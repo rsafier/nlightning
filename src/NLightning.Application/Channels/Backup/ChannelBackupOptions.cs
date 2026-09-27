@@ -28,4 +28,11 @@ public sealed class ChannelBackupOptions
     /// it off). Catches a channel that left memory without an event (closed on chain).
     /// </summary>
     public TimeSpan RefreshInterval { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// How many blocks below the tip <c>restorechanbackup</c> searches for the spend of a funding output that is
+    /// already spent (default 4032, about four weeks; never below the funding block). A spend older than that is
+    /// reported with the height to rescan from.
+    /// </summary>
+    public uint RestoreSpendSearchDepth { get; set; } = 4032;
 }

@@ -5,8 +5,12 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Tests.Channels.Backup;
 
 using Application.Channels.Backup;
+using Application.Channels.Backup.Interfaces;
 using Application.Channels.Backup.Models;
+using Application.Onchain.Interfaces;
 using Application.Protocol.Factories;
+using Domain.Bitcoin.Events;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
@@ -37,6 +41,7 @@ public class ChannelRestoreServiceTests : IDisposable
     private readonly Mock<IPeerManager> _peerManager = new();
     private readonly Mock<IChannelManager> _channelManager = new();
     private readonly Sha256 _sha256 = new();
+    private readonly List<(TxId TxId, uint Index, TxId Spender, uint Height)> _markedSpent = [];
     private int _saves;
 
     public void Dispose()
@@ -243,6 +248,151 @@ public class ChannelRestoreServiceTests : IDisposable
         Assert.Empty(result.Peers);
     }
 
+    [Fact]
+    public async Task Given_TheFundingSpentBeforeTheRestore_When_Restored_Then_TheSpendIsMarkedAndHandedToTheOnchainWatcher()
+    {
+        // Arrange: the peer force-closed (on our wiped node's error) before restorechanbackup ran
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, true));
+        var spendingTxId = new TxId(Enumerable.Repeat((byte)0x5E, 32).ToArray());
+        OutpointSpentEventArgs? located = null;
+        var locator = new Mock<IFundingSpendLocator>();
+        locator.Setup(l => l.LocateAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync((ChannelBackupEntry entry, CancellationToken _) =>
+                {
+                    located = new OutpointSpentEventArgs(entry.ChannelId,
+                                                         new SignedTransaction(spendingTxId, [0x02, 0x00]), 950, 3,
+                                                         entry.FundingTxId, entry.FundingOutputIndex,
+                                                         new Hash(new byte[32]));
+                    return new FundingSpendLocation(FundingSpendStatus.SpentFound, located);
+                });
+        var watcher = new Mock<IOnchainChannelWatcher>();
+        watcher.Setup(w => w.HandleFundingSpentAsync(It.IsAny<OutpointSpentEventArgs>(),
+                                                     It.IsAny<CancellationToken>()))
+               .Callback(() => _calls.Add("onchain"))
+               .ReturnsAsync((FundingSpendOutcome?)null);
+        var service = CreateService(spendLocator: locator.Object, onchainWatcher: watcher.Object);
+
+        // Act
+        var result = await service.RestoreAsync(backup, ct);
+
+        // Assert: registered first, then the spend recorded on the funding watch and handed over
+        var channel = Assert.Single(result.Channels);
+        Assert.Equal(ChannelRestoreAction.Restore, channel.Action);
+        Assert.Contains("already closed", channel.Detail);
+        Assert.Contains("950", channel.Detail);
+        watcher.Verify(w => w.HandleFundingSpentAsync(located!, It.IsAny<CancellationToken>()), Times.Once);
+        var marked = Assert.Single(_markedSpent);
+        Assert.Equal(_storedWatches[0].TransactionId, marked.TxId);
+        Assert.Equal(_storedWatches[0].OutputIndex, marked.Index);
+        Assert.Equal(spendingTxId, marked.Spender);
+        Assert.Equal(950u, marked.Height);
+        Assert.Equal(["save", "register", "save", "onchain", "connect"], _calls);
+    }
+
+    [Fact]
+    public async Task Given_ASpentFundingWhoseSpendIsNotFound_When_Restored_Then_TheResultSaysFromWhereToRescan()
+    {
+        // Arrange: spent, but not in the searched blocks (from 5000 on); the funding was created at height 101
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        var locator = new Mock<IFundingSpendLocator>();
+        locator.Setup(l => l.LocateAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new FundingSpendLocation(FundingSpendStatus.SpentNotFound, SearchedFromHeight: 5_000));
+        var watcher = new Mock<IOnchainChannelWatcher>();
+        var service = CreateService(spendLocator: locator.Object, onchainWatcher: watcher.Object);
+
+        // Act
+        var result = await service.RestoreAsync(backup, ct);
+
+        // Assert
+        var channel = Assert.Single(result.Channels);
+        Assert.Equal(ChannelRestoreAction.Restore, channel.Action);
+        Assert.StartsWith("FundingAlreadySpent", channel.Detail);
+        Assert.Contains("rescan from height 101", channel.Detail);
+        watcher.VerifyNoOtherCalls();
+        Assert.Empty(_markedSpent);
+    }
+
+    [Fact]
+    public async Task Given_AnUnspentFunding_When_Restored_Then_NothingIsHandedToTheOnchainWatcher()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        var locator = new Mock<IFundingSpendLocator>();
+        locator.Setup(l => l.LocateAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new FundingSpendLocation(FundingSpendStatus.Unspent));
+        var watcher = new Mock<IOnchainChannelWatcher>();
+        var service = CreateService(spendLocator: locator.Object, onchainWatcher: watcher.Object);
+
+        // Act
+        var result = await service.RestoreAsync(backup, ct);
+
+        // Assert
+        Assert.Contains("asked to force close", Assert.Single(result.Channels).Detail);
+        watcher.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_RestoredChannels_When_Restored_Then_TheKeyIndexIsReservedPastTheHighestBeforeAnythingIsStored()
+    {
+        // Arrange: key indexes 1, 7 and 4; channel 4 is already in the database (not restored)
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false), (7, true), (4, false));
+        _storedChannels.Add(new BackupTestData().AddChannel(4));
+        var reserver = new Mock<IChannelKeyIndexReserver>();
+        reserver.Setup(r => r.ReserveThroughAsync(It.IsAny<uint>(), It.IsAny<CancellationToken>()))
+                .Callback(() => _calls.Add("reserve"))
+                .ReturnsAsync(7u);
+        var service = CreateService(keyIndexReserver: reserver.Object);
+
+        // Act
+        await service.RestoreAsync(backup, ct);
+
+        // Assert
+        reserver.Verify(r => r.ReserveThroughAsync(7u, It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal("reserve", _calls[0]);
+    }
+
+    [Fact]
+    public async Task Given_NothingToRestore_When_Restored_Then_NoKeyIndexIsReserved()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        _storedChannels.Add(new BackupTestData().AddChannel(1));
+        var reserver = new Mock<IChannelKeyIndexReserver>();
+        var service = CreateService(keyIndexReserver: reserver.Object);
+
+        // Act
+        await service.RestoreAsync(backup, ct);
+
+        // Assert
+        reserver.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_APeerThatDoesNotDisconnect_When_Restored_Then_ReportedNotConnectedAndNoConnectTried()
+    {
+        // Arrange: the old connection never closes within the timeout
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        _peerManager.Setup(p => p.GetPeer(It.IsAny<CompactPubKey>()))
+                    .Returns((CompactPubKey id) => new PeerModel(id, "10.0.0.1", 9736, "IPv4"));
+        var service = CreateService();
+
+        // Act
+        var result = await service.RestoreAsync(backup, ct);
+
+        // Assert
+        var peer = Assert.Single(result.Peers);
+        Assert.False(peer.Connected);
+        Assert.Contains("did not close", peer.Error);
+        Assert.Empty(_connects);
+        Assert.Equal(ChannelRestoreAction.Restore, Assert.Single(result.Channels).Action);
+    }
+
     private async Task<byte[]> ExportAsync(CancellationToken ct, params (byte Tag, bool Anchors)[] channels)
     {
         // The same node key (seed 7) and channel key derivation as _node
@@ -252,7 +402,9 @@ public class ChannelRestoreServiceTests : IDisposable
         return (await source.CreateService().ExportAsync(null, ct)).Backup;
     }
 
-    private ChannelRestoreService CreateService(bool failSave = false)
+    private ChannelRestoreService CreateService(bool failSave = false, IFundingSpendLocator? spendLocator = null,
+                                                IOnchainChannelWatcher? onchainWatcher = null,
+                                                IChannelKeyIndexReserver? keyIndexReserver = null)
     {
         var channelRepository = new Mock<IChannelDbRepository>();
         channelRepository.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
@@ -273,6 +425,11 @@ public class ChannelRestoreServiceTests : IDisposable
         var stagedWatches = new List<WatchedOutpointModel>();
         watchRepository.Setup(r => r.Add(It.IsAny<WatchedOutpointModel>()))
                        .Callback((WatchedOutpointModel w) => stagedWatches.Add(w));
+        watchRepository.Setup(r => r.MarkSpentAsync(It.IsAny<TxId>(), It.IsAny<uint>(), It.IsAny<TxId>(),
+                                                    It.IsAny<uint>(), It.IsAny<Hash>()))
+                       .Callback((TxId txId, uint index, TxId spender, uint height, Hash _) =>
+                                     _markedSpent.Add((txId, index, spender, height)))
+                       .Returns(Task.CompletedTask);
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelRepository.Object);
         unitOfWork.SetupGet(u => u.PeerDbRepository).Returns(peerRepository.Object);
@@ -324,7 +481,8 @@ public class ChannelRestoreServiceTests : IDisposable
                                          Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }),
                                          watcher.Object, _peerManager.Object, _node.KeyManager,
                                          provider.GetRequiredService<IServiceScopeFactory>(), _sha256,
-                                         _node.Signer.Object, NullLogger<ChannelRestoreService>.Instance)
+                                         _node.Signer.Object, NullLogger<ChannelRestoreService>.Instance,
+                                         spendLocator, onchainWatcher, keyIndexReserver)
         {
             DisconnectTimeout = TimeSpan.FromSeconds(1)
         };
