@@ -504,10 +504,11 @@ public class GraphPrunerTests
     }
 
     [Fact]
-    public async Task Given_Mainnet_When_Started_Then_NothingIsSubscribed()
+    public async Task Given_GraphDisabled_When_Started_Then_NothingIsSubscribed()
     {
-        // Arrange (plan D12: the graph stays off on mainnet unless Gossip:Enabled is set)
+        // Arrange (Gossip:Enabled = false; since D12 the graph is on by default everywhere, mainnet included)
         var kit = await GraphStoreTests.CreateGraphAsync();
+        kit.Options.Enabled = false;
         var monitor = new Mock<IBlockchainMonitor>();
         var pruner = CreatePruner(kit, monitor: monitor, network: "mainnet");
 

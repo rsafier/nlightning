@@ -260,9 +260,11 @@ public static class NodeConfigurationExtensions
         // Regtest and signets switch HTLCs on explicitly; mainnet and testnet leave the switch to NodeOptions' code
         // default (null binds as unset), so the BOLT 5 O6-T4 gate decides both
         var enableHtlcs = resolved == BitcoinNetwork.Regtest || isSignet ? "true" : "null";
-        // BOLT 7 plan D12: the graph, gossip sync and relay stay off on mainnet until Proof G5; public channels there
-        // are gated by AllowPublicChannelsOnMainnet alone (AcceptPublicChannels keeps its code default, true)
-        var gossipOn = isMainnet ? "false" : "true";
+        // BOLT 7 plan D12 (decided in wave d12): the graph and gossip sync are on everywhere, mainnet included; the
+        // relay of others' gossip stays off on mainnet; public channels there are gated by
+        // AllowPublicChannelsOnMainnet alone (AcceptPublicChannels keeps its code default, true)
+        const string gossipOn = "true";
+        var gossipRelayOn = isMainnet ? "false" : "true";
 
         var (feeSource, feeUrl) = name switch
         {
@@ -348,7 +350,7 @@ public static class NodeConfigurationExtensions
                  "Gossip": {
                    "Enabled": {{GOSSIP_ON}},
                    "SyncEnabled": {{GOSSIP_ON}},
-                   "RelayEnabled": {{GOSSIP_ON}},
+                   "RelayEnabled": {{GOSSIP_RELAY_ON}},
                    "AcceptPublicChannels": true,
                    "AllowPublicChannelsOnMainnet": false,
                    "MaxMemoryMb": 1024
@@ -387,6 +389,7 @@ public static class NodeConfigurationExtensions
                   .Replace("{{DNS_SEEDS}}", dnsSeeds)
                   .Replace("{{ENABLE_HTLCS}}", enableHtlcs)
                   .Replace("{{GOSSIP_ON}}", gossipOn)
+                  .Replace("{{GOSSIP_RELAY_ON}}", gossipRelayOn)
                   .Replace("{{FEE_BASE_MSAT}}", Invariant(routing.FeeBaseMsat))
                   .Replace("{{FEE_PPM}}", Invariant(routing.FeeProportionalMillionths))
                   .Replace("{{CLTV_EXPIRY_DELTA}}", Invariant(routing.CltvExpiryDelta))

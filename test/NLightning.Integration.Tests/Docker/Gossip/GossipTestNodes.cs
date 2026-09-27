@@ -43,7 +43,7 @@ public static class GossipTestNodes
 
     /// <summary>
     /// The <c>Gossip</c> flags every proof node sets: the graph on (<c>GossipGraphOptions.Enabled</c>; default on
-    /// everywhere but mainnet, plan D12) and fundee acceptance of public channels (<c>GossipOptions</c>, G1-T1).
+    /// everywhere, mainnet included since plan D12 was decided) and fundee acceptance of public channels (<c>GossipOptions</c>, G1-T1).
     /// </summary>
     private static readonly string[] s_gossipFlags =
         [nameof(GossipGraphOptions.Enabled), nameof(GossipOptions.AcceptPublicChannels)];

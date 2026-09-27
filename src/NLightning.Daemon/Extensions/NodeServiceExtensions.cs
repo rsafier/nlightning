@@ -336,7 +336,7 @@ public static class NodeServiceExtensions
 
         // BOLT 7 gossip queries and sync (G3-T1/G3-T2): answers peers' queries from the graph, syncs the graph from
         // up to Gossip:SyncPeers peers, sends the gossip_timestamp_filters and re-queries what the ingress dropped
-        // (NL-353). Gossip:SyncEnabled unset means on everywhere but mainnet (plan D12); the peer services hand it
+        // (NL-353). Gossip:SyncEnabled unset means on everywhere, mainnet included (plan D12, wave d12); the peer services hand it
         // messages 261-265 and call it after init
         services.AddGossipSyncServices();
         services.AddOptions<GossipSyncOptions>()

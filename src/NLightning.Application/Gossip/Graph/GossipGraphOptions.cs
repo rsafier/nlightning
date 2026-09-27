@@ -29,8 +29,8 @@ public sealed class GossipGraphOptions
 
     /// <summary>
     /// Receives, validates and stores graph gossip, and asks each gossip peer for its graph at connect. Unset (the
-    /// default) means on everywhere but mainnet (plan D12: mainnet stays off until the G5 proof); read the effective
-    /// value with <see cref="IsEnabledFor"/>.
+    /// default) means on everywhere, mainnet included (plan D12, opened after the verified mainnet run of wave d12);
+    /// read the effective value with <see cref="IsEnabledFor"/>.
     /// </summary>
     /// <remarks>Configuration key <c>Gossip:Enabled</c>.</remarks>
     public bool? Enabled { get; set; }
@@ -230,9 +230,13 @@ public sealed class GossipGraphOptions
     /// <summary>Blocks after the funding spend at which a channel is forgotten (BOLT 7: 72).</summary>
     public uint SpentChannelRetentionBlocks { get; set; } = 72;
 
-    /// <summary>The effective switch: <see cref="Enabled"/> when set, otherwise true on every chain but mainnet.</summary>
-    public bool IsEnabledFor(BitcoinNetwork network) =>
-        Enabled ?? !string.Equals(network.Name, NetworkConstants.Mainnet, StringComparison.OrdinalIgnoreCase);
+    /// <summary>The effective switch: <see cref="Enabled"/> when set, otherwise true on every chain (D12).</summary>
+    public bool IsEnabledFor(BitcoinNetwork network)
+    {
+        // On every network since D12; the callers keep asking per network so a chain can be gated again
+        _ = network;
+        return Enabled ?? true;
+    }
 
     /// <summary>
     /// The depth in effect on <paramref name="network"/>: <see cref="AnnouncementDepth"/> (at least 1) on regtest,

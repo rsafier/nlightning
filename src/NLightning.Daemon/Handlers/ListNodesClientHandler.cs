@@ -17,7 +17,7 @@ using Interfaces;
 /// <summary>
 /// Lists the announced nodes of the gossip graph (ClientCommand 17, BOLT 7 plan G2-T6), ordered by node id, each with
 /// the number of graph channels it is an end of. Refused with <c>invalid_operation</c> while the graph is disabled
-/// (<c>Gossip:Enabled</c>; off on mainnet by default, plan D12).
+/// (<c>Gossip:Enabled = false</c>; on everywhere by default since plan D12 was decided).
 /// </summary>
 public sealed class ListNodesClientHandler : IClientCommandHandler<ListNodesClientRequest, ListNodesClientResponse>
 {

@@ -192,8 +192,8 @@ public class DescribeGraphIpcHandlerTests
     [Fact]
     public async Task Given_TheGraphDisabled_When_DescribeGraph_Then_InvalidOperation()
     {
-        // Arrange (plan D12: mainnet without Gossip:Enabled)
-        using var provider = BuildProvider(CreateGraph(), "mainnet");
+        // Arrange (Gossip:Enabled = false; on by default everywhere since D12)
+        using var provider = BuildProvider(CreateGraph(), "mainnet", graphEnabled: false);
         var handler = new DescribeGraphIpcHandler(NullLogger<DescribeGraphIpcHandler>.Instance, provider);
 
         // Act
@@ -346,10 +346,10 @@ public class DescribeGraphIpcHandlerTests
     }
 
     private static ServiceProvider BuildProvider(GraphStore store, string network = "regtest",
-                                                 GossipMemoryBudget? budget = null)
+                                                 GossipMemoryBudget? budget = null, bool? graphEnabled = null)
     {
         var nodeOptions = Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Resolve(network) });
-        var graphOptions = Options.Create(new GossipGraphOptions());
+        var graphOptions = Options.Create(new GossipGraphOptions { Enabled = graphEnabled });
         var ingress = new GossipIngress(store, new Mock<IGossipSignatureVerifier>().Object,
                                         new Mock<IFundingOutputLookup>().Object, graphOptions, nodeOptions,
                                         NullLogger<GossipIngress>.Instance);

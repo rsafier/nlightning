@@ -1,6 +1,5 @@
 namespace NLightning.Application.Gossip.Sync;
 
-using Domain.Protocol.Constants;
 using Domain.Protocol.ValueObjects;
 
 /// <summary>
@@ -19,7 +18,7 @@ public sealed class GossipSyncOptions
 
     /// <summary>
     /// Whether we query peers for their graph and send them <c>gossip_timestamp_filter</c>s. Unset (the default)
-    /// means on everywhere but mainnet (plan D12). Queries from peers are always answered (from an empty graph when
+    /// means on everywhere, mainnet included (plan D12, opened in wave d12). Queries from peers are always answered (from an empty graph when
     /// the graph is off).
     /// </summary>
     /// <remarks>Configuration key <c>Gossip:SyncEnabled</c>.</remarks>
@@ -109,10 +108,13 @@ public sealed class GossipSyncOptions
     /// </remarks>
     public int MaxOutboxGossipPerPeer { get; set; }
 
-    /// <summary>The effective switch: <see cref="SyncEnabled"/> when set, otherwise true on every chain but mainnet.
-    /// </summary>
-    public bool IsSyncEnabledFor(BitcoinNetwork network) =>
-        SyncEnabled ?? !string.Equals(network.Name, NetworkConstants.Mainnet, StringComparison.OrdinalIgnoreCase);
+    /// <summary>The effective switch: <see cref="SyncEnabled"/> when set, otherwise true on every chain (D12).</summary>
+    public bool IsSyncEnabledFor(BitcoinNetwork network)
+    {
+        // On every network since D12; the callers keep asking per network so a chain can be gated again
+        _ = network;
+        return SyncEnabled ?? true;
+    }
 
     /// <summary>The invalid settings, empty when valid.</summary>
     public IReadOnlyList<string> GetValidationErrors()

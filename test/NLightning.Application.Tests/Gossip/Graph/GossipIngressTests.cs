@@ -417,7 +417,7 @@ public class GossipIngressTests
     public void Given_GraphDisabled_When_OwnGossipIsAdded_Then_NothingStarts()
     {
         // Arrange
-        var (ingress, store) = CreateIngressOverBlockedStore(network: "mainnet");
+        var (ingress, store) = CreateIngressOverBlockedStore(enabled: false);
 
         // Act
         ((IOwnGossipSink)ingress).AddOwnNodeAnnouncement(GraphTestKit.SignedNodeAnnouncement(s_alice, s_now).Payload);
@@ -446,18 +446,19 @@ public class GossipIngressTests
     }
 
     [Theory]
-    [InlineData("mainnet", null, false)]
+    [InlineData("mainnet", null, true)]
     [InlineData("regtest", null, true)]
     [InlineData("signet", null, true)]
     [InlineData("mainnet", true, true)]
+    [InlineData("mainnet", false, false)]
     [InlineData("regtest", false, false)]
-    public void Given_NetworkAndSetting_When_Asked_Then_TheGraphIsOffOnMainnetByDefault(string network,
+    public void Given_NetworkAndSetting_When_Asked_Then_TheGraphIsOnByDefaultEverywhere(string network,
         bool? enabled, bool expected)
     {
         // Arrange
         var options = new GossipGraphOptions { Enabled = enabled };
 
-        // Act + Assert (plan D12)
+        // Act + Assert (plan D12, opened for mainnet in wave d12)
         Assert.Equal(expected, options.IsEnabledFor(BitcoinNetwork.Resolve(network)));
     }
 
@@ -465,7 +466,7 @@ public class GossipIngressTests
     public void Given_GraphDisabled_When_GossipIsQueued_Then_ItIsDropped()
     {
         // Arrange
-        var (ingress, store) = CreateIngressOverBlockedStore(network: "mainnet");
+        var (ingress, store) = CreateIngressOverBlockedStore(enabled: false);
 
         // Act
         var queued = ingress.TryEnqueue(GraphTestKit.CreatePeer().Object,
@@ -709,12 +710,12 @@ public class GossipIngressTests
     }
 
     private static (GossipIngress Ingress, Mock<IGraphStore> Store) CreateIngressOverBlockedStore(
-        string network = "regtest", int maxPerPeer = 2_000)
+        string network = "regtest", int maxPerPeer = 2_000, bool? enabled = null)
     {
         var store = new Mock<IGraphStore>();
         store.Setup(s => s.LoadAsync(It.IsAny<CancellationToken>()))
              .Returns(new TaskCompletionSource().Task);
-        var options = new GossipGraphOptions { MaxQueuedPerPeer = maxPerPeer, Workers = 1 };
+        var options = new GossipGraphOptions { MaxQueuedPerPeer = maxPerPeer, Workers = 1, Enabled = enabled };
         var nodeOptions = new NodeOptions { BitcoinNetwork = BitcoinNetwork.Resolve(network) };
         var ingress = new GossipIngress(store.Object, new GossipSignatureVerifier(),
                                         new Mock<IFundingOutputLookup>().Object,

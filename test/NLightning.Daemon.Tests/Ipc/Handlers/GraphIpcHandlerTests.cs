@@ -165,8 +165,8 @@ public class GraphIpcHandlerTests
     [Fact]
     public async Task Given_TheGraphDisabled_When_Listed_Then_InvalidOperation()
     {
-        // Arrange (plan D12: mainnet without Gossip:Enabled)
-        using var provider = BuildProvider(CreateGraph(), network: "mainnet");
+        // Arrange (Gossip:Enabled = false; on by default everywhere since D12)
+        using var provider = BuildProvider(CreateGraph(), "mainnet", graphEnabled: false);
         var nodes = new ListNodesIpcHandler(NullLogger<ListNodesIpcHandler>.Instance, provider);
         var channels = new ListGraphChannelsIpcHandler(NullLogger<ListGraphChannelsIpcHandler>.Instance, provider);
         var ct = TestContext.Current.CancellationToken;
@@ -237,11 +237,12 @@ public class GraphIpcHandlerTests
         return store;
     }
 
-    private static ServiceProvider BuildProvider(IGraphStore store, string network = "regtest")
+    private static ServiceProvider BuildProvider(IGraphStore store, string network = "regtest",
+                                                 bool? graphEnabled = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton(store);
-        services.AddSingleton(Options.Create(new GossipGraphOptions()));
+        services.AddSingleton(Options.Create(new GossipGraphOptions { Enabled = graphEnabled }));
         services.AddSingleton(Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Resolve(network) }));
         services.AddScoped<IClientCommandHandler<ListNodesClientRequest, ListNodesClientResponse>,
             ListNodesClientHandler>();
