@@ -84,19 +84,27 @@ internal sealed class DualFundHarness : IAsyncDisposable
     /// <summary>When set, messages sent while it returns true are dropped (a link that is down).</summary>
     public bool LinkDown { get; set; }
 
-    private DualFundHarness(string directory, long bobContributionSat)
+    /// <summary>What the nodes negotiated (<c>option_dual_fund</c> and the defaults, anchors included).</summary>
+    public FeatureOptions NegotiatedFeatures { get; set; } = new() { DualFund = FeatureSupport.Optional };
+
+    /// <summary>How long <c>OpenAsync</c>/<c>BumpAsync</c> wait (the nodes' <c>Node:DualFund:OpenTimeout</c>).</summary>
+    public TimeSpan OpenTimeout { get; }
+
+    private DualFundHarness(string directory, long bobContributionSat, TimeSpan openTimeout)
     {
         _directory = directory;
+        OpenTimeout = openTimeout;
         Alice = new DualFundNode(this, "Alice", 0xA1, Path.Combine(directory, "alice.db"), 0);
         Bob = new DualFundNode(this, "Bob", 0xB0, Path.Combine(directory, "bob.db"), bobContributionSat);
     }
 
     /// <param name="bobContributionSat">What Bob (the accepter) contributes to Alice's opens.</param>
-    public static async Task<DualFundHarness> CreateAsync(long bobContributionSat)
+    /// <param name="openTimeout">The nodes' open timeout (default 10 s).</param>
+    public static async Task<DualFundHarness> CreateAsync(long bobContributionSat, TimeSpan? openTimeout = null)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"nltg-dual-fund-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
-        var harness = new DualFundHarness(directory, bobContributionSat);
+        var harness = new DualFundHarness(directory, bobContributionSat, openTimeout ?? TimeSpan.FromSeconds(10));
         foreach (var node in harness.Nodes)
             await node.StartAsync(migrate: true);
         return harness;
@@ -222,19 +230,33 @@ internal sealed class DualFundHarness : IAsyncDisposable
         _links.GetOrAdd((from.Name, Other(from).Name), _ => new ConcurrentQueue<IChannelMessage>()).Enqueue(message);
     }
 
+    /// <summary>Takes the next message <paramref name="from"/> sent, undelivered (null when none is queued).</summary>
+    public IChannelMessage? TakeNext(DualFundNode from) =>
+        _links.TryGetValue((from.Name, Other(from).Name), out var queue) && queue.TryDequeue(out var message)
+            ? message
+            : null;
+
+    /// <summary>Delivers <paramref name="message"/> as if <paramref name="from"/> sent it now.</summary>
+    public Task DeliverAsync(DualFundNode from, IChannelMessage message) => DeliverAsync(from, Other(from), message);
+
     private async Task<bool> DeliverNextAsync((string From, string To) key)
     {
         if (!_links.TryGetValue(key, out var queue) || !queue.TryDequeue(out var message))
             return false;
 
         var from = Nodes.Single(n => n.Name == key.From);
-        var to = Other(from);
+        await DeliverAsync(from, Other(from), message);
+        return true;
+    }
+
+    private async Task DeliverAsync(DualFundNode from, DualFundNode to, IChannelMessage message)
+    {
         lock (Transcript)
             Transcript.Add((from.Name, message));
         to.Received.Add(message);
         try
         {
-            await to.ChannelManager.HandleChannelMessageAsync(message, DualFundNode.NegotiatedFeatures, from.NodeId);
+            await to.ChannelManager.HandleChannelMessageAsync(message, NegotiatedFeatures, from.NodeId);
         }
         catch (Exception e) when (e is Domain.Exceptions.ChannelErrorException
                                      or Domain.Exceptions.ChannelWarningException)
@@ -242,8 +264,6 @@ internal sealed class DualFundHarness : IAsyncDisposable
             // PeerManager sends these to the peer; the harness records them
             to.Errors.Add(e);
         }
-
-        return true;
     }
 
     private async Task WhenIdleAsync()
@@ -260,9 +280,6 @@ internal sealed class DualFundHarness : IAsyncDisposable
 [ExcludeFromCodeCoverage]
 internal sealed class DualFundNode
 {
-    /// <summary>What both nodes negotiated: <c>option_dual_fund</c> and the defaults (anchors included).</summary>
-    public static readonly FeatureOptions NegotiatedFeatures = new() { DualFund = FeatureSupport.Optional };
-
     private readonly DualFundHarness _harness;
     private readonly long _acceptContributionSat;
     private ServiceProvider? _provider;
@@ -421,7 +438,7 @@ internal sealed class DualFundNode
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new DualFundingOptions
         {
             AcceptContributionSat = _acceptContributionSat,
-            OpenTimeout = TimeSpan.FromSeconds(10)
+            OpenTimeout = _harness.OpenTimeout
         }));
         services.AddSingleton<ISecureKeyManager>(KeyManager);
         services.AddPersistentOnionReplayStore();
