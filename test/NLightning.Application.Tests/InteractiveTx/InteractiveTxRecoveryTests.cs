@@ -1,5 +1,8 @@
+using Microsoft.Extensions.Logging.Abstractions;
+
 namespace NLightning.Application.Tests.InteractiveTx;
 
+using Application.InteractiveTx;
 using Application.InteractiveTx.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Quiescence;
@@ -191,5 +194,48 @@ public class InteractiveTxRecoveryTests
         Assert.Equal(1, harness.Transcript.Count(t => t is { From: "bob", Message: TxSignaturesMessage }));
         foreach (var node in new[] { harness.Alice, harness.Bob })
             Assert.Single(node.Driver.GetInfo(s_channelId)!.CompletedAttempts);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_TheEngineRefusesOurRbfTerms_When_TheAttemptWouldStart_Then_TxAbortNotAnException(
+        bool initiatorRefuses)
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var harness = new InteractiveTxHarness(InteractiveTxEngines.Reference, 100_000, 50_000);
+        harness.Alice.Fund(300_000);
+        harness.Alice.Fund(310_000);
+        harness.Bob.Fund(200_000);
+        harness.Bob.Fund(210_000);
+        await harness.PumpAsync(harness.Alice, await harness.StartAsync(FeeratePerKw, ct), ct);
+        var refusing = initiatorRefuses ? harness.Alice : harness.Bob;
+        refusing.ReplaceDriver(new InteractiveTxDriver(new RefusingRbfInteractiveTxEngine(), refusing.Builder,
+                                                       refusing.Contributor, refusing.Inspector,
+                                                       NullLogger<InteractiveTxDriver>.Instance));
+        await refusing.Driver.ResumeAsync(refusing.StoredSession(s_channelId)!,
+                                          refusing.Terms(s_channelId, harness.Other(refusing), initiatorRefuses,
+                                                         FeeratePerKw), refusing.Host, ct);
+        harness.Bob.Host.RbfHandler = (message, _) =>
+            InteractiveTxRbfDecision.Accept(harness.Bob.Terms(s_channelId, harness.Alice, false,
+                                                              message.Payload.Feerate),
+                                            harness.Bob.Host.LocalOutputShare);
+
+        // Act
+        var initRbf = await harness.Alice.Driver.RequestRbfAsync(
+                          harness.Alice.Terms(s_channelId, harness.Bob, true, 1_100),
+                          harness.Alice.Host.LocalOutputShare, ct);
+        await harness.PumpAsync(harness.Alice, initRbf, ct, maxMessages: 100);
+
+        // Assert: the refusing side answered tx_abort, its fresh reservation released, nobody negotiates
+        Assert.Contains(harness.Transcript, t => t.From == refusing.Name && t.Message is TxAbortMessage);
+        Assert.Single(refusing.Contributor.Released);
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+        {
+            Assert.False(node.Driver.IsNegotiating(s_channelId));
+            Assert.False(node.Driver.GetInfo(s_channelId)!.AwaitingAbortEcho);
+            Assert.Single(node.Host.Completions);
+        }
     }
 }

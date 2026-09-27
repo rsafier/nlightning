@@ -374,9 +374,11 @@ public class InteractiveTxHarnessTests
         {
             Assert.False(node.Driver.IsNegotiating(InteractiveTxHarness.ChannelId));
             Assert.Single(node.Driver.GetInfo(InteractiveTxHarness.ChannelId)!.CompletedAttempts);
-            // The RBF attempt's reservation is released, the original's is kept
-            var released = Assert.Single(node.Contributor.Released);
-            Assert.DoesNotContain(released, firstReservations.Select(r => r!.Value));
+            // The RBF attempt's reservation (if the side got as far as making one: an engine may refuse its
+            // non-double-spending contribution before the attempt starts) is released, the original's is kept
+            Assert.InRange(node.Contributor.Released.Count, 0, 1);
+            Assert.All(node.Contributor.Released,
+                       released => Assert.DoesNotContain(released, firstReservations.Select(r => r!.Value)));
         }
     }
 
