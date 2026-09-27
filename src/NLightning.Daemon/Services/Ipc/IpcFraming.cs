@@ -22,7 +22,10 @@ public sealed class LengthPrefixedIpcFraming : IIpcFraming
         try
         {
             await ReadExactAsync(stream, buffer.AsMemory(0, len), ct);
-            return MessagePackSerializer.Deserialize<IpcEnvelope>(buffer.AsMemory(0, len), cancellationToken: ct);
+            // The envelope is read before the client is authenticated: parse it with MessagePack's untrusted-data
+            // limits (object graph depth, collision-resistant hashing)
+            var options = MessagePackSerializer.DefaultOptions.WithSecurity(MessagePackSecurity.UntrustedData);
+            return MessagePackSerializer.Deserialize<IpcEnvelope>(buffer.AsMemory(0, len), options, ct);
         }
         finally
         {
