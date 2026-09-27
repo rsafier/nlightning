@@ -6,11 +6,14 @@ namespace NLightning.Application.Onchain;
 
 using Channels.Safety.Interfaces;
 using Domain.Bitcoin.Events;
+using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Classifiers;
@@ -94,7 +97,8 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
             return null;
         }
 
-        Recorded recorded;
+        Recorded? recorded = null;
+        ChannelFunding? spliceToBroadcastOn = null;
         using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
         {
             if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel))
@@ -104,16 +108,21 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                 return null;
             }
 
-            if (channel.FundingOutput is not { TransactionId: { } fundingTxId, Index: { } fundingIndex }
-             || args.SpentTransactionId is { } spentTxId
-             && (spentTxId != fundingTxId || args.SpentOutputIndex != fundingIndex))
-                return null;
-
-            if (channel.State is ChannelState.Closed or ChannelState.Stale)
+            if (channel.FundingOutput is not { TransactionId: not null, Index: not null }
+             || channel.State is ChannelState.Closed or ChannelState.Stale)
                 return null;
 
             using var scope = _serviceScopeFactory.CreateScope();
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            // Splicing plan §3.6: a spend of any funding of the channel (current, pending splice, retired) is judged
+            // against that funding; an outpoint that is none of them is not ours to judge
+            var fundings = await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger);
+            if (args.SpentTransactionId is { } spentTxId
+             && fundings.All(f => f.FundingTxId != spentTxId
+                               || (args.SpentOutputIndex is { } spentIndex && spentIndex != f.OutputIndex)))
+                return null;
+
             var existing = await unitOfWork.OnchainResolutionDbRepository.GetCloseAsync(channelId);
             if (existing is not null && existing.CommitmentTransactionId == spend.TxId)
             {
@@ -137,13 +146,14 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                 return new FundingSpendOutcome(existing.Kind, outputs.Count, Replayed: true);
             }
 
-            if (existing is not null)
-                _logger.LogCritical("The funding output of channel {ChannelId} is now spent by {TxId}, not by the "
-                                  + "recorded {Recorded} (reorg): recording the new spend", channelId,
-                                    Display(spend.TxId), Display(existing.CommitmentTransactionId));
+            var factory = scope.ServiceProvider.GetService<ICommitmentTransactionModelFactory>();
+            var contexts = await BuildContextsAsync(channel, fundings, unitOfWork, factory);
+            var match = FundingSpendClassifier.ClassifyAny(spend, contexts.Select(c => c.Context).ToList());
+            if (match is null)
+                return null;
 
-            var context = await BuildContextAsync(channel, fundingTxId, fundingIndex, unitOfWork);
-            var classification = FundingSpendClassifier.Classify(spend, context);
+            var spentFunding = contexts.First(c => ReferenceEquals(c.Context, match.Context)).Funding;
+            var classification = match.Classification;
             switch (classification.Kind)
             {
                 case FundingSpendKind.NotFundingSpend:
@@ -152,15 +162,42 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                     _logger.LogInformation("The funding output of channel {ChannelId} was spent by mutual close "
                                          + "{TxId}; the close path records it", channelId, Display(spend.TxId));
                     return null;
-            }
+                case FundingSpendKind.Splice:
+                    spliceToBroadcastOn = OnSpliceConfirmed(channel, fundings, spentFunding, spend, existing);
+                    break;
+                default:
+                    if (existing is not null)
+                        _logger.LogCritical("The funding output of channel {ChannelId} is now spent by {TxId}, not by "
+                                          + "the recorded {Recorded} (reorg): recording the new spend", channelId,
+                                            Display(spend.TxId), Display(existing.CommitmentTransactionId));
 
-            var closeKind = ToCloseKind(classification.Kind);
-            var (descriptors, point, unmapped) = await MapOutputsAsync(scope, channel, classification, spend);
-            if (existing is not null)
-                await RetireReplacedCloseAsync(unitOfWork, channelId, existing, spend.TxId);
-            recorded = await PersistAsync(scope, channel, args, spend, classification, closeKind, descriptors, point,
-                                          unmapped);
+                    if (!OnchainFundings.IsCurrent(channel, spentFunding))
+                        _logger.LogCritical("Channel {ChannelId}: {Kind} {TxId} spends funding {FundingTxId} "
+                                          + "({Status}), not the current one", channelId, classification.Kind,
+                                            Display(spend.TxId), Display(spentFunding.FundingTxId),
+                                            spentFunding.Status);
+
+                    var closeKind = ToCloseKind(classification.Kind);
+                    var (descriptors, point, unmapped) =
+                        await MapOutputsAsync(scope, channel, classification, spend, spentFunding, fundings, factory);
+                    if (existing is not null)
+                        await RetireReplacedCloseAsync(unitOfWork, channelId, existing, spend.TxId);
+                    recorded = await PersistAsync(scope, channel, args, spend, classification, closeKind, descriptors,
+                                                  point, unmapped, spentFunding, fundings);
+                    break;
+            }
         }
+
+        if (spliceToBroadcastOn is not null)
+        {
+            // SP2-C-T2 (SP-I4): our commitment on the funding the splice spent can never confirm; the one on the
+            // splice funding can, at the same number
+            await BroadcastOnSpliceAsync(channelId, spliceToBroadcastOn, cancellationToken);
+            return null;
+        }
+
+        if (recorded is null)
+            return null;
 
         foreach (var watch in recorded.NewWatches)
             _outpointWatcher.TrackWatchedOutpoint(watch);
@@ -205,6 +242,65 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         }
 
         return recorded.Outcome;
+    }
+
+    /// <summary>
+    /// A splice transaction of the channel confirmed (splicing plan §3.6, SP2-C-T1): not a close; the channel stays on
+    /// its fundings and the lock moves it. When the channel failed meanwhile (our commitment on the funding the splice
+    /// spends can no longer confirm), or a close recorded before was reorged out for it, the pending splice funding is
+    /// returned: our commitment on it must be broadcast instead (SP2-C-T2).
+    /// </summary>
+    private ChannelFunding? OnSpliceConfirmed(ChannelModel channel, IReadOnlyList<ChannelFunding> fundings,
+                                              ChannelFunding spentFunding, ChainTx spend, ChannelCloseModel? existing)
+    {
+        var splice = fundings.FirstOrDefault(f => f.FundingTxId == spend.TxId);
+        _logger.LogInformation("The funding output {FundingTxId} of channel {ChannelId} was spent by its splice {TxId} "
+                             + "({Status})", Display(spentFunding.FundingTxId), channel.ChannelId,
+                               Display(spend.TxId), splice?.Status);
+        if (splice is null || splice.Status is ChannelFundingStatus.Current or ChannelFundingStatus.Replaced)
+            return null;
+
+        if (splice.Status == ChannelFundingStatus.Discarded)
+            _logger.LogCritical("[B5-GEN-06] Channel {ChannelId}: the discarded splice {TxId} confirmed; its funding "
+                              + "output holds the channel's funds now", channel.ChannelId, Display(spend.TxId));
+
+        if (existing is not null)
+        {
+            _logger.LogCritical("[B5-GEN-06] Channel {ChannelId}: the recorded close {Recorded} left the chain and the "
+                              + "splice {TxId} spends the funding output instead; broadcasting our commitment on the "
+                              + "splice funding", channel.ChannelId, Display(existing.CommitmentTransactionId),
+                                Display(spend.TxId));
+            return splice;
+        }
+
+        return channel.State is ChannelState.Failed ? splice : null;
+    }
+
+    /// <summary>
+    /// Hands the confirmed splice funding to <see cref="ISpliceCommitmentBroadcaster"/> (the failure service), outside
+    /// the channel's lock. A failure is logged: the failure service also checks every block.
+    /// </summary>
+    private async Task BroadcastOnSpliceAsync(ChannelId channelId, ChannelFunding splice,
+                                              CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            if (scope.ServiceProvider.GetService<ISpliceCommitmentBroadcaster>() is not { } broadcaster)
+            {
+                _logger.LogCritical("Channel {ChannelId}: splice {TxId} confirmed after the channel failed, and no "
+                                  + "splice commitment broadcaster is registered", channelId,
+                                    Display(splice.FundingTxId));
+                return;
+            }
+
+            await broadcaster.BroadcastOnSpliceAsync(channelId, splice.FundingTxId, cancellationToken);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "Broadcasting our commitment on splice {TxId} of channel {ChannelId} failed",
+                             Display(splice.FundingTxId), channelId);
+        }
     }
 
     /// <summary>
@@ -257,15 +353,19 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
     /// output.
     /// </summary>
     internal async Task<FundingSpendClassification?> ClassifyAsync(ChannelModel channel, ChainTx spend,
-                                                                   IUnitOfWork unitOfWork)
+                                                                   IUnitOfWork unitOfWork,
+                                                                   ICommitmentTransactionModelFactory? factory = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(spend);
-        if (channel.FundingOutput is not { TransactionId: { } fundingTxId, Index: { } fundingIndex })
+        var fundings = await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger);
+        if (fundings.Count == 0)
             return null;
 
-        var context = await BuildContextAsync(channel, fundingTxId, fundingIndex, unitOfWork);
-        return FundingSpendClassifier.Classify(spend, context);
+        var contexts = await BuildContextsAsync(channel, fundings, unitOfWork, factory);
+        return FundingSpendClassifier.ClassifyAny(spend, contexts.Select(c => c.Context).ToList())?.Classification
+            ?? new FundingSpendClassification(FundingSpendKind.NotFundingSpend, null, false,
+                                              "The transaction spends no funding output of the channel");
     }
 
     /// <summary>
@@ -280,119 +380,239 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         ChainTxMapper.TryParse(broadcast.RawTransaction, out var transaction) && transaction is not null
      && transaction.Inputs.Any(i => i.PreviousTxId == parent);
 
-    /// <summary>What the classifier compares the spend with (candidates rebuilt from the persisted state).</summary>
-    private async Task<FundingSpendContext> BuildContextAsync(ChannelModel channel, TxId fundingTxId,
-                                                              uint fundingIndex, IUnitOfWork unitOfWork)
+    /// <summary>
+    /// What the classifier compares the spend with, one context per funding (splicing plan §3.6): candidates rebuilt
+    /// from the persisted state on that funding's outpoint and keys. The current funding first.
+    /// </summary>
+    /// <remarks>
+    /// Commitment numbers are shared by every funding (SP-I3), so every context carries the channel's current and next
+    /// peer numbers; a commitment on a funding we cannot rebuild keeps the number with a txid that matches nothing, so a
+    /// breach of it is still recognized (Revoked) and its outputs are mapped by script.
+    /// </remarks>
+    private async Task<IReadOnlyList<(ChannelFunding Funding, FundingSpendContext Context)>> BuildContextsAsync(
+        ChannelModel channel, IReadOnlyList<ChannelFunding> fundings, IUnitOfWork unitOfWork,
+        ICommitmentTransactionModelFactory? factory)
     {
-        CommitmentCandidate? local = null, remote = null, remoteNext = null;
+        var commitmentNumber = channel.CommitmentNumber
+                            ?? throw new InvalidOperationException(
+                                   $"Channel {channel.ChannelId} has no commitment number obscurer");
 
-        // Our commitment: the one the failure service signed (its broadcast row), else the rebuilt latest one
+        // Our commitments the failure service signed (their broadcast rows), per funding they spend
+        IReadOnlyList<BroadcastTransactionModel> signed = [];
         try
         {
             var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channel.ChannelId);
-            var signed = broadcasts.LastOrDefault(b => b is
-            {
-                Purpose: BroadcastPurpose.LocalCommitment, CommitmentNumber: not null
-            });
-            if (signed is not null)
-                local = new CommitmentCandidate(signed.CommitmentNumber!.Value, signed.TransactionId);
+            signed = broadcasts.Where(b => b is { Purpose: BroadcastPurpose.LocalCommitment, CommitmentNumber: not null })
+                               .ToList();
         }
         catch (Exception e)
         {
             _logger.LogWarning(e, "Could not read the commitment broadcasts of channel {ChannelId}", channel.ChannelId);
         }
 
-        local ??= TryCandidate(channel, CommitmentCase.Local, LocalSource(channel));
-        remote = TryCandidate(channel, CommitmentCase.Remote, RemoteSource(channel));
-        if (channel.Commitments?.RemoteNextCommit is { Commit: var next })
-            remoteNext = TryCandidate(channel, CommitmentCase.Remote,
-                                      (CommitmentTxSpec.FromCommitmentSpec(next.Spec), next.Number,
-                                       next.PerCommitmentPoint));
-
         var closingTxIds = channel.ClosingTransaction is { } closing ? new[] { closing.TxId } : null;
-        return new FundingSpendContext(fundingTxId, fundingIndex,
-                                       channel.CommitmentNumber
-                                    ?? throw new InvalidOperationException(
-                                           $"Channel {channel.ChannelId} has no commitment number obscurer"),
-                                       local, remote, remoteNext, closingTxIds,
-                                       channel.LocalShutdownScript is { } localScript ? (byte[])localScript : null,
-                                       channel.RemoteShutdownScript is { } remoteScript
-                                           ? (byte[])remoteScript
-                                           : null);
+        var localScript = channel.LocalShutdownScript is { } local ? (byte[])local : null;
+        var remoteScript = channel.RemoteShutdownScript is { } remote ? (byte[])remote : null;
+        var contexts = new List<(ChannelFunding, FundingSpendContext)>();
+        foreach (var funding in fundings)
+        {
+            var sources = await GetSourcesAsync(unitOfWork, channel, funding);
+            var localCandidate = SignedCandidate(signed, funding)
+                              ?? TryCandidate(channel, funding, factory, CommitmentCase.Local, sources.Local);
+            var remoteCandidate = TryCandidate(channel, funding, factory, CommitmentCase.Remote, sources.Remote);
+            var remoteNextCandidate = TryCandidate(channel, funding, factory, CommitmentCase.Remote,
+                                                   sources.RemoteNext);
+            if (!OnchainFundings.IsCurrent(channel, funding) && channel.Commitments is { } commitments)
+            {
+                remoteCandidate ??= new CommitmentCandidate(commitments.RemoteCommit.Number, TxId.Zero);
+                if (commitments.RemoteNextCommit is { Commit.Number: var nextNumber })
+                    remoteNextCandidate ??= new CommitmentCandidate(nextNumber, TxId.Zero);
+            }
+
+            contexts.Add((funding,
+                          new FundingSpendContext(funding.FundingTxId, funding.OutputIndex, commitmentNumber,
+                                                  localCandidate, remoteCandidate, remoteNextCandidate, closingTxIds,
+                                                  localScript, remoteScript,
+                                                  OnchainFundings.SpliceTxIdsFor(fundings, funding))));
+        }
+
+        return contexts;
     }
 
-    private CommitmentCandidate? TryCandidate(ChannelModel channel, CommitmentCase commitmentCase,
-                                              (CommitmentTxSpec Spec, ulong Number, CompactPubKey? Point)? source)
+    /// <summary>Our commitment on <paramref name="funding"/> signed for broadcast (its row), if any.</summary>
+    private static CommitmentCandidate? SignedCandidate(IReadOnlyList<BroadcastTransactionModel> signed,
+                                                        ChannelFunding funding)
+    {
+        var row = signed.LastOrDefault(b => ChainTxMapper.TryParse(b.RawTransaction, out var tx) && tx is not null
+                                         && tx.IndexOfInputSpending(funding.FundingTxId, funding.OutputIndex) >= 0);
+        return row is null ? null : new CommitmentCandidate(row.CommitmentNumber!.Value, row.TransactionId);
+    }
+
+    private CommitmentCandidate? TryCandidate(ChannelModel channel, ChannelFunding funding,
+                                              ICommitmentTransactionModelFactory? factory,
+                                              CommitmentCase commitmentCase, CommitmentSource? source)
     {
         if (source is not { } s)
             return null;
 
         try
         {
-            var map = _commitmentOutputMapper.Map(channel, s.Spec, commitmentCase, s.Number, s.Point);
+            var map = OnchainFundings.Map(_commitmentOutputMapper, factory, channel, funding, s.Spec, commitmentCase,
+                                          s.Number, s.Point);
             return new CommitmentCandidate(s.Number, map.ExpectedTxId);
         }
         catch (Exception e)
         {
-            _logger.LogWarning(e, "Could not rebuild {Case} commitment {Number} of channel {ChannelId}",
-                               commitmentCase, s.Number, channel.ChannelId);
+            _logger.LogWarning(e, "Could not rebuild {Case} commitment {Number} of channel {ChannelId} on funding "
+                                + "{FundingTxId}", commitmentCase, s.Number, channel.ChannelId,
+                               Display(funding.FundingTxId));
             return null;
         }
     }
 
+    /// <summary>
+    /// The commitments of <paramref name="funding"/>: on the current funding the state machine's; on a pending splice
+    /// the state machine's moved by its deltas (in memory), else its stored slots (kept in step by every transition,
+    /// SP-I2), only at the channel's current numbers; on a retired funding only a peer commitment the engine still
+    /// knows it was signed on (in memory).
+    /// </summary>
+    private static async Task<FundingSources> GetSourcesAsync(IUnitOfWork unitOfWork, ChannelModel channel,
+                                                              ChannelFunding funding)
+    {
+        if (OnchainFundings.IsCurrent(channel, funding))
+            return new FundingSources(LocalSource(channel), RemoteSource(channel), RemoteNextSource(channel));
+
+        if (channel.Commitments is not { } commitments)
+            return new FundingSources(null, null, null);
+
+        var txId = funding.FundingTxId;
+        CommitmentSource? local = null, remote = null, remoteNext = null;
+        if (commitments.PendingFundings.FirstOrDefault(f => f.FundingTxId == txId) is { } pending)
+        {
+            if (commitments.LocalCommit.SignaturesFor(txId) is not null)
+                local = Source(ChannelCommitments.SpecFor(commitments.LocalCommit.Spec, pending),
+                               commitments.LocalCommit.Number, null);
+            remote = Source(ChannelCommitments.SpecFor(commitments.RemoteCommit.Spec, pending),
+                            commitments.RemoteCommit.Number, commitments.RemoteCommit.PerCommitmentPoint);
+            if (commitments.RemoteNextCommit is { } next && next.SignaturesFor(txId) is not null)
+                remoteNext = Source(ChannelCommitments.SpecFor(next.Commit.Spec, pending), next.Commit.Number,
+                                    next.Commit.PerCommitmentPoint);
+            return new FundingSources(local, remote, remoteNext);
+        }
+
+        if (commitments.RemoteCommit.SignedOnFundings?.FirstOrDefault(f => f.FundingTxId == txId) is { } signedOn)
+            remote = Source(ChannelCommitments.SpecFor(commitments.RemoteCommit.Spec, signedOn),
+                            commitments.RemoteCommit.Number, commitments.RemoteCommit.PerCommitmentPoint);
+        if (commitments.RemoteNextCommit is { } unacked
+         && unacked.Commit.SignedOnFundings?.FirstOrDefault(f => f.FundingTxId == txId) is { } nextSignedOn)
+            remoteNext = Source(ChannelCommitments.SpecFor(unacked.Commit.Spec, nextSignedOn), unacked.Commit.Number,
+                                unacked.Commit.PerCommitmentPoint);
+        if (funding.Status != ChannelFundingStatus.Pending)
+            return new FundingSources(null, remote, remoteNext);
+
+        // A pending splice the engine no longer holds (a restart): its stored slots, at the channel's numbers only
+        try
+        {
+            if (unitOfWork.ChannelFundingDbRepository is { } repository)
+            {
+                if (await repository.GetLocalCommitmentAsync(channel.ChannelId, txId) is { RemoteSignatures: not null }
+                        storedLocal
+                 && storedLocal.Number == commitments.LocalCommit.Number)
+                    local = Source(storedLocal.Spec, storedLocal.Number, null);
+                if (remote is null && await repository.GetRemoteCommitmentAsync(channel.ChannelId, txId) is
+                    { Commit: var storedRemote }
+                 && storedRemote.Number == commitments.RemoteCommit.Number)
+                    remote = Source(storedRemote.Spec, storedRemote.Number, storedRemote.PerCommitmentPoint);
+                if (remoteNext is null && commitments.RemoteNextCommit is { } current
+                 && await repository.GetRemoteNextCommitmentAsync(channel.ChannelId, txId) is { } storedNext
+                 && storedNext.Commit.Number == current.Commit.Number)
+                    remoteNext = Source(storedNext.Commit.Spec, storedNext.Commit.Number,
+                                        storedNext.Commit.PerCommitmentPoint);
+            }
+        }
+        catch (Exception e) when (e is NotSupportedException or NotImplementedException or InvalidOperationException)
+        {
+            // No stored slots: the commitments of this funding are recognized by number only
+        }
+
+        return new FundingSources(local, remote, remoteNext);
+    }
+
+    private static CommitmentSource Source(CommitmentSpec spec, ulong number, CompactPubKey? point) =>
+        new(CommitmentTxSpec.FromCommitmentSpec(spec), number, point);
+
+    /// <summary>The peer's commitment awaiting its <c>revoke_and_ack</c> on the current funding.</summary>
+    private static CommitmentSource? RemoteNextSource(ChannelModel channel) =>
+        channel.Commitments?.RemoteNextCommit is { Commit: var next }
+            ? Source(next.Spec, next.Number, next.PerCommitmentPoint)
+            : null;
+
     /// <summary>Our latest local commitment (as <c>LocalCommitmentBroadcastBuilder</c> builds it).</summary>
-    private static (CommitmentTxSpec, ulong, CompactPubKey?)? LocalSource(ChannelModel channel)
+    private static CommitmentSource? LocalSource(ChannelModel channel)
     {
         if (channel.Commitments is { } commitments)
-            return (CommitmentTxSpec.FromCommitmentSpec(commitments.LocalCommit.Spec), commitments.LocalCommit.Number,
-                    null);
+            return Source(commitments.LocalCommit.Spec, commitments.LocalCommit.Number, null);
 
-        return (CommitmentTxSpec.FromChannel(channel), channel.LocalCommitmentNumber, null);
+        return new CommitmentSource(CommitmentTxSpec.FromChannel(channel), channel.LocalCommitmentNumber, null);
     }
 
     /// <summary>The peer's current commitment; without a snapshot only while the key set still holds its point.</summary>
-    private static (CommitmentTxSpec, ulong, CompactPubKey?)? RemoteSource(ChannelModel channel)
+    private static CommitmentSource? RemoteSource(ChannelModel channel)
     {
         if (channel.Commitments is { } commitments)
-            return (CommitmentTxSpec.FromCommitmentSpec(commitments.RemoteCommit.Spec),
-                    commitments.RemoteCommit.Number, commitments.RemoteCommit.PerCommitmentPoint);
+            return Source(commitments.RemoteCommit.Spec, commitments.RemoteCommit.Number,
+                          commitments.RemoteCommit.PerCommitmentPoint);
 
         if (channel.RemoteKeySet is { } remoteKeySet
          && remoteKeySet.CurrentPerCommitmentIndex == PerCommitmentIndex.From(channel.RemoteCommitmentNumber))
-            return (CommitmentTxSpec.FromChannel(channel), channel.RemoteCommitmentNumber,
-                    remoteKeySet.CurrentPerCommitmentCompactPoint);
+            return new CommitmentSource(CommitmentTxSpec.FromChannel(channel), channel.RemoteCommitmentNumber,
+                                        remoteKeySet.CurrentPerCommitmentCompactPoint);
 
         return null;
     }
 
     /// <summary>
-    /// The outputs of the commitment on chain (§3.3). A peer commitment that can't be mapped still yields our
-    /// <c>to_remote</c> (static_remotekey: found by script whatever the number, B5-RMT-03).
+    /// The outputs of the commitment on chain (§3.3), rebuilt on the funding it spends (splicing plan §3.6). A peer
+    /// commitment that can't be mapped still yields our <c>to_remote</c> (static_remotekey: found by script whatever
+    /// the number, B5-RMT-03).
     /// </summary>
     private async Task<(IReadOnlyList<CommitmentOutputDescriptor> Outputs, CompactPubKey? Point, string? Unmapped)>
         MapOutputsAsync(IServiceScope scope, ChannelModel channel, FundingSpendClassification classification,
-                        ChainTx spend)
+                        ChainTx spend, ChannelFunding funding, IReadOnlyList<ChannelFunding> fundings,
+                        ICommitmentTransactionModelFactory? factory)
     {
         var number = classification.CommitmentNumber ?? 0;
         try
         {
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var sources = await GetSourcesAsync(unitOfWork, channel, funding);
+
+            // A commitment of a funding we can't rebuild on (a retired one after a restart) is mapped by script from
+            // the state machine's spec: its HTLC and to_remote scripts do not depend on the funding
+            var current = OnchainFundings.IsCurrent(channel, funding)
+                              ? sources
+                              : new FundingSources(sources.Local ?? LocalSource(channel),
+                                                   sources.Remote ?? RemoteSource(channel),
+                                                   sources.RemoteNext ?? RemoteNextSource(channel));
             CommitmentOutputMap? map = null;
             var predatesLog = false;
             switch (classification.Kind)
             {
-                case FundingSpendKind.LocalCommit when LocalSource(channel) is var (spec, _, _):
-                    map = _commitmentOutputMapper.Map(channel, spec, CommitmentCase.Local, number, null, spend);
+                case FundingSpendKind.LocalCommit when current.Local is var (spec, _, _):
+                    map = OnchainFundings.Map(_commitmentOutputMapper, factory, channel, funding, spec,
+                                              CommitmentCase.Local, number, null, spend);
                     break;
-                case FundingSpendKind.RemoteCommit when RemoteSource(channel) is var (spec, _, point):
-                    map = _commitmentOutputMapper.Map(channel, spec, CommitmentCase.Remote, number, point, spend);
+                case FundingSpendKind.RemoteCommit when current.Remote is var (spec, _, point):
+                    map = OnchainFundings.Map(_commitmentOutputMapper, factory, channel, funding, spec,
+                                              CommitmentCase.Remote, number, point, spend);
                     break;
-                case FundingSpendKind.RemoteNextCommit
-                    when channel.Commitments?.RemoteNextCommit is { Commit: var next }:
-                    map = _commitmentOutputMapper.Map(channel, CommitmentTxSpec.FromCommitmentSpec(next.Spec),
-                                                      CommitmentCase.Remote, number, next.PerCommitmentPoint, spend);
+                case FundingSpendKind.RemoteNextCommit when current.RemoteNext is var (spec, _, point):
+                    map = OnchainFundings.Map(_commitmentOutputMapper, factory, channel, funding, spec,
+                                              CommitmentCase.Remote, number, point, spend);
                     break;
                 case FundingSpendKind.Revoked:
-                    (map, predatesLog) = await MapRevokedAsync(scope, channel, number, spend);
+                    (map, predatesLog) = await MapRevokedAsync(scope, channel, number, spend, funding, fundings,
+                                                               factory);
                     break;
             }
 
@@ -445,12 +665,13 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 
     /// <summary>
     /// A revoked commitment: the point is <c>secret * G</c> with the peer's secret from our shachain; the spec comes
-    /// from the revocation log (only commitments with HTLCs have an entry). Without an entry the outputs are mapped by
-    /// script from a stand-in spec without HTLCs: <c>to_local</c> and <c>to_remote</c> scripts do not depend on the
-    /// amounts.
+    /// from the revocation log of the funding it spends (NL-479, SP-I5; only commitments with HTLCs have an entry).
+    /// Without an entry the outputs are mapped by script from a stand-in spec without HTLCs at that funding's
+    /// capacity: <c>to_local</c> and <c>to_remote</c> scripts do not depend on the amounts.
     /// </summary>
     private async Task<(CommitmentOutputMap? Map, bool PredatesLog)> MapRevokedAsync(
-        IServiceScope scope, ChannelModel channel, ulong number, ChainTx spend)
+        IServiceScope scope, ChannelModel channel, ulong number, ChainTx spend, ChannelFunding funding,
+        IReadOnlyList<ChannelFunding> fundings, ICommitmentTransactionModelFactory? modelFactory)
     {
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var factory = scope.ServiceProvider.GetService<ISecretStorageServiceFactory>();
@@ -466,22 +687,40 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
             point = key.PubKey.ToBytes();
         }
 
-        var logged = await unitOfWork.RevokedCommitmentDbRepository.GetAsync(channel.ChannelId, number);
+        var logged = await GetRevokedAsync(unitOfWork, channel.ChannelId, funding, fundings, number);
         var predatesLog = logged is null
                        && number < await unitOfWork.RevokedCommitmentDbRepository.GetLogStartAsync(channel.ChannelId);
-        var fundingMsat = (ulong)channel.FundingOutput!.Amount.Satoshi * 1_000;
+        var fundingMsat = funding.CapacityMsat;
         var spec = logged is not null
                        ? CommitmentTxSpec.FromCommitmentSpec(logged.Spec)
                        : new CommitmentTxSpec(fundingMsat / 2, fundingMsat / 2,
                                               (ulong)channel.ChannelParams.FeeRateAmountPerKw.Satoshi);
-        return (_commitmentOutputMapper.Map(channel, spec, CommitmentCase.Revoked, number, point, spend), predatesLog);
+        return (OnchainFundings.Map(_commitmentOutputMapper, modelFactory, channel, funding, spec,
+                                    CommitmentCase.Revoked, number, point, spend), predatesLog);
+    }
+
+    /// <summary>
+    /// The revocation log entry of commitment <paramref name="number"/> on <paramref name="funding"/> (NL-479). A log
+    /// that keeps no per-funding rows (test doubles) is read by number when the channel has a single funding.
+    /// </summary>
+    internal static async Task<RevokedCommitmentModel?> GetRevokedAsync(IUnitOfWork unitOfWork, ChannelId channelId,
+                                                                      ChannelFunding funding,
+                                                                      IReadOnlyList<ChannelFunding> fundings,
+                                                                      ulong number)
+    {
+        var log = unitOfWork.RevokedCommitmentDbRepository;
+        var logged = await log.GetAsync(channelId, funding.FundingTxId, number);
+        if (logged is null && fundings.Count <= 1)
+            logged = await log.GetAsync(channelId, number);
+        return logged;
     }
 
     private async Task<Recorded> PersistAsync(IServiceScope scope, ChannelModel channel, OutpointSpentEventArgs args,
                                               ChainTx spend, FundingSpendClassification classification,
                                               ChannelCloseKind closeKind,
                                               IReadOnlyList<CommitmentOutputDescriptor> descriptors,
-                                              CompactPubKey? point, string? unmapped)
+                                              CompactPubKey? point, string? unmapped, ChannelFunding spentFunding,
+                                              IReadOnlyList<ChannelFunding> fundings)
     {
         var channelId = channel.ChannelId;
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -533,6 +772,8 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                                                  && b.TransactionId != spend.TxId))
             await unitOfWork.BroadcastTransactionDbRepository.MarkAbandonedAsync(stale.TransactionId);
 
+        await DiscardConflictingSplicesAsync(unitOfWork, channel, spend, spentFunding, fundings, broadcasts);
+
         // B5-GEN-04: the peer gets an error unless the channel already failed with one (re-sent on reconnection)
         ErrorMessage? errorToSend = null;
         if (channel.ErrorSent is null)
@@ -578,6 +819,51 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         return new Recorded(new FundingSpendOutcome(closeKind, ours.Count, false), newWatches, errorToSend,
                             channel.RemoteNodeId, alerts, revived);
     }
+
+    /// <summary>
+    /// A commitment spent the funding output: every pending splice of that funding can no longer confirm (splicing
+    /// plan §3.6: it double-spends the same output). Its funding is <see cref="ChannelFundingStatus.Discarded"/> and its
+    /// pending broadcast abandoned, in the close's save; the revocation data of the discarded funding is kept (SP-I5).
+    /// </summary>
+    private async Task DiscardConflictingSplicesAsync(IUnitOfWork unitOfWork, ChannelModel channel, ChainTx spend,
+                                                      ChannelFunding spentFunding,
+                                                      IReadOnlyList<ChannelFunding> fundings,
+                                                      IReadOnlyList<BroadcastTransactionModel> broadcasts)
+    {
+        foreach (var conflicting in broadcasts.Where(b => b.State == BroadcastState.Pending
+                                                       && b.Purpose == BroadcastPurpose.Funding
+                                                       && b.TransactionId != spend.TxId
+                                                       && SpendsOutpoint(b, spentFunding)))
+        {
+            _logger.LogWarning("Channel {ChannelId}: splice {TxId} can no longer confirm ({Commitment} spent its "
+                             + "input); abandoning it", channel.ChannelId, Display(conflicting.TransactionId),
+                               Display(spend.TxId));
+            await unitOfWork.BroadcastTransactionDbRepository.MarkAbandonedAsync(conflicting.TransactionId);
+        }
+
+        var pending = fundings.Where(f => f.Status == ChannelFundingStatus.Pending
+                                       && f.FundingTxId != spentFunding.FundingTxId)
+                              .ToList();
+        if (pending.Count == 0 || !OnchainFundings.IsCurrent(channel, spentFunding))
+            return;
+
+        try
+        {
+            if (unitOfWork.ChannelFundingDbRepository is not { } repository)
+                return;
+
+            foreach (var funding in pending)
+                await repository.UpsertAsync(channel.ChannelId, funding with { Status = ChannelFundingStatus.Discarded });
+        }
+        catch (Exception e) when (e is NotSupportedException or NotImplementedException)
+        {
+            // No funding rows to update
+        }
+    }
+
+    private static bool SpendsOutpoint(BroadcastTransactionModel broadcast, ChannelFunding funding) =>
+        ChainTxMapper.TryParse(broadcast.RawTransaction, out var transaction) && transaction is not null
+     && transaction.IndexOfInputSpending(funding.FundingTxId, funding.OutputIndex) >= 0;
 
     /// <summary>
     /// O8: the transactions prepared from the mempool before this funding spend confirmed. The ones that spend outputs
@@ -667,6 +953,13 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 
     /// <summary>A txid in the display (RPC, block explorer) byte order, for logs (NL-275).</summary>
     private static string Display(TxId txId) => new uint256(txId).ToString();
+
+    /// <summary>A commitment to rebuild: its content, number and (peer commitments) per-commitment point.</summary>
+    private readonly record struct CommitmentSource(CommitmentTxSpec Spec, ulong Number, CompactPubKey? Point);
+
+    /// <summary>The commitments of one funding that can be rebuilt.</summary>
+    private sealed record FundingSources(CommitmentSource? Local, CommitmentSource? Remote,
+                                         CommitmentSource? RemoteNext);
 
     private sealed record Recorded(
         FundingSpendOutcome Outcome,

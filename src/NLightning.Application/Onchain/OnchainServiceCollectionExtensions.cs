@@ -32,6 +32,11 @@ public static class OnchainServiceCollectionExtensions
         services.TryAddSingleton<IOnchainChannelWatcher>(sp => sp.GetRequiredService<OnchainChannelWatcher>());
         services.TryAddSingleton(sp => new SweepFeePolicy(sp.GetService<IOptions<OnchainOptions>>()?.Value.FeePolicy));
         services.TryAddSingleton<ISweepScheduler, SweepScheduler>();
+
+        // Splicing plan §3.6 (SP2-C-T2): the failure service broadcasts our commitment on a splice that confirmed
+        // after the channel failed; null when the channel safety services are not registered
+        services.TryAddSingleton<ISpliceCommitmentBroadcaster>(
+            sp => sp.GetService<Channels.Safety.ChannelFailureService>()!);
         return services;
     }
 }

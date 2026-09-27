@@ -191,13 +191,42 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         RunChannelAsync(channelId, height, null, false, cancellationToken);
 
     /// <inheritdoc />
-    public Task HandleOutputSpentAsync(OutpointSpentEventArgs args, CancellationToken cancellationToken = default)
+    /// <remarks>A spend of a funding output other than the channel's current one (a pending splice's, or one a lock
+    /// retired, watched since splicing plan §3.6) reaches this path from the channel manager; it goes to the on-chain
+    /// watcher, which classifies it against that funding (SP2-C-T1).</remarks>
+    public async Task HandleOutputSpentAsync(OutpointSpentEventArgs args,
+                                             CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(args);
-        if (args.SpentTransactionId is null || args.SpentOutputIndex is null)
-            return Task.CompletedTask;
+        if (args.SpentTransactionId is not { } spentTxId || args.SpentOutputIndex is not { } spentIndex)
+            return;
 
-        return RunChannelAsync(args.ChannelId, args.BlockHeight, args, false, cancellationToken);
+        if (await GetFundingSpendWatcherAsync(spentTxId, spentIndex) is { } watcher)
+        {
+            await watcher.HandleFundingSpentAsync(args, cancellationToken);
+            return;
+        }
+
+        await RunChannelAsync(args.ChannelId, args.BlockHeight, args, false, cancellationToken);
+    }
+
+    /// <summary>The on-chain watcher when the spent outpoint is watched as a funding output, else null.</summary>
+    private async Task<IOnchainChannelWatcher?> GetFundingSpendWatcherAsync(TxId txId, uint vout)
+    {
+        try
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var watch = await unitOfWork.WatchedOutpointDbRepository.GetAsync(txId, vout);
+            return watch?.Purpose == WatchedOutpointPurpose.FundingOutput
+                       ? scope.ServiceProvider.GetService<IOnchainChannelWatcher>()
+                       : null;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Could not read the watch of {TxId}:{Vout}", Display(txId), vout);
+            return null;
+        }
     }
 
     /// <inheritdoc />

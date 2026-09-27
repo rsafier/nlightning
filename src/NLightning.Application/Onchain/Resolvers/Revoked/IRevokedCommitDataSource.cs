@@ -2,6 +2,7 @@ namespace NLightning.Application.Onchain.Resolvers.Revoked;
 
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Models;
@@ -85,6 +86,13 @@ public sealed record RevokedCommitContext(
 {
     /// <summary>True when the commitment predates the revocation log: its HTLC outputs cannot be rebuilt.</summary>
     public bool PredatesLog => LogEntry is null && Number < LogStart;
+
+    /// <summary>
+    /// The funding the revoked commitment spends (splicing plan §3.6, SP-I5: the current one, a pending splice, or one
+    /// a lock or a discard retired); the commitment is rebuilt on its outpoint, capacity and funding keys. Null when
+    /// unknown (the channel's current funding is used).
+    /// </summary>
+    public ChannelFunding? Funding { get; init; }
 }
 
 /// <summary>

@@ -107,16 +107,26 @@ public sealed class RevokedCommitDataSource : IRevokedCommitDataSource
         using (var key = new Key((byte[])secret))
             point = key.PubKey.ToBytes();
 
-        var logEntry = await unitOfWork.RevokedCommitmentDbRepository.GetAsync(close.ChannelId, number);
-        var logStart = await unitOfWork.RevokedCommitmentDbRepository.GetLogStartAsync(close.ChannelId);
-
         var commitment = unconfirmed ?? await GetTransactionAsync(close.CommitmentTransactionId, close.SpentAtHeight);
         if (commitment is null)
             return RevokedCommitLoadResult.Missing(
                 $"transaction {close.CommitmentTransactionId} is not in block {close.SpentAtHeight}");
 
+        // NL-479 (SP-I5): the revoked commitment is rebuilt on the funding it spends (a pending splice, or a funding a
+        // lock or a discard retired), with that funding's revocation log entry
+        var fundings = await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger);
+        var funding = OnchainFundings.FindSpent(fundings, commitment);
+        var logEntry = funding is not null
+                           ? await OnchainChannelWatcher.GetRevokedAsync(unitOfWork, close.ChannelId, funding, fundings,
+                                                                         number)
+                           : await unitOfWork.RevokedCommitmentDbRepository.GetAsync(close.ChannelId, number);
+        var logStart = await unitOfWork.RevokedCommitmentDbRepository.GetLogStartAsync(close.ChannelId);
+
         return RevokedCommitLoadResult.Found(new RevokedCommitContext(channel, commitment, number, secret, point,
-                                                                      logEntry, logStart));
+                                                                      logEntry, logStart)
+        {
+            Funding = funding
+        });
     }
 
     /// <inheritdoc />

@@ -7,12 +7,14 @@ using NBitcoin;
 namespace NLightning.Application.Onchain.Resolvers;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
@@ -93,6 +95,7 @@ public sealed class RemoteCommitResolver : IOutputResolver
     private readonly IFeeService _feeService;
     private readonly ILogger<RemoteCommitResolver> _logger;
     private readonly ICommitmentOutputMapper _mapper;
+    private readonly ICommitmentTransactionModelFactory? _modelFactory;
     private readonly RemoteResolutionOptions _options;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ILightningSigner _signer;
@@ -103,9 +106,11 @@ public sealed class RemoteCommitResolver : IOutputResolver
                                 IRemoteCommitmentSource commitmentSource, IServiceScopeFactory serviceScopeFactory,
                                 IOptions<RemoteResolutionOptions>? options = null,
                                 ILogger<RemoteCommitResolver>? logger = null, SweepFeePolicy? feePolicy = null,
-                                IChannelMemoryRepository? channelMemoryRepository = null)
+                                IChannelMemoryRepository? channelMemoryRepository = null,
+                                ICommitmentTransactionModelFactory? modelFactory = null)
     {
         _mapper = mapper;
+        _modelFactory = modelFactory;
         _sweepBuilder = sweepBuilder;
         _signer = signer;
         _feeService = feeService;
@@ -273,6 +278,10 @@ public sealed class RemoteCommitResolver : IOutputResolver
         {
             var spec = CommitmentTxSpec.FromCommitmentSpec(commit.Spec);
             var map = _mapper.Map(channel, spec, CommitmentCase.Remote, commit.Number, commit.PerCommitmentPoint);
+            if (map.ExpectedTxId != close.CommitmentTransactionId
+             && await FindOnPendingFundingAsync(unitOfWork, channel, commit, close) is { } onPending)
+                return new RemoteCommitContext(unitOfWork, channel, close, commit, onPending, rows, height);
+
             if (map.ExpectedTxId != close.CommitmentTransactionId)
             {
                 // Our rebuild differs from the transaction on chain: map its outputs by script instead
@@ -297,6 +306,40 @@ public sealed class RemoteCommitResolver : IOutputResolver
                              commit.Number);
             return null;
         }
+    }
+
+    /// <summary>
+    /// The peer's commitment on a pending splice funding whose rebuilt txid is the close's (splicing plan §3.6): the
+    /// state machine's commitment moved by that funding's deltas, on its outpoint and keys; null when none matches (the
+    /// caller then maps the transaction on chain by script).
+    /// </summary>
+    private async Task<CommitmentOutputMap?> FindOnPendingFundingAsync(IUnitOfWork unitOfWork, ChannelModel channel,
+                                                                       RemoteCommit commit, ChannelCloseModel close)
+    {
+        if (_modelFactory is null)
+            return null;
+
+        foreach (var funding in await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger))
+        {
+            if (funding.Status != ChannelFundingStatus.Pending || OnchainFundings.IsCurrent(channel, funding))
+                continue;
+
+            try
+            {
+                var spec = CommitmentTxSpec.FromCommitmentSpec(ChannelCommitments.SpecFor(commit.Spec, funding));
+                var map = OnchainFundings.Map(_mapper, _modelFactory, channel, funding, spec, CommitmentCase.Remote,
+                                              commit.Number, commit.PerCommitmentPoint);
+                if (map.ExpectedTxId == close.CommitmentTransactionId)
+                    return map;
+            }
+            catch (Exception e) when (e is ArgumentException or InvalidOperationException)
+            {
+                _logger.LogWarning(e, "Channel {ChannelId}: cannot rebuild the peer's commitment {Number} on funding "
+                                    + "{TxId}", channel.ChannelId, commit.Number, Display(funding.FundingTxId));
+            }
+        }
+
+        return null;
     }
 
     /// <summary>The peer commitment the close names, from the snapshot; false when we cannot rebuild it.</summary>

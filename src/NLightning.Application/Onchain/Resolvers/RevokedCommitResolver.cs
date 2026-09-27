@@ -7,11 +7,13 @@ namespace NLightning.Application.Onchain.Resolvers;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -72,6 +74,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
     private readonly IKeyDerivationService _keyDerivationService;
     private readonly ILogger<RevokedCommitResolver> _logger;
     private readonly ICommitmentOutputMapper _mapper;
+    private readonly ICommitmentTransactionModelFactory? _modelFactory;
     private readonly RevokedCommitResolverOptions _options;
     private readonly ConcurrentDictionary<string, byte> _alerted = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _fulfilled = new();
@@ -81,10 +84,12 @@ public sealed class RevokedCommitResolver : IOutputResolver
                                  IPenaltyTransactionBuilder penaltyTransactionBuilder,
                                  ISweepTransactionBuilder sweepTransactionBuilder, ILightningSigner signer,
                                  IKeyDerivationService keyDerivationService, ILogger<RevokedCommitResolver> logger,
-                                 IOptions<RevokedCommitResolverOptions>? options = null)
+                                 IOptions<RevokedCommitResolverOptions>? options = null,
+                                 ICommitmentTransactionModelFactory? modelFactory = null)
     {
         _dataSource = dataSource;
         _mapper = mapper;
+        _modelFactory = modelFactory;
         _keyDerivationService = keyDerivationService;
         _logger = logger;
         _options = options?.Value ?? new RevokedCommitResolverOptions();
@@ -532,18 +537,22 @@ public sealed class RevokedCommitResolver : IOutputResolver
         var channel = context.Channel;
         var spec = context.LogEntry is { } entry
                        ? CommitmentTxSpec.FromCommitmentSpec(entry.Spec)
-                       : WithoutHtlcs(channel);
-        return _mapper.Map(channel, spec, CommitmentCase.Revoked, context.Number, context.PerCommitmentPoint,
-                           context.CommitmentTransaction);
+                       : WithoutHtlcs(channel, context.Funding);
+
+        // On the funding it spends (splicing plan §3.6, SP-I5): its outpoint and keys make the txid and the anchors
+        return OnchainFundings.Map(_mapper, _modelFactory, channel, context.Funding, spec, CommitmentCase.Revoked,
+                                   context.Number, context.PerCommitmentPoint, context.CommitmentTransaction);
     }
 
     /// <summary>
     /// A spec to find the <c>to_local</c> and <c>to_remote</c> of a commitment without a log entry by script: their
     /// scripts do not depend on the amounts, so both balances are set high enough that neither output is trimmed.
     /// </summary>
-    private static CommitmentTxSpec WithoutHtlcs(ChannelModel channel)
+    private static CommitmentTxSpec WithoutHtlcs(ChannelModel channel, ChannelFunding? funding)
     {
-        var halfMsat = channel.FundingOutput?.Amount.MilliSatoshi / 2 ?? 0;
+        var halfMsat = funding is not null
+                           ? funding.CapacityMsat / 2
+                           : channel.FundingOutput?.Amount.MilliSatoshi / 2 ?? 0;
         return new CommitmentTxSpec(halfMsat, halfMsat, (ulong)channel.ChannelParams.FeeRateAmountPerKw.Satoshi);
     }
 
