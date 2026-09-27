@@ -27,6 +27,9 @@ using Models;
 /// </remarks>
 public sealed class ChainFundingSpendLocator : IFundingSpendLocator
 {
+    /// <summary>How many blocks a background search reads between two progress logs.</summary>
+    internal const uint ProgressLogBlocks = 1000;
+
     private readonly IBitcoinChainService _chain;
     private readonly ChannelBackupOptions _options;
     private readonly ILogger<ChainFundingSpendLocator> _logger;
@@ -101,7 +104,10 @@ public sealed class ChainFundingSpendLocator : IFundingSpendLocator
                 return NotFound(confirmed, lowest, floor);
 
             var batchSize = Math.Max(1u, _options.RestoreSpendSearchBatchSize);
-            var fundingTxId = new uint256((byte[])entry.FundingTxId);
+            // Only a funding without a short channel id needs its own block found: with one, the floor is that block
+            var fundingTxId = confirmed ? null : new uint256((byte[])entry.FundingTxId);
+            var isRescan = belowHeight is not null;
+            var nextProgressAt = highest >= ProgressLogBlocks ? highest - ProgressLogBlocks : 0;
             for (var top = (long)highest; top >= lowest; top -= batchSize)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -111,19 +117,38 @@ public sealed class ChainFundingSpendLocator : IFundingSpendLocator
                     heights.Add((uint)height);
 
                 // Read the batch at once, look at it from the top down: the spend is above the funding
-                var blocks = await Task.WhenAll(heights.Select(h => _chain.GetBlockAsync(h)));
+                var blocks = await Task.WhenAll(heights.Select(ReadBlockAsync));
                 for (var i = 0; i < heights.Count; i++)
                 {
-                    if (blocks[i] is not { } block)
+                    var (block, pruned) = blocks[i];
+                    if (pruned)
+                    {
+                        _logger.LogError("Block {Height} is pruned on the bitcoin node: the spend of the funding output "
+                                       + "{Outpoint} of channel {ChannelId} can't be searched below {Searched}",
+                                         heights[i], outPoint, entry.ChannelId, heights[i] + 1);
+                        return new FundingSpendLocation(FundingSpendStatus.BlocksPruned,
+                                                        SearchedFromHeight: heights[i] + 1, FloorHeight: floor,
+                                                        PrunedHeight: heights[i]);
+                    }
+
+                    if (block is null)
                         continue;
 
                     if (FindSpend(entry, outPoint, block, heights[i]) is { } spend)
                         return new FundingSpendLocation(FundingSpendStatus.SpentFound, spend);
 
                     // The funding's own block: the spend is not below it
-                    if (block.Transactions.Any(t => t.GetHash() == fundingTxId))
+                    if (fundingTxId is not null && block.Transactions.Any(t => t.GetHash() == fundingTxId))
                         return new FundingSpendLocation(FundingSpendStatus.SpentNotFound,
                                                         SearchedFromHeight: heights[i], FloorHeight: heights[i]);
+                }
+
+                if (isRescan && bottom <= nextProgressAt && bottom > lowest)
+                {
+                    _logger.LogInformation("Searching for the spend of the funding output {Outpoint} of channel "
+                                         + "{ChannelId}: blocks {Highest} down to {Bottom} read, {Left} left",
+                                           outPoint, entry.ChannelId, highest, bottom, bottom - lowest);
+                    nextProgressAt = bottom >= ProgressLogBlocks ? (uint)bottom - ProgressLogBlocks : 0;
                 }
             }
 
@@ -147,6 +172,34 @@ public sealed class ChainFundingSpendLocator : IFundingSpendLocator
                                        FloorHeight: floor)
             : new FundingSpendLocation(FundingSpendStatus.SpentNotFound, SearchedFromHeight: searchedFrom,
                                        FloorHeight: floor);
+
+    /// <summary>
+    /// One block; <c>Pruned</c> when the bitcoin node no longer has it (any other read error propagates).
+    /// </summary>
+    private async Task<(Block? Block, bool Pruned)> ReadBlockAsync(uint height)
+    {
+        try
+        {
+            return (await _chain.GetBlockAsync(height), false);
+        }
+        catch (Exception e) when (IsPrunedBlockError(e))
+        {
+            return (null, true);
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="exception"/> is bitcoind's answer for a block it pruned (<c>getblock</c>: "Block not
+    /// available (pruned data)").
+    /// </summary>
+    internal static bool IsPrunedBlockError(Exception exception)
+    {
+        for (var e = exception; e is not null; e = e.InnerException)
+            if (e.Message.Contains("pruned", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+        return false;
+    }
 
     private static OutpointSpentEventArgs? FindSpend(ChannelBackupEntry entry, OutPoint outPoint, Block block,
                                                      uint height)

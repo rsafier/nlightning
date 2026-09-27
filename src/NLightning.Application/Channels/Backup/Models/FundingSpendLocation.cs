@@ -24,7 +24,14 @@ public enum FundingSpendStatus
     SpentNotFound,
 
     /// <summary>The chain could not be read (<see cref="FundingSpendLocation.Error"/>).</summary>
-    ChainUnavailable
+    ChainUnavailable,
+
+    /// <summary>
+    /// The output is spent, the blocks above <see cref="FundingSpendLocation.SearchedFromHeight"/> hold no spend, and
+    /// the bitcoin node has pruned the block at <see cref="FundingSpendLocation.PrunedHeight"/>: the rest can't be
+    /// searched on this node, and searching again fails the same way.
+    /// </summary>
+    BlocksPruned
 }
 
 /// <summary>The outcome of <see cref="Interfaces.IFundingSpendLocator.LocateAsync"/>.</summary>
@@ -35,12 +42,15 @@ public enum FundingSpendStatus
 /// <param name="Error">Why the chain could not be read.</param>
 /// <param name="FloorHeight">For <see cref="FundingSpendStatus.SpentNotFound"/>: the lowest block the spend can be in
 /// (the funding block, or the funding height recorded in the backup); 0 when unknown.</param>
+/// <param name="PrunedHeight">For <see cref="FundingSpendStatus.BlocksPruned"/>: the highest block the bitcoin node
+/// no longer has.</param>
 public sealed record FundingSpendLocation(
     FundingSpendStatus Status,
     OutpointSpentEventArgs? Spend = null,
     uint SearchedFromHeight = 0,
     string? Error = null,
-    uint FloorHeight = 0)
+    uint FloorHeight = 0,
+    uint PrunedHeight = 0)
 {
     /// <summary>
     /// True for <see cref="FundingSpendStatus.SpentNotFound"/> when older blocks are left to search (the spend is

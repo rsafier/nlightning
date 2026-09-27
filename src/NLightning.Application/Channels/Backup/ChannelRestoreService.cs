@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -46,12 +47,15 @@ using Onchain.Interfaces;
 /// looked up through <see cref="IFundingSpendLocator"/>: a spend found is marked on the watch and handed to
 /// <see cref="IOnchainChannelWatcher"/> like one the monitor saw. One older than the search depth is searched in the
 /// background down to the funding block and handed over the same way once found (NL-430); the channel's result says
-/// so. Running <c>restorechanbackup</c> again looks the spend up again for every recovery channel still Failed (after
-/// a restart that interrupted the background search, or a chain error).</para>
+/// so. The search lives in memory: <see cref="ResumeSpendSearches"/> (called by the host at every start) looks the
+/// spend up again for every recovery channel still waiting, and so does running <c>restorechanbackup</c> again
+/// (after a chain error). A spend below the bitcoin node's pruned blocks can't be searched: the result says so
+/// (<c>FundingSpendPruned</c>) instead of asking for a retry.</para>
 /// <para>A peer is tried at every address known for it (NL-431): its <c>node_announcement</c> in the gossip graph,
-/// the peer row, then every address of the backup. When none answers, a background loop retries them (the graph
-/// read again each round) with the node's reconnect backoff until the peer is connected, its recovery channels are
-/// no longer waiting for its close, or the node stops.</para>
+/// the peer row, then every address of the backup. The restore itself tries the first one and the next ones only
+/// within <see cref="ConnectBudget"/> (it holds the restore lock); the rest are tried at once by a background loop,
+/// which then retries all of them (the graph read again each round) with the node's reconnect backoff until the peer
+/// is connected, its recovery channels are no longer waiting for its close, or the node stops.</para>
 /// <para>Before anything is stored, the key manager's last used channel index is advanced past the restored channels'
 /// (<see cref="IChannelKeyIndexReserver"/>), so a stale key file never hands a restored channel's keys to a new
 /// one.</para>
@@ -59,6 +63,7 @@ using Onchain.Interfaces;
 public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
 {
     private static readonly TimeSpan s_disconnectPollInterval = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan s_registrationPollInterval = TimeSpan.FromMilliseconds(250);
 
     private readonly IChannelBackupService _backupService;
     private readonly IChannelManager _channelManager;
@@ -81,9 +86,23 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
     private readonly CancellationTokenSource _backgroundCts = new();
     private readonly ConcurrentDictionary<ChannelId, Task> _rescans = new();
     private readonly ConcurrentDictionary<CompactPubKey, Task> _reconnects = new();
+    private readonly Lock _resumeGate = new();
+    private Task? _resume;
 
     /// <summary>How long a restore waits for a connected peer's connection to close before it connects again.</summary>
     internal TimeSpan DisconnectTimeout { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// How long a restore spends connecting to one peer before it hands the addresses not tried yet to the background
+    /// reconnection (NL-431): the first address is always tried, the next ones only while this has not passed.
+    /// </summary>
+    internal TimeSpan ConnectBudget { get; init; } = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// How long <see cref="ResumeSpendSearches"/> waits for a recovery channel to be loaded by the start-up
+    /// registration before it gives up on that channel.
+    /// </summary>
+    internal TimeSpan ResumeRegistrationTimeout { get; init; } = TimeSpan.FromMinutes(5);
 
     /// <summary>
     /// The first wait of the background reconnection to an unreachable peer (<c>Node:ReconnectInitialDelay</c>).
@@ -136,7 +155,110 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
     }
 
     /// <summary>Completes when every background spend search and reconnection started so far has ended.</summary>
-    internal Task WaitForBackgroundWorkAsync() => Task.WhenAll(_rescans.Values.Concat(_reconnects.Values));
+    internal async Task WaitForBackgroundWorkAsync()
+    {
+        if (_resume is { } resume)
+            await resume;
+
+        await Task.WhenAll(_rescans.Values.Concat(_reconnects.Values));
+    }
+
+    /// <inheritdoc />
+    public void ResumeSpendSearches()
+    {
+        if (_spendLocator is null || _onchainWatcher is null || _backgroundCts.IsCancellationRequested)
+            return;
+
+        lock (_resumeGate)
+        {
+            if (_resume is not null)
+                return;
+
+            var token = _backgroundCts.Token;
+            _resume = Task.Run(() => ResumeSpendSearchesAsync(token), token);
+        }
+    }
+
+    /// <summary>
+    /// The start-up half of NL-430: every recovery channel still waiting for its peer's close
+    /// (<see cref="RecoveryChannels.IsRecoveryChannel"/>) has its funding spend looked up again, as a second
+    /// <c>restorechanbackup</c> would, once the channel is registered (the on-chain watcher ignores a channel that is
+    /// not loaded). An unspent funding output costs one <c>gettxout</c>; a spend older than the recent window starts
+    /// the background search again.
+    /// </summary>
+    internal async Task ResumeSpendSearchesAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            List<ChannelBackupEntry> entries;
+            using (var scope = _serviceScopeFactory.CreateScope())
+            {
+                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                entries = (await unitOfWork.ChannelDbRepository.GetAllAsync())
+                         .Where(c => RecoveryChannels.IsRecoveryChannel(c)
+                                  && c.FundingOutput is { TransactionId: not null, Index: not null }
+                                  && c.RemoteKeySet is not null)
+                         .Select(c => ChannelBackupService.CreateEntry(c, null))
+                         .ToList();
+            }
+
+            foreach (var entry in entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!await WaitUntilRegisteredAsync(entry.ChannelId, cancellationToken))
+                {
+                    _logger.LogWarning("Recovery channel {ChannelId} was not loaded within {Timeout}; the search for "
+                                     + "its funding spend is not resumed (run restorechanbackup again)",
+                                       entry.ChannelId, ResumeRegistrationTimeout);
+                    continue;
+                }
+
+                await _restoreLock.WaitAsync(cancellationToken);
+                try
+                {
+                    if (IsRescanRunning(entry.ChannelId))
+                        continue;
+
+                    var fundingWatch = new WatchedOutpointModel(entry.FundingTxId, entry.FundingOutputIndex,
+                                                                entry.ChannelId,
+                                                                WatchedOutpointPurpose.FundingOutput);
+                    if (await HandleEarlierSpendAsync(entry, fundingWatch, cancellationToken) is { } detail)
+                        _logger.LogWarning("Recovery channel {ChannelId} at start: {Detail}", entry.ChannelId, detail);
+                }
+                finally
+                {
+                    _restoreLock.Release();
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Stopping
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not resume the funding spend searches of the recovery channels; run "
+                              + "restorechanbackup again to look them up");
+        }
+    }
+
+    /// <summary>Waits until <paramref name="channelId"/> is in channel memory (true at once without one).</summary>
+    private async Task<bool> WaitUntilRegisteredAsync(ChannelId channelId, CancellationToken cancellationToken)
+    {
+        if (_channelMemoryRepository is null)
+            return true;
+
+        var deadline = DateTime.UtcNow + ResumeRegistrationTimeout;
+        while (!_channelMemoryRepository.TryGetChannel(channelId, out _))
+        {
+            if (DateTime.UtcNow >= deadline)
+                return false;
+
+            await Task.Delay(s_registrationPollInterval, cancellationToken);
+        }
+
+        return true;
+    }
 
     /// <inheritdoc />
     public async Task<ChannelRestoreResult> RestoreAsync(ReadOnlyMemory<byte> backup,
@@ -369,7 +491,8 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                 return "FundingSpendRescan: recovery channel stored; its funding output is already spent and the spend "
                      + $"is not in the recent blocks searched (from {location.SearchedFromHeight} to the tip): blocks "
                      + $"{location.SearchedFromHeight - 1} down to {location.FloorHeight} are searched in the "
-                     + "background and our output is swept once the spend is found";
+                     + "background (the search starts again at every start of the node until the spend is found) and "
+                     + "our output is swept once it is found";
             case FundingSpendStatus.SpentNotFound:
                 var rescanFrom = entry.FundingHeight is > 0 and var fundingHeight
                                      ? Math.Min(fundingHeight, location.SearchedFromHeight)
@@ -380,6 +503,11 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                  rescanFrom);
                 return "FundingAlreadySpent: recovery channel stored, but its funding output is already spent and "
                      + $"the spend is not in the blocks searched: rescan from height {rescanFrom} to sweep our output";
+            case FundingSpendStatus.BlocksPruned:
+                _logger.LogError("The funding output of recovery channel {ChannelId} is already spent, but the bitcoin "
+                               + "node has pruned block {Pruned} and below, where the spend must be: sweep our output "
+                               + "by hand", entry.ChannelId, location.PrunedHeight);
+                return PrunedDetail(location);
             case FundingSpendStatus.ChainUnavailable:
                 return "recovery channel stored; the peer is asked to force close, but whether the funding output is "
                      + $"already spent could not be checked ({location.Error}): run restorechanbackup again to "
@@ -392,6 +520,13 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                 return null;
         }
     }
+
+    /// <summary>The result detail for a spend below the bitcoin node's pruned blocks.</summary>
+    private static string PrunedDetail(FundingSpendLocation location) =>
+        "FundingSpendPruned: recovery channel stored; its funding output is already spent, but the spend is not in "
+      + $"the blocks from {location.SearchedFromHeight} to the tip and the bitcoin node has pruned block "
+      + $"{location.PrunedHeight} and below, so it can't be searched on this node (searching again fails the same "
+      + "way): find the spend with an unpruned node or a block explorer and sweep our output by hand";
 
     private async Task<string> HandOverEarlierSpendAsync(ChannelBackupEntry entry, WatchedOutpointModel fundingWatch,
                                                          OutpointSpentEventArgs spend,
@@ -464,25 +599,31 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                      + "{Floor} to the tip: it may never have confirmed", entry.ChannelId,
                                        location.FloorHeight);
                     break;
+                case FundingSpendStatus.BlocksPruned:
+                    _logger.LogError("Background search for the funding spend of recovery channel {ChannelId}: {Detail}",
+                                     entry.ChannelId, PrunedDetail(location));
+                    break;
                 case FundingSpendStatus.Unspent:
                     _logger.LogWarning("The funding output of recovery channel {ChannelId} is unspent again (a reorg?); "
                                      + "the chain monitor watches it", entry.ChannelId);
                     break;
                 default:
                     _logger.LogError("The background search for the funding spend of recovery channel {ChannelId} "
-                                   + "failed ({Error}); run restorechanbackup again to retry it", entry.ChannelId,
+                                   + "failed ({Error}); it starts again at the next start of the node, or run "
+                                   + "restorechanbackup again to retry it now", entry.ChannelId,
                                      location?.Error ?? "no result");
                     break;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Stopping: the next restorechanbackup searches again
+            // Stopping: the next start of the node searches again (ResumeSpendSearches)
         }
         catch (Exception e)
         {
             _logger.LogError(e, "The background search for the funding spend of recovery channel {ChannelId} failed; "
-                              + "run restorechanbackup again to retry it", entry.ChannelId);
+                              + "it starts again at the next start of the node, or run restorechanbackup again to "
+                              + "retry it now", entry.ChannelId);
         }
     }
 
@@ -542,24 +683,37 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
             }
         }
 
+        // The restore holds its lock while it connects: the first address is always tried, the next ones only within
+        // ConnectBudget; those left go to the background reconnection at once
         var errors = new List<string>(addresses.Count);
+        var started = Stopwatch.StartNew();
+        var tried = 0;
         foreach (var address in addresses)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (tried > 0 && started.Elapsed >= ConnectBudget)
+                break;
+
+            tried++;
             if (await TryConnectAsync(nodeId, address) is not { } error)
                 return new ChannelRestorePeerResult(nodeId, address, true, null);
 
             errors.Add(addresses.Count == 1 ? error : $"{address}: {error}");
         }
 
-        StartReconnect(nodeId, entry);
-        return addresses.Count == 0
-                   ? new ChannelRestorePeerResult(nodeId, null, false,
-                                                  "no address known: retried in the background as the gossip graph "
-                                                + "learns one; the close is also asked for when the peer connects")
-                   : new ChannelRestorePeerResult(nodeId, addresses[0], false,
-                                                  $"{string.Join("; ", errors)} (retried in the background; the close "
-                                                + "is also asked for when the peer connects)");
+        var untried = addresses.Skip(tried).ToList();
+        StartReconnect(nodeId, entry, untried);
+        if (addresses.Count == 0)
+            return new ChannelRestorePeerResult(nodeId, null, false,
+                                                "no address known: retried in the background as the gossip graph "
+                                              + "learns one; the close is also asked for when the peer connects");
+
+        var pending = untried.Count > 0
+                          ? $"{untried.Count} more known address(es) tried in the background now, then all of them "
+                          : "retried in the background";
+        return new ChannelRestorePeerResult(nodeId, addresses[0], false,
+                                            $"{string.Join("; ", errors)} ({pending}; the close is also asked for "
+                                          + "when the peer connects)");
     }
 
     /// <summary>One connection attempt; null when the peer is connected afterwards, else why not.</summary>
@@ -587,29 +741,39 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
     /// Keeps trying every known address of an unreachable peer, with the node's reconnect backoff, until it is
     /// connected (by us or by itself), none of its recovery channels waits for its close any more, or the node stops.
     /// </summary>
-    private void StartReconnect(CompactPubKey nodeId, ChannelBackupEntry entry)
+    /// <param name="nodeId">The peer.</param>
+    /// <param name="entry">A backed-up channel with the peer (its addresses).</param>
+    /// <param name="untried">Addresses the restore did not get to (<see cref="ConnectBudget"/>): tried at once, before
+    /// the first wait.</param>
+    private void StartReconnect(CompactPubKey nodeId, ChannelBackupEntry entry, IReadOnlyList<string> untried)
     {
         if (_reconnects.TryGetValue(nodeId, out var running) && !running.IsCompleted)
             return;
 
         var token = _backgroundCts.Token;
-        _reconnects[nodeId] = Task.Run(() => ReconnectAsync(nodeId, entry, token), token);
+        _reconnects[nodeId] = Task.Run(() => ReconnectAsync(nodeId, entry, untried, token), token);
     }
 
-    private async Task ReconnectAsync(CompactPubKey nodeId, ChannelBackupEntry entry,
+    private async Task ReconnectAsync(CompactPubKey nodeId, ChannelBackupEntry entry, IReadOnlyList<string> untried,
                                       CancellationToken cancellationToken)
     {
         var delay = ReconnectInitialDelay > TimeSpan.Zero ? ReconnectInitialDelay : TimeSpan.FromSeconds(5);
         var maxDelay = ReconnectMaxDelay >= delay ? ReconnectMaxDelay : delay;
         try
         {
+            var first = untried.Count > 0;
             while (true)
             {
-                await Task.Delay(delay, cancellationToken);
+                if (!first)
+                    await Task.Delay(delay, cancellationToken);
+
                 if (_peerManager.GetPeer(nodeId) is not null || !HasWaitingRecoveryChannel(nodeId))
                     return;
 
-                foreach (var address in await GetAddressesAsync(nodeId, entry))
+                var immediate = first;
+                var round = first ? untried : await GetAddressesAsync(nodeId, entry);
+                first = false;
+                foreach (var address in round)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (await TryConnectAsync(nodeId, address) is null)
@@ -620,7 +784,8 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                     }
                 }
 
-                delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, maxDelay.Ticks));
+                if (!immediate)
+                    delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, maxDelay.Ticks));
                 _logger.LogDebug("Peer {Peer} of restored channels still unreachable, retrying in {Delay}", nodeId,
                                  delay);
             }
