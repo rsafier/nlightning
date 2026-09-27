@@ -1,5 +1,7 @@
 namespace NLightning.Domain.Channels.Reestablish;
 
+using Bitcoin.ValueObjects;
+
 /// <summary>What processing the peer's <c>channel_reestablish</c> leads to.</summary>
 public enum ReestablishOutcome
 {
@@ -32,7 +34,27 @@ public enum ReestablishStep
     CommitDiff,
 
     /// <summary>Our persisted updates no <c>commitment_signed</c> covers yet, with their original ids.</summary>
-    UnsignedUpdates
+    UnsignedUpdates,
+
+    /// <summary>
+    /// Our <c>commitment_signed</c> for the latest interactive funding transaction again: the peer's
+    /// <c>next_funding</c> names it with the <c>commitment_signed</c> bit and we have not received its
+    /// <c>tx_signatures</c> (SP-RE-03). Byte-identical to the original (splicing plan SP2-A-T2).
+    /// </summary>
+    NextFundingCommitmentSigned,
+
+    /// <summary>
+    /// Our <c>tx_signatures</c> for the latest interactive funding transaction: the peer's <c>next_funding</c> names
+    /// it and either we received its <c>tx_signatures</c>, or we received its <c>commitment_signed</c> and sign first
+    /// (SP-RE-03).
+    /// </summary>
+    NextFundingTxSignatures,
+
+    /// <summary>
+    /// Our <c>announcement_signatures</c> for the funding the peer's <c>my_current_funding_locked</c> names, with its
+    /// bit 0 set, when the channel is public and we are ready to send them (SP-RE-04, SP-G-01).
+    /// </summary>
+    AnnouncementSignatures
 }
 
 /// <summary>
@@ -44,12 +66,17 @@ public enum ReestablishStep
 /// <param name="RequirementId">The BOLT 2 requirement behind a failure (plan §6.9 ids).</param>
 /// <param name="Reason">A description of a failure, for logs and the <c>error</c>.</param>
 /// <param name="MustBroadcast">The spec says to broadcast our latest commitment (peer sent 0, B2-RE-14).</param>
+/// <param name="PeerSpliceLocked">The pending splice the peer's <c>my_current_funding_locked</c> names and whose
+/// <c>splice_locked</c> we have not received: process it as a received <c>splice_locked</c> (SP-RE-04), before the
+/// steps. Null otherwise (splicing plan SP2-0; set by lane SP2-A, processed through lane SP2-B's
+/// <c>ISpliceService.HandlePeerFundingLockedAsync</c>).</param>
 public sealed record ReestablishPlan(
     ReestablishOutcome Outcome,
     IReadOnlyList<ReestablishStep> Steps,
     string? RequirementId = null,
     string? Reason = null,
-    bool MustBroadcast = false)
+    bool MustBroadcast = false,
+    TxId? PeerSpliceLocked = null)
 {
     public static ReestablishPlan Resume(IReadOnlyList<ReestablishStep> steps) => new(ReestablishOutcome.Resume, steps);
 

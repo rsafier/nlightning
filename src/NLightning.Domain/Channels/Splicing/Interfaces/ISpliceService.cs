@@ -1,5 +1,7 @@
 namespace NLightning.Domain.Channels.Splicing.Interfaces;
 
+using Bitcoin.ValueObjects;
+using Channels.Models;
 using Crypto.ValueObjects;
 using Models;
 using Node.Options;
@@ -63,4 +65,16 @@ public interface ISpliceService
 
     /// <summary>The negotiation in progress (or last signed) on <paramref name="channelId"/>, or null.</summary>
     SpliceNegotiationModel? GetNegotiation(ChannelId channelId);
+
+    /// <summary>
+    /// Under the lock, from <c>channel_reestablish</c>: the peer's <c>my_current_funding_locked</c> names the pending
+    /// splice <paramref name="fundingTxId"/> whose <c>splice_locked</c> we have not received; it is processed as a
+    /// received <c>splice_locked</c> (SP-RE-04: flag, lock when ours was sent too, SCID switch, announcement), staged on
+    /// <paramref name="unitOfWork"/> and saved before the replies are returned (splicing plan SP2-0; implemented by lane
+    /// SP2-B, called by lane SP2-A's reestablish handler).
+    /// </summary>
+    Task<IReadOnlyList<IChannelMessage>> HandlePeerFundingLockedAsync(ChannelModel channel, TxId fundingTxId,
+                                                                      IUnitOfWork unitOfWork,
+                                                                      CancellationToken cancellationToken = default) =>
+        throw new NotImplementedException("Lane SP2-B (SP2-B-T1, SP-RE-04)");
 }

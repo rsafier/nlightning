@@ -73,6 +73,18 @@ public sealed class ChannelInfoIpcResponse
     /// </summary>
     [Key(22)] public bool HasPolicyOverride { get; init; }
 
+    /// <summary>
+    /// The channel's fundings, current first, then the pending splices (splicing plan §3.10, SP2-0; lane SP2-D; null from
+    /// a daemon that predates it).
+    /// </summary>
+    [Key(23)] public List<ChannelFundingInfoIpcResponse>? Fundings { get; init; }
+
+    /// <summary>
+    /// Short channel ids retired by splice locks that still resolve (D12; SP2-0, lane SP2-D; null from a daemon that
+    /// predates it).
+    /// </summary>
+    [Key(24)] public List<RetiredScidInfoIpcResponse>? RetiredShortChannelIds { get; init; }
+
     public static ChannelInfoIpcResponse FromClientResponse(ChannelInfoClientResponse channel)
     {
         return new ChannelInfoIpcResponse
@@ -102,7 +114,10 @@ public sealed class ChannelInfoIpcResponse
             CltvExpiryDelta = channel.CltvExpiryDelta,
             HtlcMinimumMsat = channel.HtlcMinimumMsat,
             HtlcMaximumMsat = channel.HtlcMaximumMsat,
-            HasPolicyOverride = channel.HasPolicyOverride
+            HasPolicyOverride = channel.HasPolicyOverride,
+            Fundings = channel.Fundings.Select(ChannelFundingInfoIpcResponse.FromClientResponse).ToList(),
+            RetiredShortChannelIds = channel.RetiredShortChannelIds
+                                            .Select(RetiredScidInfoIpcResponse.FromClientResponse).ToList()
         };
     }
 }

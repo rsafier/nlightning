@@ -13,6 +13,7 @@ using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
@@ -125,6 +126,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private readonly KeysendReceiver _keysendReceiver;
     private readonly IncomingOnionProcessor _onionProcessor;
     private readonly IPeerLivenessProbe _peerLivenessProbe;
+    private readonly IRetiredScidMap? _retiredScidMap;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly TimeProvider _timeProvider;
 
@@ -155,7 +157,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                       IEnumerable<ILocalPaymentHtlcHandler>? localPaymentHandlers = null,
                       IOptions<NodeOptions>? nodeOptions = null, IOptions<HtlcSwitchOptions>? switchOptions = null,
                       IAttributionDataService? attributionDataService = null,
-                      IOptions<OnchainOptions>? onchainOptions = null)
+                      IOptions<OnchainOptions>? onchainOptions = null, IRetiredScidMap? retiredScidMap = null)
     {
         _attributionDataService = attributionDataService;
         _blockchainMonitor = blockchainMonitor;
@@ -170,6 +172,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         _logger = logger;
         _onionProcessor = onionProcessor;
         _peerLivenessProbe = peerLivenessProbe;
+        _retiredScidMap = retiredScidMap;
         _serviceScopeFactory = serviceScopeFactory;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _acceptMultiPart = (nodeOptions?.Value.Features.BasicMpp ?? FeatureSupport.Optional) != FeatureSupport.No;
@@ -1779,6 +1782,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     /// such a channel by its real scid. A channel that only negotiated the feature (<c>Optional</c>, e.g. a public
     /// channel, announced by its real scid) accepts both (NL-348).
     /// </summary>
+    /// <remarks>Splicing plan D12 (SP2-0 seam, lane SP2-B): a short channel id a splice lock retired resolves through
+    /// <see cref="IRetiredScidMap"/> for 72 blocks, after the live ones and the aliases.</remarks>
     private ChannelModel? ResolveOutgoingChannel(ShortChannelId shortChannelId) =>
         _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open
                                                 && (c.LocalAliases?.Contains(shortChannelId) == true
@@ -1786,7 +1791,15 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                                  || (c.ChannelParams.UseScidAlias != FeatureSupport.Compulsory
                                                   && c.ShortChannelId != default
                                                   && c.ShortChannelId == shortChannelId)))
-                                .FirstOrDefault();
+                                .FirstOrDefault()
+     ?? ResolveRetiredChannel(shortChannelId);
+
+    /// <summary>The open channel a retired short channel id still names (D12), or null.</summary>
+    private ChannelModel? ResolveRetiredChannel(ShortChannelId shortChannelId) =>
+        _retiredScidMap is not null && _retiredScidMap.TryResolve(shortChannelId, out var channelId)
+     && _channelMemoryRepository.TryGetChannel(channelId, out var channel) && channel.State == ChannelState.Open
+            ? channel
+            : null;
 
     /// <summary>
     /// Inside a blinded route (M5), the open channel to <paramref name="nextNodeId"/> (the recipient data's

@@ -1,5 +1,6 @@
 namespace NLightning.Application.Gossip.Announcements.Interfaces;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
@@ -106,4 +107,22 @@ public interface IChannelAnnouncementService
     /// Call it under the channel's lock.
     /// </summary>
     Task CompleteAnnouncementAsync(ChannelModel channel, IUnitOfWork unitOfWork);
+
+    /// <summary>
+    /// Whether we are ready to send <c>announcement_signatures</c> for the funding <paramref name="fundingTxId"/> of the
+    /// channel (SP-G-01: a public channel whose splice is locked both ways and has the announcement depth; the original
+    /// funding as <see cref="CanSendAnnouncementSignatures"/>). The reestablish retransmits ours when the peer's
+    /// <c>my_current_funding_locked</c> sets bit 0 for such a funding (SP-RE-04) and sets bit 0 of its own TLV 5 from
+    /// what it holds. Splicing plan SP2-0; implemented by lane SP2-B (SP2-B-T3), read by lane SP2-A.
+    /// </summary>
+    bool IsReadyForAnnouncementSignatures(ChannelModel channel, TxId fundingTxId) =>
+        throw new NotImplementedException("Lane SP2-B (SP2-B-T3, SP-G-01)");
+
+    /// <summary>
+    /// Whether the peer's <c>announcement_signatures</c> for <paramref name="shortChannelId"/> names a splice of the
+    /// channel for which we have not sent <c>splice_locked</c> yet: it is then kept and handled once we did, not answered
+    /// with a warning (BOLT 7 SHOULD, SP-G-01). Splicing plan SP2-0; implemented by lane SP2-B (SP2-B-T3).
+    /// </summary>
+    bool ShouldDeferRemoteAnnouncementSignatures(ChannelModel channel, ShortChannelId shortChannelId) =>
+        throw new NotImplementedException("Lane SP2-B (SP2-B-T3, SP-G-01)");
 }

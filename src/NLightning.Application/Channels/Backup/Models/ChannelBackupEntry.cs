@@ -90,4 +90,19 @@ public sealed record ChannelBackupEntry
 
     /// <summary>The parameters the peer announced.</summary>
     public required ChannelBackupParty Remote { get; init; }
+
+    /// <summary>
+    /// Our funding key index of the funding in <see cref="FundingTxId"/> (splicing plan D5: 0 for the original funding,
+    /// rotated by each locked splice). With <see cref="KeyIndex"/> it re-derives <see cref="LocalFundingPubKey"/>, which,
+    /// like <see cref="FundingTxId"/>, <see cref="RemoteFundingPubKey"/> and <see cref="CapacitySat"/>, describes the
+    /// channel's <b>current</b> funding (NL-478). Splicing plan SP2-0; written by lane SP2-E as a trailing field of the
+    /// record (a minor revision: a reader that predates it skips it and reads 0).
+    /// </summary>
+    public uint LocalFundingKeyIndex { get; init; }
+
+    /// <summary>
+    /// The channel's pending splices at backup time (empty when none), so a restore from a backup written before the
+    /// lock follows the splice (splicing plan SP2-0, lane SP2-E; trailing field of the record).
+    /// </summary>
+    public IReadOnlyList<ChannelBackupFunding> PendingFundings { get; init; } = [];
 }

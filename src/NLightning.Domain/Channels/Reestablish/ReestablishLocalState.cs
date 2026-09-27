@@ -14,13 +14,20 @@ using Enums;
 /// <param name="LastSent">Which of <c>commitment_signed</c>/<c>revoke_and_ack</c> we sent last.</param>
 /// <param name="HasUnsignedLocalUpdates">We persisted updates that no <c>commitment_signed</c> covers yet (states 10
 /// and 35, or our unsigned fee update): the peer dropped them on disconnect, so they are sent again.</param>
+/// <param name="LatestInteractiveTx">The latest constructed, not aborted interactive funding transaction (splice or
+/// dual-funded open) and its signing steps, for <c>next_funding</c> (SP-RE-01, SP-RE-03); null when there is none.
+/// Splicing plan SP2-0; filled by lane SP2-A.</param>
+/// <param name="Splice">The funding-lock facts for <c>my_current_funding_locked</c> (SP-RE-02, SP-RE-04, SP-RE-05);
+/// null when <c>option_splice</c> is not negotiated. Splicing plan SP2-0; filled by lane SP2-A.</param>
 public sealed record ReestablishLocalState(
     ulong LocalCommitmentNumber,
     ulong RemoteCommitmentNumber,
     bool HasRemoteNextCommit,
     bool HasSentCommitDiff,
     LastSentCommitmentMessage LastSent,
-    bool HasUnsignedLocalUpdates)
+    bool HasUnsignedLocalUpdates,
+    ReestablishInteractiveTxState? LatestInteractiveTx = null,
+    ReestablishSpliceState? Splice = null)
 {
     /// <summary>
     /// The state of a channel with a commitment snapshot.
@@ -36,6 +43,19 @@ public sealed record ReestablishLocalState(
                                          commitments.RemoteNextCommit is not null, hasSentCommitDiff, lastSent,
                                          HasUnsignedUpdates(commitments));
     }
+
+    /// <summary>
+    /// <see cref="From(ChannelCommitments, bool, LastSentCommitmentMessage)"/> with the splice facts (SP2-0).
+    /// </summary>
+    public static ReestablishLocalState From(ChannelCommitments commitments, bool hasSentCommitDiff,
+                                             LastSentCommitmentMessage lastSent,
+                                             ReestablishInteractiveTxState? latestInteractiveTx,
+                                             ReestablishSpliceState? splice) =>
+        From(commitments, hasSentCommitDiff, lastSent) with
+        {
+            LatestInteractiveTx = latestInteractiveTx,
+            Splice = splice
+        };
 
     /// <summary>Our adds (10), our removals (35) and our fee update not covered by a <c>commitment_signed</c>.</summary>
     private static bool HasUnsignedUpdates(ChannelCommitments commitments) =>

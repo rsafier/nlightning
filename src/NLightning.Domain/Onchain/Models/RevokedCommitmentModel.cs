@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Onchain.Models;
 
 using Bitcoin.Transactions.Enums;
+using Bitcoin.ValueObjects;
 using Channels.Commitments;
 using Channels.ValueObjects;
 
@@ -23,6 +24,13 @@ public sealed record RevokedCommitmentModel
 
     /// <summary>Its content (holder <see cref="CommitmentSide.Remote"/>).</summary>
     public CommitmentSpec Spec { get; }
+
+    /// <summary>
+    /// The funding whose output this revoked commitment spends (SP-I5: since splicing a number is logged once per active
+    /// funding, and a breach is punished with the spent funding's balances and capacity). Null when the reader does not
+    /// say (splicing plan SP2-0; the repository fills it in lane SP2-C, NL-479).
+    /// </summary>
+    public TxId? FundingTxId { get; init; }
 
     public RevokedCommitmentModel(ChannelId channelId, ulong number, CommitmentSpec spec)
     {

@@ -22,6 +22,10 @@ public readonly record struct CommitmentCandidate(ulong Number, TxId TxId);
 /// <param name="MutualCloseTxIds">Closing transactions we signed (every fee we proposed or accepted).</param>
 /// <param name="LocalShutdownScript">Our <c>shutdown</c> scriptpubkey, if a shutdown was exchanged.</param>
 /// <param name="RemoteShutdownScript">The peer's <c>shutdown</c> scriptpubkey, if a shutdown was exchanged.</param>
+/// <param name="SpliceTxIds">The channel's splice transactions that spend this funding output (its pending splices
+/// when it is the current funding, and the splice that replaced it when it is a retired one). A spender among them is
+/// <see cref="Enums.FundingSpendKind.Splice"/>, not a close (splicing plan §3.6, SP2-0; classified by lane SP2-C,
+/// SP2-C-T1).</param>
 public sealed record FundingSpendContext(
     TxId FundingTxId,
     uint FundingOutputIndex,
@@ -31,4 +35,5 @@ public sealed record FundingSpendContext(
     CommitmentCandidate? RemoteNextCommit = null,
     IReadOnlyCollection<TxId>? MutualCloseTxIds = null,
     byte[]? LocalShutdownScript = null,
-    byte[]? RemoteShutdownScript = null);
+    byte[]? RemoteShutdownScript = null,
+    IReadOnlyCollection<TxId>? SpliceTxIds = null);
