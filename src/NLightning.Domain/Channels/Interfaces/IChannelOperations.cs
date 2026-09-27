@@ -25,7 +25,10 @@ using ValueObjects;
 ///   <c>Failed</c> and no <c>shutdown</c> was exchanged, plus the BOLT 2 sender rules of the commitment engine.
 ///   A precondition that fails throws <see cref="Exceptions.CommitmentRefusedException"/> (nothing persisted,
 ///   nothing sent; callers map it to a local failure such as <c>temporary_channel_failure</c>). An unknown channel
-///   throws <see cref="KeyNotFoundException"/>.</item>
+///   throws <see cref="KeyNotFoundException"/>. While the channel is quiescing or quiescent (BOLT 2 "Channel
+///   Quiescence", <c>Quiescence.IQuiescenceService</c>) the refusal is the subclass
+///   <see cref="Exceptions.ChannelQuiescentException"/>: temporary, it ends with the quiescence, so a caller that can
+///   wait (a fulfill) retries after it instead of failing.</item>
 ///   <item>It applies the update to the commitment engine and <b>persists</b> the resulting transition (and, for an
 ///   offer, the <see cref="HtlcOrigin"/>) in one <c>IUnitOfWork.SaveChangesAsync</c> before anything is sent.</item>
 ///   <item>Only after the save it enqueues the wire message on the peer's outbox, then asks the commit scheduler to

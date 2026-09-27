@@ -11,6 +11,7 @@ using Node.PeerStorage;
 using Offers.Interfaces;
 using Onchain.Interfaces;
 using Payments.Interfaces;
+using Protocol.InteractiveTx.Interfaces;
 using Protocol.Onion.Interfaces;
 
 public interface IUnitOfWork : IDisposable
@@ -68,6 +69,11 @@ public interface IUnitOfWork : IDisposable
     // BOLT 12 offers (NL-447, migration AddBolt12Offers); the default is for test doubles that store no offers
     IOfferDbRepository OfferDbRepository =>
         throw new NotSupportedException("This unit of work does not store BOLT 12 offers.");
+
+    // Interactive-tx negotiations (splicing plan wave IT, migration AddInteractiveTxSessions of lane IT-C); the default
+    // is for units of work and test doubles that store none until that lane lands
+    IInteractiveTxSessionDbRepository InteractiveTxSessionDbRepository =>
+        throw new NotSupportedException("This unit of work does not store interactive-tx sessions.");
 
     Task<ICollection<PeerModel>> GetPeersForStartupAsync();
     void AddUtxo(UtxoModel utxoModel);
