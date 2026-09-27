@@ -75,6 +75,20 @@ public class RevokedCommitmentDbRepository : BaseDbRepository<RevokedCommitmentE
     }
 
     /// <inheritdoc />
+    /// <remarks>Saved rows and the rows this unit of work staged (not the ones it deleted), by number.</remarks>
+    public async Task<IReadOnlyList<RevokedCommitmentModel>> GetByFundingAsync(ChannelId channelId, TxId fundingTxId)
+    {
+        var rows = await DbSet.Where(r => r.ChannelId == channelId && r.FundingTxId == fundingTxId).ToListAsync();
+        var known = new HashSet<RevokedCommitmentEntity>(rows, ReferenceEqualityComparer.Instance);
+        rows.AddRange(DbSet.Local.Where(r => r.ChannelId == channelId && r.FundingTxId == fundingTxId
+                                          && known.Add(r)));
+        return rows.Where(r => _context.Entry(r).State != EntityState.Deleted)
+                   .OrderBy(r => r.Number)
+                   .Select(MapEntityToDomain)
+                   .ToList();
+    }
+
+    /// <inheritdoc />
     public async Task<ulong> GetLogStartAsync(ChannelId channelId)
     {
         var channel = await _context.Channels.AsNoTracking()
@@ -134,5 +148,8 @@ public class RevokedCommitmentDbRepository : BaseDbRepository<RevokedCommitmentE
     private static RevokedCommitmentModel MapEntityToDomain(RevokedCommitmentEntity entity) =>
         new(entity.ChannelId, entity.Number,
             new CommitmentSpec(CommitmentSide.Remote, entity.FeeratePerKw, entity.LocalMsat, entity.RemoteMsat,
-                               CommitmentStateEncoding.DecodeSpecHtlcs(entity.Htlcs)));
+                               CommitmentStateEncoding.DecodeSpecHtlcs(entity.Htlcs)))
+        {
+            FundingTxId = entity.FundingTxId
+        };
 }

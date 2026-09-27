@@ -7,8 +7,9 @@ using Models;
 /// <summary>
 /// Reads the revocation log (BOLT 5 plan O1-T1, table <c>RevokedCommitments</c>). Entries are written only by
 /// <c>IChannelStateDbRepository.ApplyAsync</c>, in the save of the <c>revoke_and_ack</c> transition that revoked the
-/// commitment (<see cref="Channels.Commitments.ChannelTransition.RevokedRemoteCommit"/>), and only for commitments with
-/// at least one HTLC.
+/// commitment (<see cref="Channels.Commitments.ChannelTransition.RevokedRemoteCommit"/>), once per funding it was signed
+/// on (<see cref="Channels.Commitments.ChannelTransition.RevokedRemoteCommitFundings"/>, NL-479), and only for
+/// commitments with at least one HTLC.
 /// </summary>
 public interface IRevokedCommitmentDbRepository
 {
@@ -31,10 +32,11 @@ public interface IRevokedCommitmentDbRepository
     /// <summary>
     /// Every entry logged for the funding <paramref name="fundingTxId"/> of the channel, by number (SP-I5: the
     /// classifier and the revoked resolver judge a breach of a pending, replaced or discarded funding against that
-    /// funding's log). Splicing plan SP2-0; implemented by lane SP2-C (NL-479).
+    /// funding's log; NL-479). Rows staged by the same unit of work are included. The default member throws for test
+    /// doubles that keep no per-funding log.
     /// </summary>
     Task<IReadOnlyList<RevokedCommitmentModel>> GetByFundingAsync(ChannelId channelId, TxId fundingTxId) =>
-        throw new NotImplementedException("Lane SP2-C (SP2-C-T3, NL-479)");
+        throw new NotSupportedException("This revocation log keeps no per-funding rows");
 
     /// <summary>
     /// The first revoked commitment number the log covers for the channel: 0 for channels created after migration
