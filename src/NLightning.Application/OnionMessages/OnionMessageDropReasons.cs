@@ -45,8 +45,11 @@ public static class OnionMessageDropReasons
     /// <summary>The next node is us.</summary>
     public const string Loop = "loop";
 
-    /// <summary>The next peer's connection refused the message.</summary>
-    public const string SendFailed = "send_failed";
+    /// <summary>
+    /// The next peer's outbox refused the message: it already holds its cap of onion messages (a peer that reads
+    /// slowly), or the connection is closing.
+    /// </summary>
+    public const string OutboxFull = "outbox_full";
 
     /// <summary>A final hop with more than one payload field.</summary>
     public const string MultiplePayloadFields = "multiple_payload_fields";

@@ -1,3 +1,5 @@
+using System.Threading.Channels;
+
 namespace NLightning.Application.Tests.OnionMessages.Harness;
 
 using Domain.Crypto.ValueObjects;
@@ -11,18 +13,48 @@ using Domain.Protocol.Messages;
 
 /// <summary>
 /// One end of an in-process connection between two harness nodes: <see cref="SendOnionMessageAsync"/> hands the
-/// message to the other node's service, as the peer's read loop would. Only onion messages flow.
+/// message to the other node's service, as the peer's read loop would. Only onion messages flow. The link also holds
+/// the connection's onion-message outbox (<see cref="TryEnqueueOnionMessage"/>): a bounded queue, like the
+/// <c>PeerOutbox</c> onion-message class, pumped one message at a time into <see cref="SendOnionMessageAsync"/>.
 /// </summary>
 internal sealed class LinkedPeerService : IPeerService
 {
     private readonly List<OnionMessageMessage> _sent = [];
+    private readonly Channel<OnionMessageMessage> _outbox;
+    private readonly Task _pump;
+    private TaskCompletionSource _writable = CreateOpenGate();
 
     /// <param name="remote">The node at the other end.</param>
     /// <param name="features">What the connection negotiated.</param>
-    public LinkedPeerService(OnionMessageTestNode remote, FeatureOptions features)
+    /// <param name="outboxCapacity">The onion messages the outbox holds at most.</param>
+    public LinkedPeerService(OnionMessageTestNode remote, FeatureOptions features, int outboxCapacity = 64)
     {
         Remote = remote;
         Features = features;
+        _outbox = Channel.CreateBounded<OnionMessageMessage>(new BoundedChannelOptions(outboxCapacity)
+        {
+            SingleReader = true,
+            FullMode = BoundedChannelFullMode.Wait
+        });
+        _pump = Task.Run(PumpAsync);
+    }
+
+    /// <summary>
+    /// When true, the socket stops draining (a peer that stops reading): sends block until it is set back to false,
+    /// and the outbox fills.
+    /// </summary>
+    public bool Stalled
+    {
+        get => !_writable.Task.IsCompleted;
+        set
+        {
+            if (value == Stalled)
+                return;
+            if (value)
+                _writable = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            else
+                _writable.TrySetResult();
+        }
     }
 
     /// <summary>The node at the other end.</summary>
@@ -31,8 +63,15 @@ internal sealed class LinkedPeerService : IPeerService
     /// <summary>The other end's view of this connection (the link it receives on).</summary>
     public LinkedPeerService? Reverse { get; set; }
 
-    /// <summary>When set, sends throw as a full outbox would.</summary>
+    /// <summary>When set, the outbox refuses every message, as a full or closing one does.</summary>
     public bool RefuseSends { get; set; }
+
+    /// <summary>
+    /// The outbox side (what <c>PeerManager</c> does as <c>IPeerOnionMessageOutbox</c>): queues without blocking,
+    /// false when full or refusing.
+    /// </summary>
+    public bool TryEnqueueOnionMessage(OnionMessageMessage message) =>
+        !RefuseSends && _outbox.Writer.TryWrite(message);
 
     /// <summary>The messages sent over this link.</summary>
     public IReadOnlyList<OnionMessageMessage> Sent
@@ -57,15 +96,13 @@ internal sealed class LinkedPeerService : IPeerService
     public event EventHandler<ChannelUpdateMessage>? OnChannelUpdateReceived;
 #pragma warning restore CS0067
 
-    public Task SendOnionMessageAsync(OnionMessageMessage message, CancellationToken cancellationToken = default)
+    public async Task SendOnionMessageAsync(OnionMessageMessage message, CancellationToken cancellationToken = default)
     {
-        if (RefuseSends)
-            throw new InvalidOperationException("Outbox full");
-
+        // A socket write that never completes while the reader is stalled
+        await _writable.Task.WaitAsync(cancellationToken);
         lock (_sent)
             _sent.Add(message);
         Remote.Service.HandleIncoming(Reverse!, message);
-        return Task.CompletedTask;
     }
 
     public Task<bool> PingAsync(TimeSpan timeout, CancellationToken cancellationToken = default) =>
@@ -85,5 +122,31 @@ internal sealed class LinkedPeerService : IPeerService
 
     public void Dispose()
     {
+        _outbox.Writer.TryComplete();
+        _writable.TrySetResult();
+        _pump.Wait(TimeSpan.FromSeconds(5));
+    }
+
+    private static TaskCompletionSource CreateOpenGate()
+    {
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        gate.SetResult();
+        return gate;
+    }
+
+    private async Task PumpAsync()
+    {
+        await foreach (var message in _outbox.Reader.ReadAllAsync())
+        {
+            try
+            {
+                await SendOnionMessageAsync(message);
+            }
+            catch (ObjectDisposedException)
+            {
+                // The remote node is gone
+                return;
+            }
+        }
     }
 }

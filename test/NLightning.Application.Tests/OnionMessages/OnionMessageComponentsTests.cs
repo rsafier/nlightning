@@ -161,13 +161,48 @@ public class OnionMessageComponentsTests
         Assert.Equal(OnionMessageSendStatus.NoPath, result.Status);
     }
 
-    [Fact]
-    public void Given_InvalidOptions_When_TheServiceIsBuilt_Then_Throws()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_InvalidOptions_When_TheServiceIsResolved_Then_ItDoesNotThrowAndStaysOff(bool advertised)
     {
-        // Act / Assert
-        var exception = Assert.Throws<InvalidOperationException>(
-            () => new OnionMessageTestNode("alice", 1, options: new OnionMessageOptions { ConnectToReply = true }));
-        Assert.Contains(nameof(OnionMessageOptions.ConnectToReply), exception.Message);
+        // Arrange: the peer services resolve the service while they build every connection, so a bad section of the
+        // off-by-default feature must never throw there (it would stop every peer from connecting)
+        var ct = TestContext.Current.CancellationToken;
+        var invalid = new OnionMessageOptions { ConnectToReply = true, MaxPathHops = 17 };
+
+        // Act
+        using var node = new OnionMessageTestNode("alice", 1, options: invalid, advertiseOnionMessages: advertised);
+        var result = await node.Service.SendAsync(OnionMessageDestination.ToNode(new TestNodeKeyManager(2).NodeId),
+                                                  OnionMessageContents.Single(65, new byte[] { 1 }), null, ct);
+
+        // Assert
+        Assert.False(node.Service.IsAvailable);
+        Assert.Equal(OnionMessageSendStatus.NotAvailable, result.Status);
+    }
+
+    [Fact]
+    public void Given_NoOnionMessageOutbox_When_TheServiceIsResolved_Then_ItStaysOff()
+    {
+        // Act: without the capped send path (IPeerOnionMessageOutbox) the service never sends at all
+        using var node = new OnionMessageTestNode("alice", 1, registerOutbox: false);
+
+        // Assert
+        Assert.False(node.Service.IsAvailable);
+    }
+
+    [Fact]
+    public void Given_ReplyTimeoutOption_When_TheServiceIsResolved_Then_ItIsTheDefaultReplyTimeout()
+    {
+        // Act
+        using var node = new OnionMessageTestNode("alice", 1,
+                                                  options: new OnionMessageOptions
+                                                  {
+                                                      ReplyTimeout = TimeSpan.FromSeconds(7)
+                                                  });
+
+        // Assert
+        Assert.Equal(TimeSpan.FromSeconds(7), node.Service.DefaultReplyTimeout);
     }
 
     [Fact]

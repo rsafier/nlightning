@@ -53,8 +53,20 @@ public sealed class OnionMessageOptions
     /// <summary>Per peer: messages per second admitted (default 20).</summary>
     public int PeerMessagesPerSecond { get; set; } = 20;
 
+    /// <summary>Per peer: the message burst (default 20).</summary>
+    public int PeerBurstMessages { get; set; } = 20;
+
     /// <summary>All peers together: bytes per second admitted (default 640 KiB/s).</summary>
     public int GlobalBytesPerSecond { get; set; } = 640 * 1024;
+
+    /// <summary>All peers together: the byte burst (default 2,560 KiB).</summary>
+    public int GlobalBurstBytes { get; set; } = 2560 * 1024;
+
+    /// <summary>All peers together: messages per second admitted (default 200).</summary>
+    public int GlobalMessagesPerSecond { get; set; } = 200;
+
+    /// <summary>All peers together: the message burst (default 200).</summary>
+    public int GlobalBurstMessages { get; set; } = 200;
 
     /// <summary>
     /// Open a connection to reply or to forward (plan D6). Not implemented: must stay false.
@@ -79,10 +91,13 @@ public sealed class OnionMessageOptions
             errors.Add($"{SectionName}:{nameof(ReplyTimeout)} must be positive.");
         if (MaxPathHops is < 0 or > 16)
             errors.Add($"{SectionName}:{nameof(MaxPathHops)} must be 0 to 16.");
-        if (PeerBytesPerSecond < 1 || PeerBurstBytes < 1 || PeerMessagesPerSecond < 1 || GlobalBytesPerSecond < 1)
+        if (PeerBytesPerSecond < 1 || PeerBurstBytes < 1 || PeerMessagesPerSecond < 1 || PeerBurstMessages < 1
+         || GlobalBytesPerSecond < 1 || GlobalBurstBytes < 1 || GlobalMessagesPerSecond < 1 || GlobalBurstMessages < 1)
             errors.Add($"{SectionName}: the rate limits must be at least 1.");
         if (PeerBurstBytes < PeerBytesPerSecond)
             errors.Add($"{SectionName}:{nameof(PeerBurstBytes)} must be at least {nameof(PeerBytesPerSecond)}.");
+        if (GlobalBurstBytes < GlobalBytesPerSecond)
+            errors.Add($"{SectionName}:{nameof(GlobalBurstBytes)} must be at least {nameof(GlobalBytesPerSecond)}.");
         if (ConnectToReply)
             errors.Add($"{SectionName}:{nameof(ConnectToReply)} is not implemented; leave it false.");
         return errors;
