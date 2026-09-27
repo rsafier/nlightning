@@ -1299,6 +1299,15 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                           .HandleAsync(Cast<AnnouncementSignaturesMessage>(message), currentState,
                                        negotiatedFeatures, peerPubKey);
 
+            // BOLT 2 channel quiescence (splicing plan Q1-T1, NL-019): stfu is a channel message handled under the
+            // channel's lock like the updates it stops; like them it needs the channel reestablished on this
+            // connection (B2-RE-07)
+            case MessageTypes.Stfu:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                ThrowIfNotReestablished(channelId, currentState, message.Type);
+                return await GetChannelMessageHandler<StfuMessage>(scope)
+                          .HandleAsync(Cast<StfuMessage>(message), currentState, negotiatedFeatures, peerPubKey);
+
             default:
                 await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
                 throw CreateNotImplementedWarning(message.Type, channelId);
