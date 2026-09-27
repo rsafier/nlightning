@@ -42,6 +42,18 @@ public sealed class OfferOptions
     public uint PathLifetimeMarginBlocks { get; set; } = 144;
 
     /// <summary>
+    /// How often <see cref="ExpiredBolt12InvoicePruner"/> deletes expired unpaid BOLT 12 invoices (NL-448); zero turns
+    /// the pruning off.
+    /// </summary>
+    public TimeSpan ExpiredInvoicePruneInterval { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// The most expired invoices deleted in one save; a round saves batches until one comes back short, at most
+    /// <see cref="ExpiredBolt12InvoicePruner.MaxBatchesPerRound"/> of them.
+    /// </summary>
+    public int ExpiredInvoicePruneBatchSize { get; set; } = 500;
+
+    /// <summary>
     /// The configuration problems, or none.
     /// </summary>
     public IReadOnlyList<string> GetValidationErrors()
@@ -61,6 +73,10 @@ public sealed class OfferOptions
             errors.Add($"{SectionName}:{nameof(InvoiceRequestsPerSecondPerOffer)} must be positive.");
         if (!(InvoiceRequestsPerSecond > 0))
             errors.Add($"{SectionName}:{nameof(InvoiceRequestsPerSecond)} must be positive.");
+        if (ExpiredInvoicePruneInterval < TimeSpan.Zero)
+            errors.Add($"{SectionName}:{nameof(ExpiredInvoicePruneInterval)} must not be negative.");
+        if (ExpiredInvoicePruneBatchSize < 1)
+            errors.Add($"{SectionName}:{nameof(ExpiredInvoicePruneBatchSize)} must be positive.");
         return errors;
     }
 }

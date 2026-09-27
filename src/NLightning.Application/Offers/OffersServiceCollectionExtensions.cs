@@ -20,6 +20,7 @@ public static class OffersServiceCollectionExtensions
     /// Registers <see cref="OfferService"/> (as itself and <see cref="IOfferService"/>), the invoice_request handler
     /// <see cref="InvoiceRequestHandler"/> (an <see cref="IOnionMessageHandler"/> for type 64, picked up by the
     /// onion-message service), <see cref="OfferPathIds"/>, <see cref="InvoiceRequestRateLimiter"/> and
+    /// <see cref="ExpiredBolt12InvoicePruner"/> (the host starts it, NL-448),
     /// <see cref="IBlindedPaymentPathSource"/> (<see cref="BlindedPaymentPathFactory"/> over the payments'
     /// <c>BlindedPathBuilder</c>, so call it after <c>AddPaymentsServices()</c>). Binds nothing: the host configures
     /// <see cref="OfferOptions"/> from <see cref="OfferOptions.SectionName"/>; the defaults apply otherwise, and invalid
@@ -43,6 +44,8 @@ public static class OffersServiceCollectionExtensions
         services.TryAddSingleton(sp => ActivatorUtilities.CreateInstance<OfferService>(
                                      sp, Options.Create(GetOptions(sp))));
         services.TryAddSingleton<IOfferService>(sp => sp.GetRequiredService<OfferService>());
+        services.TryAddSingleton(sp => ActivatorUtilities.CreateInstance<ExpiredBolt12InvoicePruner>(
+                                     sp, Options.Create(GetOptions(sp))));
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IOnionMessageHandler, InvoiceRequestHandler>(sp =>
             new InvoiceRequestHandler(sp.GetRequiredService<IServiceScopeFactory>(), sp,
                                       sp.GetRequiredService<ISecureKeyManager>(), sp.GetService<IBolt12Signer>(),

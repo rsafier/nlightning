@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace NLightning.Daemon.Extensions;
 
@@ -10,6 +11,7 @@ using Domain.Client.Responses;
 using Domain.Offers.Interfaces;
 using Handlers;
 using Interfaces;
+using Services;
 
 /// <summary>
 /// The BOLT 12 offer commands <c>createoffer</c>, <c>listoffers</c> and <c>disableoffer</c> (ClientCommand
@@ -38,6 +40,18 @@ public static class OfferIpcServiceExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIpcCommandHandler, ListOffersIpcHandler>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIpcCommandHandler, DisableOfferIpcHandler>());
 
+        return services;
+    }
+
+    /// <summary>
+    /// The hosted service that runs the <c>ExpiredBolt12InvoicePruner</c> (registered by the Application's
+    /// <c>AddOffersServices()</c>; <c>Offers:ExpiredInvoicePruneInterval</c>, zero turns it off), NL-448. Call it from
+    /// <c>ConfigureNltgServices</c>. Idempotent.
+    /// </summary>
+    public static IServiceCollection AddExpiredBolt12InvoicePruning(this IServiceCollection services)
+    {
+        services.TryAddEnumerable(ServiceDescriptor
+                                     .Singleton<IHostedService, ExpiredBolt12InvoicePruneHostedService>());
         return services;
     }
 }
