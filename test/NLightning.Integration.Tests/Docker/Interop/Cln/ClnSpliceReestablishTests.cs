@@ -85,9 +85,12 @@ using SpliceWireMessage = ClnSpliceTests.SpliceWireMessage;
 /// lanes merged, 2026-09-27): our splice was signed both ways, the link cut, 4 blocks mined; on reconnection CLN sent
 /// <c>my_current_funding_locked</c> = the <b>pre-splice</b> funding (not the splice that reached its depth while
 /// disconnected, which SP-RE-02 as our plan reads it would name), stayed <c>CHANNELD_AWAITING_SPLICE</c>, sent no
-/// <c>splice_locked</c> and retransmitted <c>channel_ready</c> (no splice TLV on either side, SP-RE-05). Proof (b)
-/// therefore asserts only our <c>my_current_funding_locked</c> and that the lock completes without another block;
-/// whether CLN's answer to ours locks the splice is what the integrator's run shows.</item>
+/// <c>splice_locked</c> and retransmitted <c>channel_ready</c> (no splice TLV on either side, SP-RE-05). BOLT 2
+/// (channel_reestablish: "if a splice transaction reached acceptable depth while disconnected: MUST include
+/// <c>my_current_funding_locked</c> with the txid of the latest such transaction") makes that a CLN deviation. Proof
+/// (b) therefore holds our <c>my_current_funding_locked</c> strictly (the splice, bit 0 clear on a private channel)
+/// and branches on CLN's: when it names the splice the lock must complete at the same tip (our SP-RE-04); when it
+/// does not, the deviation is logged and one more block is allowed for CLN's <c>splice_locked</c>.</item>
 /// <item>CLN fails the channel (<c>error</c> "tx_abort is not allowed after I have sent my signature" and a unilateral
 /// close) when it gets <c>tx_abort</c> after its own <c>tx_signatures</c>. Between two CLN nodes that happened when the
 /// initiator of a low-level splice was restarted before <c>splice_signed</c> (<c>Unable to resume splice as user
@@ -108,7 +111,9 @@ using SpliceWireMessage = ClnSpliceTests.SpliceWireMessage;
 /// <c>retransmit_flags</c> bit 0 set, and CLN's <c>tx_signatures</c>, sent once it has our CS, is lost too); (2) we splice
 /// in, CLN signs first (smaller contribution) and we drop its <c>tx_signatures</c> (both CS received, no
 /// <c>tx_signatures</c> either way from us); (3) CLN splices in, we sign first and drop CLN's <c>tx_signatures</c>
-/// (ours sent); (4) we splice in and cut once both <c>tx_signatures</c> passed (no <c>next_funding</c>). The restart
+/// (ours sent); (4) we splice in and cut once both <c>tx_signatures</c> passed on our side (CLN's received, ours
+/// written, the splice broadcast and 2 s of grace for ours to reach CLN; our <c>next_funding</c> absent is what is
+/// asserted, CLN's is not, since nothing on the wire confirms that CLN read ours before the reset). The restart
 /// variants stop our node while cut and start it again on the same database. CLN is restarted once in a separate test
 /// on its own container (<c>nltg-cln-sp2</c>, a fixed host port, so its address survives the restart and the shared
 /// fixture's CLN is never restarted).</para>
@@ -279,6 +284,11 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
             await Poll.UntilAsync(() => wire.FirstOrDefault(inbound: false, MessageTypes.TxSignatures, from) is not null
                                      && wire.FirstOrDefault(inbound: true, MessageTypes.TxSignatures, from) is not null,
                                   s_stepTimeout, "both tx_signatures", ct);
+            // Ours is recorded before it is written: give it time to reach CLN (the broadcast follows our send, the
+            // grace lets CLN read it) before the reset, so the cut lands after both signatures on both sides as far
+            // as the wire allows; only our side (both signatures sent and received) is asserted below
+            await WaitBroadcastAsync(FindSpliceTxId(wire, from), ct);
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
             wire.CutNow();
             Console.WriteLine($"[proof] cut at {cut}: after both tx_signatures");
         }
@@ -403,6 +413,8 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
     /// mined past both ends' lock depth while nobody can send <c>splice_locked</c>. On reconnection both
     /// <c>channel_reestablish</c> carry <c>my_current_funding_locked</c> = the splice (SP-RE-02), which completes the
     /// lock without another block (SP-RE-04): new funding, capacity and short channel id on both ends; payments after.
+    /// Ours is asserted strictly; CLN v26.06.8 names the pre-splice funding instead (a BOLT 2 deviation, class
+    /// remarks), in which case one more block is allowed for its <c>splice_locked</c> and the deviation is logged.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_TheLockDepthReachedWhileDisconnected_When_Reconnected_Then_MyCurrentFundingLockedLocks()
@@ -447,14 +459,36 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
         Console.WriteLine($"[proof] our reestablish {ours}; CLN's {theirs}");
         Assert.Null(ours.NextFundingTxId);
         Assert.Equal(spliceTxId, ours.CurrentFundingLockedTxId);
-        // Not asserted on CLN's side: v26.06.8 names the pre-splice funding here (see the class remarks); the lock must
-        // complete from ours (SP-RE-04 on CLN's side)
-        Console.WriteLine($"[proof] CLN's my_current_funding_locked {(theirs.CurrentFundingLockedTxId == spliceTxId
-                                                                           ? "names the splice"
-                                                                           : "does not name the splice")}");
-        await Poll.UntilAsync(async () => await IsLockedOnBothEndsAsync(channel, spliceTxId, ct), s_stepTimeout,
-                              "the lock completed by my_current_funding_locked", ct);
-        Assert.Equal(tip, await _fixture.Bitcoin.Rpc.GetBlockCountAsync(ct));
+        // A private channel: no announcement_signatures to ask for (BOLT 2 retransmit_flags bit 0 needs announce_channel)
+        Assert.False(ours.CurrentFundingLockedBit0, "bit 0 of my_current_funding_locked set on a private channel");
+        if (theirs.CurrentFundingLockedTxId == spliceTxId)
+        {
+            // CLN names the splice as BOLT 2 requires: its my_current_funding_locked is its splice_locked, so the lock
+            // completes at this tip without another block (SP-RE-04 on our side)
+            Console.WriteLine("[proof] CLN's my_current_funding_locked names the splice");
+            await Poll.UntilAsync(async () => await IsLockedOnBothEndsAsync(channel, spliceTxId, ct), s_stepTimeout,
+                                  "the lock completed by my_current_funding_locked", ct);
+            Assert.Equal(tip, await _fixture.Bitcoin.Rpc.GetBlockCountAsync(ct));
+        }
+        else
+        {
+            // Known CLN deviation (v26.06.8, class remarks): BOLT 2 channel_reestablish says "if a splice transaction
+            // reached acceptable depth while disconnected: MUST include my_current_funding_locked with the txid of the
+            // latest such transaction", and CLN names the pre-splice funding instead and sends no splice_locked until
+            // a block arrives. Our side cannot lock without CLN's lock, so one more block is allowed here; what this
+            // proof holds us to is our own my_current_funding_locked above
+            Console.WriteLine($"[proof] CLN deviation: my_current_funding_locked {theirs.CurrentFundingLockedTxId} "
+                            + $"instead of the splice {spliceTxId} that reached its depth while disconnected; "
+                            + "allowing one block for CLN's splice_locked");
+            if (!await PollAsync(() => IsLockedOnBothEndsAsync(channel, spliceTxId, ct), s_settleTimeout, ct))
+            {
+                await channel.MineAsync(1, ct);
+                await Poll.UntilAsync(async () => await IsLockedOnBothEndsAsync(channel, spliceTxId, ct),
+                                      s_stepTimeout, "the lock after one block (CLN deviation)", ct);
+                Assert.Equal(tip + 1, await _fixture.Bitcoin.Rpc.GetBlockCountAsync(ct));
+            }
+        }
+
         var after = await AssertLockedAsync(channel, before, spliceTxId, ct);
         Assert.Equal(before.CapacitySat + SpliceInSat, after.CapacitySat);
         await AssertWePayClnAsync(channel, LightningMoney.Satoshis(21_000), ct);
@@ -815,6 +849,21 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
         Assert.Equal(retired.ShortChannelId, replaced.ShortChannelId);
 
         return new LockedChannel((ulong)ours.Capacity.Satoshi, newScid);
+    }
+
+    /// <summary>Polls <paramref name="condition"/> once a second; false when it still fails after the timeout.</summary>
+    private static async Task<bool> PollAsync(Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (!await condition())
+        {
+            if (DateTime.UtcNow >= deadline)
+                return false;
+
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+        }
+
+        return true;
     }
 
     /// <summary>The splice transaction reached bitcoind (mempool or a block).</summary>

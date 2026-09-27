@@ -37,7 +37,8 @@ using Interfaces;
 /// funding first, then the pending splices in creation order, then the replaced fundings whose short channel id still
 /// resolves in the optional <see cref="IRetiredScidMap"/>; discarded fundings are not listed. A channel without rows
 /// (funded before the splice schema, or a unit of work that stores none) lists its funding output as the current
-/// funding. Depths are counted from the chain monitor's last processed block (optional
+/// funding. The rows of a Closed or Stale channel are not read (one query per closed channel would grow the command
+/// with the node's history): its funding output is listed as its funding. Depths are counted from the chain monitor's last processed block (optional
 /// <see cref="IBlockchainMonitor"/>); the current funding's short channel id falls back to the channel's. Retired short
 /// channel ids come from the same map, oldest first.</para>
 /// </remarks>
@@ -98,7 +99,9 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
         foreach (var channel in channels)
         {
             ct.ThrowIfCancellationRequested();
-            var fundings = fundingRepository is null
+            // A Closed or Stale channel's rows are not read: one query per closed channel grows listchannels with
+            // the node's history, and its retired short channel ids are gone; its funding output is listed instead
+            var fundings = fundingRepository is null || IsFinished(channel)
                                ? []
                                : await fundingRepository.GetByChannelIdAsync(channel.ChannelId);
             infos.Add(ToChannelInfo(channel, fundings, tipHeight));
@@ -119,6 +122,9 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
             return null;
         }
     }
+
+    private static bool IsFinished(ChannelModel channel) =>
+        channel.State is ChannelState.Closed or ChannelState.Stale;
 
     private static bool IsRequested(ChannelModel channel, ListChannelsClientRequest request) =>
         request.PeerId is null || channel.RemoteNodeId == request.PeerId.Value;
