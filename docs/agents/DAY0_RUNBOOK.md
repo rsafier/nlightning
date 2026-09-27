@@ -15,8 +15,8 @@ first (§2), mainnet after (§3).
 
 | Proof | What it shows |
 |---|---|
-| `Day0FlowTests` | Two NLightning nodes A and B, LND alice watching: (1) dual-funded public open, both contribute, alice has the `channel_announcement` and both policies at 6 confirmations; (2) payments A→B, B→A, alice→A→B; (3) A splices in: lock, new SCID announced, old SCID gone from alice's graph; (4) B splices out to an address: same, and the address holds the amount in a confirmed tx; (5) B crashes as it sends `tx_signatures` of a splice, restarts, the splice completes; B is down while it confirms, restarts, the lock completes; (6) `setchannelpolicy` on A, alice sees the new `htlc_maximum_msat`; (7) `exportchanbackup` + `verifychanbackup` on both after every step, on the current funding; (8) cooperative close. |
-| `Day0UpgradeInPlaceTests` | A SQLite database with the pre-sp1 schema (the migration before `AddSpliceFundings`) holding a used v1 channel migrates at startup, the channel reestablishes with unchanged balances and commitment numbers, pays both ways and then splices. |
+| `Day0FlowTests` | Two NLightning nodes A and B, LND alice watching: (1) dual-funded public open, both contribute, alice has the `channel_announcement` and both policies at 6 confirmations; (2) payments A→B, B→A, alice→A→B; (3) A splices in: lock, new SCID announced, old SCID gone from alice's graph (blocks mined up to BOLT 7's 72-block delay; the test prints the delay LND used); (4) B splices out to an address: same, and the address holds the amount in a confirmed tx; (5) B crashes before its `tx_signatures` of a splice reach the wire, restarts, retransmits them on `channel_reestablish` and the splice completes; B is down while it confirms, restarts, the lock completes; (6) `setchannelpolicy` on A, alice sees the new `htlc_maximum_msat`; (7) `exportchanbackup` + `verifychanbackup` on both after every step, on the current funding; (8) cooperative close. |
+| `Day0UpgradeInPlaceTests` | A SQLite database holding a used v1 channel, rolled back with EF's migrator to (a) the live Mutinynet node's schema (`AddGraphFundingTxId`, an `option_static_remotekey` channel) and (b) the migration before `AddSpliceFundings` (an anchors channel), migrates at startup, the channel reestablishes with unchanged balances and commitment numbers, pays both ways and then splices. The rows are written by the new build and rolled back by EF, not produced by an old build: values an old build wrote differently are not covered. |
 
 Also required green: Proof SP1 (`Docker/Interop/Cln/ClnSpliceTests`), Proof DF (`ClnDualFundTests`) and Proof SP2
 (`ClnSpliceReestablishTests`, `Docker/Onchain/OnchainSpliceTests`, lane SP2-D).
@@ -89,7 +89,16 @@ channel"). The faucet LND cannot splice; this channel only proves the upgrade. `
    ```bash
    $U info; $U listchannels; $U walletbalance; $U chainstatus
    $U exportchanbackup --output ~/day0/mutinynet/pre-upgrade.backup
+   cat ~/.nltg/mutinynet/bin-SHA                  # the build SHA the node runs now (if staged as in step 4)
    ```
+
+   Write down, for the rollback decisions of steps 6 and 8:
+   - the channel's **commitment numbers**, the `Commitment (l/r):` line of `listchannels` (local/remote);
+   - the node's **last applied migration**, read after step 2 with the node stopped:
+     `sqlite3 ~/.nltg/mutinynet/nltg.db 'select MigrationId from __EFMigrationsHistory order by 1 desc limit 1'`
+     (on 2026-09-27 it was `20260926163333_AddGraphFundingTxId`, so the upgrade applies at least the seven
+     migrations `AddFeeInputReservations` ... `AddSpliceFundings`);
+   - the **build SHA** of the old binaries (`git log -1 --format=%H` of the checkout they were built from).
 
    Continue only when `listchannels` shows the channel `Open`, `HTLCs (out/in): 0/0`.
 2. **Stop the node.** If the gossip soak runs it: `scripts/mutinynet/soak-gossip.sh stop` (it stops the daemon it
@@ -107,7 +116,10 @@ channel"). The faucet LND cannot splice; this channel only proves the upgrade. `
    ```
 
    The key password stays where it is (`.password`, mode 600). This copy is for **rollback before any new channel
-   update** and forensics only (§4).
+   update** and forensics only (§4). "Before any new channel update" is not "before step 7": the new daemon of step 6
+   reestablishes the public channel with the faucet LND as soon as it starts, and any `update_fee` (we funded the
+   channel, so our `IFeeUpdateScheduler` sends them) or any HTLC the faucet adds (a probe, a payment) signs a new
+   commitment and turns this copy into a **revoked state**. Step 8 says how to tell.
 4. **Stage the new build.** Check out the day-0 commit, then `scripts/mutinynet/build.sh`, and record
    `git log -1 --format=%H > ~/.nltg/mutinynet/bin-SHA`. `start-daemon.sh` runs the binaries from the checkout's
    `bin/Release/net10.0`, so do not rebuild the checkout while the node runs (or stage copies as the soak does).
@@ -115,12 +127,17 @@ channel"). The faucet LND cannot splice; this channel only proves the upgrade. `
    `Node:Features`/`Node:DualFund` block of §1. For the rehearsal with Nick also set our reachable address so his
    node can dial us: `Gossip:AnnounceAddresses: ["<public ip>:9735"]` and a matching `Node:ListenAddresses`.
 
+   For the **first start after the upgrade** also turn our `update_fee` rounds off (`Node:FeeUpdates:Enabled=false`),
+   so the node itself signs no new commitment before step 7 checked it; turn them back on (remove the key) before
+   step 7. This does not stop the faucet from adding an HTLC, so step 6 still compares the commitment numbers.
+
    ```bash
    cd ~/.nltg/mutinynet && cp appsettings.json appsettings.json.pre-day0
    jq '.Database.RunMigrations = true
        | .Node.Features.AllowExperimentalFeatures = true
        | .Node.Features.OptionQuiesce = "Optional" | .Node.Features.OptionSplice = "Optional"
-       | .Node.Features.DualFund = "Optional"' appsettings.json.pre-day0 > appsettings.json
+       | .Node.Features.DualFund = "Optional"
+       | .Node.FeeUpdates.Enabled = false' appsettings.json.pre-day0 > appsettings.json
    chmod 600 appsettings.json
    ```
 6. **Start and watch the migration.** `scripts/mutinynet/start-daemon.sh &`. The log shows EF applying every
@@ -128,15 +145,25 @@ channel"). The faucet LND cannot splice; this channel only proves the upgrade. `
 
    ```bash
    $U chainstatus                  # Processing: running, last block == tip
-   $U listchannels                 # 3458334x7x0: Open, Reestablished Yes, same balances and commitment numbers,
+   $U listchannels                 # 3458334x7x0: Open, Reestablished Yes, same balances and commitment numbers
+                                   #   (Commitment (l/r) as recorded in step 1),
                                    #   one funding (Initial, Current) on 12482a42...8d0c:0
    $U listpeers                    # the faucet LND connected
    ```
 
-   **Abort** if the migration fails (the daemon exits: stop there and restore the step 3 copy, which is safe because
-   no channel update happened yet), if the channel is not reestablished within 5 minutes, or on `DATA LOSS
-   DETECTED`.
-7. **Verify the channel works** and back it up:
+   **Abort** in these cases, and never with the step 3 copy unless step 8 allows it:
+   - The **migration fails** and the daemon exits before it connected to any peer (the log shows the migration
+     error and no peer connection or `channel_reestablish` after it): the database never signed anything new;
+     step 8 (a).
+   - The channel is **not reestablished within 5 minutes**: stop the daemon and keep the **upgraded** database.
+     Investigate from the logs (and `NL-###` it); do not go back to the step 3 copy, which may already be revoked
+     (step 3). Step 8 applies only if `listchannels` still shows the step 1 commitment numbers.
+   - **`DATA LOSS DETECTED`**: the peer claims a newer state than ours. Never restore an older database and never
+     force close (§4): keep the upgraded database, leave the node stopped or running without HTLCs, and let the
+     faucet close; investigate.
+7. **Verify the channel works** and back it up. First turn the `update_fee` rounds back on: stop the daemon,
+   remove `Node.FeeUpdates.Enabled` from `appsettings.json` (`jq 'del(.Node.FeeUpdates.Enabled)'`), start it again.
+   From here on the step 3 copy is a revoked state.
 
    ```bash
    $U payinvoice "$(scripts/mutinynet/faucet.sh invoice 1000)"
@@ -147,16 +174,27 @@ channel"). The faucet LND cannot splice; this channel only proves the upgrade. `
    ```
 
    mutinynet.com still lists NLightningFAFO with its channel `3458334x7x0`.
-8. **Rollback, if needed.** Before step 7 (no new commitment signed): stop, restore the step 3 copy of `nltg.db`,
-   start the old build. **After** step 7 the old copy is a revoked state: **never restore it**. Instead keep the
-   upgraded database and, if the old build must run, roll its schema back with the new checkout, node stopped:
+8. **Rollback, if needed.** Stop the daemon first. The step 3 copy of `nltg.db` may be restored **only** when
+   (a) the migration failed before the daemon connected to any peer (step 6), or (b) `listchannels` on the upgraded
+   node, read before the stop, still shows **exactly** the commitment numbers recorded in step 1 (no commitment was
+   signed since the copy). Then restore it (`cp "$B/nltg.db" ~/.nltg/mutinynet/nltg.db`, and remove any
+   `nltg.db-wal`/`nltg.db-shm` left next to it), restore `appsettings.json.pre-day0`, and start the old build (the
+   SHA recorded in step 1). In **every other case** the copy is a revoked state: **never restore it**. Keep the
+   upgraded database instead and, if the old build must run, roll its schema back to the **last migration recorded
+   in step 1** with the new checkout, node stopped:
    `cd src/NLightning.Infrastructure.Persistence && NLIGHTNING_SQLITE="Data Source=$HOME/.nltg/mutinynet/nltg.db"
-   dotnet ef database update 20260927163921_AddInteractiveTxSessions --framework net10.0` (the migration before
-   `AddSpliceFundings`, which rolls back any later SP2 migration with it; the design-time factory picks SQLite from
-   `NLIGHTNING_SQLITE`, as `scripts/add_migration.sh` does; unset `NLIGHTNING_POSTGRES` first) **(unverified on a
-   live file; `Day0UpgradeInPlaceTests` does the same rollback with EF's migrator)**. `AddSpliceFundings`' `Down` refuses while any
-   channel runs on a locked splice (its rotated funding keys live only in `ChannelFundings`): after a splice there is
-   no way back to a pre-sp1 build.
+   dotnet ef database update <step 1 migration, e.g. 20260926163333_AddGraphFundingTxId> --framework net10.0`
+   (this undoes every later migration, `AddSpliceFundings` and any SP2 one included; the design-time factory picks
+   SQLite from `NLIGHTNING_SQLITE`, as `scripts/add_migration.sh` does; unset `NLIGHTNING_POSTGRES` first). A
+   rollback to a newer migration than the node's own (for example the one just before `AddSpliceFundings`) leaves a
+   schema the old build has never run against: never do that. **(Unverified on a live file;**
+   `Day0UpgradeInPlaceTests` rolls a database with a used channel back to both `AddGraphFundingTxId` and the
+   migration before `AddSpliceFundings` with EF's migrator and upgrades it again at startup (both cases green on
+   2026-09-27 on `wip/fafo-sp2-sp2-f-s1-rv`, before the SP2 merge); its channel rows are written by the new build,
+   not by an old one.**)** `AddSpliceFundings`' `Down` refuses while any channel runs on
+   a locked splice (its rotated funding keys live only in `ChannelFundings`): after a splice there is no way back to
+   a pre-sp1 build. `AddBolt12Offers`' `Down` makes `Invoices.Bolt11` required again, so it fails if the upgraded
+   node created a BOLT 12 invoice (do not use offers before the upgrade is confirmed).
 
 ### 2.2 Rehearsal with Nick's node
 
@@ -274,7 +312,7 @@ mainnet` on each side.
 | Splice signed, unconfirmed | feerate too low | the channel keeps working (payments are signed for both fundings); wait for the confirmation; never restart on an old database |
 | A node restarts mid-splice | crash, reboot | start it again on the **same** database: `channel_reestablish` retransmits what is missing (Day0 proof step 5) |
 | Either side misbehaves or the channel fails | `Failed`, peer `error` | **keep the node running**: it broadcasts the commitment of the current funding (a pending splice's if that one confirmed) and sweeps (BOLT 5; `pendingsweeps`); `forceclosechannel <CH>` only as the last resort |
-| Upgrade went wrong | migration or reestablish failure | §2.1 step 8 (never an old `nltg.db` after a channel update) |
+| Upgrade went wrong | migration or reestablish failure, `DATA LOSS DETECTED` | §2.1 steps 6 and 8: the pre-upgrade copy only if the migration failed before any peer connection or the commitment numbers are still those recorded before the upgrade; otherwise keep the upgraded database and investigate (never an old `nltg.db` after a channel update) |
 
 ## 4. Rules that never change
 

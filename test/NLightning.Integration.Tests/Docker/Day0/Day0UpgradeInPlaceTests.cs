@@ -21,18 +21,25 @@ using Utils;
 
 /// <summary>
 /// The upgrade in place of the day-0 runbook (wave sp2 lane SP2-F, <c>docs/agents/DAY0_RUNBOOK.md</c> "Mutinynet
-/// phase"): a node whose SQLite database has the schema of the builds before wave sp1 (the migration before
-/// <c>AddSpliceFundings</c>) with a v1 channel in it starts on the new build, migrates at startup, reestablishes the
-/// channel with its peer, pays both ways on it and then splices it.
+/// phase"): a node whose SQLite database has an older schema with a v1 channel in it starts on the new build,
+/// migrates at startup, reestablishes the channel with its peer, pays both ways on it and then splices it. Two older
+/// schemas: the live NLightningFAFO Mutinynet node's (<c>AddGraphFundingTxId</c>, so the upgrade applies the seven
+/// migrations from <c>AddFeeInputReservations</c> to <c>AddSpliceFundings</c> and any later one, on an
+/// <c>option_static_remotekey</c> channel like its public channel) and the last one before <c>AddSpliceFundings</c>
+/// (an anchors channel).
 /// </summary>
 /// <remarks>
 /// <para>How the old database is made: a channel a peer would accept cannot be written by hand (its keys,
 /// commitments and signatures must match the peer's), so the two nodes open and use a real v1 channel with the
-/// features of a pre-sp1 build (<see cref="Day0Harness.UsePreSp1Features"/>: no quiescence, splicing or dual
-/// funding), stop, and each database is rolled back with EF's migrator to the migration before
-/// <c>AddSpliceFundings</c> (its hand-written <c>Down</c> keeps the channel's rows, <c>SpliceFundingsSchemaRoundTrip</c>
-/// proves that step on seeded rows). The test checks the rolled-back file really has the old schema (no
-/// <c>ChannelFundings</c> table, no <c>Commitments.FundingTxId</c>) before the upgraded start.</para>
+/// features of the old build (<see cref="Day0Harness.UsePreSp1Features"/>: no quiescence, splicing or dual funding,
+/// and for the live node's schema no anchors or peer storage), stop, and each database is rolled back with EF's
+/// migrator to the target migration (<c>AddSpliceFundings</c>' hand-written <c>Down</c> keeps the channel's rows,
+/// <c>SpliceFundingsSchemaRoundTrip</c> proves that step on seeded rows; the earlier <c>Down</c>s drop only tables
+/// and columns the channel rows do not use). The test checks the rolled-back file really has the old schema (every
+/// later migration pending, no <c>ChannelFundings</c> table, no <c>Commitments.FundingTxId</c>) before the upgraded
+/// start. <b>Limit:</b> the rows are written by the new build and rolled back by EF, not produced by an old build, so
+/// a value an old build wrote differently (or never wrote) is not exercised by the migrations' data steps; seeding
+/// with a staged old binary is not done.</para>
 /// <para>The splice after the upgrade needs the SP2 lanes (lock and SCID switch, SP2-B); the integrator runs it after
 /// the merge, in the gossip collection's process:
 /// <c>scripts/run-gossip.sh 1 Release -class NLightning.Integration.Tests.Docker.Day0.Day0UpgradeInPlaceTests</c>. The
@@ -43,6 +50,12 @@ public sealed class Day0UpgradeInPlaceTests : IAsyncLifetime
 {
     private const int TestTimeoutMs = 20 * 60 * 1_000;
     private const string SpliceFundingsMigration = "_AddSpliceFundings";
+
+    /// <summary>The last migration of the live NLightningFAFO Mutinynet database (<c>__EFMigrationsHistory</c>).</summary>
+    private const string LiveMutinynetNodeMigration = "20260926163333_AddGraphFundingTxId";
+
+    /// <summary>The last migration before <c>AddSpliceFundings</c>.</summary>
+    private const string LastPreSp1Migration = "20260927163921_AddInteractiveTxSessions";
     private const string SqliteMigrationsAssembly = "NLightning.Infrastructure.Persistence.Sqlite";
 
     private static readonly LightningMoney s_capacity = LightningMoney.Satoshis(1_000_000);
@@ -76,13 +89,26 @@ public sealed class Day0UpgradeInPlaceTests : IAsyncLifetime
             await node.DisposeAsync();
     }
 
-    [Fact(Timeout = TestTimeoutMs)]
-    public async Task Given_AV1ChannelInAPreSp1Database_When_TheNodesUpgradeInPlace_Then_ItMigratesAtStartupWorksAndSplices()
+    /// <param name="rollbackTarget">
+    /// The suffix of the migration the databases are rolled back to: the live Mutinynet node's
+    /// (<c>AddGraphFundingTxId</c>, seven migrations before <c>AddSpliceFundings</c>), or the last one before
+    /// <c>AddSpliceFundings</c>.
+    /// </param>
+    /// <param name="legacyChannel">
+    /// The old build's features include no <c>option_anchors</c> and no <c>option_provide_storage</c> (as the live
+    /// node's build), so the channel is an <c>option_static_remotekey</c> channel like its public channel.
+    /// </param>
+    [Theory(Timeout = TestTimeoutMs)]
+    [InlineData(LiveMutinynetNodeMigration, true)]
+    [InlineData(LastPreSp1Migration, false)]
+    public async Task Given_AV1ChannelInAnOlderDatabase_When_TheNodesUpgradeInPlace_Then_ItMigratesAtStartupWorksAndSplices(
+        string rollbackTarget, bool legacyChannel)
     {
-        // Arrange: two nodes as a pre-sp1 build runs them, a used v1 channel between them
+        // Arrange: two nodes as the old build runs them, a used v1 channel between them
         var ct = TestContext.Current.CancellationToken;
-        var a = await CreateNodeAsync("upgrade-a", ct);
-        var b = await CreateNodeAsync("upgrade-b", ct);
+        var variant = legacyChannel ? "live" : "presp1";
+        var a = await CreateNodeAsync($"upgrade-{variant}-a", legacyChannel, ct);
+        var b = await CreateNodeAsync($"upgrade-{variant}-b", legacyChannel, ct);
         await a.FundWalletAsync(LightningMoney.Satoshis(1_500_000), AddressType.P2Wpkh, ct);
         await a.FundWalletAsync(LightningMoney.Satoshis(500_000), AddressType.P2Wpkh, ct);
         // B accepts an anchors channel only with its on-chain reserve (NL-379)
@@ -95,6 +121,7 @@ public sealed class Day0UpgradeInPlaceTests : IAsyncLifetime
         var channelId = opened.ChannelId;
         var (usableA, _) = await Day0Harness.MineUntilUsableAsync(_fixture, [], a, b, channelId, ct);
         Assert.Equal(ChannelVersion.V1, Channel(a, channelId).Version);
+        Assert.Equal(!legacyChannel, Channel(a, channelId).ChannelParams.OptionAnchorOutputs);
         await Day0Harness.PayAsync(a, b, 40_000, "upgrade before a->b", ct);
         await Day0Harness.PayAsync(b, a, 10_000, "upgrade before b->a", ct);
         var beforeA = await Day0Harness.WaitSettledAsync(a, channelId, ct);
@@ -103,7 +130,7 @@ public sealed class Day0UpgradeInPlaceTests : IAsyncLifetime
         Console.WriteLine($"[upgrade] before: {beforeA.Describe()} funding {Day0Harness.Display(beforeA.FundingTxId)}"
                         + $" (opened at scid {usableA.ShortChannelId})");
 
-        // ...stopped, and each database rolled back to the schema before AddSpliceFundings
+        // ...stopped, and each database rolled back to the old schema
         await a.StopAsync();
         await b.StopAsync();
         SqliteConnection.ClearAllPools();
@@ -111,9 +138,9 @@ public sealed class Day0UpgradeInPlaceTests : IAsyncLifetime
         foreach (var node in new[] { a, b })
         {
             rowsBefore[node.Name] = await CountChannelRowsAsync(node, "before the rollback", ct);
-            var preSp1 = await RollBackToPreSp1Async(node, ct);
-            await AssertPreSp1SchemaAsync(node, preSp1, ct);
-            Assert.Equal(rowsBefore[node.Name], await CountChannelRowsAsync(node, "at the pre-sp1 schema", ct));
+            var target = await RollBackAsync(node, rollbackTarget, ct);
+            await AssertOldSchemaAsync(node, target, ct);
+            Assert.Equal(rowsBefore[node.Name], await CountChannelRowsAsync(node, $"at {target}", ct));
         }
 
         SqliteConnection.ClearAllPools();
@@ -169,38 +196,46 @@ public sealed class Day0UpgradeInPlaceTests : IAsyncLifetime
         await Day0Harness.BackupAsync(b, lockedB, "upgrade splice", ct);
     }
 
-    private async Task<NLightningTestNode> CreateNodeAsync(string name, CancellationToken ct)
+    private async Task<NLightningTestNode> CreateNodeAsync(string name, bool legacyChannel, CancellationToken ct)
     {
         var node = await NLightningTestNode.CreateAsync(_fixture, name);
         _nodes.Add(node);
-        Day0Harness.UsePreSp1Features(node);
+        Day0Harness.UsePreSp1Features(node, legacyChannel);
         await node.StartAsync(ct);
         return node;
     }
 
     /// <summary>
-    /// Rolls <paramref name="node"/>'s (stopped) SQLite database back to the migration before
-    /// <c>AddSpliceFundings</c>; returns that migration's id.
+    /// Rolls <paramref name="node"/>'s (stopped) SQLite database back to the migration whose id ends with
+    /// <paramref name="targetSuffix"/> (one before <c>AddSpliceFundings</c>); returns that migration's id.
     /// </summary>
-    private static async Task<string> RollBackToPreSp1Async(NLightningTestNode node, CancellationToken ct)
+    private static async Task<string> RollBackAsync(NLightningTestNode node, string targetSuffix,
+                                                    CancellationToken ct)
     {
         await using var context = CreateContext(node);
         var migrations = context.Database.GetMigrations().ToList();
         var spliceFundings = migrations.Single(m => m.EndsWith(SpliceFundingsMigration, StringComparison.Ordinal));
-        var preSp1 = migrations[migrations.IndexOf(spliceFundings) - 1];
-        Console.WriteLine($"[upgrade] {node.Name}: rolling {node.DatabaseFilePath} back to {preSp1}");
-        await context.GetService<IMigrator>().MigrateAsync(preSp1, ct);
-        return preSp1;
+        var target = migrations.Single(m => m.EndsWith(targetSuffix, StringComparison.Ordinal));
+        Assert.True(migrations.IndexOf(target) < migrations.IndexOf(spliceFundings),
+                    $"{target} is not older than {spliceFundings}");
+        Console.WriteLine($"[upgrade] {node.Name}: rolling {node.DatabaseFilePath} back to {target} "
+                        + $"({migrations.Count - migrations.IndexOf(target) - 1} migration(s) to undo)");
+        await context.GetService<IMigrator>().MigrateAsync(target, ct);
+        return target;
     }
 
-    /// <summary>The database is at <paramref name="preSp1"/> and has none of <c>AddSpliceFundings</c>' schema.</summary>
-    private static async Task AssertPreSp1SchemaAsync(NLightningTestNode node, string preSp1, CancellationToken ct)
+    /// <summary>
+    /// The database is at <paramref name="target"/>: every later migration is pending, and it has none of
+    /// <c>AddSpliceFundings</c>' schema.
+    /// </summary>
+    private static async Task AssertOldSchemaAsync(NLightningTestNode node, string target, CancellationToken ct)
     {
         await using var context = CreateContext(node);
         var applied = (await context.Database.GetAppliedMigrationsAsync(ct)).ToList();
-        Assert.Equal(preSp1, applied[^1]);
-        Assert.Contains(await context.Database.GetPendingMigrationsAsync(ct),
-                        m => m.EndsWith(SpliceFundingsMigration, StringComparison.Ordinal));
+        Assert.Equal(target, applied[^1]);
+        var migrations = context.Database.GetMigrations().ToList();
+        Assert.Equal(migrations.Skip(migrations.IndexOf(target) + 1),
+                     await context.Database.GetPendingMigrationsAsync(ct));
         Assert.Equal(0, await CountAsync(context,
                                          "SELECT COUNT(*) AS \"Value\" FROM sqlite_master WHERE type = 'table' "
                                        + "AND name = 'ChannelFundings'", ct));
