@@ -116,6 +116,18 @@ public interface IPeerService : IDisposable
     Task SendPeerStorageMessageAsync(IMessage message);
 
     /// <summary>
+    /// Sends a BOLT 4 <c>onion_message</c> (type 513) to the peer, which must have negotiated
+    /// <c>option_onion_messages</c>.
+    /// </summary>
+    /// <param name="message">The onion message.</param>
+    /// <param name="cancellationToken">Stops the send.</param>
+    /// <returns>A task that represents the asynchronous operation.</returns>
+    /// <exception cref="NotSupportedException">The connection does not implement onion messages (the default).
+    /// </exception>
+    Task SendOnionMessageAsync(OnionMessageMessage message, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This peer connection does not send onion messages");
+
+    /// <summary>
     /// Sends a warning message to the peer.
     /// </summary>
     /// <param name="we">The warning exception containing the warning message to be sent to the peer.</param>

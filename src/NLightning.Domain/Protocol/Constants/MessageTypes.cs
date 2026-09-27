@@ -71,7 +71,13 @@ public enum MessageTypes : ushort
     ReplyShortChannelIdsEnd = 262,
     QueryChannelRange = 263,
     ReplyChannelRange = 264,
-    GossipTimestampFilter = 265
+    GossipTimestampFilter = 265,
+
+    #endregion
+
+    #region Onion Messages
+
+    OnionMessage = 513
 
     #endregion
 }
