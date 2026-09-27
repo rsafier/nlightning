@@ -8,6 +8,7 @@ namespace NLightning.Infrastructure.Bitcoin.Offers;
 using Domain.Crypto.Constants;
 using Domain.Offers.Constants;
 using Domain.Offers.Enums;
+using Infrastructure.Crypto.Factories;
 
 /// <summary>
 /// The BOLT 12 tagged hash ("Signature Calculation"): <c>H(tag, msg) = SHA256(SHA256(tag) || SHA256(tag) || msg)</c>,
@@ -15,9 +16,7 @@ using Domain.Offers.Enums;
 /// </summary>
 internal static class Bolt12TaggedHash
 {
-    // BIP-340 auxiliary randomness: 32 zero bytes, as CLN (libsecp256k1 with no aux data), so a signature is
-    // deterministic and reproduces the BOLT 12 signature-test.json vector
-    private static readonly ReadOnlyMemory<byte> s_zeroAuxRandomness = new byte[32];
+    private const int AuxRandomnessLen = 32;
 
     /// <summary>
     /// <c>SHA256(SHA256(tag) || SHA256(tag) || msg)</c>, with the tag as UTF-8.
@@ -59,13 +58,41 @@ internal static class Bolt12TaggedHash
     };
 
     /// <summary>
-    /// The BIP-340 signature of <c>H(tag, merkleRoot)</c> by <paramref name="key"/>, with 32 zero bytes of auxiliary
-    /// randomness (deterministic, as CLN). Checks nothing: the signer checks the tag before it calls this.
+    /// The BIP-340 signature of <c>H(tag, merkleRoot)</c> by <paramref name="key"/>, with 32 bytes of fresh auxiliary
+    /// randomness from the crypto provider (BIP-340's recommended side-channel hardening, NL-455). Checks nothing: the
+    /// signer checks the tag before it calls this.
     /// </summary>
     public static byte[] SignBip340(ECPrivKey key, string tag, ReadOnlySpan<byte> merkleRoot)
     {
+        var auxRandomness = new byte[AuxRandomnessLen];
+        try
+        {
+            using (var cryptoProvider = CryptoFactory.GetCryptoProvider())
+                cryptoProvider.RandomBytes(auxRandomness);
+
+            return SignBip340(key, tag, merkleRoot, auxRandomness);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(auxRandomness);
+        }
+    }
+
+    /// <summary>
+    /// The BIP-340 signature of <c>H(tag, merkleRoot)</c> by <paramref name="key"/> with the given 32 bytes of
+    /// auxiliary randomness. 32 zero bytes give CLN's deterministic signature (libsecp256k1 with no aux data), which
+    /// reproduces the BOLT 12 signature-test.json vector; production signing uses the overload with fresh randomness.
+    /// </summary>
+    internal static byte[] SignBip340(ECPrivKey key, string tag, ReadOnlySpan<byte> merkleRoot,
+                                      byte[] auxRandomness)
+    {
+        ArgumentNullException.ThrowIfNull(auxRandomness);
+        if (auxRandomness.Length != AuxRandomnessLen)
+            throw new ArgumentException($"BIP-340 aux randomness must be {AuxRandomnessLen} bytes.",
+                                        nameof(auxRandomness));
+
         var digest = Compute(tag, merkleRoot);
-        var signature = key.SignBIP340(digest, s_zeroAuxRandomness);
+        var signature = key.SignBIP340(digest, auxRandomness);
         var bytes = new byte[CryptoConstants.MaxSignatureSize];
         signature.WriteToSpan(bytes);
         return bytes;

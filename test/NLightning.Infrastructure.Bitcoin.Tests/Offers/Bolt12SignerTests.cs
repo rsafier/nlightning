@@ -74,19 +74,60 @@ public class Bolt12SignerTests
     [Fact]
     public void Given_SignatureTestVector_When_SignedWithTheVectorKey_Then_SignatureBytesEqualVector()
     {
-        // Arrange: the vector signs deterministically (BIP-340 with 32 zero bytes of aux randomness, as CLN). This is
-        // the BIP-340 path every key kind of the signer shares; a derived payer key is never 0x42, so the payer
-        // derivation is covered by the formula and sign/verify tests instead
+        // Arrange: the vector signs deterministically (BIP-340 with 32 zero bytes of aux randomness, as CLN); the
+        // production path adds fresh aux randomness (NL-455) and is proven by the test below. This is the BIP-340 path
+        // every key kind of the signer shares; a derived payer key is never 0x42, so the payer derivation is covered by
+        // the formula and sign/verify tests instead
         var vector = SignatureVector.Load();
         Assert.True(NLightningCryptoContext.Instance.TryCreateECPrivKey(s_bobKey, out var bobKey));
 
         // Act
         byte[] signature;
         using (bobKey)
-            signature = Bolt12TaggedHash.SignBip340(bobKey!, vector.Tag, (byte[])vector.MerkleRoot);
+            signature = Bolt12TaggedHash.SignBip340(bobKey!, vector.Tag, (byte[])vector.MerkleRoot, new byte[32]);
 
         // Assert
         Assert.Equal(vector.Signature, signature);
+    }
+
+    [Fact]
+    public void Given_SignatureTestVectorKey_When_SignedForProduction_Then_FreshAuxRandomnessAndStillValid()
+    {
+        // Arrange: NL-455, production signatures use fresh BIP-340 aux randomness, so two signatures of the same root
+        // differ from each other and from the deterministic zero-aux vector, and both verify under the payer id
+        var vector = SignatureVector.Load();
+        var bolt12Signer = new Bolt12Signer(CreateSigner(s_bobKey));
+        Assert.True(NLightningCryptoContext.Instance.TryCreateECPrivKey(s_bobKey, out var bobKey));
+
+        // Act
+        byte[] first, second;
+        using (bobKey)
+        {
+            first = Bolt12TaggedHash.SignBip340(bobKey!, vector.Tag, (byte[])vector.MerkleRoot);
+            second = Bolt12TaggedHash.SignBip340(bobKey!, vector.Tag, (byte[])vector.MerkleRoot);
+        }
+
+        // Assert
+        Assert.NotEqual(first, second);
+        Assert.NotEqual(vector.Signature, first);
+        Assert.True(bolt12Signer.Verify(vector.Tag, vector.MerkleRoot, s_bobId, first));
+        Assert.True(bolt12Signer.Verify(vector.Tag, vector.MerkleRoot, s_bobId, second));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(31)]
+    [InlineData(33)]
+    public void Given_AuxRandomnessOfWrongLength_When_Signed_Then_Throws(int length)
+    {
+        // Arrange
+        Assert.True(NLightningCryptoContext.Instance.TryCreateECPrivKey(s_bobKey, out var bobKey));
+
+        // Act & Assert
+        using (bobKey)
+            Assert.Throws<ArgumentException>(() => Bolt12TaggedHash.SignBip340(
+                                                 bobKey!, Bolt12Constants.InvoiceSignatureTag, (byte[])s_someRoot,
+                                                 new byte[length]));
     }
 
     [Fact]
@@ -164,7 +205,11 @@ public class Bolt12SignerTests
         Assert.Equal(64, signature.Length);
         Assert.True(bolt12Signer.Verify(Bolt12Constants.InvoiceSignatureTag, s_someRoot, signer.GetNodePublicKey(),
                                         signature));
-        Assert.Equal(signature, bolt12Signer.SignAsNode(Bolt12Constants.InvoiceSignatureTag, s_someRoot));
+        // NL-455: fresh BIP-340 aux randomness, so the same root signs differently every time, and still verifies
+        var again = bolt12Signer.SignAsNode(Bolt12Constants.InvoiceSignatureTag, s_someRoot);
+        Assert.NotEqual(signature, again);
+        Assert.True(bolt12Signer.Verify(Bolt12Constants.InvoiceSignatureTag, s_someRoot, signer.GetNodePublicKey(),
+                                        again));
     }
 
     [Fact]
@@ -307,10 +352,11 @@ public class Bolt12SignerTests
         Assert.True(NLightningCryptoContext.Instance.TryCreateECPrivKey(s_eveBlindedKey, out var expected));
         using (expected)
         {
-            var expectedSignature = new byte[64];
-            expected!.SignBIP340(Bolt12TaggedHash.Compute(tag, (byte[])s_someRoot), new byte[32])
-                     .WriteToSpan(expectedSignature);
-            Assert.Equal(expectedSignature, signature);
+            // The signing key is the vector's blinded private key: its x-only public key verifies the signature (the
+            // bytes differ from a zero-aux signature since NL-455)
+            Assert.True(NBitcoin.Secp256k1.SecpSchnorrSignature.TryCreate(signature, out var schnorr));
+            Assert.True(expected!.CreateXOnlyPubKey()
+                                 .SigVerifyBIP340(schnorr!, Bolt12TaggedHash.Compute(tag, (byte[])s_someRoot)));
         }
     }
 
