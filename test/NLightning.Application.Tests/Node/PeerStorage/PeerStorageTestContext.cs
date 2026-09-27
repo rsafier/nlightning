@@ -132,10 +132,21 @@ internal sealed class InMemoryPeerStorageDbRepository : IPeerStorageDbRepository
 
     public Task<StoredPeerBlob?> GetAsync(CompactPubKey peerNodeId) => Task.FromResult(GetSaved(peerNodeId));
 
+    /// <summary>The next loads of every row fail.</summary>
+    public int FailNextLoads { get; set; }
+
     public Task<IReadOnlyList<StoredPeerBlob>> GetAllAsync()
     {
         lock (_lock)
+        {
+            if (FailNextLoads > 0)
+            {
+                FailNextLoads--;
+                throw new InvalidOperationException("Simulated load failure");
+            }
+
             return Task.FromResult<IReadOnlyList<StoredPeerBlob>>(_saved.Values.ToList());
+        }
     }
 
     public Task UpsertAsync(StoredPeerBlob blob)
