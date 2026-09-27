@@ -167,6 +167,53 @@ public class MessageServiceTests
     }
 
     [Fact]
+    public void Given_MalformedOnionMessage_When_Received_Then_IgnoredWithoutWarningCountedAndConnectionKept()
+    {
+        // Arrange: NL-444, a 513 whose len is below 66 fails in the payload serializer; BOLT 4 ignores an unusable
+        // onion message and 513 is odd, so no warning and no close, only the dropped{reason=malformed} count
+        var transportServiceMock = new Mock<ITransportService>();
+        transportServiceMock.Setup(t => t.IsConnected).Returns(true);
+        _messageSerializerMock.Setup(m => m.DeserializeMessageAsync(It.IsAny<Stream>()))
+                              .ThrowsAsync(new MessageSerializationException(
+                                               "Error deserializing message",
+                                               new PayloadSerializationException(
+                                                   "Error deserializing OnionMessagePayload",
+                                                   new System.Runtime.Serialization.SerializationException(
+                                                       "onion_message_packet len 10 is below 66"))));
+        var messageService = new MessageService(new Mock<ILogger<MessageService>>().Object,
+                                                _messageSerializerMock.Object, transportServiceMock.Object);
+        messageService.OnMessageReceived += (_, _) => { };
+        Exception? raisedException = null;
+        messageService.OnExceptionRaised += (_, e) => raisedException = e;
+        long malformedDrops = 0;
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (instrument.Meter.Name == "NLightning.OnionMessages"
+             && instrument.Name == "nlightning.onion_messages.dropped")
+                l.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
+        {
+            foreach (var tag in tags)
+                if (tag is { Key: "reason", Value: MessageService.MalformedOnionMessageDropReason })
+                    Interlocked.Add(ref malformedDrops, value);
+        });
+        listener.Start();
+        var bytes = new byte[] { 0x02, 0x01, 0x00, 0x0a };
+
+        // Act
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream(bytes));
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream(bytes));
+
+        // Assert
+        transportServiceMock.Verify(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()),
+                                    Times.Never());
+        Assert.Null(raisedException);
+        Assert.True(Interlocked.Read(ref malformedDrops) >= 2);
+    }
+
+    [Fact]
     public void Given_MalformedChannelMessage_When_Received_Then_StillWarnsAndCloses()
     {
         // Arrange: only the gossip broadcasts are ignored; a malformed update_add_htlc (128) still closes

@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Infrastructure.Protocol.Services;
@@ -21,6 +22,18 @@ using Exceptions;
 /// <seealso cref="IMessageService" />
 internal sealed class MessageService : IMessageService
 {
+    /// <summary>
+    /// The <c>reason</c> tag of a malformed <c>onion_message</c> on <c>nlightning.onion_messages.dropped</c> (NL-444).
+    /// </summary>
+    internal const string MalformedOnionMessageDropReason = "malformed";
+
+    // The onion-message meter of the Application's OnionMessageMetrics (same meter and instrument names), so a
+    // listener or exporter sees the malformed drops, which never reach the onion-message service, with the others
+    private static readonly Meter s_onionMessageMeter = new("NLightning.OnionMessages");
+
+    private static readonly Counter<long> s_onionMessagesDropped =
+        s_onionMessageMeter.CreateCounter<long>("nlightning.onion_messages.dropped");
+
     private readonly ILogger<IMessageService> _logger;
     private readonly IMessageSerializer _messageSerializer;
     private readonly ITransportService? _transportService;
@@ -28,6 +41,7 @@ internal sealed class MessageService : IMessageService
     private volatile bool _disposed;
     private readonly object _disposeLock = new();
     private long _malformedGossipCount;
+    private long _malformedOnionMessageCount;
 
     private EventHandler<IMessage?>? _onMessageReceived;
     private bool _listening;
@@ -168,6 +182,8 @@ internal sealed class MessageService : IMessageService
 
         if (messageType is { } type && IsGossipBroadcast(type))
             HandleMalformedGossip(type, malformedMessageException);
+        else if (messageType == (ushort)MessageTypes.OnionMessage)
+            HandleMalformedOnionMessage(malformedMessageException);
         else
             HandleMalformedMessage(malformedMessageException);
     }
@@ -215,6 +231,28 @@ internal sealed class MessageService : IMessageService
         if (count == 1)
             SendMessageAsync(new WarningMessage(new ErrorPayload($"Ignoring malformed gossip message {type}: "
                                                                + reason))).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// An <c>onion_message</c> (513) we could not parse (a <c>len</c> below 66, a key without a 02/03 prefix, a
+    /// truncated packet) is ignored and the connection kept, with no <c>warning</c> (NL-444). BOLT 4 has a reader
+    /// ignore every onion message it cannot use and never answer one, and 513 is odd (BOLT 1: odd types may be
+    /// ignored), so the BOLT 1 option to warn and close is not taken: with onion messages advertised any peer could
+    /// otherwise make us drop its connection. Counted on <c>nlightning.onion_messages.dropped</c> with
+    /// <c>reason</c> = <see cref="MalformedOnionMessageDropReason"/>; logged at Information on the first one of the
+    /// connection and every 1,000th, at Debug otherwise.
+    /// </summary>
+    private void HandleMalformedOnionMessage(Exception exception)
+    {
+        s_onionMessagesDropped.Add(1, new KeyValuePair<string, object?>("reason", MalformedOnionMessageDropReason));
+        var count = Interlocked.Increment(ref _malformedOnionMessageCount);
+        var reason = exception.InnerException?.InnerException?.Message ?? exception.InnerException?.Message
+                  ?? exception.Message;
+        if (count == 1 || count % 1_000 == 0)
+            _logger.LogInformation("Ignoring malformed onion_message from the peer ({Count} so far on this "
+                                 + "connection): {Reason}", count, reason);
+        else
+            _logger.LogDebug("Ignoring malformed onion_message: {Reason}", reason);
     }
 
     /// <summary>
