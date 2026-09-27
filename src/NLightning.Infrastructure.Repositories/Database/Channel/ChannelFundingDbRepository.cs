@@ -238,7 +238,7 @@ public class ChannelFundingDbRepository : IChannelFundingDbRepository
         return entity;
     }
 
-    private static void CopyFields(ChannelFunding funding, ChannelFundingEntity entity)
+    internal static void CopyFields(ChannelFunding funding, ChannelFundingEntity entity)
     {
         entity.OutputIndex = funding.OutputIndex;
         entity.CapacitySatoshis = checked((long)funding.CapacitySatoshis);

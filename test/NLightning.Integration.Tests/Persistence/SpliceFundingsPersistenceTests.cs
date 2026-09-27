@@ -69,6 +69,42 @@ public class SpliceFundingsPersistenceTests
     }
 
     [Fact]
+    public async Task Given_AFundingOutputWithOtherKeysThanTheKeySets_When_SavedAndConfirmed_Then_TheKeySetsStayAuthoritative()
+    {
+        // Arrange (regression, lane SP1-C: the initial funding row once took the model's FundingOutput keys, and a
+        // reload that preferred them broke the commitment signatures of channels whose FundingOutput keys differ from
+        // their key sets): the initial funding row and the reload follow the key sets, and the row follows the SCID
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channel = SqliteDbTestContext.CreateChannel(true, state: Domain.Channels.Enums.ChannelState.V1FundingSigned);
+        channel.FundingOutput!.RemoteFundingPubKey = s_spliceRemoteKey;
+        await using (var context = db.CreateDbContext())
+        {
+            await new ChannelDbRepository(context, db.Sha256).AddAsync(channel);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Act
+        channel.ShortChannelId = new ShortChannelId(800_001, 2, 1);
+        await using (var context = db.CreateDbContext())
+        {
+            await new ChannelDbRepository(context, db.Sha256).UpdateAsync(channel);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Assert
+        await using var readContext = db.CreateDbContext();
+        var reloaded = await new ChannelDbRepository(readContext, db.Sha256).GetByIdAsync(channel.ChannelId);
+        Assert.Equal(SqliteDbTestContext.RemoteFundingPubKey, reloaded!.FundingOutput!.RemoteFundingPubKey);
+        var funding = Assert.Single(await new ChannelFundingDbRepository(readContext)
+                                       .GetByChannelIdAsync(channel.ChannelId));
+        Assert.Equal(SqliteDbTestContext.RemoteFundingPubKey, funding.RemoteFundingPubKey);
+        Assert.Equal(SqliteDbTestContext.LocalFundingPubKey, funding.LocalFundingPubKey);
+        Assert.Equal(new ShortChannelId(800_001, 2, 1), funding.ShortChannelId);
+        var info = await new ChannelSigningInfoDbRepository(readContext).GetAsync(channel.ChannelId);
+        Assert.Equal(SqliteDbTestContext.RemoteFundingPubKey, info!.Value.RemoteFundingPubKey);
+    }
+
+    [Fact]
     public async Task Given_PendingSpliceCommitments_When_Saved_Then_TheyReloadPerFundingAndTheStateMachineIsUnchanged()
     {
         // Arrange
