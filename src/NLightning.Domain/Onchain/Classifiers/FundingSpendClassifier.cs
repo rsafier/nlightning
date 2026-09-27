@@ -112,8 +112,46 @@ public static class FundingSpendClassifier
     /// </summary>
     /// <param name="spender">The transaction.</param>
     /// <param name="contexts">One context per funding of the channel, each with that funding's commitments.</param>
-    public static FundingSpendMatch? ClassifyAny(ChainTx spender, IReadOnlyList<FundingSpendContext> contexts) =>
-        throw new NotImplementedException("Lane SP2-C (SP2-C-T1)");
+    /// <remarks>
+    /// The contexts are tried in order and the first one whose funding outpoint an input spends decides (a transaction
+    /// spends at most one funding output of a channel: every funding of a channel spends the one before it, so two of
+    /// them are never unspent together in the same chain). A splice spender carries no commitment number and counts as
+    /// matched. Everything else is <see cref="Classify"/> against that context alone: its commitments, not those of
+    /// another funding (splicing plan §3.6), so a revoked commitment of a retired funding is judged by the numbers of
+    /// the channel (shared by every funding, SP-I3) and punished with that funding's data (SP-I5).
+    /// </remarks>
+    public static FundingSpendMatch? ClassifyAny(ChainTx spender, IReadOnlyList<FundingSpendContext> contexts)
+    {
+        ArgumentNullException.ThrowIfNull(spender);
+        ArgumentNullException.ThrowIfNull(contexts);
+
+        foreach (var context in contexts)
+        {
+            if (context is null || !SpendsFunding(spender, context))
+                continue;
+
+            if (context.SpliceTxIds is { } spliceTxIds && spliceTxIds.Contains(spender.TxId))
+                return new FundingSpendMatch(context,
+                                             new FundingSpendClassification(FundingSpendKind.Splice, null, true,
+                                                                            "A splice transaction of the channel"));
+
+            return new FundingSpendMatch(context, Classify(spender, context));
+        }
+
+        return null;
+    }
+
+    private static bool SpendsFunding(ChainTx spender, FundingSpendContext context)
+    {
+        foreach (var input in spender.Inputs ?? [])
+        {
+            if (input is not null && input.PreviousVout == context.FundingOutputIndex
+                                  && input.PreviousTxId == context.FundingTxId)
+                return true;
+        }
+
+        return false;
+    }
 
     private static bool Matches(CommitmentCandidate? candidate, ChainTx spender) =>
         candidate is { } c && c.TxId == spender.TxId;
