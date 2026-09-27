@@ -118,6 +118,141 @@ public class DualFundHarnessTests
                      harness.Bob.Channel(channelId).LocalBalance);
     }
 
+    [Fact]
+    public async Task Given_AnUnconfirmedOpen_When_AliceBumpsItWithRbf_Then_TheReplacementConfirmsAndCarriesPayments()
+    {
+        // Arrange
+        await using var harness = await DualFundHarness.CreateAsync(BobShareSat);
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Bob.Wallet.Utxos.Add(WalletUtxo.Create(700_000));
+        var first = await OpenAsync(harness);
+        Assert.True(first.FailureReason is null, $"{first.FailureReason}\n{harness.Describe()}");
+        var channelId = first.ChannelId;
+
+        // Act: the IT-RBF-01 floor is max(25/24 x 2,500, 2,500 + 25) = 2,604 sat/kw
+        var belowFloor = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.Alice.DualFund.BumpAsync(channelId, 2_600, TestContext.Current.CancellationToken));
+        var bump = await harness.RunAsync(harness.Alice.DualFund.BumpAsync(channelId, 5_000,
+                                                                           TestContext.Current.CancellationToken));
+
+        // Assert: a new funding transaction that re-spends the first one's inputs, the same shares
+        Assert.Contains("IT-RBF-01", belowFloor.Message);
+        Assert.True(bump.FailureReason is null, $"{bump.FailureReason}\n{harness.Describe()}");
+        Assert.NotEqual(first.FundingTxId, bump.FundingTxId);
+        Assert.Contains(harness.Transcript, t => t is { From: "Alice", Message: TxInitRbfMessage });
+        Assert.Contains(harness.Transcript, t => t is { From: "Bob", Message: TxAckRbfMessage });
+        foreach (var node in harness.Nodes)
+        {
+            Assert.Equal([first.FundingTxId!.Value, bump.FundingTxId!.Value],
+                         node.DualFund.GetSignedFundingTxIds(channelId));
+            Assert.Equal(bump.FundingTxId, node.Channel(channelId).FundingOutput!.TransactionId);
+            var sessions = await node.InScopeAsync(u => u.InteractiveTxSessionDbRepository
+                                                          .GetByChannelIdAsync(channelId));
+            Assert.Equal(2, sessions.Count(x => x.State == InteractiveTxSessionState.Signed));
+            Assert.Contains(sessions, x => x.Purpose == InteractiveTxPurpose.DualFundRbf && x.FeeratePerKw == 5_000);
+            var inputs = sessions.Select(x => x.ConstructedTx!.Inputs.Select(i => (i.PrevTxId, i.PrevTxVout))
+                                               .ToHashSet())
+                                 .ToList();
+            Assert.True(inputs[0].Overlaps(inputs[1]), "The replacement must double-spend the first attempt");
+
+            // The first attempt is no longer sent after every block
+            var broadcasts = await node.InScopeAsync(u => u.BroadcastTransactionDbRepository
+                                                            .GetByChannelIdAsync(channelId));
+            Assert.Equal(BroadcastState.Replaced,
+                         Assert.Single(broadcasts, b => b.TransactionId == first.FundingTxId).State);
+            Assert.Equal(BroadcastState.Pending,
+                         Assert.Single(broadcasts, b => b.TransactionId == bump.FundingTxId).State);
+        }
+
+        // Act: the replacement confirms, then a payment
+        await harness.ConfirmFundingAsync(channelId, bump.FundingTxId!.Value);
+        await harness.Alice.PayAsync(harness.Bob, channelId, LightningMoney.Satoshis(10_000));
+        await harness.PumpAsync();
+
+        // Assert
+        Assert.Equal(ChannelState.Open, harness.Alice.Channel(channelId).State);
+        Assert.Equal(ChannelState.Open, harness.Bob.Channel(channelId).State);
+        Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
+    }
+
+    [Fact]
+    public async Task Given_TheLinkDropsBeforeTheSecondCommitmentSigned_When_ANodeRestarts_Then_NextFundingFinishesIt()
+    {
+        // Arrange: stop right before the second commitment_signed is delivered (both sent theirs and stored them)
+        await using var harness = await DualFundHarness.CreateAsync(BobShareSat);
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Bob.Wallet.Utxos.Add(WalletUtxo.Create(700_000));
+        _ = harness.Alice.DualFund.OpenAsync(new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare, 2_500),
+                                             TestContext.Current.CancellationToken);
+        var commitments = 0;
+        await harness.PumpAsync((_, message) => message is CommitmentSignedMessage && ++commitments == 2);
+        var channelId = harness.Transcript.First(t => t.Message is CommitmentSignedMessage).Message.Payload.ChannelId;
+        var receiver = harness.Transcript.First(t => t.Message is CommitmentSignedMessage).From == "Alice"
+                           ? harness.Alice
+                           : harness.Bob;
+
+        // Act: the link drops, the node whose peer's commitment_signed was lost restarts from its database, reconnect
+        await harness.RestartAsync(receiver);
+        await harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert: its channel_reestablish asked for the commitment_signed again (next_funding, bit 0), and the open
+        // completed on both sides with one funding transaction
+        var askedAgain = harness.Transcript.Where(t => t.From == receiver.Name
+                                                    && t.Message is ChannelReestablishMessage)
+                                .Select(t => ((ChannelReestablishMessage)t.Message).NextFundingTlv)
+                                .Single();
+        Assert.NotNull(askedAgain);
+        Assert.Equal(1, askedAgain.RetransmitFlags & 1);
+        foreach (var node in harness.Nodes)
+        {
+            var sessions = await node.InScopeAsync(u => u.InteractiveTxSessionDbRepository
+                                                          .GetByChannelIdAsync(channelId));
+            Assert.True(Assert.Single(sessions).State == InteractiveTxSessionState.Signed, harness.Describe());
+            Assert.Single(node.Published);
+        }
+
+        Assert.Equal(harness.Alice.Published[0].TransactionId, harness.Bob.Published[0].TransactionId);
+    }
+
+    [Fact]
+    public async Task Given_TheLinkDropsBeforeTheFirstTxSignatures_When_TheOpenerRestarts_Then_TheyAreRetransmitted()
+    {
+        // Arrange: Bob contributes less, so he sends tx_signatures first (IT-SIG-01); stop before it arrives
+        await using var harness = await DualFundHarness.CreateAsync(BobShareSat);
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Bob.Wallet.Utxos.Add(WalletUtxo.Create(700_000));
+        _ = harness.Alice.DualFund.OpenAsync(new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare, 2_500),
+                                             TestContext.Current.CancellationToken);
+        await harness.PumpAsync((_, message) => message is TxSignaturesMessage);
+        var channelId = harness.Transcript.First(t => t.Message is CommitmentSignedMessage).Message.Payload.ChannelId;
+
+        // Act: Alice restarts (her driver's memory is gone), reconnect
+        await harness.RestartAsync(harness.Alice);
+        await harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert: both channel_reestablish carry next_funding without the commitment_signed bit, Bob sent his
+        // tx_signatures again and the open completed on both sides
+        var reestablishes = harness.Transcript.Where(t => t.Message is ChannelReestablishMessage)
+                                   .Select(t => ((ChannelReestablishMessage)t.Message).NextFundingTlv)
+                                   .ToList();
+        Assert.Equal(2, reestablishes.Count);
+        Assert.All(reestablishes, tlv => Assert.Equal(0, tlv!.RetransmitFlags));
+        Assert.Contains(harness.Transcript, t => t is { From: "Bob", Message: TxSignaturesMessage });
+        foreach (var node in harness.Nodes)
+        {
+            var sessions = await node.InScopeAsync(u => u.InteractiveTxSessionDbRepository
+                                                          .GetByChannelIdAsync(channelId));
+            Assert.True(Assert.Single(sessions).State == InteractiveTxSessionState.Signed, harness.Describe());
+        }
+
+        // And the channel opens once the funding confirms
+        await harness.ConfirmFundingAsync(channelId, harness.Bob.Published[0].TransactionId);
+        Assert.Equal(ChannelState.Open, harness.Alice.Channel(channelId).State);
+        Assert.Equal(ChannelState.Open, harness.Bob.Channel(channelId).State);
+    }
+
     private static async Task<DualFundedOpenResult> OpenAsync(DualFundHarness harness, uint feeratePerKw = 2_500)
     {
         var open = harness.Alice.DualFund.OpenAsync(
