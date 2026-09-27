@@ -38,6 +38,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 using InteractiveTx.Interfaces;
 using Interfaces;
 using Onchain.Interfaces;
+using Quiescence;
 using Reestablish;
 using Safety;
 using Safety.Interfaces;
@@ -636,6 +637,11 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// <inheritdoc />
     public async Task OnPeerDisconnectedAsync(CompactPubKey peerPubKey)
     {
+        // BOLT 2 quiescence (Q-R-04, NL-470): on disconnection the channels of the peer are no longer quiescent, also
+        // those whose quiescence was not bound to a connection (requested while the peer was away, or without a peer
+        // manager); a dependent protocol waiting for its quiescence learns it through the service
+        _serviceProvider.GetService<IQuiescenceService>()?.OnPeerDisconnected(peerPubKey);
+
         foreach (var channel in GetPeerChannels(peerPubKey))
         {
             if (channel.Commitments is null)
@@ -715,6 +721,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         _serviceProvider.GetService<IPeerLivenessProbe>()?.MarkLinkUp(channelId, peerPubKey);
         if (channel.Commitments is not null)
             await QueuePendingDomainEventsAsync(scope, channel);
+
+        // A stfu owed on this connection (a quiescence requested before the reestablish, NL-470) may go out now: the
+        // release runs after this lock, behind the reestablish's replies
+        _serviceProvider.GetService<IStfuReleaseScheduler>()?.ScheduleRelease(channelId);
 
         _logger.LogInformation("Channel {ChannelId} reestablished with peer {Peer}", channelId, peerPubKey);
         return true;

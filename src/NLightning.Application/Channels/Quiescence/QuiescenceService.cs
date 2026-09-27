@@ -70,6 +70,15 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
 
     private LinkUpEventReplayer? _ownReplayer;
 
+    /// <summary>
+    /// Raised once per quiescence when it ends, with the reason (<see cref="QuiescenceEndReason.Disconnected"/> also for
+    /// a connection that closed or was replaced, <see cref="QuiescenceEndReason.Timeout"/> when it timed out). Raised
+    /// synchronously: under the channel's lock when <see cref="Terminate"/> or a request cancellation ended it, without
+    /// it on a disconnection. Dependent protocols (a splice waiting for its quiescence or its <c>splice_ack</c>) use it
+    /// to learn that their negotiation is over (NL-470); a handler must not take the channel's lock nor throw.
+    /// </summary>
+    public event EventHandler<QuiescenceEndedEventArgs>? QuiescenceEnded;
+
     public QuiescenceService(IChannelLockProvider channelLockProvider, IChannelMemoryRepository channelMemoryRepository,
                              ILogger<QuiescenceService> logger, IMessageFactory messageFactory,
                              IServiceProvider serviceProvider, IOptions<NodeOptions>? nodeOptions = null,
@@ -492,7 +501,7 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
     private Entry CreateEntry(ChannelModel channel, QuiescenceState state, bool withWaiter)
     {
         var peer = GetPeerManager()?.GetPeer(channel.RemoteNodeId);
-        var entry = new Entry(channel.RemoteNodeId, peer, _timeProvider.GetUtcNow())
+        var entry = new Entry(channel.ChannelId, channel.RemoteNodeId, peer, _timeProvider.GetUtcNow())
         {
             State = state,
             Negotiated = IsNegotiatedWith(channel.RemoteNodeId),
@@ -547,6 +556,15 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
                                Describe(entry.State));
         entry.Waiter?.TrySetException(new InvalidOperationException(
                                           $"The quiescence ended ({reason}) before the channel became quiescent"));
+
+        try
+        {
+            QuiescenceEnded?.Invoke(this, new QuiescenceEndedEventArgs(entry.ChannelId, entry.Peer, reason));
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "A handler of the end of the quiescence of channel {ChannelId} failed", entry.ChannelId);
+        }
     }
 
     /// <summary>The live entry of the channel; a stale one (its connection was replaced) is dropped.</summary>
@@ -611,8 +629,10 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
             + $"received {state.StfuReceived}";
 
     /// <summary>One channel's quiescence; mutated under the channel's lock and <see cref="_sync"/>.</summary>
-    private sealed class Entry(CompactPubKey peer, PeerModel? connection, DateTimeOffset createdAt)
+    private sealed class Entry(ChannelId channelId, CompactPubKey peer, PeerModel? connection,
+                               DateTimeOffset createdAt)
     {
+        public ChannelId ChannelId { get; } = channelId;
         public CompactPubKey Peer { get; } = peer;
         public PeerModel? Connection { get; } = connection;
         public DateTimeOffset CreatedAt { get; } = createdAt;
@@ -645,3 +665,10 @@ public sealed record QuiescenceSnapshot(ChannelId ChannelId, CompactPubKey PeerP
     /// </summary>
     public DateTimeOffset? TerminatedAt { get; init; }
 }
+
+/// <summary>A quiescence ended (<see cref="QuiescenceService.QuiescenceEnded"/>).</summary>
+/// <param name="ChannelId">The channel.</param>
+/// <param name="PeerPubKey">Its peer.</param>
+/// <param name="Reason">Why it ended.</param>
+public sealed record QuiescenceEndedEventArgs(ChannelId ChannelId, CompactPubKey PeerPubKey,
+                                              QuiescenceEndReason Reason);
