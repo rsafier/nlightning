@@ -48,6 +48,7 @@ change them. Every High/Medium finding is fixed; step 2 fixed the Low/Info ones 
 | SR-16 | Info | Logs: no log call passes a key, preimage, secret, password, cookie or connection string as an argument (reviewed every `Log*`/Serilog call whose arguments mention them); messages only say that a preimage or secret exists | ok |
 | SR-17 | Low | `PeerServiceFactory` takes a copy of the node private key per connection (`GetNodeKeyPair()`) for the BOLT 8 handshake and never wipes it; the handshake should do its ECDH through `ISecureKeyManager` like the onion peel | open, transport seam |
 | SR-18 | Low | The `.v1.bak` kept after a v1 upgrade (NL-211, for downgrades) is the same key under the weak v1 KDF (fixed salt, 64 KiB): whoever gets the directory attacks that copy, not the v2 file | fixed (cf8c8ae): a stderr notice on every load while the `.v1.bak` exists (`SecureKeyManager.GetWeakBackupWarning`) tells the operator to delete it once a downgrade is no longer needed; the file is never deleted automatically (NL-211 keeps it for downgrades) |
+| SR-19 | Low | SR-04's index write was not fully crash-durable: the temp file was fsynced and renamed over the key file, but the parent directory was never fsynced, so on Linux a power loss after the rename could bring back the old file with a lower `LastUsedIndex` while the channel row using the new index was already committed (database on another disk or host, or a filesystem without one global journal); the next `CreateNewChannel` would then reuse that index's funding key, basepoints and per-commitment seed | partial (this commit): every atomic key-file write fsyncs the parent directory on Unix (failure throws, so the key is not handed out); `SecureKeyManager.EnsureLastUsedChannelIndexAtLeast(uint)` raises (never lowers) and persists the index; open: call it at startup with the highest `ChannelKeyIndex` in the channel tables (seam for the persistence/daemon lane) |
 
 ## Key derivation (NL-159)
 
@@ -73,7 +74,9 @@ wallet key: that needs a new node (close channels, sweep, start fresh), not a fi
   v3 reload (node id, wallet key, descriptor, index); wrong `nodeKeyPath` refused; BIP84 mnemonic vector; NL-212 ANSI
   known-answer (opens and upgrades with the encoder, refused without); `GetSystemAnsiPasswordBytes`; world-readable
   v1 file and its backup end 0600; group bit dropped on an index update; index on file before `GetNextChannelKey`
-  returns; 16 concurrent opens give unique indexes and the highest on file; the stored index is never lowered.
+  returns; 16 concurrent opens give unique indexes and the highest on file; the stored index is never lowered;
+  SR-19: `EnsureLastUsedChannelIndexAtLeast` raises the index past a higher database index and never lowers it, the
+  parent-directory sync succeeds on an existing directory and throws on a missing one (Unix).
 - `Daemon.Tests/Services/Ipc/CookieFileAuthenticatorTests`: the cookie (with a trailing newline) is accepted;
   null, empty, last character changed, prefix and longer tokens are refused; missing and empty cookie files refuse.
 - `Daemon.Tests/Services/Ipc/NamedPipeIpcServiceTests`: a silent client is disconnected after the read timeout (with a
@@ -99,6 +102,9 @@ wallet key: that needs a new node (close channels, sweep, start fresh), not a fi
    only full fix.
 4. `tools/NLightning.GossipProbe/ProbeNode.cs` still creates keys with the legacy constructor (v2 files); fine for a
    probe, but new product code must use `CreateNew`/`FromMnemonic`.
-5. Not reviewed here: Windows named-pipe ACL behaviour end to end (only `CurrentUserOnly` is set), the database file's
+5. SR-19: at startup, read the highest `ChannelKeyIndex` across the channel tables (including closed and forgotten
+   channels) and call `SecureKeyManager.EnsureLastUsedChannelIndexAtLeast` before `PeerManager.StartAsync`; needs a
+   repository query (persistence lane) and one call in the daemon's startup (daemon lane).
+6. Not reviewed here: Windows named-pipe ACL behaviour end to end (only `CurrentUserOnly` is set), the database file's
    own mode when its path is outside the config directory (`Database:ConnectionString` can point anywhere), and
    Serilog sinks configured by the operator outside the config directory.
