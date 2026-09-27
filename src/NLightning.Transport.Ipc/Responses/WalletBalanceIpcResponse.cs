@@ -14,7 +14,7 @@ public sealed class WalletBalanceIpcResponse
     [Key(1)] public required LightningMoney UnconfirmedBalance { get; init; }
 
     /// <summary>The reserve kept for <c>option_anchors</c> channels (NL-379; <c>Node:Anchors</c>).</summary>
-    [Key(2)] public LightningMoney AnchorReserve { get; init; } = LightningMoney.Zero;
+    [Key(2)] public required LightningMoney AnchorReserve { get; init; }
 
     /// <summary>The <c>option_anchors</c> channels the reserve is kept for.</summary>
     [Key(3)] public int AnchorsChannelCount { get; init; }
@@ -23,10 +23,10 @@ public sealed class WalletBalanceIpcResponse
     /// The confirmed balance free to spend (not locked to a funding, reserved for a fee or spent by a pending
     /// broadcast).
     /// </summary>
-    [Key(4)] public LightningMoney AvailableBalance { get; init; } = LightningMoney.Zero;
+    [Key(4)] public required LightningMoney AvailableBalance { get; init; }
 
     /// <summary>
     /// <see cref="AvailableBalance"/> minus <see cref="AnchorReserve"/>: what a channel funding may use.
     /// </summary>
-    [Key(5)] public LightningMoney SpendableBalance { get; init; } = LightningMoney.Zero;
+    [Key(5)] public required LightningMoney SpendableBalance { get; init; }
 }
