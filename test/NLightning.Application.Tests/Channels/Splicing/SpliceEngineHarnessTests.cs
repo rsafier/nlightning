@@ -378,16 +378,18 @@ public class SpliceEngineHarnessTests
             Assert.Equal(fundingTx2, node.Node.State.Params.Funding!.FundingTxId);
         }
 
-        // Any other transaction spending the funding output the channel model still names is handed on as before
-        // (after the lock ChannelModel.FundingOutput stays on FundingTx1: a spend of FundingTx2 is not routed as a
-        // funding spend yet, wave SP2)
+        // The channel model's funding output followed the lock, and any other transaction spending it (a commitment)
+        // is handed to the on-chain watcher as before (the watch of the new outpoint itself is wave SP2)
+        var fundingOutput = harness.Alice.Node.Channel.FundingOutput!;
+        Assert.Equal(fundingTx2, fundingOutput.TransactionId);
+        Assert.Equal(TwoNodeHarness.FundingSatoshis + 100_000, (ulong)fundingOutput.Amount.Satoshi);
         var other = new Domain.Bitcoin.ValueObjects.SignedTransaction(
             new Domain.Bitcoin.ValueObjects.TxId(Enumerable.Repeat((byte)0x42, 32).ToArray()), [0x02, 0x00]);
         harness.Alice.Node.ChainMonitor.Raise(
             m => m.OnWatchedOutpointSpent += null,
             new Domain.Bitcoin.Events.OutpointSpentEventArgs(TwoNodeHarness.ChannelId, other,
-                                                             TwoNodeHarness.BlockHeight + 9, 1, fundingTx1,
-                                                             harness.Alice.Node.Channel.FundingOutput!.Index));
+                                                             TwoNodeHarness.BlockHeight + 9, 1, fundingTx2,
+                                                             fundingOutput.Index));
         for (var i = 0; i < 100 && harness.Alice.FundingSpends.IsEmpty; i++)
             await Task.Delay(10, TestContext.Current.CancellationToken);
         Assert.Single(harness.Alice.FundingSpends);
