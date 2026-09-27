@@ -287,6 +287,13 @@ internal static class ClientApp
                 case "get-channel-policy":
                     await ChannelPolicyCommands.RunAsync(cmd, commandArgs, client, cancellationToken);
                     break;
+                case "splicein":
+                case "splice-in":
+                case "spliceout":
+                case "splice-out":
+                    if (!await SpliceCommands.RunAsync(cmd, commandArgs, client, cancellationToken))
+                        return Failure;
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -477,6 +484,11 @@ internal static class ClientApp
             case "getchannelpolicy":
             case "get-channel-policy":
                 return ChannelPolicyCommands.Validate(cmd, commandArgs);
+            case "splicein":
+            case "splice-in":
+            case "spliceout":
+            case "splice-out":
+                return SpliceCommands.Validate(cmd, commandArgs);
             case "listinvoices":
             case "list-invoices":
             case "listpayments":
