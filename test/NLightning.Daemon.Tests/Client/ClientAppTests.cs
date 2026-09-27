@@ -269,6 +269,29 @@ public class ClientAppTests
     }
 
     [Fact]
+    public void GivenDisconnectArguments_WhenValidatedAndParsed_ThenNodeAndForceInAnyOrder()
+    {
+        // Arrange (NL-152)
+        const string node = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        // Act
+        var plain = ClientApp.ParseDisconnectOptions([node], out var plainError);
+        var forced = ClientApp.ParseDisconnectOptions(["--FORCE", node], out _);
+
+        // Assert
+        Assert.Null(plainError);
+        Assert.Equal(node, Convert.ToHexString((byte[])plain!.Value.NodeId).ToLowerInvariant());
+        Assert.False(plain.Value.Force);
+        Assert.True(forced!.Value.Force);
+        Assert.Null(ClientApp.ValidateArguments("disconnect", [node]));
+        Assert.Null(ClientApp.ValidateArguments("disconnect-peer", [node, "--force"]));
+        Assert.NotNull(ClientApp.ValidateArguments("disconnect", []));
+        Assert.NotNull(ClientApp.ValidateArguments("disconnect", ["--force"]));
+        Assert.NotNull(ClientApp.ValidateArguments("disconnect", ["peer@host:9735"]));
+        Assert.NotNull(ClientApp.ValidateArguments("disconnect", [node, node]));
+    }
+
+    [Fact]
     public void GivenGraphListingArguments_WhenValidatedAndParsed_ThenScidAndNodeInAnyOrder()
     {
         // Arrange
