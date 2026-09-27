@@ -14,7 +14,8 @@ using Services;
 
 /// <summary>
 /// Static channel backups (SCB) in the node: the Application service and monitor, <c>Node:Backup</c>, the client and
-/// IPC handlers of <c>exportchanbackup</c> (ClientCommand 21) and <c>verifychanbackup</c> (22).
+/// IPC handlers of <c>exportchanbackup</c> (ClientCommand 21), <c>verifychanbackup</c> (22) and
+/// <c>restorechanbackup</c> (23).
 /// </summary>
 public static class ChannelBackupServiceExtensions
 {
@@ -33,8 +34,11 @@ public static class ChannelBackupServiceExtensions
             ExportChanBackupClientHandler>();
         services.AddScoped<IClientCommandHandler<VerifyChanBackupClientRequest, VerifyChanBackupClientResponse>,
             VerifyChanBackupClientHandler>();
+        services.AddScoped<IClientCommandHandler<RestoreChanBackupClientRequest, RestoreChanBackupClientResponse>,
+            RestoreChanBackupClientHandler>();
         services.AddSingleton<IIpcCommandHandler, ExportChanBackupIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, VerifyChanBackupIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, RestoreChanBackupIpcHandler>();
         return services;
     }
 

@@ -6,6 +6,7 @@ using NBitcoin;
 
 namespace NLightning.Application.Channels.Managers;
 
+using Backup;
 using Close;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
@@ -480,6 +481,15 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 switch (channel.State)
                 {
                     case ChannelState.Failed or ChannelState.OnchainResolving:
+                        // A channel restored from a static backup first asks the peer to force close with the BOLT 2
+                        // "we lost data" channel_reestablish (B2-RE-14), then gets its error like any failed channel
+                        if (RecoveryChannels.IsRecoveryChannel(channel))
+                        {
+                            RaiseResponseMessages(peerPubKey, [CreateDataLossReestablish(scope, channel)]);
+                            _logger.LogWarning("Asking peer {Peer} to force close recovery channel {ChannelId}",
+                                               peerPubKey, channel.ChannelId);
+                        }
+
                         errors.Add(await GetStoredErrorAsync(scope, channel));
                         _logger.LogInformation("Re-sending the error of failed channel {ChannelId}",
                                                channel.ChannelId);
@@ -868,6 +878,28 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         }
 
         return new ErrorMessage(new ErrorPayload(channel.ChannelId, ChannelFailedException.DefaultPeerMessage));
+    }
+
+    /// <summary>
+    /// The data-loss <c>channel_reestablish</c> of a recovery channel (<see cref="RecoveryChannels"/>), with our point
+    /// of commitment 0 (our real current point is unknown; the peer only needs the numbers to fail the channel), or
+    /// our payment basepoint when the signer can't give it.
+    /// </summary>
+    private ChannelReestablishMessage CreateDataLossReestablish(IServiceScope scope, ChannelModel channel)
+    {
+        CompactPubKey point;
+        try
+        {
+            point = _lightningSigner.GetPerCommitmentPoint(channel.ChannelId, 0);
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "No per-commitment point for recovery channel {ChannelId}", channel.ChannelId);
+            point = channel.LocalKeySet.PaymentCompactBasepoint;
+        }
+
+        return RecoveryChannels.CreateDataLossReestablish(scope.ServiceProvider.GetRequiredService<IMessageFactory>(),
+                                                          channel.ChannelId, point);
     }
 
     /// <summary>The text of the channel's stored <c>error</c> (to send it again in reply to a message).</summary>

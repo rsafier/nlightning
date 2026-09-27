@@ -216,6 +216,14 @@ internal static class ClientApp
                     if (!verification.IsValid)
                         return Failure;
                     break;
+                case "restorechanbackup":
+                case "restore-chan-backup":
+                    var restoreBytes = await ReadBackupArgumentAsync(commandArgs, cancellationToken);
+                    var restore = await client.RestoreChanBackupAsync(restoreBytes, cancellationToken);
+                    new RestoreChanBackupPrinter().Print(restore);
+                    if (restore.Channels.Any(c => c.Outcome is "Failed" or "KeysMismatch"))
+                        return Failure;
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -357,6 +365,8 @@ internal static class ClientApp
                 return ParseExportChanBackupOptions(commandArgs, out var exportError) is null ? exportError : null;
             case "verifychanbackup":
             case "verify-chan-backup":
+            case "restorechanbackup":
+            case "restore-chan-backup":
                 if (commandArgs.Length == 1 && !commandArgs[0].StartsWith("--", StringComparison.Ordinal))
                     return null;
                 if (commandArgs.Length == 2 && string.Equals(commandArgs[0], "--hex", StringComparison.Ordinal))

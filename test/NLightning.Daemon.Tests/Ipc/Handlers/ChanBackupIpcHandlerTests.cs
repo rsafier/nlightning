@@ -19,22 +19,26 @@ using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
+using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
+using Domain.Onchain.Interfaces;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
+using Domain.Serialization.Interfaces;
+using Infrastructure.Crypto.Hashes;
 using Transport.Ipc;
 using Transport.Ipc.MessagePack;
 using Transport.Ipc.Requests;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// exportchanbackup (ClientCommand 21) and verifychanbackup (22) over IPC: the daemon's registrations, client
+/// exportchanbackup (ClientCommand 21), verifychanbackup (22) and restorechanbackup (23) over IPC: the daemon's registrations, client
 /// handlers and MessagePack contract around the real backup service (repositories, key manager and signer mocked).
 /// </summary>
 public class ChanBackupIpcHandlerTests
@@ -132,6 +136,59 @@ public class ChanBackupIpcHandlerTests
     }
 
     [Fact]
+    public async Task Given_TheBackupAndALostDatabase_When_RestoredOverIpc_Then_EveryChannelIsRestored()
+    {
+        // Arrange
+        AddChannel(1, anchors: true);
+        AddChannel(2, anchors: false);
+        await using var provider = BuildProvider();
+        var export = new ExportChanBackupIpcHandler(NullLogger<ExportChanBackupIpcHandler>.Instance, provider);
+        var restore = new RestoreChanBackupIpcHandler(NullLogger<RestoreChanBackupIpcHandler>.Instance, provider);
+        var exported = Read<ExportChanBackupIpcResponse>(
+            await export.HandleAsync(Envelope(ClientCommand.ExportChanBackup, new ExportChanBackupIpcRequest()),
+                                     TestContext.Current.CancellationToken));
+        var channelIds = _channels.Select(c => c.ChannelId).ToList();
+        _channels.Clear();
+
+        // Act
+        var envelope = await restore.HandleAsync(Envelope(ClientCommand.RestoreChanBackup,
+                                                          new RestoreChanBackupIpcRequest { Backup = exported.Backup }),
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(IpcEnvelopeKind.Response, envelope.Kind);
+        var restored = Read<RestoreChanBackupIpcResponse>(envelope);
+        Assert.Equal(channelIds, restored.Channels.Select(c => c.ChannelId));
+        Assert.All(restored.Channels, c => Assert.Equal("Restore", c.Outcome));
+        Assert.Equal([true, false], restored.Channels.Select(c => c.OptionAnchors));
+        Assert.Equal(2, restored.Peers.Count);
+    }
+
+    [Fact]
+    public async Task Given_ATamperedBackup_When_RestoredOverIpc_Then_InvalidOperation()
+    {
+        // Arrange
+        AddChannel(1, anchors: false);
+        await using var provider = BuildProvider();
+        var export = new ExportChanBackupIpcHandler(NullLogger<ExportChanBackupIpcHandler>.Instance, provider);
+        var restore = new RestoreChanBackupIpcHandler(NullLogger<RestoreChanBackupIpcHandler>.Instance, provider);
+        var backup = Read<ExportChanBackupIpcResponse>(
+                         await export.HandleAsync(Envelope(ClientCommand.ExportChanBackup,
+                                                           new ExportChanBackupIpcRequest()),
+                                                  TestContext.Current.CancellationToken)).Backup;
+        backup[^1] ^= 0x80;
+
+        // Act
+        var envelope = await restore.HandleAsync(Envelope(ClientCommand.RestoreChanBackup,
+                                                          new RestoreChanBackupIpcRequest { Backup = backup }),
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(IpcEnvelopeKind.Error, envelope.Kind);
+        Assert.Equal(ErrorCodes.InvalidOperation, Read<IpcError>(envelope).Code);
+    }
+
+    [Fact]
     public void Given_TheDaemonRegistrations_When_Resolved_Then_TheBackupFileDefaultsToTheConfigDirectory()
     {
         // Arrange
@@ -148,6 +205,8 @@ public class ChanBackupIpcHandlerTests
         Assert.Equal(Path.Combine("/tmp/nltg-x", "channel.backup"), options.FilePath);
         Assert.Contains(provider.GetServices<IIpcCommandHandler>(), h => h.Command == ClientCommand.ExportChanBackup);
         Assert.Contains(provider.GetServices<IIpcCommandHandler>(), h => h.Command == ClientCommand.VerifyChanBackup);
+        Assert.Contains(provider.GetServices<IIpcCommandHandler>(),
+                        h => h.Command == ClientCommand.RestoreChanBackup);
     }
 
     [Fact]
@@ -187,6 +246,8 @@ public class ChanBackupIpcHandlerTests
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelRepository.Object);
         unitOfWork.SetupGet(u => u.PeerDbRepository).Returns(peerRepository.Object);
+        unitOfWork.SetupGet(u => u.WatchedOutpointDbRepository)
+                  .Returns(new Mock<IWatchedOutpointDbRepository>().Object);
 
         var nodeId = new CompactPubKey(_nodeKey.PubKey.ToBytes());
         var keyManager = new Mock<ISecureKeyManager>();
@@ -204,6 +265,12 @@ public class ChanBackupIpcHandlerTests
         services.AddSingleton(keyManager.Object);
         services.AddSingleton(signer.Object);
         services.AddSingleton(new Mock<IChannelMemoryRepository>().Object);
+        services.AddSingleton(new Mock<IChannelManager>().Object);
+        services.AddSingleton(new Mock<IPeerManager>().Object);
+        services.AddSingleton(new Mock<IOutpointWatcher>().Object);
+        services.AddSingleton(new Mock<IMessageFactory>().Object);
+        services.AddSingleton(new Mock<IMessageSerializer>().Object);
+        services.AddSingleton<ISha256>(new Sha256());
         services.AddSingleton(Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }));
         services.AddChannelBackupNodeServices(new ConfigurationBuilder().Build());
         services.AddChannelBackupFile("/tmp/nltg-test");

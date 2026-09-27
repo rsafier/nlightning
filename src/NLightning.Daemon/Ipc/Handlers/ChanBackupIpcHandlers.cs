@@ -43,3 +43,21 @@ internal sealed class VerifyChanBackupIpcHandler
     protected override VerifyChanBackupIpcResponse ToIpcResponse(VerifyChanBackupClientResponse response) =>
         VerifyChanBackupIpcResponse.FromClientResponse(response);
 }
+
+internal sealed class RestoreChanBackupIpcHandler
+    : ClientCommandIpcHandler<RestoreChanBackupIpcRequest, RestoreChanBackupClientRequest,
+        RestoreChanBackupClientResponse, RestoreChanBackupIpcResponse>
+{
+    public override ClientCommand Command => ClientCommand.RestoreChanBackup;
+
+    public RestoreChanBackupIpcHandler(ILogger<RestoreChanBackupIpcHandler> logger, IServiceProvider serviceProvider)
+        : base(logger, serviceProvider)
+    {
+    }
+
+    protected override RestoreChanBackupClientRequest ToClientRequest(RestoreChanBackupIpcRequest request) =>
+        request.ToClientRequest();
+
+    protected override RestoreChanBackupIpcResponse ToIpcResponse(RestoreChanBackupClientResponse response) =>
+        RestoreChanBackupIpcResponse.FromClientResponse(response);
+}

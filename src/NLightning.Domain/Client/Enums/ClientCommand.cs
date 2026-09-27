@@ -31,5 +31,6 @@ public enum ClientCommand
     GetRoute = 19,
     DescribeGraph = 20,
     ExportChanBackup = 21,
-    VerifyChanBackup = 22
+    VerifyChanBackup = 22,
+    RestoreChanBackup = 23
 }

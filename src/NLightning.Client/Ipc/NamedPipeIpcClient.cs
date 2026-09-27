@@ -334,6 +334,13 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
             ClientCommand.VerifyChanBackup, new VerifyChanBackupIpcRequest { Backup = backup }, ct);
 
     /// <summary>
+    /// Restores a static channel backup of this node as recovery channels (ClientCommand 23).
+    /// </summary>
+    public Task<RestoreChanBackupIpcResponse> RestoreChanBackupAsync(byte[] backup, CancellationToken ct = default) =>
+        SendRequestAsync<RestoreChanBackupIpcRequest, RestoreChanBackupIpcResponse>(
+            ClientCommand.RestoreChanBackup, new RestoreChanBackupIpcRequest { Backup = backup }, ct);
+
+    /// <summary>
     /// Whether the node's chain processing is halted and what it refuses meanwhile (ClientCommand 16, NL-216).
     /// </summary>
     public Task<ChainStatusIpcResponse> ChainStatusAsync(CancellationToken ct = default) =>
