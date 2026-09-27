@@ -80,9 +80,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 4 | 19 | 132 | 155 |
+| open | 0 | 4 | 19 | 130 | 153 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 54 | 127 | 93 | 288 |
+| fixed | 14 | 54 | 127 | 95 | 290 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 0 | 1 |
 | **Total** | **14** | **58** | **149** | **230** | **451** |
@@ -4606,22 +4606,22 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-449 The onion message harness rate-limit test fails when run alone
-- **Status:** open
+- **Status:** fixed (d2fcb082)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/OnionMessages/OnionMessageHarnessTests.cs` (`Given_ARateLimitOf20PerSecondAtBob_When_AliceSends25InOneSecond_Then_BobDropsTheLast5`)
 - **Evidence:** Fails every time when its class or the test alone is run (`OperationCanceledException` in `RecordingHandler.WaitForAsync` after 10 s: carol never sees 20 messages); reproduced 3/3 by the ledger agent at `a3445f3f` (net10.0 Release, `--filter FullyQualifiedName~OnionMessageHarnessTests`), while the whole Application.Tests project passes (2263/2263), so the order or timing of the other tests hides it. Lanes B12-C and B12-D saw it fail on `6f4bdaad`. Suspected, not verified: the M6 onion-message outbox cap on the alice->bob link (wired in 9639b7cf/641a5fff) drops some of the 25 back-to-back sends before bob's limiter is reached.
-- **Fix sketch:** Drain the harness outbox between sends or raise its cap in this test, and assert on the outbox drops separately; add the test to the known-flake list until then.
+- **Fix sketch:** Drain the harness outbox between sends or raise its cap in this test, and assert on the outbox drops separately; add the test to the known-flake list until then. Root cause: `AddOnionMessageServices` registers the production `OnionMessageRateLimiter` by default (per-peer burst 20, system clock), so carol (meant to be unlimited) dropped bob's 21st message whenever the test finished within a real second; the full project ran slowly enough to refill the bucket. Fixed by giving carol its own frozen-clock limiter and asserting it drops nothing; passes alone 5/5 and in its class.
 - **Blocks/Blocked-by:** Related NL-446, NL-442
 - **Plan ref:** `BOLT12_PLAN.md` OM2-T2, OM3
 
 ### NL-456 WalletBalanceIpcResponse raises three MsgPack017 build warnings
-- **Status:** open
+- **Status:** fixed (04899411)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Transport.Ipc/Responses/WalletBalanceIpcResponse.cs:17,26,31`
 - **Evidence:** Three `init` properties with initializers: MessagePack resets them to the type default when the key is missing (MsgPack017). Present since the anchors reserve fields (41ce3200, wave O7b); the gates grep only `warning CS`, so the baseline missed them. Seen by the B12 integrator and reproduced by the ledger agent with a clean Release build of `NLightning.Transport.Ipc`.
-- **Fix sketch:** Drop the initializers (or make the members required) so an older client or daemon cannot silently read the default; count analyzer warnings in the gate.
+- **Fix sketch:** Drop the initializers (or make the members required) so an older client or daemon cannot silently read the default; count analyzer warnings in the gate. Fixed: the three `LightningMoney` members are `required` without initializers (the daemon sets every field; keys 0-5 unchanged); a clean Release build shows only the 5 CS86xx of NL-171.
 - **Blocks/Blocked-by:** Related NL-171
 - **Plan ref:** —
 
