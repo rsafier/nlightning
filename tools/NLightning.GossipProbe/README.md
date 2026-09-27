@@ -73,6 +73,20 @@ gracefully: the graph is flushed and the summary written. Options: `--dir`, `--p
 `--log-level`, `--label`, `--chain`, `--rpc-env`, `--chain-concurrency`, `--chain-rate`, `--sync-tip`,
 `--block-poll-seconds`, `--max-blocks-per-poll`; for `verify`: `--sample`, `--rate`, `--esplora`.
 
+### Relay run (`--relay-to`, D12)
+
+`--relay-to <node id|alias prefix>` (with `--chain rpc`) turns `Gossip:RelayEnabled` on, but the relay's peer
+directory lists only that peer, so the other peers stay sync peers and never get our relayed gossip. Every relay send
+is recorded per peer and type (`summary.json` → `relay`): sent or queued, refused by the outbox (`.refused`), and
+`.echo_to_origin` for a message version (a 256's scid, a 257/258's signature) that the same peer had sent us. The
+probe still has no channel and announces nothing of its own. The relay backlog is the `relay_pending` queue depth in
+`samples.csv`.
+
+```bash
+dotnet tools/NLightning.GossipProbe/bin/Release/net10.0/NLightning.GossipProbe.dll run --chain rpc \
+    --dir ~/.nltg-gossip-probe/verified --relay-to ACINQ --min-minutes 20 --max-minutes 25 --label relay
+```
+
 ## Output (`<dir>/runs/<UTC time>[-label]/`)
 
 - `samples.csv`: one row per sample: graph channels, nodes (graph and announced), policies, channels without policy,

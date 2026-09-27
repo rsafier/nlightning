@@ -196,6 +196,14 @@ public sealed class ProbeRun
         _summary["meter_histograms"] = meters.Histograms.ToDictionary(h => h.Key,
                                                                       h => new { h.Value.Count, h.Value.Sum, h.Value.Max });
         _summary["log_warning_error_counts"] = loggerProvider.Counts;
+        if (traffic.Relay is { } relay)
+        {
+            _summary["relay"] = relay.Snapshot();
+            Console.WriteLine($"Relay to {_options.RelayTo}: {relay.Total("announcement") + relay.Total("update")} "
+                            + $"sent or queued, {relay.Total(".refused")} refused by the outbox, "
+                            + $"{relay.Total(".echo_to_origin")} echoed to their origin");
+        }
+
         _summary["peer_traffic"] = traffic.Snapshot()
                                           .GroupBy(t => ProbeOptions.AliasOf(t.Key.Peer.ToString()))
                                           .ToDictionary(g => g.Key,

@@ -68,6 +68,12 @@ public sealed class ProbeOptions
     public int MaxBlocksPerPoll { get; private set; } = 10;
     public bool IsRpc => Chain == "rpc";
 
+    /// <summary>
+    /// The relay run (D12): the node id (or a default peer's alias prefix, e.g. <c>ACINQ</c>) of the one peer that gets
+    /// our relay of other nodes' gossip; null (the default) keeps the relay off.
+    /// </summary>
+    public string? RelayTo { get; private set; }
+
     public static string Usage =>
         """
         nltg gossip probe (test harness; mainnet, gossip-only, no channels, no funds)
@@ -78,6 +84,7 @@ public sealed class ProbeOptions
                              [--listen-port 19735] [--log-level Information|Debug] [--label <text>]
                              [--chain stub|rpc] [--rpc-env <file>] [--chain-concurrency <n>] [--chain-rate <n/s>]
                              [--sync-tip headers|blocks] [--block-poll-seconds 15] [--max-blocks-per-poll 10]
+                             [--relay-to <node id|alias>]
           GossipProbe verify [--dir <path>] [--sample 300] [--rate 2] [--esplora https://mempool.space/api]
           GossipProbe chaininfo [--rpc-env <file>]
 
@@ -87,6 +94,7 @@ public sealed class ProbeOptions
                 or --max-minutes. The graph stays in <dir>/probe.db, so a second run measures the reload.
                 With --chain rpc the funding outputs are checked against the bitcoind of --rpc-env (the product's
                 FundingOutputLookup, AssumeChannelValid off) and new blocks are followed for the spend detection.
+                --relay-to (needs --chain rpc) turns the relay of other nodes' gossip on toward that one peer only.
         chaininfo  checks that this process reaches the bitcoind of --rpc-env (getblockchaininfo).
         verify  checks a random sample of the stored channels' funding outputs against an Esplora API (at most
                 --rate requests per second; stops on HTTP 429).
@@ -137,6 +145,7 @@ public sealed class ProbeOptions
                 case "--max-blocks-per-poll":
                     options.MaxBlocksPerPoll = int.Parse(value, CultureInfo.InvariantCulture);
                     break;
+                case "--relay-to": options.RelayTo = ResolvePeer(value); break;
                 default: return null;
             }
         }
@@ -148,6 +157,13 @@ public sealed class ProbeOptions
 
     public static string AliasOf(string nodeIdHex) =>
         KnownAliases.TryGetValue(nodeIdHex, out var alias) ? alias : nodeIdHex[..16];
+
+    private static string ResolvePeer(string value)
+    {
+        var match = KnownAliases.FirstOrDefault(
+            a => a.Value.StartsWith(value, StringComparison.OrdinalIgnoreCase));
+        return match.Key ?? value.ToLowerInvariant();
+    }
 
     private static double ParseDouble(string value) => double.Parse(value, CultureInfo.InvariantCulture);
 }

@@ -34,8 +34,12 @@ public sealed class PeerTraffic
     /// <summary>Per short channel id, what arrived (for the diagnosis of channels left without a policy).</summary>
     public IReadOnlyDictionary<ShortChannelId, ChannelSeen> Channels => _channels;
 
+    /// <summary>The relay run's recorder (<c>--relay-to</c>), null otherwise.</summary>
+    public RelayRecorder? Relay { get; set; }
+
     public void RecordGossip(CompactPubKey peer, IMessage message)
     {
+        Relay?.RecordReceived(peer, message);
         switch (message)
         {
             case ChannelAnnouncementMessage announcement:

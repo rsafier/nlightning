@@ -11,8 +11,10 @@ namespace NLightning.GossipProbe;
 
 using Application.Gossip.Graph;
 using Application.Gossip.Relay;
+using Application.Gossip.Relay.Interfaces;
 using Application.Gossip.Sync;
 using Daemon.Extensions;
+using Domain.Crypto.ValueObjects;
 using Domain.Gossip.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.ValueObjects;
@@ -97,7 +99,7 @@ public sealed class ProbeNode : IAsyncDisposable
             // The test's gossip settings: a leech that syncs, never relays, and takes channels on their signatures
             ["Gossip:Enabled"] = "true",
             ["Gossip:SyncEnabled"] = "true",
-            ["Gossip:RelayEnabled"] = "false",
+            ["Gossip:RelayEnabled"] = _options.RelayTo is null ? "false" : "true",
             ["Gossip:AssumeChannelValid"] = _rpc is null ? "true" : "false",
             ["Gossip:FundingValidation"] = "Full",
             ["Gossip:AllowPublicChannelsOnMainnet"] = "false",
@@ -140,6 +142,18 @@ public sealed class ProbeNode : IAsyncDisposable
             }));
         }
 
+        if (_options.RelayTo is { } relayTo)
+        {
+            // The relay run (D12): relay on, toward the one peer only, every send recorded
+            if (_rpc is null)
+                throw new InvalidOperationException("--relay-to needs --chain rpc (only chain-checked channels relay)");
+
+            var target = new CompactPubKey(Convert.FromHexString(relayTo));
+            Traffic.Relay = new RelayRecorder();
+            Decorate<IGossipPeerDirectory>(services, inner => new RelayTargetPeerDirectory(inner, target));
+            Decorate<IGossipPeerSender>(services, inner => new RecordingGossipPeerSender(inner, Traffic.Relay));
+        }
+
         // Per-peer traffic counters around the peer services' gossip ports
         Decorate<IGossipIngress>(services, inner => new CountingGossipIngress(inner, Traffic));
         Decorate<IGossipSyncService>(services, inner => new CountingGossipSyncService(inner, Traffic));
@@ -153,9 +167,11 @@ public sealed class ProbeNode : IAsyncDisposable
         _ = Services.GetRequiredService<IOptions<GossipSyncOptions>>().Value;
         var relayOptions = Services.GetRequiredService<IOptions<GossipRelayOptions>>().Value;
         var network = Services.GetRequiredService<IOptions<NodeOptions>>().Value.BitcoinNetwork;
-        if (graphOptions.AssumeChannelValid != (_rpc is null) || relayOptions.IsRelayEnabledFor(network))
+        if (graphOptions.AssumeChannelValid != (_rpc is null)
+         || relayOptions.IsRelayEnabledFor(network) != _options.RelayTo is not null)
             throw new InvalidOperationException(
-                "The probe must run with relay off, and AssumeChannelValid on without a chain, off with one");
+                "The probe must run with relay off (on only with --relay-to), and AssumeChannelValid on without a "
+              + "chain, off with one");
 
         if (_rpc is not null)
         {
