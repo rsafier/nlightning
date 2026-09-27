@@ -38,7 +38,7 @@ public sealed class OnionMessageChannelTests
         channel.ShortChannelId = realScid;
         channel.LocalAliases = [alias];
         bob.Channels.Add(channel);
-        var path = carol.PathFactory.Create([bob.NodeId, carol.NodeId],
+        var path = carol.PathBuilder.CreatePath([bob.NodeId, carol.NodeId],
         [
             new BlindedRecipientData { ShortChannelId = byAlias ? alias : realScid },
             new BlindedRecipientData()
@@ -63,7 +63,7 @@ public sealed class OnionMessageChannelTests
         using var alice = new OnionMessageTestNode("alice", 1);
         using var bob = new OnionMessageTestNode("bob", 2);
         OnionMessageTestNode.Connect(alice, bob);
-        var path = alice.PathFactory.Create([bob.NodeId, alice.NodeId],
+        var path = alice.PathBuilder.CreatePath([bob.NodeId, alice.NodeId],
         [
             new BlindedRecipientData { ShortChannelId = new ShortChannelId(1, 1, 1) },
             new BlindedRecipientData()
@@ -94,7 +94,7 @@ public sealed class OnionMessageChannelTests
         channel.ShortChannelId = scid;
         alice.Channels.Add(channel);
         var bobDirection = (byte)(GraphChannel.CompareNodeIds(bob.NodeId, alice.NodeId) < 0 ? 0 : 1);
-        var path = carol.PathFactory.Create([bob.NodeId, carol.NodeId]);
+        var path = carol.PathBuilder.CreateMessagePath([bob.NodeId, carol.NodeId]);
         var wirePath = new WireBlindedPath(SciddirOrPubkey.FromShortChannelId(scid, bobDirection), path.FirstPathKey,
                                            path.Hops);
 
@@ -126,7 +126,7 @@ public sealed class OnionMessageChannelTests
         OnionMessageTestNode.Connect(bob, carol);
         OnionMessageTestNode.Connect(dave, carol);
         alice.Channels.Add(PeerStorageTestContext.CreateChannel(dave.NodeId, ChannelState.Open));
-        var path = carol.PathFactory.Create([bob.NodeId, carol.NodeId]);
+        var path = carol.PathBuilder.CreateMessagePath([bob.NodeId, carol.NodeId]);
 
         // Act
         var result = await alice.Service.SendAndWaitForReplyAsync(

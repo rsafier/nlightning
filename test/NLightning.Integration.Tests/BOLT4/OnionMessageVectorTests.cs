@@ -11,6 +11,7 @@ using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.OnionMessages;
 using Domain.Protocol.OnionMessages.Constants;
+using Domain.Protocol.OnionMessages.Enums;
 using Domain.Protocol.Payloads;
 using Infrastructure.Bitcoin.Crypto.Functions;
 using Infrastructure.Bitcoin.Onion;

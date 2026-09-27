@@ -98,7 +98,7 @@ public class OnionMessageComponentsTests
         var ids = new byte[] { 1, 2, 4 }.Select(s => new TestNodeKeyManager(s).NodeId).Append(node.NodeId).ToList();
 
         // Act
-        var path = node.PathFactory.Create(ids, new byte[32]);
+        var path = node.PathBuilder.CreateMessagePath(ids, new byte[32]);
 
         // Assert
         Assert.Equal(ids[0], path.FirstNodeId);
@@ -227,7 +227,7 @@ public class OnionMessageComponentsTests
         peerManager.Setup(m => m.ListPeers()).Returns([]);
         var finder = new OnionMessagePathFinder(peerManager.Object, new Mock<IChannelMemoryRepository>().Object,
                                                 node.NodeId, 3);
-        var factory = new ReplyPathFactory(node.PathFactory, finder, node.NodeId);
+        var factory = new ReplyPathFactory(node.PathBuilder, finder, node.NodeId);
         var pathId = new byte[32];
 
         // Act

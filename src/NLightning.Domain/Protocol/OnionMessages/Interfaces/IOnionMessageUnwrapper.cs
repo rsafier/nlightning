@@ -1,7 +1,8 @@
-namespace NLightning.Infrastructure.Bitcoin.Onion.OnionMessages;
+namespace NLightning.Domain.Protocol.OnionMessages.Interfaces;
 
-using Domain.Crypto.ValueObjects;
-using Domain.Protocol.Messages;
+using Crypto.ValueObjects;
+using Enums;
+using Messages;
 
 /// <summary>
 /// The receive-side crypto of onion messages (BOLT 4 "Onion Messages", reader): peel the Sphinx layer with the
@@ -13,8 +14,13 @@ using Domain.Protocol.Messages;
 /// one with an unknown even type, any <c>allowed_features</c> bit (no feature is defined for onion messages), a
 /// non-final hop with anything but <c>encrypted_recipient_data</c>, a <c>path_id</c> or no next hop, a final hop
 /// without <c>encrypted_recipient_data</c> or with more than one payload field (types 64 and up): all
-/// <see cref="OnionMessageUnwrapStatus.Ignored"/>. Reply matching (<c>path_id</c> against our reply paths), rate
+/// <see cref="OnionMessageUnwrapStatus.Ignored"/>, with the rule in <see cref="OnionMessageUnwrapResult.IgnoreKind"/>.
+/// The recipient data must also carry no <c>payment_relay</c> or <c>payment_constraints</c> (a creator MUST NOT
+/// include them in a message path), and a <c>reply_path</c> must hold valid points. Reply matching (<c>path_id</c> against our reply paths), rate
 /// limits and peer lookup are the caller's.</para>
+/// <para>Implemented by <c>Infrastructure.Bitcoin/Onion/OnionMessages/OnionMessageUnwrapper</c> over the Domain
+/// <see cref="OnionMessageTlvsCodec"/>; <c>Application/OnionMessages/OnionMessageService</c> reads every received
+/// message through it (NL-442).</para>
 /// <para>Never throws for a bad message; only local faults throw: a missing key manager
 /// (<see cref="UnwrapAsLocalNode"/>) or an invalid node key (<see cref="Unwrap"/>). Stateless and thread-safe.</para>
 /// </remarks>

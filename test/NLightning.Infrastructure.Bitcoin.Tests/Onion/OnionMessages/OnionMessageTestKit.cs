@@ -4,6 +4,8 @@ using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Models;
+using Domain.Protocol.OnionMessages;
+using Domain.Protocol.OnionMessages.Enums;
 using Domain.Protocol.Payloads;
 using Infrastructure.Bitcoin.Crypto.Functions;
 using Infrastructure.Bitcoin.Onion;

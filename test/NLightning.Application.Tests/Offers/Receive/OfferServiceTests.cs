@@ -75,7 +75,7 @@ public sealed class OfferServiceTests : IDisposable
 
     private OfferService CreateService() =>
         new(_store.ScopeFactory, _keyManager, Options.Create(_nodeOptions), new OfferPathIds(_keyManager),
-            _services.GetRequiredService<IRouteBlindingService>(), _peerManager.Object, _channels.Object, _services,
+            _services.GetRequiredService<IBlindedMessagePathBuilder>(), _peerManager.Object, _channels.Object, _services,
             NullLogger<OfferService>.Instance, Options.Create(new OfferOptions()), _clock);
 
     [Fact]

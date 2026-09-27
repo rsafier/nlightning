@@ -6,6 +6,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.OnionMessages;
+using Domain.Protocol.OnionMessages.Enums;
 using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.Payloads;
 using Harness;
@@ -44,7 +45,7 @@ public sealed class OnionMessageServiceTests : IDisposable
     public async Task Given_ANonFinalHopWithAnExtraField_When_BobReadsIt_Then_Ignored()
     {
         // Arrange
-        var path = _carol.PathFactory.Create([_bob.NodeId, _carol.NodeId]);
+        var path = _carol.PathBuilder.CreateMessagePath([_bob.NodeId, _carol.NodeId]);
         var message = Craft(path, (i, hop) => i == 0
                                                   ? Tlvs(hop, [new OnionMessageTlvRecord(TestType, new byte[] { 1 })])
                                                   : Tlvs(hop, [Record(TestType)]));
@@ -60,7 +61,7 @@ public sealed class OnionMessageServiceTests : IDisposable
     public async Task Given_ANonFinalHopWithAPathId_When_BobReadsIt_Then_Ignored()
     {
         // Arrange
-        var path = _carol.PathFactory.Create([_bob.NodeId, _carol.NodeId],
+        var path = _carol.Raw.CreatePath([_bob.NodeId, _carol.NodeId],
         [
             new BlindedRecipientData { NextNodeId = _carol.NodeId, PathId = new byte[] { 1 } },
             new BlindedRecipientData()
@@ -77,7 +78,7 @@ public sealed class OnionMessageServiceTests : IDisposable
     public async Task Given_AllowedFeaturesWithABit_When_BobReadsIt_Then_Ignored()
     {
         // Arrange
-        var path = _carol.PathFactory.Create([_bob.NodeId, _carol.NodeId],
+        var path = _carol.PathBuilder.CreatePath([_bob.NodeId, _carol.NodeId],
         [
             new BlindedRecipientData { NextNodeId = _carol.NodeId, AllowedFeatures = new byte[] { 0x01 } },
             new BlindedRecipientData()
@@ -111,7 +112,7 @@ public sealed class OnionMessageServiceTests : IDisposable
 
         // Assert
         await ExpectBobDropAsync(OnionMessageDropReasons.ForbiddenRecipientData);
-        Assert.Throws<ArgumentException>(() => _carol.PathFactory.Create(
+        Assert.Throws<ArgumentException>(() => _carol.PathBuilder.CreatePath(
                                              [_carol.NodeId],
                                              [
                                                  new BlindedRecipientData
@@ -125,7 +126,7 @@ public sealed class OnionMessageServiceTests : IDisposable
     public async Task Given_AFinalHopWithTwoPayloadFields_When_CarolReadsIt_Then_Ignored()
     {
         // Arrange
-        var path = _carol.PathFactory.Create([_bob.NodeId, _carol.NodeId]);
+        var path = _carol.PathBuilder.CreateMessagePath([_bob.NodeId, _carol.NodeId]);
         var message = Craft(path, (i, hop) => i == 0 ? Tlvs(hop, []) : Tlvs(hop, [Record(64), Record(TestType)]));
 
         // Act
@@ -140,7 +141,7 @@ public sealed class OnionMessageServiceTests : IDisposable
     public async Task Given_AnUnknownEvenTypeAtTheFinalHop_When_CarolReadsIt_Then_Ignored()
     {
         // Arrange
-        var path = _carol.PathFactory.Create([_bob.NodeId, _carol.NodeId]);
+        var path = _carol.PathBuilder.CreateMessagePath([_bob.NodeId, _carol.NodeId]);
         var message = Craft(path, (i, hop) => i == 0 ? Tlvs(hop, []) : Tlvs(hop, [Record(70)]));
 
         // Act
@@ -154,7 +155,7 @@ public sealed class OnionMessageServiceTests : IDisposable
     public async Task Given_AnUnknownOddTypeBelow64AtTheFinalHop_When_CarolReadsIt_Then_KeptWithThePayloadField()
     {
         // Arrange
-        var path = _carol.PathFactory.Create([_bob.NodeId, _carol.NodeId]);
+        var path = _carol.PathBuilder.CreateMessagePath([_bob.NodeId, _carol.NodeId]);
         var message = Craft(path, (i, hop) => i == 0 ? Tlvs(hop, []) : Tlvs(hop, [Record(33), Record(TestType)]));
 
         // Act
@@ -169,7 +170,7 @@ public sealed class OnionMessageServiceTests : IDisposable
     public async Task Given_AHopWithoutEncryptedRecipientData_When_BobReadsIt_Then_Ignored()
     {
         // Arrange
-        var path = _carol.PathFactory.Create([_bob.NodeId, _carol.NodeId]);
+        var path = _carol.PathBuilder.CreateMessagePath([_bob.NodeId, _carol.NodeId]);
         var message = Craft(path, (i, hop) => i == 0
                                                   ? OnionMessageTlvsCodec.Encode(new OnionMessageTlvs(null, null, []))
                                                   : Tlvs(hop, [Record(TestType)]));
@@ -185,7 +186,7 @@ public sealed class OnionMessageServiceTests : IDisposable
     public async Task Given_AFlippedBit_When_BobPeels_Then_IgnoredWithoutAnyReply()
     {
         // Arrange
-        var path = _carol.PathFactory.Create([_bob.NodeId, _carol.NodeId]);
+        var path = _carol.PathBuilder.CreateMessagePath([_bob.NodeId, _carol.NodeId]);
         var message = CraftStandard(path);
         var packet = message.Payload.OnionMessagePacket.ToArray();
         packet[100] ^= 0x01;
@@ -204,7 +205,7 @@ public sealed class OnionMessageServiceTests : IDisposable
     {
         // Arrange
         var dave = new Payments.TestNodeKeyManager(4).NodeId;
-        var path = _carol.PathFactory.Create([_bob.NodeId, dave]);
+        var path = _carol.PathBuilder.CreateMessagePath([_bob.NodeId, dave]);
 
         // Act
         await AliceSendsToBobAsync(CraftStandard(path));
@@ -220,7 +221,7 @@ public sealed class OnionMessageServiceTests : IDisposable
         _bob.RemovePeer(_carol);
         _carol.RemovePeer(_bob);
         OnionMessageTestNode.Connect(_bob, _carol, onionMessages: false);
-        var path = _carol.PathFactory.Create([_bob.NodeId, _carol.NodeId]);
+        var path = _carol.PathBuilder.CreateMessagePath([_bob.NodeId, _carol.NodeId]);
 
         // Act
         await AliceSendsToBobAsync(CraftStandard(path));
@@ -234,7 +235,7 @@ public sealed class OnionMessageServiceTests : IDisposable
     public async Task Given_ANextNodeThatIsTheSender_When_BobForwards_Then_DroppedNotEchoed()
     {
         // Arrange
-        var path = _alice.PathFactory.Create([_bob.NodeId, _alice.NodeId]);
+        var path = _alice.PathBuilder.CreateMessagePath([_bob.NodeId, _alice.NodeId]);
 
         // Act
         await AliceSendsToBobAsync(CraftStandard(path));
@@ -248,7 +249,7 @@ public sealed class OnionMessageServiceTests : IDisposable
     public async Task Given_ANextNodeThatIsBobHimself_When_BobForwards_Then_Dropped()
     {
         // Arrange
-        var path = _carol.PathFactory.Create([_bob.NodeId, _bob.NodeId]);
+        var path = _carol.PathBuilder.CreateMessagePath([_bob.NodeId, _bob.NodeId]);
 
         // Act
         await AliceSendsToBobAsync(CraftStandard(path));
@@ -261,8 +262,8 @@ public sealed class OnionMessageServiceTests : IDisposable
     public async Task Given_ANonFinalHopWithoutANextNode_When_BobForwards_Then_Dropped()
     {
         // Arrange
-        var path = _carol.PathFactory.Create([_bob.NodeId, _carol.NodeId],
-                                             [new BlindedRecipientData(), new BlindedRecipientData()]);
+        var path = _carol.Raw.CreatePath([_bob.NodeId, _carol.NodeId],
+                                         [new BlindedRecipientData(), new BlindedRecipientData()]);
 
         // Act
         await AliceSendsToBobAsync(CraftStandard(path));
@@ -276,7 +277,7 @@ public sealed class OnionMessageServiceTests : IDisposable
     {
         // Arrange
         var overrideKey = new Payments.TestNodeKeyManager(9).NodeId;
-        var path = _carol.PathFactory.Create([_bob.NodeId, _carol.NodeId],
+        var path = _carol.PathBuilder.CreatePath([_bob.NodeId, _carol.NodeId],
         [
             new BlindedRecipientData { NextNodeId = _carol.NodeId, NextPathKeyOverride = overrideKey },
             new BlindedRecipientData()
@@ -342,7 +343,7 @@ public sealed class OnionMessageServiceTests : IDisposable
         Craft(path, (i, hop) => i == path.Hops.Count - 1 ? Tlvs(hop, [Record(TestType)]) : Tlvs(hop, []));
 
     private OnionMessageMessage Craft(BlindedPath path, Func<int, BlindedPathHop, byte[]> payloadFor) =>
-        _alice.Builder.BuildFromPayloads(path.FirstPathKey, path.Hops.Select(h => h.BlindedNodeId).ToList(),
+        _alice.Raw.BuildFromPayloads(path.FirstPathKey, path.Hops.Select(h => h.BlindedNodeId).ToList(),
                                          path.Hops.Select((hop, i) => payloadFor(i, hop)).ToList());
 
     private static byte[] Tlvs(BlindedPathHop hop, IReadOnlyList<OnionMessageTlvRecord> records) =>
@@ -363,6 +364,48 @@ public sealed class OnionMessageServiceTests : IDisposable
         if (node == _bob)
             Assert.Equal(0, _bob.Metrics.Forwarded);
         Assert.Empty(_carolHandler.Received);
+    }
+
+    [Theory]
+    [InlineData(OnionMessageIgnoreReason.Undecryptable, OnionMessageDropReasons.Undecryptable)]
+    [InlineData(OnionMessageIgnoreReason.InvalidPayload, OnionMessageDropReasons.InvalidPayload)]
+    [InlineData(OnionMessageIgnoreReason.InvalidRecipientData, OnionMessageDropReasons.InvalidRecipientData)]
+    [InlineData(OnionMessageIgnoreReason.ForbiddenRecipientData, OnionMessageDropReasons.ForbiddenRecipientData)]
+    [InlineData(OnionMessageIgnoreReason.NonFinalExtraFields, OnionMessageDropReasons.NonFinalExtraFields)]
+    [InlineData(OnionMessageIgnoreReason.NonFinalPathId, OnionMessageDropReasons.NonFinalPathId)]
+    [InlineData(OnionMessageIgnoreReason.NoNextHop, OnionMessageDropReasons.NoNextHop)]
+    [InlineData(OnionMessageIgnoreReason.MultiplePayloadFields, OnionMessageDropReasons.MultiplePayloadFields)]
+    public void Given_AnUnwrapperReaderRule_When_Mapped_Then_TheDropTagIsTheServicesOwn(OnionMessageIgnoreReason kind,
+                                                                                         string expected)
+    {
+        // Act (NL-442: the service reads every message through IOnionMessageUnwrapper and keeps its metric tags)
+        var tag = OnionMessageService.ToDropReason(kind);
+
+        // Assert
+        Assert.Equal(expected, tag);
+    }
+
+    [Fact]
+    public void Given_ARecipientDataWithPaymentRelay_When_Received_Then_DroppedAsForbidden()
+    {
+        // Arrange: a path through Bob whose data breaks the message-path rule (written without the production checks)
+        var path = _carol.Raw.CreatePath([_bob.NodeId, _carol.NodeId],
+        [
+            new BlindedRecipientData
+            {
+                NextNodeId = _carol.NodeId,
+                PaymentRelay = new BlindedPaymentRelay(40, 100, 1000)
+            },
+            new BlindedRecipientData()
+        ]);
+        var message = _alice.PacketBuilder.Build([], path, OnionMessageContents.Single(TestType, new byte[] { 1 }),
+                                                 null);
+
+        // Act
+        _bob.Service.ProcessIncoming(_alice.NodeId, message);
+
+        // Assert
+        Assert.Equal(1, _bob.Metrics.GetDropped(OnionMessageDropReasons.ForbiddenRecipientData));
     }
 
     private sealed class ThrowingHandler : IOnionMessageHandler
