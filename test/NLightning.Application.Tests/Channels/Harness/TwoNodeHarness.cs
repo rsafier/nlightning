@@ -1027,6 +1027,8 @@ internal sealed class InMemoryChannelRepository : IChannelMemoryRepository
 
     public bool TryRemoveTemporaryChannel(CompactPubKey compactPubKey, ChannelId channelId) => false;
 
+    public IReadOnlyList<ChannelId> RemoveTemporaryChannels(CompactPubKey compactPubKey) => [];
+
     public void UpgradeChannel(ChannelId oldChannelId, ChannelModel tempChannel)
     {
         OnChannelUpgraded?.Invoke(this, null!);

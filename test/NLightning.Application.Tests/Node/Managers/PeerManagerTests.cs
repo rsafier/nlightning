@@ -1299,6 +1299,22 @@ public class PeerManagerTests
     }
 
     [Fact]
+    public async Task Given_PeerWithAnOpenInProgress_When_ItDisconnects_Then_ItsTemporaryChannelsAreForgotten()
+    {
+        // Arrange (NL-392: an open that did not reach funding_created does not survive the connection)
+        var peerManager = await CreatePeerManagerWithPeerAsync();
+        _mockChannelMemoryRepository.Setup(r => r.RemoveTemporaryChannels(_compactPubKey))
+                                    .Returns([ChannelId.Zero]);
+
+        // Act
+        RaiseDisconnect(_mockPeerService);
+
+        // Assert
+        Assert.Null(peerManager.GetPeer(_compactPubKey));
+        _mockChannelMemoryRepository.Verify(r => r.RemoveTemporaryChannels(_compactPubKey), Times.Once);
+    }
+
+    [Fact]
     public async Task Given_AMessageIsStillHandled_When_StopAsync_Then_ItWaitsForIt()
     {
         // Arrange (no handler may still persist while the host disposes the services)

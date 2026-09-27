@@ -46,8 +46,17 @@ public sealed class OpenChannelClientHandler
     private ChannelId _channelId = ChannelId.Zero;
     private IPeerService? _peerService;
 
+    /// <summary>The default of <see cref="OpenTimeout"/>.</summary>
+    public static readonly TimeSpan DefaultOpenTimeout = TimeSpan.FromMinutes(2);
+
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.OpenChannel;
+
+    /// <summary>
+    /// How long we wait for the peer's accept_channel after open_channel (NL-392). The open then fails and its
+    /// temporary channel is forgotten.
+    /// </summary>
+    internal TimeSpan OpenTimeout { get; set; } = DefaultOpenTimeout;
 
     public OpenChannelClientHandler(IBlockchainMonitor blockchainMonitor, IChannelFactory channelFactory,
                                     IChannelManager channelManager, IChannelMemoryRepository channelMemoryRepository,
@@ -134,6 +143,12 @@ public sealed class OpenChannelClientHandler
                 _anchorReserveService.ReleasePendingChannel(channel.ChannelId);
                 throw new ClientException(ErrorCodes.NotEnoughBalance, e.Message);
             }
+            catch (InvalidOperationException e)
+            {
+                // NL-393: the funding selection found too few UTXOs (a concurrent spend since the balance check)
+                _anchorReserveService.ReleasePendingChannel(channel.ChannelId);
+                throw NotEnoughBalance(e);
+            }
             catch
             {
                 _anchorReserveService.ReleasePendingChannel(channel.ChannelId);
@@ -142,7 +157,14 @@ public sealed class OpenChannelClientHandler
         }
         else
         {
-            _utxoMemoryRepository.LockUtxosToSpendOnChannel(request.FundingAmount, channel.ChannelId);
+            try
+            {
+                _utxoMemoryRepository.LockUtxosToSpendOnChannel(request.FundingAmount, channel.ChannelId);
+            }
+            catch (InvalidOperationException e)
+            {
+                throw NotEnoughBalance(e);
+            }
         }
 
         // Create a task completion source for the response
@@ -187,6 +209,20 @@ public sealed class OpenChannelClientHandler
                 _logger.LogInformation("Sending OpenChannel message to peer {peerId} for channel {channelId}",
                                        peerId,
                                        channel.ChannelId);
+            // Bounded wait for accept_channel (NL-392): a peer that never answers, or a cancelled request, fails the
+            // open and forgets its temporary channel below
+            using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            waitCts.CancelAfter(OpenTimeout);
+            await using var waitRegistration = waitCts.Token.Register(() =>
+            {
+                if (ct.IsCancellationRequested)
+                    tsc.TrySetCanceled(ct);
+                else
+                    tsc.TrySetException(new ClientException(ErrorCodes.ConnectionError,
+                                                            $"Peer {peerId} did not answer open_channel within "
+                                                          + $"{OpenTimeout.TotalSeconds:0} s"));
+            });
+
             // Stores the temporary channel and queues open_channel on the peer's outbox, under the channel's lock
             await _channelManager.StartOpeningChannelAsync(peerId, channel, openChannel1Message);
 
@@ -195,6 +231,11 @@ public sealed class OpenChannelClientHandler
         catch
         {
             _utxoMemoryRepository.ReturnUtxosNotSpentOnChannel(_channelId);
+
+            // NL-392: the failed open's temporary channel (already gone when accept_channel's handler failed or the
+            // peer disconnected)
+            if (_channelMemoryRepository.TryRemoveTemporaryChannel(peerId, _channelId))
+                _logger.LogInformation("Forgot the temporary channel {ChannelId} of the failed open", _channelId);
 
             throw;
         }
@@ -223,6 +264,9 @@ public sealed class OpenChannelClientHandler
         void ChannelUpgradedHandlerEnvelope(object? _, ChannelUpgradedEventArgs args) =>
             HandleChannelUpgraded(args, tsc);
     }
+
+    private static ClientException NotEnoughBalance(InvalidOperationException e) =>
+        new(ErrorCodes.NotEnoughBalance, $"We don't have enough balance to open this channel: {e.Message}");
 
     private void HandleChannelUpgraded(ChannelUpgradedEventArgs args,
                                        TaskCompletionSource<OpenChannelClientResponse> tsc)
