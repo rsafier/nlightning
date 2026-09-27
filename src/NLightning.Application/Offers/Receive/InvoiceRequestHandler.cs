@@ -42,7 +42,8 @@ public enum InvoiceRequestOutcome
 /// "Invoice Requests" reader and "Invoices" writer; plan B3-T2, B3-T3, §3.7 steps 2-4).
 /// </summary>
 /// <remarks>
-/// <para>Order (first failure wins): offers unavailable, no <c>reply_path</c> or the node-wide rate limit → ignore;
+/// <para>Order (first failure wins): offers unavailable, no <c>reply_path</c> or the node-wide rate limit (one token
+/// per request, taken before parsing) → ignore;
 /// <see cref="InvoiceRequestReader"/> (B12-IRQ-02 without the offer) and the <c>invreq_payer_id</c> signature → ignore
 /// (plan D10: nothing is answered before the signature verified); a request that answers no offer (no issuer id and no
 /// paths: the refund flow, out of scope) → ignore; offer fields that match no offer of ours → <c>invoice_error</c>;
@@ -145,7 +146,9 @@ public sealed class InvoiceRequestHandler : IOnionMessageHandler
         if (message.ReplyPath is not { } replyPath)
             return Ignore("no reply_path");
 
-        if (!_rateLimiter.HasGlobalCapacity())
+        // Every request costs a node-wide token before any parsing or signature check, so floods of bad signatures,
+        // unknown offers or wrong paths are capped too
+        if (!_rateLimiter.TryTakeGlobal())
             return Ignore("node-wide invoice_request rate limit");
 
         var payload = message.Contents.Records.FirstOrDefault(r => r.Type == InvoiceRequestType);
@@ -167,8 +170,11 @@ public sealed class InvoiceRequestHandler : IOnionMessageHandler
         using var scope = _serviceScopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var offer = await unitOfWork.OfferDbRepository.GetByOfferBytesAsync(request.OfferBytes);
+        // Never answered: an invoice_error would tell a prober which offers are not ours, and so, by silence, which
+        // ones are (linking an offer with offer_paths to our node id, or two offers to each other). BOLT 12 rationale
+        // of Invoice Requests: a node must not reveal it is the source of an offer
         if (offer is null)
-            return await RefuseAsync(replyPath, new InvoiceRequestRefusal("Unknown offer"), cancellationToken);
+            return Ignore("the offer fields match no offer of ours");
 
         // BOLT 12: MUST ignore a request that did not come through one of the offer's paths, and, for an offer without
         // paths, one that came through a blinded path (a path_id of ours: the sender's own path to us has none)

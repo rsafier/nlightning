@@ -268,6 +268,56 @@ public sealed class OfferServiceTests : IDisposable
         Assert.Equal(active.OfferId, Assert.Single(activeOnly).OfferId);
         Assert.Equal(3, all.Count);
     }
+
+    [Fact]
+    public void Given_PeersWithAndWithoutChannels_When_SelectingIntroductionNodes_Then_OnlyChannelPeersAreUsed()
+    {
+        // Arrange: offer_paths are fixed in the offer, and we never reconnect to a peer without a channel
+        var noChannelA = TestPaths.Point(0x11);
+        var channelPeerA = TestPaths.Point(0x12);
+        var noChannelB = TestPaths.Point(0x13);
+        var channelPeerB = TestPaths.Point(0x14);
+        var channelPeerC = TestPaths.Point(0x15);
+        CompactPubKey[] peers = [noChannelA, channelPeerA, noChannelB, channelPeerB, channelPeerC];
+        var withChannel = new HashSet<CompactPubKey> { channelPeerA, channelPeerB, channelPeerC };
+
+        // Act
+        var selected = OfferService.SelectIntroductionNodes(peers, withChannel.Contains, 2, out var withoutChannel);
+
+        // Assert
+        Assert.Equal([channelPeerA, channelPeerB], selected);
+        Assert.False(withoutChannel);
+    }
+
+    [Fact]
+    public void Given_OneChannelPeer_When_SelectingIntroductionNodes_Then_NoPeerWithoutAChannelFillsTheOtherPath()
+    {
+        // Arrange
+        var noChannel = TestPaths.Point(0x11);
+        var channelPeer = TestPaths.Point(0x12);
+
+        // Act
+        var selected = OfferService.SelectIntroductionNodes([noChannel, channelPeer], p => p == channelPeer, 2,
+                                                            out var withoutChannel);
+
+        // Assert
+        Assert.Equal([channelPeer], selected);
+        Assert.False(withoutChannel);
+    }
+
+    [Fact]
+    public void Given_NoChannelPeer_When_SelectingIntroductionNodes_Then_TheOthersAreTheFallback()
+    {
+        // Arrange
+        CompactPubKey[] peers = [TestPaths.Point(0x11), TestPaths.Point(0x12), TestPaths.Point(0x13)];
+
+        // Act
+        var selected = OfferService.SelectIntroductionNodes(peers, _ => false, 2, out var withoutChannel);
+
+        // Assert
+        Assert.Equal(peers.Take(2), selected);
+        Assert.True(withoutChannel);
+    }
 }
 
 /// <summary>
