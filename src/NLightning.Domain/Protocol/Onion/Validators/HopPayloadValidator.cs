@@ -29,6 +29,11 @@ using Protocol.ValueObjects;
 /// for unknown odd types, so every record (known or not) is checked against the allowed set.
 /// </para>
 /// <para>
+/// Custom records (types of 65536 and up, <see cref="OnionPayloadTlvTypes.CustomRecordTypeStart"/>) are accepted
+/// whatever their parity, as LND does, and a non-blinded final hop with a <c>keysend_preimage</c> needs no
+/// <c>payment_data</c> (keysend, a spontaneous payment without an invoice; lane lh1-l3).
+/// </para>
+/// <para>
 /// A non-blinded final hop that carries <c>short_channel_id</c> is accepted: "MUST NOT include short_channel_id" is a
 /// writer rule only, and the final-node reader requirements do not check it.
 /// </para>
@@ -87,8 +92,11 @@ public static class HopPayloadValidator
     private static OnionException? FindUnknownEvenType(HopPayload payload)
     {
         // BOLT 1: an unknown even type MUST fail the stream. The parser already enforces this; repeat it here for
-        // payloads that were built by hand.
-        var unknownEven = payload.UnknownTlvs.FirstOrDefault(tlv => tlv.Type.Value % 2 == 0);
+        // payloads that were built by hand. Custom records (65536 and up) are accepted whatever their parity, as LND
+        // does: they are for the final node's application (keysend's preimage is one, and even)
+        var unknownEven = payload.UnknownTlvs.FirstOrDefault(tlv => tlv.Type.Value % 2 == 0
+                                                                 && tlv.Type < OnionPayloadTlvTypes
+                                                                              .CustomRecordTypeStart);
 
         return unknownEven is null
                    ? null
@@ -151,8 +159,9 @@ public static class HopPayloadValidator
         // A short_channel_id at the final node is ignored: "MUST NOT include" it is a writer-only rule.
 
         // BOLT 4 reader, final node: "MUST return an error if total_msat is not present". Outside a blinded route
-        // total_msat is carried only by payment_data.
-        return payload.PaymentData is null
+        // total_msat is carried only by payment_data. A keysend payment (keysend_preimage, no invoice, so no
+        // payment_secret) is paid in one HTLC without it, as LND and CLN send it: its total is amt_to_forward
+        return payload.PaymentData is null && payload.KeysendPreimage is null
                    ? Missing(payload, OnionPayloadTlvTypes.PaymentData, "payment_data (total_msat)")
                    : null;
     }

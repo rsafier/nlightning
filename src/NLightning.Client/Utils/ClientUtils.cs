@@ -49,6 +49,12 @@ public static class ClientUtils
         Console.WriteLine("                               offers without one (or in another currency); exit code 1");
         Console.WriteLine("                               if nothing was paid or the payment failed; the limits are");
         Console.WriteLine("                               those of payinvoice");
+        Console.WriteLine("  keysend <node_id> <sats> [--tlv <type>=<hex>]... [--max-fee-msat <msat>]");
+        Console.WriteLine("          [--timeout <seconds>]");
+        Console.WriteLine("                               Send a spontaneous payment (no invoice) with our own");
+        Console.WriteLine("                               preimage; --tlv adds a custom record for the payee (type");
+        Console.WriteLine("                               65536 or more, repeatable); exit code 1 if it failed; the");
+        Console.WriteLine("                               limits are those of payinvoice, never split");
         Console.WriteLine("  fetchinvoice <offer> [msat] [--quantity <n>] [--note <text>]");
         Console.WriteLine("                               Fetch and check an invoice for a BOLT 12 offer without");
         Console.WriteLine("                               paying it (alias: fetch-invoice)");

@@ -7,6 +7,7 @@ using Domain.Money;
 using Domain.Offers.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
+using Domain.Payments.Keysend;
 using Domain.Payments.Models;
 using Domain.Protocol.Onion.Enums;
 using Persistence.Contexts;
@@ -19,6 +20,9 @@ using Persistence.Entities.Payment;
 /// <remarks>
 /// Writes are staged on the unit of work. <see cref="GetByPaymentHashAsync"/> sees what this unit of work staged
 /// (it goes through the change tracker); <see cref="GetInFlightAsync"/> and <see cref="ListAsync"/> read what is saved.
+/// <para>Keysend payments (lane lh1-l3, no schema change): a row with neither <c>Bolt11</c> nor <c>OfferBolt12</c> whose
+/// <c>Bolt12InvoiceBytes</c> is not null is a keysend payment, and that column holds its custom records as a TLV stream
+/// (<see cref="CustomRecordCodec"/>; empty when there are none). Seam for a dedicated <c>CustomRecords</c> column.</para>
 /// </remarks>
 public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRepository
 {
@@ -142,7 +146,15 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
                                     entity.Preimage is { } preimage ? new Secret(preimage) : (Secret?)null,
                                     entity.FailureCode is { } code ? (FailureCode)code : (FailureCode?)null,
                                     entity.FailureSourceIndex, entity.FailureReason, entity.CompletedAt, route,
-                                    MapBolt12(entity));
+                                    MapBolt12(entity), MapKeysend(entity));
+    }
+
+    private static KeysendDetails? MapKeysend(PaymentEntity entity)
+    {
+        if (entity.Bolt11 is not null || entity.OfferBolt12 is not null || entity.Bolt12InvoiceBytes is not { } records)
+            return null;
+
+        return new KeysendDetails(CustomRecordCodec.Decode(records));
     }
 
     private static Bolt12PaymentDetails? MapBolt12(PaymentEntity entity)
@@ -158,7 +170,9 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
     {
         entity.Bolt11 = payment.Bolt11;
         entity.OfferBolt12 = payment.Bolt12?.Offer;
-        entity.Bolt12InvoiceBytes = payment.Bolt12?.InvoiceBytes.ToArray();
+        entity.Bolt12InvoiceBytes = payment.Keysend is { } keysend
+                                        ? CustomRecordCodec.Encode(keysend.CustomRecords)
+                                        : payment.Bolt12?.InvoiceBytes.ToArray();
         entity.InvoiceRequestMetadata = payment.Bolt12?.InvoiceRequestMetadata.ToArray();
         entity.PayerNote = payment.Bolt12?.PayerNote;
         entity.AmountMsat = checked((long)payment.Amount.MilliSatoshi);

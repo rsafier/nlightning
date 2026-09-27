@@ -7,6 +7,7 @@ using Domain.Money;
 using Domain.Offers.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
+using Domain.Payments.Keysend;
 using Domain.Payments.Models;
 using Persistence.Contexts;
 using Persistence.Entities.Payment;
@@ -19,6 +20,9 @@ using Persistence.Entities.Payment;
 /// <remarks>
 /// Writes are staged on the unit of work. <see cref="GetByPaymentHashAsync"/> sees what this unit of work staged
 /// (it goes through the change tracker); <see cref="ListAsync"/> reads what is saved.
+/// <para>Keysend records (<c>InvoiceKind.Keysend</c> = 2, lane lh1-l3, no schema change): no BOLT 11 string, and
+/// <c>Bolt12InvoiceBytes</c> holds the payer's custom records as a TLV stream (<see cref="CustomRecordCodec"/>; empty
+/// when there are none). Seam for a dedicated <c>CustomRecords</c> column.</para>
 /// </remarks>
 public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRepository
 {
@@ -48,7 +52,9 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
             Bolt11 = invoice.Bolt11,
             Kind = (byte)invoice.Kind,
             OfferId = invoice.Bolt12?.OfferId,
-            Bolt12InvoiceBytes = invoice.Bolt12?.InvoiceBytes.ToArray(),
+            Bolt12InvoiceBytes = invoice.Keysend is { } keysend
+                                     ? CustomRecordCodec.Encode(keysend.CustomRecords)
+                                     : invoice.Bolt12?.InvoiceBytes.ToArray(),
             InvoiceRequestPayerId = invoice.Bolt12?.PayerId,
             Quantity = invoice.Bolt12?.Quantity,
             PayerNote = invoice.Bolt12?.PayerNote,
@@ -139,8 +145,14 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
         return new InvoiceModel(entity.PaymentHash, new Secret(entity.Preimage), new Secret(entity.PaymentSecret),
                                 ToMoney(entity.AmountMsat), entity.Description, entity.Bolt11, entity.CreatedAt,
                                 entity.ExpirySeconds, entity.MinFinalCltvExpiry, (InvoiceStatus)entity.Status,
-                                ToMoney(entity.AmountReceivedMsat), entity.SettledAt, MapBolt12(entity));
+                                ToMoney(entity.AmountReceivedMsat), entity.SettledAt, MapBolt12(entity),
+                                MapKeysend(entity));
     }
+
+    private static KeysendDetails? MapKeysend(InvoiceEntity entity) =>
+        entity.Kind == (byte)InvoiceKind.Keysend
+            ? new KeysendDetails(CustomRecordCodec.Decode(entity.Bolt12InvoiceBytes ?? []))
+            : null;
 
     private static Bolt12InvoiceDetails? MapBolt12(InvoiceEntity entity)
     {

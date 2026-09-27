@@ -42,6 +42,16 @@ public sealed class InvoiceInfoIpcResponse
 
     [Key(9)] public DateTimeOffset? SettledAt { get; init; }
 
+    /// <summary>
+    /// BOLT 11, BOLT 12 or a received keysend payment.
+    /// </summary>
+    [Key(10)] public InvoiceKind Kind { get; init; }
+
+    /// <summary>
+    /// The custom records a keysend payer attached, by type (null or empty for invoices we issued).
+    /// </summary>
+    [Key(11)] public Dictionary<ulong, byte[]>? CustomRecords { get; init; }
+
     public static InvoiceInfoIpcResponse FromClientResponse(InvoiceInfoClientResponse invoice)
     {
         ArgumentNullException.ThrowIfNull(invoice);
@@ -56,7 +66,9 @@ public sealed class InvoiceInfoIpcResponse
             ExpiresAt = invoice.ExpiresAt,
             IsExpired = invoice.IsExpired,
             AmountReceived = invoice.AmountReceived,
-            SettledAt = invoice.SettledAt
+            SettledAt = invoice.SettledAt,
+            Kind = invoice.Kind,
+            CustomRecords = CustomRecordsIpc.FromRecords(invoice.CustomRecords)
         };
     }
 }

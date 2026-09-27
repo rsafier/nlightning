@@ -29,6 +29,10 @@ using Domain.Protocol.Onion.Models;
 ///   amount paid (<c>total_msat</c>, BOLT 4 "Basic Multi-Part Payments") below the invoice amount or more than twice
 ///   it; <c>cltv_expiry</c> &lt; current height + the invoice's <c>min_final_cltv_expiry_delta</c>.</item>
 /// </list>
+/// <para>Keysend (lane lh1-l3): for an <c>InvoiceKind.Keysend</c> record (made by <c>KeysendReceiver</c> from the
+/// onion's <c>keysend_preimage</c>) <c>payment_data</c> is optional and its secret is not checked; the HTLC must carry
+/// that preimage outside a blinded route and pay in one part (<c>total_msat</c>, when sent, = <c>amt_to_forward</c>);
+/// the record has no amount, so any amount is accepted.</para>
 /// <para>The first two checks run before the invoice lookup, as LND and CLN do: they detect a penultimate hop that
 /// tampered with the HTLC and reveal nothing about our invoices. BOLT 4 lists 15 before 18/19 in its failure-code
 /// list; since the HTLC-vs-onion errors carry no invoice information, reporting them first leaks nothing.</para>
@@ -157,6 +161,13 @@ public sealed class FinalHopProcessor
         {
             totalMsat = data.TotalMsat;
         }
+        else if (invoice is { Kind: InvoiceKind.Keysend }
+              && payload is { KeysendPreimage: not null, AmtToForward: { } keysendAmount })
+        {
+            // Keysend (lane lh1-l3): one HTLC without payment_data (no invoice, no payment_secret); what it pays is
+            // amt_to_forward
+            totalMsat = keysendAmount;
+        }
         else
         {
             return Unknown("The final payload has no payment_data.");
@@ -172,6 +183,13 @@ public sealed class FinalHopProcessor
         // BOLT 12 invoices are paid only at the end of their blinded paths (B12-INV-02, plan B3-T4)
         if (!payload.IsBlinded && invoice.Kind == InvoiceKind.Bolt12)
             return Unknown("A BOLT 12 invoice is paid only through its blinded paths.");
+
+        // Keysend (lane lh1-l3): the record was made for the preimage the payer put in the onion; only that preimage
+        // pays it, in one part, outside a blinded route (keysend has no blinded form)
+        var isKeysend = invoice.Kind == InvoiceKind.Keysend;
+        if (isKeysend && (payload.IsBlinded || payload.KeysendPreimage is not { } keysendPreimage
+                       || !keysendPreimage.Span.SequenceEqual((ReadOnlySpan<byte>)invoice.Preimage)))
+            return Unknown("A keysend record is paid only by an HTLC carrying its keysend_preimage.");
 
         // Only a Settled invoice commits to its set (the settle is the commit point): for any other status a mark
         // skips no check
@@ -204,10 +222,15 @@ public sealed class FinalHopProcessor
             if (blindedRecipientData!.PathId is not { } pathId || !BlindedPathId.Matches(pathId.Span, invoice.Preimage))
                 return Unknown("The blinded route's path_id is not the invoice's.");
         }
-        else if (!payload.PaymentData!.PaymentSecret.Equals(invoice.PaymentSecret))
+        else if (!isKeysend && !payload.PaymentData!.PaymentSecret.Equals(invoice.PaymentSecret))
         {
+            // A keysend record has no secret to check: the payer's preimage authenticates it
             return Unknown("The payment_secret does not match.");
         }
+
+        if (isKeysend && isMultiPart)
+            return Unknown($"total_msat {totalMsat.MilliSatoshi} differs from amt_to_forward "
+                         + $"{amtToForward.MilliSatoshi} (keysend payments are single-part).");
 
         // Without basic_mpp, total_msat must be exactly amt_to_forward (BOLT 4)
         if (isMultiPart && !acceptMultiPart)

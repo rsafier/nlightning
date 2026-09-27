@@ -3,6 +3,7 @@ namespace NLightning.Domain.Payments.Models;
 using Channels.ValueObjects;
 using Crypto.ValueObjects;
 using Enums;
+using Keysend;
 using Money;
 using Offers.Models;
 using Protocol.Onion.Enums;
@@ -40,6 +41,12 @@ public sealed class PaymentModel
     /// The BOLT 12 offer and invoice paid, when the payment came from an offer (<c>payoffer</c>).
     /// </summary>
     public Bolt12PaymentDetails? Bolt12 { get; }
+
+    /// <summary>
+    /// The custom records of a spontaneous (keysend) payment, when the payment is one: it pays no invoice
+    /// (<see cref="Bolt11"/> and <see cref="Bolt12"/> are null) and the preimage was ours.
+    /// </summary>
+    public KeysendDetails? Keysend { get; }
 
     public CompactPubKey PayeeNodeId { get; }
 
@@ -112,10 +119,13 @@ public sealed class PaymentModel
     /// <param name="route">The route of the onion (see <see cref="Route"/>); null or empty when not recorded. When
     /// given, its last hop must be <paramref name="payeeNodeId"/>.</param>
     /// <param name="bolt12">The BOLT 12 offer and invoice paid, if any.</param>
+    /// <param name="keysend">The custom records of a keysend payment, when it is one.</param>
     public PaymentModel(Hash paymentHash, string? bolt11, CompactPubKey payeeNodeId, LightningMoney amount,
                         LightningMoney fee, DateTimeOffset createdAt, IReadOnlyList<PaymentHop>? route = null,
-                        Bolt12PaymentDetails? bolt12 = null)
+                        Bolt12PaymentDetails? bolt12 = null, KeysendDetails? keysend = null)
     {
+        if (keysend is not null && (bolt11 is not null || bolt12 is not null))
+            throw new ArgumentException("A keysend payment pays no invoice.", nameof(keysend));
         ArgumentNullException.ThrowIfNull(amount);
         ArgumentNullException.ThrowIfNull(fee);
         if (amount.IsZero)
@@ -126,6 +136,7 @@ public sealed class PaymentModel
         PaymentHash = paymentHash;
         Bolt11 = bolt11;
         Bolt12 = bolt12;
+        Keysend = keysend;
         PayeeNodeId = payeeNodeId;
         Amount = amount;
         Fee = fee;
@@ -143,7 +154,7 @@ public sealed class PaymentModel
                                        Secret? preimage, FailureCode? failureCode, int? failureSourceIndex,
                                        string? failureReason, DateTimeOffset? completedAt,
                                        IReadOnlyList<PaymentHop>? route = null,
-                                       Bolt12PaymentDetails? bolt12 = null)
+                                       Bolt12PaymentDetails? bolt12 = null, KeysendDetails? keysend = null)
     {
         if (!Enum.IsDefined(status))
             throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown payment status.");
@@ -156,7 +167,7 @@ public sealed class PaymentModel
         if (status != PaymentStatus.InFlight && completedAt is null)
             throw new ArgumentException("A completed payment needs its completion time.", nameof(completedAt));
 
-        return new PaymentModel(paymentHash, bolt11, payeeNodeId, amount, fee, createdAt, route, bolt12)
+        return new PaymentModel(paymentHash, bolt11, payeeNodeId, amount, fee, createdAt, route, bolt12, keysend)
         {
             Status = status,
             OutgoingChannelId = outgoingChannelId,

@@ -361,6 +361,27 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Sends a spontaneous (keysend) payment and waits for the outcome (ClientCommand 31).
+    /// </summary>
+    /// <param name="arguments">The parsed <c>keysend</c> arguments.</param>
+    /// <param name="ct">Cancels the call (the payment itself keeps going in the daemon).</param>
+    public Task<PayInvoiceIpcResponse> KeysendAsync(KeysendArguments arguments, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(arguments);
+        var req = new KeysendIpcRequest
+        {
+            Destination = arguments.Destination,
+            Amount = LightningMoney.Satoshis(arguments.AmountSat),
+            CustomRecords = arguments.CustomRecords.Count == 0
+                                ? null
+                                : arguments.CustomRecords.ToDictionary(pair => pair.Key, pair => pair.Value),
+            TimeoutSeconds = arguments.TimeoutSeconds,
+            MaxFee = arguments.MaxFeeMsat is { } fee ? LightningMoney.MilliSatoshis(fee) : null
+        };
+        return SendRequestAsync<KeysendIpcRequest, PayInvoiceIpcResponse>(ClientCommand.Keysend, req, ct);
+    }
+
+    /// <summary>
     /// Fetches an invoice for a BOLT 12 offer and pays it (ClientCommand 29).
     /// </summary>
     /// <param name="arguments">The parsed <c>payoffer</c> arguments.</param>

@@ -55,6 +55,23 @@ public static class OnionPayloadTlvTypes
     public static readonly BigSize TotalAmountMsat = 18;
 
     /// <summary>
+    /// The first type of the custom-record range (65536, LND's <c>record.CustomTypeStart</c>): types from here on are
+    /// application records for the final node (keysend, podcasting 2.0 boostagrams, ...), not BOLT 4 fields.
+    /// </summary>
+    /// <remarks>
+    /// A record in this range is kept verbatim whatever its parity: like LND ("we always accept custom fields, because a
+    /// higher level application may understand them") the parser and <c>HopPayloadValidator</c> do not fail an unknown
+    /// even type here (BOLT 1's "it's ok to be odd" rule applies below it). They are not in <see cref="KnownTypes"/>.
+    /// </remarks>
+    public static readonly BigSize CustomRecordTypeStart = 65536;
+
+    /// <summary>
+    /// keysend_preimage (5482373484, 32 bytes): the preimage of a spontaneous payment (keysend), in the final hop's
+    /// custom-record range. Not a BOLT type; LND, CLN and Eclair use it.
+    /// </summary>
+    public static readonly BigSize KeysendPreimage = 5482373484;
+
+    /// <summary>
     /// Every type of the <c>payload</c> namespace this node understands. Any other even type fails the payload
     /// (BOLT 1 "it's ok to be odd").
     /// </summary>

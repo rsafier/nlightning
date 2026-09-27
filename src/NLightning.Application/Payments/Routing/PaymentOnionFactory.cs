@@ -9,6 +9,7 @@ using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
+using Keysend;
 
 /// <summary>
 /// Builds the Sphinx onion for a <see cref="PaymentRoute"/> (ONION M4-T6).
@@ -18,7 +19,8 @@ using Domain.Serialization.Interfaces;
 /// <c>outgoing_cltv_value</c>; intermediate hops also get <c>short_channel_id</c>; the payee gets
 /// <c>payment_data</c> (<c>payment_secret</c>, <c>total_msat</c> = <see cref="PaymentRoute.TotalAmount"/>: the amount,
 /// or the whole payment's amount for one part of a multi-part payment) and, when the invoice has one,
-/// <c>payment_metadata</c>.</para>
+/// <c>payment_metadata</c>. A keysend payment's payee gets <c>keysend_preimage</c> and the custom records instead of
+/// <c>payment_data</c> (<see cref="KeysendFinalRecords"/>; no invoice, so no <c>payment_secret</c>).</para>
 /// <para>The session key is 32 bytes from the OS CSPRNG, drawn again until it is a valid secp256k1 scalar, used for
 /// this onion only and zeroed afterwards.</para>
 /// </remarks>
@@ -41,12 +43,14 @@ public sealed class PaymentOnionFactory
     /// Builds the onion with a fresh CSPRNG session key.
     /// </summary>
     /// <exception cref="ArgumentException">If the payloads do not fit in the 1300-byte onion.</exception>
-    public async Task<PaymentOnion> CreateAsync(PaymentRoute route)
+    /// <param name="route">The route.</param>
+    /// <param name="keysend">The keysend records of the payee's payload, for a keysend payment.</param>
+    public async Task<PaymentOnion> CreateAsync(PaymentRoute route, KeysendFinalRecords? keysend = null)
     {
         var sessionKey = CreateSessionKey();
         try
         {
-            return await CreateAsync(route, new PrivKey(sessionKey));
+            return await CreateAsync(route, new PrivKey(sessionKey), keysend);
         }
         finally
         {
@@ -59,7 +63,8 @@ public sealed class PaymentOnionFactory
     /// <see cref="CreateAsync(PaymentRoute)"/>). The key must never be reused.
     /// </summary>
     /// <exception cref="ArgumentException">If the payloads do not fit in the 1300-byte onion.</exception>
-    public async Task<PaymentOnion> CreateAsync(PaymentRoute route, PrivKey sessionKey)
+    public async Task<PaymentOnion> CreateAsync(PaymentRoute route, PrivKey sessionKey,
+                                                KeysendFinalRecords? keysend = null)
     {
         ArgumentNullException.ThrowIfNull(route);
 
@@ -67,7 +72,7 @@ public sealed class PaymentOnionFactory
         foreach (var hop in route.Hops)
         {
             using var stream = new MemoryStream();
-            await _hopPayloadSerializer.SerializeAsync(CreatePayload(hop, route), stream);
+            await _hopPayloadSerializer.SerializeAsync(CreatePayload(hop, route, keysend), stream);
             hops.Add(new OnionHop(hop.NodeId, stream.ToArray()));
         }
 
@@ -78,13 +83,21 @@ public sealed class PaymentOnionFactory
     /// <summary>
     /// The hop payload a route hop receives.
     /// </summary>
-    public static HopPayload CreatePayload(RouteHop hop, PaymentRoute route)
+    /// <param name="hop">The hop.</param>
+    /// <param name="route">The route.</param>
+    /// <param name="keysend">For a keysend payment, what the payee gets instead of <c>payment_data</c>.</param>
+    public static HopPayload CreatePayload(RouteHop hop, PaymentRoute route, KeysendFinalRecords? keysend = null)
     {
         ArgumentNullException.ThrowIfNull(hop);
         ArgumentNullException.ThrowIfNull(route);
 
         if (hop.EncryptedRecipientData is { } encryptedRecipientData)
+        {
+            if (keysend is not null)
+                throw new ArgumentException("A keysend payment is not paid through a blinded path.", nameof(keysend));
+
             return CreateBlindedPayload(hop, encryptedRecipientData, route);
+        }
 
         var tlvs = new List<BaseTlv>
         {
@@ -95,6 +108,11 @@ public sealed class PaymentOnionFactory
         if (hop.OutgoingShortChannelId is { } shortChannelId)
         {
             tlvs.Add(new OnionShortChannelIdTlv(shortChannelId));
+        }
+        else if (keysend is not null)
+        {
+            // keysend (LND, CLN): no payment_data, one HTLC, the preimage and the custom records for the payee
+            tlvs.AddRange(keysend.ToTlvs());
         }
         else
         {

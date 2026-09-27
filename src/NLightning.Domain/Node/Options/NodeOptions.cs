@@ -115,6 +115,12 @@ public class NodeOptions
     /// <see cref="AnchorReserveOptions"/>
     public AnchorReserveOptions Anchors { get; set; } = new();
 
+    /// <summary>
+    /// Spontaneous (keysend) payments, from <c>Node:Keysend</c> (lane lh1-l3).
+    /// </summary>
+    /// <see cref="KeysendOptions"/>
+    public KeysendOptions Keysend { get; set; } = new();
+
     /// <summary>The longest <see cref="Alias"/> in UTF-8 bytes (the <c>alias</c> field of <c>node_announcement</c>).</summary>
     public const int AliasMaxBytes = 32;
 
@@ -196,6 +202,7 @@ public class NodeOptions
         errors.AddRange(Routing.GetValidationErrors());
         errors.AddRange(FeeUpdates.GetValidationErrors());
         errors.AddRange(Anchors.GetValidationErrors());
+        errors.AddRange(Keysend.GetValidationErrors());
         if (CustomSignet is not null)
             errors.AddRange(CustomSignet.GetValidationErrors(BitcoinNetwork));
         return errors;

@@ -34,6 +34,7 @@ using Domain.Protocol.Tlv;
 using FinalHop;
 using Gossip.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Keysend;
 using Onchain;
 using Onion;
 
@@ -121,6 +122,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private readonly IReadOnlyList<ILocalPaymentHtlcHandler> _localPaymentHandlers;
     private readonly ILogger<HtlcSwitch> _logger;
     private readonly uint _reasonableDepth;
+    private readonly KeysendReceiver _keysendReceiver;
     private readonly IncomingOnionProcessor _onionProcessor;
     private readonly IPeerLivenessProbe _peerLivenessProbe;
     private readonly IServiceScopeFactory _serviceScopeFactory;
@@ -177,6 +179,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         _mppTimeout = mppTimeout > TimeSpan.Zero ? mppTimeout : HtlcSwitchOptions.DefaultMppTimeout;
         _reasonableDepth = onchainOptions?.Value.ReasonableDepth ?? OutputResolutionFacts.DefaultReasonableDepth;
         _blindedErrorMaxDelay = switchOptions?.Value.BlindedErrorMaxDelay ?? HtlcSwitchOptions.DefaultBlindedErrorMaxDelay;
+        _keysendReceiver = new KeysendReceiver(nodeOptions?.Value.Keysend, _timeProvider);
     }
 
     /// <summary>Waits until no <c>mpp_timeout</c> round runs in the background (tests).</summary>
@@ -390,10 +393,22 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
         var height = CurrentHeight;
         FinalHopResult decision;
+        InvoiceModel? newKeysendRecord = null;
         using (var scope = _serviceScopeFactory.CreateScope())
         {
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
             var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(htlc.PaymentHash);
+
+            // Keysend (lane lh1-l3): no invoice for the hash and a keysend_preimage in the onion. The record is checked
+            // like an invoice and saved only once accepted (below); a refused one leaves the hash unknown
+            if (invoice is null && KeysendReceiver.IsKeysend(final.Payload))
+            {
+                invoice = newKeysendRecord = _keysendReceiver.TryCreateInvoice(htlc.PaymentHash, final.Payload,
+                                                                               out var keysendRefusal);
+                if (keysendRefusal is not null)
+                    _logger.LogInformation("Keysend HTLC {HtlcId} of channel {ChannelId} for {PaymentHash} refused: "
+                                         + "{Reason}", htlc.Id, channelId, htlc.PaymentHash, keysendRefusal);
+            }
 
             // NL-323: a part of a set we committed to carries the invoice's preimage in its record, and the invoice is
             // Settled (the settle is the commit point: a mark on a part of an Open invoice, left by a set that became
@@ -447,6 +462,9 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             return;
         }
 
+        if (newKeysendRecord is not null)
+            await SaveKeysendRecordAsync(newKeysendRecord, htlc, channelId);
+
         var part = new HtlcSetPart(channelId, htlc.Id, amount, decision.PartAmount!, final.SharedSecret);
         var set = GetHtlcSet(htlc.PaymentHash, decision.TotalMsat!);
         if (set.TotalMsat != decision.TotalMsat!)
@@ -475,6 +493,22 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         }
 
         await FulfillSetAsync(set, decision.Preimage!.Value, height, cancellationToken);
+    }
+
+    /// <summary>
+    /// Saves the invoice record of an accepted keysend HTLC (lane lh1-l3) in its own save, under the payment hash lock,
+    /// before its set is fulfilled: the settle then finds it <c>Open</c> as for any invoice. A crash after this save
+    /// leaves an <c>Open</c> record that the replayed HTLC (or a retry with the same preimage) is checked against.
+    /// </summary>
+    private async Task SaveKeysendRecordAsync(InvoiceModel record, HtlcRecord htlc, ChannelId channelId)
+    {
+        using var scope = _serviceScopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        await unitOfWork.InvoiceDbRepository.AddAsync(record);
+        await unitOfWork.SaveChangesAsync();
+        _logger.LogInformation("Keysend payment {PaymentHash} of {AmountMsat} msat received on channel {ChannelId} "
+                             + "(HTLC {HtlcId}) with {CustomRecords} custom record(s)", record.PaymentHash,
+                               htlc.AmountMsat, channelId, htlc.Id, record.Keysend?.CustomRecords.Count ?? 0);
     }
 
     /// <summary>

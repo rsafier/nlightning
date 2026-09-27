@@ -2,6 +2,7 @@ namespace NLightning.Domain.Payments.Models;
 
 using Crypto.ValueObjects;
 using Enums;
+using Keysend;
 using Money;
 using Offers.Models;
 
@@ -73,20 +74,32 @@ public sealed class InvoiceModel
     public Bolt12InvoiceDetails? Bolt12 { get; }
 
     /// <summary>
-    /// <see cref="InvoiceKind.Bolt12"/> when <see cref="Bolt12"/> is set, else <see cref="InvoiceKind.Bolt11"/>.
+    /// The custom records of a spontaneous payment we received (<see cref="InvoiceKind.Keysend"/>), or null for an
+    /// invoice we issued.
     /// </summary>
-    public InvoiceKind Kind => Bolt12 is null ? InvoiceKind.Bolt11 : InvoiceKind.Bolt12;
+    public KeysendDetails? Keysend { get; }
+
+    /// <summary>
+    /// <see cref="InvoiceKind.Bolt12"/> when <see cref="Bolt12"/> is set, <see cref="InvoiceKind.Keysend"/> when
+    /// <see cref="Keysend"/> is, else <see cref="InvoiceKind.Bolt11"/>.
+    /// </summary>
+    public InvoiceKind Kind => Bolt12 is not null ? InvoiceKind.Bolt12
+                             : Keysend is not null ? InvoiceKind.Keysend
+                             : InvoiceKind.Bolt11;
 
     public InvoiceModel(Hash paymentHash, Secret preimage, Secret paymentSecret, LightningMoney? amount,
                         string? description, string? bolt11, DateTimeOffset createdAt, uint expirySeconds,
                         ushort minFinalCltvExpiry, InvoiceStatus status = InvoiceStatus.Open,
                         LightningMoney? amountReceived = null, DateTimeOffset? settledAt = null,
-                        Bolt12InvoiceDetails? bolt12 = null)
+                        Bolt12InvoiceDetails? bolt12 = null, KeysendDetails? keysend = null)
     {
-        if (bolt12 is null)
+        if (bolt12 is not null && keysend is not null)
+            throw new ArgumentException("A keysend record is not a BOLT 12 invoice.", nameof(keysend));
+        if (bolt12 is null && keysend is null)
             ArgumentException.ThrowIfNullOrWhiteSpace(bolt11);
         else if (bolt11 is not null)
-            throw new ArgumentException("A BOLT 12 invoice has no BOLT 11 string.", nameof(bolt11));
+            throw new ArgumentException("A BOLT 12 invoice or a keysend record has no BOLT 11 string.",
+                                        nameof(bolt11));
         if (amount is { IsZero: true })
             throw new ArgumentOutOfRangeException(nameof(amount), "An invoice amount must be positive; use null for "
                                                                 + "any amount.");
@@ -113,6 +126,7 @@ public sealed class InvoiceModel
         AmountReceived = amountReceived;
         SettledAt = settledAt;
         Bolt12 = bolt12;
+        Keysend = keysend;
     }
 
     /// <summary>

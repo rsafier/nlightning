@@ -10,6 +10,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Offers.Enums;
 using Domain.Payments.Enums;
+using Domain.Payments.Keysend;
 using Handlers;
 using Ipc;
 using Printers;
@@ -172,6 +173,13 @@ internal static class ClientApp
                                                                   cancellationToken);
                     new PayOfferPrinter().Print(offerPayment);
                     if (offerPayment.Payment is not { Status: not PaymentStatus.Failed })
+                        return Failure;
+                    break;
+                case "keysend":
+                    var keysendPayment = await client.KeysendAsync(ParseKeysendOptions(commandArgs, out _)!,
+                                                                   cancellationToken);
+                    new PayInvoicePrinter().Print(keysendPayment);
+                    if (keysendPayment.Payment.Status == PaymentStatus.Failed)
                         return Failure;
                     break;
                 case "fetchinvoice":
@@ -363,6 +371,10 @@ internal static class ClientApp
             case "pay-offer":
                 return ParsePayOfferOptions(commandArgs, true, out var payOfferError) is null
                            ? $"{payOfferError} Usage: {cmd} {PayOfferUsage}"
+                           : null;
+            case "keysend":
+                return ParseKeysendOptions(commandArgs, out var keysendError) is null
+                           ? $"{keysendError} Usage: {cmd} {KeysendUsage}"
                            : null;
             case "fetchinvoice":
             case "fetch-invoice":
@@ -823,6 +835,153 @@ internal static class ClientApp
         return new PayInvoiceArguments(positional[0], amount, timeout, maxFeeMsat, maxParts);
     }
 
+    /// <summary>The arguments of keysend.</summary>
+    internal const string KeysendUsage =
+        "<node_id> <amount_sat> [--tlv <type>=<hex>]... [--max-fee-msat <msat>] [--timeout <seconds>]";
+
+    /// <summary>
+    /// The largest keysend amount, in sats: the 21M BTC supply.
+    /// </summary>
+    internal const ulong MaxKeysendSats = 2_100_000_000_000_000;
+
+    /// <summary>
+    /// Parses the arguments of keysend: <c>&lt;node_id&gt; &lt;amount_sat&gt;</c> and the options <c>--tlv
+    /// &lt;type&gt;=&lt;hex&gt;</c> (a custom record for the payee, type 65536 or more and never 5482373484, the keysend
+    /// preimage; repeatable, an empty value allowed), <c>--max-fee-msat &lt;msat&gt;</c> and <c>--timeout
+    /// &lt;seconds&gt;</c> (1 to <see cref="MaxPayTimeoutSeconds"/>), each also as <c>--option=value</c>.
+    /// </summary>
+    /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
+    internal static KeysendArguments? ParseKeysendOptions(string[] commandArgs, out string? error)
+    {
+        var positional = new List<string>();
+        var records = new Dictionary<ulong, byte[]>();
+        ulong? maxFeeMsat = null;
+        uint? timeout = null;
+        for (var i = 0; i < commandArgs.Length; i++)
+        {
+            var argument = commandArgs[i];
+            if (!argument.StartsWith("--", StringComparison.Ordinal))
+            {
+                positional.Add(argument);
+                continue;
+            }
+
+            var separator = argument.IndexOf('=');
+            var name = separator < 0 ? argument : argument[..separator];
+            string value;
+            if (separator >= 0)
+            {
+                value = argument[(separator + 1)..];
+            }
+            else if (i + 1 < commandArgs.Length)
+            {
+                value = commandArgs[++i];
+            }
+            else
+            {
+                error = $"Missing value for {name}.";
+                return null;
+            }
+
+            switch (name.ToLowerInvariant())
+            {
+                case "--tlv":
+                    if (!TryParseCustomRecord(value, out var type, out var bytes, out var recordError))
+                    {
+                        error = $"Invalid --tlv '{value}': {recordError}";
+                        return null;
+                    }
+
+                    if (!records.TryAdd(type, bytes))
+                    {
+                        error = $"Custom record type {type} is given twice.";
+                        return null;
+                    }
+
+                    break;
+                case "--max-fee-msat":
+                    if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var fee)
+                     || fee > MaxPayFeeMsat)
+                    {
+                        error = $"Invalid fee limit '{value}': expected a number of msat from 0 to {MaxPayFeeMsat}.";
+                        return null;
+                    }
+
+                    maxFeeMsat = fee;
+                    break;
+                case "--timeout":
+                    if (!TryParsePositiveUInt(value, out var seconds) || seconds > MaxPayTimeoutSeconds)
+                    {
+                        error = $"Invalid timeout '{value}': expected 1 to {MaxPayTimeoutSeconds} seconds.";
+                        return null;
+                    }
+
+                    timeout = seconds;
+                    break;
+                default:
+                    error = $"Unknown option '{name}': expected --tlv, --max-fee-msat or --timeout.";
+                    return null;
+            }
+        }
+
+        if (positional.Count != 2)
+        {
+            error = positional.Count < 2
+                        ? "Missing arguments: the node id and the amount in sats."
+                        : $"Unexpected argument '{positional[2]}'.";
+            return null;
+        }
+
+        if (!TryParseNodeId(positional[0], out var nodeId))
+        {
+            error = $"Invalid node id '{positional[0]}': expected 66 hex characters.";
+            return null;
+        }
+
+        if (!ulong.TryParse(positional[1], NumberStyles.None, CultureInfo.InvariantCulture, out var amountSat)
+         || amountSat == 0 || amountSat > MaxKeysendSats)
+        {
+            error = $"Invalid amount '{positional[1]}': expected a positive number of sats up to {MaxKeysendSats}.";
+            return null;
+        }
+
+        error = null;
+        return new KeysendArguments(nodeId, amountSat, records, timeout, maxFeeMsat);
+    }
+
+    /// <summary>
+    /// Parses one <c>--tlv &lt;type&gt;=&lt;hex&gt;</c> custom record.
+    /// </summary>
+    internal static bool TryParseCustomRecord(string value, out ulong type, out byte[] bytes, out string? error)
+    {
+        type = 0;
+        bytes = [];
+        var separator = value.IndexOf('=');
+        if (separator <= 0)
+        {
+            error = "expected <type>=<hex>.";
+            return false;
+        }
+
+        if (!ulong.TryParse(value[..separator], NumberStyles.None, CultureInfo.InvariantCulture, out type)
+         || type < CustomRecordCodec.MinType || type == CustomRecordCodec.KeysendPreimageType)
+        {
+            error = $"the type must be a number of at least {CustomRecordCodec.MinType}, not "
+                  + $"{CustomRecordCodec.KeysendPreimageType} (the keysend preimage).";
+            return false;
+        }
+
+        var hex = value[(separator + 1)..];
+        if (hex.Length > 0 && !TryParseHex(hex, out bytes))
+        {
+            error = "the value must be hex (an even number of hex characters).";
+            return false;
+        }
+
+        error = null;
+        return true;
+    }
+
     /// <summary>The arguments of payoffer.</summary>
     internal const string PayOfferUsage =
         "<offer> [amount_msat] [--quantity <n>] [--note <text>] [--max-fee-msat <msat>] [--max-parts <n>] "
@@ -1251,6 +1410,16 @@ internal sealed record PayInvoiceArguments(
     uint? TimeoutSeconds,
     ulong? MaxFeeMsat,
     uint? MaxParts);
+
+/// <summary>
+/// The parsed arguments of keysend: the payee, the amount in sats and the custom records by type.
+/// </summary>
+public sealed record KeysendArguments(
+    CompactPubKey Destination,
+    ulong AmountSat,
+    IReadOnlyDictionary<ulong, byte[]> CustomRecords,
+    uint? TimeoutSeconds,
+    ulong? MaxFeeMsat);
 
 /// <summary>
 /// The parsed arguments of payoffer and fetchinvoice (fetchinvoice leaves the payment limits null).
