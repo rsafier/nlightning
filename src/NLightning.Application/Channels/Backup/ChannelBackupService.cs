@@ -23,7 +23,10 @@ using Models;
 /// <remarks>
 /// The file is only replaced when its channels changed, and never by an empty backup while the database holds no
 /// channel row at all (a wiped or new database: the existing file is what <c>restorechanbackup</c> needs). A file
-/// that does not decrypt with our key is moved aside, not overwritten.
+/// that does not decrypt with our key is moved aside, not overwritten. A file holding a channel the database has no
+/// row for at all (lost, not closed through this database: e.g. a new channel opened on a wiped database before the
+/// restore) is moved aside as <c>&lt;file&gt;.&lt;UTC time&gt;.superseded</c> before the new file is written, so no
+/// lost channel's backup is ever dropped.
 /// </remarks>
 public sealed class ChannelBackupService : IChannelBackupService
 {
@@ -144,7 +147,8 @@ public sealed class ChannelBackupService : IChannelBackupService
         await _writeLock.WaitAsync(cancellationToken);
         try
         {
-            var (snapshot, channelRows) = await LoadAsync(null, cancellationToken);
+            var (snapshot, channelIds) = await LoadAsync(null, cancellationToken);
+            var channelRows = channelIds.Count;
             var content = CanonicalContent(snapshot);
             if (_lastWrittenContent is not null && content.AsSpan().SequenceEqual(_lastWrittenContent))
                 return new ChannelBackupWriteResult(ChannelBackupWriteOutcome.Unchanged, snapshot.Channels.Count,
@@ -187,6 +191,18 @@ public sealed class ChannelBackupService : IChannelBackupService
                         return new ChannelBackupWriteResult(ChannelBackupWriteOutcome.Unchanged,
                                                             snapshot.Channels.Count, path);
                     }
+
+                    // Channels the database never saw closed: this file is their only backup, keep it aside
+                    var lost = existing.Channels.Where(c => !channelIds.Contains(c.ChannelId))
+                                       .Select(c => c.ChannelId).Distinct().ToList();
+                    if (lost.Count > 0)
+                    {
+                        movedAside = ChannelBackupFile.MoveAside(path, _timeProvider.GetUtcNow(), "superseded");
+                        _logger.LogError("The channel backup {Path} holds {Count} channel(s) the database has no row for "
+                                       + "({ChannelIds}); it is kept as {MovedTo} (restore it with restorechanbackup) "
+                                       + "and a new file is written", path, lost.Count, string.Join(", ", lost),
+                                         movedAside);
+                    }
                 }
             }
 
@@ -206,7 +222,7 @@ public sealed class ChannelBackupService : IChannelBackupService
         }
     }
 
-    private async Task<(ChannelBackupSnapshot Snapshot, int ChannelRows)> LoadAsync(
+    private async Task<(ChannelBackupSnapshot Snapshot, HashSet<ChannelId> ChannelIds)> LoadAsync(
         ChannelId? channelId, CancellationToken cancellationToken)
     {
         using var scope = _serviceScopeFactory.CreateScope();
@@ -232,7 +248,7 @@ public sealed class ChannelBackupService : IChannelBackupService
         var createdAt = DateTimeOffset.FromUnixTimeSeconds(_timeProvider.GetUtcNow().ToUnixTimeSeconds());
         var snapshot = new ChannelBackupSnapshot(_nodeOptions.BitcoinNetwork.ChainHash,
                                                  _secureKeyManager.GetNodePubKey(), createdAt, entries);
-        return (snapshot, channels.Count);
+        return (snapshot, channels.Select(c => c.ChannelId).ToHashSet());
     }
 
     internal static ChannelBackupEntry CreateEntry(ChannelModel channel, PeerModel? peer)

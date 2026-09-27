@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
 using OutPoint = NBitcoin.OutPoint;
+using Transaction = NBitcoin.Transaction;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -64,13 +65,28 @@ public class BackupRestoreFlowTests : IAsyncLifetime
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Given_ABackupAndAWipedDatabase_When_Restored_Then_LndForceClosesAndOurToRemoteIsSwept(
-        bool anchors)
+    public Task Given_ABackupAndAWipedDatabase_When_Restored_Then_LndForceClosesAndOurToRemoteIsSwept(bool anchors) =>
+        RunAsync(anchors, false);
+
+    /// <summary>
+    /// LND force-closes while our database is lost and its commitment confirms before <c>restorechanbackup</c> runs
+    /// (the chain monitor only sees spends from its height on): the restore finds the spend and our <c>to_remote</c>
+    /// is still swept.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task Given_LndForceClosedBeforeTheRestore_When_Restored_Then_TheEarlierSpendIsFoundAndOurToRemoteIsSwept(
+        bool anchors) =>
+        RunAsync(anchors, true);
+
+    private async Task RunAsync(bool anchors, bool peerClosesFirst)
     {
         // Arrange: a used channel and its backup
         var ct = TestContext.Current.CancellationToken;
         var david = _fixture.GetLndNode("david");
-        var node = await _harness.CreateNodeAsync(anchors ? "scb-anchors" : "scb-legacy", ct,
+        var node = await _harness.CreateNodeAsync((anchors ? "scb-anchors" : "scb-legacy") + (peerClosesFirst ? "-early" : ""),
+                                                  ct,
                                                   o => o.Features.OptionAnchors = anchors
                                                                                      ? FeatureSupport.Optional
                                                                                      : FeatureSupport.No,
@@ -96,26 +112,44 @@ public class BackupRestoreFlowTests : IAsyncLifetime
         await node.StartAsync(ct);
         Assert.False(node.ChannelMemoryRepository.TryGetChannel(channel.ChannelId, out _));
         var walletBefore = AnchorsHarness.WalletBalance(node);
+        var channelPoint = channel.ChannelPoint().Split(':');
+        var fundingOutPoint = new OutPoint(uint256.Parse(channelPoint[0]), uint.Parse(channelPoint[1]));
+        Transaction? lndCommitment = null;
+        if (peerClosesFirst)
+        {
+            // LND force-closes on its own and its commitment is buried before the restore
+            lndCommitment = await ForceCloseAsync(david, fundingOutPoint, ct);
+            await _harness.MineUntilConfirmedAsync(node, [david], lndCommitment.GetHash(), ct);
+            await ChainSync.MineAndWaitAsync(_fixture, 3, [david], [node], ct);
+        }
 
         // Act 2: restorechanbackup
         var restore = await HandleAsync<RestoreChanBackupClientRequest, RestoreChanBackupClientResponse>(
                           node, new RestoreChanBackupClientRequest { Backup = export.Backup }, ct);
 
-        // Assert: a recovery channel, the peer asked to force close
+        // Assert: a recovery channel, the peer asked to force close (or its earlier close found)
         var restored = Assert.Single(restore.Channels);
+        Console.WriteLine($"Restore: {restored.Outcome}: {restored.Detail}");
         Assert.Equal("Restore", restored.Outcome);
         Assert.Equal(anchors, restored.OptionAnchors);
-        Assert.True(Assert.Single(restore.Peers).Connected, restore.Peers[0].Error);
         Assert.True(node.ChannelMemoryRepository.TryGetChannel(channel.ChannelId, out var recovery));
         Assert.True(RecoveryChannels.IsRecoveryChannel(recovery!));
+        if (peerClosesFirst)
+        {
+            Assert.Contains("already closed", restored.Detail);
+        }
+        else
+        {
+            Assert.True(Assert.Single(restore.Peers).Connected, restore.Peers[0].Error);
 
-        // LND force-closes: its commitment spends the funding output
-        var channelPoint = channel.ChannelPoint().Split(':');
-        var fundingOutPoint = new OutPoint(uint256.Parse(channelPoint[0]), uint.Parse(channelPoint[1]));
-        var lndCommitment = await Poll.ForAsync(async () => await _harness.FindMempoolSpenderAsync(fundingOutPoint, ct),
+            // LND force-closes: its commitment spends the funding output
+            lndCommitment = await Poll.ForAsync(async () => await _harness.FindMempoolSpenderAsync(fundingOutPoint, ct),
                                                 s_timeout, "LND's commitment in the mempool", ct);
-        Console.WriteLine($"LND force-closed with {lndCommitment.GetHash()}");
-        await _harness.MineUntilConfirmedAsync(node, [david], lndCommitment.GetHash(), ct);
+            Console.WriteLine($"LND force-closed with {lndCommitment.GetHash()}");
+            await _harness.MineUntilConfirmedAsync(node, [david], lndCommitment.GetHash(), ct);
+        }
+
+        Assert.NotNull(lndCommitment);
 
         // We recorded it as a commitment we cannot rebuild, never our own
         var close = await AnchorsHarness.WaitForCloseAsync(node, channel.ChannelId, ct);
@@ -153,6 +187,32 @@ public class BackupRestoreFlowTests : IAsyncLifetime
                               s_timeout, "the wallet credited with our channel balance", ct);
         Assert.True(node.ChannelMemoryRepository.TryGetChannel(channel.ChannelId, out var resolving));
         Assert.Equal(ChannelState.OnchainResolving, resolving!.State);
+    }
+
+    /// <summary>LND <c>CloseChannel { force = true }</c>; returns its commitment once it is in the mempool.</summary>
+    private async Task<Transaction> ForceCloseAsync(LNDNodeConnection lnd, OutPoint fundingOutPoint,
+                                                    CancellationToken ct)
+    {
+        using var closeTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        closeTimeout.CancelAfter(s_timeout);
+        using var closeCall = lnd.LightningClient.CloseChannel(new CloseChannelRequest
+        {
+            ChannelPoint = new ChannelPoint
+            {
+                FundingTxidStr = fundingOutPoint.Hash.ToString(),
+                OutputIndex = fundingOutPoint.N
+            },
+            Force = true
+        }, cancellationToken: closeTimeout.Token);
+        PendingUpdate? pending = null;
+        while (pending is null && await closeCall.ResponseStream.MoveNext(closeTimeout.Token))
+            pending = closeCall.ResponseStream.Current.ClosePending;
+        Assert.NotNull(pending);
+
+        var commitment = await Poll.ForAsync(async () => await _harness.FindMempoolSpenderAsync(fundingOutPoint, ct),
+                                             s_timeout, "LND's commitment in the mempool", ct);
+        Console.WriteLine($"{lnd.LocalAlias} force-closed with {commitment.GetHash()} before the restore");
+        return commitment;
     }
 
     private static void AddBackupServices(IServiceCollection services) =>

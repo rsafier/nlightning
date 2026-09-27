@@ -316,6 +316,73 @@ public sealed class ChannelBackupServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ABackupOfALostChannelAndANewChannelInAWipedDatabase_When_WriteFile_Then_TheOldFileIsKeptAside()
+    {
+        // Arrange: the file holds channel 1; the database was wiped and channel 2 opened before any restore
+        var data = new BackupTestData();
+        data.Options.FilePath = FilePath;
+        data.AddChannel(1);
+        await data.CreateService().WriteFileAsync(TestContext.Current.CancellationToken);
+        var written = await File.ReadAllBytesAsync(FilePath, TestContext.Current.CancellationToken);
+        data.Channels.Clear();
+        data.AddChannel(2);
+        var service = data.CreateService();
+
+        // Act
+        var result = await service.WriteFileAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the new file holds channel 2, the old one (channel 1) is kept byte for byte
+        Assert.Equal(ChannelBackupWriteOutcome.Written, result.Outcome);
+        var current = Assert.Single(
+            service.Decrypt(await File.ReadAllBytesAsync(FilePath, TestContext.Current.CancellationToken)).Channels);
+        Assert.Equal(2, ((byte[])current.ChannelId)[0]);
+        Assert.NotNull(result.MovedAsidePath);
+        Assert.EndsWith(".superseded", result.MovedAsidePath);
+        Assert.Equal(written, await File.ReadAllBytesAsync(result.MovedAsidePath, TestContext.Current.CancellationToken));
+        var kept = Assert.Single(service.Decrypt(written).Channels);
+        Assert.Equal(1, ((byte[])kept.ChannelId)[0]);
+    }
+
+    [Fact]
+    public async Task Given_ASupersededFileTwiceInOneSecond_When_WriteFile_Then_NeitherIsOverwritten()
+    {
+        // Arrange: channel 1 lost, then channel 2 lost too, at the same clock second
+        var data = new BackupTestData();
+        data.Options.FilePath = FilePath;
+        data.AddChannel(1);
+        await data.CreateService().WriteFileAsync(TestContext.Current.CancellationToken);
+        data.Channels.Clear();
+        data.AddChannel(2);
+        var first = await data.CreateService().WriteFileAsync(TestContext.Current.CancellationToken);
+        data.Channels.Clear();
+        data.AddChannel(3);
+
+        // Act
+        var second = await data.CreateService().WriteFileAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotNull(first.MovedAsidePath);
+        Assert.NotNull(second.MovedAsidePath);
+        Assert.NotEqual(first.MovedAsidePath, second.MovedAsidePath);
+        Assert.True(File.Exists(first.MovedAsidePath));
+        Assert.True(File.Exists(second.MovedAsidePath));
+    }
+
+    [Fact]
+    public async Task Given_ADirectory_When_SyncedAfterAWrite_Then_TheSyncSucceedsOnUnix()
+    {
+        // Arrange
+        await ChannelBackupFile.WriteAtomicallyAsync(FilePath, new byte[] { 1, 2, 3 },
+                                                     TestContext.Current.CancellationToken);
+
+        // Act
+        var synced = ChannelBackupFile.TrySyncDirectory(_directory);
+
+        // Assert
+        Assert.Equal(OperatingSystem.IsLinux() || OperatingSystem.IsMacOS(), synced);
+    }
+
+    [Fact]
     public async Task Given_OnlyClosedChannelsInTheDatabase_When_WriteFile_Then_AnEmptyBackupReplacesTheFile()
     {
         // Arrange
