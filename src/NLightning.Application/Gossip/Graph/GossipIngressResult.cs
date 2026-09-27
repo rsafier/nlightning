@@ -17,6 +17,12 @@ public enum GossipIngressOutcome
     /// <summary>Kept until the channel (or node) it depends on is in the graph.</summary>
     Orphaned,
 
+    /// <summary>
+    /// A <c>channel_announcement</c> with valid signatures kept outside the graph until its first valid
+    /// <c>channel_update</c> (NL-406, <see cref="PendingAnnouncementIndex"/>).
+    /// </summary>
+    Pending,
+
     /// <summary>The chain could not answer yet (bitcoind behind or down, a reorg, too few confirmations): retry later.</summary>
     Deferred
 }
@@ -53,6 +59,8 @@ public sealed record GossipIngressResult(
         new(GossipIngressOutcome.Ignored, detail, reason);
 
     internal static GossipIngressResult Orphaned(string detail) => new(GossipIngressOutcome.Orphaned, detail);
+
+    internal static GossipIngressResult Pending(string detail) => new(GossipIngressOutcome.Pending, detail);
 
     internal static GossipIngressResult Deferred(string detail) => new(GossipIngressOutcome.Deferred, detail);
 }

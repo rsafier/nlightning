@@ -82,23 +82,20 @@ public class GossipIngressTests
         // also has another channel (with eve), and two unrelated nodes have one
         var kit = CreateKit();
         var peer = GraphTestKit.CreatePeer();
-        await kit.Ingress.ProcessAsync(peer.Object,
-                                       GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
-                                                                              s_bobFunding), 0,
-                                       TestContext.Current.CancellationToken);
+        var ct = TestContext.Current.CancellationToken;
+        await kit.AnnounceAsync(peer.Object,
+                                GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
+                                                                       s_bobFunding), cancellationToken: ct);
         var eve = new TestGossipKey(5);
         var aliceEve = new ShortChannelId(111, 1, 0);
         var unrelated = new ShortChannelId(112, 1, 0);
-        await kit.Ingress.ProcessAsync(peer.Object,
-                                       GraphTestKit.SignedChannelAnnouncement(aliceEve, s_alice, eve,
-                                                                              new TestGossipKey(21),
-                                                                              new TestGossipKey(22)), 0,
-                                       TestContext.Current.CancellationToken);
-        await kit.Ingress.ProcessAsync(peer.Object,
-                                       GraphTestKit.SignedChannelAnnouncement(unrelated, eve, new TestGossipKey(6),
-                                                                              new TestGossipKey(23),
-                                                                              new TestGossipKey(24)), 0,
-                                       TestContext.Current.CancellationToken);
+        await kit.AnnounceAsync(peer.Object,
+                                GraphTestKit.SignedChannelAnnouncement(aliceEve, s_alice, eve, new TestGossipKey(21),
+                                                                       new TestGossipKey(22)), cancellationToken: ct);
+        await kit.AnnounceAsync(peer.Object,
+                                GraphTestKit.SignedChannelAnnouncement(unrelated, eve, new TestGossipKey(6),
+                                                                       new TestGossipKey(23), new TestGossipKey(24)),
+                                cancellationToken: ct);
         Assert.Equal(3, kit.Store.ChannelCount);
         var carol = new TestGossipKey(3);
         var dave = new TestGossipKey(4);
@@ -173,10 +170,10 @@ public class GossipIngressTests
         // Arrange: anyone can sign an announcement with their own keys for any scid; it proves nothing
         var kit = CreateKit();
         var peer = GraphTestKit.CreatePeer();
-        await kit.Ingress.ProcessAsync(peer.Object,
-                                       GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
-                                                                              s_bobFunding), 0,
-                                       TestContext.Current.CancellationToken);
+        await kit.AnnounceAsync(peer.Object,
+                                GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
+                                                                       s_bobFunding),
+                                cancellationToken: TestContext.Current.CancellationToken);
         var forged = GraphTestKit.SignedChannelAnnouncement(s_scid, new TestGossipKey(3), new TestGossipKey(4),
                                                             new TestGossipKey(13), new TestGossipKey(14));
 
@@ -524,20 +521,25 @@ public class GossipIngressTests
     }
 
     [Fact]
-    public async Task Given_AnAnnouncementGivenUpAfterItsRetries_When_ItArrivesAgainLater_Then_ItIsMissedUntilStored()
+    public async Task Given_AnAnnouncementGivenUpAfterItsRetries_When_ItsUpdateArrivesAgainLater_Then_ItIsMissedUntilStored()
     {
-        // Arrange: bitcoind is down and no retry is allowed
+        // Arrange: bitcoind is down and no retry is allowed; NL-406: the update that promotes the announcement runs
+        // the chain lookup, so the update is what is given up
         var kit = new GraphTestKit(configure: o => o.MaxRetries = 0);
         kit.FundingFails(FundingOutputStatus.ChainUnavailable);
         await kit.Ingress.StartAsync();
         var announcement = GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
                                                                   s_bobFunding);
+        var update = GraphTestKit.SignedChannelUpdate(s_scid, s_alice, GraphTestKit.DirectionOf(s_alice, s_bob),
+                                                      s_now);
 
         // Act
         Assert.True(kit.Ingress.TryEnqueue(GraphTestKit.CreatePeer().Object, announcement));
+        Assert.True(kit.Ingress.TryEnqueue(GraphTestKit.CreatePeer().Object, update));
         await WaitUntilAsync(() => kit.Ingress.DroppedCount == 1);
+        Assert.True(kit.Ingress.IsPendingAnnouncement(s_scid));
         kit.FundingFound();
-        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object, announcement, 1,
+        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object, update, 1,
                                        TestContext.Current.CancellationToken);
         await kit.Ingress.StopAsync();
 
@@ -626,7 +628,7 @@ public class GossipIngressTests
     }
 
     [Fact]
-    public async Task Given_TransientChainAnswer_When_TheWorkerMeetsIt_Then_TheAnnouncementIsRetriedLater()
+    public async Task Given_TransientChainAnswer_When_TheFirstUpdatePromotesTheAnnouncement_Then_ItIsRetriedLater()
     {
         // Arrange
         var kit = new GraphTestKit(configure: o =>
@@ -641,6 +643,9 @@ public class GossipIngressTests
         Assert.True(kit.Ingress.TryEnqueue(GraphTestKit.CreatePeer().Object,
                                            GraphTestKit.SignedChannelAnnouncement(
                                                s_scid, s_alice, s_bob, s_aliceFunding, s_bobFunding)));
+        Assert.True(kit.Ingress.TryEnqueue(GraphTestKit.CreatePeer().Object,
+                                           GraphTestKit.SignedChannelUpdate(
+                                               s_scid, s_alice, GraphTestKit.DirectionOf(s_alice, s_bob), s_now)));
         await WaitUntilAsync(() => kit.FundingLookup.Invocations.Count >= 1);
         kit.FundingFound();
         await WaitUntilAsync(() => kit.Store.ChannelCount == 1);
@@ -657,14 +662,26 @@ public class GossipIngressTests
         return kit;
     }
 
+    /// <summary>
+    /// alice-bob in the graph: its announcement promoted (NL-406) by an old update of bob's direction, so alice's
+    /// direction is still free for the tests.
+    /// </summary>
     private static async Task<GraphTestKit> CreateKitWithChannelAsync()
     {
         var kit = CreateKit();
-        var result = await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object,
-                                                    GraphTestKit.SignedChannelAnnouncement(
-                                                        s_scid, s_alice, s_bob, s_aliceFunding, s_bobFunding),
-                                                    0, TestContext.Current.CancellationToken);
-        Assert.Equal(GossipIngressOutcome.Accepted, result.Outcome);
+        var peer = GraphTestKit.CreatePeer().Object;
+        var ct = TestContext.Current.CancellationToken;
+        var announced = await kit.Ingress.ProcessAsync(peer,
+                                                       GraphTestKit.SignedChannelAnnouncement(
+                                                           s_scid, s_alice, s_bob, s_aliceFunding, s_bobFunding),
+                                                       0, ct);
+        Assert.Equal(GossipIngressOutcome.Pending, announced.Outcome);
+        var promoted = await kit.Ingress.ProcessAsync(peer,
+                                                      GraphTestKit.SignedChannelUpdate(
+                                                          s_scid, s_bob, GraphTestKit.DirectionOf(s_bob, s_alice),
+                                                          s_now - 100),
+                                                      0, ct);
+        Assert.Equal(GossipIngressOutcome.Accepted, promoted.Outcome);
         return kit;
     }
 

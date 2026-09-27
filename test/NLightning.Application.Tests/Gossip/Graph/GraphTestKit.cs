@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -37,6 +38,8 @@ internal sealed class SettableTimeProvider(DateTimeOffset now) : TimeProvider
 [ExcludeFromCodeCoverage]
 internal sealed class TestGossipKey
 {
+    private static readonly ConcurrentDictionary<CompactPubKey, TestGossipKey> s_byPubKey = new();
+
     private readonly ECPrivKey _key;
 
     public TestGossipKey(byte seed)
@@ -48,9 +51,13 @@ internal sealed class TestGossipKey
         var pubKey = new byte[33];
         _key.CreatePubKey().WriteToSpan(true, pubKey, out _);
         PubKey = new CompactPubKey(pubKey);
+        s_byPubKey.TryAdd(PubKey, this);
     }
 
     public CompactPubKey PubKey { get; }
+
+    /// <summary>The test key of <paramref name="pubKey"/> (every key made in this process is known).</summary>
+    public static TestGossipKey Of(CompactPubKey pubKey) => s_byPubKey[pubKey];
 
     public CompactSignature Sign(Hash hash)
     {
@@ -125,6 +132,26 @@ internal sealed class GraphTestKit
     public GraphStore Store { get; }
     public Mock<IFundingOutputLookup> FundingLookup { get; }
     public GossipIngress Ingress { get; }
+
+    /// <summary>
+    /// Processes a signed announcement the way a peer sends it (NL-406: followed by a <c>channel_update</c>): when it
+    /// is kept pending, node_1's update of direction 0 (timestamp <paramref name="updateTimestamp"/>, default the
+    /// kit's clock) follows, and that update's result is returned (it carries the announcement's chain check: accepted,
+    /// deferred, or the funding failure). Any other outcome of the announcement is returned as it is.
+    /// </summary>
+    public async Task<GossipIngressResult> AnnounceAsync(IPeerService? peer, ChannelAnnouncementMessage announcement,
+                                                         int attempt = 0, uint? updateTimestamp = null,
+                                                         CancellationToken cancellationToken = default)
+    {
+        var result = await Ingress.ProcessAsync(peer, announcement, attempt, cancellationToken);
+        if (result.Outcome != GossipIngressOutcome.Pending)
+            return result;
+
+        var update = SignedChannelUpdate(announcement.Payload.ShortChannelId,
+                                         TestGossipKey.Of(announcement.Payload.NodeId1), 0,
+                                         updateTimestamp ?? (uint)Clock.GetUtcNow().ToUnixTimeSeconds());
+        return await Ingress.ProcessAsync(peer, update, attempt, cancellationToken);
+    }
 
     /// <summary>Every funding output is found, unspent, <paramref name="confirmations"/> deep, with this amount.</summary>
     public void FundingFound(long amountSat = 1_000_000, uint confirmations = 6)

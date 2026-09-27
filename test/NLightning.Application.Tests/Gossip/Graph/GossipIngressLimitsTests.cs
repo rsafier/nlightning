@@ -8,6 +8,7 @@ using Application.Gossip.Metrics;
 using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
 using Domain.Gossip.Enums;
+using Domain.Gossip.Graph;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Validation;
 using Domain.Node.Interfaces;
@@ -466,14 +467,22 @@ public class GossipIngressLimitsTests : IDisposable
         kit.FundingFails(status);
         var peer = GraphTestKit.CreatePeer(0x66);
 
-        // Act
+        // Act: NL-406, each announcement is looked up when its first update promotes it
         for (var i = 0; i < 5; i++)
+        {
+            var scid = new ShortChannelId(300 + (uint)i, 1, 0);
             await ProcessAsync(kit, peer,
-                               GraphTestKit.SignedChannelAnnouncement(new ShortChannelId(300 + (uint)i, 1, 0), s_alice,
-                                                                      s_bob, s_aliceFunding, s_bobFunding));
+                               GraphTestKit.SignedChannelAnnouncement(scid, s_alice, s_bob, s_aliceFunding,
+                                                                      s_bobFunding));
+            await ProcessAsync(kit, peer,
+                               GraphTestKit.SignedChannelUpdate(scid, s_alice, GraphTestKit.DirectionOf(s_alice, s_bob),
+                                                                s_now));
+        }
 
         // Assert
         Assert.Equal(banned, kit.Ingress.IsBannedForMisbehaviour(peer.Object.PeerPubKey));
+        peer.Verify(p => p.Disconnect(It.IsAny<Exception>()), banned ? Times.Once() : Times.Never());
+        Assert.Equal(0, kit.Ingress.PendingAnnouncementCount);
         Assert.Equal(5, _recorder.Sum("nlightning.gossip.chain.lookups",
                                       (GossipMetrics.StatusTag, GossipMetrics.TagValue(status))));
     }
@@ -530,8 +539,10 @@ public class GossipIngressLimitsTests : IDisposable
         var connection = GraphTestKit.CreatePeer(0x66);
         kit.Store.Ban(connection.Object.PeerPubKey, "conflicting announcement", GraphTestKit.DefaultNow.AddDays(14));
 
-        // Act
+        // Act (NL-406: the announcement with its first update)
         var taken = kit.Ingress.TryEnqueue(connection.Object, Announcement());
+        Assert.True(kit.Ingress.TryEnqueue(connection.Object,
+                                           Update(s_alice, GraphTestKit.DirectionOf(s_alice, s_bob), s_now - 10, 1)));
         await WaitForAsync(() => kit.Store.TryGetChannel(s_scid, out _));
         await kit.Ingress.StopAsync();
 
@@ -545,11 +556,13 @@ public class GossipIngressLimitsTests : IDisposable
     public async Task Given_TheIngress_When_MessagesAreProcessed_Then_TheCountersFollowTheOutcomes()
     {
         // Arrange (G5-T4: received/accepted/rejected by reason, chain lookups)
-        var kit = await CreateKitWithChannelAsync();
+        var kit = new GraphTestKit(metrics: _metrics);
+        kit.FundingFound();
         var peer = GraphTestKit.CreatePeer();
         var direction = GraphTestKit.DirectionOf(s_alice, s_bob);
 
-        // Act
+        // Act: NL-406, the announcement waits for its first update, which promotes it (then counted accepted)
+        Assert.Equal(GossipIngressOutcome.Pending, (await ProcessAsync(kit, peer, Announcement())).Outcome);
         await ProcessAsync(kit, peer, Update(s_alice, direction, s_now - 10, 1));
         await ProcessAsync(kit, peer, Update(s_alice, direction, s_now - 10, 1));
         await ProcessAsync(kit, peer, Update(s_mallory, direction, s_now - 5, 2));
@@ -568,13 +581,22 @@ public class GossipIngressLimitsTests : IDisposable
                                       (GossipMetrics.StatusTag, "found")));
     }
 
-    private async Task<GraphTestKit> CreateKitWithChannelAsync(Action<GossipGraphOptions>? configure = null)
+    /// <summary>
+    /// alice-bob in the graph, verified, without any policy and without spending a rate token (NL-406: through the
+    /// ingress it would enter only with its first update, which the limit tests count).
+    /// </summary>
+    private Task<GraphTestKit> CreateKitWithChannelAsync(Action<GossipGraphOptions>? configure = null)
     {
         var kit = new GraphTestKit(configure: configure, metrics: _metrics);
         kit.FundingFound();
-        var result = await ProcessAsync(kit, GraphTestKit.CreatePeer(0x70), Announcement());
-        Assert.Equal(GossipIngressOutcome.Accepted, result.Outcome);
-        return kit;
+        var announcement = Announcement().Payload;
+        Assert.True(kit.Store.TryAddChannel(new GraphChannel(s_scid, announcement.NodeId1, announcement.NodeId2,
+                                                             announcement.BitcoinKey1, announcement.BitcoinKey2,
+                                                             1_000_000)
+        {
+            RawAnnouncement = announcement.GetBytes()
+        }, GraphTestKit.TxIdFor(s_scid)));
+        return Task.FromResult(kit);
     }
 
     private static async Task WaitForAsync(Func<bool> condition)

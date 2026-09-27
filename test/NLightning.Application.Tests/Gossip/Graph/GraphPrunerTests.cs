@@ -232,16 +232,20 @@ public class GraphPrunerTests
     [Fact]
     public async Task Given_AChannelWithoutUpdates_When_ItsAnnouncementIsOld_Then_ItIsRemoved()
     {
-        // Arrange: the announcement's arrival is the baseline
+        // Arrange: the announcement's arrival is the baseline. Since NL-406 the ingress stores an announcement only
+        // with its first update, so such a channel comes from the database (rows saved before) or the store itself
         var kit = new GraphTestKit();
         kit.FundingFound();
         var scid = new ShortChannelId(130, 1, 1);
-        var result = await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object,
-                                                    GraphTestKit.SignedChannelAnnouncement(
-                                                        scid, s_bob, s_carol, new TestGossipKey(12),
-                                                        new TestGossipKey(13)), 0,
-                                                    TestContext.Current.CancellationToken);
-        Assert.Equal(GossipIngressOutcome.Accepted, result.Outcome);
+        var announcement = GraphTestKit.SignedChannelAnnouncement(scid, s_bob, s_carol, new TestGossipKey(12),
+                                                                  new TestGossipKey(13)).Payload;
+        Assert.True(kit.Store.TryAddChannel(new GraphChannel(scid, announcement.NodeId1, announcement.NodeId2,
+                                                             announcement.BitcoinKey1, announcement.BitcoinKey2,
+                                                             1_000_000)
+        {
+            RawAnnouncement = announcement.GetBytes()
+        }));
+        await Task.CompletedTask;
         var pruner = CreatePruner(kit);
 
         // Act
@@ -395,11 +399,10 @@ public class GraphPrunerTests
         var pruner = CreatePruner(kit);
         var scid = new ShortChannelId(150, 1, 0);
         pruner.ApplyBlock(200, [SpendOf(scid)]);
-        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object,
-                                       GraphTestKit.SignedChannelAnnouncement(scid, s_alice, s_bob,
-                                                                              new TestGossipKey(11),
-                                                                              new TestGossipKey(12)), 0,
-                                       TestContext.Current.CancellationToken);
+        await kit.AnnounceAsync(GraphTestKit.CreatePeer().Object,
+                                GraphTestKit.SignedChannelAnnouncement(scid, s_alice, s_bob, new TestGossipKey(11),
+                                                                       new TestGossipKey(12)),
+                                cancellationToken: TestContext.Current.CancellationToken);
 
         // Act
         var marked = pruner.ApplyBlock(201, []);
@@ -421,11 +424,10 @@ public class GraphPrunerTests
         pruner.ApplyBlock(200, [SpendOf(scid)]);
         for (var height = 201u; height <= 200 + GraphPruner.RecentSpendBlocks; height++)
             pruner.ApplyBlock(height, []);
-        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object,
-                                       GraphTestKit.SignedChannelAnnouncement(scid, s_alice, s_bob,
-                                                                              new TestGossipKey(11),
-                                                                              new TestGossipKey(12)), 0,
-                                       TestContext.Current.CancellationToken);
+        await kit.AnnounceAsync(GraphTestKit.CreatePeer().Object,
+                                GraphTestKit.SignedChannelAnnouncement(scid, s_alice, s_bob, new TestGossipKey(11),
+                                                                       new TestGossipKey(12)),
+                                cancellationToken: TestContext.Current.CancellationToken);
 
         // Act
         var marked = pruner.ApplyBlock(210, []);

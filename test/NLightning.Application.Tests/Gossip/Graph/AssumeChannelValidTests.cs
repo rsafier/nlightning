@@ -33,9 +33,9 @@ public class AssumeChannelValidTests
         var kit = new GraphTestKit(configure: o => o.AssumeChannelValid = true);
         var message = GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding, s_bobFunding);
 
-        // Act
-        var result = await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object, message, 0,
-                                                    TestContext.Current.CancellationToken);
+        // Act: NL-406, the announcement enters the graph with its first update
+        var result = await kit.AnnounceAsync(GraphTestKit.CreatePeer().Object, message,
+                                             cancellationToken: TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Equal(GossipIngressOutcome.Accepted, result.Outcome);
@@ -78,9 +78,9 @@ public class AssumeChannelValidTests
         kit.FundingFound(amountSat: 2_500_000);
         var message = GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding, s_bobFunding);
 
-        // Act
-        var result = await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object, message, 0,
-                                                    TestContext.Current.CancellationToken);
+        // Act: NL-406, the announcement enters the graph (and is looked up) with its first update
+        var result = await kit.AnnounceAsync(GraphTestKit.CreatePeer().Object, message,
+                                             cancellationToken: TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Equal(GossipIngressOutcome.Accepted, result.Outcome);
@@ -103,8 +103,7 @@ public class AssumeChannelValidTests
         await kit.Ingress.ProcessAsync(peer, GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob,
                                                                                     s_aliceFunding, s_bobFunding),
                                        0, ct);
-        Assert.True(kit.Store.TryGetChannel(s_scid, out var withoutPolicy));
-        Assert.Null(withoutPolicy.EstimatedCapacityMsat);
+        Assert.False(kit.Store.TryGetChannel(s_scid, out _)); // NL-406: pending until its first update
 
         // Act: SignedChannelUpdate sets htlc_maximum_msat to 500,000,000
         var update = GraphTestKit.SignedChannelUpdate(s_scid, s_alice, GraphTestKit.DirectionOf(s_alice, s_bob),
@@ -124,9 +123,9 @@ public class AssumeChannelValidTests
         // Arrange
         var kit = new GraphTestKit(configure: o => o.AssumeChannelValid = true);
         var ct = TestContext.Current.CancellationToken;
-        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object,
-                                       GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
-                                                                              s_bobFunding), 0, ct);
+        await kit.AnnounceAsync(GraphTestKit.CreatePeer().Object,
+                                GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
+                                                                       s_bobFunding), cancellationToken: ct);
         await kit.Store.FlushAsync(ct);
 
         // Act
@@ -145,9 +144,9 @@ public class AssumeChannelValidTests
         // Arrange: a restart with an assumed channel (no funding txid is ever known for it)
         var kit = new GraphTestKit(configure: o => o.AssumeChannelValid = true);
         var ct = TestContext.Current.CancellationToken;
-        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object,
-                                       GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
-                                                                              s_bobFunding), 0, ct);
+        await kit.AnnounceAsync(GraphTestKit.CreatePeer().Object,
+                                GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
+                                                                       s_bobFunding), cancellationToken: ct);
         Assert.Contains(s_scid, kit.Store.GetChannelsWithoutFundingTxId());
         var pruner = new GraphPruner(kit.Store, new Mock<IBlockchainMonitor>().Object, kit.FundingLookup.Object,
                                      Microsoft.Extensions.Options.Options.Create(kit.Options),

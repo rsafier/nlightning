@@ -60,6 +60,12 @@ public sealed record DescribeGraphClientResponse
     /// <summary>Updates and node announcements waiting for their channel.</summary>
     public int? Orphans { get; init; }
 
+    /// <summary>
+    /// Signed channel announcements kept outside the graph until their first channel_update (NL-406), or null without
+    /// an ingress.
+    /// </summary>
+    public int? PendingAnnouncements { get; init; }
+
     /// <summary>A range sync with at least one peer completed, or null without a sync manager.</summary>
     public bool? HasCompletedInitialSync { get; init; }
 

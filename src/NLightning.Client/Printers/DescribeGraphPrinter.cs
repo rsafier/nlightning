@@ -33,7 +33,7 @@ public sealed class DescribeGraphPrinter : IPrinter<DescribeGraphIpcResponse>
             Line($"  Memory (process):   {ToMegabytes(item.ProcessWorkingSetBytes ?? 0)} MiB RSS, {ToMegabytes(item.ProcessManagedHeapBytes ?? 0)} MiB managed heap; budget {limit} ({state}, {item.MemoryBudgetRefused ?? 0} refused)");
         }
         Line($"  Pending writes:     {item.PendingWrites}");
-        Line($"  Ingress:            {Optional(item.IngressQueued)} queued, {Optional(item.IngressDropped)} dropped, {Optional(item.Orphans)} orphans");
+        Line($"  Ingress:            {Optional(item.IngressQueued)} queued, {Optional(item.IngressDropped)} dropped, {Optional(item.Orphans)} orphans, {Optional(item.PendingAnnouncements)} announcements without update");
         Line($"  Initial sync:       {item.HasCompletedInitialSync switch { true => "complete", false => "not complete", null => "-" }}");
         Line($"  Peers:              {item.Peers.Count}");
         foreach (var peer in item.Peers)

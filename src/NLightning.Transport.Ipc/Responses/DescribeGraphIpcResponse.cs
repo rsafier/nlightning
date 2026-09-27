@@ -68,6 +68,9 @@ public sealed class DescribeGraphIpcResponse
     /// <summary>New channels and nodes refused over the budget since the start.</summary>
     [Key(27)] public long? MemoryBudgetRefused { get; init; }
 
+    /// <summary>Channel announcements waiting for their first channel_update (NL-406); null without an ingress.</summary>
+    [Key(28)] public int? PendingAnnouncements { get; init; }
+
     public static DescribeGraphIpcResponse FromClientResponse(DescribeGraphClientResponse clientResponse)
     {
         ArgumentNullException.ThrowIfNull(clientResponse);
@@ -90,6 +93,7 @@ public sealed class DescribeGraphIpcResponse
             IngressQueued = clientResponse.IngressQueued,
             IngressDropped = clientResponse.IngressDropped,
             Orphans = clientResponse.Orphans,
+            PendingAnnouncements = clientResponse.PendingAnnouncements,
             HasCompletedInitialSync = clientResponse.HasCompletedInitialSync,
             Peers = clientResponse.Peers.Select(p => new GraphPeerSyncIpcInfo
             {
