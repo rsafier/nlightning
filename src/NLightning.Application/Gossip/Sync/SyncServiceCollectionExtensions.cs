@@ -48,12 +48,28 @@ public static class SyncServiceCollectionExtensions
                                              ? 0
                                              : Math.Min(graphOptions.MaxQueuedPerPeer, graphOptions.MaxQueued),
                                          sp.GetService<GossipMetrics>(),
-                                         ingress is null ? null : ingress.QueuedCountOf);
+                                         ingress is null ? null : ingress.QueuedCountOf,
+                                         GetPendingChannels(sp, ingress));
         });
         services.TryAddSingleton<IGossipSyncManager>(sp => sp.GetRequiredService<GossipSyncManager>());
         services.TryAddSingleton<IGossipSyncService>(sp => sp.GetRequiredService<GossipSyncManager>());
         // G3-T5: the payment retry path's refresh goes to the sync (replaces AddPaymentSendServices' no-op default)
         services.Replace(ServiceDescriptor.Singleton<IGossipScidRefresher, GossipSyncScidRefresher>());
         return services;
+    }
+
+    /// <summary>
+    /// The pending-channel views the sync asks (NL-415, NL-414): every registered <see cref="IGossipPendingChannels"/>,
+    /// plus the graph ingress and the funding output lookup when they implement it (so a new implementation needs no
+    /// registration line). Duplicates are removed by the manager.
+    /// </summary>
+    private static List<IGossipPendingChannels> GetPendingChannels(IServiceProvider sp, GossipIngress? ingress)
+    {
+        var sources = sp.GetServices<IGossipPendingChannels>().ToList();
+        if (((object?)ingress ?? sp.GetService<IGossipIngress>()) is IGossipPendingChannels ingressView)
+            sources.Add(ingressView);
+        if (sp.GetService<IFundingOutputLookup>() is IGossipPendingChannels lookupView)
+            sources.Add(lookupView);
+        return sources;
     }
 }
