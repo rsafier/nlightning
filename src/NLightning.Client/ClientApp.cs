@@ -55,6 +55,12 @@ internal static class ClientApp
     /// </summary>
     internal const ulong MaxOpenChannelSats = 2_100_000_000_000_000;
 
+    /// <summary>
+    /// The largest withdraw fee rate, in sat/vB; the daemon refuses a larger one
+    /// (<c>WithdrawClientHandler.MaxSatPerVbyte</c>).
+    /// </summary>
+    internal const ulong MaxWithdrawSatPerVbyte = 1_000;
+
     internal static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
     {
         try
@@ -124,6 +130,14 @@ internal static class ClientApp
                 case "wallet-balance":
                     var balance = await client.GetWalletBalance(cancellationToken);
                     new WalletBalancePrinter().Print(balance);
+                    break;
+                case "withdraw":
+                case "send-coins":
+                case "sendcoins":
+                    var withdrawArgs = ParseWithdrawOptions(commandArgs, out _)!;
+                    var withdrawal = await client.WithdrawAsync(withdrawArgs.Address, withdrawArgs.AmountSat,
+                                                                withdrawArgs.SatPerVbyte, cancellationToken);
+                    new WithdrawPrinter().Print(withdrawal);
                     break;
                 case "openchannel":
                 case "open-channel":
@@ -277,6 +291,12 @@ internal static class ClientApp
             case "connect":
             case "connect-peer":
                 return commandArgs.Length < 1 ? $"Missing argument. Usage: {cmd} <node>" : null;
+            case "withdraw":
+            case "send-coins":
+            case "sendcoins":
+                return ParseWithdrawOptions(commandArgs, out var withdrawError) is null
+                           ? $"{withdrawError} Usage: {cmd} {WithdrawUsage}"
+                           : null;
             case "disconnect":
             case "disconnect-peer":
                 return ParseDisconnectOptions(commandArgs, out var disconnectError) is null
@@ -491,6 +511,86 @@ internal static class ClientApp
         }
 
         return (nodeId.Value, force);
+    }
+
+    /// <summary>The arguments of withdraw.</summary>
+    internal const string WithdrawUsage = "<address> <amount_sat|all> [--sat-per-vb <n>]";
+
+    /// <summary>
+    /// <c>&lt;address&gt; &lt;amount_sat|all&gt; [--sat-per-vb &lt;n&gt;]</c> of withdraw; the option (also as
+    /// <c>--sat-per-vb=n</c>) may come anywhere.
+    /// </summary>
+    /// <returns>The parsed arguments (a null amount is "all"), or null with <paramref name="error"/> set.</returns>
+    internal static WithdrawArguments? ParseWithdrawOptions(string[] commandArgs, out string? error)
+    {
+        error = null;
+        ulong? satPerVbyte = null;
+        var positional = new List<string>();
+        for (var i = 0; i < commandArgs.Length; i++)
+        {
+            var argument = commandArgs[i];
+            string? value = null;
+            if (string.Equals(argument, "--sat-per-vb", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= commandArgs.Length)
+                {
+                    error = "Missing value for --sat-per-vb.";
+                    return null;
+                }
+
+                value = commandArgs[++i];
+            }
+            else if (argument.StartsWith("--sat-per-vb=", StringComparison.OrdinalIgnoreCase))
+            {
+                value = argument["--sat-per-vb=".Length..];
+            }
+            else if (argument.StartsWith("--", StringComparison.Ordinal))
+            {
+                error = $"Unknown option '{argument}'.";
+                return null;
+            }
+            else
+            {
+                positional.Add(argument);
+                continue;
+            }
+
+            if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var rate) || rate == 0
+             || rate > MaxWithdrawSatPerVbyte)
+            {
+                error = $"Invalid fee rate '{value}': expected 1 to {MaxWithdrawSatPerVbyte} sat/vB.";
+                return null;
+            }
+
+            satPerVbyte = rate;
+        }
+
+        if (positional.Count < 2)
+        {
+            error = "Missing arguments.";
+            return null;
+        }
+
+        if (positional.Count > 2)
+        {
+            error = $"Unexpected argument '{positional[2]}'.";
+            return null;
+        }
+
+        ulong? amountSat = null;
+        if (!string.Equals(positional[1], "all", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!ulong.TryParse(positional[1], NumberStyles.None, CultureInfo.InvariantCulture, out var sats)
+             || sats == 0 || sats > MaxOpenChannelSats)
+            {
+                error = $"Invalid amount '{positional[1]}': expected a positive number of sats or 'all'.";
+                return null;
+            }
+
+            amountSat = sats;
+        }
+
+        return new WithdrawArguments(positional[0], amountSat, satPerVbyte);
     }
 
     /// <summary>A node id: 66 hex characters of a compressed public key (02 or 03 first).</summary>
@@ -980,3 +1080,8 @@ internal sealed record PayInvoiceArguments(
     uint? TimeoutSeconds,
     ulong? MaxFeeMsat,
     uint? MaxParts);
+
+/// <summary>
+/// The parsed arguments of withdraw (a null amount is "all").
+/// </summary>
+internal sealed record WithdrawArguments(string Address, ulong? AmountSat, ulong? SatPerVbyte);
