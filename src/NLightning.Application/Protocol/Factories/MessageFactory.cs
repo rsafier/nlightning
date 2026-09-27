@@ -470,8 +470,6 @@ public class MessageFactory : IMessageFactory
                                                          UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
                                                          bool requireConfirmedInputs = false)
     {
-        ArgumentNullException.ThrowIfNull(localParams);
-
         var payload = new OpenChannel2Payload(_bitcoinNetwork.ChainHash, channelFlags, commitmentFeeRatePerKw,
                                               delayedPaymentBasepoint, localParams.DustLimitAmount,
                                               firstPerCommitmentPoint, fundingAmount, fundingFeeRatePerKw,
@@ -540,8 +538,6 @@ public class MessageFactory : IMessageFactory
                                                              UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
                                                              bool requireConfirmedInputs = false)
     {
-        ArgumentNullException.ThrowIfNull(localParams);
-
         var payload = new AcceptChannel2Payload(delayedPaymentBasepoint, localParams.DustLimitAmount,
                                                 firstPerCommitmentPoint, fundingAmount, fundingPubKey, htlcBasepoint,
                                                 localParams.HtlcMinimumAmount, localParams.MaxAcceptedHtlcs,
