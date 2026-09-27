@@ -200,6 +200,9 @@ public class TlvStreamSerializerTests
             new NextFundingTlv(Enumerable.Range(0, 32).Select(i => (byte)i).ToArray()),
             new RemoteAddressTlv(1, "192.168.0.1", 9735),
             new RequireConfirmedInputsTlv(),
+            new SharedInputSignatureTlv(Enumerable.Range(0, SharedInputSignatureTlv.ValueLength).Select(i => (byte)(i + 2))
+                                                  .ToArray()),
+            new SharedInputTxIdTlv(Enumerable.Range(0, 32).Select(i => (byte)(i + 3)).ToArray()),
             new ShortChannelIdTlv(new ShortChannelId(1234, 0, 1)),
             new UpfrontShutdownScriptTlv(new BitcoinScript([0x00, 0x14, .. new byte[20]])),
             new AmtToForwardTlv(LightningMoney.MilliSatoshis(1_000_000)),

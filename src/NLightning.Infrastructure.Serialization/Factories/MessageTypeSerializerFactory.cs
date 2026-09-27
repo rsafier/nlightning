@@ -98,7 +98,9 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _serializers.Add(typeof(TxAckRbfMessage),
                          new TxAckRbfMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                            _tlvStreamSerializer));
-        _serializers.Add(typeof(TxAddInputMessage), new TxAddInputMessageTypeSerializer(_payloadSerializerFactory));
+        _serializers.Add(typeof(TxAddInputMessage),
+                         new TxAddInputMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                             _tlvStreamSerializer));
         _serializers.Add(typeof(TxAddOutputMessage),
                          new TxAddOutputMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(TxCompleteMessage), new TxCompleteMessageTypeSerializer(_payloadSerializerFactory));
@@ -110,7 +112,8 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _serializers.Add(typeof(TxRemoveOutputMessage),
                          new TxRemoveOutputMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(TxSignaturesMessage),
-                         new TxSignaturesMessageTypeSerializer(_payloadSerializerFactory));
+                         new TxSignaturesMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                               _tlvStreamSerializer));
         _serializers.Add(typeof(UpdateAddHtlcMessage),
                          new UpdateAddHtlcMessageTypeSerializer(_payloadSerializerFactory,
                                                                 _tlvConverterFactory, _tlvStreamSerializer));

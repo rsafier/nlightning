@@ -44,6 +44,8 @@ public class TlvConverterFactory : ITlvConverterFactory
         _converters.Add(typeof(NextFundingTlv), new NextFundingTlvConverter());
         _converters.Add(typeof(RemoteAddressTlv), new RemoteAddressTlvConverter());
         _converters.Add(typeof(RequireConfirmedInputsTlv), new RequireConfirmedInputsTlvConverter());
+        _converters.Add(typeof(SharedInputSignatureTlv), new SharedInputSignatureTlvConverter());
+        _converters.Add(typeof(SharedInputTxIdTlv), new SharedInputTxIdTlvConverter());
         _converters.Add(typeof(ShortChannelIdTlv), new ShortChannelIdTlvConverter());
         _converters.Add(typeof(UpfrontShutdownScriptTlv), new UpfrontShutdownScriptTlvConverter());
 
