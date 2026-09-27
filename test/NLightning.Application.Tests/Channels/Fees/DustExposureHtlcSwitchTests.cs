@@ -16,9 +16,11 @@ using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
+using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
+using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Onion.ValueObjects;
 using Domain.Serialization.Interfaces;
 using Handlers;
@@ -43,6 +45,7 @@ public class DustExposureHtlcSwitchTests
     private readonly List<FailureMessage> _failures = [];
     private readonly List<HtlcRecord> _htlcs = [];
     private ISphinxService _sphinx = new FixedSphinx(s_sharedSecret);
+    private HopPayload _payload = new();
 
     public DustExposureHtlcSwitchTests()
     {
@@ -169,6 +172,46 @@ public class DustExposureHtlcSwitchTests
     }
 
     [Fact]
+    public async Task Given_BlindedHtlcWithPathKeyOverTheDustLimit_When_LockedIn_Then_FailedMalformedWithInvalidOnionBlinding()
+    {
+        // Arrange - a seventh HTLC that came inside a blinded route (path_key in update_add_htlc)
+        var htlc = _context.LockIn(HtlcDirection.Incoming, DustHtlcMsat, NormalOperationTestContext.SecretOf(6),
+                                   NormalOperationTestContext.Point(0x33));
+
+        // Act
+        await CreateSwitch().HandleAsync(new IncomingHtlcLockedIn(NormalOperationTestContext.TestChannelId, htlc),
+                                         TestContext.Current.CancellationToken);
+
+        // Assert - BOLT 2: update_fail_malformed_htlc + invalid_onion_blinding, never a plain error onion
+        _operations.Verify(o => o.FailMalformedHtlcAsync(NormalOperationTestContext.TestChannelId, htlc.Id,
+                                                         FailureCode.InvalidOnionBlinding, It.IsAny<Hash>(),
+                                                         It.IsAny<CancellationToken>()), Times.Once);
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+        _inner.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_BlindedIntroductionForwardOverTheDustLimit_When_LockedIn_Then_FailedWithInvalidOnionBlinding()
+    {
+        // Arrange - we are the introduction node: current_path_key in the payload, not the final hop
+        _sphinx = new FixedSphinx(s_sharedSecret, intermediate: true);
+        _payload = new HopPayload(new EncryptedRecipientDataTlv(new byte[] { 1, 2, 3 }),
+                                  new CurrentPathKeyTlv(NormalOperationTestContext.Point(0x33)));
+
+        // Act
+        await CreateSwitch().HandleAsync(LockedIn(5), TestContext.Current.CancellationToken);
+
+        // Assert - BOLT 2: update_fail_htlc with our own invalid_onion_blinding, not temporary_channel_failure
+        _operations.Verify(o => o.FailHtlcAsync(NormalOperationTestContext.TestChannelId, 5,
+                                                It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()),
+                           Times.Once);
+        Assert.Equal(FailureCode.InvalidOnionBlinding, Assert.Single(_failures).Code);
+        _inner.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task Given_HtlcNoLongerWaiting_When_Replayed_Then_PassedToTheSwitch()
     {
         // Arrange - an id the channel does not hold (already removed)
@@ -247,14 +290,14 @@ public class DustExposureHtlcSwitchTests
     {
         // An empty payload fails validation, so the result carries the shared secret (IncomingOnionFailed)
         var payloads = new Mock<IHopPayloadSerializer>();
-        payloads.Setup(p => p.DeserializeAsync(It.IsAny<ReadOnlyMemory<byte>>())).ReturnsAsync(new HopPayload());
+        payloads.Setup(p => p.DeserializeAsync(It.IsAny<ReadOnlyMemory<byte>>())).ReturnsAsync(() => _payload);
         return new IncomingOnionProcessor(_sphinx, payloads.Object, new Mock<IOnionReplayStore>().Object,
                                           NullLogger<IncomingOnionProcessor>.Instance);
     }
 
     /// <summary>Peels every onion as a final hop with a fixed secret, or fails as a bad onion without one (Moq can't
     /// mock span arguments).</summary>
-    private sealed class FixedSphinx(Secret? sharedSecret) : ISphinxService
+    private sealed class FixedSphinx(Secret? sharedSecret, bool intermediate = false) : ISphinxService
     {
         public OnionPacket Construct(IReadOnlyList<OnionHop> hops, PrivKey sessionKey,
                                      ReadOnlySpan<byte> associatedData, int hopPayloadsLength,
@@ -271,7 +314,8 @@ public class DustExposureHtlcSwitchTests
         public PeeledOnion PeelAsLocalNode(OnionPacket packet, ReadOnlySpan<byte> associatedData,
                                            CompactPubKey? pathKey, OnionPacketKind packetKind) =>
             sharedSecret is { } secret
-                ? new PeeledOnion(new byte[] { 2, 0 }, secret, null)
+                ? new PeeledOnion(new byte[] { 2, 0 }, secret,
+                                  intermediate ? new OnionPacket(new byte[OnionConstants.PacketLength]) : null)
                 : throw new OnionException(FailureCode.InvalidOnionHmac, "bad hmac");
 
         public PeeledOnion Peel(OnionPacket packet, ReadOnlySpan<byte> associatedData, PrivKey nodeKey,

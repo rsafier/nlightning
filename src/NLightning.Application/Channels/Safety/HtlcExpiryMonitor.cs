@@ -25,6 +25,7 @@ using Interfaces;
 using Onchain;
 using Onchain.Resolvers;
 using Payments.Onion;
+using Payments.Switch;
 
 /// <summary>
 /// The block-driven BOLT 2 HTLC deadline monitor (BOLT2 plan N9-T2; B2-CLTV-03/05/06, B2-FWD-03). On every new block
@@ -383,6 +384,14 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
     {
         try
         {
+            // Inside a blinded route (path_key in update_add_htlc) every failure is the malformed
+            // invalid_onion_blinding, which needs no shared secret (BOLT 2, M5)
+            if (await BlindedHtlcFailures.TryFailMalformedAsync(_channelOperations, channelId, htlc, cancellationToken))
+            {
+                LogFailedBack(channelId, htlc, height, "update_fail_malformed_htlc invalid_onion_blinding");
+                return;
+            }
+
             var secret = await unitOfWork.ChannelStateDbRepository.GetOnionSharedSecretAsync(channelId, htlc.Key);
             if (secret is null && _incomingOnionProcessor is not null && !htlc.OnionRoutingPacket.IsEmpty)
             {
@@ -408,9 +417,14 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
                 return;
             }
 
-            var reason = _failureOnionService.CreateErrorPacket(sharedSecret, FailureMessage.TemporaryNodeFailure());
-            await _channelOperations.FailHtlcAsync(channelId, htlc.Id, reason, cancellationToken);
-            LogFailedBack(channelId, htlc, height, "temporary_node_failure");
+            // Inside a blinded route the BOLT 2 invalid_onion_blinding rules replace temporary_node_failure (M5)
+            var isIntroductionForward = _incomingOnionProcessor is not null
+                                     && await BlindedHtlcFailures.IsIntroductionForwardAsync(_incomingOnionProcessor,
+                                                                                            htlc);
+            var sent = await BlindedHtlcFailures.FailAsync(_channelOperations, _failureOnionService, channelId, htlc,
+                                                           sharedSecret, FailureMessage.TemporaryNodeFailure(),
+                                                           isIntroductionForward, cancellationToken);
+            LogFailedBack(channelId, htlc, height, sent);
         }
         catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
         {

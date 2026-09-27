@@ -493,6 +493,31 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_FailedCircuitOfABlindedHtlc_When_FailBackDue_Then_FailedMalformedWithInvalidOnionBlinding()
+    {
+        // Arrange: the incoming update_add_htlc carried a path_key (we are inside a blinded route)
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        SetPathKey(_pair.Bob, incomingId, NormalOperationTestContext.Point(0x33));
+        UseChannel(_pair.Bob);
+        _circuits.Setup(r => r.GetByIncomingAsync(_channel.ChannelId, incomingId))
+                 .ReturnsAsync(Circuit(incomingId, ForwardCircuitStatus.Failed, outgoingHtlcId: null));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert (BOLT 2): update_fail_malformed_htlc + invalid_onion_blinding, never temporary_node_failure
+        _operations.Verify(o => o.FailMalformedHtlcAsync(_channel.ChannelId, incomingId,
+                                                         Domain.Protocol.Onion.Enums.FailureCode.InvalidOnionBlinding,
+                                                         It.IsAny<Hash>(), It.IsAny<CancellationToken>()),
+                           Times.Once);
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+    }
+
+    [Fact]
     public async Task Given_FailedChannel_When_UnresolvedIncomingDue_Then_NotFailedBack()
     {
         // Arrange: nothing can be sent on a failed channel
@@ -579,6 +604,17 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
     {
         var state = node.State;
         var record = state.GetHtlc(HtlcDirection.Incoming, htlcId)! with { KnownPreimage = preimage };
+        node.State = ChannelCommitments.Restore(state.ChannelId, state.Params, state.LocalBalanceMsat,
+                                                state.RemoteBalanceMsat, state.Htlcs.SetItem(record.Key, record).Values,
+                                                state.FeeUpdates, state.LocalNextHtlcId, state.RemoteNextHtlcId,
+                                                state.LocalCommit, state.RemoteCommit, state.RemoteNextCommit,
+                                                state.RemoteNextPerCommitmentPoint);
+    }
+
+    private static void SetPathKey(RealSigningNode node, ulong htlcId, CompactPubKey pathKey)
+    {
+        var state = node.State;
+        var record = state.GetHtlc(HtlcDirection.Incoming, htlcId)! with { PathKey = pathKey };
         node.State = ChannelCommitments.Restore(state.ChannelId, state.Params, state.LocalBalanceMsat,
                                                 state.RemoteBalanceMsat, state.Htlcs.SetItem(record.Key, record).Values,
                                                 state.FeeUpdates, state.LocalNextHtlcId, state.RemoteNextHtlcId,
