@@ -1,9 +1,11 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Gossip;
 
+using Domain.Bitcoin.Events;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
@@ -36,10 +38,19 @@ using Wallet.Interfaces;
 /// </para>
 /// <para>
 /// An output spent only by a mempool transaction is <see cref="FundingOutputStatus.OutputSpentInMempool"/> (a second
-/// <c>gettxout</c> without the mempool), which is transient like <see cref="FundingOutputStatus.BlockNotFound"/>.
+/// <c>gettxout</c> without the mempool), which is transient like <see cref="FundingOutputStatus.BlockNotFound"/>. That
+/// answer can only change with a new block (the close confirming, or leaving the mempool), so it is kept per short
+/// channel id and given again without asking bitcoind until a block comes (NL-414): with an
+/// <see cref="IBlockchainMonitor"/> as the outpoint watcher, until its next <c>OnNewBlockDetected</c>; without one,
+/// while <c>getblockcount</c> still names the tip it was read at (one RPC instead of four). Either way at most
+/// <see cref="FundingOutputLookupOptions.MempoolSpentRecheckInterval"/>.
+/// </para>
+/// <para>
+/// <see cref="IGossipPendingChannels"/> (NL-415): a short channel id is pending while a lookup of it waits or runs,
+/// and while its kept mempool answer holds, so the gossip sync does not download its announcement again meanwhile.
 /// </para>
 /// </remarks>
-public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
+public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingChannels, IDisposable
 {
     private readonly IBitcoinChainService _chain;
     private readonly ILogger<FundingOutputLookup> _logger;
@@ -47,6 +58,12 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
     private readonly SemaphoreSlim _concurrency;
     private readonly TokenBucketRateLimiter _rateLimiter;
     private readonly int _cacheCapacity;
+    private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _mempoolSpentRecheckInterval;
+    private readonly IBlockchainMonitor? _blockMonitor;
+    private readonly ConcurrentDictionary<ShortChannelId, int> _inFlight = new();
+    private readonly ConcurrentDictionary<ShortChannelId, MempoolSpentAnswer> _mempoolSpent = new();
+    private long _lastKnownTip = -1;
 
     private readonly Lock _cacheGate = new();
     private readonly Dictionary<uint, LinkedListNode<CachedBlock>> _cache = new();
@@ -68,12 +85,40 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
         _chain = chain;
         _logger = logger;
         _concurrency = new SemaphoreSlim(settings.ChainLookupConcurrency, settings.ChainLookupConcurrency);
-        _rateLimiter = new TokenBucketRateLimiter(settings.ChainLookupsPerSecond, timeProvider ?? TimeProvider.System);
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _rateLimiter = new TokenBucketRateLimiter(settings.ChainLookupsPerSecond, _timeProvider);
         _cacheCapacity = settings.ChainLookupCacheHeights;
+        _mempoolSpentRecheckInterval = settings.MempoolSpentRecheckInterval;
 
         _outpointWatcher = outpointWatcher;
         if (_outpointWatcher is not null)
             _outpointWatcher.OnBlockDisconnected += HandleBlockDisconnected;
+
+        // NL-414: the monitor's blocks end the kept mempool answers without a getblockcount per lookup
+        _blockMonitor = outpointWatcher as IBlockchainMonitor;
+        if (_blockMonitor is not null)
+            _blockMonitor.OnNewBlockDetected += HandleNewBlock;
+    }
+
+    /// <summary>The short channel ids whose "only spent in the mempool" answer is kept (tests).</summary>
+    internal int MempoolSpentCount => _mempoolSpent.Count;
+
+    /// <inheritdoc />
+    public bool IsPending(ShortChannelId shortChannelId) =>
+        _inFlight.ContainsKey(shortChannelId) || TryGetMempoolSpent(shortChannelId, out _);
+
+    /// <summary>
+    /// Forgets the kept mempool answers read at a tip below <paramref name="height"/>: a block came since (NL-414).
+    /// The monitor's <c>OnNewBlockDetected</c> calls it; tests call it directly.
+    /// </summary>
+    internal void OnNewBlock(uint height)
+    {
+        ObserveTip(height);
+        foreach (var (shortChannelId, answer) in _mempoolSpent)
+        {
+            if (answer.Tip < height)
+                _mempoolSpent.TryRemove(new KeyValuePair<ShortChannelId, MempoolSpentAnswer>(shortChannelId, answer));
+        }
     }
 
     /// <summary>The heights whose txid list is cached, most recently used first (tests).</summary>
@@ -90,18 +135,13 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
     public async Task<FundingOutputLookupResult> LookupAsync(ShortChannelId shortChannelId,
                                                              CancellationToken cancellationToken = default)
     {
-        await _concurrency.WaitAsync(cancellationToken);
+        _inFlight.AddOrUpdate(shortChannelId, 1, (_, count) => count + 1);
         try
         {
-            await _rateLimiter.WaitAsync(cancellationToken);
+            if (await TryReuseMempoolSpentAsync(shortChannelId) is { } kept)
+                return kept;
 
-            var result = await LookupOnceAsync(shortChannelId);
-            if (result.Status != FundingOutputStatus.ChainMoved)
-                return result;
-
-            // The output was reported at another height: drop the cached list and ask once more
-            InvalidateFrom(shortChannelId.BlockHeight);
-            return await LookupOnceAsync(shortChannelId);
+            return await LookupFromChainAsync(shortChannelId, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -111,7 +151,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
         }
         finally
         {
-            _concurrency.Release();
+            ReleaseInFlight(shortChannelId);
         }
     }
 
@@ -163,6 +203,8 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
     {
         if (_outpointWatcher is not null)
             _outpointWatcher.OnBlockDisconnected -= HandleBlockDisconnected;
+        if (_blockMonitor is not null)
+            _blockMonitor.OnNewBlockDetected -= HandleNewBlock;
         _concurrency.Dispose();
     }
 
@@ -183,21 +225,127 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
         return PayToMultiSigTemplate.Instance.GenerateScriptPubKey(2, orderedKeys).WitHash.ScriptPubKey.ToBytes();
     }
 
-    private async Task<FundingOutputLookupResult> LookupOnceAsync(ShortChannelId shortChannelId)
+    private async Task<FundingOutputLookupResult> LookupFromChainAsync(ShortChannelId shortChannelId,
+                                                                       CancellationToken cancellationToken)
+    {
+        await _concurrency.WaitAsync(cancellationToken);
+        try
+        {
+            await _rateLimiter.WaitAsync(cancellationToken);
+
+            var (result, tip) = await LookupOnceAsync(shortChannelId);
+            if (result.Status == FundingOutputStatus.ChainMoved)
+            {
+                // The output was reported at another height: drop the cached list and ask once more
+                InvalidateFrom(shortChannelId.BlockHeight);
+                (result, tip) = await LookupOnceAsync(shortChannelId);
+            }
+
+            if (result.Status == FundingOutputStatus.OutputSpentInMempool)
+                RememberMempoolSpent(shortChannelId, tip);
+
+            return result;
+        }
+        finally
+        {
+            _concurrency.Release();
+        }
+    }
+
+    /// <summary>
+    /// NL-414: the kept "only spent in the mempool" answer while no block came since it was read (see the remarks of
+    /// this class); null when there is none or it no longer holds (then it is forgotten).
+    /// </summary>
+    private async Task<FundingOutputLookupResult?> TryReuseMempoolSpentAsync(ShortChannelId shortChannelId)
+    {
+        if (!TryGetMempoolSpent(shortChannelId, out var answer))
+            return null;
+
+        if (_blockMonitor is null)
+        {
+            // No block events: one getblockcount tells whether a block came
+            var tip = await _chain.GetCurrentBlockHeightAsync();
+            ObserveTip(tip);
+            if (tip != answer.Tip)
+            {
+                _mempoolSpent.TryRemove(new KeyValuePair<ShortChannelId, MempoolSpentAnswer>(shortChannelId, answer));
+                return null;
+            }
+        }
+
+        if (_logger.IsEnabled(LogLevel.Trace))
+            _logger.LogTrace("Funding output of {ShortChannelId} still spent in the mempool at tip {Tip}; not asking "
+                           + "bitcoind again before the next block", shortChannelId, answer.Tip);
+        return FundingOutputLookupResult.Failed(FundingOutputStatus.OutputSpentInMempool);
+    }
+
+    private bool TryGetMempoolSpent(ShortChannelId shortChannelId, out MempoolSpentAnswer answer)
+    {
+        if (!_mempoolSpent.TryGetValue(shortChannelId, out answer))
+            return false;
+
+        // A block the monitor reported, or a later tip another lookup read, ends it; so does the interval
+        if (_timeProvider.GetElapsedTime(answer.ReadAt) < _mempoolSpentRecheckInterval
+         && answer.Tip >= Interlocked.Read(ref _lastKnownTip))
+            return true;
+
+        _mempoolSpent.TryRemove(new KeyValuePair<ShortChannelId, MempoolSpentAnswer>(shortChannelId, answer));
+        return false;
+    }
+
+    private void RememberMempoolSpent(ShortChannelId shortChannelId, uint tip)
+    {
+        if (_mempoolSpentRecheckInterval <= TimeSpan.Zero)
+            return;
+
+        // Bounded by what is spent in the mempool now; the stale ones are dropped on the way
+        if (_mempoolSpent.Count >= MaxMempoolSpentAnswers)
+            foreach (var key in _mempoolSpent.Keys)
+                TryGetMempoolSpent(key, out _);
+        if (_mempoolSpent.Count >= MaxMempoolSpentAnswers)
+            return;
+
+        _mempoolSpent[shortChannelId] = new MempoolSpentAnswer(tip, _timeProvider.GetTimestamp());
+    }
+
+    private void ReleaseInFlight(ShortChannelId shortChannelId)
+    {
+        while (_inFlight.TryGetValue(shortChannelId, out var count))
+        {
+            if (count <= 1
+                    ? _inFlight.TryRemove(new KeyValuePair<ShortChannelId, int>(shortChannelId, count))
+                    : _inFlight.TryUpdate(shortChannelId, count - 1, count))
+                return;
+        }
+    }
+
+    private void ObserveTip(uint tip)
+    {
+        long current;
+        do
+        {
+            current = Interlocked.Read(ref _lastKnownTip);
+            if (tip <= current)
+                return;
+        } while (Interlocked.CompareExchange(ref _lastKnownTip, tip, current) != current);
+    }
+
+    private async Task<(FundingOutputLookupResult Result, uint Tip)> LookupOnceAsync(ShortChannelId shortChannelId)
     {
         var height = shortChannelId.BlockHeight;
         var tip = await _chain.GetCurrentBlockHeightAsync();
+        ObserveTip(tip);
         if (height > tip)
-            return FundingOutputLookupResult.Failed(FundingOutputStatus.BlockNotFound);
+            return (FundingOutputLookupResult.Failed(FundingOutputStatus.BlockNotFound), tip);
 
         var block = await GetTxIdsAsync(height);
         if (block is not { } list)
-            return FundingOutputLookupResult.Failed(FundingOutputStatus.BlockUnavailable);
+            return (FundingOutputLookupResult.Failed(FundingOutputStatus.BlockUnavailable), tip);
 
         var txIds = list.TxIds;
 
         if (shortChannelId.TransactionIndex >= txIds.Count)
-            return FundingOutputLookupResult.Failed(FundingOutputStatus.TransactionIndexOutOfRange);
+            return (FundingOutputLookupResult.Failed(FundingOutputStatus.TransactionIndexOutOfRange), tip);
 
         var txId = txIds[(int)shortChannelId.TransactionIndex];
         var outPoint = new OutPoint(txId, shortChannelId.OutputIndex);
@@ -206,9 +354,9 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
         {
             // Spent in a block, missing, or only spent by a mempool transaction (a close not mined yet: transient)
             var confirmed = await _chain.GetConfirmedUnspentOutputAsync(outPoint);
-            return FundingOutputLookupResult.Failed(confirmed is { } c && c.Height == height
+            return (FundingOutputLookupResult.Failed(confirmed is { } c && c.Height == height
                                                         ? FundingOutputStatus.OutputSpentInMempool
-                                                        : FundingOutputStatus.OutputSpentOrMissing);
+                                                        : FundingOutputStatus.OutputSpentOrMissing), tip);
         }
 
         if (found.Height != height)
@@ -216,7 +364,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
             if (_logger.IsEnabled(LogLevel.Debug))
                 _logger.LogDebug("Funding output of {ShortChannelId} reported at height {Height}, not {ScidHeight}",
                                  shortChannelId, found.Height, height);
-            return FundingOutputLookupResult.Failed(FundingOutputStatus.ChainMoved);
+            return (FundingOutputLookupResult.Failed(FundingOutputStatus.ChainMoved), tip);
         }
 
         // A reorg between reading the txid list and gettxout can mine the same tx at the same height at another index:
@@ -227,13 +375,13 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
             if (_logger.IsEnabled(LogLevel.Debug))
                 _logger.LogDebug("Block {Height} changed during the funding output lookup of {ShortChannelId}", height,
                                  shortChannelId);
-            return FundingOutputLookupResult.Failed(FundingOutputStatus.ChainMoved);
+            return (FundingOutputLookupResult.Failed(FundingOutputStatus.ChainMoved), tip);
         }
 
         var confirmations = tip >= height ? tip - height + 1 : 1;
-        return FundingOutputLookupResult.WithOutput(FundingOutputStatus.Found, new TxId(txId.ToBytes()),
+        return (FundingOutputLookupResult.WithOutput(FundingOutputStatus.Found, new TxId(txId.ToBytes()),
                                                     LightningMoney.Satoshis(found.Output.Value.Satoshi),
-                                                    found.Output.ScriptPubKey.ToBytes(), confirmations);
+                                                    found.Output.ScriptPubKey.ToBytes(), confirmations), tip);
     }
 
     private async Task<(uint256 BlockHash, IReadOnlyList<uint256> TxIds)?> GetTxIdsAsync(uint height)
@@ -291,6 +439,14 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
     }
 
     private void HandleBlockDisconnected(object? sender, BlockDisconnectedEventArgs e) => InvalidateFrom(e.Height);
+
+    private void HandleNewBlock(object? sender, NewBlockEventArgs e) => OnNewBlock(e.Height);
+
+    /// <summary>At most this many kept mempool answers (a mempool full of closes is not worth more memory).</summary>
+    private const int MaxMempoolSpentAnswers = 10_000;
+
+    /// <summary>An "only spent in the mempool" answer read at tip <c>Tip</c>, at timestamp <c>ReadAt</c>.</summary>
+    private readonly record struct MempoolSpentAnswer(uint Tip, long ReadAt);
 
     private sealed record CachedBlock(uint Height, uint256 BlockHash, IReadOnlyList<uint256> TxIds);
 }
