@@ -337,7 +337,7 @@ public class GossipMemoryBudgetTests : IDisposable
 
         // Act
         var update = await ProcessAsync(kit, peer, GraphTestKit.SignedChannelUpdate(s_scid, s_alice, direction,
-                                                                                     s_now - 500));
+                                                                                     s_now - 500, feeBaseMsat: 2_000));
         kit.Clock.Now += TimeSpan.FromMinutes(10);
         var knownNode = await ProcessAsync(kit, peer, GraphTestKit.SignedNodeAnnouncement(s_alice, s_now, "again"));
         var newNode = await ProcessAsync(kit, peer, GraphTestKit.SignedNodeAnnouncement(s_bob, s_now));
@@ -368,13 +368,42 @@ public class GossipMemoryBudgetTests : IDisposable
         // Act
         _clock.Now += TimeSpan.FromSeconds(1);
         _reader.WorkingSet = 900 * MiB;
-        var accepted = await kit.Ingress.ProcessAsync(peer.Object, announcement, 1,
-                                                      TestContext.Current.CancellationToken);
+        var accepted = await kit.AnnounceAsync(peer.Object, announcement, 1,
+                                               cancellationToken: TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Equal(GossipIngressOutcome.Accepted, accepted.Outcome);
         Assert.True(kit.Store.TryGetChannel(other, out _));
         Assert.False(budget.IsOverBudget);
+    }
+
+    [Fact]
+    public async Task Given_APendingAnnouncement_When_ItsFirstUpdateComesOverTheBudget_Then_ItIsNotPromoted()
+    {
+        // Arrange (NL-406: a new channel enters the graph at its first update, so the budget holds there too)
+        var (kit, budget) = await CreateKitWithChannelAsync();
+        var peer = GraphTestKit.CreatePeer();
+        var other = new ShortChannelId(111, 1, 0);
+        var kept = await kit.Ingress.ProcessAsync(peer.Object,
+                                                  GraphTestKit.SignedChannelAnnouncement(
+                                                      other, s_bob, s_carol, s_bobFunding, s_carolFunding), 0,
+                                                  TestContext.Current.CancellationToken);
+        Assert.Equal(GossipIngressOutcome.Pending, kept.Outcome);
+        _clock.Now += TimeSpan.FromSeconds(1);
+        _reader.WorkingSet = 1_100 * MiB;
+        Assert.True(budget.IsOverBudget);
+
+        // Act
+        var refused = await kit.Ingress.ProcessAsync(peer.Object,
+                                                     GraphTestKit.SignedChannelUpdate(
+                                                         other, s_bob, GraphTestKit.DirectionOf(s_bob, s_carol),
+                                                         s_now - 100), 0,
+                                                     TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(GossipMetricReasons.MemoryBudget, refused.LimitReason);
+        Assert.False(kit.Store.TryGetChannel(other, out _));
+        Assert.True(kit.Ingress.IsPendingAnnouncement(other));
     }
 
     private GossipMemoryBudget CreateBudget(GossipGraphOptions? options = null,
@@ -388,9 +417,11 @@ public class GossipMemoryBudgetTests : IDisposable
         _reader.WorkingSet = 100 * MiB;
         var kit = new GraphTestKit(metrics: _metrics, memoryBudget: budget);
         kit.FundingFound();
-        var result = await ProcessAsync(kit, GraphTestKit.CreatePeer(0x70),
-                                        GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob,
-                                                                               s_aliceFunding, s_bobFunding));
+        var result = await kit.AnnounceAsync(GraphTestKit.CreatePeer(0x70).Object,
+                                             GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob,
+                                                                                    s_aliceFunding, s_bobFunding),
+                                             updateTimestamp: s_now - 2_000,
+                                             cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(GossipIngressOutcome.Accepted, result.Outcome);
         _clock.Now += TimeSpan.FromSeconds(1);
         return (kit, budget);

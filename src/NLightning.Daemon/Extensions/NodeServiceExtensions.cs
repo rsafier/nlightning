@@ -286,6 +286,10 @@ public static class NodeServiceExtensions
         // BOLT 7 funding output lookups of channel announcements (optional Gossip section; defaults apply, G2-T2)
         services.Configure<FundingOutputLookupOptions>(configuration.GetSection("Gossip"));
 
+        // Where the funding txid of a channel announcement comes from (optional; Gossip:FundingTxIdSource Bitcoind
+        // (default) or Esplora with Gossip:EsploraUrl, for pruned nodes; D12 lane Z4)
+        services.Configure<FundingTxIdSourceOptions>(configuration.GetSection("Gossip"));
+
         // BOLT 7 public channels (optional Gossip section: AcceptPublicChannels, AllowPublicChannelsOnMainnet,
         // AnnouncementDepth, AnnounceAddresses, OwnGossipFlushInterval, NodeAnnouncementRefreshInterval; G1-T1..T7,
         // NL-341); a bad announced address fails the start

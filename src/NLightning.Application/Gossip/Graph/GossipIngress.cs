@@ -722,6 +722,11 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         if (_store.ChannelCount >= _options.MaxChannels)
             return GraphFull($"the graph holds {_options.MaxChannels} channels", update.ShortChannelId.ToString());
 
+        // NL-373 with NL-406: the promotion is where a channel enters the graph, so the budget holds here too (the
+        // announcement stays pending; a later update promotes it once the process is back under the budget)
+        if (_memoryBudget?.RefuseNew("channels") is { } overBudget)
+            return overBudget;
+
         var check = await CheckFundingAsync(pending, announcement, origin, cancellationToken);
         if (check.Failure is { } failure)
         {

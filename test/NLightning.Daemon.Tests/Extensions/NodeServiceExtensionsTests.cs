@@ -43,6 +43,7 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.ValueObjects;
+using Infrastructure.Bitcoin.Gossip;
 using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -744,6 +745,58 @@ public class NodeServiceExtensionsTests
         Assert.Equal(5, options.SyncPeers);
         Assert.Equal(TimeSpan.FromSeconds(30), options.SyncReplyTimeout);
         Assert.False(manager.IsSyncEnabled);
+    }
+
+    [Fact]
+    public void Given_EsploraFundingTxIdSource_When_Composed_Then_TheFundingOutputLookupUsesTheIndex()
+    {
+        // Arrange (D12 lane Z4: Gossip:FundingTxIdSource=Esplora is bound from the Gossip section)
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Gossip:FundingTxIdSource", "Esplora"),
+                                                        ("Gossip:EsploraUrl", "http://esplora.test/api"),
+                                                        ("Gossip:EsploraMaxInlineWait", "00:00:03")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<FundingTxIdSourceOptions>>().Value;
+        var lookup = provider.GetRequiredService<IFundingOutputLookup>();
+        var source = typeof(FundingOutputLookup)
+                    .GetField("_txIdSource",
+                              System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .GetValue(lookup);
+
+        // Assert
+        Assert.Equal(FundingTxIdSourceKind.Esplora, options.FundingTxIdSource);
+        Assert.Equal("http://esplora.test/api", options.EsploraUrl);
+        Assert.Equal(TimeSpan.FromSeconds(3), options.EsploraMaxInlineWait);
+        Assert.IsType<FundingOutputLookup>(lookup);
+        Assert.Same(provider.GetRequiredService<EsploraTxIdSource>(), source);
+    }
+
+    [Fact]
+    public void Given_NoFundingTxIdSource_When_Composed_Then_TheFundingOutputLookupAsksBitcoind()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var lookup = provider.GetRequiredService<IFundingOutputLookup>();
+        var source = typeof(FundingOutputLookup)
+                    .GetField("_txIdSource",
+                              System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .GetValue(lookup);
+
+        // Assert
+        Assert.Equal(FundingTxIdSourceKind.Bitcoind,
+                     provider.GetRequiredService<IOptions<FundingTxIdSourceOptions>>().Value.FundingTxIdSource);
+        Assert.Null(source);
     }
 
     [Fact]
