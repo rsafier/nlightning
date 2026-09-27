@@ -1,6 +1,6 @@
 # Remaining work
 
-This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`), G-C (`4dc0f77`) and G-D (`48a8951`).
+This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`), G-C (`4dc0f77`), G-D (`48a8951`), anchors waves O7 (`897f032`) and O7b (`f9fad19`), and the mainnet gossip probe (`fbb113b`).
 - Detailed status per item lives in [`ISSUES.md`](ISSUES.md) (NL IDs) and [`BOLT_COVERAGE.md`](BOLT_COVERAGE.md).
 - Designs live in the plan files linked below.
 - Update this file when a line item lands or a new one is found.
@@ -10,7 +10,8 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 - **Channel lifecycle.**
   - BOLT 2 open (v1), normal operation, reestablish, `update_fee`, dust limits and HTLC deadlines.
   - Cooperative close: legacy and `option_simple_close`.
-  - All proven against LND in Docker, with CLN interop 17/17.
+  - All proven against LND in Docker, with CLN interop 22/22.
+  - **Anchor channels by default** (`option_anchors` Optional, wave O7b): CPFP with RBF, package relay, peer-anchor bumping, a per-channel on-chain reserve; LND, CLN, ABCD and gossip suites pass on anchors channels.
 - **Multi-hop payments.** Forwarding, final hop, send, MPP both directions, retries with a fee limit, a persistent onion replay set, and error onions. The ABCD suite (LND → NLightning → NLightning → LND) passes 3 runs in a row.
 - **BOLT 5 on-chain enforcement, O0–O6.**
   - Our force close and theirs, with HTLC resolution.
@@ -18,7 +19,9 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
   - On-chain preimage handling, including final-hop claims (NL-316).
   - RBF sweeps and reorgs.
   - O8 mempool reaction: preimages and penalties from unconfirmed transactions (NL-098), and the `chainstatus` halt gate (NL-216), gossip wave G-A.
-- **Live Mutinynet smoke test.** Open, pay, receive, restart, cooperative close ([`MUTINYNET.md`](MUTINYNET.md)).
+- **BOLT 7 public channels, gossip and graph routing** (waves G-A..G-D): we pay and get paid over public channels without route hints against LND and CLN (goal proofs (a)-(e)); the whole mainnet graph synced and verified on chain against a real bitcoind ([`MAINNET_GOSSIP_PROBE.md`](MAINNET_GOSSIP_PROBE.md)); gossip stays off on mainnet by default (D12).
+- **Mainnet HTLC gate open** (O6-T4, wave G-D): HTLCs on for every network by default after the full BOLT 5 proof set.
+- **Live Mutinynet smoke test.** Open, pay, receive, restart, cooperative close, and a public channel with our node announced as `NLightningFAFO` and visible on mutinynet.com ([`MUTINYNET.md`](MUTINYNET.md)).
 - **Platform.** net10.0 + net11.0; SQLite, Postgres and SQL Server schemas kept in sync.
 
 ## Before real funds (mainnet gate)
@@ -69,7 +72,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 
 ## Interop and testing
 
-- **More implementations.** Eclair and LDK interop suites (CLN done: 17/17). A CLN-funded ABCD-style multi-hop test.
+- **More implementations.** Eclair and LDK interop suites (CLN done: 22/22; mainnet gossip already exercised against Eclair, CLN and LND peers). A CLN-funded ABCD-style multi-hop test.
 - **CI.**
   - Run the Docker suites in CI. They are local only today, and NL-276 blocks the host process on macOS, so an in-container runner is needed.
   - Per-fixture container names, so suites can run in parallel.
