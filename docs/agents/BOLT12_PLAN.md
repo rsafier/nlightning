@@ -8,6 +8,8 @@ This plan covers two waves:
 
 **Status (2026-09-27, `wip/fafo` @ `a3445f3f`): wave B12 is integrated** (NL-447 partial). B0-T1/T2/T3/T5, B1, B2, B3 and B4-T1..T4 are done, Proof B12 receive and pay are green against CLN v26.06.8 (4/4 each), and `ClientCommand` 26-30 are `createoffer`, `listoffers`, `disableoffer`, `payoffer`, `fetchinvoice`. Open: B0-T4 CLN captures (NL-450), the expired-invoice prune timer (NL-448), reachability limits (NL-452). See "Wave B12 record" at the end of §5.
 
+**Status (2026-09-27, `wip/fafo` @ `a6c633f9`): wave B12 is closed** (NL-447 fixed in wave lh1, lane l2). B0-T4 is done: CLN v26.06.8's offer, invoice_request, invoice and invoice_error are captured in `Bolt12ClnVectors` and checked byte-exact, and CLN's invoice is the B4-T2 positive case of `InvoiceVerifierTests` (NL-450, 3295f675). B2-T2's prune runs: `ExpiredBolt12InvoicePruner` with a grace of at least the MPP timeout (NL-448, b9faac3d, 84eef9ed, registered in a6c633f9). B1-T1 signs with fresh aux randomness (NL-455, e767fd30). OM0-T1: a malformed 513 is ignored and counted, no warning (NL-444, 8035c63b). OM1/OM2-T3/OM2-T5: one Domain codec and one path builder, the service reads through `IOnionMessageUnwrapper` (Domain) and the harness runs the production builder (NL-442, e1693d44). B0: both `Bolt12Wire` seams deleted (NL-453, 844318cc). §3.11: `Offers` template section and `listinvoices` kind/offer id (NL-454, c0587be9). Carried: NL-451, NL-452, NL-464.
+
 Every repo claim cites a repo-relative path, verified at `wip/fafo` @ `88d046c7` unless marked otherwise. Claims marked **(unverified)** were not checked against the spec, code or a running peer. Confirm them before relying on them.
 
 - **Spec source:** `lightning/bolts` master, fetched 2026-09-27 through the GitHub contents API:
@@ -461,7 +463,7 @@ Deviations from this plan (spec wins):
 - `payment_relay`/`payment_constraints` in a message path are accepted and ignored by the reader (§3.2 step 5); the writer refuses them.
 - A forward to ourselves is dropped as `loop` rather than processed as a dummy hop (our paths have no dummy hops).
 - D7 relaxed: the reply path's introduction node is a connected onion-message peer with an open channel first, then any connected onion-message peer, then us, so channelless topologies (the CLN proof) work.
-- A malformed 513 still takes the NL-207 warning-and-close path (NL-444).
+- A malformed 513 still takes the NL-207 warning-and-close path (NL-444; fixed in wave lh1, 8035c63b: ignored and counted).
 - The rate-limit values beyond §3.4 were chosen by lane M6-C (NL-446).
 
 Gates at `641a5fff`: Release and Release.Native 0 errors, the 5 baseline CS86xx warnings, net11.0 compile check green, `dotnet format` clean; 8332 non-Docker tests on net10.0 (both configs), Long simulator 1/1; Docker (net10.0, in-container runner, SQL Server skipped) CLN 33/33 incl. Proof M6, LND 66/66, gossip 28/28, ABCD 3 x 10/10, on-chain legacy 24 (+2 Explicit), anchors 18/18. Proof M6 passed before the D9 flip, and every suite above ran after it.
@@ -551,7 +553,7 @@ Deviations from this plan (spec wins):
 
 Gates at `a3445f3f`: Release and Release.Native (net10.0) 0 errors, the 5 baseline CS86xx warnings (plus the three pre-existing MsgPack017 warnings, NL-456); SDK 11 rc1 net10.0 + net11.0 compile check 0 errors; `dotnet format` clean; `HasPendingModelChanges` false x3; **8985** non-Docker tests on net10.0 (both configs), Long simulator 1/1; Docker (net10.0, in-container runner, SQL Server skipped) CLN 39/39 (+3 Explicit) incl. both offer proofs, LND 62/62, `MultiNodeHarnessTests` 5/5 facts (server-database theory not run, NL-429), gossip 28/28, on-chain legacy + anchors 40/40 (+2 Explicit), ABCD 3 x 10/10. Proof B12's "three runs in a row" was met by the lanes on local merges (receive 6 runs, pay per lane E); the integrated branch ran the CLN suite once.
 
-Follow-ups: NL-448 (prune timer), NL-450 (B0-T4), NL-451, NL-452, NL-453, NL-454, NL-455; NL-440 (BOLT 11 blinded paths, dummy hops); NL-449 (onion message harness test fails alone).
+Follow-ups: NL-448 (prune timer), NL-450 (B0-T4), NL-451, NL-452, NL-453, NL-454, NL-455 (all but NL-451 and NL-452 fixed in wave lh1); NL-440 (BOLT 11 blinded paths, dummy hops); NL-449 (onion message harness test fails alone).
 
 ### Waves and lanes (for the multi-agent wave workflow)
 | Wave | Lane | Files owned (exclusive) | Depends on | Proof |
