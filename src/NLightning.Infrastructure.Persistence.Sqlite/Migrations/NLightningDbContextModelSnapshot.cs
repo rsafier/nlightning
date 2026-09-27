@@ -413,6 +413,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .IsRequired()
                         .HasColumnType("BLOB");
 
+                    b.Property<bool>("IsDualFunded")
+                        .HasColumnType("INTEGER");
+
                     b.Property<bool>("IsInitiator")
                         .HasColumnType("INTEGER");
 
@@ -432,6 +435,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<ulong>("LocalCommitmentNumber")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("LocalFundingContributionSatoshis")
                         .HasColumnType("INTEGER");
 
                     b.Property<ulong>("LocalNextHtlcId")
@@ -462,6 +468,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<ulong>("RemoteCommitmentNumber")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("RemoteFundingContributionSatoshis")
                         .HasColumnType("INTEGER");
 
                     b.Property<ulong>("RemoteNextHtlcId")
@@ -502,6 +511,75 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasIndex("ChangeAddressIndex", "ChangeAddressIsChange", "ChangeAddressAddressType");
 
                     b.ToTable("Channels");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelFundingEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("FundingTxId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<bool>("AnnouncementSignaturesReceived")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CapacitySatoshis")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint?>("ConfirmedHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint?>("FeeratePerKw")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("LocalBalanceDeltaMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("LocalFundingKeyIndex")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("LocalFundingPubKey")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<uint?>("Locktime")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ushort>("OutputIndex")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("RbfOf")
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("RemoteBalanceDeltaMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("RemoteFundingPubKey")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("ShortChannelId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<bool>("SpliceLockedReceived")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("SpliceLockedSent")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("ChannelId", "FundingTxId");
+
+                    b.ToTable("ChannelFundings");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelKeySetEntity", b =>
@@ -563,6 +641,34 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("ChannelLocalAliases");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelPolicyEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<ushort?>("CltvExpiryDelta")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint?>("FeeBaseMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint?>("FeeProportionalMillionths")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ulong?>("HtlcMaximumMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ulong?>("HtlcMinimumMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("UpdatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("ChannelId");
+
+                    b.ToTable("ChannelPolicies");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.CommitmentEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
@@ -570,6 +676,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.Property<byte>("Slot")
                         .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("FundingTxId")
+                        .HasColumnType("BLOB");
 
                     b.Property<uint>("FeeratePerKw")
                         .HasColumnType("INTEGER");
@@ -596,7 +705,7 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<byte[]>("Signature")
                         .HasColumnType("BLOB");
 
-                    b.HasKey("ChannelId", "Slot");
+                    b.HasKey("ChannelId", "Slot", "FundingTxId");
 
                     b.ToTable("Commitments");
                 });
@@ -808,6 +917,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<ulong>("Number")
                         .HasColumnType("INTEGER");
 
+                    b.Property<byte[]>("FundingTxId")
+                        .HasColumnType("BLOB");
+
                     b.Property<uint>("FeeratePerKw")
                         .HasColumnType("INTEGER");
 
@@ -821,7 +933,7 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<ulong>("RemoteMsat")
                         .HasColumnType("INTEGER");
 
-                    b.HasKey("ChannelId", "Number");
+                    b.HasKey("ChannelId", "Number", "FundingTxId");
 
                     b.ToTable("RevokedCommitments");
                 });
@@ -1476,6 +1588,15 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasForeignKey("ChangeAddressIndex", "ChangeAddressIsChange", "ChangeAddressAddressType");
 
                     b.Navigation("ChangeAddress");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelFundingEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelKeySetEntity", b =>

@@ -2,8 +2,10 @@ using Microsoft.EntityFrameworkCore;
 
 namespace NLightning.Infrastructure.Repositories.Database.Channel;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
@@ -51,8 +53,12 @@ public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
                                                       && b.CommitmentNumber != null)
                                              .Select(b => b.CommitmentNumber!.Value)
                                              .ToListAsync();
+        var fundings = await _context.ChannelFundings.AsNoTracking()
+                                     .Where(f => f.ChannelId == channelId)
+                                     .ToListAsync();
+        var localSlots = await GetLocalSlotsAsync(c => c.ChannelId == channelId);
 
-        return Map(channel, broadcastNumbers);
+        return Map(channel, broadcastNumbers, fundings, localSlots);
     }
 
     /// <inheritdoc />
@@ -72,32 +78,63 @@ public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
         var numbersByChannel = broadcasts.GroupBy(b => b.ChannelId!.Value)
                                          .ToDictionary(g => g.Key,
                                                        g => g.Select(b => b.CommitmentNumber!.Value).ToList());
+        var fundingsByChannel = (await _context.ChannelFundings.AsNoTracking().ToListAsync())
+                               .GroupBy(f => f.ChannelId)
+                               .ToDictionary(g => g.Key, g => g.ToList());
+        var slotsByChannel = (await GetLocalSlotsAsync(_ => true)).GroupBy(c => c.ChannelId)
+                                                                  .ToDictionary(g => g.Key, g => g.ToList());
 
         var result = new Dictionary<ChannelId, ChannelSigningInfo>();
         foreach (var channel in channels)
         {
             var numbers = numbersByChannel.GetValueOrDefault(channel.ChannelId) ?? [];
-            if (Map(channel, numbers) is { } signingInfo)
+            if (Map(channel, numbers, fundingsByChannel.GetValueOrDefault(channel.ChannelId) ?? [],
+                    slotsByChannel.GetValueOrDefault(channel.ChannelId) ?? []) is { } signingInfo)
                 result[channel.ChannelId] = signingInfo;
         }
 
         return result;
     }
 
+    /// <summary>Our local commitment slots that carry the peer's signatures (SP-I1 source), without tracking.</summary>
+    private Task<List<CommitmentEntity>> GetLocalSlotsAsync(
+        System.Linq.Expressions.Expression<Func<CommitmentEntity, bool>> filter) =>
+        _context.Commitments.AsNoTracking()
+                .Where(c => c.Slot == CommitmentEntity.LocalCurrentSlot && c.Signature != null)
+                .Where(filter)
+                .ToListAsync();
+
     /// <summary>
-    /// Builds the signing info as <c>ChannelModel.GetSigningInfo</c> does, plus the S1 mark: the lowest commitment
-    /// number signed for broadcast.
+    /// Builds the signing info as <c>ChannelModel.GetSigningInfo</c> does, plus the S1 mark (the lowest commitment
+    /// number signed for broadcast) and the splice data (splicing plan SP1-C): the current funding's keys and key index
+    /// from its funding row, the other fundings, and per pending funding the number of its persisted local commitment
+    /// with the peer's signatures (SP-I1).
     /// </summary>
-    private static ChannelSigningInfo? Map(ChannelEntity channel, IReadOnlyCollection<long> broadcastNumbers)
+    private static ChannelSigningInfo? Map(ChannelEntity channel, IReadOnlyCollection<long> broadcastNumbers,
+                                           IReadOnlyCollection<ChannelFundingEntity> fundings,
+                                           IReadOnlyCollection<CommitmentEntity> localSlots)
     {
         var local = channel.KeySets?.FirstOrDefault(k => k.IsLocal);
         var remote = channel.KeySets?.FirstOrDefault(k => !k.IsLocal);
         if (local is null || remote is null)
             return null;
 
-        CompactPubKey localFundingPubKey = local.FundingPubKey;
-        CompactPubKey remoteFundingPubKey = remote.FundingPubKey;
+        var current = fundings.FirstOrDefault(f => f.FundingTxId == channel.FundingTxId);
+        var localFundingPubKey = current?.LocalFundingPubKey ?? local.FundingPubKey;
+        var remoteFundingPubKey = current?.RemoteFundingPubKey ?? remote.FundingPubKey;
         CompactPubKey remoteHtlcBasepoint = remote.HtlcBasepoint;
+
+        var others = fundings.Where(f => f.FundingTxId != channel.FundingTxId)
+                             .OrderBy(f => f.Sequence)
+                             .Select(ChannelFundingDbRepository.MapToDomain)
+                             .ToList();
+        var persisted = new Dictionary<TxId, ulong>();
+        foreach (var funding in others.Where(f => f.Status == ChannelFundingStatus.Pending))
+        {
+            var slot = localSlots.FirstOrDefault(c => c.FundingTxId == funding.FundingTxId);
+            if (slot is not null)
+                persisted[funding.FundingTxId] = slot.Number;
+        }
 
         return new ChannelSigningInfo(channel.FundingTxId, channel.FundingOutputIndex,
                                       checked((ulong)channel.FundingAmountSatoshis * 1_000), localFundingPubKey,
@@ -107,7 +144,10 @@ public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
             BroadcastSignedCommitmentNumber = broadcastNumbers.Count == 0 ? null : (ulong)broadcastNumbers.Min(),
             RemoteNodeId = channel.RemoteNodeId,
             ShortChannelId = channel.ShortChannelId,
-            AnnounceChannel = channel.Config?.AnnounceChannel ?? false
+            AnnounceChannel = channel.Config?.AnnounceChannel ?? false,
+            LocalFundingKeyIndex = current?.LocalFundingKeyIndex ?? 0,
+            Fundings = others.Count == 0 ? null : others,
+            PersistedSpliceCommitments = persisted.Count == 0 ? null : persisted
         };
     }
 }

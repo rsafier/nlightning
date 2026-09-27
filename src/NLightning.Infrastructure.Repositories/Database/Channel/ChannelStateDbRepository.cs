@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 namespace NLightning.Infrastructure.Repositories.Database.Channel;
 
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
@@ -62,6 +63,10 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                    ?? throw new InvalidOperationException($"Channel {channelId} does not exist");
         WriteScalars(channel, next, extras);
 
+        // The state machine's slots are those of the channel's current funding (splicing plan §3.8): a splice's lock
+        // moves Channels.FundingTxId first, in the same save, so its rows become the state machine's
+        var fundingTxId = channel.FundingTxId;
+
         // Settled HTLCs keep their final state as an archive: the events of this transition must be re-derivable
         // after a crash (invariant I8). They are removed by PruneSettledHtlcsAsync.
         foreach (var htlc in transition.UpsertedHtlcs.Concat(transition.SettledHtlcs))
@@ -80,34 +85,22 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         if (transition.LocalCommitChanged)
         {
             var local = next.LocalCommit;
-            await UpsertCommitmentAsync(channelId, CommitmentEntity.LocalCurrentSlot, local.Number, local.Spec, null,
-                                        local.RemoteSignatures);
+            await UpsertCommitmentAsync(channelId, CommitmentEntity.LocalCurrentSlot, fundingTxId, local.Number,
+                                        local.Spec, null, local.RemoteSignatures);
         }
 
         if (transition.RemoteCommitChanged)
         {
             var remote = next.RemoteCommit;
-            await UpsertCommitmentAsync(channelId, CommitmentEntity.RemoteCurrentSlot, remote.Number, remote.Spec,
-                                        remote.PerCommitmentPoint, null);
-
-            if (next.RemoteNextCommit is { } pending)
-            {
-                await UpsertCommitmentAsync(channelId, CommitmentEntity.RemoteNextSlot, pending.Commit.Number,
-                                            pending.Commit.Spec, pending.Commit.PerCommitmentPoint,
-                                            pending.SentSignatures);
-            }
-            else
-            {
-                var stale = await FindCommitmentAsync(channelId, CommitmentEntity.RemoteNextSlot);
-                if (stale is not null)
-                    _context.Commitments.Remove(stale);
-            }
+            await UpsertCommitmentAsync(channelId, CommitmentEntity.RemoteCurrentSlot, fundingTxId, remote.Number,
+                                        remote.Spec, remote.PerCommitmentPoint, null);
+            await SyncRemoteNextAsync(channelId, fundingTxId, next.RemoteNextCommit);
         }
 
         // The revocation log (BOLT 5 plan O1-T1): the commitment the peer just revoked, in the same save as the
         // revoke_and_ack and its shachain entry, so a breach of it can be rebuilt output by output
         if (transition.RevokedRemoteCommit is { } revoked)
-            await _revokedCommitmentDbRepository.StageAsync(channelId, revoked);
+            await _revokedCommitmentDbRepository.StageAsync(channelId, revoked, fundingTxId);
 
         if (extras?.RemoteShachain is { } shachain)
             await _remoteShachainDbRepository.SaveAsync(channelId, shachain);
@@ -130,6 +123,11 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
 
         var channel = await _context.Channels.AsNoTracking().FirstOrDefaultAsync(c => c.ChannelId == channelId)
                    ?? throw new InvalidOperationException($"Channel {channelId} does not exist");
+
+        // Only the current funding's rows are the state machine's; a pending splice's are read per funding
+        commitments = commitments.Where(c => c.FundingTxId == channel.FundingTxId).ToList();
+        if (commitments.Count == 0)
+            return null;
         var feeUpdates = await _context.FeeUpdates.AsNoTracking().Where(f => f.ChannelId == channelId).ToListAsync();
         var shachain = await _remoteShachainDbRepository.GetByChannelIdAsync(channelId);
 
@@ -254,6 +252,8 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                                                       IReadOnlyList<Domain.Protocol.Models.ShachainEntry> shachain,
                                                       CommitmentParams @params)
     {
+        // The current funding's slots (splicing plan §3.8): a pending splice has rows of its own
+        rows = rows.Where(c => c.FundingTxId == channel.FundingTxId).ToList();
         var localRow = rows.SingleOrDefault(c => c.Slot == CommitmentEntity.LocalCurrentSlot)
                     ?? throw new InvalidOperationException($"Channel {channel.ChannelId} has no local commitment");
         var remoteRow = rows.SingleOrDefault(c => c.Slot == CommitmentEntity.RemoteCurrentSlot)
@@ -415,17 +415,17 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         entity.Sha256OfOnion = removal?.Kind == HtlcRemovalKind.FailMalformed ? removal.Sha256OfOnion.ToArray() : null;
     }
 
-    private static CommitmentSpec MapSpec(CommitmentEntity row, CommitmentSide holder) =>
+    internal static CommitmentSpec MapSpec(CommitmentEntity row, CommitmentSide holder) =>
         new(holder, row.FeeratePerKw, row.LocalMsat, row.RemoteMsat,
             CommitmentStateEncoding.DecodeSpecHtlcs(row.Htlcs));
 
-    private static CommitmentSignatures? MapSignatures(CommitmentEntity row) =>
+    internal static CommitmentSignatures? MapSignatures(CommitmentEntity row) =>
         row.Signature is null
             ? null
             : new CommitmentSignatures(new CompactSignature(row.Signature),
                                        CommitmentStateEncoding.DecodeSignatures(row.HtlcSignatures ?? []));
 
-    private static CompactPubKey MapPoint(CommitmentEntity row) =>
+    internal static CompactPubKey MapPoint(CommitmentEntity row) =>
         new(row.PerCommitmentPoint
          ?? throw new InvalidOperationException($"Remote commitment {row.Number} has no per-commitment point"));
 
@@ -488,15 +488,37 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         }
     }
 
-    private async Task UpsertCommitmentAsync(ChannelId channelId, byte slot, ulong number, CommitmentSpec spec,
-                                             CompactPubKey? point, CommitmentSignatures? signatures)
+    /// <summary>
+    /// Stages the unacked remote commitment slot of <paramref name="fundingTxId"/>: written when there is one, removed
+    /// otherwise.
+    /// </summary>
+    internal async Task SyncRemoteNextAsync(ChannelId channelId, TxId fundingTxId, RemoteNextCommit? pending)
     {
-        var entity = await FindCommitmentAsync(channelId, slot);
+        if (pending is not null)
+        {
+            await UpsertCommitmentAsync(channelId, CommitmentEntity.RemoteNextSlot, fundingTxId, pending.Commit.Number,
+                                        pending.Commit.Spec, pending.Commit.PerCommitmentPoint,
+                                        pending.SentSignatures);
+            return;
+        }
+
+        var stale = await FindCommitmentAsync(channelId, CommitmentEntity.RemoteNextSlot, fundingTxId);
+        if (stale is not null)
+            _context.Commitments.Remove(stale);
+    }
+
+    /// <summary>Stages one commitment slot of one funding, inserted or rewritten by primary key.</summary>
+    internal async Task UpsertCommitmentAsync(ChannelId channelId, byte slot, TxId fundingTxId, ulong number,
+                                              CommitmentSpec spec, CompactPubKey? point,
+                                              CommitmentSignatures? signatures)
+    {
+        var entity = await FindCommitmentAsync(channelId, slot, fundingTxId);
         var isNew = entity is null;
         entity ??= new CommitmentEntity
         {
             ChannelId = channelId,
             Slot = slot,
+            FundingTxId = fundingTxId,
             Number = number,
             FeeratePerKw = spec.FeeratePerKw,
             LocalMsat = spec.LocalMsat,
@@ -524,8 +546,9 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
     private async Task<HtlcEntity?> FindHtlcAsync(ChannelId channelId, HtlcKey key) =>
         await _context.Htlcs.FindAsync(channelId, key.Id, (byte)key.Direction);
 
-    private async Task<CommitmentEntity?> FindCommitmentAsync(ChannelId channelId, byte slot) =>
-        await _context.Commitments.FindAsync(channelId, slot);
+    /// <summary>A commitment slot of a funding (tracked), or null.</summary>
+    internal async Task<CommitmentEntity?> FindCommitmentAsync(ChannelId channelId, byte slot, TxId fundingTxId) =>
+        await _context.Commitments.FindAsync(channelId, slot, fundingTxId);
 
     /// <summary>A row removed earlier in the same unit of work and written again is an update, not a delete.</summary>
     private void ReviveIfDeleted(object entity)

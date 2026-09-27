@@ -76,6 +76,9 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IInteractiveTxSessionDbRepository InteractiveTxSessionDbRepository =>
         inner.InteractiveTxSessionDbRepository;
 
+    public IChannelFundingDbRepository ChannelFundingDbRepository => inner.ChannelFundingDbRepository;
+    public IChannelPolicyDbRepository ChannelPolicyDbRepository => inner.ChannelPolicyDbRepository;
+
     public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
 
     public void AddUtxo(UtxoModel utxoModel) => inner.AddUtxo(utxoModel);

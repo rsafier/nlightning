@@ -204,6 +204,18 @@ public class ChannelEntity
     /// </summary>
     public DateTimeOffset? LocalAnnouncementSigsSentAt { get; set; }
 
+    /// <summary>
+    /// True for a channel opened with <c>open_channel2</c>/<c>accept_channel2</c> (migration <c>AddSpliceFundings</c>,
+    /// splicing plan wave DF); written only through <c>IChannelFundingDbRepository</c>.
+    /// </summary>
+    public bool IsDualFunded { get; set; }
+
+    /// <summary>Our contribution to a dual-funded channel's funding output, in satoshis (null for a v1 channel).</summary>
+    public long? LocalFundingContributionSatoshis { get; set; }
+
+    /// <summary>The peer's contribution to a dual-funded channel's funding output, in satoshis.</summary>
+    public long? RemoteFundingContributionSatoshis { get; set; }
+
     public AddressType? ChangeAddressType { get; set; }
     public uint? ChangeAddressIndex { get; set; }
 
