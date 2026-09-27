@@ -72,8 +72,13 @@ internal sealed class QuiescenceTestPair : IDisposable
     public ConcurrentQueue<(string Node, ulong HtlcId, CommitmentRefusedException Refusal)> FulfillRefusals { get; } =
         new();
 
-    public QuiescenceTestPair(bool hasAnchors = false)
+    private readonly Action<HarnessNode, IServiceCollection>? _configureNode;
+
+    /// <param name="hasAnchors">Open an anchors channel.</param>
+    /// <param name="configureNode">Extra services for each node, added after the kit's own.</param>
+    public QuiescenceTestPair(bool hasAnchors = false, Action<HarnessNode, IServiceCollection>? configureNode = null)
     {
+        _configureNode = configureNode;
         Harness = new TwoNodeHarness(hasAnchors, configureServices: Configure);
         foreach (var node in new[] { Alice, Bob })
         {
@@ -213,6 +218,7 @@ internal sealed class QuiescenceTestPair : IDisposable
         services.AddQuiescenceServices();
         services.AddSingleton<IQuiescencePeerDisconnector>(new RecordingDisconnector(node.Name, Disconnects));
         services.AddSingleton<IHtlcSwitch>(sp => new FulfillingSwitch(node, sp, this));
+        _configureNode?.Invoke(node, services);
     }
 
     private sealed class RecordingDisconnector(

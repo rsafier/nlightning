@@ -22,6 +22,7 @@ using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using InteractiveTx.Interfaces;
 using Interfaces;
 using Payments.Switch;
 using Reestablish;
@@ -439,6 +440,53 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
         _logger.LogInformation("Channel {ChannelId} is quiescent (initiator: {Initiator})", channel.ChannelId,
                                initiator);
         entry.Waiter?.TrySetResult(initiator);
+
+        // A probe of ours has no dependent protocol: it ends with our tx_abort once quiescent (plan D2, SP-Q-01),
+        // sent after the messages of the current transition (the stfu that made the channel quiescent)
+        if (initiator == QuiescenceInitiator.Local && entry.State.PendingRequest == QuiescencePurpose.Probe)
+            ScheduleProbeEnd(channel.ChannelId);
+    }
+
+    private void ScheduleProbeEnd(ChannelId channelId)
+    {
+        Task round;
+        using (ExecutionContext.SuppressFlow())
+            round = Task.Run(() => EndProbeAsync(channelId));
+        TrackBackground(round);
+    }
+
+    private async Task EndProbeAsync(ChannelId channelId)
+    {
+        try
+        {
+            using var channelLock = await _channelLockProvider.AcquireAsync(channelId, _stopping.Token);
+            if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
+             || !TryGetCurrent(channelId, out var entry) || entry.TerminatedAt.HasValue
+             || entry.State is not
+             {
+                 IsQuiescent: true, PendingRequest: QuiescencePurpose.Probe, Initiator: QuiescenceInitiator.Local
+             })
+                return;
+
+            if (_serviceProvider.GetService<IInteractiveTxDriver>() is not { } driver)
+            {
+                _logger.LogInformation("Channel {ChannelId} is quiescent for a probe, but no interactive-tx driver "
+                                     + "can end it with tx_abort; it ends with the disconnection", channelId);
+                return;
+            }
+
+            var messages = driver.AbortQuiescence(channelId, channel.RemoteNodeId, "quiescence probe complete");
+            if (messages.Count > 0)
+                GetPublisher()?.Publish(channel.RemoteNodeId, messages);
+        }
+        catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+        {
+            // Shutting down
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Failed to end the quiescence probe of channel {ChannelId}", channelId);
+        }
     }
 
     private Entry CreateEntry(ChannelModel channel, QuiescenceState state, bool withWaiter)

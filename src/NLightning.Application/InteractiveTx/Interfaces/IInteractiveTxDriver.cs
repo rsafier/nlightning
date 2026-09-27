@@ -83,6 +83,14 @@ public interface IInteractiveTxDriver
     /// </summary>
     Task OnDisconnectedAsync(ChannelId channelId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Ends a quiescence that has no dependent protocol (our <c>Probe</c>, splicing plan D2 and SP-Q-01) with our
+    /// <c>tx_abort</c>: the quiescence is terminated (<c>TxAbort</c>) and the peer's echo is taken as the echo (never
+    /// answered again). Call it under the channel's lock and send what it returns. Empty when a negotiation or an RBF
+    /// request is in progress, or our <c>tx_abort</c> already waits for its echo.
+    /// </summary>
+    IReadOnlyList<IChannelMessage> AbortQuiescence(ChannelId channelId, CompactPubKey peerPubKey, string reason);
+
     /// <summary>The channels of <paramref name="peerPubKey"/> the driver holds state for.</summary>
     IReadOnlyList<ChannelId> GetChannels(CompactPubKey peerPubKey);
 

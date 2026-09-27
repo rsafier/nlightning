@@ -18,6 +18,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Quiescence;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
@@ -1190,6 +1191,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         if (IsNormalOperationMessage(message.Type) || IsCloseMessage(message.Type))
             ThrowIfNotReestablished(channelId, currentState, message.Type);
 
+        // BOLT 2 quiescence (Q-S-04): the peer MUST NOT send an update message after its stfu; warning + close
+        ThrowIfUpdateAfterPeerStfu(channelId, message.Type);
+
         // In this case we can only handle messages that are opening a channel
         switch (message.Type)
         {
@@ -1401,6 +1405,16 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// opened) on this connection breaks that: warning and close the connection, the next reconnection starts over.
     /// Without a <see cref="ReestablishTracker"/> (in-process tests) nothing is gated.
     /// </summary>
+    private void ThrowIfUpdateAfterPeerStfu(ChannelId channelId, MessageTypes messageType)
+    {
+        if (!QuiescenceRules.IsUpdateMessage(messageType)
+         || _serviceProvider.GetService<IQuiescenceService>() is not { } quiescenceService)
+            return;
+
+        if (QuiescenceRules.CheckPeerMessage(quiescenceService.GetState(channelId), messageType) is { } violation)
+            throw QuiescenceRules.CreateWarning(violation, channelId);
+    }
+
     private void ThrowIfNotReestablished(ChannelId channelId, ChannelState currentState, MessageTypes messageType)
     {
         if (currentState is not (ChannelState.Open or ChannelState.ShuttingDown or ChannelState.Negotiating

@@ -107,6 +107,43 @@ public class ChannelManagerStfuRoutingTests
     }
 
     [Fact]
+    public async Task Given_ThePeerSentStfu_When_ItSendsAnUpdate_Then_WarningClosesTheConnectionBeforeTheHandler()
+    {
+        // Arrange: BOLT 2 Q-S-04, the sender of stfu "MUST NOT send an update message after stfu"
+        _mockQuiescenceService.Setup(s => s.GetState(_channel.ChannelId))
+                              .Returns(new QuiescenceState { ReceivedStfuInitiator = true });
+        var channelManager = CreateChannelManager(withQuiescenceService: true);
+        var updateFee = new UpdateFeeMessage(new UpdateFeePayload(_channel.ChannelId, 5_000));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelWarningException>(() =>
+            channelManager.HandleChannelMessageAsync(updateFee, CreateNegotiatedFeatures(), s_peerPubKey));
+
+        // Assert
+        Assert.True(exception.CloseConnection);
+        Assert.Equal(_channel.ChannelId, exception.ChannelId);
+        Assert.Contains("Q-S-04", exception.Message);
+        Assert.Equal(0, _lockProvider.HeldCount);
+    }
+
+    [Fact]
+    public async Task Given_OurStfuOnly_When_ThePeerSendsAnUpdate_Then_NoQuiescenceWarning()
+    {
+        // Arrange: only the peer's own stfu binds it (Q-S-04); after ours alone the peer's updates still flow (Q-R-02)
+        _mockQuiescenceService.Setup(s => s.GetState(_channel.ChannelId))
+                              .Returns(new QuiescenceState { SentStfuInitiator = true });
+        var channelManager = CreateChannelManager(withQuiescenceService: true);
+        var updateFee = new UpdateFeeMessage(new UpdateFeePayload(_channel.ChannelId, 5_000));
+
+        // Act
+        var exception = await Record.ExceptionAsync(() =>
+            channelManager.HandleChannelMessageAsync(updateFee, CreateNegotiatedFeatures(), s_peerPubKey));
+
+        // Assert: whatever the update handler decides, it is not the quiescence rule
+        Assert.False(exception is ChannelWarningException w && w.Message.Contains("Q-S-04"));
+    }
+
+    [Fact]
     public async Task Given_TheServiceOwesNoReplyYet_When_StfuHandled_Then_NothingIsSent()
     {
         // Arrange: the reply waits until our pending changes are committed and revoked (Q-R-02, TryReleaseStfu)
@@ -255,6 +292,8 @@ public class ChannelManagerStfuRoutingTests
         serviceProvider.AddService(typeof(ChannelDomainEventQueue), new ChannelDomainEventQueue());
         if (tracker is not null)
             serviceProvider.AddService(typeof(ReestablishTracker), tracker);
+        if (withQuiescenceService)
+            serviceProvider.AddService(typeof(IQuiescenceService), _mockQuiescenceService.Object);
 
         return new ChannelManager(new Mock<IBlockchainMonitor>().Object, _lockProvider,
                                   _mockChannelMemoryRepository.Object, new Mock<ILogger<ChannelManager>>().Object,

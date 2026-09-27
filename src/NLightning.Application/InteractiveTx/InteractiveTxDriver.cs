@@ -271,6 +271,25 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
     }
 
     /// <inheritdoc />
+    public IReadOnlyList<IChannelMessage> AbortQuiescence(ChannelId channelId, CompactPubKey peerPubKey,
+                                                          string reason)
+    {
+        var entry = _channels.GetOrAdd(channelId, _ => new ChannelEntry(peerPubKey));
+        if (entry.Current is not null || entry.PendingRbf is not null || IsAwaitingAbortEcho(entry))
+        {
+            RemoveIfIdle(channelId, entry);
+            return [];
+        }
+
+        // Our tx_abort ends the quiescence (SP-Q-01); its echo is recognised as such and never answered
+        MarkAbortSent(entry);
+        _logger.LogInformation("Ending the quiescence of channel {ChannelId} with tx_abort ({Reason})", channelId,
+                               reason);
+        _quiescenceService?.Terminate(channelId, QuiescenceEndReason.TxAbort);
+        return [CreateTxAbort(channelId, reason)];
+    }
+
+    /// <inheritdoc />
     public async Task ResumeAsync(InteractiveTxSessionModel model, InteractiveTxTerms terms, IInteractiveTxHost host,
                                   CancellationToken cancellationToken = default,
                                   IReadOnlyList<InteractiveTxSessionModel>? completedAttempts = null)

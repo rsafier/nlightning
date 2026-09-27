@@ -10,7 +10,10 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Integration.Tests.Docker.Interop.Cln;
 
 using Abcd;
+using Application.Channels.Interfaces;
+using Application.InteractiveTx.Interfaces;
 using Application.Payments.Switch;
+using Domain.Channels.Interfaces;
 using Domain.Channels.Quiescence;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Responses;
@@ -110,7 +113,8 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
         {
             Console.WriteLine("[cln] CLN quiescence log lines for our node:\n"
                             + await GetClnLogForUsAsync(_session, CancellationToken.None,
-                                                        "STFU", "TX_ABORT", "tx_abort", "Restarting channeld"));
+                                                        "STFU", "TX_ABORT", "tx_abort", "Restarting channeld",
+                                                        "FULFILL", "fulfill", "HTLC", "htlc", "quiesc"));
             Console.WriteLine("[cln] CLN unusual/broken log lines so far:\n"
                             + await _fixture.Cln.GetLogLinesAsync(string.Empty, CancellationToken.None, 60,
                                                                   "unusual"));
@@ -122,13 +126,15 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Proof Q (a): CLN initiates with <c>stfu_channels</c>; we reply <c>stfu(0)</c> and the channel is quiescent on
-    /// both ends with CLN the initiator; CLN ends it with <c>abort_channels</c> (<c>tx_abort</c>), we echo
-    /// <c>tx_abort</c> (BOLT 2: a receiver that has not sent <c>tx_abort</c> MUST echo it) and the channel works again
-    /// on the same connection (a payment both ways).
+    /// Proof Q (a): CLN initiates (<c>dev-quiesce</c>, see <see cref="ClnQuiesceAsync"/>); we reply <c>stfu(0)</c> and
+    /// the channel is quiescent on both ends with CLN the initiator. CLN v26.06.8 cannot end it without splicing
+    /// (<c>abort_channels</c> refuses a peer without <c>option_splice</c>), so we end it with <c>tx_abort</c> (plan D2:
+    /// with no dependent protocol a quiescence ends with <c>tx_abort</c> or a disconnection); CLN acks with
+    /// <c>tx_abort</c>, restarts its channeld in place, and the channel works again on the same connection (a payment
+    /// both ways). Our echo of a peer's <c>tx_abort</c> is proven in-process (<c>InteractiveTxDriverTests</c>).
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
-    public async Task Given_ClnInitiatesQuiescence_When_ClnAbortsWithTxAbort_Then_WeEchoAndPaymentsFlowBothWays()
+    public async Task Given_ClnInitiatesQuiescence_When_WeEndItWithTxAbort_Then_ClnAcksAndPaymentsFlowBothWays()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
@@ -136,14 +142,10 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
         var quiescence = GetQuiescenceService(session);
         var reestablishesBefore = wire.Count(inbound: true, MessageTypes.ChannelReestablish);
 
-        // Act: CLN asks for quiescence (returns once both stfu are exchanged)
-        var stfu = await session.Cln.CallAsync("stfu_channels", ct,
-                                               ("channel_ids", new JsonArray(session.ChannelIdHex)));
-        Console.WriteLine($"[cln] stfu_channels: {stfu.ToJsonString()}");
+        // Act: CLN asks for quiescence
+        await ClnQuiesceAsync(session, ct);
 
         // Assert: quiescent on our side with CLN the initiator; CLN's stfu(1) came first, our stfu(0) replied
-        Assert.Equal(session.ChannelIdHex,
-                     stfu["channels"]!.AsArray().Single()!["channel_id"]!.GetValue<string>());
         var state = await Poll.ForAsync(() =>
                                         {
                                             var current = quiescence.GetState(session.ChannelId);
@@ -160,17 +162,19 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
         Assert.True(theirStfu.HasChannelId(session.ChannelId) && ourStfu.HasChannelId(session.ChannelId));
         await AssertClnLogsAsync(session, ct, "STFU initiator local.", "STFU complete: we are quiescent");
 
-        // Act: CLN ends it with tx_abort
-        var abort = await session.Cln.CallAsync("abort_channels", ct,
-                                                ("channel_ids", new JsonArray(session.ChannelIdHex)));
-        Console.WriteLine($"[cln] abort_channels: {abort.ToJsonString()}");
+        // Act: CLN v26.06.8 refuses abort_channels for a peer without option_splice (354), so the quiescence CLN
+        // started is ended from our side the way a refused dependent protocol would be: our tx_abort (plan D2)
+        await EndWithOurTxAbortAsync(session, ct);
 
-        // Assert: we echoed tx_abort, CLN took it as the ack and restarted its channeld in place; quiescence ended
-        await AssertClnLogsAsync(session, ct, "We got TX_ABORT ack", "Restarting channeld after tx_abort");
-        var theirAbort = wire.Single(inbound: true, MessageTypes.TxAbort);
-        var ourAbort = wire.Single(inbound: false, MessageTypes.TxAbort);
-        Assert.True(ourStfu.Sequence < theirAbort.Sequence && theirAbort.Sequence < ourAbort.Sequence,
-                    "tx_abort order: CLN's first, then our echo");
+        // Assert: CLN acked our tx_abort and restarted its channeld in place; quiescence ended on both sides
+        var ourAbort = await Poll.ForAsync(() => wire.FirstOrDefault(inbound: false, MessageTypes.TxAbort),
+                                           s_quiescenceTimeout, "our tx_abort", ct);
+        var theirAbort = await Poll.ForAsync(() => wire.FirstOrDefault(inbound: true, MessageTypes.TxAbort),
+                                             s_quiescenceTimeout, "CLN's tx_abort ack", ct);
+        await AssertClnLogsAsync(session, ct, "Send ack of tx_abort", "Restarting channeld after tx_abort");
+        Assert.True(ourStfu.Sequence < ourAbort.Sequence && ourAbort.Sequence < theirAbort.Sequence,
+                    "tx_abort order: ours after quiescence, then CLN's ack");
+        Assert.Equal(1, wire.Count(inbound: false, MessageTypes.TxAbort));
         Assert.True(ourAbort.HasChannelId(session.ChannelId));
         await Poll.UntilAsync(() => !quiescence.GetState(session.ChannelId).BlocksNewLocalUpdates,
                               s_quiescenceTimeout, "our quiescence ended by tx_abort", ct);
@@ -195,7 +199,7 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         var (session, wire) = await BuildAsync("nltg-quiesce-a2", ct);
         var quiescence = GetQuiescenceService(session);
-        await session.Cln.CallAsync("stfu_channels", ct, ("channel_ids", new JsonArray(session.ChannelIdHex)));
+        await ClnQuiesceAsync(session, ct);
         await Poll.UntilAsync(() => quiescence.GetState(session.ChannelId).IsQuiescent, s_quiescenceTimeout,
                               "our channel quiescent", ct);
         var reestablishesBefore = wire.Count(inbound: true, MessageTypes.ChannelReestablish);
@@ -377,6 +381,18 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
         AssertNoWarningOrError(wire);
     }
 
+    /// <summary>
+    /// CLN starts a quiescence (<c>stfu(1)</c>). CLN v26.06.8's <c>stfu_channels</c> (the <c>spenderp</c> plugin)
+    /// refuses a peer without <c>option_splice</c> ("Peer does not support splicing", code 354), and we advertise no
+    /// splice bit before SP1 (plan D2), so the proof uses the developer command <c>dev-quiesce</c> (the fixture runs
+    /// <c>--developer</c>), which sends the same <c>stfu</c> from channeld after its <c>option_quiesce</c> check.
+    /// </summary>
+    private static async Task ClnQuiesceAsync(ClnChannelSession session, CancellationToken ct)
+    {
+        var result = await session.Cln.CallAsync("dev-quiesce", ct, ("id", session.Node.NodeIdHex));
+        Console.WriteLine($"[cln] dev-quiesce: {result.ToJsonString()}");
+    }
+
     private async Task<(ClnChannelSession Session, QuiescenceWireRecorder Wire)> BuildAsync(
         string nodeName, CancellationToken ct, Action<IServiceCollection>? configureServices = null)
     {
@@ -405,6 +421,24 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
         Assert.True(_session.Node.PeerManager.GetPeer(_session.ClnPubKey)!.Features
                             .IsFeatureSet(Feature.OptionQuiesce), "CLN does not advertise option_quiesce");
         return (_session, wire);
+    }
+
+    /// <summary>
+    /// Ends the channel's quiescence with our <c>tx_abort</c> through the node's interactive-tx driver, under the
+    /// channel's lock, as the node's own probe exit does.
+    /// </summary>
+    private static async Task EndWithOurTxAbortAsync(ClnChannelSession session, CancellationToken ct)
+    {
+        var services = session.Node.Services;
+        var driver = services.GetRequiredService<IInteractiveTxDriver>();
+        var lockProvider = services.GetRequiredService<IChannelLockProvider>();
+        var publisher = services.GetRequiredService<IChannelMessagePublisher>();
+        using (await lockProvider.AcquireAsync(session.ChannelId, ct))
+        {
+            var messages = driver.AbortQuiescence(session.ChannelId, session.ClnPubKey, "no dependent protocol");
+            Assert.Single(messages);
+            publisher.Publish(session.ClnPubKey, messages);
+        }
     }
 
     private static IQuiescenceService GetQuiescenceService(ClnChannelSession session) =>
@@ -451,6 +485,17 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
                                            s_quiescenceTimeout, "our tx_abort ending the probe", ct);
         await Poll.ForAsync(() => wire.FirstOrDefault(inbound: true, MessageTypes.TxAbort, ourAbort.Sequence),
                             s_quiescenceTimeout, "CLN's tx_abort ack", ct);
+        // CLN v26.06.8 interop gap (NL-467): when CLN's lightningd hands channeld the fulfill of our HTLC while
+        // channeld is quiescent (our stfu right after our revoke_and_ack), the in-place channeld restart after tx_abort
+        // restores the HTLC as already SENT_REMOVE_HTLC and never sends the fulfill; CLN retransmits it only at the next
+        // channel_reestablish. Our side is correct (the fulfill never reached us), so a reconnection recovers it.
+        if (await Task.WhenAny(payment, Task.Delay(TimeSpan.FromSeconds(20), ct)) != payment)
+        {
+            Console.WriteLine($"[proof] attempt {attempt}: CLN did not send its fulfill after the in-place channeld "
+                            + "restart (NL-467); reconnecting so channel_reestablish retransmits it");
+            await session.Cln.CallAsync("disconnect", ct, ("id", session.Node.NodeIdHex), ("force", true));
+        }
+
         var paid = await payment.WaitAsync(TimeSpan.FromSeconds(150), ct);
         Console.WriteLine($"[cln] our payment: {paid.Status}, failure {paid.FailureCode}: {paid.FailureReason}");
         Assert.Equal(PaymentStatus.Succeeded, paid.Status);
@@ -652,10 +697,12 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
         {
             var result = await session.Cln.CallAsync("getlog", ct, ("level", "debug"));
             var lines = result["log"]!.AsArray()
-                                      .Where(e => e?["node_id"]?.GetValue<string>() == session.Node.NodeIdHex)
+                                      .Where(e => e?["node_id"]?.GetValue<string>() == session.Node.NodeIdHex
+                                               || e?["source"]?.ToString().Contains(session.Node.NodeIdHex[..8],
+                                                      StringComparison.Ordinal) == true)
                                       .Select(e => $"{e?["time"]} {e?["source"]}: {e?["log"]}")
                                       .Where(l => fragments.Any(f => l.Contains(f, StringComparison.Ordinal)))
-                                      .TakeLast(40);
+                                      .TakeLast(120);
             return string.Join(Environment.NewLine, lines);
         }
         catch (Exception e)
