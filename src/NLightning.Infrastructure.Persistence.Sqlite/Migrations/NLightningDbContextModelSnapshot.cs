@@ -916,6 +916,23 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("Peers");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerStorageBlobEntity", b =>
+                {
+                    b.Property<byte[]>("NodeId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("Blob")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("UpdatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("NodeId");
+
+                    b.ToTable("PeerStorageBlobs");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")

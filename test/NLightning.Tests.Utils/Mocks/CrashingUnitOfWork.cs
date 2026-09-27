@@ -5,6 +5,7 @@ using NLightning.Domain.Channels.Interfaces;
 using NLightning.Domain.Gossip.Interfaces;
 using NLightning.Domain.Node.Interfaces;
 using NLightning.Domain.Node.Models;
+using NLightning.Domain.Node.PeerStorage;
 using NLightning.Domain.Onchain.Interfaces;
 using NLightning.Domain.Payments.Interfaces;
 using NLightning.Domain.Persistence.Interfaces;
@@ -61,6 +62,7 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IChannelSigningInfoDbRepository ChannelSigningInfoDbRepository => inner.ChannelSigningInfoDbRepository;
     public IGraphDbRepository GraphDbRepository => inner.GraphDbRepository;
     public IPeerDbRepository PeerDbRepository => inner.PeerDbRepository;
+    public IPeerStorageDbRepository PeerStorageDbRepository => inner.PeerStorageDbRepository;
     public IInvoiceDbRepository InvoiceDbRepository => inner.InvoiceDbRepository;
     public IPaymentDbRepository PaymentDbRepository => inner.PaymentDbRepository;
     public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;

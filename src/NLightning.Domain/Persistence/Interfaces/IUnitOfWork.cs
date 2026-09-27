@@ -7,6 +7,7 @@ using Channels.Interfaces;
 using Gossip.Interfaces;
 using Node.Interfaces;
 using Node.Models;
+using Node.PeerStorage;
 using Onchain.Interfaces;
 using Payments.Interfaces;
 using Protocol.Onion.Interfaces;
@@ -46,6 +47,9 @@ public interface IUnitOfWork : IDisposable
 
     // Node repositories
     IPeerDbRepository PeerDbRepository { get; }
+
+    // BOLT 1 peer storage (migration AddPeerStorage)
+    IPeerStorageDbRepository PeerStorageDbRepository { get; }
 
     // Payment repositories
     IInvoiceDbRepository InvoiceDbRepository { get; }
