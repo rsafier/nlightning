@@ -14,6 +14,7 @@ using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
@@ -188,6 +189,34 @@ public class RetiredScidMapTests
         Assert.True(map.TryResolve(s_firstSpliceScid, out var channelId));
         Assert.Equal(s_channelId, channelId);
         Assert.False(map.TryResolve(s_initialScid, out _));
+    }
+
+    [Fact]
+    public async Task Given_AnAliasOnlyChannelsFundings_When_Loaded_Then_ItsReplacedRealScidIsNotRetired()
+    {
+        // Arrange: option_scid_alias Compulsory, whose real short channel id must never route (BOLT 2, NL-348)
+        var fundings = new List<ChannelFunding>
+        {
+            Funding(0x02, ChannelFundingStatus.Replaced, s_firstSpliceScid, 600),
+            Funding(0x04, ChannelFundingStatus.Current, s_secondSpliceScid, 700)
+        };
+        var channelDb = new Mock<IChannelDbRepository>();
+        var aliasOnly = SpliceLockTestChannels.Create(s_channelId, ChannelState.Open, s_secondSpliceScid,
+                                                      useScidAlias: FeatureSupport.Compulsory);
+        channelDb.Setup(r => r.GetReadyChannelsAsync()).ReturnsAsync([aliasOnly]);
+        var fundingDb = new Mock<IChannelFundingDbRepository>();
+        fundingDb.Setup(r => r.GetByChannelIdAsync(s_channelId)).ReturnsAsync(fundings);
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
+        unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(fundingDb.Object);
+        using var map = CreateMap(unitOfWork.Object);
+
+        // Act
+        await map.LoadAsync(710, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(map.GetByChannel(s_channelId));
+        Assert.False(map.TryResolve(s_firstSpliceScid, out _));
     }
 
     private RetiredScidMap CreateMap(IUnitOfWork? unitOfWork = null)

@@ -787,7 +787,21 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
             unitOfWork.WatchedOutpointDbRepository.Add(fundingWatch);
         }
 
-        await unitOfWork.SaveChangesAsync();
+        // SP-G-01: the replaced funding's announcement_signatures sign a void announcement, so both halves are
+        // forgotten in the lock's own save: a crash between two saves would otherwise leave the new short channel id
+        // beside the old halves, and the channel would read as announced after a restart
+        var announcementReset = retired.Count > 0 ? await StageAnnouncementResetAsync(channel, unitOfWork) : null;
+        try
+        {
+            await unitOfWork.SaveChangesAsync();
+        }
+        catch
+        {
+            // Nothing was saved: the shared model keeps the halves the database still holds
+            announcementReset?.Restore(channel);
+            throw;
+        }
+
         _statePort.ApplyFundings(channel, next, retired);
         if (fundingWatch is not null)
             _serviceProvider.GetService<IBlockchainMonitor>()?.TrackWatchedOutpoint(fundingWatch);
@@ -806,7 +820,7 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
     /// resolving in the switch for <see cref="RetiredShortChannelId.RetentionBlocks"/> blocks; our <c>channel_update</c>
     /// follows the channel's new short channel id through the channel update service) and, for a public channel, the
     /// announcement of the splice (SP-G-01, BOLT 7): the announcement of the replaced funding is void, so both halves of
-    /// <c>announcement_signatures</c> are forgotten (saved), a half of the peer's that waited for our
+    /// <c>announcement_signatures</c> were forgotten in the lock's save, a half of the peer's that waited for our
     /// <c>splice_locked</c> is taken now, and ours is returned when the splice already has the announcement depth
     /// (otherwise the block-driven announcement round of the channel manager sends it at that depth).
     /// </summary>
@@ -814,7 +828,10 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
                                                                       ShortChannelId previousShortChannelId,
                                                                       ChannelFunding locked, IUnitOfWork unitOfWork)
     {
-        if (IsSet(previousShortChannelId) && previousShortChannelId != channel.ShortChannelId)
+        // BOLT 2 option_scid_alias: an alias-only channel never accepts HTLCs by its real short channel id, so the
+        // replaced real one is not retired into the map (NL-348)
+        if (IsSet(previousShortChannelId) && previousShortChannelId != channel.ShortChannelId
+                                          && channel.ChannelParams.UseScidAlias != FeatureSupport.Compulsory)
         {
             var retiredAt = locked.ConfirmedHeight ?? locked.ShortChannelId?.BlockHeight ?? GetTip();
             _serviceProvider.GetService<IRetiredScidMap>()
@@ -827,10 +844,8 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
 
         try
         {
-            channel.ResetAnnouncementSignatures();
+            // The halves were forgotten in the lock's save (StageAnnouncementResetAsync)
             announcements.OnShortChannelIdChanged(channel.ChannelId);
-            await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
-            await unitOfWork.SaveChangesAsync();
             _channelMemoryRepository.UpdateChannel(channel);
 
             var replies = new List<IChannelMessage>();
@@ -853,6 +868,47 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
     }
 
     private static bool IsSet(ShortChannelId shortChannelId) => ((byte[]?)shortChannelId) is not null;
+
+    /// <summary>
+    /// For a public channel with announcement state, forgets both halves on the shared model and stages the channel row
+    /// in the lock's unit of work (the row's funding columns and short channel id stay the lock's, which
+    /// <c>ChannelDbRepository.UpdateAsync</c> leaves alone once a splice lock is staged). Returns what to put back when
+    /// the save fails, or null when there was nothing to forget.
+    /// </summary>
+    private static async Task<AnnouncementState?> StageAnnouncementResetAsync(ChannelModel channel,
+                                                                             IUnitOfWork unitOfWork)
+    {
+        if (!channel.AnnounceChannel
+         || channel is { RemoteAnnouncementSignatures: null, LocalAnnouncementSignaturesSentAt: null })
+            return null;
+
+        var previous = new AnnouncementState(channel.RemoteAnnouncementSignatures,
+                                             channel.LocalAnnouncementSignaturesSentAt);
+        channel.ResetAnnouncementSignatures();
+        try
+        {
+            await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+        }
+        catch
+        {
+            previous.Restore(channel);
+            throw;
+        }
+
+        return previous;
+    }
+
+    /// <summary>The announcement halves a failed lock save puts back on the shared model.</summary>
+    private sealed record AnnouncementState(ChannelAnnouncementSignatures? Remote, DateTimeOffset? SentAt)
+    {
+        public void Restore(ChannelModel channel)
+        {
+            if (Remote is not null)
+                channel.SetRemoteAnnouncementSignatures(Remote);
+            if (SentAt is { } sentAt)
+                channel.MarkAnnouncementSignaturesSent(sentAt);
+        }
+    }
 
     #endregion
 
