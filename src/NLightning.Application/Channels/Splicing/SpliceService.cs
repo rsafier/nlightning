@@ -540,7 +540,8 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         return [];
     }
 
-    internal void OnSpliceAborted(SpliceNegotiation negotiation, string reason)
+    internal async Task OnSpliceAbortedAsync(SpliceNegotiation negotiation, string reason,
+                                             CancellationToken cancellationToken)
     {
         if (negotiation.State is SpliceNegotiationState.Signed or SpliceNegotiationState.Aborted)
             return;
@@ -548,6 +549,25 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         _logger.LogInformation("Splice negotiation of channel {ChannelId} ended: {Reason}", negotiation.ChannelId,
                                reason);
         End(negotiation, reason);
+
+        // After the commitment step the peer's commitment_signed may have made the new funding pending (SP-CS-02); a
+        // tx_abort before our tx_signatures forgets the splice, so it leaves the active fundings again (no batch for it)
+        if (negotiation.NewFunding is not { } funding
+         || !_channelMemoryRepository.TryGetChannel(negotiation.ChannelId, out var channel))
+            return;
+
+        var fundings = _statePort.GetFundings(channel);
+        if (fundings.Pending.All(f => f.FundingTxId != funding.FundingTxId))
+            return;
+
+        var (next, retired) = _statePort.Discard(fundings, funding.FundingTxId);
+        using var scope = _serviceProvider.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        await _statePort.StageFundingsAsync(channel, next, retired, unitOfWork, cancellationToken);
+        await unitOfWork.SaveChangesAsync();
+        _statePort.ApplyFundings(channel, next, retired);
+        _logger.LogInformation("Splice funding {TxId} of channel {ChannelId} discarded after the abort",
+                               funding.FundingTxId, negotiation.ChannelId);
     }
 
     #endregion
