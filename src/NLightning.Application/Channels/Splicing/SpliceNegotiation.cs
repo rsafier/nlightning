@@ -94,6 +94,7 @@ internal sealed class SpliceNegotiation
 
     /// <summary>The writes the completion staged, for the memory update after the save.</summary>
     internal sealed record StagedCompletion(
+        Guid SessionId,
         FundingSet Fundings,
         BroadcastTransactionModel Broadcast,
         WatchedTransactionModel Watch);

@@ -100,8 +100,8 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         if (_quiescenceEvents is not null)
             _quiescenceEvents.QuiescenceEnded += OnQuiescenceEnded;
 
-        // The depth watcher follows the chain from the first splice message of the process on, so no host line is
-        // needed for a splice negotiated by this process (it resolves this service lazily)
+        // The depth watcher follows the chain from the first splice message of the process on (it resolves this
+        // service lazily); the host also resolves it at startup for its catch-up (SpliceDepthWatcher.CatchUpAsync)
         _ = serviceProvider.GetService<SpliceDepthWatcher>();
     }
 
@@ -532,14 +532,17 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         unitOfWork.BroadcastTransactionDbRepository.Add(broadcast);
         var watch = new WatchedTransactionModel(channel.ChannelId, funding.FundingTxId, GetLockDepth(channel));
         unitOfWork.WatchedTransactionDbRepository.Add(watch);
-        negotiation.Completion = new SpliceNegotiation.StagedCompletion(fundings, broadcast, watch);
+        negotiation.Completion = new SpliceNegotiation.StagedCompletion(completion.Session.SessionId, fundings,
+                                                                         broadcast, watch);
 
-        // The driver ends the quiescence right after its save (SP-Q-01), which applies this to memory; without a
-        // quiescence to end, now
+        // The driver saves after this returns and then ends the quiescence (SP-Q-01), which applies this to memory
+        // (TxSignaturesExchanged, under the lock). Without a quiescence left to end (none registered, or it already
+        // ended: a disconnection, the peer's tx_signatures after the end), it is applied once the driver's save is
+        // known to have committed: never here, before the save (persist, then memory, then send; SP-I7)
         if (_quiescenceEvents is null
          || _serviceProvider.GetService<IQuiescenceService>()?.GetState(channel.ChannelId) is not
          { BlocksNewLocalUpdates: true })
-            ApplyCompletion(negotiation);
+            TrackBackground(ApplyCompletionAfterSaveAsync(negotiation));
 
         return [];
     }
@@ -658,8 +661,24 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
             next = withFlags;
 
         await _statePort.StageFundingsAsync(channel, next, retired, unitOfWork, cancellationToken);
+
+        // The lock moves the channel's funding output: the new outpoint is watched for a spend from this save on (a
+        // commitment on it, revoked or not, must reach the on-chain watcher), as the funding output of an open is
+        // (BOLT 5 plan O0-T2); the startup backfill covers it only after a restart
+        WatchedOutpointModel? fundingWatch = null;
+        if (retired.Count > 0
+         && await unitOfWork.WatchedOutpointDbRepository.GetAsync(next.Current.FundingTxId, next.Current.OutputIndex)
+                is null)
+        {
+            fundingWatch = new WatchedOutpointModel(next.Current.FundingTxId, next.Current.OutputIndex,
+                                                    channel.ChannelId, WatchedOutpointPurpose.FundingOutput);
+            unitOfWork.WatchedOutpointDbRepository.Add(fundingWatch);
+        }
+
         await unitOfWork.SaveChangesAsync();
         _statePort.ApplyFundings(channel, next, retired);
+        if (fundingWatch is not null)
+            _serviceProvider.GetService<IBlockchainMonitor>()?.TrackWatchedOutpoint(fundingWatch);
 
         if (retired.Count > 0)
         {
@@ -702,7 +721,13 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
 
         if (negotiation.Completion is not null)
         {
-            ApplyCompletion(negotiation);
+            // TxSignaturesExchanged is raised by the driver after its save, under the channel's lock. Any other end
+            // (a disconnection, raised without the lock) may come while the driver's save is still running, or after
+            // it failed: the completion is applied only under the lock, once its save is known to have committed
+            if (args.Reason == QuiescenceEndReason.TxSignaturesExchanged)
+                ApplyCompletion(negotiation);
+            else
+                TrackBackground(ApplyCompletionAfterSaveAsync(negotiation));
             return;
         }
 
@@ -755,6 +780,42 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         }
 
         negotiation.Result.TrySetResult(negotiation.ToResult());
+    }
+
+    /// <summary>
+    /// Applies a staged completion once the driver's save that holds it has committed: under the channel's lock (the
+    /// driver saves under it, so its save is over), and only when the negotiation's row is stored <c>Signed</c>. A
+    /// save that failed leaves the row behind: nothing is applied, tracked or published (the driver restored its
+    /// negotiation; a retry stages a new completion).
+    /// </summary>
+    private async Task ApplyCompletionAfterSaveAsync(SpliceNegotiation negotiation)
+    {
+        try
+        {
+            await Task.Yield();
+            using var channelLock = await _channelLockProvider.AcquireAsync(negotiation.ChannelId);
+            if (negotiation.Completion is not { } completion || negotiation.State == SpliceNegotiationState.Signed)
+                return;
+
+            using var scope = _serviceProvider.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var row = await unitOfWork.InteractiveTxSessionDbRepository.GetByIdAsync(negotiation.ChannelId,
+                                                                                      completion.SessionId);
+            if (row is not { State: InteractiveTxSessionState.Signed })
+            {
+                _logger.LogWarning("The completion of splice {TxId} of channel {ChannelId} was not saved; nothing "
+                                 + "is applied", completion.Broadcast.TransactionId, negotiation.ChannelId);
+                if (ReferenceEquals(negotiation.Completion, completion))
+                    negotiation.Completion = null;
+                return;
+            }
+
+            ApplyCompletion(negotiation);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not apply the completed splice of channel {ChannelId}", negotiation.ChannelId);
+        }
     }
 
     private async Task PublishAsync(IBlockchainMonitor monitor, BroadcastTransactionModel broadcast)

@@ -1,5 +1,6 @@
 namespace NLightning.Application.Tests.Channels.Splicing;
 
+using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Quiescence;
@@ -7,6 +8,7 @@ using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Models;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Onchain.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Protocol.Constants;
 using Domain.Protocol.InteractiveTx.Enums;
@@ -14,6 +16,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.ValueObjects;
 using Harness;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using NBitcoin;
 
 /// <summary>
@@ -323,6 +326,100 @@ public class SpliceHarnessTests
         Assert.DoesNotContain(harness.Transcript, t => t is { From: "Alice", Message: TxSignaturesMessage });
         Assert.Empty(harness.Alice.Broadcasts);
         Assert.False(harness.Alice.Quiescence.GetState(TwoNodeHarness.ChannelId).BlocksNewLocalUpdates);
+    }
+
+    /// <summary>
+    /// Persist, then memory, then send (SP-I7): the save that holds the completed splice fails while a disconnection
+    /// ends the quiescence (raised without the channel lock, as a connection's close is). Nothing is applied, tracked or
+    /// published: the splice transaction never reaches the network without its broadcast row and its watch. Before, the
+    /// end of the quiescence applied the completion at once, ahead of the save.
+    /// </summary>
+    [Fact]
+    public async Task Given_TheCompletionSaveFailsDuringADisconnection_When_TheQuiescenceEnds_Then_NothingIsPublished()
+    {
+        // Arrange
+        using var harness = new SpliceHarness();
+        var start = await StopBeforeBobsTxSignaturesAsync(harness);
+        harness.Alice.FailSave = broadcasts =>
+        {
+            if (broadcasts.Count == 0)
+                return false;
+
+            harness.Alice.FailSave = null;
+            harness.Alice.Quiescence.OnPeerDisconnected(SpliceHarness.NodeIdOf("Bob"));
+            return true;
+        };
+
+        // Act: Bob's tx_signatures completes Alice's splice; her save fails
+        await Assert.ThrowsAnyAsync<Exception>(() => harness.Bob.Node.DeliverNextAsync());
+        await harness.WhenIdleAsync();
+
+        // Assert
+        Assert.Null(harness.Alice.FailSave);
+        Assert.Empty(harness.Alice.Broadcasts);
+        Assert.Empty(harness.Alice.Watches);
+        harness.Alice.Node.ChainMonitor.Verify(m => m.PublishAsync(It.IsAny<BroadcastTransactionModel>()), Times.Never);
+        harness.Alice.Node.ChainMonitor.Verify(m => m.TrackWatchedTransaction(It.IsAny<WatchedTransactionModel>()),
+                                               Times.Never);
+        if (start.IsCompletedSuccessfully)
+            Assert.NotEqual(SpliceNegotiationState.Signed, (await start).State);
+        Assert.NotEqual(SpliceNegotiationState.Signed,
+                        harness.Alice.Service.GetNegotiation(TwoNodeHarness.ChannelId)?.State);
+    }
+
+    /// <summary>
+    /// The same disconnection during a completion save that succeeds: the completion is applied once the save is over
+    /// (under the channel's lock, the stored negotiation <c>Signed</c>), so the splice is tracked and published once.
+    /// </summary>
+    [Fact]
+    public async Task Given_ADisconnectionDuringASuccessfulCompletionSave_When_TheSaveEnds_Then_TheSpliceIsPublishedOnce()
+    {
+        // Arrange
+        using var harness = new SpliceHarness();
+        var start = await StopBeforeBobsTxSignaturesAsync(harness);
+        var publishedBeforeTheSaveEnded = false;
+        harness.Alice.FailSave = broadcasts =>
+        {
+            if (broadcasts.Count == 0)
+                return false;
+
+            harness.Alice.FailSave = null;
+            harness.Alice.Quiescence.OnPeerDisconnected(SpliceHarness.NodeIdOf("Bob"));
+            publishedBeforeTheSaveEnded = harness.Alice.Node.ChainMonitor.Invocations
+                                                 .Any(i => i.Method.Name == nameof(IBlockchainMonitor.PublishAsync));
+            return false;
+        };
+
+        // Act
+        await harness.Bob.Node.DeliverNextAsync();
+        var result = await start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await harness.WhenIdleAsync();
+
+        // Assert
+        Assert.False(publishedBeforeTheSaveEnded);
+        Assert.Equal(SpliceNegotiationState.Signed, result.State);
+        var broadcast = Assert.Single(harness.Alice.Broadcasts);
+        var watch = Assert.Single(harness.Alice.Watches);
+        harness.Alice.Node.ChainMonitor.Verify(m => m.PublishAsync(broadcast), Times.Once);
+        harness.Alice.Node.ChainMonitor.Verify(m => m.TrackWatchedTransaction(watch), Times.Once);
+    }
+
+    /// <summary>Alice splices in; stops when Bob's <c>tx_signatures</c> is his next message (Alice verified his CS).</summary>
+    private static async Task<Task<SpliceResult>> StopBeforeBobsTxSignaturesAsync(SpliceHarness harness)
+    {
+        harness.Alice.Fund(500_000);
+        var start = harness.Alice.Service.StartAsync(
+            new SpliceRequest(TwoNodeHarness.ChannelId, 100_000, SpliceHarness.FeeratePerKw),
+            TestContext.Current.CancellationToken);
+        for (var round = 0; round < 2_000 && harness.Bob.Node.PeekNext() is not TxSignaturesMessage; round++)
+        {
+            await harness.WhenIdleAsync();
+            if (!await harness.Alice.Node.DeliverNextAsync() && !await harness.Bob.Node.DeliverNextAsync())
+                await Task.Delay(2, TestContext.Current.CancellationToken);
+        }
+
+        Assert.IsType<TxSignaturesMessage>(harness.Bob.Node.PeekNext());
+        return start;
     }
 
     [Fact]
