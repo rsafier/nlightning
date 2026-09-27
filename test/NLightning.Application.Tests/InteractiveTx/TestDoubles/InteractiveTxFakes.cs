@@ -179,9 +179,21 @@ internal sealed class FakeInteractiveTxContributor : IInteractiveTxContributor
                                                   CancellationToken cancellationToken = default)
     {
         SignCalls++;
-        IReadOnlyList<Witness> witnesses = contribution.Inputs.Select(i => new Witness([0x02, .. (byte[])i.PrevTxId]))
-                                                       .ToList();
+        IReadOnlyList<Witness> witnesses = contribution.Inputs.Select(i => CreateP2WpkhWitness(i.PrevTxId)).ToList();
         return Task.FromResult(witnesses);
+    }
+
+    /// <summary>
+    /// A well-formed P2WPKH witness (BIP 141 stack: a DER signature ending in SIGHASH_ALL and a 33-byte compressed
+    /// key), as the real engine checks it (IT-SIG-02); the signature is over a hash of the outpoint, not the
+    /// transaction, since the test transaction is never broadcast.
+    /// </summary>
+    internal static Witness CreateP2WpkhWitness(TxId prevTxId)
+    {
+        using var key = new Key(SHA256.HashData((byte[])prevTxId));
+        var signature = new TransactionSignature(key.Sign(new uint256(SHA256.HashData((byte[])prevTxId))),
+                                                 SigHash.All);
+        return new Witness(new WitScript(new[] { signature.ToBytes(), key.PubKey.ToBytes() }).ToBytes());
     }
 
     public Task<bool> ConfirmAsync(InteractiveTxContribution contribution,

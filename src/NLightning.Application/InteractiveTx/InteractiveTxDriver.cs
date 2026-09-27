@@ -43,6 +43,13 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 {
     private const string NoNegotiationText = "no interactive-tx negotiation in progress";
 
+    /// <summary>
+    /// How long our <c>tx_abort</c> waits for its echo before the driver stops waiting (a peer that already sent
+    /// <c>tx_signatures</c> never echoes, and a lost echo must not block the channel's interactive-tx messages for
+    /// the life of the connection).
+    /// </summary>
+    public static readonly TimeSpan AbortEchoTimeout = TimeSpan.FromMinutes(1);
+
     private readonly ConcurrentDictionary<ChannelId, ChannelEntry> _channels = new();
     private readonly IInteractiveTxEngine _engine;
     private readonly IInteractiveTxBuilder _builder;
@@ -90,14 +97,15 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         if (entry.Current is not null)
             throw new InvalidOperationException(
                 $"An interactive-tx negotiation is already in progress on channel {terms.ChannelId}");
+        ThrowIfAwaitingAbortEcho(entry, terms.ChannelId);
         if (entry.Host is not null && !ReferenceEquals(entry.Host, host))
             // A new protocol run on the channel: the earlier completed attempts belong to the earlier host
             entry.Completed.Clear();
 
         entry.Host = host;
         entry.RemoteNodeId = terms.RemoteNodeId;
-        entry.AwaitingAbortEcho = false;
         entry.PendingRbf = null;
+        entry.EchoedWithoutActivity = false;
 
         var attempt = await CreateAttemptAsync(entry, terms, cancellationToken);
         entry.Current = attempt;
@@ -151,20 +159,33 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             throw new InvalidOperationException(
                 $"No constructed interactive-tx negotiation waits for commitment_signed on channel {channelId}");
 
-        attempt.Negotiation = attempt.Negotiation.OnCommitmentSignedReceived();
-        attempt.Model = attempt.Model with
-        {
-            CommitmentSignedReceived = true,
-            State = attempt.Negotiation.State
-        };
-
-        // IT-SIG-01/03: after a valid commitment_signed, we send first by the order rule, or once the peer's arrived
+        var checkpoint = attempt.Checkpoint();
         IReadOnlyList<IChannelMessage> outbound = [];
-        if (!attempt.Model.TxSignaturesSent
-         && (attempt.Negotiation.RemoteWitnesses is not null || attempt.Negotiation.SendsTxSignaturesFirst()))
-            outbound = await SendOurSignaturesAsync(entry, attempt, unitOfWork, cancellationToken);
+        try
+        {
+            attempt.Negotiation = attempt.Negotiation.OnCommitmentSignedReceived();
+            attempt.Model = attempt.Model with
+            {
+                CommitmentSignedReceived = true,
+                State = attempt.Negotiation.State
+            };
 
-        await SaveModelAsync(attempt, unitOfWork);
+            // IT-SIG-01/03: after a valid commitment_signed, we send first by the order rule, or once the peer's
+            // arrived
+            if (!attempt.Model.TxSignaturesSent
+             && (attempt.Negotiation.RemoteWitnesses is not null || attempt.Negotiation.SendsTxSignaturesFirst()))
+                outbound = await SendOurSignaturesAsync(entry, attempt, unitOfWork, cancellationToken);
+
+            await SaveModelAsync(attempt, unitOfWork);
+        }
+        catch
+        {
+            // Nothing was saved or sent: memory goes back to what the database holds
+            attempt.Restore(checkpoint);
+            throw;
+        }
+
+        ApplyCompletion(entry, attempt);
         return outbound;
     }
 
@@ -183,6 +204,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         if (entry.Current is not null || entry.PendingRbf is not null)
             throw new InvalidOperationException(
                 $"An interactive-tx negotiation is already in progress on channel {terms.ChannelId}");
+        ThrowIfAwaitingAbortEcho(entry, terms.ChannelId);
 
         var minimum = GetMinimumRbfFeeratePerKw(entry.Completed[^1].FeeratePerKw);
         if (terms.FeeratePerKw < minimum)
@@ -190,7 +212,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
                 $"[IT-RBF-01] tx_init_rbf feerate {terms.FeeratePerKw} sat/kw is below the minimum {minimum} sat/kw");
 
         entry.PendingRbf = terms;
-        entry.AwaitingAbortEcho = false;
+        entry.EchoedWithoutActivity = false;
 
         var message = new TxInitRbfMessage(new TxInitRbfPayload(terms.ChannelId, terms.FeeratePerKw, terms.Locktime),
                                            CreateContributionTlv(fundingOutputContribution),
@@ -215,7 +237,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
             // Our tx_init_rbf is withdrawn
             entry.PendingRbf = null;
-            entry.AwaitingAbortEcho = true;
+            MarkAbortSent(entry);
             return [CreateTxAbort(channelId, reason)];
         }
 
@@ -232,7 +254,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         if (!_channels.TryGetValue(channelId, out var entry))
             return;
 
-        entry.AwaitingAbortEcho = false;
+        entry.AbortSentAt = null;
+        entry.EchoedWithoutActivity = false;
         entry.PendingRbf = null;
         if (entry.Current is { Model: null } attempt)
         {
@@ -249,7 +272,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
     /// <inheritdoc />
     public async Task ResumeAsync(InteractiveTxSessionModel model, InteractiveTxTerms terms, IInteractiveTxHost host,
-                                  CancellationToken cancellationToken = default)
+                                  CancellationToken cancellationToken = default,
+                                  IReadOnlyList<InteractiveTxSessionModel>? completedAttempts = null)
     {
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(terms);
@@ -262,11 +286,56 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
         entry.Host = host;
         entry.RemoteNodeId = terms.RemoteNodeId;
+        entry.EchoedWithoutActivity = false;
+
+        // The channel's other fully signed attempts (RBF): the floor and the double-spend rule need them
+        var signed = (completedAttempts ?? [])
+                    .Append(model)
+                    .Where(m => m.ChannelId == model.ChannelId && m.State == InteractiveTxSessionState.Signed
+                             && m.ConstructedTx is not null)
+                    .OrderBy(m => m.CreatedAt);
+        foreach (var completed in signed)
+        {
+            if (entry.Completed.All(c => c.SessionId != completed.SessionId))
+                entry.Completed.Add(new CompletedAttempt(completed.SessionId, completed.ConstructedTx!,
+                                                         completed.FeeratePerKw, completed.LocalContribution)
+                {
+                    Model = completed
+                });
+        }
+
+        if (model.State is InteractiveTxSessionState.Signed or InteractiveTxSessionState.Aborted)
+            return;
+
         var parameters = await CreateParametersAsync(entry, terms, model.LocalContribution, cancellationToken);
         entry.Current = new Attempt(model.SessionId, terms, _engine.Restore(model, parameters),
                                     model.LocalContribution)
         { Model = model };
     }
+
+    /// <inheritdoc />
+    public TxSignaturesMessage? CreateTxSignaturesRetransmission(ChannelId channelId, TxId fundingTxId)
+    {
+        if (!_channels.TryGetValue(channelId, out var entry))
+            return null;
+
+        var model = entry.Current?.Model is { } current && Matches(current, fundingTxId)
+                        ? current
+                        : entry.Completed.Select(c => c.Model).LastOrDefault(m => m is not null && Matches(m, fundingTxId));
+        if (model is not { TxSignaturesSent: true, ConstructedTx: { } transaction })
+            return null;
+
+        return new TxSignaturesMessage(
+            new TxSignaturesPayload(channelId, transaction.TxId, (model.OurWitnesses ?? []).ToList()),
+            model.OurSharedInputSignature is { } signature ? new SharedInputSignatureTlv(signature) : null);
+
+        static bool Matches(InteractiveTxSessionModel m, TxId txId) =>
+            m.ConstructedTx is { } tx && tx.TxId.Equals(txId);
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<ChannelId> GetChannels(CompactPubKey peerPubKey) =>
+        _channels.Where(kv => kv.Value.RemoteNodeId == peerPubKey).Select(kv => kv.Key).ToList();
 
     /// <inheritdoc />
     public bool IsNegotiating(ChannelId channelId) =>
@@ -280,7 +349,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
         var attempt = entry.Current;
         return new InteractiveTxNegotiationInfo(channelId, attempt?.SessionId, attempt?.Negotiation.State,
-                                                attempt?.Model is not null, entry.AwaitingAbortEcho,
+                                                attempt?.Model is not null, IsAwaitingAbortEcho(entry),
                                                 entry.PendingRbf is not null,
                                                 entry.Completed.Select(c => c.Transaction).ToList(),
                                                 attempt?.Negotiation.Inputs ?? [], attempt?.Negotiation.Outputs ?? []);
@@ -334,27 +403,39 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
                                      unitOfWork, cancellationToken);
         }
 
+        var checkpoint = attempt.Checkpoint();
         attempt.Negotiation = step.Next;
         if (step.Aborted)
         {
-            // A rule the peer broke: our tx_abort goes out and waits for its echo
+            // A rule the peer broke: our tx_abort goes out and waits for its echo (none comes from a peer that
+            // already sent tx_signatures: it must keep the negotiation)
             LogAborted(attempt, step.AbortReason!, step.RequirementId, true);
-            entry.AwaitingAbortEcho = true;
+            MarkAbortSent(entry, PeerSentSignatures(attempt) || message is TxSignaturesMessage);
             await FinishAbortAsync(entry, attempt, step.AbortReason!, unitOfWork, cancellationToken);
             return EnsureTxAbort(channelId, step.Outbound, step.AbortReason!);
         }
 
-        var outbound = new List<IChannelMessage>(step.Outbound);
-        if (step.NegotiationComplete)
+        try
         {
-            outbound.AddRange(await ConstructAsync(entry, attempt, unitOfWork, cancellationToken));
-        }
-        else if (message is TxSignaturesMessage)
-        {
-            outbound.AddRange(await AfterRemoteSignaturesAsync(entry, attempt, unitOfWork, cancellationToken));
-        }
+            var outbound = new List<IChannelMessage>(step.Outbound);
+            if (step.NegotiationComplete)
+            {
+                outbound.AddRange(await ConstructAsync(entry, attempt, unitOfWork, cancellationToken));
+            }
+            else if (message is TxSignaturesMessage)
+            {
+                outbound.AddRange(await AfterRemoteSignaturesAsync(entry, attempt, unitOfWork, cancellationToken));
+            }
 
-        return outbound;
+            return outbound;
+        }
+        catch when (ReferenceEquals(entry.Current, attempt))
+        {
+            // A save failed: nothing was sent, so memory goes back to what the database holds (persist, then
+            // update memory, then send)
+            attempt.Restore(checkpoint);
+            throw;
+        }
     }
 
     private async Task<IReadOnlyList<IChannelMessage>> ReceiveAbortAsync(
@@ -364,22 +445,30 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         var data = DescribeAbortData(abort.Payload.Data);
         if (entry?.Current is not { } attempt)
         {
-            if (entry is { AwaitingAbortEcho: true })
+            if (entry is not null && IsAwaitingAbortEcho(entry))
             {
                 // The echo of our tx_abort: the peer has seen it, the negotiation is over on both sides
-                entry.AwaitingAbortEcho = false;
+                entry.AbortSentAt = null;
                 _logger.LogDebug("tx_abort echoed by {Peer} on channel {ChannelId}", peerPubKey, channelId);
                 RemoveIfIdle(channelId, entry);
                 return [];
             }
 
+            if (entry is { EchoedWithoutActivity: true, PendingRbf: null }
+             && _quiescenceService?.GetState(channelId) is not { BlocksNewLocalUpdates: true })
+            {
+                // We echoed a tx_abort and nothing (no negotiation, no RBF request, no new quiescence) started since:
+                // this one can only be the echo of our echo, so echoing it again would bounce tx_abort forever
+                _logger.LogInformation("Not echoing tx_abort from {Peer} on channel {ChannelId} ({Data}): we echoed "
+                                     + "one and nothing started since", peerPubKey, channelId, data);
+                return [];
+            }
+
             // BOLT 2: the receiver MUST echo tx_abort if it has not sent one (also ends a quiescence without a
             // negotiation, e.g. a withdrawn tx_init_rbf of the peer's or a quiescence the peer gives up)
-            if (entry is not null)
-            {
-                entry.PendingRbf = null;
-                RemoveIfIdle(channelId, entry);
-            }
+            entry ??= _channels.GetOrAdd(channelId, _ => new ChannelEntry(peerPubKey));
+            entry.PendingRbf = null;
+            entry.EchoedWithoutActivity = true;
 
             _logger.LogInformation("tx_abort from {Peer} on channel {ChannelId} without a negotiation ({Data}); "
                                  + "echoing it", peerPubKey, channelId, data);
@@ -420,7 +509,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         ChannelId channelId, ChannelEntry? entry, TxInitRbfMessage initRbf, CompactPubKey peerPubKey,
         IUnitOfWork unitOfWork, CancellationToken cancellationToken)
     {
-        if (entry is null || entry.Host is null || entry.Completed.Count == 0 || entry.AwaitingAbortEcho)
+        if (entry is null || entry.Host is null || entry.Completed.Count == 0 || IsAwaitingAbortEcho(entry))
             return NoNegotiation(channelId, entry, peerPubKey, initRbf.Type);
 
         if (entry.Current is { } running)
@@ -474,6 +563,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         }
 
         entry.Current = attempt;
+        entry.EchoedWithoutActivity = false;
         LogStarted(attempt);
         return
         [
@@ -538,6 +628,14 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
                                                                       IUnitOfWork unitOfWork,
                                                                       CancellationToken cancellationToken)
     {
+        // IT-RBF-01: every attempt MUST double-spend all other attempts; checked here too, whatever the engine does,
+        // so we never sign two funding transactions that could both confirm
+        if (entry.Completed.FirstOrDefault(c => !DoubleSpends(attempt.Negotiation.Inputs, c.Transaction)) is
+            { } notReplaced)
+            return await RejectAsync(entry, attempt,
+                                     $"[IT-RBF-01] the negotiated transaction does not double-spend the earlier "
+                                   + $"attempt {notReplaced.Transaction.TxId}", unitOfWork, cancellationToken);
+
         try
         {
             var transaction = _builder.Build(attempt.Terms.Locktime, attempt.Negotiation.Inputs,
@@ -598,6 +696,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             outbound = await SendOurSignaturesAsync(entry, attempt, unitOfWork, cancellationToken);
 
         await SaveModelAsync(attempt, unitOfWork);
+        ApplyCompletion(entry, attempt);
         return outbound;
     }
 
@@ -657,16 +756,29 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         var completion = new InteractiveTxCompletion(model, transaction, signedTransaction, attempt.Terms.FeeratePerKw);
         var outbound = await entry.Host!.OnCompletedAsync(completion, unitOfWork, cancellationToken);
 
+        // Applied to memory by ApplyCompletion, after the caller's save
+        attempt.IsCompleted = true;
+        return outbound;
+    }
+
+    /// <summary>
+    /// After the save that stored a fully signed attempt: it becomes a completed attempt (RBF), the negotiation ends
+    /// and so does the quiescence. Nothing for an attempt that is not complete.
+    /// </summary>
+    private void ApplyCompletion(ChannelEntry entry, Attempt attempt)
+    {
+        if (!attempt.IsCompleted || !ReferenceEquals(entry.Current, attempt))
+            return;
+
+        var transaction = attempt.Negotiation.ConstructedTx!;
         entry.Completed.Add(new CompletedAttempt(attempt.SessionId, transaction, attempt.Terms.FeeratePerKw,
-                                                 attempt.Contribution));
+                                                 attempt.Contribution) { Model = attempt.Model });
         entry.Current = null;
         _quiescenceService?.Terminate(attempt.Terms.ChannelId, QuiescenceEndReason.TxSignaturesExchanged);
 
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Interactive-tx negotiation {SessionId} on channel {ChannelId} fully signed: {TxId}",
                                    attempt.SessionId, attempt.Terms.ChannelId, transaction.TxId);
-
-        return outbound;
     }
 
     private async Task<IReadOnlyList<IChannelMessage>> RejectAsync(ChannelEntry entry, Attempt attempt, string reason,
@@ -700,7 +812,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         }
 
         LogAborted(attempt, reason, null, true);
-        entry.AwaitingAbortEcho = true;
+        MarkAbortSent(entry, PeerSentSignatures(attempt));
         await FinishAbortAsync(entry, attempt, reason, unitOfWork, cancellationToken);
         return EnsureTxAbort(attempt.Terms.ChannelId, outbound, reason);
     }
@@ -723,7 +835,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
     private IReadOnlyList<IChannelMessage> NoNegotiation(ChannelId channelId, ChannelEntry? entry,
                                                          CompactPubKey peerPubKey, MessageTypes messageType)
     {
-        if (entry is { AwaitingAbortEcho: true })
+        if (entry is not null && IsAwaitingAbortEcho(entry))
         {
             // Sent before the peer saw our tx_abort: stale, the echo will follow
             _logger.LogDebug("Ignoring {MessageType} on channel {ChannelId} while our tx_abort waits for its echo",
@@ -733,14 +845,14 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
         _logger.LogInformation("{MessageType} from {Peer} on channel {ChannelId} without an interactive-tx "
                              + "negotiation; answering tx_abort", messageType, peerPubKey, channelId);
-        _channels.GetOrAdd(channelId, _ => new ChannelEntry(peerPubKey)).AwaitingAbortEcho = true;
+        MarkAbortSent(_channels.GetOrAdd(channelId, _ => new ChannelEntry(peerPubKey)));
         return [CreateTxAbort(channelId, NoNegotiationText)];
     }
 
     private IReadOnlyList<IChannelMessage> RejectRbf(ChannelId channelId, ChannelEntry entry, string reason)
     {
         _logger.LogInformation("Rejecting the RBF on channel {ChannelId}: {Reason}", channelId, reason);
-        entry.AwaitingAbortEcho = true;
+        MarkAbortSent(entry);
         return [CreateTxAbort(channelId, reason)];
     }
 
@@ -824,9 +936,49 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         }
     }
 
+    /// <summary>
+    /// Records our <c>tx_abort</c>: it waits for its echo unless the peer already sent <c>tx_signatures</c> (such a
+    /// peer keeps the negotiation and never echoes, IT-ABT-01).
+    /// </summary>
+    private void MarkAbortSent(ChannelEntry entry, bool peerSentSignatures = false)
+    {
+        entry.AbortSentAt = peerSentSignatures ? null : _timeProvider.GetUtcNow();
+        entry.EchoedWithoutActivity = false;
+    }
+
+    /// <summary>Whether our <c>tx_abort</c> still waits for its echo (at most <see cref="AbortEchoTimeout"/>).</summary>
+    private bool IsAwaitingAbortEcho(ChannelEntry entry)
+    {
+        if (entry.AbortSentAt is not { } sentAt)
+            return false;
+        if (_timeProvider.GetUtcNow() - sentAt < AbortEchoTimeout)
+            return true;
+
+        _logger.LogInformation("No echo of our tx_abort on channel entry of {Peer} after {Timeout}; no longer waiting",
+                               entry.RemoteNodeId, AbortEchoTimeout);
+        entry.AbortSentAt = null;
+        return false;
+    }
+
+    private void ThrowIfAwaitingAbortEcho(ChannelEntry entry, ChannelId channelId)
+    {
+        // A new attempt before the echo of our tx_abort would take that echo (and the peer's stale messages) as the
+        // new attempt's: BOLT 2 echoes tx_abort so that the originating peer can end the process without stale ones
+        if (IsAwaitingAbortEcho(entry))
+            throw new InvalidOperationException(
+                $"Our tx_abort on channel {channelId} waits for its echo; start a new attempt after it");
+    }
+
+    private static bool PeerSentSignatures(Attempt attempt) =>
+        attempt.Negotiation.RemoteWitnesses is not null || attempt.Model?.TxSignaturesReceived == true;
+
+    private static bool DoubleSpends(IReadOnlyList<InteractiveTxInput> inputs, ConstructedInteractiveTx earlier) =>
+        earlier.Inputs.Any(e => inputs.Any(i => i.PrevTxId.Equals(e.PrevTxId) && i.PrevTxVout == e.PrevTxVout));
+
     private void RemoveIfIdle(ChannelId channelId, ChannelEntry entry)
     {
-        if (entry is { Current: null, PendingRbf: null, AwaitingAbortEcho: false, Completed.Count: 0 })
+        if (entry is { Current: null, PendingRbf: null, AbortSentAt: null, EchoedWithoutActivity: false,
+                       Completed.Count: 0 })
             _channels.TryRemove(new KeyValuePair<ChannelId, ChannelEntry>(channelId, entry));
     }
 
@@ -900,7 +1052,15 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         public Attempt? Current { get; set; }
         public List<CompletedAttempt> Completed { get; } = [];
         public InteractiveTxTerms? PendingRbf { get; set; }
-        public bool AwaitingAbortEcho { get; set; }
+
+        /// <summary>When our last <c>tx_abort</c> went out, while it waits for its echo; null otherwise.</summary>
+        public DateTimeOffset? AbortSentAt { get; set; }
+
+        /// <summary>
+        /// We echoed a <c>tx_abort</c> and no negotiation or RBF request started since: a further <c>tx_abort</c> is
+        /// the echo of our echo and is not echoed again.
+        /// </summary>
+        public bool EchoedWithoutActivity { get; set; }
     }
 
     /// <summary>The attempt in progress.</summary>
@@ -914,8 +1074,22 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
         /// <summary>The stored row: null until our commitment_signed is sent.</summary>
         public InteractiveTxSessionModel? Model { get; set; }
+
+        /// <summary>Both tx_signatures exchanged and handed to the host; applied to memory after the save.</summary>
+        public bool IsCompleted { get; set; }
+
+        public (IInteractiveTxNegotiation Negotiation, InteractiveTxSessionModel? Model, bool IsCompleted)
+            Checkpoint() => (Negotiation, Model, IsCompleted);
+
+        public void Restore((IInteractiveTxNegotiation Negotiation, InteractiveTxSessionModel? Model, bool IsCompleted)
+                                checkpoint) =>
+            (Negotiation, Model, IsCompleted) = checkpoint;
     }
 
     private sealed record CompletedAttempt(Guid SessionId, ConstructedInteractiveTx Transaction, uint FeeratePerKw,
-                                           InteractiveTxContribution Contribution);
+                                           InteractiveTxContribution Contribution)
+    {
+        /// <summary>The stored row, for a <c>tx_signatures</c> retransmission.</summary>
+        public InteractiveTxSessionModel? Model { get; init; }
+    }
 }
