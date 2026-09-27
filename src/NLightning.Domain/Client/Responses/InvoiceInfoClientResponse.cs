@@ -40,6 +40,16 @@ public sealed class InvoiceInfoClientResponse
     public DateTimeOffset? SettledAt { get; init; }
 
     /// <summary>
+    /// BOLT 11 (a <c>createinvoice</c> string) or BOLT 12 (issued for one of our offers), NL-454.
+    /// </summary>
+    public InvoiceKind Kind { get; init; }
+
+    /// <summary>
+    /// The offer a BOLT 12 invoice was issued for; null for a BOLT 11 invoice.
+    /// </summary>
+    public Hash? OfferId { get; init; }
+
+    /// <summary>
     /// Maps a stored invoice; <paramref name="now"/> decides <see cref="IsExpired"/>.
     /// </summary>
     public static InvoiceInfoClientResponse FromModel(InvoiceModel invoice, DateTimeOffset now)
@@ -56,7 +66,9 @@ public sealed class InvoiceInfoClientResponse
             ExpiresAt = invoice.ExpiresAt,
             IsExpired = invoice.IsExpired(now),
             AmountReceived = invoice.AmountReceived,
-            SettledAt = invoice.SettledAt
+            SettledAt = invoice.SettledAt,
+            Kind = invoice.Kind,
+            OfferId = invoice.Bolt12?.OfferId
         };
     }
 }
