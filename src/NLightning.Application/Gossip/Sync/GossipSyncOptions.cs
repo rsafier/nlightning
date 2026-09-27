@@ -85,6 +85,23 @@ public sealed class GossipSyncOptions
     /// </summary>
     public int MaxQueuedQueriesPerPeer { get; set; } = 4;
 
+    /// <summary>
+    /// How long an unknown channel one sync peer was asked for is not asked from another (NL-415), counted from that
+    /// peer's <c>reply_short_channel_ids_end</c>: its announcement is queued in the ingress or waits for its chain
+    /// lookup meanwhile. A failed query frees its channels at once, and what the ingress drops is asked for again by the
+    /// missed-channel retry regardless. Zero turns it off (every sync peer's re-diff sees only the graph, NL-402).
+    /// </summary>
+    /// <remarks>Configuration key <c>Gossip:QueriedChannelTtl</c>.</remarks>
+    public TimeSpan QueriedChannelTtl { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Gossip messages (our own and relayed) one peer's <c>PeerOutbox</c> holds unsent at most (NL-360); beyond it
+    /// gossip for that connection is refused (the relay ends that flush or backlog, counted as <c>outbox_full</c> in
+    /// <c>nlightning.gossip.messages.dropped</c>) while channel messages are always queued. Zero means no cap.
+    /// </summary>
+    /// <remarks>Configuration key <c>Gossip:MaxOutboxGossipPerPeer</c>.</remarks>
+    public int MaxOutboxGossipPerPeer { get; set; } = 10_000;
+
     /// <summary>The effective switch: <see cref="SyncEnabled"/> when set, otherwise true on every chain but mainnet.
     /// </summary>
     public bool IsSyncEnabledFor(BitcoinNetwork network) =>
@@ -112,6 +129,10 @@ public sealed class GossipSyncOptions
             errors.Add($"{nameof(SkipChannelsStaleFor)} must not be negative");
         if (MaxQueuedQueriesPerPeer < 1)
             errors.Add($"{nameof(MaxQueuedQueriesPerPeer)} must be at least 1");
+        if (QueriedChannelTtl < TimeSpan.Zero)
+            errors.Add($"{nameof(QueriedChannelTtl)} must not be negative");
+        if (MaxOutboxGossipPerPeer < 0)
+            errors.Add($"{nameof(MaxOutboxGossipPerPeer)} must not be negative");
         return errors;
     }
 }

@@ -42,7 +42,10 @@ using Metrics;
 /// newer) are asked for with <c>query_short_channel_ids</c> in batches that fit one message, each batch checked against
 /// the graph again right before it goes out (what another sync peer delivered meanwhile is not asked for twice,
 /// NL-402); then
-/// <c>gossip_timestamp_filter(start - backlog, 0xFFFFFFFF)</c> (see below);</item>
+/// <c>gossip_timestamp_filter(start - backlog, 0xFFFFFFFF)</c> (see below). The re-diff also skips an unknown channel
+/// whose announcement is already on its way (NL-415): claimed by another sync session's batch
+/// (<see cref="QueriedChannelTracker"/>, <see cref="GossipSyncOptions.QueriedChannelTtl"/>), or pending in an
+/// <see cref="IGossipPendingChannels"/> (the ingress queue, the funding output lookup);</item>
 /// <item>another <c>gossip_queries</c> peer gets <c>gossip_timestamp_filter(now, 0xFFFFFFFF)</c> (new gossip only);</item>
 /// <item>a peer without <c>gossip_queries</c> gets <c>gossip_timestamp_filter(0xFFFFFFFF, 0)</c> (B7-Q-06).</item>
 /// </list>
@@ -94,6 +97,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     private readonly Func<CompactPubKey, int>? _getPeerQueueDepth;
     private readonly int _ingressQueueCapacity;
     private readonly GossipMetrics? _metrics;
+    private readonly IReadOnlyList<IGossipPendingChannels> _pendingChannels;
+    private readonly QueriedChannelTracker _queriedChannels;
     private readonly ConcurrentDictionary<IPeerService, PeerSession> _sessions = new(ReferenceEqualityComparer.Instance);
     private readonly Lock _timerLock = new();
     private readonly Lock _missedLock = new();
@@ -125,14 +130,22 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     /// The messages of one peer waiting in the graph ingress (null: pace by <paramref name="getIngressQueueDepth"/>).
     /// When given, the querier waits for the queried peer's own queue, without a time limit (NL-412).
     /// </param>
+    /// <param name="pendingChannels">
+    /// Where announcements already on their way into the graph are known (NL-415, NL-414: the ingress queue, the
+    /// funding output lookup): such channels are not asked for by a range sync's re-diff or the missed-channel retry.
+    /// </param>
     public GossipSyncManager(IGraphStore graphStore, IOptions<GossipSyncOptions> options,
                              IOptions<NodeOptions> nodeOptions, ILogger<GossipSyncManager> logger,
                              TimeProvider? timeProvider = null, IGossipIngress? ingress = null,
                              Func<IReadOnlyList<ShortChannelId>>? takeMissedShortChannelIds = null,
                              Func<uint>? getTipHeight = null, Func<int>? getIngressQueueDepth = null,
                              int ingressQueueCapacity = 0, GossipMetrics? metrics = null,
-                             Func<CompactPubKey, int>? getPeerQueueDepth = null)
+                             Func<CompactPubKey, int>? getPeerQueueDepth = null,
+                             IEnumerable<IGossipPendingChannels>? pendingChannels = null)
     {
+        _pendingChannels = pendingChannels?.Distinct(ReferenceEqualityComparer.Instance)
+                                           .Cast<IGossipPendingChannels>()
+                                           .ToList() ?? [];
         _getPeerQueueDepth = getPeerQueueDepth;
         _metrics = metrics;
         _getIngressQueueDepth = getIngressQueueDepth;
@@ -146,7 +159,11 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         _takeMissedShortChannelIds = takeMissedShortChannelIds;
         _getTipHeight = getTipHeight;
         _responder = new QueryResponder(graphStore, options);
+        _queriedChannels = new QueriedChannelTracker(_timeProvider, _options.QueriedChannelTtl);
     }
+
+    /// <summary>The unknown channels claimed by a sync session's batch (tests).</summary>
+    internal QueriedChannelTracker QueriedChannels => _queriedChannels;
 
     /// <inheritdoc />
     public bool HasCompletedInitialSync => _hasCompletedInitialSync;
@@ -293,10 +310,15 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                     _missedBacklog.Add(shortChannelId);
 
             _missedBacklog.RemoveWhere(IsCompleteInGraph);
+            _queriedChannels.Prune();
             if (_missedBacklog.Count == 0)
                 return 0;
 
-            wanted = _missedBacklog.OrderBy(QueryResponder.ToUInt64).ToList();
+            // NL-414: a channel whose announcement is still on its way (e.g. its funding output is spent in the
+            // mempool: looked up again only after the next block) stays in the backlog for a later round
+            wanted = _missedBacklog.Where(s => !IsPendingInGraphPipeline(s)).OrderBy(QueryResponder.ToUInt64).ToList();
+            if (wanted.Count == 0)
+                return 0;
         }
 
         var session = PickQuerySession();
@@ -316,6 +338,9 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         lock (_missedLock)
             foreach (var shortChannelId in wanted.Take(queued))
                 _missedBacklog.Remove(shortChannelId);
+
+        foreach (var shortChannelId in wanted.Take(queued))
+            _queriedChannels.TryClaim(shortChannelId, session);
 
         _logger.LogDebug("Asking peer {Peer} again for {Count} channels the gossip ingress dropped",
                          session.Peer.PeerPubKey, queued);
@@ -640,32 +665,59 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                                    entries.Count, wanted.Count);
 
             // Each batch is diffed again right before it goes out: what another sync peer delivered meanwhile (all of
-            // them start together after a restart or with an empty graph) is not asked for twice (NL-402)
+            // them start together after a restart or with an empty graph) is not asked for twice (NL-402), nor what
+            // another peer was asked for and still has on its way into the graph (NL-415: claimed in the batch)
             var maxPerQuery = GetMaxScidsPerQuery(withTimestamps);
             var next = 0;
             var asked = 0;
             while (next < wanted.Count)
             {
                 var batch = new List<(ShortChannelId, ulong?)>(Math.Min(maxPerQuery, wanted.Count - next));
+                var claimed = new List<ShortChannelId>();
                 for (; next < wanted.Count && batch.Count < maxPerQuery; next++)
                 {
                     var (shortChannelId, _) = wanted[next];
-                    if (Want(shortChannelId, remoteTimestamps.GetValueOrDefault(shortChannelId), withTimestamps) is
-                        { } entry)
-                        batch.Add(entry);
+                    if (Want(shortChannelId, remoteTimestamps.GetValueOrDefault(shortChannelId), withTimestamps,
+                             session) is not { } entry)
+                        continue;
+
+                    // An unknown channel is claimed for this peer, so another session's re-diff skips it
+                    if (!_graphStore.TryGetChannel(shortChannelId, out _))
+                    {
+                        if (!_queriedChannels.TryClaim(shortChannelId, session))
+                            continue;
+                        claimed.Add(shortChannelId);
+                    }
+
+                    batch.Add(entry);
                 }
 
                 if (batch.Count == 0)
                     break;
 
                 asked += batch.Count;
-                if (!await RunScidQueryAsync(session, batch, cancellationToken))
+                var answered = false;
+                try
+                {
+                    answered = await RunScidQueryAsync(session, batch, cancellationToken);
+                }
+                finally
+                {
+                    // Answered: the claims count from now; not answered (or failed): another peer may be asked at once
+                    if (answered)
+                        _queriedChannels.Renew(claimed, session);
+                    else
+                        _queriedChannels.Release(claimed, session);
+                }
+
+                if (!answered)
                     return;
             }
 
             if (asked < wanted.Count)
                 _logger.LogInformation("Asked peer {Peer} for {Asked} of the {Wanted} channels (the rest arrived from "
-                                     + "other peers meanwhile)", session.Peer.PeerPubKey, asked, wanted.Count);
+                                     + "other peers meanwhile or are on their way from them)",
+                                       session.Peer.PeerPubKey, asked, wanted.Count);
 
             session.LastRangeSyncAt = _timeProvider.GetUtcNow();
             completed = true;
@@ -725,13 +777,17 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         return startedAt > back ? startedAt - back : 0;
     }
 
+    /// <summary>
+    /// The first diff, against the graph only: a channel on its way from another peer now is checked again at its
+    /// batch (<see cref="Want"/> with the session), so one that peer's failed query released is still asked for.
+    /// </summary>
     private List<(ShortChannelId, ulong?)> Diff(IReadOnlyList<KeyValuePair<ShortChannelId, ChannelUpdatePair?>> entries,
                                                 bool withFlags)
     {
         var wanted = new List<(ShortChannelId, ulong?)>();
         foreach (var (shortChannelId, timestamps) in entries)
         {
-            if (Want(shortChannelId, timestamps, withFlags) is { } entry)
+            if (Want(shortChannelId, timestamps, withFlags, null) is { } entry)
                 wanted.Add(entry);
         }
 
@@ -740,14 +796,21 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
 
     /// <summary>
     /// Whether to ask for <paramref name="shortChannelId"/> now, and with which query flag: an unknown channel with
-    /// everything; a known one only with timestamps and only its directions whose update is newer; never a spent one.
+    /// everything, unless (with a <paramref name="session"/>, at batch time) its announcement is already on its way
+    /// (NL-415); a known one only with timestamps and only its directions whose update is newer; never a spent one.
     /// </summary>
-    private (ShortChannelId, ulong?)? Want(ShortChannelId shortChannelId, ChannelUpdatePair? timestamps, bool withFlags)
+    private (ShortChannelId, ulong?)? Want(ShortChannelId shortChannelId, ChannelUpdatePair? timestamps, bool withFlags,
+                                           PeerSession? session)
     {
         if (!_graphStore.TryGetChannel(shortChannelId, out var channel))
         {
             // NL-404: both updates stale or missing by the peer's own timestamps: an abandoned (zombie) channel
             if (withFlags && timestamps is { } peerTimestamps && IsStaleByTimestamps(peerTimestamps))
+                return null;
+
+            // NL-415: asked from another peer, or queued/looked up in the graph pipeline already
+            if (session is not null && (_queriedChannels.IsClaimedByOther(shortChannelId, session)
+                                     || IsPendingInGraphPipeline(shortChannelId)))
                 return null;
 
             return (shortChannelId, withFlags ? GossipQueryCodec.QueryFlagAll : null);
@@ -764,6 +827,28 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         if (remote.Node2 > (channel.Policy2?.Timestamp ?? 0))
             flag |= GossipQueryCodec.QueryFlagChannelUpdate2;
         return flag != 0 ? (shortChannelId, flag) : null;
+    }
+
+    /// <summary>
+    /// True when a registered <see cref="IGossipPendingChannels"/> (the ingress, the funding output lookup) holds the
+    /// channel's announcement (NL-415, NL-414). A failing source counts as "not pending".
+    /// </summary>
+    private bool IsPendingInGraphPipeline(ShortChannelId shortChannelId)
+    {
+        foreach (var source in _pendingChannels)
+        {
+            try
+            {
+                if (source.IsPending(shortChannelId))
+                    return true;
+            }
+            catch (Exception e)
+            {
+                _logger.LogDebug(e, "A pending-channel source failed for {ShortChannelId}", shortChannelId);
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
