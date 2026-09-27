@@ -6,11 +6,13 @@ namespace NLightning.Domain.Tests.Channels.Commitments;
 
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
@@ -42,7 +44,8 @@ internal sealed record SimulatorConfig(
     ulong? BobMaxDustExposureMsat,
     int Steps,
     double DisconnectRate,
-    StepWeights Weights)
+    StepWeights Weights,
+    bool Splicing = false)
 {
     public static SimulatorConfig Random(Random rng)
     {
@@ -110,6 +113,18 @@ internal sealed class SimulatorStats
     /// (see <see cref="CommitmentPairSimulator"/>).</summary>
     public int CrossedFeeFailures;
 
+    /// <summary>Splicing mode (SP1-B-T5): splices negotiated (new and RBF), locked, discarded, batches signed and
+    /// batches received with obsolete members (SP-OP-06).</summary>
+    public int Splices;
+    public int RbfSplices;
+    public int SpliceIns;
+    public int SpliceOuts;
+    public int Locks;
+    public int Discards;
+    public int BatchesSigned;
+    public int ObsoleteBatchMembers;
+    public int QuiescenceDrains;
+
     /// <summary>Local refusals by requirement id.</summary>
     public SortedDictionary<string, int> Refusals { get; } = new(StringComparer.Ordinal);
 
@@ -139,6 +154,15 @@ internal sealed class SimulatorStats
         SettledEvents += other.SettledEvents;
         IncomingSettledEvents += other.IncomingSettledEvents;
         CrossedFeeFailures += other.CrossedFeeFailures;
+        Splices += other.Splices;
+        RbfSplices += other.RbfSplices;
+        SpliceIns += other.SpliceIns;
+        SpliceOuts += other.SpliceOuts;
+        Locks += other.Locks;
+        Discards += other.Discards;
+        BatchesSigned += other.BatchesSigned;
+        ObsoleteBatchMembers += other.ObsoleteBatchMembers;
+        QuiescenceDrains += other.QuiescenceDrains;
         foreach (var (id, n) in other.Refusals)
             Refusals[id] = Refusals.GetValueOrDefault(id) + n;
     }
@@ -150,7 +174,9 @@ internal sealed class SimulatorStats
       + $"re-sent CS {RetransmittedCommitments}, RAA {RetransmittedRevocations}, updates {RetransmittedUpdates}), "
       + $"gate refusals {GateRefusals}, max open HTLCs {MaxOpenHtlcs}, crossed-fee channel failures "
       + $"{CrossedFeeFailures}; events: locked-in {LockedInEvents}, fulfilled {FulfilledEvents}, failed "
-      + $"{FailedEvents}, settled {SettledEvents}, incoming settled {IncomingSettledEvents}; refusals: "
+      + $"{FailedEvents}, settled {SettledEvents}, incoming settled {IncomingSettledEvents}; splices {Splices} "
+      + $"(RBF {RbfSplices}, in {SpliceIns}, out {SpliceOuts}, drains {QuiescenceDrains}), locks {Locks}, discards "
+      + $"{Discards}, batches {BatchesSigned} (obsolete members {ObsoleteBatchMembers}); refusals: "
       + string.Join(", ", Refusals.Select(r => $"{r.Key} {r.Value}"));
 }
 
@@ -192,6 +218,7 @@ internal sealed class CommitmentPairSimulator
     private readonly Queue<string> _trace = new();
     private readonly Dictionary<Hash, Secret> _preimages = new();
     private int _step;
+    private int _spliceCounter;
 
     /// <summary>The funder sent an add or <c>update_fee</c> while adds of the non-funder were still in flight to it.
     /// </summary>
@@ -205,15 +232,28 @@ internal sealed class CommitmentPairSimulator
     /// <summary>Independent ledger: what Alice's settled balance must be once every HTLC is resolved.</summary>
     private long _expectedAliceMsat;
 
-    public CommitmentPairSimulator(int seed, SimulatorConfig? config = null)
+    public CommitmentPairSimulator(int seed, SimulatorConfig? config = null, bool splicing = false)
     {
         _seed = seed;
         _rng = new Random(seed);
-        _config = config ?? SimulatorConfig.Random(_rng);
+        _config = config ?? SimulatorConfig.Random(_rng) with { Splicing = splicing };
         var aliceParams = new CommitmentParams(true, (_config.AliceMsat + _config.BobMsat) / 1_000, _config.Anchors,
                                                _config.AliceParty, _config.BobParty, _config.AliceMaxDustExposureMsat);
         var bobParams = new CommitmentParams(false, aliceParams.FundingSatoshis, _config.Anchors, _config.BobParty,
                                              _config.AliceParty, _config.BobMaxDustExposureMsat);
+        if (_config.Splicing)
+        {
+            // Splicing mode: both engines know the (same) initial funding, so they can hold pending splices
+            aliceParams = aliceParams with
+            {
+                Funding = SpliceTestKit.Initial(aliceParams.FundingSatoshis, CommitmentsTestKit.AliceTag)
+            };
+            bobParams = bobParams with
+            {
+                Funding = SpliceTestKit.Initial(bobParams.FundingSatoshis, CommitmentsTestKit.BobTag)
+            };
+        }
+
         Alice = new SimNode("alice", CommitmentsTestKit.AliceTag, CommitmentsTestKit.BobTag,
                             Create(aliceParams, _config.AliceMsat, _config.BobMsat, CommitmentsTestKit.BobTag));
         Bob = new SimNode("bob", CommitmentsTestKit.BobTag, CommitmentsTestKit.AliceTag,
@@ -311,6 +351,29 @@ internal sealed class CommitmentPairSimulator
         {
             Disconnect();
             return;
+        }
+
+        // Splicing mode only (no draw otherwise, so the single-funding seeds replay exactly as before)
+        if (_config.Splicing)
+        {
+            var spliceRoll = _rng.Next(100);
+            if (spliceRoll < 3)
+            {
+                SpliceStep();
+                return;
+            }
+
+            if (spliceRoll < 5)
+            {
+                LockStep();
+                return;
+            }
+
+            if (spliceRoll < 6)
+            {
+                DiscardStep();
+                return;
+            }
         }
 
         var node = _rng.Next(2) == 0 ? Alice : Bob;
@@ -531,9 +594,24 @@ internal sealed class CommitmentPairSimulator
     {
         var htlcMoves = node.State.Htlcs.Values.Count(h => HtlcStateTable.TryNext(h.State, HtlcEvent.SendCommit, out _));
         var result = node.State.SendCommit(node.Signer);
-        var cs = Assert.IsType<OutboundCommitmentSigned>(Assert.Single(result.Outbound));
+        var signed = result.Outbound.OfType<OutboundCommitmentSigned>().ToList();
+        var cs = signed[0];
         Check(cs.RemoteCommitmentNumber == node.State.RemoteCommit.Number + 1,
               $"{node.Name} signed remote commitment {cs.RemoteCommitmentNumber} after {node.State.RemoteCommit.Number}");
+
+        // SP-OP-03: one member per active funding, the current first, all at the same number; start_batch only then
+        var active = node.State.PendingFundings.Count + 1;
+        Check(signed.Count == active && signed.All(s => s.RemoteCommitmentNumber == cs.RemoteCommitmentNumber),
+              $"{node.Name} signed {signed.Count} commitments for {active} fundings");
+        Check(active == 1
+                  ? result.Outbound.Count == 1 && cs.FundingTxId is null
+                  : result.Outbound[0] is OutboundStartBatch batch && batch.BatchSize == active
+                 && cs.FundingTxId == node.State.Params.Funding!.FundingTxId
+                 && signed.Skip(1).Select(s => s.FundingTxId!.Value)
+                          .SequenceEqual(node.State.PendingFundings.Select(f => f.FundingTxId)),
+              $"{node.Name} batch framing is wrong (SP-OP-03)");
+        if (active > 1)
+            Stats.BatchesSigned++;
         Apply(node, result, $"{node.Name} commitment_signed #{cs.RemoteCommitmentNumber}");
         node.LastSentCommitAfterRevoke = true;
         Stats.CommitmentsSigned++;
@@ -583,7 +661,13 @@ internal sealed class CommitmentPairSimulator
                       $"{to.Name} <- update_fee {fee.FeeratePerKw}");
                 break;
             case CommitMessage commit:
-                ReceiveCommit(to, from, commit);
+                ReceiveCommit(to, from, commit.Number, state => state.ReceiveCommit(commit.Signatures, to.Verifier));
+                break;
+            case BatchCommitMessage batch:
+                var active = to.State.PendingFundings.Count + 1;
+                if (batch.Members.Count > active)
+                    Stats.ObsoleteBatchMembers += batch.Members.Count - active;
+                ReceiveCommit(to, from, batch.Number, state => state.ReceiveCommitBatch(batch.Members, to.Verifier));
                 break;
             case RevokeMessage revoke:
                 ReceiveRevoke(to, from, revoke);
@@ -591,17 +675,18 @@ internal sealed class CommitmentPairSimulator
         }
     }
 
-    private void ReceiveCommit(SimNode to, SimNode from, CommitMessage commit)
+    private void ReceiveCommit(SimNode to, SimNode from, ulong number,
+                               Func<ChannelCommitments, CommitmentsResult> receive)
     {
-        Check(commit.Number == to.State.LocalCommit.Number + 1,
-              $"{to.Name} got commitment_signed #{commit.Number} while at local commitment {to.State.LocalCommit.Number}");
+        Check(number == to.State.LocalCommit.Number + 1,
+              $"{to.Name} got commitment_signed #{number} while at local commitment {to.State.LocalCommit.Number}");
         if (to.State.RemoteNextCommit is not null)
             Stats.CrossedCommitments++;
 
         CommitmentsResult result;
         try
         {
-            result = to.State.ReceiveCommit(commit.Signatures, to.Verifier);
+            result = receive(to.State);
         }
         catch (CommitmentViolationException e) when (to == Bob && _funderUpdateCrossedAdds
                                                   && e.RequirementId is "B2-ADD-R02" or "B2-FEE-R03")
@@ -616,18 +701,21 @@ internal sealed class CommitmentPairSimulator
         // receiver now holds.
         var signed = from.State.RemoteNextCommit?.Commit
                   ?? throw Fail($"{to.Name} got commitment_signed but {from.Name} has no unacked commitment");
-        Check(signed.Number == commit.Number, $"{from.Name} signed #{signed.Number}, message says #{commit.Number}");
-        CheckMirrored(signed.Spec, result.Next.LocalCommit.Spec, $"{to.Name} local #{commit.Number}");
+        Check(signed.Number == number, $"{from.Name} signed #{signed.Number}, message says #{number}");
+        CheckMirrored(signed.Spec, result.Next.LocalCommit.Spec, $"{to.Name} local #{number}");
 
         // I3: the secret of commitment n is released only once commitment n + 1 is held with valid signatures.
         Check(raa.RevokedCommitmentNumber + 1 == result.Next.LocalCommit.Number
            && raa.NextCommitmentNumber == result.Next.LocalCommit.Number + 1,
               $"{to.Name} revokes #{raa.RevokedCommitmentNumber} / next #{raa.NextCommitmentNumber} at local commitment {result.Next.LocalCommit.Number}");
 
+        // SP-I3: ... on every active funding: the one revocation comes only with a verified commitment n + 1 per funding
+        CheckFundingSignatures(to, result.Next);
+
         to.State = result.Next;
         to.Outbox.Enqueue(RevokeFor(to));
         to.LastSentCommitAfterRevoke = false;
-        Trace($"{to.Name} <- commitment_signed #{commit.Number}, -> revoke_and_ack #{raa.RevokedCommitmentNumber}");
+        Trace($"{to.Name} <- commitment_signed #{number}, -> revoke_and_ack #{raa.RevokedCommitmentNumber}");
         CheckTransition(to, result);
     }
 
@@ -657,8 +745,23 @@ internal sealed class CommitmentPairSimulator
     private ChannelCommitments Apply(SimNode node, CommitmentsResult result, string what)
     {
         node.State = result.Next;
-        foreach (var outbound in result.Outbound)
-            node.Outbox.Enqueue(ToMessage(node, outbound));
+        for (var i = 0; i < result.Outbound.Count; i++)
+        {
+            // A start_batch and its members travel as one message (the inbound loop groups them, SP1-A-T3)
+            if (result.Outbound[i] is OutboundStartBatch batch)
+            {
+                var members = result.Outbound.Skip(i + 1).Take(batch.BatchSize).Cast<OutboundCommitmentSigned>()
+                                    .ToList();
+                node.Outbox.Enqueue(new BatchCommitMessage(members[0].RemoteCommitmentNumber,
+                                                           members.Select(m => new ReceivedCommitmentSigned(
+                                                                              m.FundingTxId, m.Signatures))
+                                                                  .ToList()));
+                i += batch.BatchSize;
+                continue;
+            }
+
+            node.Outbox.Enqueue(ToMessage(node, result.Outbound[i]));
+        }
 
         Trace(what);
         CheckTransition(node, result);
@@ -858,7 +961,17 @@ internal sealed class CommitmentPairSimulator
             foreach (var message in signedUpdates)
                 node.Outbox.Enqueue(message);
             var sent = state.RemoteNextCommit!;
-            node.Outbox.Enqueue(new CommitMessage(sent.Commit.Number, sent.SentSignatures));
+            if (sent.PendingFundingSignatures.Count == 0)
+                node.Outbox.Enqueue(new CommitMessage(sent.Commit.Number, sent.SentSignatures));
+            else
+                node.Outbox.Enqueue(new BatchCommitMessage(
+                                        sent.Commit.Number,
+                                        [
+                                            new ReceivedCommitmentSigned(state.Params.Funding!.FundingTxId,
+                                                                         sent.SentSignatures),
+                                            .. sent.PendingFundingSignatures.Select(s => new ReceivedCommitmentSigned(
+                                                                                         s.FundingTxId, s.Signatures))
+                                        ]));
             Stats.RetransmittedCommitments++;
         }
 
@@ -1065,10 +1178,15 @@ internal sealed class CommitmentPairSimulator
             // I4/I5: our latest commitment is the only one we hold and carries valid signatures.
             if (state.LocalCommit.RemoteSignatures is { } signatures && !ReferenceEquals(node.Verified, state.LocalCommit))
             {
-                Check(node.Verifier.Matches(state.LocalCommit.Number, state.LocalCommit.Spec, signatures),
+                Check(node.Verifier.Matches(state.Params.Funding, state.LocalCommit.Number, state.LocalCommit.Spec,
+                                            signatures),
                       $"{node.Name} holds local commitment {state.LocalCommit.Number} without valid signatures (I5)");
+                CheckFundingSignatures(node, state);
                 node.Verified = state.LocalCommit;
             }
+
+            if (_config.Splicing)
+                CheckFundings(node, peer);
 
             // I7: the peer's latest local commitment is one we signed and both see it the same way.
             var peerLocal = peer.LocalCommit;
@@ -1087,6 +1205,232 @@ internal sealed class CommitmentPairSimulator
         }
 
         Stats.MaxOpenHtlcs = Math.Max(Stats.MaxOpenHtlcs, Math.Max(Alice.State.Htlcs.Count, Bob.State.Htlcs.Count));
+    }
+
+    #endregion
+
+    /// <summary>
+    /// SP-I2: the latest local commitment carries the peer's valid signatures on every pending funding (the same
+    /// number, balances moved by the funding's deltas), so whichever funding confirms, it can be broadcast.
+    /// </summary>
+    private void CheckFundingSignatures(SimNode node, ChannelCommitments state)
+    {
+        Check(state.LocalCommit.PendingFundingSignatures.Select(s => s.FundingTxId)
+                   .SequenceEqual(state.PendingFundings.Select(f => f.FundingTxId)),
+              $"{node.Name} local commitment {state.LocalCommit.Number} lacks signatures for a pending funding (SP-I2)");
+        foreach (var funding in state.PendingFundings)
+            Check(node.Verifier.Matches(funding, state.LocalCommit.Number,
+                                        ChannelCommitments.SpecFor(state.LocalCommit.Spec, funding),
+                                        state.LocalCommit.SignaturesFor(funding.FundingTxId)!),
+                  $"{node.Name} local commitment {state.LocalCommit.Number} on {funding.FundingTxId} has invalid signatures (SP-I2)");
+        if (state.RemoteNextCommit is { } unacked)
+            Check(unacked.PendingFundingSignatures.Select(s => s.FundingTxId)
+                         .SequenceEqual(state.PendingFundings.Select(f => f.FundingTxId)),
+                  $"{node.Name} unacked remote commitment lacks a pending funding's signatures (SP-OP-03)");
+    }
+
+    /// <summary>
+    /// Splicing invariants: I6 per funding (settled balances and every commitment add up to each funding's capacity,
+    /// never negative), both nodes hold the same pending fundings with mirrored deltas, and on every funding the
+    /// non-funder's local commitment pays the funder's fee (SP-I6).
+    /// </summary>
+    private void CheckFundings(SimNode node, ChannelCommitments peer)
+    {
+        var state = node.State;
+        Check(state.Params.Funding is not null && peer.Params.Funding is not null
+           && state.Params.Funding.FundingTxId == peer.Params.Funding.FundingTxId
+           && state.Params.FundingSatoshis == peer.Params.FundingSatoshis,
+              $"{node.Name} and its peer disagree on the current funding");
+        Check(state.PendingFundings.Count == peer.PendingFundings.Count,
+              $"{node.Name} has {state.PendingFundings.Count} pending fundings, its peer {peer.PendingFundings.Count}");
+        for (var i = 0; i < state.PendingFundings.Count; i++)
+        {
+            var funding = state.PendingFundings[i];
+            var mirror = peer.PendingFundings[i];
+            Check(funding.FundingTxId == mirror.FundingTxId && funding.CapacitySatoshis == mirror.CapacitySatoshis
+               && funding.LocalBalanceDeltaMsat == mirror.RemoteBalanceDeltaMsat
+               && funding.RemoteBalanceDeltaMsat == mirror.LocalBalanceDeltaMsat,
+                  $"{node.Name} pending funding {i} is not the peer's mirror");
+
+            var capacity = funding.CapacityMsat;
+            Check((long)state.LocalBalanceMsat + funding.LocalBalanceDeltaMsat
+                + (long)state.RemoteBalanceMsat + funding.RemoteBalanceDeltaMsat == (long)capacity,
+                  $"{node.Name} settled balances do not add up to funding {funding.FundingTxId} (I6)");
+            foreach (var spec in new[]
+                     {
+                         state.LocalCommit.Spec, state.RemoteCommit.Spec, state.RemoteNextCommit?.Commit.Spec,
+                         state.BuildSpec(CommitmentSide.Local), state.BuildSpec(CommitmentSide.Remote)
+                     })
+            {
+                if (spec is null)
+                    continue;
+
+                Check((long)spec.LocalMsat + funding.LocalBalanceDeltaMsat >= 0
+                   && (long)spec.RemoteMsat + funding.RemoteBalanceDeltaMsat >= 0,
+                      $"{node.Name} {spec} is negative on funding {funding.FundingTxId} (SP-I6)");
+                Check(ChannelCommitments.SpecFor(spec, funding).TotalMsat == capacity,
+                      $"{node.Name} {spec} does not conserve funding {funding.FundingTxId} (I6)");
+            }
+
+            if (!state.Params.LocalIsFunder)
+            {
+                var localSpec = ChannelCommitments.SpecFor(state.LocalCommit.Spec, funding);
+                var funderCost = CommitmentFeeCalculator.FunderCostMsat(localSpec, state.Params.Local.DustLimitSatoshis,
+                                                                        state.Params.OptionAnchors);
+                Check(localSpec.RemoteMsat >= funderCost,
+                      $"{node.Name} local commitment {state.LocalCommit.Number} on {funding.FundingTxId}: the funder has {localSpec.RemoteMsat} msat for a {funderCost} msat fee (SP-I6)");
+            }
+        }
+    }
+
+    #region Splicing steps
+
+    /// <summary>
+    /// Quiescence (SP-I8): both sides stop proposing and sign/revoke until nothing is pending in either direction and
+    /// nothing is in flight. Returns false when it does not settle.
+    /// </summary>
+    private bool Quiesce()
+    {
+        Stats.QuiescenceDrains++;
+        for (var round = 0; round < 64; round++)
+        {
+            if (Alice.Outbox.Count == 0 && Bob.Outbox.Count == 0 && Alice.State.IsSettledForSplice
+             && Bob.State.IsSettledForSplice)
+                return true;
+
+            if (Alice.Outbox.Count > 0 || Bob.Outbox.Count > 0)
+                Deliver(Bob.Outbox.Count == 0 || (Alice.Outbox.Count > 0 && _rng.Next(2) == 0) ? Bob : Alice);
+            else if (Alice.State.CanSendCommit)
+                SendCommit(Alice);
+            else if (Bob.State.CanSendCommit)
+                SendCommit(Bob);
+            else
+                return false;
+
+            CheckInvariants();
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A splice (or, with one pending, an RBF attempt of it) negotiated while quiescent: the initiator splices in or
+    /// out, the acceptor contributes 0 (D10); both sign and verify the splice commitments at the current numbers
+    /// (SP-CS-01/02, no revoke_and_ack), then the funding is pending on both.
+    /// </summary>
+    private void SpliceStep()
+    {
+        if (Alice.State.PendingFundings.Count >= ChannelCommitments.MaxActiveFundings - 1 || !Quiesce())
+            return;
+
+        var initiator = _rng.Next(2) == 0 ? Alice : Bob;
+        var state = initiator.State;
+        var capacitySat = state.Params.FundingSatoshis;
+        long contributionSat;
+        if (_rng.Next(2) == 0)
+        {
+            contributionSat = _rng.NextInt64(1_000, 2_000_000);
+        }
+        else
+        {
+            // Splice-out: keep the reserve of the smaller funding (D9) and, as funder, the fee at twice the feerate
+            var balanceMsat = Math.Min(state.LocalCommit.Spec.LocalMsat, state.RemoteCommit.Spec.LocalMsat);
+            var funderCost = state.Params.LocalIsFunder
+                                 ? CommitmentFeeCalculator.FunderCostMsat(
+                                       new CommitmentSpec(CommitmentSide.Local, state.LocalCommit.Spec.FeeratePerKw * 2,
+                                                          state.LocalCommit.Spec.LocalMsat,
+                                                          state.LocalCommit.Spec.RemoteMsat,
+                                                          state.LocalCommit.Spec.Htlcs),
+                                       Math.Max(state.Params.Local.DustLimitSatoshis,
+                                                state.Params.Remote.DustLimitSatoshis), state.Params.OptionAnchors)
+                                 : 0;
+            var reserveMsat = Math.Max(state.Params.LocalReserveMsat, capacitySat * 1_000 / 100);
+            var spare = (long)balanceMsat - (long)reserveMsat - (long)funderCost - 1_000_000;
+            if (spare < 1_000_000)
+                return;
+
+            contributionSat = -_rng.NextInt64(1_000, spare / 1_000);
+        }
+
+        var txTag = ++_spliceCounter;
+        var rbfOf = Alice.State.PendingFundings.Count > 0 ? Alice.State.PendingFundings[0].FundingTxId : (TxId?)null;
+        var kind = rbfOf is null ? ChannelFundingKind.Splice : ChannelFundingKind.SpliceRbf;
+        var initiatorView = new ChannelFunding(SpliceTxId(txTag), 1, (ulong)((long)capacitySat + contributionSat),
+                                               SpliceTestKit.Key(initiator.Tag), SpliceTestKit.Key(initiator.PeerTag),
+                                               (uint)txTag, contributionSat * 1_000, 0, kind,
+                                               ChannelFundingStatus.Pending, 253, 0, rbfOf);
+        var acceptor = Peer(initiator);
+        var acceptorView = SpliceTestKit.Mirror(initiatorView);
+
+        var fromInitiator = initiator.State.SignSpliceCommitment(initiatorView, initiator.Signer);
+        var fromAcceptor = acceptor.State.SignSpliceCommitment(acceptorView, acceptor.Signer);
+        Check(fromInitiator.Transition.IsEmpty && fromAcceptor.Transition.IsEmpty,
+              "Signing a splice commitment changed the snapshot (SP-CS-02)");
+        var initiatorCs = Assert.IsType<OutboundCommitmentSigned>(Assert.Single(fromInitiator.Outbound));
+        var acceptorCs = Assert.IsType<OutboundCommitmentSigned>(Assert.Single(fromAcceptor.Outbound));
+        Check(initiatorCs.RemoteCommitmentNumber == initiator.State.RemoteCommit.Number
+           && acceptorCs.RemoteCommitmentNumber == acceptor.State.RemoteCommit.Number,
+              "A splice commitment was not signed at the current number (SP-CS-01)");
+
+        var atAcceptor = acceptor.State.ReceiveSpliceCommitment(acceptorView, initiatorCs.Signatures, acceptor.Verifier);
+        var atInitiator = initiator.State.ReceiveSpliceCommitment(initiatorView, acceptorCs.Signatures,
+                                                                  initiator.Verifier);
+        Check(atAcceptor.Outbound.Count == 0 && atInitiator.Outbound.Count == 0,
+              "A splice commitment was answered with a revoke_and_ack (SP-CS-02)");
+        Apply(acceptor, atAcceptor, $"{acceptor.Name} verifies splice {txTag}");
+        Apply(initiator, atInitiator,
+              $"{initiator.Name} {(contributionSat > 0 ? "splices in" : "splices out")} {Math.Abs(contributionSat)} sat ({kind} {txTag})");
+
+        Stats.Splices++;
+        if (kind == ChannelFundingKind.SpliceRbf)
+            Stats.RbfSplices++;
+        if (contributionSat > 0)
+            Stats.SpliceIns++;
+        else
+            Stats.SpliceOuts++;
+    }
+
+    /// <summary>
+    /// <c>splice_locked</c> sent and received for one pending funding (both sides at once; messages may be in flight): it
+    /// becomes current with its deltas folded, the others are discarded. Batches already in flight carry obsolete members,
+    /// which the receiver ignores (SP-OP-06).
+    /// </summary>
+    private void LockStep()
+    {
+        if (Alice.State.PendingFundings.Count == 0)
+            return;
+
+        var locked = Alice.State.PendingFundings[_rng.Next(Alice.State.PendingFundings.Count)];
+        _expectedAliceMsat += locked.LocalBalanceDeltaMsat;
+        foreach (var node in new[] { Alice, Bob })
+        {
+            var result = node.State.LockFunding(locked.FundingTxId);
+            Check(result.Transition.RetiredFundings!.Count == node.State.PendingFundings.Count,
+                  $"{node.Name} lock retired {result.Transition.RetiredFundings.Count} fundings");
+            Apply(node, result, $"{node.Name} locks splice {locked.FundingTxId}");
+        }
+
+        Stats.Locks++;
+    }
+
+    /// <summary>Every pending splice abandoned (a commitment of the current funding confirmed, or the splice was
+    /// double-spent) on both sides.</summary>
+    private void DiscardStep()
+    {
+        if (Alice.State.PendingFundings.Count == 0)
+            return;
+
+        foreach (var node in new[] { Alice, Bob })
+            Apply(node, node.State.DiscardPendingFundings(), $"{node.Name} discards its pending splices");
+        Stats.Discards++;
+    }
+
+    private static TxId SpliceTxId(int tag)
+    {
+        var bytes = new byte[32];
+        bytes[0] = 0x5C;
+        BinaryPrimitives.WriteInt32BigEndian(bytes.AsSpan(1), tag);
+        return bytes;
     }
 
     #endregion
@@ -1231,6 +1575,12 @@ internal sealed record FeeMessage(uint FeeratePerKw) : SimMessage;
 
 internal sealed record CommitMessage(ulong Number, CommitmentSignatures Signatures) : SimMessage;
 
+/// <summary>A <c>start_batch</c> group of <c>commitment_signed</c> (splicing mode, SP-OP-03).</summary>
+internal sealed record BatchCommitMessage(ulong Number, IReadOnlyList<ReceivedCommitmentSigned> Members) : SimMessage
+{
+    public override string ToString() => $"BatchCommitMessage #{Number} x{Members.Count}";
+}
+
 internal sealed record RevokeMessage(ulong RevokedNumber, Secret Secret, CompactPubKey NextPoint) : SimMessage;
 
 /// <summary>
@@ -1245,13 +1595,21 @@ internal sealed class DigestCommitmentSigner(SimNode node) : ICommitmentSigner
                                                      CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint)
     {
         var state = node.State;
-        if (number != state.RemoteCommit.Number + 1 || number <= node.RevokedByPeer)
+
+        // A splice commitment (SP-CS-01) is the current remote number on a funding not active yet; it must not be
+        // revoked already (SP-I4). Anything else is the next number (on every active funding at once, SP-I3).
+        var spliceStep = funding is not null && state.Fundings?.Find(funding.FundingTxId) is null;
+        var valid = spliceStep
+                        ? number == state.RemoteCommit.Number && number >= node.RevokedByPeer
+                        : number == state.RemoteCommit.Number + 1 && number > node.RevokedByPeer;
+        if (!valid)
             throw new InvalidOperationException(
-                $"{node.Name} asked to sign remote commitment {number} (remote at {state.RemoteCommit.Number}, peer revoked up to {node.RevokedByPeer})");
+                $"{node.Name} asked to sign remote commitment {number} (remote at {state.RemoteCommit.Number}, peer revoked up to {node.RevokedByPeer}, splice step {spliceStep})");
         if (!remotePerCommitmentPoint.Equals(CommitmentsTestKit.Point(node.PeerTag, number)))
             throw new InvalidOperationException($"{node.Name} signs remote commitment {number} with a wrong point");
 
-        return CommitmentDigest.Sign(number, spec, state.Params.Remote.DustLimitSatoshis, state.Params.OptionAnchors);
+        return CommitmentDigest.Sign(funding, number, spec, state.Params.Remote.DustLimitSatoshis,
+                                     state.Params.OptionAnchors);
     }
 }
 
@@ -1259,10 +1617,10 @@ internal sealed class DigestCommitmentSigner(SimNode node) : ICommitmentSigner
 internal sealed class DigestCommitmentVerifier(ulong localDustSat, bool anchors) : ICommitmentVerifier
 {
     public bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number, CommitmentSpec spec,
-                                      CommitmentSignatures signatures) => Matches(number, spec, signatures);
+                                      CommitmentSignatures signatures) => Matches(funding, number, spec, signatures);
 
-    public bool Matches(ulong number, CommitmentSpec spec, CommitmentSignatures signatures) =>
-        CommitmentDigest.Sign(number, spec, localDustSat, anchors) is var expected
+    public bool Matches(ChannelFunding? funding, ulong number, CommitmentSpec spec, CommitmentSignatures signatures) =>
+        CommitmentDigest.Sign(funding, number, spec, localDustSat, anchors) is var expected
      && expected.Signature.Equals(signatures.Signature)
      && expected.HtlcSignatures.SequenceEqual(signatures.HtlcSignatures);
 }
@@ -1273,10 +1631,16 @@ internal static class CommitmentDigest
     /// Holder-perspective encoding: number, feerate, to_local, to_remote, then each HTLC as (offered by holder, id,
     /// amount, hash, expiry) in a canonical order; one HTLC "signature" per untrimmed HTLC.
     /// </summary>
-    public static CommitmentSignatures Sign(ulong number, CommitmentSpec spec, ulong holderDustSat, bool anchors)
+    /// <remarks>With a funding (splicing mode) its txid is part of the digest, so a signature is valid for one funding
+    /// only; without one (the single-funding runs) the digest is the one it always was.</remarks>
+    public static CommitmentSignatures Sign(ChannelFunding? funding, ulong number, CommitmentSpec spec,
+                                            ulong holderDustSat, bool anchors)
     {
         var htlcs = spec.Htlcs.OrderBy(h => h.IsOfferedBy(spec.Holder)).ThenBy(h => h.Id).ToList();
-        var buffer = new byte[8 + 4 + 8 + 8 + htlcs.Count * (1 + 8 + 8 + 32 + 4)];
+        var fundingLength = funding is null ? 0 : 32;
+        var buffer = new byte[8 + 4 + 8 + 8 + htlcs.Count * (1 + 8 + 8 + 32 + 4) + fundingLength];
+        if (funding is not null)
+            ((byte[])funding.FundingTxId).CopyTo(buffer, buffer.Length - fundingLength);
         var span = buffer.AsSpan();
         BinaryPrimitives.WriteUInt64BigEndian(span, number);
         BinaryPrimitives.WriteUInt32BigEndian(span[8..], spec.FeeratePerKw);
