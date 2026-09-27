@@ -47,7 +47,9 @@ using Domain.Protocol.Payloads;
 /// <see cref="PeerStorageOptions.RetrievalWait"/>), and once a retrieval names channels we do not know, no backup goes
 /// to any peer until the restart (<see cref="BackupsHeldForDataLoss"/>). The next process reads the same copy again, so
 /// the evidence survives restarts on the peer. Only retrievals of peers we have a channel with or sent a backup to, or
-/// that hold a blob of ours, are recorded.
+/// that hold a blob of ours, are recorded. The latest retrieval of each peer is also written to
+/// <c>PeerStorageRetrievals</c> (NL-432) before any backup goes back to the peer, so the operator can read it after a
+/// restart (<see cref="ListRetrievalsAsync"/>, <c>listpeerstorage</c>); a failed write is retried at every round.
 /// </para>
 /// </remarks>
 public sealed class PeerStorageService : IPeerStorageService, IDisposable
@@ -66,6 +68,7 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
     private readonly ConcurrentDictionary<CompactPubKey, PeerBackupRetrieval> _retrievals = new();
     private readonly ConcurrentDictionary<CompactPubKey, TaskCompletionSource> _awaitingRetrieval = new();
     private readonly ConcurrentDictionary<CompactPubKey, PendingBlob> _pendingWithoutChannel = new();
+    private readonly ConcurrentDictionary<CompactPubKey, StoredPeerRetrieval> _unwrittenRetrievals = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly Lock _loadLock = new();
     private readonly Lock _timerLock = new();
@@ -181,6 +184,50 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
     /// <inheritdoc />
     public IReadOnlyList<PeerBackupRetrieval> GetRetrievals() =>
         _retrievals.Values.OrderBy(r => r.ReceivedAt).ToList();
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<PeerStorageRetrievalReport>> ListRetrievalsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        using var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        var rows = (await unitOfWork.PeerStorageRetrievalDbRepository.GetAllAsync())
+                  .ToDictionary(r => r.PeerNodeId, r => (Retrieval: r, Persisted: true));
+        foreach (var (peerId, unwritten) in _unwrittenRetrievals)
+            if (!rows.TryGetValue(peerId, out var row) || row.Retrieval.ReceivedAt <= unwritten.ReceivedAt)
+                rows[peerId] = (unwritten, false);
+
+        var reports = new List<PeerStorageRetrievalReport>(rows.Count);
+        foreach (var (retrieval, persisted) in rows.Values.OrderBy(r => r.Retrieval.ReceivedAt))
+        {
+            var contents = await _blobProvider.TryReadBlobAsync(retrieval.Blob, cancellationToken);
+            var unknownWhenReceived = retrieval.UnknownChannelIds.ToHashSet();
+            var channels = new List<PeerBackupChannelStatus>();
+            foreach (var channel in contents?.Channels ?? [])
+                channels.Add(new PeerBackupChannelStatus(
+                                 channel.ChannelId, channel.PeerNodeId, unknownWhenReceived.Contains(channel.ChannelId),
+                                 await unitOfWork.ChannelDbRepository.ExistsAsync(channel.ChannelId)));
+
+            reports.Add(new PeerStorageRetrievalReport(retrieval.PeerNodeId, retrieval.ReceivedAt, retrieval.Blob,
+                                                       contents, retrieval.MatchesLastSent, channels, persisted));
+        }
+
+        return reports;
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<StoredPeerBlob>> ListStoredBlobsAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureLoaded();
+        var blobs = new List<StoredPeerBlob>(_stored.Count);
+        foreach (var (peerId, entry) in _stored)
+            lock (entry)
+                blobs.Add(new StoredPeerBlob(peerId, entry.Blob, entry.ReceivedAt));
+
+        return Task.FromResult<IReadOnlyList<StoredPeerBlob>>(
+            blobs.OrderBy(b => Convert.ToHexString(b.PeerNodeId)).ToList());
+    }
 
     /// <inheritdoc />
     public Task<StoredPeerBlob?> GetStoredBlobAsync(CompactPubKey peerNodeId)
@@ -343,8 +390,13 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
             if (unknownChannels.Count > 0)
                 _backupsHeld = true;
 
-            _retrievals[peerId] = new PeerBackupRetrieval(peerId, _timeProvider.GetUtcNow(), blob.Length, contents,
-                                                          matchesLastSent, unknownChannels);
+            var receivedAt = _timeProvider.GetUtcNow();
+            _retrievals[peerId] = new PeerBackupRetrieval(peerId, receivedAt, blob.Length, contents, matchesLastSent,
+                                                          unknownChannels);
+
+            // Kept across restarts (NL-432), before our backup can replace the peer's copy
+            await WriteRetrievalAsync(new StoredPeerRetrieval(peerId, receivedAt, blob, matchesLastSent,
+                                                              unknownChannels.Select(c => c.ChannelId).ToList()));
 
             // The peer lost (or never stored) what we sent it last: send the current backup again (a blob that holds
             // the same backup, e.g. the one sent before our restart, is kept). A peer not registered yet (its
@@ -495,6 +547,10 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
 
     private async Task FlushAsync(bool force)
     {
+        // The retrievals whose write failed first (the evidence of a data loss)
+        foreach (var unwritten in _unwrittenRetrievals.Values)
+            await WriteRetrievalAsync(unwritten);
+
         var now = _timeProvider.GetUtcNow();
         foreach (var (peerId, entry) in _stored)
         {
@@ -546,6 +602,45 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
                 _logger.LogError(e, "Failed to store the peer_storage blob of peer {Peer}; retrying in the next round",
                                  peerId);
             }
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Writes the peer's latest retrieval; on failure it is kept in memory (listed, and retried at every round and at
+    /// the stop).
+    /// </summary>
+    private async Task WriteRetrievalAsync(StoredPeerRetrieval retrieval)
+    {
+        var peerId = retrieval.PeerNodeId;
+        _unwrittenRetrievals.AddOrUpdate(peerId, retrieval,
+                                         (_, existing) => existing.ReceivedAt > retrieval.ReceivedAt
+                                                              ? existing
+                                                              : retrieval);
+        await _writeLock.WaitAsync();
+        try
+        {
+            // A newer retrieval of the same peer was written meanwhile, or replaces this one
+            if (!_unwrittenRetrievals.TryGetValue(peerId, out var latest) || !ReferenceEquals(latest, retrieval))
+                return;
+
+            using var scope = _scopeFactory.CreateScope();
+            using var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            await unitOfWork.PeerStorageRetrievalDbRepository.UpsertAsync(retrieval);
+            await unitOfWork.SaveChangesAsync();
+            _unwrittenRetrievals.TryRemove(new KeyValuePair<CompactPubKey, StoredPeerRetrieval>(peerId, retrieval));
+        }
+        catch (ObjectDisposedException) when (_disposed)
+        {
+            _logger.LogWarning("Could not store the peer_storage_retrieval of peer {Peer} at shutdown", peerId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Failed to store the peer_storage_retrieval of peer {Peer}; retrying in the next round",
+                             peerId);
         }
         finally
         {

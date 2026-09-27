@@ -27,4 +27,20 @@ public class PeerStoragePersistenceTests
             () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)),
             TestContext.Current.CancellationToken);
     }
+
+    [Fact]
+    public async Task Given_SchemaFromBeforeAddPeerStorageRetrievals_When_Migrated_Then_RetrievalsRoundTrip()
+    {
+        // Arrange (NL-432; the SQLite run of the round trip the Docker Postgres test shares)
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        var options = new DbContextOptionsBuilder<NLightningDbContext>()
+                     .UseSqlite(connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"))
+                     .Options;
+
+        // Act & Assert
+        await PeerStorageRetrievalSchemaRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)),
+            TestContext.Current.CancellationToken);
+    }
 }

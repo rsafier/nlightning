@@ -269,6 +269,10 @@ internal static class ClientApp
                 case "disable-offer":
                     await OfferCommands.RunAsync(cmd, commandArgs, MaxListCount, client, cancellationToken);
                     break;
+                case "listpeerstorage":
+                case "list-peer-storage":
+                    await PeerStorageCommands.RunAsync(commandArgs, client, cancellationToken);
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -447,6 +451,9 @@ internal static class ClientApp
             case "disableoffer":
             case "disable-offer":
                 return OfferCommands.Validate(cmd, commandArgs, MaxListCount);
+            case "listpeerstorage":
+            case "list-peer-storage":
+                return PeerStorageCommands.Validate(cmd, commandArgs);
             case "listinvoices":
             case "list-invoices":
             case "listpayments":

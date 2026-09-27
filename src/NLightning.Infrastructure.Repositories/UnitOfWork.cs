@@ -63,6 +63,7 @@ public class UnitOfWork : IUnitOfWork
     // Node repositories
     private PeerDbRepository? _peerDbRepository;
     private PeerStorageDbRepository? _peerStorageDbRepository;
+    private PeerStorageRetrievalDbRepository? _peerStorageRetrievalDbRepository;
 
     // Payment repositories
     private InvoiceDbRepository? _invoiceDbRepository;
@@ -129,6 +130,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IPeerStorageDbRepository PeerStorageDbRepository =>
         _peerStorageDbRepository ??= new PeerStorageDbRepository(_context);
+
+    public IPeerStorageRetrievalDbRepository PeerStorageRetrievalDbRepository =>
+        _peerStorageRetrievalDbRepository ??= new PeerStorageRetrievalDbRepository(_context);
 
     public IInvoiceDbRepository InvoiceDbRepository => _invoiceDbRepository ??= new InvoiceDbRepository(_context);
 

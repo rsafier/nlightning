@@ -54,3 +54,46 @@ public sealed record PeerBackupRetrieval(CompactPubKey PeerNodeId, DateTimeOffse
 /// <param name="Blob">Its latest <c>peer_storage</c> blob.</param>
 /// <param name="UpdatedAt">When we stored it.</param>
 public sealed record StoredPeerBlob(CompactPubKey PeerNodeId, byte[] Blob, DateTimeOffset UpdatedAt);
+
+/// <summary>
+/// The latest <c>peer_storage_retrieval</c> of a peer as it is kept (table <c>PeerStorageRetrievals</c>, NL-432).
+/// </summary>
+/// <param name="PeerNodeId">The peer that handed the blob back.</param>
+/// <param name="ReceivedAt">When it arrived.</param>
+/// <param name="Blob">The blob exactly as the peer sent it (read again with <see cref="IPeerBackupBlobProvider"/>).</param>
+/// <param name="MatchesLastSent">
+/// Whether it was the last blob the node sent this peer in the process that received it (null when it had sent none).
+/// </param>
+/// <param name="UnknownChannelIds">
+/// The channels the blob named that the node had no record of when it arrived (a sign of data loss).
+/// </param>
+public sealed record StoredPeerRetrieval(CompactPubKey PeerNodeId, DateTimeOffset ReceivedAt, byte[] Blob,
+                                         bool? MatchesLastSent, IReadOnlyList<ChannelId> UnknownChannelIds);
+
+/// <summary>
+/// One channel of a retrieved backup, with whether the node knows it now.
+/// </summary>
+/// <param name="ChannelId">The channel.</param>
+/// <param name="PeerNodeId">Its peer, as the backup names it.</param>
+/// <param name="UnknownWhenReceived">True when the node had no record of it when the retrieval arrived.</param>
+/// <param name="KnownNow">True when the node has a record of it now (e.g. restored from a static channel backup).</param>
+public sealed record PeerBackupChannelStatus(ChannelId ChannelId, CompactPubKey PeerNodeId, bool UnknownWhenReceived,
+                                             bool KnownNow);
+
+/// <summary>
+/// A peer's latest <c>peer_storage_retrieval</c>, read again for the operator (<c>listpeerstorage</c>, NL-432).
+/// </summary>
+/// <param name="PeerNodeId">The peer that handed the blob back.</param>
+/// <param name="ReceivedAt">When it arrived.</param>
+/// <param name="Blob">The blob as the peer sent it.</param>
+/// <param name="Contents">What the blob holds, or null when it is not one of ours.</param>
+/// <param name="MatchesLastSent">See <see cref="StoredPeerRetrieval.MatchesLastSent"/>.</param>
+/// <param name="Channels">The channels the blob names, each with whether the node knows it now.</param>
+/// <param name="Persisted">False when the row could not be written yet (it is retried at the next round).</param>
+public sealed record PeerStorageRetrievalReport(CompactPubKey PeerNodeId, DateTimeOffset ReceivedAt, byte[] Blob,
+                                                PeerBackupContents? Contents, bool? MatchesLastSent,
+                                                IReadOnlyList<PeerBackupChannelStatus> Channels, bool Persisted)
+{
+    /// <summary>The channels the blob names that the node has no record of now: what is left to restore.</summary>
+    public IEnumerable<PeerBackupChannelStatus> StillUnknown => Channels.Where(c => !c.KnownNow);
+}

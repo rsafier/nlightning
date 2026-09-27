@@ -56,6 +56,7 @@ public class NLightningDbContext : DbContext
     // Node DbSets
     public DbSet<PeerEntity> Peers { get; set; }
     public DbSet<PeerStorageBlobEntity> PeerStorageBlobs { get; set; }
+    public DbSet<PeerStorageRetrievalEntity> PeerStorageRetrievals { get; set; }
 
     // Payment DbSets
     public DbSet<InvoiceEntity> Invoices { get; set; }
@@ -103,6 +104,7 @@ public class NLightningDbContext : DbContext
         // Node entities
         modelBuilder.ConfigurePeerEntity(_databaseType);
         modelBuilder.ConfigurePeerStorageBlobEntity(_databaseType);
+        modelBuilder.ConfigurePeerStorageRetrievalEntity(_databaseType);
 
         // Payment entities
         modelBuilder.ConfigureInvoiceEntity(_databaseType);

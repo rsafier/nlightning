@@ -34,9 +34,11 @@ internal sealed class PeerStorageTestContext : IDisposable
     private readonly ServiceProvider _provider;
 
     public PeerStorageTestContext(byte nodeSeed = 1, FeatureSupport offerStorage = FeatureSupport.Optional,
-                                  PeerStorageOptions? options = null, InMemoryPeerStorageDbRepository? store = null)
+                                  PeerStorageOptions? options = null, InMemoryPeerStorageDbRepository? store = null,
+                                  InMemoryPeerStorageRetrievalDbRepository? retrievals = null)
     {
         Store = store ?? new InMemoryPeerStorageDbRepository();
+        Retrievals = retrievals ?? new InMemoryPeerStorageRetrievalDbRepository();
         _channelMemory.Setup(r => r.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
                       .Returns((Func<ChannelModel, bool> predicate) => Channels.Where(predicate).ToList());
         _channelDb.Setup(r => r.ExistsAsync(It.IsAny<ChannelId>()))
@@ -45,7 +47,12 @@ internal sealed class PeerStorageTestContext : IDisposable
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.PeerStorageDbRepository).Returns(Store);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(_channelDb.Object);
-        unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() => Store.SaveAsync());
+        unitOfWork.SetupGet(u => u.PeerStorageRetrievalDbRepository).Returns(Retrievals);
+        unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(async () =>
+        {
+            await Retrievals.SaveAsync();
+            await Store.SaveAsync();
+        });
 
         var services = new ServiceCollection();
         services.AddScoped(_ => unitOfWork.Object);
@@ -71,6 +78,7 @@ internal sealed class PeerStorageTestContext : IDisposable
 
     public ManualTimeProvider Time { get; } = new();
     public InMemoryPeerStorageDbRepository Store { get; }
+    public InMemoryPeerStorageRetrievalDbRepository Retrievals { get; }
     public PeerStorageCipher Cipher { get; }
     public ChannelListPeerBackupBlobProvider BlobProvider { get; }
     public PeerStorageService Service { get; }
@@ -177,6 +185,66 @@ internal sealed class InMemoryPeerStorageDbRepository : IPeerStorageDbRepository
 
             foreach (var apply in _staged)
                 apply();
+            _staged.Clear();
+            Saves++;
+        }
+
+        return Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// The <c>PeerStorageRetrievals</c> table in memory: upserts are staged and applied by <see cref="SaveAsync"/>.
+/// </summary>
+[ExcludeFromCodeCoverage]
+internal sealed class InMemoryPeerStorageRetrievalDbRepository : IPeerStorageRetrievalDbRepository
+{
+    private readonly Dictionary<CompactPubKey, StoredPeerRetrieval> _saved = new();
+    private readonly List<StoredPeerRetrieval> _staged = [];
+    private readonly Lock _lock = new();
+
+    public int Saves { get; private set; }
+
+    /// <summary>The next saves fail.</summary>
+    public int FailNextSaves { get; set; }
+
+    public StoredPeerRetrieval? GetSaved(CompactPubKey peer)
+    {
+        lock (_lock)
+            return _saved.GetValueOrDefault(peer);
+    }
+
+    public Task<StoredPeerRetrieval?> GetAsync(CompactPubKey peerNodeId) => Task.FromResult(GetSaved(peerNodeId));
+
+    public Task<IReadOnlyList<StoredPeerRetrieval>> GetAllAsync()
+    {
+        lock (_lock)
+            return Task.FromResult<IReadOnlyList<StoredPeerRetrieval>>(_saved.Values.ToList());
+    }
+
+    public Task UpsertAsync(StoredPeerRetrieval retrieval)
+    {
+        lock (_lock)
+            _staged.Add(retrieval with { Blob = retrieval.Blob.ToArray() });
+        return Task.CompletedTask;
+    }
+
+    public Task SaveAsync()
+    {
+        lock (_lock)
+        {
+            if (_staged.Count == 0)
+                return Task.CompletedTask;
+
+            if (FailNextSaves > 0)
+            {
+                FailNextSaves--;
+                _staged.Clear();
+                throw new InvalidOperationException("Simulated save failure");
+            }
+
+            foreach (var retrieval in _staged)
+                _saved[retrieval.PeerNodeId] = retrieval;
             _staged.Clear();
             Saves++;
         }
