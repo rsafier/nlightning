@@ -12,7 +12,8 @@ public static class CloseServiceCollectionExtensions
     /// <see cref="ClosingFeeEstimator"/> (needs the host's <c>IFeeService</c>),
     /// <see cref="ClosingTimeoutMonitor"/> (fails through the <c>IChannelFailureService</c> of
     /// <c>AddChannelSafetyServices</c>, resolved when a deadline passes) and <see cref="IChannelCloseService"/>, the scoped <see cref="ChannelCloseCoordinator"/> and
-    /// <see cref="ShutdownScriptProvider"/>, the scoped <see cref="Simple.SimpleCloseCoordinator"/>
+    /// <see cref="ShutdownScriptProvider"/>, the singleton <see cref="UpfrontShutdownScriptSource"/> (our
+    /// <c>upfront_shutdown_script</c>, NL-045), the scoped <see cref="Simple.SimpleCloseCoordinator"/>
     /// (<c>option_simple_close</c>, N11), and <see cref="ChannelCloseOptions"/> (defaults unless the host binds
     /// <c>Node:Close</c>). Idempotent. The <c>shutdown</c>/<c>closing_signed</c>/<c>closing_complete</c>/
     /// <c>closing_sig</c> handlers are registered by the handler scan.
@@ -27,6 +28,7 @@ public static class CloseServiceCollectionExtensions
         services.TryAddScoped<ChannelCloseCoordinator>();
         services.TryAddScoped<Simple.SimpleCloseCoordinator>();
         services.TryAddScoped<ShutdownScriptProvider>();
+        services.TryAddSingleton<UpfrontShutdownScriptSource>();
         return services;
     }
 }

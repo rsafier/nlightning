@@ -54,6 +54,11 @@ public readonly record struct ChannelParty
         UpfrontShutdownScript = upfrontShutdownScript;
     }
 
+    /// <summary>These parameters with <paramref name="script"/> as the upfront shutdown script.</summary>
+    public ChannelParty WithUpfrontShutdownScript(BitcoinScript? script) =>
+        new(DustLimitAmount, ChannelReserveAmount, HtlcMinimumAmount, MaxAcceptedHtlcs, MaxHtlcValueInFlight,
+            ToSelfDelay, script);
+
     /// <summary>
     /// The parameters of a party we have not heard from yet (the peer, before its <c>accept_channel</c>).
     /// </summary>

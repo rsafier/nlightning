@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using NLightning.Infrastructure.Persistence.Contexts;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
 {
     [DbContext(typeof(NLightningDbContext))]
-    partial class NLightningDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260927144444_AddShutdownHtlcBoundaryAndAddressReservation")]
+    partial class AddShutdownHtlcBoundaryAndAddressReservation
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1213,36 +1216,6 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasName("pk_peer_storage_blobs");
 
                     b.ToTable("peer_storage_blobs", (string)null);
-                });
-
-            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerStorageRetrievalEntity", b =>
-                {
-                    b.Property<byte[]>("NodeId")
-                        .HasColumnType("bytea")
-                        .HasColumnName("node_id");
-
-                    b.Property<byte[]>("Blob")
-                        .IsRequired()
-                        .HasColumnType("bytea")
-                        .HasColumnName("blob");
-
-                    b.Property<bool?>("MatchesLastSent")
-                        .HasColumnType("boolean")
-                        .HasColumnName("matches_last_sent");
-
-                    b.Property<long>("ReceivedAt")
-                        .HasColumnType("bigint")
-                        .HasColumnName("received_at");
-
-                    b.Property<byte[]>("UnknownChannelIds")
-                        .IsRequired()
-                        .HasColumnType("bytea")
-                        .HasColumnName("unknown_channel_ids");
-
-                    b.HasKey("NodeId")
-                        .HasName("pk_peer_storage_retrievals");
-
-                    b.ToTable("peer_storage_retrievals", (string)null);
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", b =>

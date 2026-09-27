@@ -317,6 +317,25 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             return;
         }
 
+        // NL-279 (BOLT 2 B2-SHUT-S08): the peer added this HTLC after our shutdown (it may not have seen it yet). A node
+        // that sent shutdown SHOULD fail to route it, and a shutdown means no new HTLC is accepted either: fail it back
+        // instead of forwarding it or accepting it as final hop
+        (Secret SharedSecret, bool Introduction)? routable = result switch
+        {
+            IncomingOnionForward routed => (routed.SharedSecret, routed.Blinded?.IsIntroduction ?? false),
+            IncomingOnionFinal received => (received.SharedSecret, false),
+            _ => null
+        };
+        if (routable is var (sharedSecret, introduction) && IsAddedAfterOurShutdown(channelId, htlcId))
+        {
+            await RecordSecretAsync(channelId, htlcId, sharedSecret, storedSecret, cancellationToken);
+            await FailBackAsync(channelId, htlc, sharedSecret, FailureMessage.TemporaryNodeFailure(), cancellationToken,
+                                introduction);
+            _logger.LogInformation("Failed back incoming HTLC {HtlcId} of channel {ChannelId}: added after our shutdown "
+                                 + "(B2-SHUT-S08)", htlcId, channelId);
+            return;
+        }
+
         switch (result)
         {
             case IncomingOnionMalformed malformed:
@@ -1701,6 +1720,14 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private bool IsOnchain(ChannelId channelId) =>
         _channelMemoryRepository.TryGetChannel(channelId, out var channel)
      && channel.State is ChannelState.Failed or ChannelState.OnchainResolving;
+
+    /// <summary>
+    /// The peer added incoming HTLC <paramref name="htlcId"/> after our <c>shutdown</c> (NL-279,
+    /// <see cref="ChannelModel.IsRemoteHtlcAddedAfterLocalShutdown"/>).
+    /// </summary>
+    private bool IsAddedAfterOurShutdown(ChannelId channelId, ulong htlcId) =>
+        _channelMemoryRepository.TryGetChannel(channelId, out var channel)
+     && channel.IsRemoteHtlcAddedAfterLocalShutdown(htlcId);
 
     /// <summary>The incoming HTLC when it is locked in and no removal was sent for it yet.</summary>
     private HtlcRecord? GetAwaitingIncomingHtlc(ChannelId channelId, ulong htlcId) =>

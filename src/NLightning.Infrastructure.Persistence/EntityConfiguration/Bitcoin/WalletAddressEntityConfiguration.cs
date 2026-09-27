@@ -17,6 +17,8 @@ public static class WalletAddressEntityConfiguration
             // Set Required props
             entity.Property(e => e.Address)
                   .IsRequired();
+            entity.Property(e => e.IsReserved)
+                  .IsRequired();
 
             // Set relations
             entity.HasMany(x => x.Utxos)

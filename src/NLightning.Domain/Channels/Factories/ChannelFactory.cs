@@ -94,14 +94,9 @@ public class ChannelFactory : IChannelFactory
                                                               message.Payload.HtlcBasepoint,
                                                               message.Payload.FirstPerCommitmentPoint);
 
+        // Our upfront shutdown script is a reserved wallet address, set by the caller once the channel is admitted
+        // (ChannelModel.SetLocalUpfrontShutdownScript, NL-045); without one a zero-length script is sent
         BitcoinScript? localUpfrontShutdownScript = null;
-        // Generate our upfront shutdown script
-        if (_nodeOptions.Features.UpfrontShutdownScript > FeatureSupport.No)
-        {
-            // Generate our upfront shutdown script
-            // TODO: Generate a script from the local key set
-            // localUpfrontShutdownScript = ;
-        }
 
         // Generate the channel configuration
         var useScidAlias = FeatureSupport.No;
@@ -248,17 +243,10 @@ public class ChannelFactory : IChannelFactory
                                                  localBasepoints.DelayedPaymentBasepoint, localBasepoints.HtlcBasepoint,
                                                  firstPerCommitmentPoint);
 
+        // Our upfront shutdown script is a reserved wallet address, set by the caller before open_channel is sent
+        // (ChannelModel.SetLocalUpfrontShutdownScript, NL-045). BOLT 2 allows a zero-length one even when the feature
+        // is negotiated, so a compulsory peer is no reason to refuse the open
         BitcoinScript? localUpfrontShutdownScript = null;
-        // Generate our upfront shutdown script
-        if (negotiatedFeatures.UpfrontShutdownScript == FeatureSupport.Compulsory)
-            throw new ChannelErrorException("Upfront shutdown script is compulsory but we are not able to send it");
-
-        if (_nodeOptions.Features.UpfrontShutdownScript > FeatureSupport.No)
-        {
-            // Generate our upfront shutdown script
-            // TODO: Generate a script from the local key set
-            // localUpfrontShutdownScript = ;
-        }
 
         // Generate the channel configuration: only our values are known until accept_channel arrives
         var localParams = new ChannelParty(dustLimitAmount, channelReserveAmount,

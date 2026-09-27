@@ -185,6 +185,25 @@ public class ChannelCloseCoordinatorTests
     }
 
     [Fact]
+    public async Task Given_OpenChannel_When_Initiate_Then_ThePeersNextHtlcIdIsPersistedWithOurShutdown()
+    {
+        // Arrange (NL-279, B2-SHUT-S08: every later add of the peer is failed back, also after a restart)
+        var channel = CreateChannel(ChannelState.Open);
+        ulong? persisted = null;
+        _channelDb.Setup(r => r.UpdateAsync(It.IsAny<ChannelModel>()))
+                  .Callback((ChannelModel c) => persisted = c.FirstRemoteHtlcIdAfterLocalShutdown)
+                  .Returns(Task.CompletedTask);
+
+        // Act
+        await CreateCoordinator().InitiateAsync(channel, new ChannelCloseRequest());
+
+        // Assert: no snapshot here, so the channel's own next id (0: the peer's first add would come after it)
+        Assert.Equal(0UL, channel.FirstRemoteHtlcIdAfterLocalShutdown);
+        Assert.Equal(0UL, persisted);
+        Assert.True(channel.IsRemoteHtlcAddedAfterLocalShutdown(0));
+    }
+
+    [Fact]
     public async Task Given_NoUpfrontScript_When_GetLocalScript_Then_WalletAddressIsWatchedAgain()
     {
         // Arrange: the wallet reuses an address whose deposit was spent; the monitor stopped watching it after that

@@ -83,6 +83,15 @@ public class ChannelModel
     public BitcoinScript? RemoteShutdownScript { get; private set; }
 
     /// <summary>
+    /// The id of the first HTLC the peer added after our <c>shutdown</c>: the peer's next HTLC id when our
+    /// <c>shutdown</c> was persisted (NL-279, B2-SHUT-S08). Every incoming HTLC with an id at or above it was added
+    /// after our <c>shutdown</c> and is failed back instead of being routed or accepted. Null while we have not sent a
+    /// <c>shutdown</c>, or for a <c>shutdown</c> persisted by a build that did not record it (such HTLCs are then
+    /// handled as before).
+    /// </summary>
+    public ulong? FirstRemoteHtlcIdAfterLocalShutdown { get; private set; }
+
+    /// <summary>
     /// The fully signed mutual close transaction both sides agreed on, persisted before it is broadcast
     /// (<see cref="ChannelState.Closing"/>), or null.
     /// </summary>
@@ -261,6 +270,23 @@ public class ChannelModel
         ChannelParams = ChannelParams.WithRemote(remoteParams);
     }
 
+    /// <summary>
+    /// Sets the <c>upfront_shutdown_script</c> we announce (NL-045), before <c>open_channel</c>/<c>accept_channel</c>
+    /// is sent: only while the channel is being opened and has no upfront script yet, since BOLT 2 binds our
+    /// <c>shutdown</c> to it (B2-SHUT-S09).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The channel is past <see cref="ChannelState.V1Opening"/> or already
+    /// has an upfront script.</exception>
+    public void SetLocalUpfrontShutdownScript(BitcoinScript script)
+    {
+        if (State != ChannelState.V1Opening)
+            throw new InvalidOperationException("Our upfront shutdown script can only be set while opening the channel");
+        if (ChannelParams.Local.UpfrontShutdownScript is not null)
+            throw new InvalidOperationException("Our upfront shutdown script is already set");
+
+        ChannelParams = ChannelParams.WithLocal(ChannelParams.Local.WithUpfrontShutdownScript(script));
+    }
+
     public void AddRemoteKeySet(ChannelKeySetModel remoteKeySet)
     {
         if (RemoteKeySet is not null)
@@ -334,6 +360,20 @@ public class ChannelModel
 
         LocalShutdownScript = script;
     }
+
+    /// <summary>
+    /// Records the peer's next HTLC id at the moment our <c>shutdown</c> is persisted
+    /// (<see cref="FirstRemoteHtlcIdAfterLocalShutdown"/>). Set once: a later call keeps the first value.
+    /// </summary>
+    public void SetFirstRemoteHtlcIdAfterLocalShutdown(ulong htlcId) =>
+        FirstRemoteHtlcIdAfterLocalShutdown ??= htlcId;
+
+    /// <summary>
+    /// True when the peer added incoming HTLC <paramref name="htlcId"/> after our <c>shutdown</c> (BOLT 2: we SHOULD
+    /// fail to route it, B2-SHUT-S08).
+    /// </summary>
+    public bool IsRemoteHtlcAddedAfterLocalShutdown(ulong htlcId) =>
+        LocalShutdownScript is not null && FirstRemoteHtlcIdAfterLocalShutdown is { } first && htlcId >= first;
 
     /// <summary>Records the script of the peer's <c>shutdown</c>.</summary>
     /// <exception cref="InvalidOperationException">Another script was already recorded.</exception>

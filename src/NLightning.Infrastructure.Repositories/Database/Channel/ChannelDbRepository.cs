@@ -378,6 +378,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
 
             LocalShutdownScript = channelModel.LocalShutdownScript is { } localScript ? (byte[])localScript : null,
             RemoteShutdownScript = channelModel.RemoteShutdownScript is { } remoteScript ? (byte[])remoteScript : null,
+            FirstRemoteHtlcIdAfterLocalShutdown = channelModel.FirstRemoteHtlcIdAfterLocalShutdown,
             ClosingTxId = channelModel.ClosingTransaction?.TxId,
             ClosingTransaction = channelModel.ClosingTransaction?.RawTxBytes,
 
@@ -467,6 +468,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             channelModel.SetLocalShutdownScript(channelEntity.LocalShutdownScript);
         if (channelEntity.RemoteShutdownScript is not null)
             channelModel.SetRemoteShutdownScript(channelEntity.RemoteShutdownScript);
+        if (channelEntity.FirstRemoteHtlcIdAfterLocalShutdown is { } firstAfterShutdown)
+            channelModel.SetFirstRemoteHtlcIdAfterLocalShutdown(firstAfterShutdown);
         if (channelEntity is { ClosingTxId: { } closingTxId, ClosingTransaction: { Length: > 0 } closingTx })
             channelModel.SetClosingTransaction(new SignedTransaction(closingTxId, closingTx));
         if (channelEntity is { RemoteAnnouncementNodeSig: { } nodeSig, RemoteAnnouncementBitcoinSig: { } bitcoinSig })

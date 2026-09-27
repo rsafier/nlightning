@@ -177,6 +177,13 @@ public class ChannelEntity
     /// <summary>The script of the peer's <c>shutdown</c>, or null.</summary>
     public byte[]? RemoteShutdownScript { get; set; }
 
+    /// <summary>
+    /// The peer's next HTLC id when our <c>shutdown</c> was persisted: incoming HTLCs from this id on were added after
+    /// it and are failed back (NL-279, B2-SHUT-S08). Null before our <c>shutdown</c> (migration
+    /// <c>AddShutdownHtlcBoundaryAndAddressReservation</c>).
+    /// </summary>
+    public ulong? FirstRemoteHtlcIdAfterLocalShutdown { get; set; }
+
     /// <summary>The txid of the agreed mutual close transaction, or null.</summary>
     public TxId? ClosingTxId { get; set; }
 

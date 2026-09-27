@@ -223,6 +223,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<bool>("IsReserved")
+                        .HasColumnType("INTEGER");
+
                     b.HasKey("Index", "IsChange", "AddressType");
 
                     b.ToTable("WalletAddresses");
@@ -393,6 +396,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.Property<byte[]>("ErrorSent")
                         .HasColumnType("BLOB");
+
+                    b.Property<ulong?>("FirstRemoteHtlcIdAfterLocalShutdown")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("FundingAmountSatoshis")
                         .HasColumnType("INTEGER");
