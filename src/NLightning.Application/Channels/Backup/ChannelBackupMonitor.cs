@@ -7,13 +7,15 @@ namespace NLightning.Application.Channels.Backup;
 
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Interfaces;
 
 /// <summary>
-/// Keeps the backup file up to date: a write is requested at start, whenever a channel enters or leaves the backup or
-/// gets its short channel id (<see cref="IChannelMemoryRepository"/> events; HTLC updates change nothing in a backup
-/// and are filtered out), and every <see cref="ChannelBackupOptions.RefreshInterval"/>. Requests coalesce: one write
+/// Keeps the backup file up to date: a write is requested at start, whenever a channel enters or leaves the backup,
+/// gets its short channel id, moves to another funding (a locked splice, the RBF of a dual-funded open) or gains or
+/// loses a pending splice (<see cref="IChannelMemoryRepository"/> events, NL-478; HTLC updates change nothing in a
+/// backup and are filtered out), and every <see cref="ChannelBackupOptions.RefreshInterval"/>. Requests coalesce: one write
 /// runs at a time, <see cref="ChannelBackupOptions.WriteDelay"/> after the first request, and it writes only when the
 /// channels differ from the file (<see cref="IChannelBackupService.WriteFileAsync"/>).
 /// </summary>
@@ -24,7 +26,7 @@ public sealed class ChannelBackupMonitor : IAsyncDisposable
     private readonly ChannelBackupOptions _options;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<ChannelBackupMonitor> _logger;
-    private readonly ConcurrentDictionary<ChannelId, (bool BackedUp, string ShortChannelId)> _seen = new();
+    private readonly ConcurrentDictionary<ChannelId, string> _seen = new();
     private readonly object _gate = new();
     private readonly CancellationTokenSource _stopping = new();
 
@@ -176,7 +178,7 @@ public sealed class ChannelBackupMonitor : IAsyncDisposable
         try
         {
             var channel = args.Channel;
-            var key = (ChannelBackupService.IsBackedUp(channel), channel.ShortChannelId.ToString());
+            var key = GetBackupKey(channel);
             if (_seen.TryGetValue(channel.ChannelId, out var previous) && previous == key)
                 return;
 
@@ -188,6 +190,21 @@ public sealed class ChannelBackupMonitor : IAsyncDisposable
             // Never fail the caller (it may hold a channel lock)
             _logger.LogError(e, "Channel backup event handling failed");
         }
+    }
+
+    /// <summary>
+    /// What of <paramref name="channel"/> a backup holds and an update can change: whether it is backed up, its short
+    /// channel id, its current funding (outpoint and our funding key: a splice lock, a dual-funded RBF) and its pending
+    /// splices.
+    /// </summary>
+    internal static string GetBackupKey(ChannelModel channel)
+    {
+        var funding = channel.FundingOutput;
+        var pending = channel.Commitments?.PendingFundings is { Count: > 0 } fundings
+                          ? string.Join(",", fundings.Select(f => $"{f.FundingTxId}:{f.OutputIndex}"))
+                          : string.Empty;
+        return $"{ChannelBackupService.IsBackedUp(channel)}|{channel.ShortChannelId}|{funding?.TransactionId}:"
+             + $"{funding?.Index}|{funding?.LocalFundingPubKey}|{pending}";
     }
 
     private void HandleChannelUpgraded(object? sender, ChannelUpgradedEventArgs args) => RequestWrite();

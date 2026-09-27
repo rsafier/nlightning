@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace NLightning.Application.Tests.Channels.Backup;
 
 using Application.Channels.Backup;
+using Application.Channels.Backup.Interfaces;
 using Application.Channels.Backup.Models;
 using Application.Gossip.Graph.Interfaces;
 using Domain.Bitcoin.Interfaces;
@@ -11,6 +12,7 @@ using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
@@ -31,6 +33,9 @@ internal sealed class BackupTestData
 {
     public List<ChannelModel> Channels { get; } = [];
     public List<PeerModel> Peers { get; } = [];
+
+    /// <summary>The stored fundings of a channel (the <c>ChannelFundings</c> rows), read by the backup.</summary>
+    public Dictionary<ChannelId, FundingSet> FundingSets { get; } = [];
     public TestNodeKeyManager KeyManager { get; }
     public Mock<ILightningSigner> Signer { get; } = new();
     public ChannelBackupOptions Options { get; } = new() { WriteDelay = TimeSpan.Zero };
@@ -59,7 +64,7 @@ internal sealed class BackupTestData
     /// <summary>A funded channel with key index <paramref name="tag"/>, keys matching <see cref="Signer"/>.</summary>
     public ChannelModel AddChannel(byte tag, bool anchors = false, ChannelState state = ChannelState.Open,
                                    bool withFunding = true, bool initiator = true, ShortChannelId? scid = null,
-                                   bool withPeer = true)
+                                   bool withPeer = true, ChannelVersion version = ChannelVersion.V1)
     {
         var remoteNode = Key(0x03, tag, 9);
         var local = new ChannelKeySetModel(tag, Key(0x02, tag, 1), Key(0x02, tag, 2), Key(0x02, tag, 3),
@@ -83,7 +88,7 @@ internal sealed class BackupTestData
         var channel = new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat(tag, 32).ToArray()), null,
                                        funding, initiator, null, null, LightningMoney.Satoshis(600_000), local, 0, 0,
                                        LightningMoney.Satoshis(400_000), remote, 0, remoteNode, 0, state,
-                                       ChannelVersion.V1)
+                                       version)
         {
             FundingCreatedAtBlockHeight = 100u + tag
         };
@@ -109,17 +114,22 @@ internal sealed class BackupTestData
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelRepository.Object);
         unitOfWork.SetupGet(u => u.PeerDbRepository).Returns(peerRepository.Object);
+        var fundingRepository = new Mock<IChannelFundingDbRepository>();
+        fundingRepository.Setup(r => r.GetFundingSetAsync(It.IsAny<ChannelId>()))
+                         .ReturnsAsync((ChannelId id) => FundingSets.GetValueOrDefault(id));
+        unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(fundingRepository.Object);
 
         var services = new ServiceCollection();
         services.AddScoped(_ => unitOfWork.Object);
         return services.BuildServiceProvider();
     }
 
-    public ChannelBackupService CreateService(IServiceProvider? provider = null, IGraphStore? graphStore = null) =>
+    public ChannelBackupService CreateService(IServiceProvider? provider = null, IGraphStore? graphStore = null,
+                                              IChannelFundingKeySource? fundingKeySource = null) =>
         new((provider ?? BuildProvider()).GetRequiredService<IServiceScopeFactory>(), KeyManager, Signer.Object,
             Microsoft.Extensions.Options.Options.Create(new NodeOptions { BitcoinNetwork = Network }),
             Microsoft.Extensions.Options.Options.Create(Options), new FixedTimeProvider(this),
-            NullLogger<ChannelBackupService>.Instance, graphStore);
+            NullLogger<ChannelBackupService>.Instance, graphStore, fundingKeySource);
 
     /// <summary>A graph node of <paramref name="nodeId"/> announcing <paramref name="addresses"/>.</summary>
     public static GraphNode GraphNodeWith(CompactPubKey nodeId, params AddressDescriptor[] addresses) =>
@@ -189,7 +199,8 @@ internal sealed class BackupTestData
          && x.RemoteRevocationBasepoint == y.RemoteRevocationBasepoint
          && x.RemotePaymentBasepoint == y.RemotePaymentBasepoint
          && x.RemoteDelayedPaymentBasepoint == y.RemoteDelayedPaymentBasepoint
-         && x.RemoteHtlcBasepoint == y.RemoteHtlcBasepoint && x.Local == y.Local && x.Remote == y.Remote;
+         && x.RemoteHtlcBasepoint == y.RemoteHtlcBasepoint && x.Local == y.Local && x.Remote == y.Remote
+         && x.LocalFundingKeyIndex == y.LocalFundingKeyIndex && x.PendingFundings.SequenceEqual(y.PendingFundings);
 
         public int GetHashCode(ChannelBackupEntry obj) => obj.ChannelId.GetHashCode();
     }

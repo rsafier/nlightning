@@ -1,5 +1,7 @@
 namespace NLightning.Application.Channels.Backup.Interfaces;
 
+using Domain.Bitcoin.Events;
+using Domain.Crypto.ValueObjects;
 using Models;
 
 /// <summary>
@@ -24,4 +26,22 @@ public interface IFundingSpendLocator
     /// </summary>
     Task<FundingSpendLocation> RescanAsync(ChannelBackupEntry entry, uint belowHeight,
                                            CancellationToken cancellationToken);
+
+    /// <summary>
+    /// When <paramref name="spend"/> (a spend of <paramref name="entry"/>'s funding output found by
+    /// <see cref="LocateAsync"/> or <see cref="RescanAsync"/>) is a splice of the channel rather than a commitment, the
+    /// entry moved to the splice's funding output (outpoint, capacity, both keys, our key index, funding height and
+    /// short channel id); null for a commitment, a mutual close or a transaction whose funding output can't be
+    /// recognized (splicing plan lane SP2-E, NL-478; see <see cref="SpliceSpendFollower"/>). Never throws for a chain
+    /// failure.
+    /// </summary>
+    /// <param name="entry">The channel at the funding the spend spends.</param>
+    /// <param name="spend">The spend.</param>
+    /// <param name="deriveLocalFundingKey">Our funding key of this channel at a funding key index (null when it can't
+    /// be derived).</param>
+    /// <param name="cancellationToken">Stops the search.</param>
+    Task<ChannelBackupEntry?> FollowSpliceAsync(ChannelBackupEntry entry, OutpointSpentEventArgs spend,
+                                                Func<uint, CompactPubKey?> deriveLocalFundingKey,
+                                                CancellationToken cancellationToken) =>
+        Task.FromResult<ChannelBackupEntry?>(null);
 }

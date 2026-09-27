@@ -30,7 +30,7 @@ using Domain.Protocol.ValueObjects;
 using Domain.Serialization.Interfaces;
 using Infrastructure.Crypto.Hashes;
 
-public class ChannelRestoreServiceTests : IDisposable
+public partial class ChannelRestoreServiceTests : IDisposable
 {
     private readonly BackupTestData _node = new();
     private readonly List<ChannelModel> _storedChannels = [];
@@ -731,7 +731,8 @@ public class ChannelRestoreServiceTests : IDisposable
                                                 IChannelKeyIndexReserver? keyIndexReserver = null,
                                                 IGraphStore? graphStore = null, TimeSpan? reconnectDelay = null,
                                                 IChannelMemoryRepository? channelMemory = null,
-                                                TimeSpan? connectBudget = null, TimeSpan? resumeTimeout = null)
+                                                TimeSpan? connectBudget = null, TimeSpan? resumeTimeout = null,
+                                                IChannelFundingKeySource? fundingKeySource = null)
     {
         var channelRepository = new Mock<IChannelDbRepository>();
         channelRepository.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
@@ -758,6 +759,8 @@ public class ChannelRestoreServiceTests : IDisposable
                                      _markedSpent.Add((txId, index, spender, height)))
                        .Returns(Task.CompletedTask);
         var unitOfWork = new Mock<IUnitOfWork>();
+        var stagedFundings = new List<Action>();
+        unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(CreateFundingRepository(stagedFundings));
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelRepository.Object);
         unitOfWork.SetupGet(u => u.PeerDbRepository).Returns(peerRepository.Object);
         unitOfWork.SetupGet(u => u.WatchedOutpointDbRepository).Returns(watchRepository.Object);
@@ -771,6 +774,9 @@ public class ChannelRestoreServiceTests : IDisposable
             _storedChannels.AddRange(stagedChannels);
             _storedPeers.AddRange(stagedPeers);
             _storedWatches.AddRange(stagedWatches);
+            foreach (var apply in stagedFundings)
+                apply();
+            stagedFundings.Clear();
             stagedChannels.Clear();
             stagedPeers.Clear();
             stagedWatches.Clear();
@@ -809,7 +815,8 @@ public class ChannelRestoreServiceTests : IDisposable
                                          watcher.Object, _peerManager.Object, _node.KeyManager,
                                          provider.GetRequiredService<IServiceScopeFactory>(), _sha256,
                                          _node.Signer.Object, NullLogger<ChannelRestoreService>.Instance,
-                                         spendLocator, onchainWatcher, keyIndexReserver, graphStore, channelMemory)
+                                         spendLocator, onchainWatcher, keyIndexReserver, graphStore, channelMemory,
+                                         fundingKeySource)
         {
             DisconnectTimeout = TimeSpan.FromSeconds(1),
             ConnectBudget = connectBudget ?? TimeSpan.FromSeconds(20),

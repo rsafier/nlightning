@@ -9,6 +9,8 @@ namespace NLightning.Application.Channels.Backup;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Gossip.Addresses;
 using Domain.Gossip.Graph;
@@ -33,6 +35,11 @@ using Models;
 /// <para>Each channel carries the peer's stored address and the connectable addresses of its
 /// <c>node_announcement</c> in the gossip graph (at most <see cref="MaxAddressesPerChannel"/>), so a restore can reach
 /// a peer whose address changed (NL-431).</para>
+/// <para>Splices and dual-funded opens (lane SP2-E, NL-478): an entry's funding is the channel's current one (the
+/// outpoint, capacity and keys of <c>ChannelModel.FundingOutput</c>), with our funding key index and the pending splices
+/// read from the stored fundings (<c>IChannelFundingDbRepository.GetFundingSetAsync</c>); the check re-derives the
+/// rotated key through <see cref="IChannelFundingKeySource"/>. <see cref="ChannelBackupMonitor"/> rewrites the file when
+/// a splice locks or a dual-funded open's funding moves.</para>
 /// </remarks>
 public sealed class ChannelBackupService : IChannelBackupService
 {
@@ -47,6 +54,7 @@ public sealed class ChannelBackupService : IChannelBackupService
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<ChannelBackupService> _logger;
     private readonly IGraphStore? _graphStore;
+    private readonly IChannelFundingKeySource _fundingKeySource;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
     private byte[]? _lastWrittenContent;
@@ -55,9 +63,11 @@ public sealed class ChannelBackupService : IChannelBackupService
     public ChannelBackupService(IServiceScopeFactory serviceScopeFactory, ISecureKeyManager secureKeyManager,
                                 ILightningSigner signer, IOptions<NodeOptions> nodeOptions,
                                 IOptions<ChannelBackupOptions>? options = null, TimeProvider? timeProvider = null,
-                                ILogger<ChannelBackupService>? logger = null, IGraphStore? graphStore = null)
+                                ILogger<ChannelBackupService>? logger = null, IGraphStore? graphStore = null,
+                                IChannelFundingKeySource? fundingKeySource = null)
     {
         _graphStore = graphStore;
+        _fundingKeySource = fundingKeySource ?? new SignerChannelFundingKeySource(signer);
         _serviceScopeFactory = serviceScopeFactory;
         _secureKeyManager = secureKeyManager;
         _signer = signer;
@@ -133,9 +143,12 @@ public sealed class ChannelBackupService : IChannelBackupService
         foreach (var entry in snapshot.Channels)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            // The funding key of the current funding: a splice rotates it (index > 0), the basepoints keep index 0
             var basepoints = _signer.GetChannelBasepoints(entry.KeyIndex);
-            var keysMatch = basepoints.FundingPubKey == entry.LocalFundingPubKey
-                         && basepoints.PaymentBasepoint == entry.LocalPaymentBasepoint;
+            var keysMatch = basepoints.PaymentBasepoint == entry.LocalPaymentBasepoint
+                         && _fundingKeySource.GetFundingPubKey(entry.KeyIndex, entry.LocalFundingKeyIndex)
+                                is { } fundingKey
+                         && fundingKey == entry.LocalFundingPubKey;
             checks.Add(new ChannelBackupEntryCheck(entry, keysMatch,
                                                    await GetLocalStateAsync(unitOfWork, entry.ChannelId)));
         }
@@ -253,7 +266,8 @@ public sealed class ChannelBackupService : IChannelBackupService
                 peers[channel.RemoteNodeId] = peer;
             }
 
-            entries.Add(CreateEntry(channel, peer, GetGraphNode(channel.RemoteNodeId)));
+            entries.Add(CreateEntry(channel, peer, GetGraphNode(channel.RemoteNodeId),
+                                    await GetFundingSetAsync(unitOfWork, channel.ChannelId, _logger)));
         }
 
         var createdAt = DateTimeOffset.FromUnixTimeSeconds(_timeProvider.GetUtcNow().ToUnixTimeSeconds());
@@ -287,10 +301,60 @@ public sealed class ChannelBackupService : IChannelBackupService
         }
     }
 
-    internal static ChannelBackupEntry CreateEntry(ChannelModel channel, PeerModel? peer, GraphNode? graphNode = null)
+    /// <summary>
+    /// The stored fundings of a channel (splicing plan §3.3), or null when the unit of work stores none (a test double,
+    /// or a build without the table) or they can't be read: the entry then describes the channel's funding output with
+    /// key index 0 and no pending splice.
+    /// </summary>
+    internal static async Task<FundingSet?> GetFundingSetAsync(IUnitOfWork unitOfWork, ChannelId channelId,
+                                                               ILogger logger)
+    {
+        try
+        {
+            var repository = unitOfWork.ChannelFundingDbRepository;
+            return repository is null ? null : await repository.GetFundingSetAsync(channelId);
+        }
+        catch (NotSupportedException)
+        {
+            return null;
+        }
+        catch (Exception e)
+        {
+            logger.LogWarning(e, "Could not read the fundings of channel {ChannelId} for its backup", channelId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The backup entry of <paramref name="channel"/>. Its funding fields are the channel's <b>current</b> funding
+    /// (NL-478): the outpoint, capacity and both funding keys of <see cref="ChannelModel.FundingOutput"/>, which a
+    /// locked splice replaces, with our key's index from <paramref name="fundings"/> (else the engine snapshot's current
+    /// funding, else 0), and the pending splices of <paramref name="fundings"/> (else the snapshot's).
+    /// </summary>
+    internal static ChannelBackupEntry CreateEntry(ChannelModel channel, PeerModel? peer, GraphNode? graphNode = null,
+                                                   FundingSet? fundings = null)
     {
         var funding = channel.FundingOutput!;
         var remote = channel.RemoteKeySet!;
+        var fundingTxId = funding.TransactionId!.Value;
+        var fundingIndex = funding.Index!.Value;
+
+        // Our key index of the current funding: its stored row, else the engine's view of it when it is a splice's (a
+        // splice locked in this process; rebuilt after a restart the engine's funding always says index 0), else 0
+        // (never spliced)
+        var current = fundings?.Current is { } stored && stored.FundingTxId == fundingTxId
+                                                      && stored.OutputIndex == fundingIndex
+                          ? stored
+                          : channel.Commitments?.Params.Funding is { Kind: not ChannelFundingKind.Initial } engine
+                         && engine.FundingTxId == fundingTxId && engine.OutputIndex == fundingIndex
+                              ? engine
+                              : null;
+        var pending = (fundings?.Pending ?? (IReadOnlyList<ChannelFunding>?)channel.Commitments?.PendingFundings ?? [])
+                     .Where(f => f.Status == ChannelFundingStatus.Pending && f.FundingTxId != fundingTxId)
+                     .Select(f => new ChannelBackupFunding(f.FundingTxId, f.OutputIndex, f.CapacitySatoshis,
+                                                           f.LocalFundingKeyIndex, f.LocalFundingPubKey,
+                                                           f.RemoteFundingPubKey))
+                     .ToList();
         var addresses = new List<ChannelBackupAddress>();
         if (peer is not null && !string.IsNullOrWhiteSpace(peer.Host) && peer.Port is > 0 and <= ushort.MaxValue)
             addresses.Add(new ChannelBackupAddress(peer.Type, peer.Host, (ushort)peer.Port));
@@ -315,8 +379,8 @@ public sealed class ChannelBackupService : IChannelBackupService
             ChannelId = channel.ChannelId,
             RemoteNodeId = channel.RemoteNodeId,
             Addresses = addresses,
-            FundingTxId = funding.TransactionId!.Value,
-            FundingOutputIndex = funding.Index!.Value,
+            FundingTxId = fundingTxId,
+            FundingOutputIndex = fundingIndex,
             CapacitySat = (ulong)funding.Amount.Satoshi,
             FundingHeight = channel.FundingCreatedAtBlockHeight,
             ShortChannelId = HasShortChannelId(channel.ShortChannelId) ? channel.ShortChannelId : (ShortChannelId?)null,
@@ -329,15 +393,17 @@ public sealed class ChannelBackupService : IChannelBackupService
             MinimumDepth = channel.ChannelParams.MinimumDepth,
             ChannelType = channel.ChannelParams.ToChannelType().GetWireBytes() ?? [],
             KeyIndex = channel.LocalKeySet.KeyIndex,
-            LocalFundingPubKey = channel.LocalKeySet.FundingCompactPubKey,
+            LocalFundingPubKey = funding.LocalFundingPubKey,
             LocalPaymentBasepoint = channel.LocalKeySet.PaymentCompactBasepoint,
-            RemoteFundingPubKey = remote.FundingCompactPubKey,
+            RemoteFundingPubKey = funding.RemoteFundingPubKey,
             RemoteRevocationBasepoint = remote.RevocationCompactBasepoint,
             RemotePaymentBasepoint = remote.PaymentCompactBasepoint,
             RemoteDelayedPaymentBasepoint = remote.DelayedPaymentCompactBasepoint,
             RemoteHtlcBasepoint = remote.HtlcCompactBasepoint,
             Local = ChannelBackupParty.From(channel.ChannelParams.Local),
-            Remote = ChannelBackupParty.From(channel.ChannelParams.Remote)
+            Remote = ChannelBackupParty.From(channel.ChannelParams.Remote),
+            LocalFundingKeyIndex = current?.LocalFundingKeyIndex ?? 0,
+            PendingFundings = pending
         };
     }
 

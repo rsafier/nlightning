@@ -30,7 +30,10 @@ public static class ChannelBackupServiceCollectionExtensions
     /// also uses, when registered, <see cref="IOnchainChannelWatcher"/> (a funding output the peer spent before the
     /// restore), <see cref="IBitcoinChainService"/> (behind <see cref="IFundingSpendLocator"/>) and
     /// <see cref="IChannelKeyIndexReserver"/> (TryAdd'ed over the <see cref="ISecureKeyManager"/>). Both services read
-    /// the peer's announced addresses from <see cref="IGraphStore"/> when it is registered (NL-431).
+    /// the peer's announced addresses from <see cref="IGraphStore"/> when it is registered (NL-431). Spliced channels
+    /// (NL-478): both derive our rotated funding keys through <see cref="IChannelFundingKeySource"/> (TryAdd'ed over the
+    /// signer), and the restore moves a stored recovery channel to a splice under the channel's
+    /// <see cref="IChannelLockProvider"/> when one is registered.
     /// </summary>
     public static IServiceCollection AddChannelBackupServices(this IServiceCollection services)
     {
@@ -42,7 +45,8 @@ public static class ChannelBackupServiceCollectionExtensions
                                                             sp.GetService<IOptions<ChannelBackupOptions>>(),
                                                             sp.GetService<TimeProvider>(),
                                                             sp.GetService<ILogger<ChannelBackupService>>(),
-                                                            sp.GetService<IGraphStore>()));
+                                                            sp.GetService<IGraphStore>(),
+                                                            sp.GetService<IChannelFundingKeySource>()));
         services.TryAddSingleton(sp => new ChannelBackupMonitor(sp.GetRequiredService<IChannelBackupService>(),
                                                                 sp.GetRequiredService<IChannelMemoryRepository>(),
                                                                 sp.GetService<IOptions<ChannelBackupOptions>>(),
@@ -65,13 +69,17 @@ public static class ChannelBackupServiceCollectionExtensions
                                                              sp.GetService<IOnchainChannelWatcher>(),
                                                              sp.GetService<IChannelKeyIndexReserver>(),
                                                              sp.GetService<IGraphStore>(),
-                                                             sp.GetService<IChannelMemoryRepository>()));
+                                                             sp.GetService<IChannelMemoryRepository>(),
+                                                             sp.GetService<IChannelFundingKeySource>(),
+                                                             sp.GetService<IChannelLockProvider>()));
         services.TryAddSingleton<IFundingSpendLocator>(sp => sp.GetService<IBitcoinChainService>() is { } chain
                                                                  ? new ChainFundingSpendLocator(
                                                                      chain,
                                                                      sp.GetService<IOptions<ChannelBackupOptions>>(),
                                                                      sp.GetService<ILogger<ChainFundingSpendLocator>>())
                                                                  : NullFundingSpendLocator.Instance);
+        services.TryAddSingleton<IChannelFundingKeySource>(sp => new SignerChannelFundingKeySource(
+                                                               sp.GetRequiredService<ILightningSigner>()));
         services.TryAddSingleton<IChannelKeyIndexReserver>(sp => new SecureKeyManagerKeyIndexReserver(
                                                                sp.GetRequiredService<ISecureKeyManager>(),
                                                                sp.GetService<ILogger<SecureKeyManagerKeyIndexReserver>>()));

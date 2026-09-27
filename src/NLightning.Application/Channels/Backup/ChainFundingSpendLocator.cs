@@ -51,6 +51,82 @@ public sealed class ChainFundingSpendLocator : IFundingSpendLocator
                                                   CancellationToken cancellationToken) =>
         SearchAsync(entry, belowHeight, cancellationToken);
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// A pending splice of the backup or our next funding keys against the peer's known keys recognize the output at
+    /// once (<see cref="SpliceSpendFollower.TryIdentifyNextFunding"/>); otherwise each spent P2WSH output of the splice
+    /// is searched for its spend in the recent window (<see cref="ChannelBackupOptions.RestoreSpendSearchDepth"/>) and
+    /// the 2-of-2 script its witness reveals names our key and the peer's new one.
+    /// </remarks>
+    public async Task<ChannelBackupEntry?> FollowSpliceAsync(ChannelBackupEntry entry, OutpointSpentEventArgs spend,
+                                                             Func<uint, CompactPubKey?> deriveLocalFundingKey,
+                                                             CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentNullException.ThrowIfNull(spend);
+        ArgumentNullException.ThrowIfNull(deriveLocalFundingKey);
+
+        Transaction transaction;
+        try
+        {
+            transaction = Transaction.Load(spend.SpendingTransaction.RawTxBytes, Network.Main);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "The spend of the funding output of channel {ChannelId} can't be read",
+                               entry.ChannelId);
+            return null;
+        }
+
+        if (SpliceSpendFollower.IsCommitment(transaction))
+            return null;
+
+        if (SpliceSpendFollower.TryIdentifyNextFunding(entry, transaction, spend.BlockHeight, spend.TransactionIndex,
+                                                       deriveLocalFundingKey) is { } next)
+            return next;
+
+        // The peer rotated its key too: the witness of the new funding output's spend shows both keys
+        var txId = new TxId(transaction.GetHash().ToBytes());
+        for (var vout = 0; vout < transaction.Outputs.Count && vout <= ushort.MaxValue; vout++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var output = transaction.Outputs[vout];
+            if (!output.ScriptPubKey.IsScriptType(ScriptType.P2WSH))
+                continue;
+
+            var candidate = SpliceSpendFollower.MoveTo(entry, txId, (ushort)vout, (ulong)output.Value.Satoshi,
+                                                       entry.LocalFundingKeyIndex, entry.LocalFundingPubKey,
+                                                       entry.RemoteFundingPubKey, spend.BlockHeight,
+                                                       spend.TransactionIndex);
+            var location = await SearchAsync(candidate, null, cancellationToken);
+            if (location is not { Status: FundingSpendStatus.SpentFound, Spend: { } outputSpend })
+                continue;
+
+            try
+            {
+                var spender = Transaction.Load(outputSpend.SpendingTransaction.RawTxBytes, Network.Main);
+                var outPoint = new OutPoint(transaction.GetHash(), vout);
+                var input = spender.Inputs.FirstOrDefault(i => i.PrevOut == outPoint);
+                if (input is not null
+                 && SpliceSpendFollower.TryParseFundingWitness(entry, input.WitScript, deriveLocalFundingKey) is
+                 { } keys)
+                    return candidate with
+                    {
+                        LocalFundingKeyIndex = keys.Index,
+                        LocalFundingPubKey = keys.Local,
+                        RemoteFundingPubKey = keys.Remote
+                    };
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _logger.LogWarning(e, "The spend of output {Vout} of splice {TxId} of channel {ChannelId} can't be read",
+                                   vout, txId, entry.ChannelId);
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// The lowest block the funding spend can be in: the short channel id's block, else the funding height recorded
     /// in the backup (null when neither is known).
