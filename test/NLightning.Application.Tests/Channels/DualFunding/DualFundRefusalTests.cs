@@ -56,8 +56,8 @@ public class DualFundRefusalTests
 
         // Assert: accept_channel2 said 0, Bob added no input, the funding output is Alice's share alone
         Assert.True(result.FailureReason is null, $"{result.FailureReason}\n{harness.Describe()}");
-        var accept = Assert.Single(harness.Transcript, t => t.Message is AcceptChannel2Message);
-        Assert.True(((AcceptChannel2Message)accept.Message).Payload.FundingAmount.IsZero);
+        var (_, accept) = Assert.Single(harness.Transcript, t => t.Message is AcceptChannel2Message);
+        Assert.True(((AcceptChannel2Message)accept).Payload.FundingAmount.IsZero);
         Assert.DoesNotContain(harness.Transcript, t => t is { From: "Bob", Message: TxAddInputMessage });
         Assert.Equal(s_aliceShare, harness.Bob.Channel(result.ChannelId).FundingOutput!.Amount);
         Assert.True(harness.Bob.Channel(result.ChannelId).LocalBalance.IsZero);

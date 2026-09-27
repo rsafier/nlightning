@@ -1,4 +1,3 @@
-using System.Text.Json.Nodes;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,11 +13,9 @@ using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
-using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
-using Domain.Node.Options;
 using Domain.Node.ValueObjects;
 using Fixtures;
 using Utils;

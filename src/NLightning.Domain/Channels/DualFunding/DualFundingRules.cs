@@ -3,9 +3,9 @@ namespace NLightning.Domain.Channels.DualFunding;
 using Bitcoin.ValueObjects;
 using Domain.Enums;
 using Money;
+using Node;
 using Protocol.InteractiveTx;
 using Protocol.InteractiveTx.Models;
-using Node;
 
 /// <summary>
 /// The BOLT 2 "Channel Establishment v2" rules that are not the interactive-tx engine's (splicing plan wave DF, DF1/DF2):

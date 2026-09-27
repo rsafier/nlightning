@@ -4,8 +4,6 @@ namespace NLightning.Application.Tests.Channels.DualFunding;
 
 using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
-using Domain.Channels.ValueObjects;
-using Domain.Crypto.Hashes;
 using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Protocol.InteractiveTx.Enums;
