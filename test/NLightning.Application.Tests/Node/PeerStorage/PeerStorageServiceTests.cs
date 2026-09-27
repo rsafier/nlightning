@@ -155,6 +155,25 @@ public class PeerStorageServiceTests
     }
 
     [Fact]
+    public async Task Given_TheSameBlobAgain_When_Received_Then_NothingIsWritten()
+    {
+        // Arrange: peers send their blob on every connection
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(19);
+        context.AddChannel(peer.PeerPubKey);
+        context.Service.HandleMessage(peer, new PeerStorageMessage(new PeerStoragePayload(new byte[] { 4, 2 })));
+        await context.Service.LastWork;
+
+        // Act
+        context.Time.Advance(TimeSpan.FromMinutes(5));
+        context.Service.HandleMessage(peer, new PeerStorageMessage(new PeerStoragePayload(new byte[] { 4, 2 })));
+        await context.Service.RunRoundAsync();
+
+        // Assert
+        Assert.Equal(1, context.Store.Saves);
+    }
+
+    [Fact]
     public async Task Given_ADelayedWrite_When_TheServiceIsDisposed_Then_ItIsWritten()
     {
         // Arrange
@@ -272,6 +291,74 @@ public class PeerStorageServiceTests
                                                                    TestContext.Current.CancellationToken);
         Assert.Contains(contents!.Channels, c => c.ChannelId == added.ChannelId);
         Assert.Equal(2, contents.Channels.Count);
+    }
+
+    [Fact]
+    public async Task Given_OurBackupAlreadySent_When_ThePeerReconnects_Then_ItIsNotSentAgainAndItsRetrievalMatches()
+    {
+        // Arrange
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(31);
+        context.AddChannel(peer.PeerPubKey);
+        context.Service.OnPeerInitialized(peer);
+        var sent = await peer.NextAsync<PeerStorageMessage>();
+        peer.Disconnect();
+        var reconnected = new FakeGossipPeer(31);
+
+        // Act: the peer hands back what it keeps right after init
+        context.Service.OnPeerInitialized(reconnected);
+        context.Service.HandleMessage(
+            reconnected, new PeerStorageRetrievalMessage(new PeerStorageRetrievalPayload(sent.Payload.Blob)));
+        await context.Service.LastWork;
+
+        // Assert
+        Assert.True(await reconnected.NothingSentWithinAsync(s_quiet));
+        Assert.True(Assert.Single(context.Service.GetRetrievals()).MatchesLastSent);
+    }
+
+    [Fact]
+    public async Task Given_ARetrievalThatIsNotOurLastBlob_When_Received_Then_TheCurrentBackupIsSentAgain()
+    {
+        // Arrange: the peer hands back an older backup of ours
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(32);
+        context.AddChannel(peer.PeerPubKey);
+        var older = await context.BlobProvider.CreateBlobAsync(TestContext.Current.CancellationToken);
+        context.AddChannel(new FakeGossipPeer(34).PeerPubKey);
+        context.Service.OnPeerInitialized(peer);
+        await peer.NextAsync<PeerStorageMessage>();
+
+        // Act
+        context.Service.HandleMessage(
+            peer, new PeerStorageRetrievalMessage(new PeerStorageRetrievalPayload(older!.Blob)));
+        await context.Service.LastWork;
+
+        // Assert
+        Assert.False(Assert.Single(context.Service.GetRetrievals()).MatchesLastSent);
+        var resent = await peer.NextAsync<PeerStorageMessage>();
+        Assert.NotNull(await context.BlobProvider.TryReadBlobAsync(resent.Payload.Blob,
+                                                                   TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Given_ARetrievalHoldingOurCurrentBackup_When_ItIsAnotherEncryption_Then_ItIsNotSentAgain()
+    {
+        // Arrange: what the peer keeps from before our restart holds the same channels as our current backup
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(33);
+        context.AddChannel(peer.PeerPubKey);
+        var beforeRestart = await context.BlobProvider.CreateBlobAsync(TestContext.Current.CancellationToken);
+        context.Service.OnPeerInitialized(peer);
+        await peer.NextAsync<PeerStorageMessage>();
+
+        // Act
+        context.Service.HandleMessage(
+            peer, new PeerStorageRetrievalMessage(new PeerStorageRetrievalPayload(beforeRestart!.Blob)));
+        await context.Service.LastWork;
+
+        // Assert
+        Assert.False(Assert.Single(context.Service.GetRetrievals()).MatchesLastSent);
+        Assert.True(await peer.NothingSentWithinAsync(s_quiet));
     }
 
     [Fact]

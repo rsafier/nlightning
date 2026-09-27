@@ -34,8 +34,10 @@ using Domain.Protocol.Payloads;
 /// </para>
 /// <para>
 /// Client: a peer that negotiated <c>option_provide_storage</c> gets our blob (<see cref="IPeerBackupBlobProvider"/>)
-/// once per connection, and again whenever the round (every <see cref="PeerStorageOptions.BackupInterval"/>) finds
-/// that what the blob holds changed. A <c>peer_storage_retrieval</c> is read back: a blob that is not ours is only
+/// at its first connection of the process, whenever the round (every <see cref="PeerStorageOptions.BackupInterval"/>)
+/// finds that what the blob holds changed, and again when the <c>peer_storage_retrieval</c> it sends after init is not
+/// the last blob we sent it. A connection with nothing new gets nothing, so the peer's retrieval can be checked against
+/// the last blob sent (<see cref="PeerBackupRetrieval.MatchesLastSent"/>). A blob handed back that is not ours is only
 /// logged; one of ours naming channels we have no record of is a sign of data loss, logged and kept for the restore
 /// flow (<see cref="GetRetrievals"/>).
 /// </para>
@@ -62,7 +64,7 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
     private volatile bool _loaded;
     private ITimer? _timer;
     private int _roundRunning;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public PeerStorageService(IServiceScopeFactory scopeFactory, IPeerBackupBlobProvider blobProvider,
                               IChannelMemoryRepository channelMemoryRepository, IOptions<NodeOptions> nodeOptions,
@@ -118,7 +120,10 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
             _storagePeers[peerId] = peer;
             peer.OnDisconnect += (_, _) => _storagePeers.TryRemove(new KeyValuePair<CompactPubKey, IPeerService>(
                                                                        peerId, peer));
-            LastWork = SendBackupAsync(peer, null, force: true);
+
+            // Only when it holds something else than what we sent it last (or nothing from this process): a peer
+            // hands the stored blob back after init, and a new encryption of the same backup would not match it
+            LastWork = SendBackupAsync(peer, null, force: false);
         }
         catch (Exception e)
         {
@@ -189,7 +194,9 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
 
         _stopping.Cancel();
 
-        // Best effort: the blobs whose write was delayed
+        // Best effort: the blobs whose write was delayed. When the container disposes this singleton it can no longer
+        // create scopes; the latest blob of a peer is then lost if it came less than MinStoreInterval before the stop
+        // (BOLT 1 allows the delay), and the peer's next peer_storage replaces it anyway
         try
         {
             FlushAsync(force: true).Wait(TimeSpan.FromSeconds(5));
@@ -220,6 +227,13 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
         bool writeNow;
         lock (entry)
         {
+            if (entry.Blob.AsSpan().SequenceEqual(blob) && (entry.Dirty || entry.WrittenAt is not null))
+            {
+                // The same blob again (peers send it on every connection): nothing to write
+                _logger.LogDebug("Peer {Peer} sent the peer_storage blob we already keep", peerId);
+                return;
+            }
+
             entry.Blob = blob;
             entry.ReceivedAt = now;
             entry.Dirty = true;
@@ -258,6 +272,12 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
 
             _retrievals[peerId] = new PeerBackupRetrieval(peerId, _timeProvider.GetUtcNow(), blob.Length, contents,
                                                           matchesLastSent, unknownChannels);
+
+            // The peer lost (or never stored) what we sent it last: send the current backup again (a blob that holds
+            // the same backup, e.g. the one sent before our restart, is kept)
+            if (matchesLastSent == false && contents?.Fingerprint != lastSent?.Fingerprint
+             && _storagePeers.TryGetValue(peerId, out var storagePeer))
+                await SendBackupAsync(storagePeer, null, force: true);
 
             if (contents is null)
             {
@@ -396,6 +416,10 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
                 using var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
                 await unitOfWork.PeerStorageDbRepository.UpsertAsync(new StoredPeerBlob(peerId, blob, receivedAt));
                 await unitOfWork.SaveChangesAsync();
+            }
+            catch (ObjectDisposedException) when (_disposed)
+            {
+                _logger.LogWarning("Could not store the latest peer_storage blob of peer {Peer} at shutdown", peerId);
             }
             catch (Exception e)
             {

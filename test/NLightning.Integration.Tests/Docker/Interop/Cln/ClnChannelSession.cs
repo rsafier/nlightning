@@ -252,13 +252,16 @@ public sealed class ClnChannelSession : IAsyncDisposable
     /// <summary>
     /// A separate node <paramref name="nodeName"/> that funds a private channel of <paramref name="capacity"/> to CLN
     /// (pushing <paramref name="push"/>) at our default feerate, followed until both ends are usable. The caller
-    /// disposes the session (and so the node).
+    /// disposes the session (and so the node). <paramref name="configureNode"/> runs before the node starts (e.g. to set
+    /// <see cref="NLightningTestNode.ConfigureServices"/>).
     /// </summary>
     public static async Task<ClnChannelSession> BuildOurFundedAsync(ClnFixture fixture, string nodeName,
                                                                     LightningMoney capacity, LightningMoney push,
-                                                                    CancellationToken cancellationToken)
+                                                                    CancellationToken cancellationToken,
+                                                                    Action<NLightningTestNode>? configureNode = null)
     {
         var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName);
+        configureNode?.Invoke(node);
         var session = new ClnChannelSession(fixture, node);
         try
         {

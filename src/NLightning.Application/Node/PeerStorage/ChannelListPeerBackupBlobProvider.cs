@@ -116,6 +116,7 @@ public sealed class ChannelListPeerBackupBlobProvider : IPeerBackupBlobProvider
             offset += EntryLength;
         }
 
-        return Task.FromResult<PeerBackupContents?>(new PeerBackupContents(createdAt, channels));
+        var fingerprint = Convert.ToHexString(SHA256.HashData(plaintext.AsSpan(HeaderLength, count * EntryLength)));
+        return Task.FromResult<PeerBackupContents?>(new PeerBackupContents(createdAt, channels, fingerprint));
     }
 }

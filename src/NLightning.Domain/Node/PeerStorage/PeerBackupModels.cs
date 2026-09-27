@@ -23,7 +23,12 @@ public sealed record PeerBackupChannel(ChannelId ChannelId, CompactPubKey PeerNo
 /// </summary>
 /// <param name="CreatedAt">When the blob was built.</param>
 /// <param name="Channels">The channels it names.</param>
-public sealed record PeerBackupContents(DateTimeOffset CreatedAt, IReadOnlyList<PeerBackupChannel> Channels);
+/// <param name="Fingerprint">
+/// The <see cref="PeerBackupBlob.Fingerprint"/> the blob was built with (null when the provider cannot tell), so a
+/// blob handed back that holds our current backup is not sent again.
+/// </param>
+public sealed record PeerBackupContents(DateTimeOffset CreatedAt, IReadOnlyList<PeerBackupChannel> Channels,
+                                        string? Fingerprint = null);
 
 /// <summary>
 /// A <c>peer_storage_retrieval</c> a peer sent us.
