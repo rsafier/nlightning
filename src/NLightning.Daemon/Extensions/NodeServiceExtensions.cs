@@ -301,20 +301,12 @@ public static class NodeServiceExtensions
                      // Replace the lists rather than let the binder append to them (NL-113)
                      var bootstrapSeeds = configuration.GetSection("Node:Bootstrap:Seeds").Get<string[]?>();
                      if (bootstrapSeeds is not null)
-                     {
                          options.Bootstrap.Seeds = bootstrapSeeds.ToList();
-                     }
-                     else
-                     {
-                         // The obsolete Node:DnsSeedServers key (read by nothing before NL-113) still counts when
-                         // Node:Bootstrap:Seeds is absent; the bootstrap service warns about it
-                         var obsoleteSeeds = configuration.GetSection("Node:DnsSeedServers").Get<string[]?>();
-                         if (obsoleteSeeds is { Length: > 0 })
-                         {
-                             options.Bootstrap.Seeds = obsoleteSeeds.ToList();
-                             options.Bootstrap.SeedsFromObsoleteKey = true;
-                         }
-                     }
+
+                     // The obsolete Node:DnsSeedServers key is never used: older templates wrote mainnet seeds into it
+                     // on every network. Only a list the operator edited earns a warning (when bootstrap is on)
+                     var obsoleteSeeds = configuration.GetSection("Node:DnsSeedServers").Get<string[]?>();
+                     options.Bootstrap.ObsoleteSeedsIgnored = BootstrapOptions.IsEditedObsoleteSeedList(obsoleteSeeds);
 
                      var nameServers = configuration.GetSection("Node:Bootstrap:NameServers").Get<string[]?>();
                      if (nameServers is not null)

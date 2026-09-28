@@ -1071,7 +1071,7 @@ public class NodeServiceExtensionsTests
         Assert.Null(configuration["Node:DnsSeedServers"]);
         Assert.False(options.Bootstrap.IsEnabled);
         Assert.Equal(seeds, options.Bootstrap.GetEffectiveSeeds(options.BitcoinNetwork, out _));
-        Assert.False(options.Bootstrap.SeedsFromObsoleteKey);
+        Assert.False(options.Bootstrap.ObsoleteSeedsIgnored);
         var defaults = new BootstrapOptions();
         Assert.Equal(defaults.Transport, options.Bootstrap.Transport);
         Assert.Equal(defaults.MinPeers, options.Bootstrap.MinPeers);
@@ -1110,14 +1110,19 @@ public class NodeServiceExtensionsTests
         Assert.Equal(["1.1.1.1", "8.8.8.8:53"], options.Bootstrap.NameServers);
     }
 
-    [Fact]
-    public void Given_TheObsoleteDnsSeedServers_When_Bound_Then_TheyBecomeTheBootstrapSeeds()
+    [Theory]
+    [InlineData("mainnet", new[] { "nodes.lightning.directory", "nodes.lightning.wiki" })]
+    [InlineData("testnet", new[] { "test.nodes.lightning.directory" })]
+    [InlineData("regtest", new string[0])]
+    public void Given_TheOldTemplatesDnsSeedServers_When_Bound_Then_TheNetworkDefaultsApplyWithoutAWarningFlag(
+        string network, string[] expected)
     {
-        // Arrange: a config written by an older template
+        // Arrange: the list every older template wrote on every network but signets, in another order
         var services = new ServiceCollection();
-        services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
-                                                        ("Node:DnsSeedServers:0", "nodes.lightning.directory"),
-                                                        ("Node:DnsSeedServers:1", "lseed.bitcoinstats.com")),
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Network", network),
+                                                        ("Node:DnsSeedServers:0", "lseed.bitcoinstats.com"),
+                                                        ("Node:DnsSeedServers:1", "nlseed.nlightn.ing"),
+                                                        ("Node:DnsSeedServers:2", "Nodes.Lightning.Directory")),
                                      new Mock<ISecureKeyManager>().Object);
         using var provider = services.BuildServiceProvider();
 
@@ -1125,8 +1130,30 @@ public class NodeServiceExtensionsTests
         var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
 
         // Assert
-        Assert.Equal(["nodes.lightning.directory", "lseed.bitcoinstats.com"], options.Bootstrap.Seeds);
-        Assert.True(options.Bootstrap.SeedsFromObsoleteKey);
+        Assert.Null(options.Bootstrap.Seeds);
+        Assert.Equal(expected, options.Bootstrap.GetEffectiveSeeds(options.BitcoinNetwork, out var ignored));
+        Assert.False(ignored);
+        Assert.False(options.Bootstrap.ObsoleteSeedsIgnored);
+    }
+
+    [Fact]
+    public void Given_AnEditedObsoleteDnsSeedServers_When_Bound_Then_ItIsIgnoredAndFlagged()
+    {
+        // Arrange: an entry that is not even a DNS name, which must not fail validation either
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
+                                                        ("Node:DnsSeedServers:0", "my.seed.example:53")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+
+        // Assert
+        Assert.Null(options.Bootstrap.Seeds);
+        Assert.Equal(BootstrapOptions.MainnetSeeds, options.Bootstrap.GetEffectiveSeeds(BitcoinNetwork.Mainnet, out _));
+        Assert.True(options.Bootstrap.ObsoleteSeedsIgnored);
+        Assert.Empty(options.GetValidationErrors());
     }
 
     [Fact]
@@ -1145,7 +1172,7 @@ public class NodeServiceExtensionsTests
 
         // Assert
         Assert.Equal(["new.example.org"], options.Bootstrap.Seeds);
-        Assert.False(options.Bootstrap.SeedsFromObsoleteKey);
+        Assert.True(options.Bootstrap.ObsoleteSeedsIgnored);
     }
 
     [Theory]

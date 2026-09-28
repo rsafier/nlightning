@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -5,6 +6,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Node.Bootstrap;
 
+using Domain.Channels.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Bootstrap;
@@ -22,13 +24,19 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// </summary>
 /// <remarks>
 /// <para>The host starts it after <c>PeerManager.StartAsync</c>; it runs in the background and never blocks the start.
-/// Before every run it checks the gate: enabled, seeds for the network, chain processing not halted, fewer than
-/// <see cref="BootstrapOptions.MinPeers"/> connected, no saved dialable peer that is not connected (saved peers are
-/// the peer manager's job), and no graph node with an address (the node already knows contacts).</para>
+/// Before every run it checks the gate. Two reasons end the loop: no seeds for the network, and
+/// <see cref="BootstrapOptions.MinPeers"/> connected. The others skip that run only and are checked again after
+/// <see cref="BootstrapOptions.RetryInterval"/> (each skip counts toward <see cref="BootstrapOptions.MaxRuns"/>):
+/// chain processing halted, a saved peer with active channels that is not connected (the peer manager keeps
+/// reconnecting those; a saved peer without channels is dialed once at start and never again, so it does not count),
+/// and a graph node with an address (the node already knows contacts, NL-543).</para>
 /// <para>A run queries the seeds one at a time in random order until it has enough candidates, drops candidates
-/// already connected, saved or ourselves, keeps one address per node, caps what one seed may supply and dials them
-/// through <see cref="IPeerManager.ConnectToPeerAsync"/>, which saves the peers it connects. The BOLT 8 handshake is
-/// the only proof of a seed's node id. The next start sees the saved peers and does not bootstrap again.</para>
+/// already connected, saved or ourselves and endpoints that failed earlier in this process, keeps one address per
+/// node and one node per address, caps what one seed may supply and dials them through
+/// <see cref="IPeerManager.DialPeerAsync"/> under
+/// <see cref="BootstrapOptions.ConnectTimeout"/>, which cancels the dial (so a timed-out dial never outlives its
+/// slot); the peer manager saves the peers it connects. The BOLT 8 handshake is the only proof of a seed's node
+/// id.</para>
 /// </remarks>
 internal sealed class PeerBootstrapService : IPeerBootstrapService
 {
@@ -42,6 +50,9 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     private readonly IPeerManager _peerManager;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ISecureKeyManager _secureKeyManager;
+
+    // Endpoints whose dial failed in this process; only the loop touches it
+    private readonly HashSet<(IPAddress, ushort)> _failedEndpoints = [];
 
     private CancellationTokenSource? _cts;
     private Task? _loop;
@@ -69,15 +80,15 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     /// <inheritdoc />
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        if (Options.SeedsFromObsoleteKey)
-            _logger.LogWarning("Node:DnsSeedServers is obsolete; its seeds were used as Node:Bootstrap:Seeds. Move "
-                             + "them to Node:Bootstrap:Seeds");
-
         if (!Options.IsEnabled)
         {
             _logger.LogDebug("BOLT 10 bootstrap is off (Node:Bootstrap:Enabled)");
             return Task.CompletedTask;
         }
+
+        if (Options.ObsoleteSeedsIgnored)
+            _logger.LogWarning("Node:DnsSeedServers is obsolete and ignored; the bootstrap uses Node:Bootstrap:Seeds "
+                             + "or the network's seeds. Move your seeds to Node:Bootstrap:Seeds");
 
         if (_loop is not null)
             throw new InvalidOperationException($"{nameof(PeerBootstrapService)} is already running");
@@ -116,19 +127,34 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
             if (Options.StartupDelay > TimeSpan.Zero)
                 await Task.Delay(Options.StartupDelay, ct);
 
+            string? lastSkip = null;
             for (var run = 1; run <= Options.MaxRuns; run++)
             {
                 ct.ThrowIfCancellationRequested();
                 try
                 {
                     var gate = await CheckGateAsync(ct);
-                    if (gate is not null)
+                    if (gate is { Final: true })
                     {
-                        _logger.LogInformation("BOLT 10 bootstrap: {Reason}, skipped", gate);
+                        _logger.LogInformation("BOLT 10 bootstrap: {Reason}, skipped", gate.Value.Reason);
                         return;
                     }
 
-                    await RunOnceAsync(run, ct);
+                    if (gate is { } skip)
+                    {
+                        // A reason that may clear: checked again after RetryInterval; a repeat logs at Debug
+                        if (skip.Reason == lastSkip)
+                            _logger.LogDebug("BOLT 10 bootstrap: {Reason}, run {Run} skipped", skip.Reason, run);
+                        else
+                            _logger.LogInformation("BOLT 10 bootstrap: {Reason}, run {Run} skipped; checking again "
+                                                 + "in {Interval}", skip.Reason, run, Options.RetryInterval);
+                        lastSkip = skip.Reason;
+                    }
+                    else
+                    {
+                        lastSkip = null;
+                        await RunOnceAsync(run, ct);
+                    }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -158,8 +184,11 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         }
     }
 
-    /// <summary>Why the node should not bootstrap now, or null when it should.</summary>
-    private async Task<string?> CheckGateAsync(CancellationToken ct)
+    /// <summary>
+    /// Why the node should not bootstrap now, or null when it should. <c>Final</c> reasons end the loop; the others
+    /// skip this run only.
+    /// </summary>
+    private async Task<(string Reason, bool Final)?> CheckGateAsync(CancellationToken ct)
     {
         var network = _nodeOptions.BitcoinNetwork;
         var seeds = Options.GetEffectiveSeeds(network, out var ignoredConfigured);
@@ -167,28 +196,35 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
             _logger.LogWarning("BOLT 10 bootstrap: the configured seeds are ignored on {Network}, which has no public "
                              + "seeds (set Node:Bootstrap:AllowSeedsOnThisNetwork to use them)", network);
         if (seeds.Count == 0)
-            return $"no seeds for {network}";
-
-        if (_blockchainMonitor is { IsChainProcessingHalted: true })
-            return "chain processing is halted";
+            return ($"no seeds for {network}", true);
 
         var connected = _peerManager.ListPeers();
         if (connected.Count >= Options.MinPeers)
-            return $"{connected.Count} peers connected (MinPeers {Options.MinPeers})";
+            return ($"{connected.Count} peers connected (MinPeers {Options.MinPeers})", true);
 
+        if (_blockchainMonitor is { IsChainProcessingHalted: true })
+            return ("chain processing is halted", false);
+
+        // Only saved peers with active channels: the peer manager keeps reconnecting those, while a saved peer
+        // without channels was dialed once at start and is never retried, so it must not hold the bootstrap back
         var connectedIds = connected.Select(p => p.NodeId).ToHashSet();
         var saved = await GetSavedPeersAsync();
         ct.ThrowIfCancellationRequested();
-        var dialable = saved.Count(p => !p.IsInboundOnly && !string.IsNullOrWhiteSpace(p.Host)
-                                                         && !connectedIds.Contains(p.NodeId));
-        if (dialable > 0)
-            return $"{dialable} saved peers to dial";
+        var reconnecting = saved.Count(p => !p.IsInboundOnly && !string.IsNullOrWhiteSpace(p.Host)
+                                                             && !connectedIds.Contains(p.NodeId)
+                                                             && HasActiveChannels(p));
+        if (reconnecting > 0)
+            return ($"{reconnecting} saved peers with channels to reconnect", false);
 
         if (_graphStore?.GetSnapshot().Nodes.Any(n => n.Addresses.Count > 0) == true)
-            return "the graph knows nodes with addresses";
+            return ("the graph knows nodes with addresses", false);
 
         return null;
     }
+
+    private static bool HasActiveChannels(PeerModel peer) =>
+        peer.Channels is { Count: > 0 } channels
+     && channels.Any(c => c.State is not (ChannelState.Closed or ChannelState.Stale));
 
     private async Task RunOnceAsync(int run, CancellationToken ct)
     {
@@ -242,7 +278,9 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     }
 
     /// <summary>
-    /// Drops candidates already connected, saved or ourselves, keeps the first address of each node and shuffles them.
+    /// Drops candidates already connected, saved or ourselves and endpoints that failed earlier in this process,
+    /// keeps the first address of each node and the first node of each address (so a seed cannot point many node ids
+    /// at one third party) and shuffles them.
     /// </summary>
     private async Task<List<SeedPeerCandidate>> SelectCandidatesAsync(List<SeedPeerCandidate> collected)
     {
@@ -252,7 +290,11 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         foreach (var peer in await GetSavedPeersAsync())
             excluded.Add(peer.NodeId);
 
-        var candidates = collected.Where(c => !excluded.Contains(c.NodeId)).DistinctBy(c => c.NodeId).ToArray();
+        var candidates = collected.Where(c => !excluded.Contains(c.NodeId)
+                                           && !_failedEndpoints.Contains((c.Address, c.Port)))
+                                  .DistinctBy(c => c.NodeId)
+                                  .DistinctBy(c => (c.Address, c.Port))
+                                  .ToArray();
         Random.Shared.Shuffle(candidates);
         return [.. candidates];
     }
@@ -299,25 +341,38 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
             var results = await Task.WhenAll(batch.Select(c => DialOneAsync(c, ct)));
             for (var i = 0; i < batch.Count; i++)
             {
-                if (results[i])
-                    connected++;
-                else
-                    perSeed[batch[i].Seed]--;
+                switch (results[i])
+                {
+                    case DialOutcome.Connected:
+                        connected++;
+                        break;
+                    case DialOutcome.Failed:
+                        perSeed[batch[i].Seed]--;
+                        _failedEndpoints.Add((batch[i].Address, batch[i].Port));
+                        break;
+                    default:
+                        perSeed[batch[i].Seed]--;
+                        break;
+                }
             }
         }
 
         return (connected, attempted);
     }
 
-    private async Task<bool> DialOneAsync(SeedPeerCandidate candidate, CancellationToken ct)
+    private async Task<DialOutcome> DialOneAsync(SeedPeerCandidate candidate, CancellationToken ct)
     {
         var address = candidate.ToPeerAddressInfo();
+
+        // The timeout cancels the dial itself, which closes its connection, rather than stop waiting for it
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(Options.ConnectTimeout);
         try
         {
-            await _peerManager.ConnectToPeerAsync(address).WaitAsync(Options.ConnectTimeout, ct);
+            await _peerManager.DialPeerAsync(address, timeout.Token);
             _logger.LogInformation("BOLT 10 bootstrap: connected to {Peer} (seed {Seed})", address.Address,
                                    candidate.Seed);
-            return true;
+            return DialOutcome.Connected;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -326,6 +381,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         catch (InvalidOperationException)
         {
             _logger.LogDebug("BOLT 10 bootstrap: already connected to {Peer}", address.Address);
+            return DialOutcome.AlreadyConnected;
         }
         catch (Exception e) when (e is ConnectionException or TimeoutException or SocketException
                                     or OperationCanceledException)
@@ -337,7 +393,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
             _logger.LogDebug(e, "BOLT 10 bootstrap: could not connect to {Peer}", address.Address);
         }
 
-        return false;
+        return DialOutcome.Failed;
     }
 
     private async Task<IReadOnlyList<PeerModel>> GetSavedPeersAsync()
@@ -345,5 +401,12 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         using var scope = _scopeFactory.CreateScope();
         using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         return [.. await uow.GetPeersForStartupAsync()];
+    }
+
+    private enum DialOutcome
+    {
+        Connected,
+        AlreadyConnected,
+        Failed
     }
 }

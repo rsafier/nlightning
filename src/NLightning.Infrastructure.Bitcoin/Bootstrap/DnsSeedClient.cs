@@ -51,15 +51,20 @@ internal sealed class DnsSeedClient : IDnsSeedClient
         var token = seedCts.Token;
         try
         {
-            var (outcome, srvResponse) = await QuerySrvAsync(root, families, token);
+            var (outcome, srvResponse) = await QuerySrvAsync(root, families, maxResults, token);
             if (srvResponse is null)
                 return new DnsSeedResult(root, outcome, candidates, rejected);
 
             var seen = new HashSet<(CompactPubKey, IPAddress, ushort)>();
+
+            // One record per (target, port): a node listening on two ports comes back as two tuples of one virtual
+            // host (BOLT 10), and both are kept; the target's addresses are looked up once
             var records = srvResponse.Srv
                                      .Where(r => !string.IsNullOrWhiteSpace(r.Target))
-                                     .DistinctBy(r => r.Target.TrimEnd('.').ToLowerInvariant())
+                                     .DistinctBy(r => (r.Target.TrimEnd('.').ToLowerInvariant(), r.Port))
                                      .ToArray();
+            var addressesByTarget =
+                new Dictionary<string, IReadOnlyList<IPAddress>>(StringComparer.OrdinalIgnoreCase);
             Random.Shared.Shuffle(records);
             foreach (var record in records)
             {
@@ -77,7 +82,12 @@ internal sealed class DnsSeedClient : IDnsSeedClient
                     continue;
                 }
 
-                var addresses = await GetAddressesAsync(root, target, srvResponse, families, token);
+                if (!addressesByTarget.TryGetValue(target, out var addresses))
+                {
+                    addresses = await GetAddressesAsync(root, target, srvResponse, families, token);
+                    addressesByTarget[target] = addresses;
+                }
+
                 foreach (var found in addresses)
                 {
                     if (candidates.Count >= maxResults)
@@ -116,16 +126,18 @@ internal sealed class DnsSeedClient : IDnsSeedClient
     }
 
     /// <summary>
-    /// The SRV answer to use: with <see cref="BootstrapOptions.UseQueryConditions"/> the <c>r0.a&lt;n&gt;</c> query
-    /// first, then the bare root, then <c>_nodes._tcp.&lt;root&gt;</c>. Null (with the outcome) when none answered
-    /// records.
+    /// The SRV answer to use: with <see cref="BootstrapOptions.UseQueryConditions"/> the
+    /// <c>n&lt;count&gt;.a&lt;families&gt;.r0</c> query first (the <c>n</c> condition asks for
+    /// <paramref name="maxResults"/> records, BOLT 10's default being 25), then the bare root, then
+    /// <c>_nodes._tcp.&lt;root&gt;</c>. Null (with the outcome) when none answered records.
     /// </summary>
     private async Task<(DnsSeedOutcome Outcome, DnsLookupResponse? Response)> QuerySrvAsync(
-        string root, DnsSeedAddressTypes families, CancellationToken ct)
+        string root, DnsSeedAddressTypes families, int maxResults, CancellationToken ct)
     {
         var names = new List<string>(3);
         if (_options.UseQueryConditions)
-            names.Add(new DnsSeedQuery(root, Realm: 0, AddressTypes: (byte)families).ToHostName());
+            names.Add(new DnsSeedQuery(root, Realm: 0, AddressTypes: (byte)families, Count: maxResults)
+                         .ToHostName());
         names.Add(root);
         names.Add(DnsSeedQuery.SrvAlias(root));
 

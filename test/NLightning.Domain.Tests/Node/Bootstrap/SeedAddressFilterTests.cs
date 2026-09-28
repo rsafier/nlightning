@@ -30,6 +30,26 @@ public class SeedAddressFilterTests
     [InlineData("2001:db8::1")]
     [InlineData("::ffff:10.0.0.1")]
     [InlineData("::ffff:127.0.0.1")]
+    [InlineData("192.0.0.1")]
+    [InlineData("192.0.2.1")]
+    [InlineData("198.51.100.7")]
+    [InlineData("203.0.113.254")]
+    [InlineData("198.18.0.1")]
+    [InlineData("198.19.255.255")]
+    [InlineData("::a00:1")]
+    [InlineData("::7f00:1")]
+    [InlineData("::8.8.8.8")]
+    [InlineData("64:ff9b::a00:1")]
+    [InlineData("64:ff9b::7f00:1")]
+    [InlineData("64:ff9b::c0a8:101")]
+    [InlineData("64:ff9b::c000:201")]
+    [InlineData("64:ff9b:1::808:808")]
+    [InlineData("2002:a00:1::1")]
+    [InlineData("2002:7f00:1::")]
+    [InlineData("2002:c612:1::1")]
+    [InlineData("100::1")]
+    [InlineData("fec0::1")]
+    [InlineData("feff::1")]
     public void Given_ANonRoutableAddress_When_Checked_Then_ItIsRefusedWithAReason(string address)
     {
         // Act
@@ -50,7 +70,15 @@ public class SeedAddressFilterTests
     [InlineData("::ffff:8.8.8.8")]
     [InlineData("2606:4700:4700::1111")]
     [InlineData("2001:db9::1")]
-    [InlineData("fec0::1")]
+    [InlineData("192.0.1.1")]
+    [InlineData("192.0.3.1")]
+    [InlineData("198.17.255.255")]
+    [InlineData("198.20.0.1")]
+    [InlineData("198.51.101.1")]
+    [InlineData("203.0.114.1")]
+    [InlineData("64:ff9b::808:808")]
+    [InlineData("2002:808:808::1")]
+    [InlineData("100:0:0:1::1")]
     public void Given_APublicAddress_When_Checked_Then_ItIsUsable(string address)
     {
         // Act
@@ -78,6 +106,8 @@ public class SeedAddressFilterTests
     [InlineData("127.0.0.1")]
     [InlineData("fd00::1")]
     [InlineData("::1")]
+    [InlineData("192.0.2.1")]
+    [InlineData("64:ff9b::a00:1")]
     public void Given_NonRoutableAllowed_When_APrivateAddressIsChecked_Then_ItIsUsable(string address)
     {
         // Act
@@ -92,6 +122,8 @@ public class SeedAddressFilterTests
     [InlineData("224.0.0.1")]
     [InlineData("::")]
     [InlineData("ff02::1")]
+    [InlineData("64:ff9b::e000:1")]
+    [InlineData("2002:0:1::1")]
     public void Given_NonRoutableAllowed_When_AnUnspecifiedOrMulticastAddressIsChecked_Then_ItIsStillRefused(
         string address)
     {
@@ -100,5 +132,20 @@ public class SeedAddressFilterTests
 
         // Assert
         Assert.False(usable);
+    }
+
+    [Theory]
+    [InlineData("64:ff9b::a00:1", "NAT64 IPv6 (64:ff9b::/96) embedding private IPv4 (10.0.0.0/8)")]
+    [InlineData("2002:7f00:1::", "6to4 IPv6 (2002::/16) embedding loopback IPv4 (127.0.0.0/8)")]
+    [InlineData("::a00:1", "IPv4-compatible IPv6 (::/96)")]
+    public void Given_AnIPv6AddressEmbeddingIPv4_When_Checked_Then_TheReasonNamesBoth(string address,
+        string expected)
+    {
+        // Act
+        var usable = SeedAddressFilter.IsUsable(IPAddress.Parse(address), 9735, false, out var reason);
+
+        // Assert
+        Assert.False(usable);
+        Assert.Equal(expected, reason);
     }
 }
