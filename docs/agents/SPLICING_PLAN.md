@@ -661,7 +661,7 @@ Owner decisions of 2026-09-28: implement NL-530 (the accepter may start the RBF 
 |---|---|---|
 | NL-530 accepter RBF | done: `BumpAsync` in either role; the sender is the interactive-tx initiator (funding output and common fields); our contribution = previous inputs rebuilt as initiator, or fresh wallet inputs (share plus `GetOpenerExtraWeight`, a share of 0 included: `InteractiveTxContributionRequest.FundWeightWithoutAmount`) for an accepter with no input in the earlier attempts, released when the request ends before an attempt exists; `bumpopen --contribution-sat 0` allowed; everything after the commitment step is lane dfrbf's | 5329c08d |
 | NL-532 log levels | done: `PeerConnectionFailures.GetLogLevel` (remote close Information, ping timeout/reset/timeouts/peer conditions Warning, our failures Error) in `PeerService`, `PeerCommunicationService`, `PeerOutbox`; the peer's `warning`, init problems and malformed messages are Warnings | 3a813c88 |
-| NL-533 Day0 step 4 race | done (test only) | SHA_533 |
+| NL-533 Day0 step 4 race | done (test only) | 08774008 |
 
 **CLN v26.06.8:** dualopend answers the accepter's `tx_init_rbf` with `tx_abort` "Only the channel initiator is allowed to initiate RBF" (the string is in `lightning_dualopend`; our log: "tx_abort ... without a negotiation (Only the channel initiator is allowed to initiate RBF)"), the connection stays up and the open confirms on its first funding. Allowed by BOLT 2 ("MAY fail the negotiation for any reason"); pinned by `ClnDualFundTests.Given_ClnsUnconfirmedDualFundedOpen_When_WeBumpItAsTheAccepter_*`. Between two NLightning nodes the accepter's bump works: `Day0FlowTests` step 1 (c), B bumps after A's bump and B's attempt confirms and is announced.
 

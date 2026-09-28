@@ -4585,7 +4585,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G5-T5
 
 ### NL-533 Day0FlowTests step 4 read the splice-out transaction before it reached bitcoind
-- **Status:** fixed (SHA_533)
+- **Status:** fixed (08774008)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Day0/Day0FlowTests.cs` (step 4)
