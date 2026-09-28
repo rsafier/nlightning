@@ -634,6 +634,23 @@ No migration. Ledger: NL-521 and NL-522 fixed, new NL-526 and NL-527.
 
 Gate (net10.0, Release): `dotnet format` clean, non-Docker green apart from the known flakes (NL-466, NL-472; green alone). Docker (CLN, host): `ClnSpliceRbfTests` 5/5, `ClnDualFundTests` 3/3, `ClnOfferPayTests` 4/4; one full CLN run 67/70 (+4 Explicit), the misses NL-526 (`ClnOfferReceiveTests` exact amounts vs NL-440's dummy hop, fails alone too). Dual-funded RBF stays off by default (`Node:DualFund:AllowRbf`).
 
+### Lane dfrbf record (2026-09-28; branch `wip/fafo-dfrbf` from `wip/fafo` at `47b0ce4a`)
+
+Owner decisions of 2026-09-28: fix NL-527; NL-526 with realistic dummy-hop fees and the records holding what we received; `Node:DualFund:AllowRbf` on by default if it tests OK. Migration `AddDualFundAttempts` (all three providers). Ledger: NL-526, NL-527, NL-528 fixed; new NL-529, NL-530, NL-531.
+
+**What `AllowRbf` gated and why it was off.** Both directions of a dual-funded open's RBF: our `BumpAsync` as the opener and the peer's `tx_init_rbf` (either role), answered with `tx_abort` when off. It was turned off in the wave sp1 review because the channel kept the latest attempt's outpoint and peer commitment signature only and `ChannelManager.ConfirmFundingAsync` ignored which transaction confirmed: an earlier attempt confirming (any signed attempt may, BOLT 2) left the channel on an outpoint that never confirms with a first commitment signed for another funding, i.e. no unilateral close (funds dependent on the peer). Public channels were refused on top (the signer kept the first attempt's outpoint; obsolete since NL-521).
+
+| Task | Status | SHAs |
+|---|---|---|
+| NL-527 our refused `tx_init_rbf` | done: `IInteractiveTxHost.OnRbfRequestEndedAsync` (peer's `tx_abort`, simultaneous `tx_init_rbf`, attempt not buildable after `tx_ack_rbf`, disconnection); the splice host keeps the no-op (its bump ends with the quiescence) | 0d15bdef |
+| NL-526 dummy-hop amounts | done: no product change (invoices already record the HTLC set's amounts, `listinvoices` shows them; the final-hop checks see through our dummy hops); `ClnOfferReceiveTests` bounds the received amount by what a BOLT 4 introduction node forwards at the path's `blinded_payinfo` fee (measured exactly at the bound); in-process pin in `Bolt11BlindedInvoiceTests` | 51b40ea8 |
+| NL-528 follow the confirmed attempt | done: per-attempt share and peer signature stored; `OnFundingConfirmedAsync` moves the channel (and the signer) to the attempt that confirmed and abandons a running RBF; early `channel_ready` deferred until our confirmation; restart mid-RBF restores the signed attempt from its row; the losing attempts' own inputs released at the irrevocable depth; public opens may be bumped; `AllowRbf` default true | 62a43729 |
+| `bumpopen` (IPC 38) and proofs | done: CLI/IPC for the opener's bump; Proof DF extended: (c) through `bumpopen`, (d) CLN's `openchannel_bump` of its own open followed, (e) the first attempt mined after our bump (`generateblock`), both nodes follow; `Day0FlowTests` step 1 (b) bumps the public dual-funded open between two NLightning nodes | f4744680, bae1e17f |
+
+Not done: the accepter starting an RBF (BOLT 2 MAY, NL-530); the losing attempts' watches stay pending (NL-529).
+
+Gate (net10.0, Release): 0 errors, the 5 known CS86xx; Release.Native 0 errors; `dotnet format` clean; non-Docker 10,963 (Domain 3524, Application 2978, Integration 933, Serialization 613, Infrastructure 455, Bitcoin 1348, Bolt11 327, Daemon 785), green apart from `GossipGraphReloadTests` (NL-466, 3/3 alone). Docker: `ClnDualFundTests` 5/5, `ClnOfferReceiveTests` 4/4, `ClnOfferPayTests` + `ClnSpliceRbfTests` + `ClnCloseTests` + `ClnOfferReceiveTests` 17/17; full CLN runs: the first two 44/72 and 38/72 failed (CLN's fee floor raised by the dual-funding class's wallet sends; fixed by funding CLN at 1 sat/vB), the third 71/72 + 4 `Explicit` (the only miss `ClnCloseTests.Given_ChannelClnFunded_*` after the dual-funding class, 4/4 alone, NL-531; NL-477 passed); `Day0FlowTests` + `Day0UpgradeInPlaceTests` + `RouteBlindingFlowTests` + `Bolt11BlindedPathFlowTests` 9/9 (`scripts/run-gossip.sh`); `PostgresTests` 18/18 (the migration). SQL Server not run (standard cycle).
+
 ### Waves and lanes (for the multi-agent wave workflow)
 | Wave | Lane | Files owned (exclusive) | Depends on | Proof |
 |---|---|---|---|---|
