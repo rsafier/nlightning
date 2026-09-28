@@ -3738,7 +3738,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M4-T6
 
 ### NL-502 An invoice with two `p` fields decoded with the first payment hash (duplicate payment hash, bolts#1357)
-- **Status:** fixed (commit "reject bolt 11 invoices with more than one payment hash (NL-502 / bolts#1357)")
+- **Status:** fixed (a2dd57dd)
 - **Severity:** high
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Bolt11/Models/TaggedFieldList.cs` (`FromBitReader`)
