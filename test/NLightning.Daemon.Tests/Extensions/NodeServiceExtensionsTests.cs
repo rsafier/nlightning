@@ -1074,7 +1074,7 @@ public class NodeServiceExtensionsTests
         Assert.Equal(new BootstrapOptions().IsEnabledOn(options.BitcoinNetwork), enabled);
         Assert.True(configuration.GetValue<bool?>("Node:Bootstrap:FallbackToPublicResolvers"));
         Assert.Equal(["1.1.1.1", "8.8.8.8"],
-                     configuration.GetSection("Node:Bootstrap:FallbackNameServers").Get<string[]>());
+                     configuration.GetSection("Node:Bootstrap:FallbackNameServers").Get<string[]>() ?? []);
         Assert.Equal(["1.1.1.1", "8.8.8.8"], options.Bootstrap.FallbackNameServers);
         Assert.True(options.Bootstrap.UsesFallbackResolvers);
         Assert.Equal(seeds, options.Bootstrap.GetEffectiveSeeds(options.BitcoinNetwork, out _));
