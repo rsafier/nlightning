@@ -210,7 +210,11 @@ public sealed partial class GossipRelayScheduler
                     return sent;
             }
 
-            if (now >= state.NextFlushAt)
+            // NL-417: no flush while a backlog runs. What was collected since the snapshot includes newer updates and
+            // node announcements of channels the backlog has not sent yet; flushed now they would reach the peer before
+            // their channel_announcement. They wait in the pending set (bounded, a 256 with its 258s) and go out at the
+            // first tick after the backlog ends
+            if (now >= state.NextFlushAt && state.Backlog is null && state.HeldBacklogItem is null)
             {
                 sent += await FlushPeerAsync(peer, state, filter, now);
 

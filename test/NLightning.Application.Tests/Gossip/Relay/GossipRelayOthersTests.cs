@@ -373,6 +373,41 @@ public class GossipRelayOthersTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ARunningBacklog_When_ANewerUpdateOfALaterChannelIsCollected_Then_ItWaitsForTheBacklog()
+    {
+        // Arrange (NL-417, mainnet relay proof): 30 channels (90 messages) at 1 per second, so the backlog outlasts the
+        // peer's first flush; a channel the backlog has not reached yet gets a newer update meanwhile
+        using var paced = new GossipRelayOthersTests(new GossipRelayOptions { BacklogMessagesPerSecond = 1 });
+        for (uint i = 0; i < 30; i++)
+            paced._graph.AddSignedChannel(new ShortChannelId(600 + i, 1, 0), SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        var last = new ShortChannelId(629, 1, 0);
+        var peer = paced.AddPeer(0x41, new GossipTimestampFilter(0, uint.MaxValue));
+        await paced.BaselineAsync();
+        paced.RaiseFilter(peer);
+        await paced.TickAfterAsync(TimeSpan.FromSeconds(1));
+        var (node1, _) = SyncTestGraph.Ordered(SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        paced.ApplyUpdate(last, node1, 0, 1_700_000_050);
+
+        // Act: past the peer's first flush and to the end of the backlog, one second at a time
+        for (var i = 0; i < 150; i++)
+            await paced.TickAfterAsync(TimeSpan.FromSeconds(1));
+
+        // Assert: no update before its announcement, and the newer update after the last channel's announcement
+        var announced = new HashSet<ShortChannelId>();
+        foreach (var message in peer.Sent)
+        {
+            if (message is ChannelAnnouncementMessage announcement)
+                Assert.True(announced.Add(announcement.Payload.ShortChannelId));
+            else if (message is ChannelUpdateMessage update)
+                Assert.Contains(update.Payload.ShortChannelId, announced);
+        }
+
+        Assert.Equal(30, announced.Count);
+        Assert.Contains(peer.Sent.OfType<ChannelUpdateMessage>(),
+                        u => u.Payload.ShortChannelId == last && u.Payload.Timestamp == 1_700_000_050);
+    }
+
+    [Fact]
     public async Task Given_OurOwnChannel_When_Relayed_Then_OnlyThePeersDirectionGoesThroughTheRelay()
     {
         // Arrange: we are node A; our 256 and 258 go through the own path (regardless of filters)
