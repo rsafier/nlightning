@@ -4519,7 +4519,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT12_PLAN.md` Proof B12
 
 ### NL-527 A peer's tx_abort of our pending tx_init_rbf never reaches the dual-funding host
-- **Status:** fixed (SHA_527)
+- **Status:** fixed (0d15bdef)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`ReceiveAbortAsync` without a negotiation, `ReceiveAckRbfAsync` catch branches), `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`BumpAsync`)
