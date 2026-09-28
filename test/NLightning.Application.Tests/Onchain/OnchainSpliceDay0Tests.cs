@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
 
@@ -8,8 +9,12 @@ using Application.Channels.Services;
 using Application.Onchain;
 using Application.Onchain.Interfaces;
 using Channels.Services;
+using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing;
@@ -48,6 +53,9 @@ public sealed class OnchainSpliceDay0Tests : IDisposable
     private readonly Mock<IOnchainChannelWatcher> _watcher = new();
     private readonly Mock<IBitcoinChainService> _chain = new();
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
+    private readonly Mock<IFeeInputSelector> _feeInputSelector = new();
+    private readonly Mock<IOnchainResolutionDbRepository> _resolutions = new();
+    private readonly List<FeeInputReservation> _reservations = [];
     private readonly List<InteractiveTxSessionModel> _storedSessions = [];
     private readonly ServiceProvider _provider;
     private readonly ChannelModel _channel;
@@ -80,12 +88,18 @@ public sealed class OnchainSpliceDay0Tests : IDisposable
         _unitOfWork.SetupGet(u => u.WatchedOutpointDbRepository).Returns(_watches.Object);
         _unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(_fundings.Object);
         _unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(_sessions.Object);
+        _unitOfWork.SetupGet(u => u.OnchainResolutionDbRepository).Returns(_resolutions.Object);
+        _resolutions.Setup(r => r.GetOutputsByChannelIdAsync(It.IsAny<Domain.Channels.ValueObjects.ChannelId>()))
+                    .ReturnsAsync([]);
+        _feeInputSelector.Setup(f => f.GetAllAsync(It.IsAny<CancellationToken>()))
+                         .ReturnsAsync(() => _reservations.ToList());
 
         var services = new ServiceCollection();
         services.AddScoped(_ => _unitOfWork.Object);
         services.AddSingleton(_contributor.Object);
         services.AddSingleton(_watcher.Object);
         services.AddSingleton(_chain.Object);
+        services.AddSingleton(_feeInputSelector.Object);
         _provider = services.BuildServiceProvider();
     }
 
@@ -170,6 +184,33 @@ public sealed class OnchainSpliceDay0Tests : IDisposable
         Assert.Equal(1, CountReleases());
         Assert.NotNull(kept);
         Assert.Contains((s_walletTxId, 1u), kept);
+    }
+
+    [Fact]
+    public async Task Given_TheContributorKeptTheReservation_When_ALaterRoundFreesIt_Then_TheSessionIsSettledThen()
+    {
+        // Arrange: the first release keeps the reservation (a kept outpoint the wallet still holds)
+        _storedSessions.Add(SpliceSession());
+        _fundingWatch.MarkSpent(s_commitmentTxId, CloseHeight, new Hash(new byte[32]));
+        _reservations.Add(new FeeInputReservation(Guid.NewGuid(), "itx:splice:x",
+                                                  [new WalletInput(s_walletTxId, 1, LightningMoney.Satoshis(100_000),
+                                                                   AddressType.P2Wpkh, new BitcoinScript(new byte[22]),
+                                                                   272)],
+                                                  LightningMoney.Zero, LightningMoney.Zero, null));
+        var executor = CreateExecutor();
+
+        // Act: still reserved after the first round; the wallet dropped the kept outpoint before the second
+        await executor.RunRoundAsync(CloseHeight + 99, TestContext.Current.CancellationToken);
+        var resolvedAfterFirst = Assert.Single(_storedSessions).ResolvedAt;
+        _reservations.Clear();
+        await executor.RunRoundAsync(CloseHeight + 100, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(CloseHeight + 101, TestContext.Current.CancellationToken);
+
+        // Assert: tried again until nothing held our input, then settled once
+        Assert.Null(resolvedAfterFirst);
+        Assert.Equal(2, CountReleases());
+        Assert.NotNull(Assert.Single(_storedSessions).ResolvedAt);
+        _unitOfWork.Verify(u => u.SaveChangesAsync(), Times.Once);
     }
 
     [Fact]
@@ -267,6 +308,153 @@ public sealed class OnchainSpliceDay0Tests : IDisposable
                                                        It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task Given_AFailedChannelWhoseFundingAPendingSpliceSpent_When_Replaying_Then_TheWatcherGetsItOnce()
+    {
+        // Arrange: a crash after the monitor recorded the splice, before the watcher handed it to the broadcaster
+        var (block, splice) = BlockWithSpendOf(_fundingWatch);
+        var spliceTxId = new TxId(splice.GetHash().ToBytes());
+        _channel.UpdateState(ChannelState.Failed);
+        _fundings.Setup(f => f.GetByChannelIdAsync(_channel.ChannelId))
+                 .ReturnsAsync(() => [ChannelFunding.FromFundingOutput(_channel.FundingOutput!)!,
+                                      Splice(ChannelFundingStatus.Pending, spliceTxId)]);
+        _fundingWatch.MarkSpent(spliceTxId, CloseHeight, new Hash(block.GetHash().ToBytes()));
+        _chain.Setup(c => c.GetBlockAsync(CloseHeight)).ReturnsAsync(block);
+        var executor = CreateExecutor();
+
+        // Act
+        await executor.RunRoundAsync(CloseHeight + 1, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(CloseHeight + 2, TestContext.Current.CancellationToken);
+
+        // Assert
+        _watcher.Verify(w => w.HandleFundingSpentAsync(
+                            It.Is<OutpointSpentEventArgs>(a => a.SpendingTransaction.TxId == spliceTxId
+                                                            && a.SpentTransactionId == _fundingWatch.TransactionId),
+                            It.IsAny<CancellationToken>()), Times.Once);
+        Assert.True(executor.FundingSpendReplay.IsDone);
+    }
+
+    [Fact]
+    public async Task Given_ADiscardedSpliceNextToARecordedClose_When_Replaying_Then_TheWatcherGetsTheSplice()
+    {
+        // Arrange: the close's save discarded the splice, then a reorg confirmed the splice instead; a crash hit
+        // before the watcher retired the close
+        var (block, splice) = BlockWithSpendOf(_fundingWatch);
+        var spliceTxId = new TxId(splice.GetHash().ToBytes());
+        _channel.UpdateState(ChannelState.OnchainResolving);
+        _fundings.Setup(f => f.GetByChannelIdAsync(_channel.ChannelId))
+                 .ReturnsAsync(() => [ChannelFunding.FromFundingOutput(_channel.FundingOutput!)!,
+                                      Splice(ChannelFundingStatus.Discarded, spliceTxId)]);
+        _resolutions.Setup(r => r.GetCloseAsync(_channel.ChannelId))
+                    .ReturnsAsync(new ChannelCloseModel(_channel.ChannelId, ChannelCloseKind.RemoteCommitment,
+                                                        s_commitmentTxId, 0, CloseHeight - 5,
+                                                        new Hash(new byte[32]), DateTimeOffset.UnixEpoch));
+        _fundingWatch.MarkSpent(spliceTxId, CloseHeight, new Hash(block.GetHash().ToBytes()));
+        _chain.Setup(c => c.GetBlockAsync(CloseHeight)).ReturnsAsync(block);
+        var executor = CreateExecutor();
+
+        // Act
+        await executor.RunRoundAsync(CloseHeight + 1, TestContext.Current.CancellationToken);
+
+        // Assert
+        _watcher.Verify(w => w.HandleFundingSpentAsync(
+                            It.Is<OutpointSpentEventArgs>(a => a.SpendingTransaction.TxId == spliceTxId
+                                                            && a.SpendingTransaction.RawTxBytes.SequenceEqual(
+                                                                   splice.ToBytes())
+                                                            && a.BlockHeight == CloseHeight
+                                                            && a.TransactionIndex == 1u),
+                            It.IsAny<CancellationToken>()), Times.Once);
+        Assert.True(executor.FundingSpendReplay.IsDone);
+    }
+
+    [Fact]
+    public async Task Given_ARecordNamingATransactionNoLongerInItsBlock_When_Replaying_Then_NothingIsHandedOver()
+    {
+        // Arrange: the block at that height no longer holds the recorded spend (a stale record after a reorg)
+        var (block, _) = BlockWithSpendOf(_fundingWatch);
+        _fundingWatch.MarkSpent(s_commitmentTxId, CloseHeight, new Hash(new byte[32]));
+        _chain.Setup(c => c.GetBlockAsync(CloseHeight)).ReturnsAsync(block);
+        var executor = CreateExecutor();
+
+        // Act
+        await executor.RunRoundAsync(CloseHeight + 1, TestContext.Current.CancellationToken);
+
+        // Assert
+        _watcher.Verify(w => w.HandleFundingSpentAsync(It.IsAny<OutpointSpentEventArgs>(),
+                                                       It.IsAny<CancellationToken>()), Times.Never);
+        Assert.True(executor.FundingSpendReplay.IsDone);
+    }
+
+    [Fact]
+    public async Task Given_TheWatcherThrows_When_Replaying_Then_TheNextRoundHandsTheSpendOverAgain()
+    {
+        // Arrange
+        var (block, commitment) = BlockWithSpendOf(_fundingWatch);
+        _fundingWatch.MarkSpent(new TxId(commitment.GetHash().ToBytes()), CloseHeight,
+                                new Hash(block.GetHash().ToBytes()));
+        _chain.Setup(c => c.GetBlockAsync(CloseHeight)).ReturnsAsync(block);
+        _watcher.SetupSequence(w => w.HandleFundingSpentAsync(It.IsAny<OutpointSpentEventArgs>(),
+                                                              It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new InvalidOperationException("database unavailable"))
+                .ReturnsAsync((FundingSpendOutcome?)null);
+        var executor = CreateExecutor();
+
+        // Act
+        await executor.RunRoundAsync(CloseHeight + 1, TestContext.Current.CancellationToken);
+        var doneAfterFailure = executor.FundingSpendReplay.IsDone;
+        await executor.RunRoundAsync(CloseHeight + 2, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(CloseHeight + 3, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(doneAfterFailure);
+        Assert.True(executor.FundingSpendReplay.IsDone);
+        _watcher.Verify(w => w.HandleFundingSpentAsync(It.IsAny<OutpointSpentEventArgs>(),
+                                                       It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task Given_APrunedBlock_When_ReplayingEveryRound_Then_ItWarnsAndGivesUpAfterTheLimit()
+    {
+        // Arrange
+        var (_, commitment) = BlockWithSpendOf(_fundingWatch);
+        _fundingWatch.MarkSpent(new TxId(commitment.GetHash().ToBytes()), CloseHeight, new Hash(new byte[32]));
+        _chain.Setup(c => c.GetBlockAsync(CloseHeight)).ReturnsAsync((Block?)null);
+        var logger = new RecordingLogger<OnchainResolutionExecutor>();
+        var executor = CreateExecutor(logger);
+
+        // Act
+        for (var round = 1u; round < Application.Onchain.Reorg.RecordedFundingSpendReplay.MaxRounds; round++)
+            await executor.RunRoundAsync(CloseHeight + round, TestContext.Current.CancellationToken);
+        var doneBeforeLimit = executor.FundingSpendReplay.IsDone;
+        await executor.RunRoundAsync(CloseHeight + 500, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(CloseHeight + 501, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(doneBeforeLimit);
+        Assert.True(executor.FundingSpendReplay.IsDone);
+        Assert.Contains(logger.Entries, e => e is { Level: LogLevel.Warning } && e.Message.Contains("pruned"));
+        Assert.Single(logger.Entries, e => e.Level == LogLevel.Critical);
+        _chain.Verify(c => c.GetBlockAsync(CloseHeight),
+                      Times.Exactly(Application.Onchain.Reorg.RecordedFundingSpendReplay.MaxRounds));
+    }
+
+    [Fact]
+    public async Task Given_AResolvingChannelWithoutARecordedClose_When_RoundsRun_Then_TheWarningIsLoggedOnce()
+    {
+        // Arrange: a close retired for its splice; the channel waits for a commitment on the splice funding
+        _channel.UpdateState(ChannelState.OnchainResolving);
+        var logger = new RecordingLogger<OnchainResolutionExecutor>();
+        var executor = CreateExecutor(logger);
+
+        // Act
+        for (var round = 1u; round <= 3; round++)
+            await executor.RunRoundAsync(CloseHeight + round, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Single(logger.Entries,
+                      e => e.Level == LogLevel.Warning && e.Message.Contains("without a recorded funding spend"));
+    }
+
     #endregion
 
     public void Dispose()
@@ -278,23 +466,25 @@ public sealed class OnchainSpliceDay0Tests : IDisposable
     private int CountReleases() =>
         _contributor.Invocations.Count(i => i.Method.Name == nameof(IInteractiveTxContributor.ReleaseDiscardedAsync));
 
-    private OnchainResolutionExecutor CreateExecutor()
+    private OnchainResolutionExecutor CreateExecutor(ILogger<OnchainResolutionExecutor>? logger = null)
     {
         var memory = new Mock<IChannelMemoryRepository>();
         memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
               .Returns((Func<ChannelModel, bool> predicate) => new[] { _channel }.Where(predicate).ToList());
+        var channel = _channel;
+        memory.Setup(m => m.TryGetChannel(_channel.ChannelId, out channel)).Returns(true);
         return new OnchainResolutionExecutor(new Mock<IChainBroadcaster>().Object, new ChannelLockProvider(),
-                                             memory.Object, NullLogger<OnchainResolutionExecutor>.Instance,
+                                             memory.Object, logger ?? NullLogger<OnchainResolutionExecutor>.Instance,
                                              new Mock<IOutpointWatcher>().Object,
                                              _provider.GetRequiredService<IServiceScopeFactory>());
     }
 
-    private ChannelFunding Splice(ChannelFundingStatus status)
+    private ChannelFunding Splice(ChannelFundingStatus status, TxId? txId = null)
     {
         var current = ChannelFunding.FromFundingOutput(_channel.FundingOutput!)!;
         return current with
         {
-            FundingTxId = s_spliceTxId,
+            FundingTxId = txId ?? s_spliceTxId,
             OutputIndex = 0,
             Kind = ChannelFundingKind.Splice,
             Status = status
@@ -332,6 +522,31 @@ public sealed class OnchainSpliceDay0Tests : IDisposable
             State = InteractiveTxSessionState.TxSignaturesSent,
             CreatedAt = DateTimeOffset.UnixEpoch
         };
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        private readonly List<(LogLevel Level, string Message)> _entries = [];
+
+        public IReadOnlyList<(LogLevel Level, string Message)> Entries
+        {
+            get
+            {
+                lock (_entries)
+                    return _entries.ToList();
+            }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                                Func<TState, Exception?, string> formatter)
+        {
+            lock (_entries)
+                _entries.Add((logLevel, formatter(state, exception)));
+        }
     }
 
     /// <summary>A block whose second transaction spends the watched funding outpoint.</summary>

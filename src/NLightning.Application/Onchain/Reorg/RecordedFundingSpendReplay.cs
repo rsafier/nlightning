@@ -9,6 +9,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Splicing.Enums;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -28,15 +29,22 @@ using Interfaces;
 /// retires a close reorged out for it, or hands the splice to the commitment broadcaster). A spend by the current or a
 /// replaced funding is the normal splice path (the lock moved the channel) and is skipped. The watcher is idempotent, so
 /// a spend it had handled changes nothing.</para>
-/// <para>The spending transaction is read from its block through <see cref="IBitcoinChainService"/>; without one, or
-/// when the block cannot be read, the replay is tried again in the next round.</para>
+/// <para>The spending transaction is read from its block through <see cref="IBitcoinChainService"/>. When a block cannot
+/// be read (an error, or a pruned block) or the watcher throws, the spends not handed over yet are tried again in the
+/// next round, up to <see cref="MaxRounds"/> rounds, after which the replay gives up with a CRITICAL log. A spend no
+/// longer in the recorded block (a stale record) is skipped with a warning.</para>
 /// </remarks>
 internal sealed class RecordedFundingSpendReplay
 {
+    /// <summary>The rounds a replay that cannot complete is tried before it gives up (about a day of blocks).</summary>
+    internal const int MaxRounds = 144;
+
     private readonly IChannelMemoryRepository _channelMemoryRepository;
+    private readonly HashSet<(ChannelId, TxId, uint, TxId)> _handed = [];
     private readonly ILogger _logger;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private bool _done;
+    private int _failedRounds;
 
     public RecordedFundingSpendReplay(IChannelMemoryRepository channelMemoryRepository, ILogger logger,
                                       IServiceScopeFactory serviceScopeFactory)
@@ -65,8 +73,7 @@ internal sealed class RecordedFundingSpendReplay
             return 0;
         }
 
-        var spends = new List<(Domain.Channels.ValueObjects.ChannelId ChannelId, TxId FundingTxId, uint Vout, TxId
-            SpentBy, uint Height)>();
+        var spends = new List<(ChannelId ChannelId, TxId FundingTxId, uint Vout, TxId SpentBy, uint Height)>();
         using (var scope = _serviceScopeFactory.CreateScope())
         {
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -96,7 +103,8 @@ internal sealed class RecordedFundingSpendReplay
                       || channel.State is not (ChannelState.Failed or ChannelState.OnchainResolving)))
                         continue;
 
-                    spends.Add((channel.ChannelId, funding.FundingTxId, funding.OutputIndex, spentBy, height));
+                    if (!_handed.Contains((channel.ChannelId, funding.FundingTxId, funding.OutputIndex, spentBy)))
+                        spends.Add((channel.ChannelId, funding.FundingTxId, funding.OutputIndex, spentBy, height));
                 }
             }
         }
@@ -116,6 +124,7 @@ internal sealed class RecordedFundingSpendReplay
         }
 
         var handed = 0;
+        var complete = true;
         foreach (var (channelId, fundingTxId, vout, spentBy, height) in spends)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -129,11 +138,18 @@ internal sealed class RecordedFundingSpendReplay
                 _logger.LogWarning(e, "Could not read block {Height} to replay the recorded spend of funding "
                                     + "{FundingTxId} of channel {ChannelId}; retrying in the next round", height,
                                    Display(fundingTxId), channelId);
-                return handed;
+                complete = false;
+                continue;
             }
 
             if (block is null)
-                return handed;
+            {
+                _logger.LogWarning("Block {Height} is not available (pruned?) to replay the recorded spend {TxId} of "
+                                 + "funding {FundingTxId} of channel {ChannelId}; retrying in the next round", height,
+                                   Display(spentBy), Display(fundingTxId), channelId);
+                complete = false;
+                continue;
+            }
 
             var index = block.Transactions.FindIndex(t => new TxId(t.GetHash().ToBytes()) == spentBy);
             if (index < 0)
@@ -156,17 +172,32 @@ internal sealed class RecordedFundingSpendReplay
                                                new SignedTransaction(spentBy, transaction.ToBytes()),
                                                height, (uint)index, fundingTxId, vout,
                                                new Hash(block.GetHash().ToBytes())), cancellationToken);
+                _handed.Add((channelId, fundingTxId, vout, spentBy));
                 handed++;
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
                 _logger.LogError(e, "Replaying the recorded spend {TxId} of funding {FundingTxId} of channel "
-                                  + "{ChannelId} failed", Display(spentBy), Display(fundingTxId),
-                                 channelId);
+                                  + "{ChannelId} failed; retrying in the next round", Display(spentBy),
+                                 Display(fundingTxId), channelId);
+                complete = false;
             }
         }
 
-        _done = true;
+        if (complete)
+        {
+            _done = true;
+            return handed;
+        }
+
+        if (++_failedRounds >= MaxRounds)
+        {
+            _logger.LogCritical("Gave up replaying the recorded funding spends after {Rounds} rounds: a funding spend "
+                              + "recorded before a crash may be unhandled; restart the node once the blocks and the "
+                              + "watcher are available again (NL-493)", _failedRounds);
+            _done = true;
+        }
+
         return handed;
     }
 
