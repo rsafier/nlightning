@@ -13,8 +13,11 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
+using Domain.Channels.Splicing.Interfaces;
+using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Protocol.Messages;
@@ -192,6 +195,79 @@ public class ChannelAnnouncementSpliceTests
 
     #endregion
 
+    #region NL-490: a late half for the short channel id a splice retired
+
+    [Fact]
+    public async Task Given_ThePeersLateHalfForTheRetiredScid_When_Received_Then_IgnoredWithoutAWarningOrASave()
+    {
+        // Arrange: the lock moved the channel to the splice's scid; the replaced funding's scid is in the retired map
+        using var pair = new AnnouncementTestPair();
+        var retired = new ShortChannelId(AnnouncementTestPair.FundingHeight - 30, 2,
+                                         AnnouncementTestPair.FundingOutputIndex);
+        var service = CreateService(pair.Alice, Pending(true, s_spliceScid), RetiredMap(retired));
+        var handler = CreateHandler(pair, service);
+
+        // Act
+        var replies = await handler.HandleAsync(HalfFor(retired), Domain.Channels.Enums.ChannelState.Open,
+                                                new FeatureOptions(), pair.Bob.NodeId);
+
+        // Assert: BOLT 7 wants a warning only for a scid that matches none of the channel's fundings
+        Assert.Empty(replies);
+        Assert.Null(pair.Alice.Channel.RemoteAnnouncementSignatures);
+        Assert.Equal(0, pair.Alice.Saves);
+        Assert.Null(await service.ProcessDeferredRemoteAnnouncementSignaturesAsync(
+                        pair.Alice.Channel, pair.Bob.NodeId, pair.Alice.UnitOfWork.Object));
+    }
+
+    [Fact]
+    public async Task Given_AHalfForAScidOfNoFunding_When_Received_Then_ItStillGetsTheWarning()
+    {
+        // Arrange: a retired map that knows another scid of this channel
+        using var pair = new AnnouncementTestPair();
+        var retired = new ShortChannelId(AnnouncementTestPair.FundingHeight - 30, 2,
+                                         AnnouncementTestPair.FundingOutputIndex);
+        var service = CreateService(pair.Alice, Pending(true, s_spliceScid), RetiredMap(retired));
+        var handler = CreateHandler(pair, service);
+        var unknown = new ShortChannelId(AnnouncementTestPair.FundingHeight - 31, 7, 3);
+
+        // Act / Assert
+        await Assert.ThrowsAsync<ChannelWarningException>(() => handler.HandleAsync(
+                                                              HalfFor(unknown),
+                                                              Domain.Channels.Enums.ChannelState.Open,
+                                                              new FeatureOptions(), pair.Bob.NodeId));
+    }
+
+    private static AnnouncementSignaturesMessageHandler CreateHandler(AnnouncementTestPair pair,
+                                                                      ChannelAnnouncementService service) =>
+        new(service, pair.Alice.Channels, NullLogger<AnnouncementSignaturesMessageHandler>.Instance,
+            pair.Alice.UnitOfWork.Object);
+
+    private static AnnouncementSignaturesMessage HalfFor(ShortChannelId shortChannelId) =>
+        new(new AnnouncementSignaturesPayload(AnnouncementTestPair.ChannelId, shortChannelId, EmptySignature,
+                                              EmptySignature));
+
+    private static IRetiredScidMap RetiredMap(ShortChannelId retired) => new OneRetiredScid(retired);
+
+    /// <summary>A retired map holding one short channel id of the test channel.</summary>
+    private sealed class OneRetiredScid(ShortChannelId retired) : IRetiredScidMap
+    {
+        public void Retire(RetiredShortChannelId retiredScid) => throw new NotSupportedException();
+
+        public bool TryResolve(ShortChannelId shortChannelId, out ChannelId channelId)
+        {
+            channelId = AnnouncementTestPair.ChannelId;
+            return shortChannelId == retired;
+        }
+
+        public IReadOnlyList<RetiredShortChannelId> GetByChannel(ChannelId channelId) => [];
+
+        public int PruneExpired(uint height) => 0;
+
+        public Task LoadAsync(uint currentHeight, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    #endregion
+
     private static CompactSignature EmptySignature => new(new byte[64]);
 
     private static CompactPubKey NewKey(byte tag)
@@ -211,7 +287,8 @@ public class ChannelAnnouncementSpliceTests
 
     /// <summary>The production service of <paramref name="node"/> with a splice state port holding one pending
     /// splice.</summary>
-    private static ChannelAnnouncementService CreateService(AnnouncementTestNode node, ChannelFunding pending)
+    private static ChannelAnnouncementService CreateService(AnnouncementTestNode node, ChannelFunding pending,
+                                                            IRetiredScidMap? retiredScidMap = null)
     {
         var channel = node.Channel;
         var current = ChannelFunding.FromFundingOutput(channel.FundingOutput!)!;
@@ -224,6 +301,6 @@ public class ChannelAnnouncementSpliceTests
                                               new MessageFactory(Options.Create(node.NodeOptions)),
                                               new OwnGossipPublisher(node.Sink, node.Relay),
                                               Options.Create(node.NodeOptions), Options.Create(new GossipOptions()),
-                                              spliceStatePort: port.Object);
+                                              spliceStatePort: port.Object, retiredScidMap: retiredScidMap);
     }
 }

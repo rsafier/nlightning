@@ -10,6 +10,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Gossip.Interfaces;
@@ -50,6 +51,7 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
     private readonly NodeOptions _nodeOptions;
     private readonly TimeProvider _timeProvider;
     private readonly ISpliceStatePort? _spliceStatePort;
+    private readonly IRetiredScidMap? _retiredScidMap;
 
     // Channel id -> the peer's announcement_signatures for a splice we have not sent splice_locked for (BOLT 7 SHOULD)
     private readonly ConcurrentDictionary<ChannelId, (ShortChannelId ShortChannelId, ChannelAnnouncementSignatures
@@ -69,7 +71,8 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
                                       IChannelUpdateService? channelUpdateService = null,
                                       INodeAnnouncementService? nodeAnnouncementService = null,
                                       TimeProvider? timeProvider = null,
-                                      ISpliceStatePort? spliceStatePort = null)
+                                      ISpliceStatePort? spliceStatePort = null,
+                                      IRetiredScidMap? retiredScidMap = null)
     {
         _blockchainMonitor = blockchainMonitor;
         _signatureVerifier = signatureVerifier;
@@ -83,6 +86,7 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
         _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
         _timeProvider = timeProvider ?? TimeProvider.System;
         _spliceStatePort = spliceStatePort;
+        _retiredScidMap = retiredScidMap;
     }
 
     /// <summary>
@@ -281,6 +285,11 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
         if (!channel.AnnounceChannel || (HasShortChannelId(channel) && channel.ShortChannelId == shortChannelId))
             return false;
 
+        // NL-490 (BOLT 7): a late half for a funding a splice replaced matches one of the channel's fundings, so it
+        // gets no warning; DeferRemoteAnnouncementSignatures drops it
+        if (IsRetiredShortChannelId(channel.ChannelId, shortChannelId))
+            return true;
+
         // BOLT 7: SHOULD defer a splice's announcement_signatures until we sent splice_locked for it. Before our own
         // depth the splice's short channel id is not known to us, so the funding output index is all we can match
         return GetPendingFundings(channel)
@@ -295,6 +304,14 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
                                                   ChannelAnnouncementSignatures signatures)
     {
         ArgumentNullException.ThrowIfNull(signatures);
+        if (IsRetiredShortChannelId(channelId, shortChannelId))
+        {
+            // NL-490: the replaced funding is never announced again (SP-G-01); its late half is ignored, no warning
+            _logger.LogDebug("Ignoring the announcement_signatures of channel {ChannelId} for {ShortChannelId}, a "
+                           + "funding a splice replaced", channelId, shortChannelId);
+            return;
+        }
+
         _deferred[channelId] = (shortChannelId, signatures);
         _logger.LogInformation("Deferring the announcement_signatures of channel {ChannelId} for splice "
                              + "{ShortChannelId} until our splice_locked", channelId, shortChannelId);
@@ -339,6 +356,12 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
     }
 
     private ChainHash ChainHash => _nodeOptions.BitcoinNetwork.ChainHash;
+
+    /// <summary>Whether <paramref name="shortChannelId"/> is a short channel id the channel had before a splice lock
+    /// (still in the <see cref="IRetiredScidMap"/>, which keeps it 72 blocks).</summary>
+    private bool IsRetiredShortChannelId(ChannelId channelId, ShortChannelId shortChannelId) =>
+        _retiredScidMap is not null && _retiredScidMap.TryResolve(shortChannelId, out var retiredOf)
+                                    && retiredOf == channelId;
 
     private IReadOnlyList<ChannelFunding> GetPendingFundings(ChannelModel channel)
     {

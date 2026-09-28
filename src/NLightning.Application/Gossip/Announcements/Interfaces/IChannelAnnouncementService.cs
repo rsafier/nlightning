@@ -121,7 +121,9 @@ public interface IChannelAnnouncementService
     /// <summary>
     /// Whether the peer's <c>announcement_signatures</c> for <paramref name="shortChannelId"/> names a splice of the
     /// channel for which we have not sent <c>splice_locked</c> yet: it is then kept and handled once we did, not answered
-    /// with a warning (BOLT 7 SHOULD, SP-G-01). Splicing plan SP2-0; implemented by lane SP2-B (SP2-B-T3).
+    /// with a warning (BOLT 7 SHOULD, SP-G-01). Splicing plan SP2-0; implemented by lane SP2-B (SP2-B-T3). Also true
+    /// for a short channel id a splice lock retired (still in <c>IRetiredScidMap</c>): it matches one of the channel's
+    /// fundings, so BOLT 7 wants no warning, and <see cref="DeferRemoteAnnouncementSignatures"/> drops it (NL-490).
     /// </summary>
     bool ShouldDeferRemoteAnnouncementSignatures(ChannelModel channel, ShortChannelId shortChannelId) =>
         throw new NotImplementedException("Lane SP2-B (SP2-B-T3, SP-G-01)");
@@ -130,7 +132,8 @@ public interface IChannelAnnouncementService
     /// Keeps the peer's <c>announcement_signatures</c> for <paramref name="shortChannelId"/>, a splice of the channel
     /// we have not sent <c>splice_locked</c> for (<see cref="ShouldDeferRemoteAnnouncementSignatures"/>), in memory
     /// until <see cref="ProcessDeferredRemoteAnnouncementSignaturesAsync"/> takes it (BOLT 7: SHOULD defer handling it
-    /// until after it has sent <c>splice_locked</c>). A later half for the same channel replaces it.
+    /// until after it has sent <c>splice_locked</c>). A later half for the same channel replaces it. A half for a retired
+    /// short channel id is ignored (logged at debug): the replaced funding is never announced again (NL-490).
     /// </summary>
     void DeferRemoteAnnouncementSignatures(ChannelId channelId, ShortChannelId shortChannelId,
                                            ChannelAnnouncementSignatures signatures)
