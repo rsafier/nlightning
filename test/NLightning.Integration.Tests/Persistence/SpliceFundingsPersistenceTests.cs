@@ -53,6 +53,22 @@ public class SpliceFundingsPersistenceTests
     }
 
     [Fact]
+    public async Task Given_RowsOfAddSpliceHardening_When_RolledBack_Then_RefusedWhileASignedOnRecordExistsAndInboundOnlyPeersDropped()
+    {
+        // Arrange
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        var options = new DbContextOptionsBuilder<NLightningDbContext>()
+                     .UseSqlite(connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"))
+                     .Options;
+
+        // Act & Assert (provider-agnostic, as the other schema round trips)
+        await SpliceHardeningSchemaRoundTrip.AssertDownAsync(
+            () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)), DatabaseType.Sqlite,
+            TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_ANewChannel_When_Added_Then_ItsInitialFundingIsStoredWithIt()
     {
         // Arrange
