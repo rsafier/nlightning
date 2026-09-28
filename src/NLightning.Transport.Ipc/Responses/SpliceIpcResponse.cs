@@ -7,8 +7,8 @@ using Domain.Channels.ValueObjects;
 using Domain.Client.Responses;
 
 /// <summary>
-/// Response for SpliceIn and SpliceOut (ClientCommand 33, 34): the splice txid (hex, the usual display order), the new
-/// capacity and the negotiation's state. DTO shell of the SP1 contracts (lane SP1-E).
+/// Response for SpliceIn, SpliceOut and BumpSplice (ClientCommand 33, 34, 37): the splice txid (hex, the usual
+/// display order), the new capacity and the negotiation's state. DTO shell of the SP1 contracts (lane SP1-E).
 /// </summary>
 [MessagePackObject]
 public sealed class SpliceIpcResponse

@@ -21,6 +21,7 @@ public class ClientCommandTests
         Assert.Equal(34, (int)ClientCommand.SpliceOut);
         Assert.Equal(35, (int)ClientCommand.SetChannelPolicy);
         Assert.Equal(36, (int)ClientCommand.GetChannelPolicy);
+        Assert.Equal(37, (int)ClientCommand.BumpSplice);
         Assert.Equal(Enum.GetValues<ClientCommand>().Length, Enum.GetValues<ClientCommand>().Distinct().Count());
     }
 }

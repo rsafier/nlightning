@@ -56,5 +56,11 @@ public enum ClientCommand
     SetChannelPolicy = 35,
 
     /// <summary>Read a channel's routing policy in force (wave sp1 lane SP1-G).</summary>
-    GetChannelPolicy = 36
+    GetChannelPolicy = 36,
+
+    /// <summary>
+    /// RBF a channel's pending splice at a higher feerate (<c>bumpsplice</c>, splicing plan §3.10, wave SPR lane SPR-B);
+    /// answered with the splice response of <see cref="SpliceIn"/>/<see cref="SpliceOut"/>.
+    /// </summary>
+    BumpSplice = 37
 }

@@ -42,3 +42,21 @@ public sealed class SpliceOutIpcRequest
     public SpliceOutClientRequest ToClientRequest() =>
         new(ChannelId, AmountSat) { Address = Address, FeeRatePerKw = FeeRatePerKw };
 }
+
+/// <summary>
+/// Request for BumpSplice (ClientCommand 37), answered with a <c>SpliceIpcResponse</c>. DTO shell of the SPR contracts;
+/// the handlers are lane SPR-B's.
+/// </summary>
+[MessagePackObject]
+public sealed class BumpSpliceIpcRequest
+{
+    [Key(0)] public required ChannelId ChannelId { get; init; }
+
+    /// <summary>The new attempt's feerate, in sat/kw.</summary>
+    [Key(1)] public required uint FeeRatePerKw { get; init; }
+
+    /// <summary>The most our side may pay for the new attempt, in satoshis, or null for no cap.</summary>
+    [Key(2)] public ulong? MaxFeeSat { get; init; }
+
+    public BumpSpliceClientRequest ToClientRequest() => new(ChannelId, FeeRatePerKw) { MaxFeeSat = MaxFeeSat };
+}

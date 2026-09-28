@@ -9,7 +9,8 @@ using Enums;
 /// new set.
 /// </summary>
 /// <remarks>
-/// The transitions (<see cref="AddPending"/>, <see cref="Lock"/>, <see cref="Discard"/>) enforce the rules: a new splice
+/// The transitions (<see cref="AddPending"/>, <see cref="AddRbfSibling"/> (wave SPR), <see cref="Lock"/>,
+/// <see cref="Discard"/>) enforce the rules: a new splice
 /// only when nothing is pending, RBF siblings of the pending splice, lock folds the deltas and discards siblings and
 /// ancestors. The commitment engine (<c>ChannelCommitments</c>) applies them to its <c>PendingFundings</c> together with
 /// the per-funding signatures.
@@ -79,6 +80,34 @@ public sealed record FundingSet(ChannelFunding Current, IReadOnlyList<ChannelFun
 
         return this with { Pending = [.. Pending, funding] };
     }
+
+    /// <summary>
+    /// The latest pending attempt (the one an RBF replaces and whose feerate the next <c>tx_init_rbf</c> must beat,
+    /// IT-RBF-01), or null when nothing is pending.
+    /// </summary>
+    public ChannelFunding? LatestAttempt => Pending.Count == 0 ? null : Pending[^1];
+
+    /// <summary>
+    /// Adds an RBF attempt of the pending splice (wave SPR, SPR-T2): a <see cref="ChannelFundingKind.SpliceRbf"/>
+    /// funding whose <see cref="ChannelFunding.RbfOf"/> is <see cref="LatestAttempt"/>, whose
+    /// <see cref="ChannelFunding.FeeratePerKw"/> is at least <c>InteractiveTxRbfRules.GetMinimumNextFeerate</c> of it,
+    /// and that keeps <see cref="ActiveCount"/> within <c>ChannelCommitments.MaxActiveFundings</c> (the
+    /// <c>start_batch</c> limit of 20, SP-OP-04); otherwise the <see cref="AddPending"/> rules. Every attempt spends the
+    /// current funding output, so the attempts double-spend each other (BOLT 2 splicing rationale).
+    /// </summary>
+    /// <exception cref="ArgumentException">One of those rules is broken, or nothing is pending.</exception>
+    public FundingSet AddRbfSibling(ChannelFunding attempt) =>
+        throw new NotImplementedException("Lane SPR-A (SPR-T2, NL-489)");
+
+    /// <summary>
+    /// The other attempts of the same splice as the pending <paramref name="fundingTxId"/> (its RBF siblings and
+    /// ancestors, SP-LK-03): what <see cref="Lock"/> discards when <paramref name="fundingTxId"/> locks, and the
+    /// candidates a peer's <c>splice_locked</c> for "different RBF candidates" names (D11). Empty when it is the only
+    /// attempt.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="fundingTxId"/> is not pending.</exception>
+    public IReadOnlyList<ChannelFunding> Siblings(TxId fundingTxId) =>
+        throw new NotImplementedException("Lane SPR-A (SPR-T2, NL-489)");
 
     /// <summary>
     /// Locks the pending funding <paramref name="fundingTxId"/> (<c>splice_locked</c> sent and received for it): it

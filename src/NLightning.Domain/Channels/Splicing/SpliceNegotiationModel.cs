@@ -31,6 +31,9 @@ using ValueObjects;
 /// <param name="State">How far the negotiation got.</param>
 /// <param name="SpliceTxId">The splice transaction id, once constructed.</param>
 /// <param name="CreatedAt">When the negotiation started.</param>
+/// <param name="RbfOf">For an RBF attempt of a pending splice (<c>tx_init_rbf</c>/<c>tx_ack_rbf</c>, wave SPR): the
+/// latest pending attempt it replaces (<see cref="FundingSet.LatestAttempt"/>); null for a <c>splice_init</c>
+/// negotiation.</param>
 public sealed record SpliceNegotiationModel(
     ChannelId ChannelId,
     bool IsInitiator,
@@ -46,4 +49,5 @@ public sealed record SpliceNegotiationModel(
     BitcoinScript? SpliceOutScript,
     SpliceNegotiationState State,
     TxId? SpliceTxId,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    TxId? RbfOf = null);

@@ -31,6 +31,15 @@ public class ChannelModel
     public FundingOutputInfo? FundingOutput { get; private set; }
 
     /// <summary>
+    /// The derivation index of our funding key in the current funding (splicing plan D5): 0 for a channel never
+    /// spliced, the locked splice's <c>ChannelFunding.LocalFundingKeyIndex</c> after a lock. Set with
+    /// <see cref="SetLocalFundingKeyIndex"/> by the reload (from the current <c>ChannelFundings</c> row) and by the lock
+    /// next to <see cref="ReplaceFundingOutput"/>; <see cref="GetSigningInfo"/> reports it with the current funding's
+    /// keys (NL-495, wave spr).
+    /// </summary>
+    public uint LocalFundingKeyIndex { get; private set; }
+
+    /// <summary>
     /// Our funding pubkey of the current funding: the funding output's (a locked splice rotates it, splicing plan D5),
     /// else the key set's. The 2-of-2 script and both anchor outputs of a commitment use the current funding's keys
     /// (BOLT 3), never the key set's once a splice locked.
@@ -486,6 +495,19 @@ public class ChannelModel
         DataLossDetected = true;
     }
 
+    /// <summary>Sets <see cref="LocalFundingKeyIndex"/> (NL-495): the current funding's key index.</summary>
+    public void SetLocalFundingKeyIndex(uint localFundingKeyIndex)
+    {
+        LocalFundingKeyIndex = localFundingKeyIndex;
+    }
+
+    /// <summary>
+    /// The signer's view of the channel. Contract (NL-495, wave spr): the funding fields are the <b>current</b>
+    /// funding's (<see cref="FundingOutput"/>'s outpoint, capacity and keys, <see cref="LocalFundingPubKey"/>/
+    /// <see cref="RemoteFundingPubKey"/>, and <see cref="LocalFundingKeyIndex"/>), not the key sets' original funding
+    /// keys; until the lane lands it still reports the key sets' keys, which the signer tolerates as a refresh of a
+    /// known splice funding.
+    /// </summary>
     public ChannelSigningInfo GetSigningInfo()
     {
         return new ChannelSigningInfo(FundingOutput!.TransactionId!.Value, FundingOutput.Index!.Value,
