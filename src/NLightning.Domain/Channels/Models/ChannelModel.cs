@@ -212,8 +212,8 @@ public class ChannelModel
 
     #endregion
 
-    private readonly LightningMoney _localBalance;
-    private readonly LightningMoney _remoteBalance;
+    private LightningMoney _localBalance;
+    private LightningMoney _remoteBalance;
     private readonly ulong _localNextHtlcId;
     private readonly ulong _remoteNextHtlcId;
     private readonly ulong _localCommitmentNumber;
@@ -347,6 +347,35 @@ public class ChannelModel
             throw new InvalidOperationException("The channel has no funding output to replace");
 
         FundingOutput = fundingOutput;
+    }
+
+    /// <summary>
+    /// An RBF of a dual-funded open changed a contribution (BOLT 2 lets either side change its
+    /// <c>funding_output_contribution</c> in <c>tx_init_rbf</c>/<c>tx_ack_rbf</c>, NL-521): the channel's funding output
+    /// (outpoint and capacity, same funding keys), both balances and the parameters that follow the capacity (the
+    /// reserve and in-flight limits) become the new attempt's. Only before the first snapshot (no <c>channel_ready</c>
+    /// yet), while the channel is being opened.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The channel has a snapshot, is past
+    /// <see cref="ChannelState.V1FundingSigned"/> or has no funding output yet.</exception>
+    public void ReplaceUnconfirmedFunding(FundingOutputInfo fundingOutput, LightningMoney localBalance,
+                                          LightningMoney remoteBalance, ChannelParams channelParams)
+    {
+        ArgumentNullException.ThrowIfNull(fundingOutput);
+        ArgumentNullException.ThrowIfNull(localBalance);
+        ArgumentNullException.ThrowIfNull(remoteBalance);
+        if (Commitments is not null || State is not (ChannelState.V1Opening or ChannelState.V1FundingSigned))
+            throw new InvalidOperationException("Only the funding of a channel that is still being opened can change");
+        if (FundingOutput is null)
+            throw new InvalidOperationException("The channel has no funding output to replace");
+        if (localBalance.MilliSatoshi + remoteBalance.MilliSatoshi != fundingOutput.Amount.MilliSatoshi)
+            throw new ArgumentException("The balances must add up to the funding output's amount",
+                                        nameof(fundingOutput));
+
+        FundingOutput = fundingOutput;
+        _localBalance = localBalance;
+        _remoteBalance = remoteBalance;
+        ChannelParams = channelParams;
     }
 
     public void UpdateLastSentSignature(CompactSignature lastSentSignature)

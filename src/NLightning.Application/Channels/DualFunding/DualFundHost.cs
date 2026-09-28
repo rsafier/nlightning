@@ -70,4 +70,8 @@ internal sealed class DualFundHost : IInteractiveTxHost
                                                               IReadOnlyList<ConstructedInteractiveTx> previousAttempts,
                                                               CancellationToken cancellationToken) =>
         _service.DecideRbfAsync(_negotiation, message);
+
+    /// <inheritdoc />
+    public Task<string?> OnRbfAcknowledgedAsync(TxAckRbfMessage message, CancellationToken cancellationToken) =>
+        Task.FromResult(_service.OnRbfAcknowledged(_negotiation, message));
 }

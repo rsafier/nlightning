@@ -83,7 +83,36 @@ internal sealed class DualFundNegotiation
     /// <summary>Whether an anchors channel counts toward the anchors reserve while it is being opened.</summary>
     public bool HoldsAnchorReserve { get; set; }
 
+    /// <summary>
+    /// The shares of the last fully signed attempt while an RBF attempt runs with other ones (BOLT 2: either side may
+    /// change its <c>funding_output_contribution</c> in <c>tx_init_rbf</c>/<c>tx_ack_rbf</c>, NL-521): put back when the
+    /// attempt ends before both <c>tx_signatures</c>, dropped when it completes. Memory only.
+    /// </summary>
+    public (LightningMoney Local, LightningMoney Remote)? SharesBeforeRbf { get; set; }
+
     public LightningMoney Total => LightningMoney.MilliSatoshis(LocalShare.MilliSatoshi + RemoteShare.MilliSatoshi);
+
+    /// <summary>
+    /// The attempt's shares become <paramref name="local"/> and <paramref name="remote"/>; the signed attempt's are
+    /// kept in <see cref="SharesBeforeRbf"/> (once per attempt).
+    /// </summary>
+    public void ChangeShares(LightningMoney local, LightningMoney remote)
+    {
+        SharesBeforeRbf ??= (LocalShare, RemoteShare);
+        LocalShare = local;
+        RemoteShare = remote;
+    }
+
+    /// <summary>An RBF attempt ended before it was signed: the signed attempt's shares again.</summary>
+    public void RestoreShares()
+    {
+        if (SharesBeforeRbf is not { } shares)
+            return;
+
+        LocalShare = shares.Local;
+        RemoteShare = shares.Remote;
+        SharesBeforeRbf = null;
+    }
 
     /// <summary>Completes whoever waits (the open, or the bump) with <paramref name="result"/>.</summary>
     public void Complete(DualFundedOpenResult result)
@@ -93,10 +122,17 @@ internal sealed class DualFundNegotiation
         OpenCompletion?.TrySetResult(result);
     }
 
-    /// <summary>A fully signed attempt's funding outpoint and first-commitment signatures.</summary>
+    /// <summary>
+    /// A fully signed attempt's funding outpoint, capacity, balances and parameters (the reserve and in-flight limits
+    /// follow the capacity) and first-commitment signatures.
+    /// </summary>
     internal sealed record SignedFunding(
         TxId TransactionId,
         ushort Index,
+        LightningMoney Capacity,
+        LightningMoney LocalBalance,
+        LightningMoney RemoteBalance,
+        ChannelParams ChannelParams,
         CompactSignature? LastSentSignature,
         CompactSignature? LastReceivedSignature);
 

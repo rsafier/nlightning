@@ -8,6 +8,7 @@ namespace NLightning.Application.Channels.DualFunding;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
@@ -19,6 +20,8 @@ using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Validators;
 using Domain.Channels.Validators.Parameters;
 using Domain.Channels.ValueObjects;
@@ -35,6 +38,7 @@ using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.InteractiveTx;
 using Domain.Protocol.InteractiveTx.Enums;
+using Domain.Protocol.InteractiveTx.Interfaces;
 using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -63,9 +67,9 @@ using Interfaces;
 /// memory only. Its <see cref="ChannelModel.Version"/> is <see cref="ChannelVersion.V2"/>.</para>
 /// <para>Singleton; every member that changes a negotiation runs under the channel's lock (the handlers under the one
 /// <c>ChannelManager</c> holds, <see cref="OpenAsync"/>/<see cref="BumpAsync"/> take it themselves).</para>
-/// <para>Known limits (ledger follow-ups): RBF is off unless <see cref="DualFundingOptions.AllowRbf"/>; an RBF keeps
-/// both contributions (a different <c>funding_output_contribution</c> is refused), and the channel keeps the
-/// signatures of the latest signed attempt only, so a replaced attempt that confirms instead leaves the channel on the
+/// <para>Known limits (ledger follow-ups): RBF is off unless <see cref="DualFundingOptions.AllowRbf"/>; an RBF may change
+/// either contribution (BOLT 2, NL-521: the capacity, balances and reserve follow the attempt), and the channel keeps
+/// the signatures of the latest signed attempt only, so a replaced attempt that confirms instead leaves the channel on the
 /// wrong outpoint (the per-funding commitments come with splicing's <c>FundingSet</c>).</para>
 /// </remarks>
 public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
@@ -343,7 +347,19 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     }
 
     /// <inheritdoc />
+    public Task<DualFundedOpenResult> BumpAsync(ChannelId channelId, uint feeratePerKw,
+                                                CancellationToken cancellationToken = default) =>
+        BumpAsync(channelId, feeratePerKw, null, cancellationToken);
+
+    /// <summary>
+    /// <see cref="BumpAsync(ChannelId, uint, CancellationToken)"/> with our <c>funding_output_contribution</c> changed
+    /// to <paramref name="localContribution"/> (BOLT 2: "MAY set <c>funding_output_contribution</c> to a different
+    /// value", NL-521), paid from the inputs of our last attempt (their change pays the difference); null keeps it.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">As the other overload, or the new contribution is refused
+    /// (<see cref="GetRbfShareViolation"/>) or our inputs cannot pay it.</exception>
     public async Task<DualFundedOpenResult> BumpAsync(ChannelId channelId, uint feeratePerKw,
+                                                      LightningMoney? localContribution,
                                                       CancellationToken cancellationToken = default)
     {
         TaskCompletionSource<DualFundedOpenResult> completion;
@@ -358,6 +374,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                     $"Channel {channelId} is not waiting for its funding (channel_ready sent or received)");
             if (negotiation.CompletedTxIds.Count == 0 || negotiation.LastContribution is not { } previous)
                 throw new InvalidOperationException($"Channel {channelId} has no signed funding transaction to replace");
+
+            // No attempt runs (the driver refuses a second one): shares a refused attempt took are dropped
+            negotiation.RestoreShares();
             if (await GetRbfRefusalAsync(negotiation) is { } refusal)
                 throw new InvalidOperationException($"Channel {channelId}: {refusal}");
 
@@ -366,16 +385,31 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                 throw new InvalidOperationException(
                     $"[IT-RBF-01] {feeratePerKw} sat/kw is below the minimum {minimum} sat/kw");
 
-            var contribution = negotiation.LocalShare.IsZero
-                                   ? InteractiveTxContribution.Empty
-                                   : DualFundingRules.RebuildContributionForFeerate(
-                                         previous, negotiation.LocalShare, true, GetSharedFunding(negotiation),
-                                         feeratePerKw, LightningMoney.Satoshis(ChangeDustLimitSat))
-                                  ?? throw new InvalidOperationException(
-                                         $"Our inputs cannot pay {feeratePerKw} sat/kw; add funds and try again");
+            var share = localContribution ?? negotiation.LocalShare;
+            if (share.IsZero)
+                throw new InvalidOperationException("The opener must contribute to a dual-funded open");
+            if (GetRbfShareViolation(negotiation, share, negotiation.RemoteShare.Satoshi) is { } violation)
+                throw new InvalidOperationException($"Channel {channelId}: {violation}");
+
+            var contribution = DualFundingRules.RebuildContributionForFeerate(
+                                   previous, share, true, GetSharedFunding(negotiation), feeratePerKw,
+                                   LightningMoney.Satoshis(ChangeDustLimitSat))
+                            ?? throw new InvalidOperationException(
+                                   $"Our inputs cannot pay {share} at {feeratePerKw} sat/kw; add funds and try again");
 
             var terms = CreateTerms(negotiation, true, feeratePerKw, GetLocktime(), contribution: contribution);
-            var messages = await GetDriver().RequestRbfAsync(terms, negotiation.LocalShare, cancellationToken);
+            ChangeSharesForRbf(negotiation, share, negotiation.RemoteShare);
+            IReadOnlyList<IChannelMessage> messages;
+            try
+            {
+                messages = await GetDriver().RequestRbfAsync(terms, share, cancellationToken);
+            }
+            catch
+            {
+                negotiation.RestoreShares();
+                throw;
+            }
+
             completion = new TaskCompletionSource<DualFundedOpenResult>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             negotiation.BumpCompletion = completion;
@@ -405,10 +439,13 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     public LightningMoney GetAcceptContribution(OpenChannel2Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
+        return GetAcceptContribution(message.Payload.FundingAmount);
+    }
+
+    private LightningMoney GetAcceptContribution(LightningMoney openerContribution)
+    {
         var wanted = LightningMoney.Satoshis(_options.AcceptContributionSat);
-        return _options.MatchOpenerContribution && wanted > message.Payload.FundingAmount
-                   ? message.Payload.FundingAmount
-                   : wanted;
+        return _options.MatchOpenerContribution && wanted > openerContribution ? openerContribution : wanted;
     }
 
     /// <inheritdoc />
@@ -691,22 +728,35 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
         var isFirstAttempt = channel.State == ChannelState.V1Opening;
         if (!isFirstAttempt && negotiation.LastSignedFunding is null
-                            && channel.FundingOutput is { TransactionId: { } signedTxId, Index: { } signedIndex })
+                            && channel.FundingOutput is
+                            { TransactionId: { } signedTxId, Index: { } signedIndex } signedFunding)
         {
             // An RBF attempt: the last fully signed attempt stays restorable until this one is signed (OnAbortedAsync)
             negotiation.LastSignedFunding = new DualFundNegotiation.SignedFunding(
-                signedTxId, signedIndex, channel.LastSentSignature, channel.LastReceivedSignature);
+                signedTxId, signedIndex, signedFunding.Amount, channel.LocalBalance, channel.RemoteBalance,
+                channel.ChannelParams, channel.LastSentSignature, channel.LastReceivedSignature);
         }
 
-        channel.FundingOutput!.TransactionId = transaction.TxId;
-        channel.FundingOutput.Index = checked((ushort)index);
-        RegisterWithSigner(channel, isFirstAttempt);
+        CompactSignature signature;
+        if (isFirstAttempt)
+        {
+            channel.FundingOutput!.TransactionId = transaction.TxId;
+            channel.FundingOutput.Index = checked((ushort)index);
+            RegisterWithSigner(channel);
+            signature = _lightningSigner.SignChannelTransaction(channel.ChannelId,
+                                                                BuildCommitment(channel, CommitmentSide.Remote));
+        }
+        else
+        {
+            // An RBF attempt: its outpoint, and its capacity, balances and reserve when a contribution changed
+            // (NL-521); the signer signs it as a pending funding of the channel (the BIP 143 sighash commits to the
+            // funding amount, so the first attempt's registration cannot sign it)
+            ApplyAttemptFunding(negotiation, channel, transaction.TxId, checked((ushort)index));
+            RegisterRbfFunding(channel, session);
+            signature = _lightningSigner.SignChannelTransaction(channel.ChannelId, transaction.TxId,
+                                                                BuildCommitment(channel, CommitmentSide.Remote));
+        }
 
-        var remoteCommitment =
-            _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote,
-                                                                                channel.RemoteCommitmentNumber);
-        var signature = _lightningSigner.SignChannelTransaction(
-            channel.ChannelId, _commitmentTransactionBuilder.Build(remoteCommitment));
         channel.UpdateLastSentSignature(signature);
 
         if (isFirstAttempt)
@@ -762,9 +812,14 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         foreach (var replaced in negotiation.CompletedTxIds)
             await unitOfWork.BroadcastTransactionDbRepository.MarkReplacedAsync(replaced);
 
+        // The signer signs for the new attempt from now on, as the channel does (its capacity may differ, NL-521)
+        if (negotiation.CompletedTxIds.Count > 0)
+            LockRbfFunding(channel, txId);
+
         negotiation.CompletedTxIds.Add(txId);
         negotiation.PendingTxId = null;
         negotiation.LastSignedFunding = null;
+        negotiation.SharesBeforeRbf = null;
         TrackAfterSave(negotiation, txId, () => PublishAsync(negotiation, txId, fundingWatch, outpointWatch,
                                                               broadcast));
         return [];
@@ -780,6 +835,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         negotiation.PendingTxId = null;
         if (negotiation.CompletedTxIds.Count > 0)
         {
+            negotiation.RestoreShares();
             await RestoreLastSignedFundingAsync(negotiation, reason);
             negotiation.BumpCompletion?.TrySetResult(new DualFundedOpenResult(negotiation.ChannelId, null, reason));
             negotiation.BumpCompletion = null;
@@ -803,8 +859,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             return;
 
         negotiation.LastSignedFunding = null;
-        funding.TransactionId = signed.TransactionId;
-        funding.Index = signed.Index;
+        channel.ReplaceUnconfirmedFunding(
+            new FundingOutputInfo(signed.Capacity, funding.LocalFundingPubKey, funding.RemoteFundingPubKey,
+                                  signed.TransactionId, signed.Index), signed.LocalBalance, signed.RemoteBalance,
+            signed.ChannelParams);
         if (signed.LastSentSignature is not null)
             channel.UpdateLastSentSignature(signed.LastSentSignature);
         if (signed.LastReceivedSignature is not null)
@@ -855,9 +913,13 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     }
 
     /// <summary>
-    /// A peer's <c>tx_init_rbf</c> for the open (the driver checked the IT-RBF-01 feerate floor): accepted with the
-    /// same shares, our inputs re-added and our change lowered for the new feerate, unless
-    /// <see cref="GetRbfRefusalAsync"/> refuses it.
+    /// A peer's <c>tx_init_rbf</c> for the open (the driver checked the IT-RBF-01 feerate floor), unless
+    /// <see cref="GetRbfRefusalAsync"/> refuses it. BOLT 2: the opener "MAY set <c>funding_output_contribution</c> to a
+    /// different value" (NL-521): its new contribution is checked (<see cref="GetRbfShareViolation"/>) and the attempt's
+    /// funding output, balances and reserve follow it. Our share: the previous one with our inputs re-added and our
+    /// change lowered for the new feerate; when we did not contribute before but our policy wants to
+    /// (<see cref="DualFundingOptions.AcceptContributionSat"/>, e.g. the wallet was empty at the open), a fresh
+    /// contribution, or still none when the wallet cannot fund it.
     /// </summary>
     internal async Task<InteractiveTxRbfDecision> DecideRbfAsync(DualFundNegotiation negotiation,
                                                                  TxInitRbfMessage message)
@@ -865,11 +927,17 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         if (await GetRbfRefusalAsync(negotiation) is { } refusal)
             return InteractiveTxRbfDecision.Reject(refusal);
 
+        // No attempt runs (the driver checked it): shares a refused attempt took are dropped
+        negotiation.RestoreShares();
+
         // funding_output_contribution is an s64 in satoshis (SP1-A); a dual-funded open's share is never negative
         var theirs = message.FundingOutputContributionTlv?.Satoshis ?? 0L;
-        if (theirs < 0 || (ulong)theirs * 1_000UL != negotiation.RemoteShare.MilliSatoshi)
-            return InteractiveTxRbfDecision.Reject(
-                $"changing the funding contribution ({negotiation.RemoteShare} -> {theirs} sat) is not supported");
+        var feerate = message.Payload.Feerate;
+        var localShare = negotiation.LocalShare;
+        if (localShare.IsZero && theirs >= 0)
+            localShare = GetAcceptContribution(LightningMoney.Satoshis(theirs));
+        if (GetRbfShareViolation(negotiation, localShare, theirs) is { } violation)
+            return InteractiveTxRbfDecision.Reject(violation);
 
         var contribution = InteractiveTxContribution.Empty;
         if (!negotiation.LocalShare.IsZero)
@@ -878,18 +946,107 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                 return InteractiveTxRbfDecision.Reject("our previous contribution is unknown");
 
             var rebuilt = DualFundingRules.RebuildContributionForFeerate(
-                previous, negotiation.LocalShare, false, GetSharedFunding(negotiation), message.Payload.Feerate,
+                previous, negotiation.LocalShare, false, GetSharedFunding(negotiation), feerate,
                 LightningMoney.Satoshis(ChangeDustLimitSat));
             if (rebuilt is null)
-                return InteractiveTxRbfDecision.Reject($"our inputs cannot pay {message.Payload.Feerate} sat/kw");
+                return InteractiveTxRbfDecision.Reject($"our inputs cannot pay {feerate} sat/kw");
             contribution = rebuilt;
         }
+        else if (!localShare.IsZero)
+        {
+            // Nothing of ours is in the earlier attempts, so nothing must be double-spent: a new contribution
+            try
+            {
+                contribution = await GetContributor().ContributeAsync(
+                                   new InteractiveTxContributionRequest(negotiation.ChannelId,
+                                                                        InteractiveTxPurpose.DualFundRbf, localShare,
+                                                                        [], feerate, 0,
+                                                                        message.RequireConfirmedInputsTlv is not null));
+            }
+            catch (InsufficientFundsException e)
+            {
+                _logger.LogWarning("Cannot contribute {Amount} to the RBF of {ChannelId} ({Reason}); accepting it "
+                                 + "without our funds", localShare, negotiation.ChannelId, e.Message);
+                localShare = LightningMoney.Zero;
+                if (GetRbfShareViolation(negotiation, localShare, theirs) is { } withoutUs)
+                    return InteractiveTxRbfDecision.Reject(withoutUs);
+            }
+        }
 
-        var terms = CreateTerms(negotiation, false, message.Payload.Feerate, message.Payload.Locktime,
-                                contribution: contribution);
-        _logger.LogInformation("Accepting the RBF of channel {ChannelId} at {Feerate} sat/kw", negotiation.ChannelId,
-                               message.Payload.Feerate);
+        ChangeSharesForRbf(negotiation, localShare, LightningMoney.Satoshis(theirs));
+        var terms = CreateTerms(negotiation, false, feerate, message.Payload.Locktime, contribution: contribution);
+        _logger.LogInformation("Accepting the RBF of channel {ChannelId} at {Feerate} sat/kw: {Remote} + our {Local}",
+                               negotiation.ChannelId, feerate, negotiation.RemoteShare, negotiation.LocalShare);
         return InteractiveTxRbfDecision.Accept(terms, negotiation.LocalShare);
+    }
+
+    /// <summary>
+    /// The peer's <c>tx_ack_rbf</c> to our <c>tx_init_rbf</c> (driver callback, under the channel's lock, before the
+    /// attempt is created): BOLT 2 lets the accepter change its <c>funding_output_contribution</c> (NL-521), so the
+    /// attempt's funding output is built from the new value, checked by <see cref="GetRbfShareViolation"/>. Returns the
+    /// <c>tx_abort</c> reason when it is refused, else null.
+    /// </summary>
+    internal string? OnRbfAcknowledged(DualFundNegotiation negotiation, TxAckRbfMessage message)
+    {
+        var theirs = message.FundingOutputContributionTlv?.Satoshis ?? 0L;
+        if (GetRbfShareViolation(negotiation, negotiation.LocalShare, theirs) is { } violation)
+        {
+            _logger.LogWarning("Refusing the tx_ack_rbf of channel {ChannelId}: {Reason}", negotiation.ChannelId,
+                               violation);
+            return violation;
+        }
+
+        ChangeSharesForRbf(negotiation, negotiation.LocalShare, LightningMoney.Satoshis(theirs));
+        return null;
+    }
+
+    /// <summary>
+    /// Why an RBF attempt with <paramref name="localShare"/> and the peer's <paramref name="remoteSatoshis"/> is
+    /// refused, or null (NL-521): a negative contribution (an s64 on the wire, but a v2 open's share is never negative),
+    /// more than all bitcoin, a funding output at or below the dust limit, an opener's share that cannot pay the first
+    /// commitment's fee (and anchors) at the channel's feerate (BOLT 2 open_channel), or a large channel without
+    /// <c>option_support_large_channel</c>.
+    /// </summary>
+    private string? GetRbfShareViolation(DualFundNegotiation negotiation, LightningMoney localShare,
+                                         long remoteSatoshis)
+    {
+        if (remoteSatoshis < 0)
+            return $"funding_output_contribution {remoteSatoshis} sat is negative: a dual-funded open's contribution "
+                 + "cannot be";
+        if (remoteSatoshis > MaxMoneySatoshis)
+            return $"funding_output_contribution {remoteSatoshis} sat is more than all bitcoin";
+
+        var channel = negotiation.Channel ?? throw new InvalidOperationException("The channel is not known yet");
+        var remoteShare = LightningMoney.Satoshis(remoteSatoshis);
+        var total = LightningMoney.MilliSatoshis(localShare.MilliSatoshi + remoteShare.MilliSatoshi);
+        var channelParams = channel.ChannelParams;
+        var dustLimit = Max(channelParams.Local.DustLimitAmount, channelParams.Remote.DustLimitAmount);
+        if (total <= dustLimit)
+            return $"the funding output of {total} would be at or below the dust limit {dustLimit}";
+
+        var openerShare = negotiation.IsOpener ? localShare : remoteShare;
+        var fee = CommitmentFeeCalculator.FunderCost((ulong)channelParams.FeeRateAmountPerKw.Satoshi,
+                                                     channelParams.OptionAnchorOutputs, 0);
+        if (openerShare < fee)
+            return $"the opener's contribution {openerShare} cannot pay the first commitment's fee {fee}";
+
+        if (total >= Domain.Channels.Constants.ChannelConstants.LargeChannelAmount
+         && GetNegotiatedFeatures(negotiation.Peer).LargeChannels == FeatureSupport.No)
+            return $"a funding output of {total} is a large channel, which is not negotiated";
+
+        return null;
+    }
+
+    private void ChangeSharesForRbf(DualFundNegotiation negotiation, LightningMoney localShare,
+                                    LightningMoney remoteShare)
+    {
+        if (localShare == negotiation.LocalShare && remoteShare == negotiation.RemoteShare)
+            return;
+
+        _logger.LogInformation("RBF of channel {ChannelId} changes the contributions: ours {OldLocal} -> {Local}, the "
+                             + "peer's {OldRemote} -> {Remote}", negotiation.ChannelId, negotiation.LocalShare,
+                               localShare, negotiation.RemoteShare, remoteShare);
+        negotiation.ChangeShares(localShare, remoteShare);
     }
 
     #endregion
@@ -935,13 +1092,15 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
         if (violation is null)
         {
-            var localCommitment =
-                _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
-                                                                                    channel.LocalCommitmentNumber);
+            var localCommitment = BuildCommitment(channel, CommitmentSide.Local);
             try
             {
-                _lightningSigner.ValidateSignature(channelId, message.Payload.Signature,
-                                                   _commitmentTransactionBuilder.Build(localCommitment));
+                // An RBF attempt is a pending funding of the signer until it completes (its capacity may differ)
+                if (negotiation.CompletedTxIds.Count > 0)
+                    _lightningSigner.ValidateSignature(channelId, pendingTxId, message.Payload.Signature,
+                                                       localCommitment);
+                else
+                    _lightningSigner.ValidateSignature(channelId, message.Payload.Signature, localCommitment);
             }
             catch (SignerException e)
             {
@@ -1050,11 +1209,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         if (negotiation is not { Channel: { } channel, PendingTxId: { } txId })
             return null;
 
-        var remoteCommitment =
-            _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote,
-                                                                                channel.RemoteCommitmentNumber);
-        var signature = _lightningSigner.SignChannelTransaction(channel.ChannelId,
-                                                                _commitmentTransactionBuilder.Build(remoteCommitment));
+        var remoteCommitment = BuildCommitment(channel, CommitmentSide.Remote);
+        var signature = negotiation.CompletedTxIds.Count > 0
+                            ? _lightningSigner.SignChannelTransaction(channel.ChannelId, txId, remoteCommitment)
+                            : _lightningSigner.SignChannelTransaction(channel.ChannelId, remoteCommitment);
         return _messageFactory.CreateCommitmentSignedMessage(channel.ChannelId, signature, [], txId);
     }
 
@@ -1090,6 +1248,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     #region Helpers
 
     private const long ChangeDustLimitSat = 546;
+
+    /// <summary>21 million bitcoin in satoshis (a contribution above it is not an amount).</summary>
+    private const long MaxMoneySatoshis = 2_100_000_000_000_000;
 
     private IInteractiveTxDriver GetDriver() =>
         _serviceProvider.GetService<IInteractiveTxDriver>()
@@ -1152,26 +1313,98 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         return new BitcoinScript(output.ToTxOut().ScriptPubKey.ToBytes());
     }
 
+    /// <summary>Registers the channel with the signer for the first attempt.</summary>
+    private void RegisterWithSigner(ChannelModel channel) =>
+        _lightningSigner.RegisterChannel(channel.ChannelId, channel.GetSigningInfo());
+
     /// <summary>
-    /// Registers the channel with the signer for the first attempt. An RBF attempt keeps the first registration (the
-    /// signer refuses another outpoint; its per-funding API comes with splicing): the BIP 143 sighash does commit to
-    /// the funding outpoint, so the commitment signatures are right only because the signer takes the prevout from the
-    /// transaction it is given, built on the new outpoint. The registration's outpoint stays the first attempt's, so
-    /// the signer cannot sign a channel announcement after an RBF: an RBF of a public channel is refused
-    /// (<see cref="GetRbfRefusalAsync"/>).
+    /// An RBF attempt's funding for the signer (NL-521): a pending funding of the channel with the same funding keys
+    /// and the attempt's capacity, signed for through the per-funding API until it completes
+    /// (<see cref="LockRbfFunding"/>). The first attempt's registration cannot sign it: the BIP 143 sighash commits to
+    /// the funding amount, which an RBF changes when a contribution does. Registering the same attempt again (a
+    /// retransmission) is a no-op.
     /// </summary>
-    private void RegisterWithSigner(ChannelModel channel, bool isFirstAttempt)
+    private void RegisterRbfFunding(ChannelModel channel, InteractiveTxSessionModel session)
+    {
+        var funding = channel.FundingOutput!;
+        _lightningSigner.RegisterFunding(channel.ChannelId,
+                                         new ChannelFunding(funding.TransactionId!.Value, funding.Index!.Value,
+                                                            (ulong)funding.Amount.Satoshi,
+                                                            funding.LocalFundingPubKey, funding.RemoteFundingPubKey,
+                                                            channel.LocalFundingKeyIndex, 0, 0,
+                                                            ChannelFundingKind.Initial, ChannelFundingStatus.Pending,
+                                                            session.FeeratePerKw, session.Locktime));
+    }
+
+    /// <summary>
+    /// A completed RBF attempt is the channel's funding for the signer too (its capacity may differ from the first
+    /// attempt's, NL-521): the earlier attempts are kept as replaced fundings, whose keys stay known. Already current
+    /// (a registration from the database after a restart) is a no-op.
+    /// </summary>
+    private void LockRbfFunding(ChannelModel channel, TxId txId)
     {
         try
         {
-            _lightningSigner.RegisterChannel(channel.ChannelId, channel.GetSigningInfo());
+            _lightningSigner.LockFunding(channel.ChannelId, txId);
         }
-        catch (SignerException e) when (!isFirstAttempt)
+        catch (SignerException e)
         {
-            _logger.LogDebug(e, "Signer keeps the first funding outpoint of channel {ChannelId} for the RBF attempt",
-                             channel.ChannelId);
+            _logger.LogWarning(e, "The signer did not take funding {TxId} of channel {ChannelId} as current; it "
+                                + "loads the channel from the database at the next start", txId, channel.ChannelId);
         }
     }
+
+    /// <summary>
+    /// The channel's funding outpoint, capacity, balances and capacity-bound parameters for an RBF attempt: a changed
+    /// contribution moves the capacity, both balances (a v2 open has no push), the reserve (BOLT 2: 1% of the funding
+    /// both sides contribute, at least the dust limit, on both sides) and our in-flight limit (a share of the capacity,
+    /// as at the open). The peer's in-flight limit is what it announced.
+    /// </summary>
+    private void ApplyAttemptFunding(DualFundNegotiation negotiation, ChannelModel channel, TxId txId, ushort index)
+    {
+        var funding = channel.FundingOutput!;
+        var total = negotiation.Total;
+        var channelParams = channel.ChannelParams;
+        if (total != funding.Amount)
+        {
+            var reserve = DualFundingRules.GetChannelReserve(total, Max(channelParams.Local.DustLimitAmount,
+                                                                        channelParams.Remote.DustLimitAmount));
+            var local = channelParams.Local;
+            var remote = channelParams.Remote;
+            channelParams = channelParams
+                           .WithLocal(new ChannelParty(local.DustLimitAmount, reserve, local.HtlcMinimumAmount,
+                                                       local.MaxAcceptedHtlcs,
+                                                       LightningMoney.Satoshis(
+                                                           _nodeOptions.AllowUpToPercentageOfChannelFundsInFlight
+                                                         * total.Satoshi / 100M), local.ToSelfDelay,
+                                                       local.UpfrontShutdownScript))
+                           .WithRemote(new ChannelParty(remote.DustLimitAmount, reserve, remote.HtlcMinimumAmount,
+                                                        remote.MaxAcceptedHtlcs, remote.MaxHtlcValueInFlight,
+                                                        remote.ToSelfDelay, remote.UpfrontShutdownScript));
+            _logger.LogInformation("RBF attempt {TxId} of channel {ChannelId}: capacity {Old} -> {New}, reserve {Reserve}",
+                                   txId, channel.ChannelId, funding.Amount, total, reserve);
+        }
+
+        channel.ReplaceUnconfirmedFunding(new FundingOutputInfo(total, funding.LocalFundingPubKey,
+                                                                funding.RemoteFundingPubKey, txId, index),
+                                          LightningMoney.MilliSatoshis(negotiation.LocalShare.MilliSatoshi),
+                                          LightningMoney.MilliSatoshis(negotiation.RemoteShare.MilliSatoshi),
+                                          channelParams);
+    }
+
+    private SignedTransaction BuildCommitment(ChannelModel channel, CommitmentSide side) =>
+        _commitmentTransactionBuilder.Build(
+            _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(
+                channel, side, side == CommitmentSide.Local ? channel.LocalCommitmentNumber
+                                                            : channel.RemoteCommitmentNumber));
+
+    private IInteractiveTxContributor GetContributor() =>
+        _serviceProvider.GetService<IInteractiveTxContributor>()
+     ?? throw new InvalidOperationException("No interactive-tx contributor is registered");
+
+    /// <summary>The features negotiated with <paramref name="peer"/> (our own without a peer manager).</summary>
+    private FeatureOptions GetNegotiatedFeatures(CompactPubKey peer) =>
+        _serviceProvider.GetService<IPeerManager>()?.GetPeer(peer)?.NegotiatedFeatures ?? _nodeOptions.Features;
 
     private static BitcoinScript? NonEmpty(UpfrontShutdownScriptTlv? tlv)
     {

@@ -381,8 +381,24 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         // No splice locked yet: the initial funding follows the channel (the confirmation, a reorg)
         var row = fundings.FirstOrDefault(f => f.Kind == (byte)ChannelFundingKind.Initial
                                              && f.Status == (byte)ChannelFundingStatus.Current);
-        if (row is not null && row.FundingTxId == txId)
+        if (row is null)
+            return;
+
+        if (row.FundingTxId == txId)
+        {
             ChannelFundingDbRepository.CopyFields(initial, row);
+            return;
+        }
+
+        // An RBF of a dual-funded open (before channel_ready, so before any splice) moved the channel to another
+        // funding transaction, whose capacity may differ (NL-521): the initial funding row follows it. The txid is part
+        // of the row's key, so the row is replaced.
+        if (fundings.Count == 1 && channelModel.Commitments is null)
+        {
+            _context.ChannelFundings.Remove(row);
+            _context.ChannelFundings.Add(
+                ChannelFundingDbRepository.CreateEntity(channelModel.ChannelId, initial, row.Sequence));
+        }
     }
 
     /// <summary>

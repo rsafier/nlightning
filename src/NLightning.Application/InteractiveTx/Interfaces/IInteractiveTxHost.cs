@@ -74,4 +74,15 @@ public interface IInteractiveTxHost
     Task<InteractiveTxRbfDecision> OnRbfRequestedAsync(TxInitRbfMessage message,
                                                        IReadOnlyList<ConstructedInteractiveTx> previousAttempts,
                                                        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The peer answered our <c>tx_init_rbf</c> with <paramref name="message"/>, before the new attempt is created (so
+    /// before <see cref="GetSharedFundingAsync"/> is called for it). BOLT 2: the peer "MAY set
+    /// <c>funding_output_contribution</c> to a different value" than in its earlier messages, so a host whose shared
+    /// output depends on it takes the new value here (NL-521). Returns null to go on, or the reason of the
+    /// <c>tx_abort</c> that ends the RBF (then <see cref="OnAbortedAsync"/> follows). A host that learned the peer's
+    /// contribution before the driver (a splice reads <c>tx_ack_rbf</c> itself) keeps the default.
+    /// </summary>
+    Task<string?> OnRbfAcknowledgedAsync(TxAckRbfMessage message, CancellationToken cancellationToken) =>
+        Task.FromResult<string?>(null);
 }

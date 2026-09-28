@@ -9,13 +9,13 @@ using Domain.Node.Options;
 using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
-using Domain.Protocol.Tlv;
 using InteractiveTx.TestDoubles;
 
 /// <summary>
 /// The refusals of the dual-funded open (splicing plan wave DF, BOLT 2 "Channel Establishment v2") on
 /// <see cref="DualFundHarness"/>: no <c>option_dual_fund</c>, an accepter that cannot fund its share, a first
-/// <c>commitment_signed</c> with an HTLC signature, and an RBF that changes the peer's contribution.
+/// <c>commitment_signed</c> with an HTLC signature. RBF contributions are in <see cref="DualFundRbfContributionTests"/>
+/// (a changed contribution is accepted since NL-521).
 /// </summary>
 public class DualFundRefusalTests
 {
@@ -144,30 +144,5 @@ public class DualFundRefusalTests
         }
 
         Assert.Empty(sender.Published);
-    }
-
-    [Fact]
-    public async Task Given_AnRbfThatChangesTheOpenersContribution_When_Received_Then_TxAbortAndTheOpenStands()
-    {
-        // Arrange
-        await using var harness = await DualFundHarness.CreateAsync(400_000, allowRbf: true);
-        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
-        harness.Bob.Wallet.Utxos.Add(WalletUtxo.Create(700_000));
-        var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
-                                                new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare),
-                                                TestContext.Current.CancellationToken));
-        Assert.True(result.FailureReason is null, $"{result.FailureReason}\n{harness.Describe()}");
-        var initRbf = new TxInitRbfMessage(new TxInitRbfPayload(result.ChannelId, 5_000, 500),
-                                           new FundingOutputContributionTlv(LightningMoney.Satoshis(650_000)));
-
-        // Act
-        await harness.DeliverAsync(harness.Alice, initRbf);
-        var abort = harness.TakeNext(harness.Bob);
-
-        // Assert: Bob refused the RBF; the signed open is still the channel's funding
-        var txAbort = Assert.IsType<TxAbortMessage>(abort);
-        Assert.Contains("contribution", System.Text.Encoding.ASCII.GetString(txAbort.Payload.Data));
-        Assert.Equal([result.FundingTxId!.Value], harness.Bob.DualFund.GetSignedFundingTxIds(result.ChannelId));
-        Assert.Equal(ChannelState.V1FundingSigned, harness.Bob.Channel(result.ChannelId).State);
     }
 }

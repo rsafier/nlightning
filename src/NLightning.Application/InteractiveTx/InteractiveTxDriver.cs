@@ -613,6 +613,14 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         entry.PendingRbf = null;
         var terms = pending with { RemoteRequiresConfirmedInputs = ackRbf.RequireConfirmedInputsTlv is not null };
 
+        // NL-521: the peer may change its funding_output_contribution in tx_ack_rbf; the host takes it (or refuses it)
+        // before the attempt's shared funding is built
+        if (await entry.Host!.OnRbfAcknowledgedAsync(ackRbf, cancellationToken) is { } refusal)
+        {
+            await entry.Host.OnAbortedAsync(channelId, refusal, cancellationToken);
+            return RejectRbf(channelId, entry, refusal);
+        }
+
         Attempt attempt;
         try
         {
