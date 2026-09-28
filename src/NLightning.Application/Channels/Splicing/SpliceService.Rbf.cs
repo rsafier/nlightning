@@ -201,11 +201,14 @@ public sealed partial class SpliceService
     }
 
     /// <summary>
-    /// Whether a <c>tx_init_rbf</c>/<c>tx_ack_rbf</c> on <paramref name="channelId"/> belongs to a splice (the channel
-    /// is past <c>channel_ready</c>; a dual-funded open is RBF-ed before it, through the interactive-tx driver alone).
+    /// Whether a <c>tx_init_rbf</c>/<c>tx_ack_rbf</c> on <paramref name="channelId"/> belongs to a splice: the channel
+    /// is past <c>channel_ready</c> and <c>option_splice</c> is negotiated. A dual-funded open is RBF-ed before
+    /// <c>channel_ready</c>, through the interactive-tx driver alone, which also answers a late one with
+    /// <c>tx_abort</c> on a channel without splicing.
     /// </summary>
-    public bool HandlesRbf(ChannelId channelId) =>
-        _channelMemoryRepository.TryGetChannel(channelId, out var channel)
+    public bool HandlesRbf(ChannelId channelId, FeatureOptions negotiatedFeatures) =>
+        negotiatedFeatures is { OptionSplice: not FeatureSupport.No }
+     && _channelMemoryRepository.TryGetChannel(channelId, out var channel)
      && channel.State is Domain.Channels.Enums.ChannelState.Open or Domain.Channels.Enums.ChannelState.ShuttingDown
                                                                   or Domain.Channels.Enums.ChannelState.Negotiating;
 

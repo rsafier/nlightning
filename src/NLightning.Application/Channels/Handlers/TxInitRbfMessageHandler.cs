@@ -37,7 +37,8 @@ public sealed class TxInitRbfMessageHandler : IChannelMessageHandler<TxInitRbfMe
     {
         ArgumentNullException.ThrowIfNull(message);
         var channelId = message.Payload.ChannelId;
-        if (_serviceProvider.GetService<SpliceService>() is { } splices && splices.HandlesRbf(channelId))
+        if (_serviceProvider.GetService<SpliceService>() is { } splices
+         && splices.HandlesRbf(channelId, negotiatedFeatures))
             return splices.HandleTxInitRbfAsync(message, negotiatedFeatures, peerPubKey, _unitOfWork);
 
         if (_serviceProvider.GetService<IInteractiveTxDriver>() is { } driver)
