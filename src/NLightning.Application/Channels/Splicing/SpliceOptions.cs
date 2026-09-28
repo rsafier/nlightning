@@ -22,11 +22,23 @@ public sealed class SpliceOptions
     public uint MinFeeratePerKw { get; set; } = 253;
 
     /// <summary>
-    /// SP-R-01: the highest <c>funding_feerate_perkw</c> of a peer's <c>splice_init</c> we accept (above it:
-    /// <c>tx_abort</c>). As acceptor we pay nothing (D10), so this only guards against a feerate the initiator could
-    /// not mean.
+    /// SP-R-01: the highest <c>funding_feerate_perkw</c> of a peer's <c>splice_init</c> we accept, and the highest
+    /// <c>feerate</c> of a peer's <c>tx_init_rbf</c> (above it: <c>tx_abort</c>, BOLT 2 "MAY send tx_abort for any
+    /// reason"). As acceptor of a splice we pay nothing (D10), but in a peer's RBF of a splice we contributed to we pay
+    /// our part of the fee at the peer's feerate (from our channel balance for a splice-out, from our change for a
+    /// splice-in), so the cap also bounds what the peer can make us pay (see also
+    /// <see cref="MaxRbfFeeShareSatoshis"/>).
     /// </summary>
     public uint MaxFeeratePerKw { get; set; } = 250_000;
+
+    /// <summary>
+    /// Wave SPR review: the most our share of the fee of a peer's RBF attempt may be (the fee of our own inputs and
+    /// outputs at the peer's feerate). Above it, or above half of what our contribution moves (our splice-out outputs,
+    /// our splice-in amount), we contribute nothing to that attempt instead (BOLT 2 fee bumping: a node "sets their sats
+    /// to zero" rather than fail the RBF). Null leaves only the half-of-what-it-moves rule. Our own bumps are bounded
+    /// by <c>SpliceBumpRequest.MaxFeeSatoshis</c> instead.
+    /// </summary>
+    public ulong? MaxRbfFeeShareSatoshis { get; set; } = 50_000;
 
     /// <summary>
     /// Set <c>require_confirmed_inputs</c> in our <c>splice_init</c>/<c>splice_ack</c> (SP-S-02, SP-TX-04): the peer's
