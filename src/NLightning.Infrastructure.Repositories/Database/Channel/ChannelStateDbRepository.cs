@@ -8,6 +8,8 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Payments.Enums;
@@ -197,14 +199,58 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                    ?? throw new InvalidOperationException($"Channel {channelId} does not exist");
 
         // Only the current funding's rows are the state machine's; a pending splice's are read per funding
+        var allCommitments = commitments;
         commitments = commitments.Where(c => c.FundingTxId == channel.FundingTxId).ToList();
         if (commitments.Count == 0)
             return null;
         var feeUpdates = await _context.FeeUpdates.AsNoTracking().Where(f => f.ChannelId == channelId).ToListAsync();
         var shachain = await _remoteShachainDbRepository.GetByChannelIdAsync(channelId);
+        var pendingRows = await _context.ChannelFundings.AsNoTracking()
+                                        .Where(f => f.ChannelId == channelId
+                                                 && f.Status == (byte)ChannelFundingStatus.Pending)
+                                        .OrderBy(f => f.Sequence)
+                                        .ToListAsync();
 
-        return MapToDomain(channel, commitments, htlcs, feeUpdates, shachain, @params);
+        var state = MapToDomain(channel, commitments, htlcs, feeUpdates, shachain, @params);
+        if (pendingRows.Count == 0)
+            return state;
+
+        // A splice the peer's commitment_signed made pending (wave sp2 integration): restored with the signatures of
+        // our commitment and of the unacked remote one on its funding, so the reestablish, the splice's
+        // splice_locked and its lock find it after a restart. A pending row without the peer's signatures at our
+        // current number was never pending in the engine (only our commitment_signed went out) and stays out.
+        var pendingFundings = new List<PendingFundingState>();
+        foreach (var row in pendingRows)
+        {
+            var slots = allCommitments.Where(c => c.FundingTxId == row.FundingTxId).ToList();
+            var localRow = slots.SingleOrDefault(c => c.Slot == CommitmentEntity.LocalCurrentSlot);
+            if (localRow is null || localRow.Number != state.Commitments.LocalCommit.Number
+                                 || MapSignatures(localRow) is not { } localSignatures)
+                continue;
+
+            var remoteNextRow = slots.SingleOrDefault(c => c.Slot == CommitmentEntity.RemoteNextSlot);
+            pendingFundings.Add(new PendingFundingState(ChannelFundingDbRepository.MapToDomain(row), localSignatures,
+                                                        remoteNextRow is null ? null : MapSignatures(remoteNextRow)));
+        }
+
+        if (pendingFundings.Count == 0)
+            return state;
+
+        try
+        {
+            return MapToDomain(channel, commitments, htlcs, feeUpdates, shachain, @params, pendingFundings);
+        }
+        catch (InvalidOperationException)
+        {
+            // Stored per-funding signatures that do not fit the snapshot (a crash between the splice step's saves):
+            // the channel still loads on its current funding, as before any splice was restored
+            return state;
+        }
     }
+
+    /// <summary>A pending funding of the engine snapshot with its per-funding signatures, as stored.</summary>
+    internal sealed record PendingFundingState(ChannelFunding Funding, CommitmentSignatures LocalSignatures,
+                                               CommitmentSignatures? RemoteNextSignatures);
 
     /// <inheritdoc />
     public async Task SetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc, Secret sharedSecret)
@@ -322,7 +368,8 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                                                       IEnumerable<HtlcEntity> htlcRows,
                                                       IEnumerable<FeeUpdateEntity> feeUpdateRows,
                                                       IReadOnlyList<Domain.Protocol.Models.ShachainEntry> shachain,
-                                                      CommitmentParams @params)
+                                                      CommitmentParams @params,
+                                                      IReadOnlyList<PendingFundingState>? pendingFundings = null)
     {
         // The current funding's slots (splicing plan §3.8): a pending splice has rows of its own
         rows = rows.Where(c => c.FundingTxId == channel.FundingTxId).ToList();
@@ -347,8 +394,14 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         }
 
         var feeUpdates = feeUpdateRows.Select(f => new FeeUpdate(f.Sequence, f.FeeratePerKw, (HtlcState)f.State));
+        pendingFundings ??= [];
         var localCommit = new LocalCommit(localRow.Number, MapSpec(localRow, CommitmentSide.Local),
-                                          MapSignatures(localRow));
+                                          MapSignatures(localRow))
+        {
+            PendingFundingSignatures = pendingFundings
+                                       .Select(p => new FundingSignatures(p.Funding.FundingTxId, p.LocalSignatures))
+                                       .ToList()
+        };
         var remoteCommit = new RemoteCommit(remoteRow.Number, MapSpec(remoteRow, CommitmentSide.Remote),
                                             MapPoint(remoteRow));
         RemoteNextCommit? remoteNextCommit = null;
@@ -358,7 +411,14 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                                  MapPoint(remoteNextRow)),
                 MapSignatures(remoteNextRow)
              ?? throw new InvalidOperationException(
-                    $"Channel {channel.ChannelId} has an unacked remote commitment without signatures"));
+                    $"Channel {channel.ChannelId} has an unacked remote commitment without signatures"))
+            {
+                PendingFundingSignatures = pendingFundings
+                                           .Where(p => p.RemoteNextSignatures is not null)
+                                           .Select(p => new FundingSignatures(p.Funding.FundingTxId,
+                                                                              p.RemoteNextSignatures!))
+                                           .ToList()
+            };
 
         ChannelCommitments commitments;
         try
@@ -368,7 +428,10 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                                                      checked((ulong)channel.RemoteBalanceMsat), openHtlcs, feeUpdates,
                                                      channel.LocalNextHtlcId, channel.RemoteNextHtlcId, localCommit,
                                                      remoteCommit, remoteNextCommit,
-                                                     channel.RemoteNextPerCommitmentPoint);
+                                                     channel.RemoteNextPerCommitmentPoint,
+                                                     pendingFundings.Count == 0
+                                                         ? null
+                                                         : pendingFundings.Select(p => p.Funding).ToList());
         }
         catch (ArgumentException e)
         {

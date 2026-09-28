@@ -163,6 +163,60 @@ public class SpliceFundingsPersistenceTests
     }
 
     [Fact]
+    public async Task Given_ASpliceThePeersCommitmentSignedMadePending_When_Reloaded_Then_TheEngineHasItPending()
+    {
+        // Arrange: the splice step's saves (ours, then the peer's splice commitment_signed on the new funding)
+        await using var harness = await SpliceHarness.CreateAsync();
+        var funding = harness.Splice(0x95);
+        var us = harness.Driver.Us;
+        var signatures = CommitmentDanceDriver.Signatures(0x31, us.LocalCommit.Spec.Htlcs.Count);
+        await harness.SaveAsync(async uow =>
+        {
+            await uow.ChannelFundingDbRepository.UpsertAsync(harness.ChannelId, funding);
+            await uow.ChannelFundingDbRepository.StageRemoteCommitmentAsync(
+                harness.ChannelId, funding.FundingTxId,
+                new RemoteCommit(us.RemoteCommit.Number, Shifted(us.RemoteCommit.Spec),
+                                 us.RemoteCommit.PerCommitmentPoint), CommitmentDanceDriver.Signatures(0x32, 0));
+            await uow.ChannelFundingDbRepository.StageLocalCommitmentAsync(
+                harness.ChannelId, funding.FundingTxId,
+                new LocalCommit(us.LocalCommit.Number, Shifted(us.LocalCommit.Spec), signatures));
+        });
+
+        // Act: a restart
+        var reloaded = await harness.ReloadChannelAsync();
+
+        // Assert: the pending splice is back in the engine, with the peer's signatures of our commitment on it
+        var commitments = reloaded.Commitments!;
+        Assert.Equal(funding.FundingTxId, Assert.Single(commitments.PendingFundings).FundingTxId);
+        Assert.Equal(signatures.Signature, commitments.LocalCommit.SignaturesFor(funding.FundingTxId)!.Signature);
+        Assert.Equal(us.LocalCommit.Number, commitments.LocalCommit.Number);
+    }
+
+    [Fact]
+    public async Task Given_ASpliceOnlyWeSignedFor_When_Reloaded_Then_TheEngineHasNoPendingFunding()
+    {
+        // Arrange: only our commitment_signed's save (the peer's splice commitment_signed never arrived)
+        await using var harness = await SpliceHarness.CreateAsync();
+        var funding = harness.Splice(0x96);
+        var us = harness.Driver.Us;
+        await harness.SaveAsync(async uow =>
+        {
+            await uow.ChannelFundingDbRepository.UpsertAsync(harness.ChannelId, funding);
+            await uow.ChannelFundingDbRepository.StageRemoteCommitmentAsync(
+                harness.ChannelId, funding.FundingTxId,
+                new RemoteCommit(us.RemoteCommit.Number, Shifted(us.RemoteCommit.Spec),
+                                 us.RemoteCommit.PerCommitmentPoint), CommitmentDanceDriver.Signatures(0x33, 0));
+        });
+
+        // Act
+        var reloaded = await harness.ReloadChannelAsync();
+
+        // Assert: as before the restart, nothing is pending in the engine
+        Assert.Empty(reloaded.Commitments!.PendingFundings);
+        await harness.AssertReloadEqualsAsync();
+    }
+
+    [Fact]
     public async Task Given_TheCurrentFunding_When_StagingSpliceCommitmentsForIt_Then_Refused()
     {
         // Arrange

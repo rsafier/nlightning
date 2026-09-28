@@ -146,6 +146,42 @@ public class SpliceConformanceTests
         await AssertUsableAsync(harness, spliceTxId);
     }
 
+    /// <summary>
+    /// SP-T-04 across a restart (wave sp2 integration, Proof SP2 (b)): both <c>commitment_signed</c> are lost and Alice
+    /// restarts, so her splice service and interactive-tx driver no longer hold the negotiation. On
+    /// <c>channel_reestablish</c> she resumes it from her stored rows: Bob's retransmitted <c>commitment_signed</c> is
+    /// taken as the splice's (not as a commitment update), and both <c>tx_signatures</c> follow.
+    /// </summary>
+    [Fact]
+    public async Task Given_BothCommitSigsLostAndTheInitiatorRestarted_When_Reconnected_Then_TheSpliceCompletes()
+    {
+        // Arrange
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(SpliceIn + 200_000);
+        var start = StartSplice(harness);
+        await PumpUntilAsync(harness, (_, m) => m is CommitmentSignedMessage);
+        var lostAlice = (CommitmentSignedMessage)harness.Alice.Node.PeekNext()!;
+        var spliceTxId = lostAlice.FundingTxIdTlv!.FundingTxId;
+
+        // Act
+        await harness.RestartAsync(harness.Alice);
+        await start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Null(harness.Alice.Driver.GetInfo(TwoNodeHarness.ChannelId));
+        var mark = harness.Transcript.Count;
+        await harness.Harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert
+        Assert.Equal(
+        [
+            "Alice:ChannelReestablish", "Bob:ChannelReestablish", "Bob:CommitmentSigned", "Alice:CommitmentSigned",
+            "Bob:TxSignatures", "Alice:TxSignatures"
+        ], Sequence(harness, mark, IsSigningStep));
+        AssertSameBytes(harness, lostAlice, Retransmitted<CommitmentSignedMessage>(harness, mark, "Alice"));
+        AssertPendingOnBoth(harness, spliceTxId);
+        await AssertUsableAsync(harness, spliceTxId);
+    }
+
     #endregion
 
     #region SP-T-05 one side sent tx_signatures

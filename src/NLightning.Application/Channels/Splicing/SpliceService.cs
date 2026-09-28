@@ -381,6 +381,69 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
     public SpliceNegotiationModel? GetNegotiation(ChannelId channelId) =>
         Get(channelId)?.Model ?? _lastSigned.GetValueOrDefault(channelId);
 
+    /// <summary>
+    /// Under the channel's lock, on <c>channel_reestablish</c>: the channel's splice negotiation rebuilt after a restart
+    /// from its stored rows (the latest constructed, not aborted, not fully signed <c>InteractiveTxSessions</c> row of
+    /// purpose <see cref="InteractiveTxPurpose.Splice"/> and the <c>ChannelFundings</c> row our
+    /// <c>commitment_signed</c>'s save wrote), and resumed in the interactive-tx driver, so the peer's retransmitted
+    /// splice <c>commitment_signed</c> and <c>tx_signatures</c> complete it instead of a <c>tx_abort</c> (BOLT 2
+    /// <c>next_funding</c>; wave sp2 integration). Nothing when a negotiation is in memory or none is stored.
+    /// </summary>
+    public async Task EnsureLoadedAsync(ChannelModel channel, IUnitOfWork unitOfWork,
+                                        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(unitOfWork);
+        var channelId = channel.ChannelId;
+        if (Get(channelId) is not null || channel.Commitments is null)
+            return;
+
+        var sessions = await unitOfWork.InteractiveTxSessionDbRepository.GetByChannelIdAsync(channelId);
+        var stored = sessions.Where(m => m.Purpose == InteractiveTxPurpose.Splice
+                                      && m.State != InteractiveTxSessionState.Aborted && m.ConstructedTx is not null)
+                             .OrderBy(m => m.CreatedAt)
+                             .ToList();
+        if (stored.Count == 0 || stored[^1] is not { State: not InteractiveTxSessionState.Signed } latest)
+            return;
+
+        var txId = latest.ConstructedTx!.TxId;
+        var funding = (await unitOfWork.ChannelFundingDbRepository.GetByChannelIdAsync(channelId))
+           .FirstOrDefault(f => f.FundingTxId == txId && f.Status == ChannelFundingStatus.Pending);
+        if (funding is null)
+        {
+            _logger.LogInformation("Splice {TxId} of channel {ChannelId} has no pending funding row; not resumed",
+                                   txId, channelId);
+            return;
+        }
+
+        var fundings = _statePort.GetFundings(channel);
+        var negotiation = CreateNegotiation(channel, fundings, latest.IsInitiator,
+                                            funding.LocalBalanceDeltaMsat / 1_000,
+                                            funding.RemoteBalanceDeltaMsat / 1_000, latest.FeeratePerKw,
+                                            latest.Locktime, funding.LocalFundingPubKey, funding.LocalFundingKeyIndex,
+                                            funding.RemoteFundingPubKey, false, false, null, null,
+                                            SpliceNegotiationState.CommitmentSigned);
+        negotiation.Model = negotiation.Model with { SpliceTxId = txId };
+        if (!TryPrepareSharedFunding(negotiation, out var reason))
+        {
+            _logger.LogWarning("Cannot resume splice {TxId} of channel {ChannelId}: {Reason}", txId, channelId, reason);
+            return;
+        }
+
+        negotiation.NewFunding = funding;
+        negotiation.CommitmentSignedReceived = latest.CommitmentSignedReceived
+                                            || fundings.Pending.Any(f => f.FundingTxId == txId);
+        var host = CreateHost(negotiation);
+        var driver = GetDriver();
+        if (driver.GetInfo(channelId) is null)
+            await driver.ResumeAsync(latest, CreateTerms(negotiation, latest.LocalContribution), host,
+                                     cancellationToken, stored.Where(m => m.SessionId != latest.SessionId).ToList());
+
+        _negotiations[channelId] = negotiation;
+        _logger.LogInformation("Resumed splice {TxId} of channel {ChannelId} (peer's commitment_signed {Received})",
+                               txId, channelId, negotiation.CommitmentSignedReceived ? "received" : "awaited");
+    }
+
     #endregion
 
     #region ISpliceCommitmentReceiver

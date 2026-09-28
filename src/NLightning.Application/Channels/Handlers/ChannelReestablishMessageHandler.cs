@@ -182,6 +182,12 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                                              && local.LatestInteractiveTx is not null)
             await _dualFundReestablish.EnsureLoadedAsync(channel);
 
+        // A splice our commitment_signed started resumes too (the driver and the splice service forgot it on a
+        // restart), so the peer's retransmitted splice commitment_signed and tx_signatures complete it
+        if (local.LatestInteractiveTx is { IsSplice: true, TxSignaturesReceived: false }
+         && _serviceProvider?.GetService<SpliceService>() is { } splices)
+            await splices.EnsureLoadedAsync(channel, _unitOfWork);
+
         // SP-RE-04: the peer's my_current_funding_locked processed as its splice_locked, before the retransmissions
         if (plan.PeerSpliceLocked is { } lockedTxId && plan.Outcome == ReestablishOutcome.Resume)
             replies.AddRange(await ProcessPeerSpliceLockedAsync(channel, lockedTxId, peerPubKey));
