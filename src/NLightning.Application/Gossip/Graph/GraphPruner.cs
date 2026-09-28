@@ -238,8 +238,11 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
 
             _store.MarkSpent(shortChannelId, height);
             changes++;
-            _logger.LogInformation("Graph channel {ShortChannelId} closed: its funding output was spent at block {Height}",
-                                   shortChannelId, height);
+            // BOLT 7: kept (and routable by a splice's peers) until the spend is 72 blocks deep, since a splice
+            // re-announces the channel under a new short channel id; not necessarily a close
+            _logger.LogInformation("Graph channel {ShortChannelId}: its funding output was spent at block {Height} "
+                                 + "(a close or a splice); it is forgotten at block {ForgetHeight}", shortChannelId,
+                                   height, height + _options.SpentChannelRetentionBlocks);
         }
 
         return changes;

@@ -1236,8 +1236,15 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
 
         if (session is null)
         {
-            _logger.LogWarning("Peer {Peer} not connected, dropping {messageType}", args.PeerPubKey,
-                               Enum.GetName(args.ResponseMessage.Type));
+            // A funding-lock message raised while the peer is away (e.g. a confirmation processed at startup, before
+            // the connection) is routine: channel_reestablish carries it on the next connection
+            var level = args.ResponseMessage.Type is MessageTypes.SpliceLocked or MessageTypes.ChannelReady
+                                                  or MessageTypes.AnnouncementSignatures
+                            ? LogLevel.Information
+                            : LogLevel.Warning;
+            if (_logger.IsEnabled(level))
+                _logger.Log(level, "Peer {Peer} not connected, dropping {messageType}", args.PeerPubKey,
+                            Enum.GetName(args.ResponseMessage.Type));
             return;
         }
 

@@ -94,10 +94,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 7 | 166 | 173 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 147 | 126 | 348 |
+| fixed | 14 | 61 | 147 | 127 | 349 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **157** | **298** | **530** |
+| **Total** | **14** | **61** | **157** | **299** | **531** |
 
 ### Epics
 
@@ -4614,6 +4614,15 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Return the funding txid of a dual-funded open in the open's own response (a new `ClientCommand` or response key, NL-210 rules), or let the subscription request carry the txid the client last printed so the daemon answers at once when the channel's current funding differs; and document `openchannel ... &` (or a second terminal) for `bumpopen` in the runbook meanwhile.
 - **Blocks/Blocked-by:** Related NL-528, NL-530
 - **Plan ref:** `DAY0_RUNBOOK.md` §2.2
+### NL-536 Routine startup and splice events in the Mutinynet logs were warnings or misleading
+- **Status:** fixed (this commit)
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` ("Processing missed blocks"), `src/NLightning.Application/Node/Managers/PeerManager.cs` ("not connected, dropping"), `src/NLightning.Application/Channels/Splicing/RetiredScidMap.cs` (`LoadAsync`), `src/NLightning.Application/Gossip/Graph/GraphPruner.cs` ("Graph channel ... closed")
+- **Evidence:** The two Mutinynet dry-run logs (`~/.nltg/mutinynet{,-fafo2}/daemon.out`, 2026-09-28): every restart logged `WRN Processing missed blocks from height N to M` and `WRN Peer ... not connected, dropping SpliceLocked` (a splice confirmed at startup before the peer reconnected; the reestablish's `my_current_funding_locked` carries it), `RetiredScidMap Loaded N retired short channel id(s) at height 0` (the host loads the map before the chain monitor has its height, so nothing expired was dropped and the log named height 0), and each splice logged `GraphPruner Graph channel <scid> closed: its funding output was spent`, although a spliced channel is only marked spent and kept for 72 blocks.
+- **Fix:** Lane cli535. Missed blocks at Information; a dropped `splice_locked`, `channel_ready` or `announcement_signatures` for an unconnected peer at Information (anything else stays Warning); `RetiredScidMap.LoadAsync(0)` reads the chain monitor's stored `BlockchainState` height (test `RetiredScidMapTests.Given_TheMonitorNotStartedYet_*`); the pruner says "its funding output was spent at block H (a close or a splice); it is forgotten at block H + 72".
+- **Blocks/Blocked-by:** Related NL-518, NL-532, NL-534
+- **Plan ref:** `DAY0_RUNBOOK.md` §5
 ### NL-525 Our onion-message paths have no dummy hops
 - **Status:** open
 - **Severity:** low

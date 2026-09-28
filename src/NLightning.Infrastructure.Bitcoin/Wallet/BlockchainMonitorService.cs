@@ -1599,9 +1599,10 @@ public class BlockchainMonitorService : IBlockchainMonitor
         if (upToExclusive > _catchUpHeight)
             _catchUpHeight = upToExclusive;
 
-        if (upToExclusive > _lastProcessedBlockHeight + 1)
-            _logger.LogWarning("Processing missed blocks from height {LastProcessedHeight} to {CurrentHeight}",
-                               _lastProcessedBlockHeight + 1, upToExclusive - 1);
+        // Routine after downtime or a burst of blocks: Information, not a warning
+        if (upToExclusive > _lastProcessedBlockHeight + 1 && _logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Processing missed blocks from height {LastProcessedHeight} to {CurrentHeight}",
+                                   _lastProcessedBlockHeight + 1, upToExclusive - 1);
 
         await FillQueueFromChainAsync();
     }

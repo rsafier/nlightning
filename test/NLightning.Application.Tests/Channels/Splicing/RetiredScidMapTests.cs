@@ -5,6 +5,7 @@ namespace NLightning.Application.Tests.Channels.Splicing;
 
 using Application.Channels.Splicing;
 using Domain.Bitcoin.Events;
+using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
@@ -189,6 +190,37 @@ public class RetiredScidMapTests
         Assert.True(map.TryResolve(s_firstSpliceScid, out var channelId));
         Assert.Equal(s_channelId, channelId);
         Assert.False(map.TryResolve(s_initialScid, out _));
+    }
+
+    [Fact]
+    public async Task Given_TheMonitorNotStartedYet_When_LoadedAtHeightZero_Then_TheStoredHeightIsUsed()
+    {
+        // Arrange: the daemon loads the map before the chain monitor starts (its height is 0 then); the monitor
+        // stored 710, where the initial scid (retired at 600, expiring at 672) is already gone
+        var fundings = new List<ChannelFunding>
+        {
+            Funding(0x01, ChannelFundingStatus.Replaced, s_initialScid, 400),
+            Funding(0x02, ChannelFundingStatus.Replaced, s_firstSpliceScid, 600),
+            Funding(0x04, ChannelFundingStatus.Current, s_secondSpliceScid, 700)
+        };
+        var channelDb = new Mock<IChannelDbRepository>();
+        channelDb.Setup(r => r.GetReadyChannelsAsync()).ReturnsAsync([CreateChannel(s_channelId, ChannelState.Open)]);
+        var fundingDb = new Mock<IChannelFundingDbRepository>();
+        fundingDb.Setup(r => r.GetByChannelIdAsync(s_channelId)).ReturnsAsync(fundings);
+        var states = new Mock<IBlockchainStateDbRepository>();
+        states.Setup(r => r.GetStateAsync()).ReturnsAsync(new BlockchainState(710, Hash.Empty, DateTime.UtcNow));
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
+        unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(fundingDb.Object);
+        unitOfWork.SetupGet(u => u.BlockchainStateDbRepository).Returns(states.Object);
+        using var map = CreateMap(unitOfWork.Object);
+
+        // Act
+        await map.LoadAsync(0, TestContext.Current.CancellationToken);
+
+        // Assert
+        var entry = Assert.Single(map.GetByChannel(s_channelId));
+        Assert.Equal(s_firstSpliceScid, entry.ShortChannelId);
     }
 
     [Fact]

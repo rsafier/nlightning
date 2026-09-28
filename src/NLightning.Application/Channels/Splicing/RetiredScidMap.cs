@@ -103,11 +103,33 @@ public sealed class RetiredScidMap : IRetiredScidMap, IDisposable
         return expired.Count;
     }
 
+    private async Task<uint> GetStoredHeightAsync(IUnitOfWork unitOfWork)
+    {
+        try
+        {
+            return unitOfWork.BlockchainStateDbRepository is { } states
+                && await states.GetStateAsync() is { } state
+                       ? state.LastProcessedHeight
+                       : 0;
+        }
+        catch (Exception e) when (e is NotSupportedException or InvalidOperationException)
+        {
+            _logger.LogDebug(e, "Could not read the last processed block height; loading at height 0");
+            return 0;
+        }
+    }
+
     /// <inheritdoc />
     public async Task LoadAsync(uint currentHeight, CancellationToken cancellationToken = default)
     {
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        // The host loads the map before the chain monitor starts, whose height is 0 until then: use the height the
+        // monitor stored, so expired entries are dropped now and the log names the real height
+        if (currentHeight == 0)
+            currentHeight = await GetStoredHeightAsync(unitOfWork);
+
         var channels = await unitOfWork.ChannelDbRepository.GetReadyChannelsAsync();
 
         var rebuilt = new List<RetiredShortChannelId>();
