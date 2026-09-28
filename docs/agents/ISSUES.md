@@ -90,10 +90,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 9 | 163 | 172 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 60 | 144 | 112 | 330 |
+| fixed | 14 | 61 | 144 | 112 | 331 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **60** | **156** | **281** | **511** |
+| **Total** | **14** | **61** | **156** | **281** | **512** |
 
 ### Epics
 
@@ -1524,6 +1524,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** End the quiescence from the driver's rejection and echo paths (or give the host a callback), with a test for a non-splice host.
 - **Blocks/Blocked-by:** Related NL-470, NL-489
 - **Plan ref:** —
+
+### NL-517 After a restart on a locked splice, the engine's current funding is the initial one (kind, key index 0)
+- **Status:** fixed (pending)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelDbRepository.cs` (`MapWithStateAsync`), `src/NLightning.Domain/Channels/Commitments/CommitmentParams.cs` (`FromChannel`)
+- **Evidence:** Mutinynet day-0 rehearsal (2026-09-28, build `d5d8b184`): NLightningFAFO2 restarted while its own splice-out `2cb71d6b...c693` was the current funding (key index 2); at the next lock the row was rewritten as `Kind` Initial, `LocalFundingKeyIndex` 0 with the rotated pubkey (the node's other side kept Splice/2). The reload built the engine's `CommitmentParams.Funding` with `ChannelFunding.FromFundingOutput` (Initial, index 0), the lock retired that copy through `ApplyLockAsync`, and at the next start `ChannelSigningInfoDbRepository` hands the row to the signer, whose `RegisterFundingLocked` throws `SignerException` (index 0 does not derive that pubkey). Until the next lock the engine also applied the initial funding's reserve rule (`CommitmentParams.LocalReserveMsatOn`) and the reestablish treated the current funding as not a splice (`ReestablishService.GetSpliceState`).
+- **Fix sketch:** Done: the reload puts the stored current funding row into the engine's params when it is a splice. Proof: `SpliceFundingsPersistenceTests.Given_ALockedSplice_When_ReloadedAndTheNextSpliceLocks_Then_TheRetiredRowKeepsItsKindAndKeyIndex` (fails without the fix). The one corrupted row (FAFO2) was repaired by hand with the node stopped (`Kind` 1, `LocalFundingKeyIndex` 2, checked against the peer's row).
+- **Blocks/Blocked-by:** Part of NL-021
+- **Plan ref:** `SPLICING_PLAN.md` D5; `DAY0_RUNBOOK.md` §5
 
 ### NL-510 Splice RBF cannot add fresh wallet inputs to our contribution
 - **Status:** open

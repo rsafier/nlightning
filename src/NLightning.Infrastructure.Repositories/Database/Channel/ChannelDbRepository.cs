@@ -274,6 +274,20 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         // The snapshot runs under the dust policy it was saved with (NL-242) and keeps the inferred-limits flag of a
         // channel migrated by SplitChannelParams, so its guessed limits are still never enforced after a restart
         var @params = CommitmentParams.FromChannel(channelModel, channelEntity.MaxDustHtlcExposureMsat);
+
+        // A locked splice is the engine's current funding as stored (its kind and rotated key index), not the initial
+        // funding FromChannel builds from the funding output: the next lock retires this funding with the engine's
+        // copy, and a copy with key index 0 and the rotated key fails the signer's registration at the next start
+        // (NL-517)
+        if (currentFunding is { Kind: not (byte)ChannelFundingKind.Initial })
+            @params = @params with
+            {
+                Funding = ChannelFundingDbRepository.MapToDomain(currentFunding) with
+                {
+                    Status = ChannelFundingStatus.Current
+                }
+            };
+
         var state = await _channelStateDbRepository.LoadAsync(channelModel.ChannelId, @params);
         if (state is not null)
             channelModel.UpdateCommitments(state.Commitments, new ChannelStateExtras

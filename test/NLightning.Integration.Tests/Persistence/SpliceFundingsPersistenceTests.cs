@@ -466,6 +466,44 @@ public class SpliceFundingsPersistenceTests
     }
 
     [Fact]
+    public async Task Given_ALockedSplice_When_ReloadedAndTheNextSpliceLocks_Then_TheRetiredRowKeepsItsKindAndKeyIndex()
+    {
+        // Arrange: a splice locked before a restart (NL-517, found in the Mutinynet day-0 rehearsal)
+        await using var harness = await SpliceHarness.CreateAsync();
+        var funding = harness.Splice(0x9b, 1_000_000) with { ShortChannelId = new ShortChannelId(900_000, 13, 1) };
+        await harness.SaveAsync(uow => uow.ChannelFundingDbRepository.UpsertAsync(harness.ChannelId, funding));
+        var locked = funding with { Status = ChannelFundingStatus.Current, SpliceLockedReceived = true };
+        await harness.SaveAsync(async uow =>
+        {
+            await uow.ChannelFundingDbRepository.ApplyLockAsync(
+                harness.ChannelId, locked, [harness.CurrentFunding with { Status = ChannelFundingStatus.Replaced }]);
+            await uow.ChannelStateDbRepository.InitializeAsync(harness.Driver.Us);
+        });
+
+        // Act: the restart, then the next splice locks with the reloaded engine's fundings (as the splice service's
+        // lock does)
+        var reloaded = await harness.ReloadChannelAsync();
+        var next = harness.Splice(0x9c, 1_000_000) with { LocalFundingKeyIndex = 2 };
+        await harness.SaveAsync(uow => uow.ChannelFundingDbRepository.UpsertAsync(harness.ChannelId, next));
+        var (lockedSet, retired) = new FundingSet(reloaded.Commitments!.Fundings!.Current, [next])
+                                      .Lock(next.FundingTxId);
+        await harness.SaveAsync(uow => uow.ChannelFundingDbRepository.ApplyLockAsync(harness.ChannelId,
+                                                                                     lockedSet.Current, retired));
+
+        // Assert: the reloaded engine runs on the stored splice, and retiring it kept the row's identity
+        Assert.Equal(locked, reloaded.Commitments.Params.Funding);
+        using var reader = harness.CreateUnitOfWork();
+        var all = await reader.ChannelFundingDbRepository.GetByChannelIdAsync(harness.ChannelId);
+        var replaced = Assert.Single(all, f => f.FundingTxId == funding.FundingTxId);
+        Assert.Equal(ChannelFundingStatus.Replaced, replaced.Status);
+        Assert.Equal(ChannelFundingKind.Splice, replaced.Kind);
+        Assert.Equal(funding.LocalFundingKeyIndex, replaced.LocalFundingKeyIndex);
+        Assert.Equal(s_spliceLocalKey, replaced.LocalFundingPubKey);
+        var info = (await reader.ChannelSigningInfoDbRepository.GetAsync(harness.ChannelId))!.Value;
+        Assert.Equal(1U, Assert.Single(info.Fundings!, f => f.FundingTxId == funding.FundingTxId).LocalFundingKeyIndex);
+    }
+
+    [Fact]
     public async Task Given_ADiscardedSplice_When_TheModelsShortChannelIdChanges_Then_TheChannelAndItsInitialFundingFollow()
     {
         // Arrange (regression: any non-initial funding row, even a splice that never locked, froze the channel's
