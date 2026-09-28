@@ -44,4 +44,22 @@ public interface IFundingSpendLocator
                                                 Func<uint, CompactPubKey?> deriveLocalFundingKey,
                                                 CancellationToken cancellationToken) =>
         Task.FromResult<ChannelBackupEntry?>(null);
+
+    /// <summary>
+    /// For a transaction that spent <paramref name="entry"/>'s funding output without being a commitment and that
+    /// <see cref="FollowSpliceAsync"/> could not follow (the peer rotated its funding key and the new funding output is
+    /// still unspent): whether its output <paramref name="outputIndex"/> is still unspent, or was spent with a 2-of-2
+    /// witness that reveals our key (the channel's next funding, the peer's key read from it), or by anything else.
+    /// Never throws for a chain failure (<see cref="SpliceOutputStatus.Unknown"/>); the default tells nothing.
+    /// </summary>
+    /// <param name="entry">The channel at the funding the transaction spends.</param>
+    /// <param name="spend">The transaction's spend of that funding.</param>
+    /// <param name="outputIndex">The P2WSH output to check.</param>
+    /// <param name="deriveLocalFundingKey">Our funding key of this channel at a funding key index.</param>
+    /// <param name="cancellationToken">Stops the search.</param>
+    Task<SpliceOutputCheck> CheckSpliceOutputAsync(ChannelBackupEntry entry, OutpointSpentEventArgs spend,
+                                                   ushort outputIndex,
+                                                   Func<uint, CompactPubKey?> deriveLocalFundingKey,
+                                                   CancellationToken cancellationToken) =>
+        Task.FromResult(new SpliceOutputCheck(SpliceOutputStatus.Unknown));
 }

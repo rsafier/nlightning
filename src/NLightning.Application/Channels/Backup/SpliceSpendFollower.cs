@@ -43,6 +43,42 @@ public static class SpliceSpendFollower
     }
 
     /// <summary>
+    /// The outputs of <paramref name="transaction"/> that may be a channel's funding output: its P2WSH outputs, in
+    /// order.
+    /// </summary>
+    public static IReadOnlyList<ushort> GetCandidateOutputs(Transaction transaction)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        var outputs = new List<ushort>();
+        for (var vout = 0; vout < transaction.Outputs.Count && vout <= ushort.MaxValue; vout++)
+            if (transaction.Outputs[vout].ScriptPubKey.IsScriptType(ScriptType.P2WSH))
+                outputs.Add((ushort)vout);
+
+        return outputs;
+    }
+
+    /// <summary>
+    /// For the serialized transaction <paramref name="rawTransaction"/> that spent a channel's funding output: null when
+    /// it can't be read or has the shape of a commitment (a close to resolve), else the outputs that may be the
+    /// channel's next funding output (<see cref="GetCandidateOutputs"/>; none: no splice, a close of another shape).
+    /// </summary>
+    public static IReadOnlyList<ushort>? GetSpliceCandidateOutputs(byte[] rawTransaction)
+    {
+        ArgumentNullException.ThrowIfNull(rawTransaction);
+        Transaction transaction;
+        try
+        {
+            transaction = Transaction.Load(rawTransaction, Network.Main);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        return IsCommitment(transaction) ? null : GetCandidateOutputs(transaction);
+    }
+
+    /// <summary>
     /// The local funding key indexes tried for a splice of <paramref name="current"/>: the current one, the next
     /// <see cref="MaxKeyRotationLookahead"/>, and those of the pending splices.
     /// </summary>

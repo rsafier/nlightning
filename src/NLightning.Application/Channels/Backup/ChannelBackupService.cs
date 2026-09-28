@@ -17,6 +17,7 @@ using Domain.Gossip.Graph;
 using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.Interfaces;
 using Gossip.Graph.Interfaces;
 using Interfaces;
@@ -45,6 +46,12 @@ public sealed class ChannelBackupService : IChannelBackupService
 {
     /// <summary>The most addresses a backed-up channel holds for its peer.</summary>
     public const int MaxAddressesPerChannel = 8;
+
+    /// <summary>
+    /// The highest funding key index searched when the recorded one does not derive a channel's funding key (one per
+    /// splice of the channel).
+    /// </summary>
+    public const uint MaxFundingKeyIndexSearch = 256;
 
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ISecureKeyManager _secureKeyManager;
@@ -88,7 +95,10 @@ public sealed class ChannelBackupService : IChannelBackupService
     public async Task<ChannelBackupSnapshot> CreateSnapshotAsync(ChannelId? channelId,
                                                                  CancellationToken cancellationToken)
     {
-        var (snapshot, _) = await LoadAsync(channelId, cancellationToken);
+        var (snapshot, _, unverified) = await LoadAsync(channelId, cancellationToken);
+        if (unverified.Count > 0)
+            _logger.LogError("The funding key of channel(s) {ChannelIds} does not derive from this node's key file at "
+                           + "any funding key index: their backup can't be restored", string.Join(", ", unverified));
         if (channelId is { } only && snapshot.Channels.Count == 0)
             throw new KeyNotFoundException($"Channel {only} is not backed up: unknown, closed, or before its "
                                          + "funding outpoint.");
@@ -171,12 +181,15 @@ public sealed class ChannelBackupService : IChannelBackupService
         await _writeLock.WaitAsync(cancellationToken);
         try
         {
-            var (snapshot, channelIds) = await LoadAsync(null, cancellationToken);
+            var (snapshot, channelIds, unverified) = await LoadAsync(null, cancellationToken);
             var channelRows = channelIds.Count;
+            if (unverified.Count > 0)
+                snapshot = await KeepPreviousEntriesAsync(path, snapshot, unverified, cancellationToken);
+            IReadOnlyList<ChannelId>? unverifiedResult = unverified.Count == 0 ? null : unverified;
             var content = CanonicalContent(snapshot);
             if (_lastWrittenContent is not null && content.AsSpan().SequenceEqual(_lastWrittenContent))
                 return new ChannelBackupWriteResult(ChannelBackupWriteOutcome.Unchanged, snapshot.Channels.Count,
-                                                    path);
+                                                    path, UnverifiedChannels: unverifiedResult);
 
             string? movedAside = null;
             if (File.Exists(path))
@@ -213,7 +226,8 @@ public sealed class ChannelBackupService : IChannelBackupService
                     {
                         _lastWrittenContent = content;
                         return new ChannelBackupWriteResult(ChannelBackupWriteOutcome.Unchanged,
-                                                            snapshot.Channels.Count, path);
+                                                            snapshot.Channels.Count, path,
+                                                            UnverifiedChannels: unverifiedResult);
                     }
 
                     // Channels the database never saw closed: this file is their only backup, keep it aside
@@ -238,7 +252,7 @@ public sealed class ChannelBackupService : IChannelBackupService
                                        snapshot.Channels.Count);
 
             return new ChannelBackupWriteResult(ChannelBackupWriteOutcome.Written, snapshot.Channels.Count, path,
-                                                movedAside);
+                                                movedAside, unverifiedResult);
         }
         finally
         {
@@ -246,12 +260,18 @@ public sealed class ChannelBackupService : IChannelBackupService
         }
     }
 
-    private async Task<(ChannelBackupSnapshot Snapshot, HashSet<ChannelId> ChannelIds)> LoadAsync(
-        ChannelId? channelId, CancellationToken cancellationToken)
+    /// <summary>
+    /// The snapshot of the backed-up channels, every channel id of the database, and the channels whose funding key
+    /// no key index derives (their entries are in the snapshot as built; <see cref="WriteFileAsync"/> keeps the file's
+    /// previous entry for them instead).
+    /// </summary>
+    private async Task<(ChannelBackupSnapshot Snapshot, HashSet<ChannelId> ChannelIds, List<ChannelId> Unverified)>
+        LoadAsync(ChannelId? channelId, CancellationToken cancellationToken)
     {
         using var scope = _serviceScopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var channels = (await unitOfWork.ChannelDbRepository.GetAllAsync()).ToList();
+        var unverified = new List<ChannelId>();
         var entries = new List<ChannelBackupEntry>();
         var peers = new Dictionary<Domain.Crypto.ValueObjects.CompactPubKey, PeerModel?>();
         foreach (var channel in channels.Where(IsBackedUp).OrderBy(c => c.ChannelId.ToString()))
@@ -266,14 +286,175 @@ public sealed class ChannelBackupService : IChannelBackupService
                 peers[channel.RemoteNodeId] = peer;
             }
 
-            entries.Add(CreateEntry(channel, peer, GetGraphNode(channel.RemoteNodeId),
-                                    await GetFundingSetAsync(unitOfWork, channel.ChannelId, _logger)));
+            var entry = CreateEntry(channel, peer, GetGraphNode(channel.RemoteNodeId),
+                                    await GetFundingSetAsync(unitOfWork, channel.ChannelId, _logger),
+                                    await GetDualFundCandidatesAsync(unitOfWork, channel, _logger));
+            if (CheckFundingKey(entry) is { } checkedEntry)
+            {
+                entries.Add(checkedEntry);
+            }
+            else
+            {
+                unverified.Add(channel.ChannelId);
+                entries.Add(entry);
+            }
         }
 
         var createdAt = DateTimeOffset.FromUnixTimeSeconds(_timeProvider.GetUtcNow().ToUnixTimeSeconds());
         var snapshot = new ChannelBackupSnapshot(_nodeOptions.BitcoinNetwork.ChainHash,
                                                  _secureKeyManager.GetNodePubKey(), createdAt, entries);
-        return (snapshot, channels.Select(c => c.ChannelId).ToHashSet());
+        return (snapshot, channels.Select(c => c.ChannelId).ToHashSet(), unverified);
+    }
+
+    /// <summary>
+    /// <paramref name="entry"/> with a funding key index that derives its funding key (lane SP2-E review): the one it
+    /// has, else the first of 0 .. <see cref="MaxFundingKeyIndexSearch"/> that does (the index read from a stored row
+    /// can be missing: a failed read, or a funding row that does not match); pending fundings whose key does not
+    /// derive are left out. Null when no index derives the key: the restore would refuse the entry.
+    /// </summary>
+    internal ChannelBackupEntry? CheckFundingKey(ChannelBackupEntry entry)
+    {
+        var fixedEntry = entry;
+        if (!Derives(entry.KeyIndex, entry.LocalFundingKeyIndex, entry.LocalFundingPubKey))
+        {
+            uint? found = null;
+            for (var index = 0u; index <= MaxFundingKeyIndexSearch; index++)
+                if (index != entry.LocalFundingKeyIndex && Derives(entry.KeyIndex, index, entry.LocalFundingPubKey))
+                {
+                    found = index;
+                    break;
+                }
+
+            if (found is not { } fundingKeyIndex)
+                return null;
+
+            _logger.LogWarning("The funding key of channel {ChannelId} is at funding key index {Found}, not the "
+                             + "recorded {Recorded}; the backup records {Found}", entry.ChannelId, fundingKeyIndex,
+                               entry.LocalFundingKeyIndex, fundingKeyIndex);
+            fixedEntry = entry with { LocalFundingKeyIndex = fundingKeyIndex };
+        }
+
+        var pending = entry.PendingFundings
+                           .Where(f => Derives(entry.KeyIndex, f.LocalFundingKeyIndex, f.LocalFundingPubKey))
+                           .ToList();
+        return pending.Count == entry.PendingFundings.Count ? fixedEntry : fixedEntry with { PendingFundings = pending };
+    }
+
+    private bool Derives(uint channelKeyIndex, uint fundingKeyIndex, Domain.Crypto.ValueObjects.CompactPubKey key)
+    {
+        try
+        {
+            return _fundingKeySource.GetFundingPubKey(channelKeyIndex, fundingKeyIndex) is { } derived
+                && derived == key;
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Could not derive funding key {FundingKeyIndex} of channel key {KeyIndex}",
+                             fundingKeyIndex, channelKeyIndex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// <paramref name="snapshot"/> with the entry of each channel of <paramref name="unverified"/> (its funding key
+    /// derives at no index: the restore would refuse it) replaced by the one the file at <paramref name="path"/> holds
+    /// when that one's key derives (an entry at an earlier funding still restores: the restore follows splices), else
+    /// left out. Logged at error level: the channel's backup is not up to date.
+    /// </summary>
+    private async Task<ChannelBackupSnapshot> KeepPreviousEntriesAsync(string path, ChannelBackupSnapshot snapshot,
+                                                                       IReadOnlyCollection<ChannelId> unverified,
+                                                                       CancellationToken cancellationToken)
+    {
+        ChannelBackupSnapshot? existing = null;
+        try
+        {
+            if (File.Exists(path))
+                existing = Decrypt(await File.ReadAllBytesAsync(path, cancellationToken));
+        }
+        catch (Exception e) when (e is ChannelBackupException or IOException)
+        {
+            _logger.LogDebug(e, "The channel backup {Path} can't be read for the previous entries", path);
+        }
+
+        var entries = new List<ChannelBackupEntry>(snapshot.Channels.Count);
+        foreach (var entry in snapshot.Channels)
+        {
+            if (!unverified.Contains(entry.ChannelId))
+            {
+                entries.Add(entry);
+                continue;
+            }
+
+            var previous = existing?.Channels.FirstOrDefault(c => c.ChannelId == entry.ChannelId);
+            if (previous is not null && CheckFundingKey(previous) is { } kept)
+            {
+                _logger.LogError("The funding key {FundingKey} of channel {ChannelId} derives at no funding key index "
+                               + "of this node's key file; its previous backup (funding {FundingTxId}:{Index}) is kept",
+                                 entry.LocalFundingPubKey, entry.ChannelId, kept.FundingTxId,
+                                 kept.FundingOutputIndex);
+                entries.Add(kept);
+            }
+            else
+            {
+                _logger.LogError("The funding key {FundingKey} of channel {ChannelId} derives at no funding key index "
+                               + "of this node's key file and no earlier backup of it is kept: the channel is left out "
+                               + "of the backup", entry.LocalFundingPubKey, entry.ChannelId);
+            }
+        }
+
+        return snapshot with { Channels = entries };
+    }
+
+    /// <summary>
+    /// The other signed candidates of an unconfirmed dual-funded open (lane SP2-E review): every stored negotiation of
+    /// <paramref name="channel"/> (a v2 channel without a short channel id yet) for which we sent our
+    /// <c>tx_signatures</c>, so the peer can broadcast it and any of them may be the one that confirms. They share the
+    /// channel's funding keys (an RBF keeps them). Empty for any other channel, or when the negotiations can't be read.
+    /// </summary>
+    internal static async Task<IReadOnlyList<ChannelBackupFunding>> GetDualFundCandidatesAsync(
+        IUnitOfWork unitOfWork, ChannelModel channel, ILogger logger)
+    {
+        if (channel.Version != ChannelVersion.V2 || HasShortChannelId(channel.ShortChannelId)
+                                                 || channel.FundingOutput is not
+                                                 { TransactionId: { } fundingTxId } funding)
+            return [];
+
+        IReadOnlyList<Domain.Protocol.InteractiveTx.InteractiveTxSessionModel> sessions;
+        try
+        {
+            if (unitOfWork.InteractiveTxSessionDbRepository is not { } repository)
+                return [];
+
+            sessions = await repository.GetByChannelIdAsync(channel.ChannelId);
+        }
+        catch (NotSupportedException)
+        {
+            return [];
+        }
+        catch (Exception e)
+        {
+            logger.LogWarning(e, "Could not read the negotiations of channel {ChannelId} for its backup",
+                              channel.ChannelId);
+            return [];
+        }
+
+        var candidates = new List<ChannelBackupFunding>();
+        foreach (var session in sessions)
+        {
+            if (session.Purpose is not (InteractiveTxPurpose.DualFund or InteractiveTxPurpose.DualFundRbf)
+             || !session.TxSignaturesSent
+             || session.ConstructedTx is not { SharedOutputIndex: { } index } constructed
+             || index >= constructed.Outputs.Count || index > ushort.MaxValue
+             || constructed.TxId == fundingTxId
+             || candidates.Any(c => c.FundingTxId == constructed.TxId))
+                continue;
+
+            candidates.Add(new ChannelBackupFunding(constructed.TxId, (ushort)index,
+                                                    (ulong)constructed.Outputs[(int)index].Amount.Satoshi, 0,
+                                                    funding.LocalFundingPubKey, funding.RemoteFundingPubKey));
+        }
+
+        return candidates;
     }
 
     /// <summary>
@@ -331,8 +512,15 @@ public sealed class ChannelBackupService : IChannelBackupService
     /// locked splice replaces, with our key's index from <paramref name="fundings"/> (else the engine snapshot's current
     /// funding, else 0), and the pending splices of <paramref name="fundings"/> (else the snapshot's).
     /// </summary>
+    /// <param name="channel">The channel.</param>
+    /// <param name="peer">Its peer row (its address).</param>
+    /// <param name="graphNode">The peer's node in the gossip graph (its announced addresses).</param>
+    /// <param name="fundings">The channel's stored fundings.</param>
+    /// <param name="dualFundCandidates">The other signed candidates of an unconfirmed dual-funded open
+    /// (<see cref="GetDualFundCandidatesAsync"/>), backed up as pending fundings.</param>
     internal static ChannelBackupEntry CreateEntry(ChannelModel channel, PeerModel? peer, GraphNode? graphNode = null,
-                                                   FundingSet? fundings = null)
+                                                   FundingSet? fundings = null,
+                                                   IReadOnlyList<ChannelBackupFunding>? dualFundCandidates = null)
     {
         var funding = channel.FundingOutput!;
         var remote = channel.RemoteKeySet!;
@@ -355,6 +543,9 @@ public sealed class ChannelBackupService : IChannelBackupService
                                                            f.LocalFundingKeyIndex, f.LocalFundingPubKey,
                                                            f.RemoteFundingPubKey))
                      .ToList();
+        foreach (var candidate in dualFundCandidates ?? [])
+            if (candidate.FundingTxId != fundingTxId && pending.All(p => p.FundingTxId != candidate.FundingTxId))
+                pending.Add(candidate);
         var addresses = new List<ChannelBackupAddress>();
         if (peer is not null && !string.IsNullOrWhiteSpace(peer.Host) && peer.Port is > 0 and <= ushort.MaxValue)
             addresses.Add(new ChannelBackupAddress(peer.Type, peer.Host, (ushort)peer.Port));

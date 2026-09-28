@@ -323,7 +323,10 @@ public class OnchainClientHandlerTests
         Assert.IsType<PendingSweepsClientHandler>(
             scope.ServiceProvider
                  .GetRequiredService<IClientCommandHandler<PendingSweepsClientRequest, PendingSweepsClientResponse>>());
-        Assert.IsType<OnchainChannelWatcher>(provider.GetRequiredService<IOnchainChannelWatcher>());
+        // The channel backup lane wraps the watcher so a recovery channel's splice is followed, not closed (NL-478)
+        var watcher = Assert.IsType<Application.Channels.Backup.SpliceFollowingOnchainChannelWatcher>(
+            provider.GetRequiredService<IOnchainChannelWatcher>());
+        Assert.IsType<OnchainChannelWatcher>(watcher.Inner);
         Assert.IsType<OnchainResolutionExecutor>(provider.GetRequiredService<IOnchainResolutionExecutor>());
         Assert.Equal(20U, provider.GetRequiredService<IOptions<OnchainOptions>>().Value.IrrevocableDepth);
         Assert.Equal(15, (int)ClientCommand.PendingSweeps);
