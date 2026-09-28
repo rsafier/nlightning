@@ -92,12 +92,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 7 | 167 | 174 |
+| open | 0 | 0 | 7 | 168 | 175 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 61 | 147 | 121 | 343 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **157** | **294** | **526** |
+| **Total** | **14** | **61** | **157** | **295** | **527** |
 
 ### Epics
 
@@ -4572,6 +4572,15 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-486
 - **Plan ref:** `SPLICING_PLAN.md` "Lane dfrbf record"
 
+### NL-532 A peer closing the connection is logged at Error level
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure/Node/Services/PeerService.cs` ("Exception occurred with peer")
+- **Evidence:** The 24 h mainnet soak logged both of its errors this way: ACINQ closing the stream (`EndOfStreamException` behind `ConnectionException`) and noserver4u's missed `pong`. Both are routine disconnects, and the reconnect followed. Error level makes them look like faults in the operator's log (`MAINNET_GOSSIP_PROBE.md` "24 h mainnet soak").
+- **Fix sketch:** Log a remote close or a ping timeout at Warning (Information for a clean EOF). Keep Error for our own failures.
+- **Blocks/Blocked-by:** Found by NL-376
+- **Plan ref:** BOLT7 G5-T5
 ### NL-525 Our onion-message paths have no dummy hops
 - **Status:** open
 - **Severity:** low

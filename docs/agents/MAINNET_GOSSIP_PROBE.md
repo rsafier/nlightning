@@ -452,7 +452,7 @@ database of the earlier runs, ended by its own 24 h timer at 2026-09-28 14:28:25
     - 14 are the dropped-message counter (every 1,000, mostly in the first minutes);
     - 2 are the disconnections.
   - Errors: the 2 disconnections above.
-  - A remote end-of-stream is logged at Error level. That is louder than it deserves; a Warning would do.
+  - A remote end-of-stream is logged at Error level. That is louder than it deserves; a Warning would do (NL-532).
 
 NL-376 is closed with this run and the Mutinynet 24 h soak (`MUTINYNET.md`, "Gossip soak (G5-T5)"). What mainnet
 gossip still lacks is the relay proof from a node with a public channel (NL-417) and the outbox pause (NL-360).
