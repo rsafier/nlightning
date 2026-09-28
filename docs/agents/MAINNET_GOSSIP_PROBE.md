@@ -457,3 +457,119 @@ database of the earlier runs, ended by its own 24 h timer at 2026-09-28 14:28:25
 
 NL-376 is closed with this run and the Mutinynet 24 h soak (`MUTINYNET.md`, "Gossip soak (G5-T5)"). What mainnet
 gossip still lacks is the relay proof from a node with a public channel (NL-417) and the outbox pause (NL-360).
+
+## BOLT 10 bootstrap run (2026-09-28)
+
+Owner request: boot the mainnet gossip node and let it find its peers from the DNS seeds alone. Branch
+`wip/fafo-b10main` (from `wip/fafo` at `6a0c3352`), after the owner reversed D-B10-1 (bootstrap on by default on
+mainnet, NL-113).
+
+### Method
+
+- **Harness:** `tools/NLightning.GossipProbe run --bootstrap --chain rpc` (README, "BOLT 10 bootstrap run"). No
+  `--peer`: the probe starts the product's `PeerBootstrapService` right after `PeerManager.StartAsync`, as
+  `NltgDaemonService` does, with `Node:Bootstrap` at its mainnet default (enabled by the unset key, the default seeds
+  `nodes.lightning.directory` and `nodes.lightning.wiki`, `MinPeers` 3, `MaxPeersFromBootstrap` 8, `StartupDelay`
+  15 s, the system resolver then the public fallback 1.1.1.1/8.8.8.8, TCP). The probe never dials. Gossip as in the
+  verified runs: sync on (`Gossip:SyncPeers` at the product default, 3), relay off, `AssumeChannelValid` off, every
+  funding output checked against the owner's unpruned bitcoind (read-only RPCs). No channel, no funds, no wallet
+  spend.
+- **Node:** a fresh directory, database and **fresh probe key** each (`~/.nltg-gossip-probe/b10-bootstrap/`, node id
+  `027e6056...aca56`; `~/.nltg-gossip-probe/b10-bootstrap-2/`, `02af8619...44f96`), so the node knew no peer and no
+  graph node. Binaries staged under `~/.nltg-gossip-probe/bin-b10` (run 1, the lane's working tree with the
+  on-by-default and fallback changes) and `bin-b10b` (rerun, with NL-546's fix, `10822bdd`). The old soak data under
+  `~/.nltg-gossip-probe/soak` was not touched.
+- **Runs** (raw data in `<dir>/runs/<UTC>-<label>/`: `bootstrap-seeds.csv`, `bootstrap-dials.csv`,
+  `bootstrap-runs.csv`, `bootstrap-peers.csv`, `samples.csv`, `peers.csv`, `lookups.csv`, `range-replies.csv`,
+  `probe.log`, `summary.json`; console in `<dir>/console-*.txt`):
+
+| Run | Binary | Duration | Purpose |
+|---|---|---|---|
+| `20260928T193558Z-b10-bootstrap` (fresh database and key) | `bin-b10` | 40.1 min | the main run |
+| `20260928T201716Z-b10-restart` (run 1's database) | `bin-b10` | 4.1 min | restart with the bootstrapped peers saved |
+| `20260928T202217Z-b10-rerun` (fresh database and key) | `bin-b10b` (NL-546 fixed) | 15.1 min | the seed client with concurrent target lookups |
+
+### Results
+
+| | Run 1 (40 min) | Rerun (15 min, NL-546 fixed) |
+|---|---|---|
+| Seed the bootstrap asked (random order) | `nodes.lightning.wiki` | `nodes.lightning.directory` |
+| System resolver's answer | Timeout (10 s, the per-seed limit) | SERVFAIL |
+| Fallback resolvers' answer | 25 candidates, 0 rejected | 25 candidates, 0 rejected |
+| Seed query time (system + fallback) | 19.5 s | 10.3 s |
+| Second seed asked | no (25 candidates are enough for 8 peers x 3) | no |
+| Candidates collected / selected / dialed | 25 / 25 / 10 | 25 / 22 / 10 |
+| Dials connected / failed / timed out | 8 / 2 / 0 | 8 / 2 / 0 |
+| Dial time of a connection (TCP + BOLT 8 + init) | 0.04-0.72 s | 0.04-0.65 s |
+| Time to the first peer (from the bootstrap's start, 15 s start delay included) | 35 s | 26 s |
+| Time to the third peer (`MinPeers`: the loop ends) | 36 s | 26 s |
+| Peers connected | 8 from 0:36 to the end, no disconnection | 8 from 0:26 to the end, no disconnection |
+| `sync_complete` (first sample) | 12.0 min | 11.0 min |
+| Graph at the end: channels (all chain-verified) / announced nodes / policies | 30,570 / 9,622 / 54,344 | 30,558 / 9,559 / 54,309 |
+| Announcements held without an update (NL-406) | 8,461 | 24,927 (15 min) |
+| Time to 50 / 90 / 99 % of the final channels | 6.5 / 11.0 / 12.5 min | 6.0 / 10.0 / 11.0 min |
+| Funding lookups (bitcoind) | 30,579 (Found 30,570, spent/missing 3, mempool-spent 6) | 30,814 (Found 30,558, spent/missing 256) |
+| Resident size (median / max / at the end) | 606 / 634 / 474 MB | 601 / 651 / 648 MB |
+| Managed heap max / CPU max (one core) | 448 MB / 55 % | 446 MB / 61 % |
+| Database / WAL at the end | 42.4 / 5.3 MiB | 42.3 / 7.1 MiB |
+| Warnings / errors logged | 32 / 0 (21 EF migration notices, 11 dropped-message counters) | 26 / 0 |
+| `Gossip:MaxMemoryMb` crossed | no | no |
+
+The graph matches the 24 h soak's (30,673 channels, 9,929 announced nodes at its end) after about 12 minutes.
+
+**Restart** (run 1's database, the 8 bootstrapped peers saved as ordinary `Peers` rows): `PeerManager.StartAsync`
+dialed them, all 8 reconnected, the bootstrap's first gate found 8 peers connected (`MinPeers` 3) and ended without a
+DNS query. The graph (30,570 channels) reloaded in 0.5 s; `sync_complete` again after 1.1 min.
+
+**Seeds** (the census after each run asks both seeds once more through the product's seed client):
+
+| Seed | System resolver (this Mac: the home router and the ISP's IPv6 resolver) | Fallback (1.1.1.1) |
+|---|---|---|
+| `nodes.lightning.directory` | SERVFAIL in every query | 25 SRV records, no glue; 25 IPv4 (run 1) or 22 IPv4 + 3 IPv6 (rerun); ports 9735, 9766 (run 1), 9735, 9889 (rerun) |
+| `nodes.lightning.wiki` | no answer within the per-seed 10 s (Timeout) in every query | 25 SRV records, no glue; 25 IPv4; ports 9735, 9745 (run 1 census), 6669, 9735, 9736, 9835 (rerun census), 9740 and 10016 among run 1's dials |
+
+Without the fallback (D-B10-7) the mainnet default would have found no peer on this host. Both seeds answer the bare
+root; neither sends address glue, so every target costs an A and an AAAA query.
+
+**Peers discovered** (implementation from the peer's `node_announcement`: LND sets bit 2023; the others are not told
+apart):
+
+| Run | Peer (alias) | Address | Implementation |
+|---|---|---|---|
+| 1 | Johoe | 95.217.32.30:9735 | LND |
+| 1 | jbs node | 152.67.125.92:9735 | LND |
+| 1 | IBEX_SB | 34.74.1.106:9735 | LND |
+| 1 | Jamaussie | 45.32.245.8:9735 | LND |
+| 1 | zlnd0 | 54.87.193.89:9735 | LND |
+| 1 | LOUDFELONY | 34.7.82.59:9735 | not LND (the alias has the form of CLN's default) |
+| 1 | Electrum Trampoline | 195.201.207.61:9740 | not LND |
+| 1 | spotlight.soy | 160.16.59.243:9735 | not LND |
+| rerun | PaidlyInteractive⚡, PaidlyInteractive2⚡ | 3.71.156.219, 18.192.92.189 :9735 | LND |
+| rerun | LQWD-HongKong | 18.163.90.95:9735 | LND |
+| rerun | senza | 3.220.219.249:9735 | LND |
+| rerun | Fedimint-Gateway-V1 | 64.23.148.40:9735 | LND |
+| rerun | Lightning.Video | 5.161.58.236:9735 | LND |
+| rerun | BitcoinOnLinux | 62.80.227.49:9735 | LND |
+| rerun | satellite-api-mainnet | 35.197.62.113:9735 | not LND |
+
+The four failed dials: two refused TCP connections (54.201.244.204:10016, 65.7.8.70:9735), one peer that closed the
+connection before its `init` (170.75.163.209), one connect error (195.49.96.165); each endpoint is skipped for the
+rest of the process. The sync peers of run 1 at the end were Electrum Trampoline, jbs node and zlnd0 (the
+rotation also ran a range sync on Johoe).
+
+### Anomalies and issues
+
+- **NL-546 (fixed, `10822bdd`):** the seed client resolved the 25 targets one after the other (50 TCP queries,
+  about 8.5 s per seed through 1.1.1.1); the fallback part of a seed query now takes about 1 s (census: 4.5 s for
+  `nodes.lightning.directory` with the router's SERVFAIL, was 10.3 s; `DnsSeedLiveTests` 0.66 s for 25 targets).
+- The system resolver's failure still costs up to the per-seed timeout (10 s) before the fallback when it hangs
+  (`nodes.lightning.wiki`): that is the price of asking it first (D-B10-7).
+- Only one seed is asked when it returns enough candidates (`MaxPeersFromBootstrap x 3` = 24); the second seed is
+  asked only when the first falls short. As designed; the census shows both seeds answer.
+- No IPv6 peer was dialed: run 1 had no IPv6 candidate, the rerun's 3 IPv6 candidates were not needed.
+- The peers' `init` features as the probe reads them (`PeerModel.Features`) never show bit 2023 even for LND nodes,
+  whose `node_announcement` has it; the implementation guess uses the announcement.
+- As in the earlier runs, the initial sync drops gossip on full ingress queues (10,585 in run 1, 4,180 in the rerun)
+  and asks for those channels again; the dropped-message warnings are the 11 and 5 GossipIngress warnings.
+- Known gap unchanged: a node that restarts with a graph but none of its saved peers reachable does not bootstrap
+  (the graph knows addresses) and connects to no graph node either (NL-543).
