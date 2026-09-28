@@ -64,6 +64,17 @@ public class Bolt11BlindedInvoiceTests
         var stored = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
                                                              .GetByPaymentHashAsync(invoice.PaymentHash));
         Assert.Equal(InvoiceStatus.Settled, stored!.Status);
+
+        // NL-526: Carol's invoice records what her HTLC carried, the amount plus what her own dummy hop kept (BOLT 4
+        // lets a final node take more than the amount): above the amount, and at most the path's aggregated fee less
+        // what Bob, the introduction node, kept for his hop
+        Assert.Equal(add.Payload.Amount, stored.AmountReceived);
+        Assert.True(harness.Bob.Services.GetRequiredService<IChannelUpdateService>()
+                           .TryGetLocalChannelUpdate(ThreeNodeHarness.BobCarolChannelId, out var bobsUpdate));
+        var bobsFee = new BlindedPayInfo(bobsUpdate!.Payload.FeeBaseMsat, bobsUpdate.Payload.FeeProportionalMillionths, 0, 0, 0)
+                     .ComputeFeeMsat(s_amount.MilliSatoshi);
+        var dummyHopsFee = stored.AmountReceived!.MilliSatoshi - s_amount.MilliSatoshi;
+        Assert.InRange(dummyHopsFee, 1UL, path.PayInfo.ComputeFeeMsat(s_amount.MilliSatoshi) - bobsFee);
     }
 
     [Fact]

@@ -4,13 +4,18 @@ using Microsoft.Extensions.DependencyInjection;
 namespace NLightning.Integration.Tests.Docker.Interop.Cln;
 
 using Abcd;
+using Application.Gossip.Interfaces;
 using Daemon.Interfaces;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Offers;
 using Domain.Offers.Enums;
 using Domain.Payments.Enums;
+using Domain.Payments.Models;
+using Domain.Persistence.Interfaces;
+using Domain.Protocol.Onion.Models;
 using Fixtures;
 using Utils;
 
@@ -22,7 +27,8 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// <para>(a) an offer with an amount: CLN's <c>fetchinvoice</c> gets our invoice, <c>decode</c> shows our node id,
-/// the amount and our paths, CLN's <c>xpay</c> pays it and our invoice is Settled for exactly that amount; (b) an
+/// the amount and our paths, CLN's <c>xpay</c> pays it and our invoice is Settled for that amount plus what our own
+/// dummy hop kept (NL-526, bounded by the path's pay info); (b) an
 /// amountless offer fetched with <c>amount_msat</c> and paid; (d) CLN's <c>xpay</c> of the offer string itself; (e)
 /// after <c>disableoffer</c> CLN's <c>fetchinvoice</c> fails with our <c>invoice_error</c> (CLN code 1004, "Remote node
 /// sent failure message", as in Proof M6 (c)).</para>
@@ -83,7 +89,7 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
     /// <summary>
     /// Proof B12 receive (a) and (c): an offer of 10,000 sat; CLN fetches an invoice through our offer path (CLN is its
     /// introduction node), <c>decode</c> shows our node id, the amount and our blinded paths, and CLN pays it through
-    /// them: our invoice row is Settled for exactly 10,000 sat.
+    /// them: our invoice row is Settled for 10,000 sat plus our dummy hop's fee (NL-526).
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_OurOfferWithAnAmount_When_ClnFetchesAndPays_Then_OurInvoiceIsSettled()
@@ -170,10 +176,10 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
                                                        ? i
                                                        : null,
                                        TimeSpan.FromSeconds(30), "our invoice settled", ct);
-        Assert.Equal(3_000_000UL, ours.AmountReceived!.MilliSatoshi);
+        await AssertReceivedWithOurDummyHopsAsync(ours, 3_000_000UL, ct);
         var after = await ListOfferAsync(offer.OfferId, ct);
         Assert.Equal(before.PaidInvoices + 1, after.PaidInvoices);
-        await AssertBalanceGrewByAsync(balanceBefore, 3_000_000UL, ct);
+        await AssertBalanceGrewByAsync(balanceBefore, ours.AmountReceived!.MilliSatoshi, ct);
     }
 
     /// <summary>
@@ -227,17 +233,72 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
                                                        ? i
                                                        : null,
                                        TimeSpan.FromSeconds(30), "our invoice settled", ct);
-        Assert.Equal(amountMsat, ours.AmountReceived!.MilliSatoshi);
+        await AssertReceivedWithOurDummyHopsAsync(ours, amountMsat, ct);
         Assert.Equal((long)amountMsat, paid["amount_msat"]!.GetValue<long>());
-        await AssertBalanceGrewByAsync(balanceBefore, amountMsat, ct);
+        await AssertBalanceGrewByAsync(balanceBefore, ours.AmountReceived!.MilliSatoshi, ct);
+    }
+
+    /// <summary>
+    /// NL-526: our invoice paths end with dummy hops of our own node (NL-440, <c>Node:Invoices:BlindedPathDummyHops</c>),
+    /// whose fee a payer pays like any other hop's and which our final hop keeps (BOLT 4: a final node may accept more
+    /// than the amount). The invoice records what the HTLC carried: at least the amount, and at most what a
+    /// spec-following introduction node forwards to us when the payer pays exactly the path's <c>blinded_payinfo</c>
+    /// fee (BOLT 4 "Route Blinding": <c>amt_to_forward = ((amount_msat - fee_base_msat) * 1000000 + 1000000 +
+    /// fee_proportional_millionths - 1) / (1000000 + fee_proportional_millionths)</c> with CLN's policy towards us),
+    /// i.e. the amount plus our dummy hops' aggregated fee. Each path's pay info is checked to aggregate CLN's policy
+    /// once per relaying hop (CLN and each dummy hop), so the bound is computed from the path we built.
+    /// </summary>
+    private async Task AssertReceivedWithOurDummyHopsAsync(InvoiceInfoClientResponse ours, ulong amountMsat,
+                                                           CancellationToken ct)
+    {
+        // listinvoices shows what the HTLC carried; the stored invoice holds the paths we built
+        var received = ours.AmountReceived!.MilliSatoshi;
+        InvoiceModel? stored;
+        using (var scope = Node.Services.CreateScope())
+            stored = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().InvoiceDbRepository
+                                .GetByPaymentHashAsync(ours.PaymentHash);
+        Assert.Equal(received, stored!.AmountReceived!.MilliSatoshi);
+        var invoice = Bolt12Invoice.Parse(stored.Bolt12!.InvoiceBytes);
+        var paths = invoice.Fields.Paths!;
+        var payInfos = invoice.Fields.BlindedPay!;
+        Assert.Equal(paths.Count, payInfos.Count);
+
+        var channelId = (await Session.GetOurChannelAsync(ct)).ChannelId;
+        Assert.True(Node.Services.GetRequiredService<IChannelUpdateService>()
+                        .TryGetRemoteChannelUpdate(channelId, out var clnUpdate));
+        var clnRelay = new BlindedPaymentRelay(clnUpdate!.CltvExpiryDelta,
+                                               clnUpdate.FeeProportionalMillionths,
+                                               clnUpdate.FeeBaseMsat);
+
+        ulong maxReceived = 0;
+        for (var i = 0; i < paths.Count; i++)
+        {
+            var relayingHops = paths[i].Hops.Count - 1;
+            Assert.True(relayingHops >= 1, "a path has CLN and our final hop at least");
+            var (feeBase, feeProportional, _) = BlindedPayInfo.Aggregate(Enumerable.Repeat(clnRelay, relayingHops)
+                                                                                    .ToList(), 0);
+            Assert.Equal(feeBase, payInfos[i].FeeBaseMsat);
+            Assert.Equal(feeProportional, payInfos[i].FeeProportionalMillionths);
+
+            var intoPath = (UInt128)(amountMsat + payInfos[i].ComputeFeeMsat(amountMsat));
+            var toUs = ((intoPath - clnRelay.FeeBaseMsat) * 1_000_000 + 1_000_000 + clnRelay.FeeProportionalMillionths
+                      - 1) / (1_000_000 + clnRelay.FeeProportionalMillionths);
+            maxReceived = Math.Max(maxReceived, (ulong)toUs);
+            Console.WriteLine($"[nltg] path {i}: {relayingHops - 1} dummy hop(s), pay info {feeBase} msat + "
+                            + $"{feeProportional} ppm, at most {toUs - amountMsat} msat for our dummy hops");
+        }
+
+        Console.WriteLine($"[nltg] received {received} msat for a {amountMsat} msat invoice");
+        Assert.InRange(received, amountMsat, maxReceived);
     }
 
     private async Task<LightningMoney> GetOurBalanceAsync(CancellationToken ct) =>
         (await Session.GetOurChannelAsync(ct)).LocalBalance;
 
     /// <summary>
-    /// Our side of the channel grew by exactly the invoice amount once the fulfill is irrevocably committed (CLN is
-    /// both the payer and the introduction node of our blinded paths, so no routing fee lands on our side).
+    /// Our side of the channel grew by exactly what our invoice records as received once the fulfill is irrevocably
+    /// committed (CLN is both the payer and the introduction node of our blinded paths: what lands on our side is the
+    /// amount plus our own dummy hops' fee, NL-526).
     /// </summary>
     private async Task AssertBalanceGrewByAsync(LightningMoney balanceBefore, ulong amountMsat, CancellationToken ct)
     {
@@ -249,7 +310,7 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
             {
                 last = (await GetOurBalanceAsync(ct)).MilliSatoshi;
                 return last == expected;
-            }, TimeSpan.FromSeconds(30), "our channel balance grown by the invoice amount", ct);
+            }, TimeSpan.FromSeconds(30), "our channel balance grown by the amount received", ct);
         }
         catch (TimeoutException e)
         {

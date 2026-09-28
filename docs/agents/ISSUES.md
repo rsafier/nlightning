@@ -92,9 +92,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 8 | 165 | 173 |
+| open | 0 | 0 | 8 | 164 | 172 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 145 | 120 | 340 |
+| fixed | 14 | 61 | 145 | 121 | 341 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **61** | **156** | **291** | **522** |
@@ -4509,12 +4509,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `DAY0_RUNBOOK.md` §5
 
 ### NL-526 ClnOfferReceiveTests assert the exact amount but our BOLT 12 invoice paths now carry a dummy hop
-- **Status:** open
+- **Status:** fixed (SHA_526)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnOfferReceiveTests.cs` (`AssertSettledAsync`), `src/NLightning.Application/Payments/` (invoice `AmountReceived` with dummy hops)
 - **Evidence:** Lane rbf, on `wip/fafo` `2b5dffd2` plus the rbf commits (nothing of which touches payments or offers): 3 of the 4 cases fail, with the class alone as in the full run: our invoice records 10,000,112 msat received for a 10,000,000 msat invoice (3,000,035 for 3,000,000, 7,777,088 for 7,777,000) and our balance grows by as much. Our invoice path (CLN introduced, then us and one dummy hop, NL-440's `Node:Invoices:BlindedPathDummyHops` default 1) advertises payinfo 3 msat + 21 ppm; CLN (`xpay`, `amount_sent_msat` 10,000,000) pays it, the dummy hop's share arrives in our HTLC and we keep it. BOLT 4 lets the final node accept more than the amount, so the payments are fine; the proof's "exactly the amount" no longer holds since NL-440 (merged just before this lane).
 - **Fix sketch:** Owner decision: either the invoice's `AmountReceived` is the final payload's `amt_to_forward` (excluding what our own dummy hops keep) or the proof accepts amount + our dummy hops' fee; then fix the other side and rerun the class.
+- **Update (lane dfrbf, owner decision 2026-09-28):** Dummy hops keep realistic fees (each takes the introduction node's `payment_relay`, as NL-440 built them; never zero-fee dummies), and the records store what we really received: the invoice's `AmountReceived` is the settled HTLC set's `HtlcSum` (`HtlcSwitch.SettleWithAsync`), i.e. the HTLCs' `amount_msat` with our dummy hops' share, for BOLT 11, BOLT 12 and keysend alike, and `listinvoices` shows it (`InvoiceInfoIpcResponse.AmountReceived`, the client's "Received (msat)"): no product change was needed. The final-hop checks already see through our dummy hops (`IncomingBlindedHop.ReceivedAmount`/`ReceivedCltvExpiry`: `amt_to_forward` against the amount after every dummy hop's `payment_relay`, as if they were other nodes; the "below the amount" and "more than twice" checks use `total_amount_msat`, which dummy hops do not change), so dummy fees neither fail an exact payment nor count towards the 2x limit. `ClnOfferReceiveTests` now asserts `amount <= received <= bound`, the bound being what a BOLT 4 introduction node forwards (`((amount_msat - fee_base_msat) * 1000000 + 1000000 + fee_proportional_millionths - 1) / (1000000 + fee_proportional_millionths)` with CLN's policy towards us) when the payer pays exactly the path's `blinded_payinfo` fee, computed from our stored invoice's paths (each path's pay info checked to aggregate CLN's policy once per relaying hop), and our balance growing by exactly the recorded amount. Measured: 10,000,112 / 7,777,088 / 3,000,035 msat for 10,000,000 / 7,777,000 / 3,000,000 msat, each exactly at its bound; class 4/4. The other Docker assertions of an exact `AmountReceived` are BOLT 11 invoices without blinded paths (`Node:Invoices:BlindedPaths` is off by default); `Bolt11BlindedInvoiceTests.Given_CarolsBlindedBolt11Invoice_*` now pins the in-process case (Carol's record equals her HTLC's amount, above the amount by at most the path fee less Bob's).
 - **Blocks/Blocked-by:** Follow-up of NL-440
 - **Plan ref:** `BOLT12_PLAN.md` Proof B12
 
