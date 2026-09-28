@@ -72,6 +72,10 @@ public static class ClientUtils
         Console.WriteLine("  spliceout <channel_id> <sats> [--address <address>] [--feerate <sat_per_kw>]");
         Console.WriteLine("                               Splice funds out of a channel to an address [default: a");
         Console.WriteLine("                               new address of the node's wallet] (alias: splice-out)");
+        Console.WriteLine("  bumpsplice <channel_id> <feerate_per_kw> [--max-fee-sat <sats>]");
+        Console.WriteLine("                               RBF the channel's pending splice at a higher feerate (alias:");
+        Console.WriteLine("                               bump-splice); at least max(25/24 x, +25) of the latest");
+        Console.WriteLine("                               attempt; --max-fee-sat caps our share of the new fee");
         Console.WriteLine("  forceclosechannel <channel_id>");
         Console.WriteLine("                               Fail a channel and broadcast our latest commitment (alias:");
         Console.WriteLine("                               force-close-channel)");

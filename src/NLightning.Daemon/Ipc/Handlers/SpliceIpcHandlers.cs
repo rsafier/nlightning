@@ -46,3 +46,23 @@ internal sealed class SpliceOutIpcHandler
     protected override SpliceIpcResponse ToIpcResponse(SpliceClientResponse response) =>
         SpliceIpcResponse.FromClientResponse(response);
 }
+
+/// <summary>
+/// <c>bumpsplice</c> (ClientCommand 37) over IPC, answered with the splice response.
+/// </summary>
+internal sealed class BumpSpliceIpcHandler
+    : ClientCommandIpcHandler<BumpSpliceIpcRequest, BumpSpliceClientRequest, SpliceClientResponse, SpliceIpcResponse>
+{
+    public override ClientCommand Command => ClientCommand.BumpSplice;
+
+    public BumpSpliceIpcHandler(ILogger<BumpSpliceIpcHandler> logger, IServiceProvider serviceProvider)
+        : base(logger, serviceProvider)
+    {
+    }
+
+    protected override BumpSpliceClientRequest ToClientRequest(BumpSpliceIpcRequest request) =>
+        request.ToClientRequest();
+
+    protected override SpliceIpcResponse ToIpcResponse(SpliceClientResponse response) =>
+        SpliceIpcResponse.FromClientResponse(response);
+}

@@ -368,6 +368,27 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// RBFs a channel's pending splice at a higher feerate (ClientCommand 37) and waits for the new attempt (bounded by
+    /// the daemon).
+    /// </summary>
+    /// <param name="channelId">The channel whose pending splice is bumped.</param>
+    /// <param name="feeRatePerKw">The new attempt's feerate in sat/kw (at least the RBF minimum of the latest
+    /// attempt).</param>
+    /// <param name="maxFeeSat">The most our side may pay for the new attempt, in sats; null for no cap.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<SpliceIpcResponse> BumpSpliceAsync(ChannelId channelId, uint feeRatePerKw, ulong? maxFeeSat,
+                                                   CancellationToken ct = default)
+    {
+        var req = new BumpSpliceIpcRequest
+        {
+            ChannelId = channelId,
+            FeeRatePerKw = feeRatePerKw,
+            MaxFeeSat = maxFeeSat
+        };
+        return SendRequestAsync<BumpSpliceIpcRequest, SpliceIpcResponse>(ClientCommand.BumpSplice, req, ct);
+    }
+
+    /// <summary>
     /// Lists the latest peer_storage_retrieval of each peer and the blobs we keep for our peers (ClientCommand 32).
     /// </summary>
     /// <param name="peerNodeId">Only this peer; null for every peer.</param>
