@@ -29,6 +29,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Splicing.Interfaces;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
@@ -313,6 +314,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             var channelPolicyStore = Services.GetService<ChannelPolicyStore>();
             if (channelPolicyStore is not null)
                 await channelPolicyStore.LoadAsync(cancellationToken);
+            // As the daemon does: rebuild the retired short channel ids of spliced channels (wave sp2 SP2-B)
+            var retiredScidMap = Services.GetService<IRetiredScidMap>();
+            if (retiredScidMap is not null)
+                await retiredScidMap.LoadAsync(BlockchainMonitor.LastProcessedBlockHeight, cancellationToken);
             await PeerManager.StartAsync(cancellationToken);
             peerManagerStarted = true;
             // As the daemon does: settle the payments a crash left without an HTLC id once every channel is loaded
@@ -325,6 +330,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             // As the daemon does: BOLT 5 O8, unconfirmed spends of our outputs (before the monitor's mempool loop)
             Services.GetRequiredService<IMempoolReactor>().Start();
             await BlockchainMonitor.StartAsync(currentHeight, cancellationToken);
+            // As the daemon does: drop the retired short channel ids that expired while the node was down (SP2-B)
+            retiredScidMap?.PruneExpired(BlockchainMonitor.LastProcessedBlockHeight);
             // As the daemon does: release orphaned withdraw reservations (wave m6 W1)
             var walletSpendService = Services.GetService<IWalletSpendService>();
             if (walletSpendService is not null)

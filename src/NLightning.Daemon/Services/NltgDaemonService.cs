@@ -15,6 +15,7 @@ using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Channels.Splicing.Interfaces;
 using Domain.Client.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -47,6 +48,7 @@ public class NltgDaemonService : BackgroundService
     private readonly WalletInteractiveTxContributor? _interactiveTxContributor;
     private readonly ChannelPolicyStore? _channelPolicyStore;
     private readonly SpliceDepthWatcher? _spliceDepthWatcher;
+    private readonly IRetiredScidMap? _retiredScidMap;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
                              IConfiguration configuration, IFeeService feeService,
@@ -59,8 +61,10 @@ public class NltgDaemonService : BackgroundService
                              IWalletSpendService? walletSpendService = null,
                              WalletInteractiveTxContributor? interactiveTxContributor = null,
                              ChannelPolicyStore? channelPolicyStore = null,
-                             SpliceDepthWatcher? spliceDepthWatcher = null)
+                             SpliceDepthWatcher? spliceDepthWatcher = null,
+                             IRetiredScidMap? retiredScidMap = null)
     {
+        _retiredScidMap = retiredScidMap;
         _channelPolicyStore = channelPolicyStore;
         _spliceDepthWatcher = spliceDepthWatcher;
         _interactiveTxContributor = interactiveTxContributor;
@@ -114,6 +118,11 @@ public class NltgDaemonService : BackgroundService
             if (_channelPolicyStore is not null)
                 await _channelPolicyStore.LoadAsync(stoppingToken);
 
+            // Rebuild the retired short channel ids of spliced channels before any forward can name one (wave sp2
+            // SP2-B, D12); entries already expired are refused at the monitor's tip and pruned on every block
+            if (_retiredScidMap is not null)
+                await _retiredScidMap.LoadAsync(_blockchainMonitor.LastProcessedBlockHeight, stoppingToken);
+
             // Start the peer manager service
             await _peerManager.StartAsync(stoppingToken);
 
@@ -131,6 +140,9 @@ public class NltgDaemonService : BackgroundService
 
             // Start the blockchain monitor service
             await _blockchainMonitor.StartAsync(_secureKeyManager.HeightOfBirth, stoppingToken);
+
+            // Drop the retired short channel ids that expired while we were down, now that the tip is known (SP2-B)
+            _retiredScidMap?.PruneExpired(_blockchainMonitor.LastProcessedBlockHeight);
 
             // Release the withdraw reservations a crash left without their broadcast row (wave m6 W1)
             if (_walletSpendService is not null)
