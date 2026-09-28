@@ -233,10 +233,13 @@ public class GossipRelayBacklogBoundTests : IDisposable
 
         public int Queued => Volatile.Read(ref _queued);
 
-        public ValueTask<bool> SendAsync(GossipPeer peer, Domain.Protocol.Interfaces.IMessage message)
+        public ValueTask<Domain.Gossip.Enums.GossipEnqueueResult> SendAsync(
+            GossipPeer peer, Domain.Protocol.Interfaces.IMessage message, int size)
         {
             Interlocked.Increment(ref _queued);
-            return ValueTask.FromResult(true);
+            return ValueTask.FromResult(Domain.Gossip.Enums.GossipEnqueueResult.Queued);
         }
+
+        public Domain.Gossip.Models.GossipOutboxDepth? GetDepth(GossipPeer peer) => null;
     }
 }

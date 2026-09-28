@@ -2,7 +2,9 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Application.Gossip.Relay;
 
+using Domain.Gossip.Enums;
 using Domain.Gossip.Interfaces;
+using Domain.Gossip.Models;
 using Domain.Protocol.Interfaces;
 using Interfaces;
 
@@ -26,16 +28,23 @@ public sealed class PeerGossipSender : IGossipPeerSender
     public bool UsesOutbox => GetOutbox() is not null;
 
     /// <inheritdoc />
-    public async ValueTask<bool> SendAsync(GossipPeer peer, IMessage message)
+    public async ValueTask<GossipEnqueueResult> SendAsync(GossipPeer peer, IMessage message, int size)
     {
         ArgumentNullException.ThrowIfNull(peer);
         ArgumentNullException.ThrowIfNull(message);
 
         if (GetOutbox() is { } outbox)
-            return outbox.TryEnqueueGossip(peer.Service, message);
+            return outbox.EnqueueGossip(peer.Service, message, size);
 
         await peer.Service.SendGossipMessageAsync(message);
-        return true;
+        return GossipEnqueueResult.Queued;
+    }
+
+    /// <inheritdoc />
+    public GossipOutboxDepth? GetDepth(GossipPeer peer)
+    {
+        ArgumentNullException.ThrowIfNull(peer);
+        return GetOutbox()?.GetGossipDepth(peer.Service);
     }
 
     private IPeerGossipOutbox? GetOutbox()

@@ -16,7 +16,9 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Gossip.Enums;
 using Domain.Gossip.Interfaces;
+using Domain.Gossip.Models;
 using Domain.Node.Constants;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
@@ -84,11 +86,12 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     private readonly ITcpService _tcpService;
     private readonly IServiceProvider _serviceProvider;
     private readonly IChannelUpdateService? _channelUpdateService;
-    private readonly Lazy<(int MaxQueuedGossip, GossipMetrics? Metrics)> _gossipOutboxSettings;
+    private readonly Lazy<GossipOutboxSettings> _gossipOutboxSettings;
     private readonly Lazy<IOnionMessageRateLimiter?> _onionMessageRateLimiter;
     private readonly ConcurrentDictionary<CompactPubKey, PeerSession> _peers = new();
     private readonly ConcurrentDictionary<CompactPubKey, Task> _reconnectLoops = new();
     private long _droppedOutboxOnionMessages;
+    private long _refusedOutboxGossip;
 
     /// <summary>
     /// Guards installing and removing sessions, and <see cref="_inboundLoops"/>.
@@ -167,11 +170,17 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
 
         _channelUpdateService = channelUpdateService;
         _channelUpdateService?.OnChannelUpdateReady += HandleChannelUpdateReady;
-        _gossipOutboxSettings = new Lazy<(int, GossipMetrics?)>(ResolveGossipOutboxSettings);
+        _gossipOutboxSettings = new Lazy<GossipOutboxSettings>(ResolveGossipOutboxSettings);
     }
 
     /// <summary>The gossip messages waiting in every current connection's outbox (NL-360; the metric's gauge).</summary>
     public long QueuedOutboxGossipCount => _peers.Values.Sum(s => (long)s.Outbox.QueuedGossipCount);
+
+    /// <summary>The bytes of gossip waiting in every current connection's outbox (NL-360).</summary>
+    public long QueuedOutboxGossipBytes => _peers.Values.Sum(s => s.Outbox.QueuedGossipBytes);
+
+    /// <summary>The own and relayed gossip messages a full outbox refused since the start (NL-360).</summary>
+    public long RefusedOutboxGossipCount => Interlocked.Read(ref _refusedOutboxGossip);
 
     /// <summary>The onion messages waiting in every current connection's outbox.</summary>
     public long QueuedOutboxOnionMessageCount => _peers.Values.Sum(s => (long)s.Outbox.QueuedOnionMessageCount);
@@ -746,11 +755,16 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// </summary>
     private PeerSession CreateSession(PeerModel peer, IPeerService peerService, bool isInbound)
     {
-        var (maxQueuedGossip, metrics) = _gossipOutboxSettings.Value;
+        var (maxQueuedGossip, maxQueuedGossipBytes, metrics) = _gossipOutboxSettings.Value;
         var outbox = new PeerOutbox(peerService, _logger, maxQueuedGossip,
-                                    metrics is null ? null : () => metrics.RecordDropped(OutboxFullReason),
+                                    () =>
+                                    {
+                                        Interlocked.Increment(ref _refusedOutboxGossip);
+                                        metrics?.RecordOutboxRefused();
+                                    },
                                     MaxOutboxOnionMessagesPerPeer,
-                                    () => Interlocked.Increment(ref _droppedOutboxOnionMessages));
+                                    () => Interlocked.Increment(ref _droppedOutboxOnionMessages),
+                                    maxQueuedGossipBytes);
         var session = new PeerSession(peer, peerService, outbox, isInbound);
         session.ChannelMessageHandler = (_, args) => QueueInboundMessage(session, args);
         session.DisconnectHandler = (_, args) => HandleSessionDisconnected(session, args);
@@ -1347,13 +1361,24 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// <summary>
     /// Queues gossip on the outbox of <paramref name="connection"/> (NL-351): only while it is still the peer's current
     /// connection, so our own and relayed gossip keeps FIFO order with that connection's channel messages. Capped
-    /// (NL-360): refused while <see cref="GossipSyncOptions.MaxOutboxGossipPerPeer"/> gossip messages wait on that
-    /// outbox (a peer that reads slowly); channel messages are never refused for it.
+    /// (NL-360): <see cref="GossipEnqueueResult.Full"/> when it would take the outbox's gossip over
+    /// <see cref="GossipSyncOptions.MaxOutboxGossipPerPeer"/> messages or
+    /// <see cref="GossipSyncOptions.MaxOutboxGossipBytesPerPeer"/> bytes (a peer that reads slowly); channel messages are
+    /// never refused for it.
     /// </summary>
-    public bool TryEnqueueGossip(IPeerService connection, IMessage message) =>
-        _peers.TryGetValue(connection.PeerPubKey, out var session)
-        && ReferenceEquals(session.PeerService, connection)
-        && session.Outbox.TryEnqueueGossip(message, capped: true);
+    public GossipEnqueueResult EnqueueGossip(IPeerService connection, IMessage message, int size) =>
+        TryGetCurrentSession(connection) is { } session
+            ? session.Outbox.EnqueueGossip(message, size)
+            : GossipEnqueueResult.Gone;
+
+    /// <inheritdoc />
+    public GossipOutboxDepth? GetGossipDepth(IPeerService connection) =>
+        TryGetCurrentSession(connection)?.Outbox.GossipDepth;
+
+    private PeerSession? TryGetCurrentSession(IPeerService connection) =>
+        _peers.TryGetValue(connection.PeerPubKey, out var session) && ReferenceEquals(session.PeerService, connection)
+            ? session
+            : null;
 
     /// <inheritdoc />
     public bool CanSendOnionMessage(CompactPubKey peerNodeId) =>
@@ -1406,32 +1431,40 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         }
     }
 
-    /// <summary>The <c>reason</c> tag of a gossip message a full outbox refused (NL-360).</summary>
-    internal const string OutboxFullReason = "outbox_full";
-
     /// <summary>
-    /// The outbox gossip cap from <see cref="GossipSyncOptions"/> (the <c>Gossip</c> section; its default without a
-    /// registration) and the gossip meter, which also gets the <c>outbox_gossip</c> queue gauge. Resolved once, at
-    /// the first session: the provider may still be building singletons while this one is constructed.
+    /// The outbox gossip caps from <see cref="GossipSyncOptions"/> (the <c>Gossip</c> section; its defaults without a
+    /// registration) and the gossip meter, which also gets the <c>outbox_gossip</c> queue gauge and the
+    /// <c>nlightning.gossip.outbox.bytes</c> gauge. Resolved once, at the first session: the provider may still be
+    /// building singletons while this one is constructed.
     /// </summary>
-    private (int MaxQueuedGossip, GossipMetrics? Metrics) ResolveGossipOutboxSettings()
+    private GossipOutboxSettings ResolveGossipOutboxSettings()
     {
-        var maxQueuedGossip = new GossipSyncOptions().MaxOutboxGossipPerPeer;
+        var defaults = new GossipSyncOptions();
+        var maxQueuedGossip = defaults.MaxOutboxGossipPerPeer;
+        var maxQueuedGossipBytes = defaults.MaxOutboxGossipBytesPerPeer;
         GossipMetrics? metrics = null;
         try
         {
             if (_serviceProvider.GetService<IOptions<GossipSyncOptions>>() is { } options)
+            {
                 maxQueuedGossip = options.Value.MaxOutboxGossipPerPeer;
+                maxQueuedGossipBytes = options.Value.MaxOutboxGossipBytesPerPeer;
+            }
+
             metrics = _serviceProvider.GetService<GossipMetrics>();
             metrics?.RegisterQueue("outbox_gossip", () => QueuedOutboxGossipCount);
+            metrics?.RegisterOutboxBytes(() => QueuedOutboxGossipBytes);
         }
         catch (Exception e)
         {
-            _logger.LogDebug(e, "Could not read the outbox gossip settings; using the default cap");
+            _logger.LogDebug(e, "Could not read the outbox gossip settings; using the default caps");
         }
 
-        return (maxQueuedGossip, metrics);
+        return new GossipOutboxSettings(maxQueuedGossip, maxQueuedGossipBytes, metrics);
     }
+
+    /// <summary>The gossip caps of every outbox and the meter their refusals go to (NL-360).</summary>
+    private sealed record GossipOutboxSettings(int MaxQueuedGossip, long MaxQueuedGossipBytes, GossipMetrics? Metrics);
 
     /// <summary>
     /// One connection to a peer: its model, its service, its ordered inbound queue and loop, and its outbox.

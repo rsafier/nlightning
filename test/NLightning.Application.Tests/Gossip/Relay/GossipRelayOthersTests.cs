@@ -8,8 +8,10 @@ using Application.Gossip.Relay;
 using Application.Gossip.Relay.Interfaces;
 using Application.Gossip.Sync.Interfaces;
 using Domain.Channels.ValueObjects;
+using Domain.Gossip.Enums;
 using Domain.Gossip.Graph;
 using Domain.Gossip.Interfaces;
+using Domain.Gossip.Models;
 using Domain.Gossip.Queries;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -512,7 +514,7 @@ public class GossipRelayOthersTests : IDisposable
 
         public void Release() => _released.TrySetResult();
 
-        public async ValueTask<bool> SendAsync(GossipPeer peer, IMessage message)
+        public async ValueTask<GossipEnqueueResult> SendAsync(GossipPeer peer, IMessage message, int size)
         {
             if (ReferenceEquals(peer.Service, Stalled) && !_released.Task.IsCompleted)
             {
@@ -521,8 +523,10 @@ public class GossipRelayOthersTests : IDisposable
             }
 
             await peer.Service.SendGossipMessageAsync(message);
-            return true;
+            return GossipEnqueueResult.Queued;
         }
+
+        public GossipOutboxDepth? GetDepth(GossipPeer peer) => null;
     }
 
     private sealed class RecordingOutbox : IPeerGossipOutbox
@@ -531,14 +535,16 @@ public class GossipRelayOthersTests : IDisposable
         public int Attempts { get; private set; }
         public List<(IPeerService Connection, IMessage Message)> Queued { get; } = [];
 
-        public bool TryEnqueueGossip(IPeerService connection, IMessage message)
+        public GossipEnqueueResult EnqueueGossip(IPeerService connection, IMessage message, int size)
         {
             Attempts++;
             if (!Accept)
-                return false;
+                return GossipEnqueueResult.Gone;
 
             Queued.Add((connection, message));
-            return true;
+            return GossipEnqueueResult.Queued;
         }
+
+        public GossipOutboxDepth? GetGossipDepth(IPeerService connection) => null;
     }
 }

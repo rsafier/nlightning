@@ -55,6 +55,22 @@ public sealed class GossipRelayOptions
     /// </summary>
     public int MaxRelayPendingPerPeer { get; set; } = 5_000;
 
+    /// <summary>
+    /// A connection the relay paused because its outbox refused gossip (NL-360, <c>Gossip:MaxOutboxGossipPerPeer</c>)
+    /// is resumed once its outbox holds at most this percentage of the gossip caps (hysteresis, so a slow reader gets
+    /// batches instead of one message per drained slot). <c>Gossip:RelayResumePercent</c>, 1 to 100.
+    /// </summary>
+    public int RelayResumePercent { get; set; } = 50;
+
+    /// <summary>
+    /// A paused connection whose outbox sent no gossip for this long is stalled (NL-360): its graph backlog ends and
+    /// the messages waiting for its flush are dropped (counted as <c>relay_stalled</c>), so a peer that never reads
+    /// does not keep an old graph snapshot or a relay backlog alive. The connection stays up (gossip is never worth a
+    /// connection; BOLT 1 pings find a dead one); the relay resumes when its outbox drains, and the peer can query what
+    /// it missed. Zero turns it off. <c>Gossip:RelayStallTimeout</c>.
+    /// </summary>
+    public TimeSpan RelayStallTimeout { get; set; } = TimeSpan.FromMinutes(10);
+
     /// <summary>How many received message versions keep their origin peers (origin suppression).</summary>
     public int MaxTrackedOrigins { get; set; } = GossipOriginTracker.DefaultCapacity;
 
@@ -79,6 +95,10 @@ public sealed class GossipRelayOptions
             errors.Add($"{nameof(BacklogMessagesPerSecond)} must be at least 1");
         if (MaxRelayPendingPerPeer < 1)
             errors.Add($"{nameof(MaxRelayPendingPerPeer)} must be at least 1");
+        if (RelayResumePercent is < 1 or > 100)
+            errors.Add($"{nameof(RelayResumePercent)} must be between 1 and 100");
+        if (RelayStallTimeout < TimeSpan.Zero)
+            errors.Add($"{nameof(RelayStallTimeout)} must not be negative");
         if (MaxTrackedOrigins < 1)
             errors.Add($"{nameof(MaxTrackedOrigins)} must be at least 1");
         return errors;

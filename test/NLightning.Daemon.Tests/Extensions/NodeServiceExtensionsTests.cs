@@ -626,10 +626,13 @@ public class NodeServiceExtensionsTests
         Assert.Equal(expectedOn, gossip.ArePublicChannelsAllowed(chain));
         // Every key of the section binds to a real option (a typo would bind nothing)
         var gossipKeys = configuration.GetSection(GossipOptions.SectionName).GetChildren().Select(c => c.Key).ToList();
-        Assert.Equal(6, gossipKeys.Count);
+        Assert.Equal(8, gossipKeys.Count);
         // NL-373: the memory budget is written on every network, 1 GiB
         Assert.Equal(GossipGraphOptions.DefaultMaxMemoryMb, graph.MaxMemoryMb);
         Assert.Equal("1024", configuration["Gossip:MaxMemoryMb"]);
+        // NL-360: the outbox gossip caps are written on every network, equal to the code defaults
+        Assert.Equal(GossipSyncOptions.DefaultMaxOutboxGossipPerPeer, sync.MaxOutboxGossipPerPeer);
+        Assert.Equal(GossipSyncOptions.DefaultMaxOutboxGossipBytesPerPeer, sync.MaxOutboxGossipBytesPerPeer);
         Assert.All(gossipKeys, key => Assert.True(typeof(GossipOptions).GetProperty(key) is not null
                                                || typeof(GossipGraphOptions).GetProperty(key) is not null
                                                || typeof(GossipSyncOptions).GetProperty(key) is not null

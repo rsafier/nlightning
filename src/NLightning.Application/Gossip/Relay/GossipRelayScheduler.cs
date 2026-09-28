@@ -7,6 +7,7 @@ namespace NLightning.Application.Gossip.Relay;
 
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Enums;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -89,6 +90,7 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
         _ourNodeId = secureKeyManager?.GetNodePubKey();
         _metrics = metrics;
         metrics?.RegisterQueue("relay_pending", () => _relayPeers.Sum(p => (long)p.Value.PendingCount));
+        metrics?.RegisterRelayPausedConnections(() => _relayPeers.Count(p => p.Value.IsPaused));
 
         if (IsRelayingOthers)
             _syncManager!.FilterReceived += OnFilterReceived;
@@ -182,7 +184,8 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
              && (existing.Digest == digest || (rank != ChannelAnnouncementRank && timestamp <= existing.Timestamp)))
                 return;
 
-            _own[key] = new OwnEntry(rank, message, digest, timestamp, shortChannelId, ++_sequence);
+            _own[key] = new OwnEntry(rank, message, digest, timestamp, shortChannelId, ++_sequence,
+                                     bytes.Length + sizeof(ushort));
             if (_timer is null && !_disposed)
             {
                 var interval = _gossipOptions.OwnGossipFlushInterval > TimeSpan.Zero
@@ -210,7 +213,9 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
 
             try
             {
-                if (!await _sender.SendAsync(peer, entry.Message))
+                // Full (NL-360) or gone: stop here, so nothing goes out ahead of this message on the connection; what
+                // was not marked sent is offered again at the next flush
+                if (await _sender.SendAsync(peer, entry.Message, entry.Size) != GossipEnqueueResult.Queued)
                     return;
 
                 sent.Add(entry.Digest);
@@ -249,5 +254,5 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
 
     /// <summary>One queued message of ours.</summary>
     private sealed record OwnEntry(int Rank, IMessage Message, string Digest, uint Timestamp,
-                                   ShortChannelId? ShortChannelId, long Sequence);
+                                   ShortChannelId? ShortChannelId, long Sequence, int Size);
 }

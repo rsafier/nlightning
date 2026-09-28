@@ -34,6 +34,12 @@ public sealed class DescribeGraphPrinter : IPrinter<DescribeGraphIpcResponse>
         }
         Line($"  Pending writes:     {item.PendingWrites}");
         Line($"  Ingress:            {Optional(item.IngressQueued)} queued, {Optional(item.IngressDropped)} dropped, {Optional(item.Orphans)} orphans, {Optional(item.PendingAnnouncements)} announcements without update");
+        if (item.IsRelayingOthers is not null || item.OutboxGossipMessages is not null)
+        {
+            var relayState = item.IsRelayingOthers switch { true => "on", false => "off", null => "-" };
+            Line($"  Relay:              {relayState}, {Optional(item.RelayPending)} pending, {Optional(item.RelayPausedConnections)} paused connections; outboxes {Optional(item.OutboxGossipMessages)} gossip messages ({ToMegabytes(item.OutboxGossipBytes ?? 0)} MiB), {Optional(item.OutboxGossipRefused)} refused");
+        }
+
         Line($"  Initial sync:       {item.HasCompletedInitialSync switch { true => "complete", false => "not complete", null => "-" }}");
         Line($"  Peers:              {item.Peers.Count}");
         foreach (var peer in item.Peers)

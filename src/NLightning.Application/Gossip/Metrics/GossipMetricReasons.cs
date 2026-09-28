@@ -58,6 +58,12 @@ public static class GossipMetricReasons
     public const string RelayBacklogFull = "relay_backlog_full";
 
     /// <summary>
+    /// A paused connection sent no gossip for <c>Gossip:RelayStallTimeout</c>: the messages waiting for its flush were
+    /// dropped and its graph backlog ended (NL-360).
+    /// </summary>
+    public const string RelayStalled = "relay_stalled";
+
+    /// <summary>
     /// An announcement without update (NL-406) left the pending index unpromoted: it outlived
     /// <c>PendingAnnouncementTtl</c>.
     /// </summary>

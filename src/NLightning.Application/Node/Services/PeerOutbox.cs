@@ -4,6 +4,8 @@ using Microsoft.Extensions.Logging;
 namespace NLightning.Application.Node.Services;
 
 using Domain.Exceptions;
+using Domain.Gossip.Enums;
+using Domain.Gossip.Models;
 using Domain.Node.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -20,12 +22,15 @@ using Infrastructure.Node.Services;
 /// the lock reaches the wire in that order. A disconnect is terminal: it is sent after everything queued before it,
 /// and anything enqueued after it is dropped.
 /// <para>
-/// NL-360: the gossip share is bounded. <see cref="QueuedGossipCount"/> counts the gossip messages not sent yet, and
-/// <see cref="TryEnqueueGossip(IMessage, bool)"/> with <c>capped</c> (our own and relayed gossip through
-/// <c>IPeerGossipOutbox</c>) refuses one when the peer already has <c>maxQueuedGossip</c> waiting (a peer that reads
-/// slowly), calling <c>onGossipDropped</c>. Channel messages, warnings, errors, the disconnect and our uncapped
-/// <c>channel_update</c> for a channel with this peer are never refused for it, so gossip can never hold a channel
-/// message back from the queue; the order of what is queued stays FIFO.
+/// NL-360: the gossip share is bounded, by count and by bytes. <see cref="QueuedGossipCount"/> and
+/// <see cref="QueuedGossipBytes"/> count the gossip not taken by the send loop yet, and <see cref="EnqueueGossip"/>
+/// (our own and relayed gossip through <c>IPeerGossipOutbox</c>) refuses a message with
+/// <see cref="GossipEnqueueResult.Full"/> when it would take the share over <c>maxQueuedGossip</c> messages or
+/// <c>maxQueuedGossipBytes</c> bytes (a peer that reads slowly), calling <c>onGossipRefused</c>; an empty share always
+/// takes one message, whatever its size. The caller keeps what was refused and offers it again once
+/// <see cref="GossipDepth"/> shows the queue drained (the relay pauses the connection). Channel messages, warnings,
+/// errors, the disconnect and our uncapped <c>channel_update</c> for a channel with this peer are never refused for
+/// it, so gossip can never hold a channel message back from the queue; the order of what is queued stays FIFO.
 /// </para>
 /// <para>
 /// Onion messages (BOLT 4, type 513, <see cref="TryEnqueueOnionMessage"/>) are a separate, lower-priority class on
@@ -71,11 +76,14 @@ public sealed class PeerOutbox
     private readonly ILogger _logger;
     private readonly IPeerService _peerService;
     private readonly int _maxQueuedGossip;
-    private readonly Action? _onGossipDropped;
+    private readonly long _maxQueuedGossipBytes;
+    private readonly Action? _onGossipRefused;
     private readonly int _maxQueuedOnionMessages;
     private readonly Action? _onOnionMessageDropped;
     private int _queuedGossip;
-    private long _droppedGossip;
+    private long _queuedGossipBytes;
+    private long _sentGossip;
+    private long _refusedGossip;
     private int _queuedOnionMessages;
     private long _droppedOnionMessages;
 
@@ -88,21 +96,25 @@ public sealed class PeerOutbox
     /// <param name="peerService">The connection.</param>
     /// <param name="logger">A logger.</param>
     /// <param name="maxQueuedGossip">
-    /// The capped gossip is refused while this many gossip messages wait (NL-360; 0: no cap).
+    /// Capped gossip is refused when it would make more than this many gossip messages wait (NL-360; 0: no cap).
     /// </param>
-    /// <param name="onGossipDropped">Called for every refused capped gossip message (the metric).</param>
+    /// <param name="onGossipRefused">Called for every refused capped gossip message (the metric).</param>
     /// <param name="maxQueuedOnionMessages">
     /// The onion messages that may wait; one more is refused. Always bounded: a value below 1 means 1.
     /// </param>
     /// <param name="onOnionMessageDropped">Called for every refused onion message (the metric).</param>
-    public PeerOutbox(IPeerService peerService, ILogger logger, int maxQueuedGossip = 0, Action? onGossipDropped = null,
+    /// <param name="maxQueuedGossipBytes">
+    /// Capped gossip is refused when it would make more than this many bytes of gossip wait (NL-360; 0: no cap).
+    /// </param>
+    public PeerOutbox(IPeerService peerService, ILogger logger, int maxQueuedGossip = 0, Action? onGossipRefused = null,
                       int maxQueuedOnionMessages = DefaultMaxQueuedOnionMessages,
-                      Action? onOnionMessageDropped = null)
+                      Action? onOnionMessageDropped = null, long maxQueuedGossipBytes = 0)
     {
         _peerService = peerService;
         _logger = logger;
         _maxQueuedGossip = Math.Max(0, maxQueuedGossip);
-        _onGossipDropped = onGossipDropped;
+        _maxQueuedGossipBytes = Math.Max(0, maxQueuedGossipBytes);
+        _onGossipRefused = onGossipRefused;
         _maxQueuedOnionMessages = Math.Max(1, maxQueuedOnionMessages);
         _onOnionMessageDropped = onOnionMessageDropped;
         Completion = Task.Run(SendLoopAsync);
@@ -111,8 +123,18 @@ public sealed class PeerOutbox
     /// <summary>The gossip messages queued and not sent yet (NL-360).</summary>
     public int QueuedGossipCount => Volatile.Read(ref _queuedGossip);
 
-    /// <summary>The capped gossip messages refused because <see cref="QueuedGossipCount"/> was at the cap.</summary>
-    public long DroppedGossipCount => Interlocked.Read(ref _droppedGossip);
+    /// <summary>The size of the gossip messages queued and not sent yet, as given when they were queued.</summary>
+    public long QueuedGossipBytes => Interlocked.Read(ref _queuedGossipBytes);
+
+    /// <summary>The gossip messages the send loop took off the queue so far (the connection's progress).</summary>
+    public long SentGossipCount => Interlocked.Read(ref _sentGossip);
+
+    /// <summary>The capped gossip messages refused because the gossip share was at its cap.</summary>
+    public long RefusedGossipCount => Interlocked.Read(ref _refusedGossip);
+
+    /// <summary>The gossip share of this outbox: queued messages and bytes, the caps, the progress.</summary>
+    public GossipOutboxDepth GossipDepth =>
+        new(QueuedGossipCount, QueuedGossipBytes, _maxQueuedGossip, _maxQueuedGossipBytes, SentGossipCount);
 
     /// <summary>The onion messages queued and not taken by the send loop yet.</summary>
     public int QueuedOnionMessageCount => Volatile.Read(ref _queuedOnionMessages);
@@ -167,43 +189,61 @@ public sealed class PeerOutbox
     }
 
     /// <summary>
-    /// Queues a BOLT 7 gossip message (e.g. our <c>channel_update</c> for a channel with this peer). Returns false when
-    /// the outbox is closed.
+    /// Queues a BOLT 7 gossip message (e.g. our <c>channel_update</c> for a channel with this peer), never refused for
+    /// the gossip cap. Returns false when the outbox is closed.
     /// </summary>
     public bool TryEnqueueGossip(IMessage message) => TryEnqueueGossip(message, false);
 
     /// <summary>
-    /// Queues a BOLT 7 gossip message. With <paramref name="capped"/> (own and relayed gossip, NL-360) it is refused
-    /// while <see cref="QueuedGossipCount"/> is at the cap given to the constructor. Returns false when refused or
-    /// when the outbox is closed.
+    /// Queues a BOLT 7 gossip message; with <paramref name="capped"/> as <see cref="EnqueueGossip"/> (size unknown).
+    /// Returns false when refused or when the outbox is closed.
     /// </summary>
-    public bool TryEnqueueGossip(IMessage message, bool capped)
+    public bool TryEnqueueGossip(IMessage message, bool capped) =>
+        Enqueue(message, 0, capped) == GossipEnqueueResult.Queued;
+
+    /// <summary>
+    /// Queues our own or relayed gossip (NL-360): <see cref="GossipEnqueueResult.Full"/> when it would take the gossip
+    /// share over its message or byte cap (an empty share always takes one message), <see cref="GossipEnqueueResult.Gone"/>
+    /// when the outbox is closed. Never blocks.
+    /// </summary>
+    /// <param name="message">The gossip message.</param>
+    /// <param name="size">Its size in bytes, counted against the byte cap (0 when unknown).</param>
+    public GossipEnqueueResult EnqueueGossip(IMessage message, int size) => Enqueue(message, size, true);
+
+    private GossipEnqueueResult Enqueue(IMessage message, int size, bool capped)
     {
         ArgumentNullException.ThrowIfNull(message);
-        if (Interlocked.Increment(ref _queuedGossip) > _maxQueuedGossip && capped && _maxQueuedGossip > 0)
+        size = Math.Max(0, size);
+        var count = Interlocked.Increment(ref _queuedGossip);
+        var bytes = Interlocked.Add(ref _queuedGossipBytes, size);
+        if (capped && ((_maxQueuedGossip > 0 && count > _maxQueuedGossip)
+                    || (_maxQueuedGossipBytes > 0 && count > 1 && bytes > _maxQueuedGossipBytes)))
         {
             Interlocked.Decrement(ref _queuedGossip);
-            var dropped = Interlocked.Increment(ref _droppedGossip);
-            if ((dropped == 1 || dropped % 1_000 == 0) && _logger.IsEnabled(LogLevel.Information))
-                _logger.LogInformation("Peer {Peer} has {Count} gossip messages waiting to be sent; {Dropped} refused "
-                                     + "so far on this connection", _peerService.PeerPubKey, _maxQueuedGossip, dropped);
+            Interlocked.Add(ref _queuedGossipBytes, -size);
+            var refused = Interlocked.Increment(ref _refusedGossip);
+            if ((refused == 1 || refused % 10_000 == 0) && _logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Peer {Peer} has {Count} gossip messages ({Bytes} bytes) waiting to be sent; {Refused} "
+                               + "refused so far on this connection", _peerService.PeerPubKey, count - 1,
+                                 bytes - size, refused);
             try
             {
-                _onGossipDropped?.Invoke();
+                _onGossipRefused?.Invoke();
             }
             catch (Exception e)
             {
-                _logger.LogDebug(e, "The gossip drop callback failed");
+                _logger.LogDebug(e, "The gossip refusal callback failed");
             }
 
-            return false;
+            return GossipEnqueueResult.Full;
         }
 
-        if (TryWrite(new OutboxItem(OutboxItemKind.Gossip, message, null)))
-            return true;
+        if (TryWrite(new OutboxItem(OutboxItemKind.Gossip, message, null, size)))
+            return GossipEnqueueResult.Queued;
 
         Interlocked.Decrement(ref _queuedGossip);
-        return false;
+        Interlocked.Add(ref _queuedGossipBytes, -size);
+        return GossipEnqueueResult.Gone;
     }
 
     /// <summary>
@@ -327,6 +367,8 @@ public sealed class PeerOutbox
                     break;
                 case OutboxItemKind.Gossip:
                     Interlocked.Decrement(ref _queuedGossip);
+                    Interlocked.Add(ref _queuedGossipBytes, -item.Size);
+                    Interlocked.Increment(ref _sentGossip);
                     await _peerService.SendGossipMessageAsync(item.Message!).ConfigureAwait(false);
                     break;
                 case OutboxItemKind.Error:
@@ -359,5 +401,5 @@ public sealed class PeerOutbox
         Disconnect
     }
 
-    private sealed record OutboxItem(OutboxItemKind Kind, IMessage? Message, Exception? Reason);
+    private sealed record OutboxItem(OutboxItemKind Kind, IMessage? Message, Exception? Reason, int Size = 0);
 }

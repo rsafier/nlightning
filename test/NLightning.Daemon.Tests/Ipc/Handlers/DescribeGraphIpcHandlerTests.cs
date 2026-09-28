@@ -7,6 +7,8 @@ namespace NLightning.Daemon.Tests.Ipc.Handlers;
 
 using Application.Gossip.Graph;
 using Application.Gossip.Graph.Interfaces;
+using Application.Gossip.Relay;
+using Application.Gossip.Relay.Interfaces;
 using Application.Gossip.Sync;
 using Daemon.Handlers;
 using Daemon.Interfaces;
@@ -19,6 +21,7 @@ using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Gossip.Graph;
 using Domain.Gossip.Interfaces;
+using Domain.Gossip.Models;
 using Domain.Node.Options;
 using Domain.Protocol.ValueObjects;
 using Transport.Ipc;
@@ -345,8 +348,57 @@ public class DescribeGraphIpcHandlerTests
         return store;
     }
 
+    [Fact]
+    public async Task Given_ARelayWithAConnectedPeer_When_DescribeGraph_Then_TheRelayAndOutboxDepthsCrossTheWire()
+    {
+        // Arrange (NL-360): one connected peer whose outbox holds 7 gossip messages (700 bytes); relay off (no graph
+        // or sync manager given to the scheduler)
+        var peer = new GossipPeer(s_alice, new Mock<Domain.Node.Interfaces.IPeerService>().Object);
+        var directory = new Mock<IGossipPeerDirectory>();
+        directory.Setup(d => d.GetConnectedPeers()).Returns([peer]);
+        var sender = new Mock<IGossipPeerSender>();
+        sender.Setup(s => s.GetDepth(peer)).Returns(new GossipOutboxDepth(7, 700, 10_000, 4_194_304, 3));
+        using var relay = new GossipRelayScheduler(directory.Object, NullLogger<GossipRelayScheduler>.Instance,
+                                                   Options.Create(new NodeOptions
+                                                   {
+                                                       BitcoinNetwork = BitcoinNetwork.Regtest
+                                                   }), sender: sender.Object);
+        using var provider = BuildProvider(CreateGraph(), relay: relay);
+        var handler = new DescribeGraphIpcHandler(NullLogger<DescribeGraphIpcHandler>.Instance, provider);
+
+        // Act
+        var payload = Read(await handler.HandleAsync(Envelope(new DescribeGraphIpcRequest()),
+                                                     TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.False(payload.IsRelayingOthers);
+        Assert.Equal(0L, payload.RelayPending);
+        Assert.Equal(0, payload.RelayPausedConnections);
+        Assert.Equal(7L, payload.OutboxGossipMessages);
+        Assert.Equal(700L, payload.OutboxGossipBytes);
+        Assert.Null(payload.OutboxGossipRefused);
+    }
+
+    [Fact]
+    public async Task Given_NoRelay_When_DescribeGraph_Then_TheRelayFieldsAreNull()
+    {
+        // Arrange
+        using var provider = BuildProvider(CreateGraph());
+        var handler = new DescribeGraphIpcHandler(NullLogger<DescribeGraphIpcHandler>.Instance, provider);
+
+        // Act
+        var payload = Read(await handler.HandleAsync(Envelope(new DescribeGraphIpcRequest()),
+                                                     TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Null(payload.IsRelayingOthers);
+        Assert.Null(payload.RelayPending);
+        Assert.Null(payload.OutboxGossipMessages);
+    }
+
     private static ServiceProvider BuildProvider(GraphStore store, string network = "regtest",
-                                                 GossipMemoryBudget? budget = null, bool? graphEnabled = null)
+                                                 GossipMemoryBudget? budget = null, bool? graphEnabled = null,
+                                                 IGossipRelayScheduler? relay = null)
     {
         var nodeOptions = Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Resolve(network) });
         var graphOptions = Options.Create(new GossipGraphOptions { Enabled = graphEnabled });
@@ -361,6 +413,8 @@ public class DescribeGraphIpcHandlerTests
         services.AddSingleton(new GossipGraphDescriber(store, ingress, sync));
         if (budget is not null)
             services.AddSingleton(budget);
+        if (relay is not null)
+            services.AddSingleton(relay);
         services.AddScoped<IClientCommandHandler<DescribeGraphClientRequest, DescribeGraphClientResponse>,
             DescribeGraphClientHandler>();
         return services.BuildServiceProvider();

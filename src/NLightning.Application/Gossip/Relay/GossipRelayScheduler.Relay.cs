@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace NLightning.Application.Gossip.Relay;
 
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Enums;
 using Domain.Gossip.Graph;
 using Domain.Gossip.Queries;
 using Domain.Node.Interfaces;
@@ -61,6 +62,19 @@ using Sync.Interfaces;
 /// <see cref="GossipRelayOptions.BacklogMessagesPerSecond"/>; it replaces the pending set and any backlog still
 /// running.
 /// </para>
+/// <para>
+/// <b>Backpressure (NL-360):</b> the peer's outbox bounds its gossip share (<c>Gossip:MaxOutboxGossipPerPeer</c>,
+/// <c>Gossip:MaxOutboxGossipBytesPerPeer</c>) and answers <see cref="GossipEnqueueResult.Full"/> when it is at the cap.
+/// The relay then pauses that connection without losing its place: the backlog message that was refused is held and
+/// sent first when the connection resumes (the snapshot pass continues after it), and the rest of an interrupted flush
+/// goes back into the pending set ahead of what was collected since (oldest first when the bound evicts), so the
+/// 256-before-258 order holds and no update goes out without its announcement. While paused, the connection gets no
+/// flush and no backlog; it resumes when its outbox holds at most <see cref="GossipRelayOptions.RelayResumePercent"/>
+/// of the caps. A paused connection that sends no gossip for <see cref="GossipRelayOptions.RelayStallTimeout"/> is
+/// stalled: its backlog ends and its pending messages are dropped (counted as <c>relay_stalled</c>), so a peer that
+/// never reads holds at most its outbox cap and the bounded pending set, and no old graph snapshot. The connection is
+/// not closed (gossip is never worth a connection).
+/// </para>
 /// </remarks>
 public sealed partial class GossipRelayScheduler
 {
@@ -85,6 +99,27 @@ public sealed partial class GossipRelayScheduler
     public bool IsRelayingOthers =>
         _graphStore is not null && _syncManager is not null
                                 && _relayOptions.IsRelayEnabledFor(_nodeOptions.BitcoinNetwork);
+
+    /// <summary>
+    /// The relay's state for <c>describegraph</c> (NL-360, NL-375): messages waiting for the connections' flushes,
+    /// paused connections, and the gossip waiting in the connected peers' outboxes.
+    /// </summary>
+    public GossipRelayStatus GetStatus()
+    {
+        var states = _relayPeers.Select(p => p.Value).ToList();
+        long outboxMessages = 0, outboxBytes = 0;
+        foreach (var peer in _peerDirectory.GetConnectedPeers())
+        {
+            if (_sender.GetDepth(peer) is not { } depth)
+                continue;
+
+            outboxMessages += depth.QueuedMessages;
+            outboxBytes += depth.QueuedBytes;
+        }
+
+        return new GossipRelayStatus(IsRelayingOthers, states.Sum(s => (long)s.PendingCount),
+                                     states.Count(s => s.IsPaused), outboxMessages, outboxBytes);
+    }
 
     /// <summary>
     /// One relay tick (the relay timer calls it; tests call it directly): collects newly accepted gossip when due,
@@ -160,17 +195,29 @@ public sealed partial class GossipRelayScheduler
             {
                 state.ClearPending();
                 state.Backlog?.Dispose();
+                state.HeldBacklogItem = null;
                 state.Backlog = EnumerateBacklog(_graphStore!.GetSnapshot(), filter, peer.NodeId).GetEnumerator();
             }
 
+            // NL-360: a connection paused on a full outbox waits until it drained (or stalls)
+            if (state.IsPaused && !TryResume(peer, state, now))
+                return 0;
+
             if (state.Backlog is not null)
-                sent += await SendBacklogAsync(peer, state);
+            {
+                sent += await SendBacklogAsync(peer, state, now);
+                if (state.IsPaused)
+                    return sent;
+            }
 
             if (now >= state.NextFlushAt)
             {
-                sent += await FlushPeerAsync(peer, state, filter);
-                while (state.NextFlushAt <= now)
-                    state.NextFlushAt += _relayOptions.RelayFlushInterval;
+                sent += await FlushPeerAsync(peer, state, filter, now);
+
+                // A flush the full outbox interrupted goes on as soon as the connection resumes
+                if (!state.IsPaused)
+                    while (state.NextFlushAt <= now)
+                        state.NextFlushAt += _relayOptions.RelayFlushInterval;
             }
 
             return sent;
@@ -250,13 +297,7 @@ public sealed partial class GossipRelayScheduler
             if (!IsOnOurChain(peer) || !_syncManager!.TryGetPeerFilter(peer.Service, out _))
                 continue;
 
-            var dropped = GetRelayState(peer, _timeProvider.GetUtcNow()).AddPending(changed);
-            if (dropped > 0)
-            {
-                _metrics?.RecordDropped(GossipMetricReasons.RelayBacklogFull, dropped);
-                _logger.LogDebug("Dropped the {Count} oldest gossip messages waiting for peer {Peer}: its relay "
-                               + "backlog holds {Max}", dropped, peer.NodeId, _relayOptions.MaxRelayPendingPerPeer);
-            }
+            RecordBacklogDrops(peer, GetRelayState(peer, _timeProvider.GetUtcNow()).AddPending(changed));
         }
 
         if (_logger.IsEnabled(LogLevel.Debug))
@@ -277,7 +318,8 @@ public sealed partial class GossipRelayScheduler
         }
     }
 
-    private async Task<int> FlushPeerAsync(GossipPeer peer, RelayPeerState state, GossipTimestampFilter filter)
+    private async Task<int> FlushPeerAsync(GossipPeer peer, RelayPeerState state, GossipTimestampFilter filter,
+                                           DateTimeOffset now)
     {
         var items = state.TakePending(AnnouncementToResend)
                          .OrderBy(i => i.Rank)
@@ -288,8 +330,9 @@ public sealed partial class GossipRelayScheduler
             return 0;
 
         var sent = 0;
-        foreach (var item in items)
+        for (var i = 0; i < items.Count; i++)
         {
+            var item = items[i];
             if (!ShouldRelay(item, filter, peer.NodeId))
                 continue;
 
@@ -298,6 +341,12 @@ public sealed partial class GossipRelayScheduler
                 case SendResult.Sent:
                     sent++;
                     break;
+                case SendResult.Full:
+                    // NL-360: the refused message and the rest go back, ahead of what was collected since
+                    var dropped = state.PutBack(items.Skip(i).ToList());
+                    RecordBacklogDrops(peer, dropped);
+                    Pause(peer, state, now);
+                    return sent;
                 case SendResult.ConnectionGone:
                     return sent;
             }
@@ -306,7 +355,7 @@ public sealed partial class GossipRelayScheduler
         return sent;
     }
 
-    private async Task<int> SendBacklogAsync(GossipPeer peer, RelayPeerState state)
+    private async Task<int> SendBacklogAsync(GossipPeer peer, RelayPeerState state, DateTimeOffset now)
     {
         var budget = (int)Math.Max(1, Math.Min(int.MaxValue,
                                                _relayOptions.BacklogMessagesPerSecond
@@ -314,27 +363,96 @@ public sealed partial class GossipRelayScheduler
         var sent = 0;
         while (sent < budget)
         {
-            if (!state.Backlog!.MoveNext())
+            RelayItem item;
+            if (state.HeldBacklogItem is { } held)
+            {
+                // Refused by the full outbox last time: it goes first, so the pass keeps its order
+                item = held;
+                state.HeldBacklogItem = null;
+            }
+            else if (!state.Backlog!.MoveNext())
             {
                 state.Backlog.Dispose();
                 state.Backlog = null;
                 _logger.LogDebug("Sent the gossip backlog to peer {Peer}", peer.NodeId);
                 break;
             }
+            else
+            {
+                item = state.Backlog.Current;
+            }
 
-            switch (await TrySendAsync(peer, state.Backlog.Current))
+            switch (await TrySendAsync(peer, item))
             {
                 case SendResult.Sent:
                     sent++;
                     break;
+                case SendResult.Full:
+                    state.HeldBacklogItem = item;
+                    Pause(peer, state, now);
+                    return sent;
                 case SendResult.ConnectionGone:
-                    state.Backlog.Dispose();
-                    state.Backlog = null;
+                    state.EndBacklog();
                     return sent;
             }
         }
 
         return sent;
+    }
+
+    /// <summary>
+    /// Pauses a connection whose outbox refused gossip (NL-360): no flush or backlog until it drained.
+    /// </summary>
+    private void Pause(GossipPeer peer, RelayPeerState state, DateTimeOffset now)
+    {
+        var depth = _sender.GetDepth(peer);
+        state.Pause(now, depth?.SentMessages ?? 0);
+        _metrics?.RecordRelayPaused();
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("Paused the gossip relay to peer {Peer}: its outbox holds {Messages} gossip messages "
+                           + "({Bytes} bytes)", peer.NodeId, depth?.QueuedMessages, depth?.QueuedBytes);
+    }
+
+    /// <summary>
+    /// True when the paused connection's outbox drained to <see cref="GossipRelayOptions.RelayResumePercent"/> of its
+    /// caps (or it has no outbox any more: the next send finds out); else checks it for a stall (NL-360).
+    /// </summary>
+    private bool TryResume(GossipPeer peer, RelayPeerState state, DateTimeOffset now)
+    {
+        if (_sender.GetDepth(peer) is not { } depth || depth.IsAtOrBelow(_relayOptions.RelayResumePercent))
+        {
+            state.Resume();
+            _logger.LogDebug("Resumed the gossip relay to peer {Peer}", peer.NodeId);
+            return true;
+        }
+
+        if (depth.SentMessages != state.ProgressMark)
+        {
+            state.MarkProgress(now, depth.SentMessages);
+            return false;
+        }
+
+        if (_relayOptions.RelayStallTimeout <= TimeSpan.Zero || state.IsStalled
+         || now - state.LastProgressAt < _relayOptions.RelayStallTimeout)
+            return false;
+
+        var dropped = state.Stall();
+        _metrics?.RecordRelayStalled();
+        _metrics?.RecordDropped(GossipMetricReasons.RelayStalled, dropped);
+        _logger.LogInformation("Peer {Peer} read no gossip for {Timeout} with {Messages} gossip messages waiting: ended "
+                             + "its gossip backlog and dropped the {Dropped} messages waiting for its relay flush",
+                               peer.NodeId, _relayOptions.RelayStallTimeout, depth.QueuedMessages, dropped);
+        return false;
+    }
+
+    private void RecordBacklogDrops(GossipPeer peer, int dropped)
+    {
+        if (dropped <= 0)
+            return;
+
+        _metrics?.RecordDropped(GossipMetricReasons.RelayBacklogFull, dropped);
+        _logger.LogDebug("Dropped the {Count} oldest gossip messages waiting for peer {Peer}: its relay backlog holds "
+                       + "{Max}", dropped, peer.NodeId, _relayOptions.MaxRelayPendingPerPeer);
     }
 
     /// <summary>
@@ -425,8 +543,14 @@ public sealed partial class GossipRelayScheduler
 
         try
         {
-            if (!await _sender.SendAsync(peer, message))
-                return SendResult.ConnectionGone;
+            // The wire size: the message type and the payload
+            switch (await _sender.SendAsync(peer, message, item.Raw.Length + sizeof(ushort)))
+            {
+                case GossipEnqueueResult.Full:
+                    return SendResult.Full;
+                case GossipEnqueueResult.Gone:
+                    return SendResult.ConnectionGone;
+            }
 
             _metrics?.RecordRelayed(item.Type, "others");
             return SendResult.Sent;
@@ -538,6 +662,7 @@ public sealed partial class GossipRelayScheduler
     {
         Sent,
         Skipped,
+        Full,
         ConnectionGone
     }
 
@@ -605,11 +730,67 @@ public sealed partial class GossipRelayScheduler
         private readonly HashSet<Domain.Channels.ValueObjects.ShortChannelId> _unsentAnnouncements = [];
         private readonly Queue<Domain.Channels.ValueObjects.ShortChannelId> _unsentOrder = new();
         private long _sequence;
+        private long _putBackSequence;
         private int _backlogRequested;
         private int _running;
+        private int _paused;
 
         public DateTimeOffset NextFlushAt { get; set; } = nextFlushAt;
         public IEnumerator<RelayItem>? Backlog { get; set; }
+
+        /// <summary>The backlog message the full outbox refused, sent first when the connection resumes (NL-360).</summary>
+        public RelayItem? HeldBacklogItem { get; set; }
+
+        /// <summary>The relay holds this connection paused on its full outbox (NL-360).</summary>
+        public bool IsPaused => Volatile.Read(ref _paused) == 1;
+
+        /// <summary>This pause already stalled (its backlog and pending messages are gone).</summary>
+        public bool IsStalled { get; private set; }
+
+        /// <summary>The outbox's sent-gossip count when the relay last saw it move.</summary>
+        public long ProgressMark { get; private set; }
+
+        /// <summary>When the relay last saw the paused outbox send gossip.</summary>
+        public DateTimeOffset LastProgressAt { get; private set; }
+
+        public void Pause(DateTimeOffset now, long sentMessages)
+        {
+            Volatile.Write(ref _paused, 1);
+            IsStalled = false;
+            MarkProgress(now, sentMessages);
+        }
+
+        public void MarkProgress(DateTimeOffset now, long sentMessages)
+        {
+            ProgressMark = sentMessages;
+            LastProgressAt = now;
+        }
+
+        public void Resume()
+        {
+            Volatile.Write(ref _paused, 0);
+            IsStalled = false;
+        }
+
+        /// <summary>Ends the backlog pass (its snapshot is released).</summary>
+        public void EndBacklog()
+        {
+            Backlog?.Dispose();
+            Backlog = null;
+            HeldBacklogItem = null;
+        }
+
+        /// <summary>
+        /// The paused connection stalled: ends its backlog and drops what waits for its flush; returns how many pending
+        /// messages went (the rest of the backlog pass is not counted).
+        /// </summary>
+        public int Stall()
+        {
+            IsStalled = true;
+            var held = HeldBacklogItem is null ? 0 : 1;
+            EndBacklog();
+            return held + ClearPending();
+        }
 
         public void RequestBacklog() => Interlocked.Exchange(ref _backlogRequested, 1);
 
@@ -695,17 +876,77 @@ public sealed partial class GossipRelayScheduler
             }
         }
 
-        /// <summary>Drops what waits (a new backlog sends every announcement with its updates again).</summary>
-        public void ClearPending()
+        /// <summary>
+        /// Puts back the rest of a flush the full outbox interrupted (NL-360), ahead of everything collected since, so
+        /// the bound evicts it first (it is the oldest); a key collected again meanwhile keeps its newer version.
+        /// Returns how many messages the bound dropped.
+        /// </summary>
+        public int PutBack(IReadOnlyList<RelayItem> items)
         {
             lock (_pendingLock)
             {
+                var channelFront = new List<(GossipMessageKey Slot, long Sequence)>();
+                var nodeFront = new List<(GossipMessageKey Slot, long Sequence)>();
+                foreach (var item in items)
+                {
+                    if (_pending.ContainsKey(item.Slot))
+                        continue;
+
+                    // Below every collected sequence (those count up from 1), so the order queues stay oldest first
+                    var sequence = --_putBackSequence;
+                    _pending[item.Slot] = (item, sequence);
+                    (item.Type == MessageTypes.NodeAnnouncement ? nodeFront : channelFront).Add((item.Slot, sequence));
+                    if (item.Type == MessageTypes.ChannelAnnouncement)
+                        _unsentAnnouncements.Remove(item.ShortChannelId);
+                }
+
+                Prepend(_channelOrder, channelFront);
+                Prepend(_nodeOrder, nodeFront);
+                var dropped = 0;
+                while (_pending.Count > maxPending)
+                {
+                    var evicted = EvictOne();
+                    if (evicted == 0)
+                        break;
+                    dropped += evicted;
+                }
+
+                CompactOrder(_channelOrder);
+                CompactOrder(_nodeOrder);
+                return dropped;
+            }
+        }
+
+        /// <summary>
+        /// Drops what waits (a new backlog sends every announcement with its updates again); returns how many messages
+        /// went.
+        /// </summary>
+        public int ClearPending()
+        {
+            lock (_pendingLock)
+            {
+                var count = _pending.Count;
                 _pending.Clear();
                 _channelOrder.Clear();
                 _nodeOrder.Clear();
                 _unsentAnnouncements.Clear();
                 _unsentOrder.Clear();
+                return count;
             }
+        }
+
+        private static void Prepend(Queue<(GossipMessageKey Slot, long Sequence)> order,
+                                    List<(GossipMessageKey Slot, long Sequence)> front)
+        {
+            if (front.Count == 0)
+                return;
+
+            var rest = order.ToList();
+            order.Clear();
+            foreach (var entry in front)
+                order.Enqueue(entry);
+            foreach (var entry in rest)
+                order.Enqueue(entry);
         }
 
         /// <summary>

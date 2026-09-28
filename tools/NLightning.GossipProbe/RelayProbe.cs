@@ -4,6 +4,8 @@ namespace NLightning.GossipProbe;
 
 using Application.Gossip.Relay.Interfaces;
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Enums;
+using Domain.Gossip.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 
@@ -62,10 +64,12 @@ public sealed class RelayRecorder
 /// <summary>Records every relay send through <see cref="RelayRecorder"/>, then passes it on.</summary>
 public sealed class RecordingGossipPeerSender(IGossipPeerSender inner, RelayRecorder recorder) : IGossipPeerSender
 {
-    public async ValueTask<bool> SendAsync(GossipPeer peer, IMessage message)
+    public async ValueTask<GossipEnqueueResult> SendAsync(GossipPeer peer, IMessage message, int size)
     {
-        var queued = await inner.SendAsync(peer, message);
-        recorder.RecordSent(peer.NodeId, message, queued);
-        return queued;
+        var result = await inner.SendAsync(peer, message, size);
+        recorder.RecordSent(peer.NodeId, message, result == GossipEnqueueResult.Queued);
+        return result;
     }
+
+    public GossipOutboxDepth? GetDepth(GossipPeer peer) => inner.GetDepth(peer);
 }

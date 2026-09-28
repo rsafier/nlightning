@@ -32,6 +32,15 @@ using Domain.Protocol.Constants;
 /// (NL-373).</item>
 /// <item><c>nlightning.gossip.memory.working_set</c> (bytes): the process's resident set at the memory budget's last
 /// reading (observable, once registered).</item>
+/// <item><c>nlightning.gossip.outbox.refused</c>: own or relayed gossip a peer's full outbox refused (NL-360; the
+/// relay keeps it and offers it again after the pause).</item>
+/// <item><c>nlightning.gossip.outbox.bytes</c> (bytes): the gossip waiting in every connection's outbox (observable,
+/// once registered).</item>
+/// <item><c>nlightning.gossip.relay.paused</c>: times the relay paused a connection whose outbox was full.</item>
+/// <item><c>nlightning.gossip.relay.stalled</c>: paused connections that sent no gossip for
+/// <c>Gossip:RelayStallTimeout</c>: their backlog and pending relay messages were dropped.</item>
+/// <item><c>nlightning.gossip.relay.paused_connections</c>: connections the relay holds paused now (observable, once
+/// registered).</item>
 /// </list>
 /// <para>Thread-safe; recording never throws and costs nothing while no listener is enabled.</para>
 /// </remarks>
@@ -74,6 +83,9 @@ public sealed class GossipMetrics : IDisposable
     private readonly Histogram<double> _syncDuration;
     private readonly Histogram<double> _storeDuration;
     private readonly Counter<long> _memoryBudgetExceeded;
+    private readonly Counter<long> _outboxRefused;
+    private readonly Counter<long> _relayPaused;
+    private readonly Counter<long> _relayStalled;
     private readonly Lock _queuesLock = new();
     private readonly Dictionary<string, Func<long>> _queues = new(StringComparer.Ordinal);
 
@@ -102,6 +114,12 @@ public sealed class GossipMetrics : IDisposable
                                                        "Duration of a graph store load or write-behind flush");
         _memoryBudgetExceeded = Meter.CreateCounter<long>("nlightning.gossip.memory.budget.exceeded", "{crossing}",
                                                           "Times the process went over Gossip:MaxMemoryMb");
+        _outboxRefused = Meter.CreateCounter<long>("nlightning.gossip.outbox.refused", "{message}",
+                                                   "Own or relayed gossip refused by a peer's full outbox");
+        _relayPaused = Meter.CreateCounter<long>("nlightning.gossip.relay.paused", "{pause}",
+                                                 "Times the relay paused a connection whose outbox was full");
+        _relayStalled = Meter.CreateCounter<long>("nlightning.gossip.relay.stalled", "{stall}",
+                                                  "Paused connections whose relay backlog was dropped after a stall");
         Meter.CreateObservableGauge("nlightning.gossip.queue.depth", ObserveQueues, "{message}",
                                     "Messages waiting in the gossip queues");
     }
@@ -166,6 +184,37 @@ public sealed class GossipMetrics : IDisposable
         ArgumentNullException.ThrowIfNull(read);
         Meter.CreateObservableGauge("nlightning.gossip.memory.working_set", read, "By",
                                     "The process's resident set at the gossip memory budget's last reading");
+    }
+
+    /// <summary>A peer's full outbox refused own or relayed gossip (NL-360).</summary>
+    public void RecordOutboxRefused() => _outboxRefused.Add(1);
+
+    /// <summary>The relay paused a connection whose outbox was full (NL-360).</summary>
+    public void RecordRelayPaused() => _relayPaused.Add(1);
+
+    /// <summary>A paused connection stalled: its relay backlog was dropped (NL-360).</summary>
+    public void RecordRelayStalled() => _relayStalled.Add(1);
+
+    /// <summary>
+    /// Reports <paramref name="read"/> (bytes) as <c>nlightning.gossip.outbox.bytes</c>; call once (the peer manager
+    /// does).
+    /// </summary>
+    public void RegisterOutboxBytes(Func<long> read)
+    {
+        ArgumentNullException.ThrowIfNull(read);
+        Meter.CreateObservableGauge("nlightning.gossip.outbox.bytes", read, "By",
+                                    "Gossip waiting in every connection's outbox");
+    }
+
+    /// <summary>
+    /// Reports <paramref name="read"/> as <c>nlightning.gossip.relay.paused_connections</c>; call once (the relay
+    /// scheduler does).
+    /// </summary>
+    public void RegisterRelayPausedConnections(Func<long> read)
+    {
+        ArgumentNullException.ThrowIfNull(read);
+        Meter.CreateObservableGauge("nlightning.gossip.relay.paused_connections", read, "{connection}",
+                                    "Connections the gossip relay holds paused on a full outbox");
     }
 
     /// <summary>

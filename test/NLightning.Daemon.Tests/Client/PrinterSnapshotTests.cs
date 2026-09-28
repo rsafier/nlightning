@@ -616,6 +616,31 @@ public class PrinterSnapshotTests
         Assert.Contains(expected + "\n", output);
     }
 
+    [Fact]
+    public void Given_RelayAndOutboxDepths_When_GraphDescriptionPrinted_Then_TheRelayLineShowsThem()
+    {
+        // Arrange (NL-360)
+        var description = new DescribeGraphIpcResponse
+        {
+            IsRelayingOthers = true,
+            RelayPending = 12,
+            RelayPausedConnections = 1,
+            OutboxGossipMessages = 10_000,
+            OutboxGossipBytes = 3L * 1048576,
+            OutboxGossipRefused = 42,
+            Peers = [],
+            ChannelPage = [],
+            NodePage = []
+        };
+
+        // Act
+        var output = Print(w => new DescribeGraphPrinter(w).Print(description));
+
+        // Assert
+        Assert.Contains("  Relay:              on, 12 pending, 1 paused connections; outboxes 10000 gossip messages (3.0 MiB), 42 refused\n",
+                        output);
+    }
+
     private static string Print(Action<TextWriter> print)
     {
         using var writer = new StringWriter();

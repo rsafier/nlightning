@@ -71,6 +71,24 @@ public sealed class DescribeGraphIpcResponse
     /// <summary>Channel announcements waiting for their first channel_update (NL-406); null without an ingress.</summary>
     [Key(28)] public int? PendingAnnouncements { get; init; }
 
+    /// <summary>Other nodes' gossip is relayed; null without a relay (NL-360).</summary>
+    [Key(29)] public bool? IsRelayingOthers { get; init; }
+
+    /// <summary>Messages waiting for the connections' relay flushes (NL-375).</summary>
+    [Key(30)] public long? RelayPending { get; init; }
+
+    /// <summary>Connections the relay holds paused on a full outbox (NL-360).</summary>
+    [Key(31)] public int? RelayPausedConnections { get; init; }
+
+    /// <summary>Gossip waiting in the connected peers' outboxes (NL-360).</summary>
+    [Key(32)] public long? OutboxGossipMessages { get; init; }
+
+    /// <summary>Its size in bytes.</summary>
+    [Key(33)] public long? OutboxGossipBytes { get; init; }
+
+    /// <summary>Own and relayed gossip a full outbox refused since the start (NL-360).</summary>
+    [Key(34)] public long? OutboxGossipRefused { get; init; }
+
     public static DescribeGraphIpcResponse FromClientResponse(DescribeGraphClientResponse clientResponse)
     {
         ArgumentNullException.ThrowIfNull(clientResponse);
@@ -118,7 +136,13 @@ public sealed class DescribeGraphIpcResponse
             ProcessWorkingSetBytes = clientResponse.ProcessWorkingSetBytes,
             ProcessManagedHeapBytes = clientResponse.ProcessManagedHeapBytes,
             IsOverMemoryBudget = clientResponse.IsOverMemoryBudget,
-            MemoryBudgetRefused = clientResponse.MemoryBudgetRefused
+            MemoryBudgetRefused = clientResponse.MemoryBudgetRefused,
+            IsRelayingOthers = clientResponse.IsRelayingOthers,
+            RelayPending = clientResponse.RelayPending,
+            RelayPausedConnections = clientResponse.RelayPausedConnections,
+            OutboxGossipMessages = clientResponse.OutboxGossipMessages,
+            OutboxGossipBytes = clientResponse.OutboxGossipBytes,
+            OutboxGossipRefused = clientResponse.OutboxGossipRefused
         };
     }
 }

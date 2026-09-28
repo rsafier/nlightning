@@ -98,6 +98,24 @@ public sealed record DescribeGraphClientResponse
 
     /// <summary>New channels and nodes refused over the budget since the start.</summary>
     public long? MemoryBudgetRefused { get; init; }
+
+    /// <summary>Other nodes' gossip is relayed, or null without a relay (NL-360).</summary>
+    public bool? IsRelayingOthers { get; init; }
+
+    /// <summary>Messages waiting for the connections' relay flushes, or null without a relay (NL-375).</summary>
+    public long? RelayPending { get; init; }
+
+    /// <summary>Connections the relay holds paused because their outbox is at its gossip cap (NL-360).</summary>
+    public int? RelayPausedConnections { get; init; }
+
+    /// <summary>Gossip waiting in the connected peers' outboxes (NL-360).</summary>
+    public long? OutboxGossipMessages { get; init; }
+
+    /// <summary>Its size in bytes.</summary>
+    public long? OutboxGossipBytes { get; init; }
+
+    /// <summary>Own and relayed gossip a full outbox refused since the start, or null without a peer manager.</summary>
+    public long? OutboxGossipRefused { get; init; }
 }
 
 /// <summary>The gossip sync state of one connection.</summary>

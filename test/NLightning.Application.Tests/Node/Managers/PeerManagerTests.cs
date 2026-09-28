@@ -27,6 +27,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Gossip.Enums;
 using Domain.Gossip.Interfaces;
 using Domain.Money;
 using Domain.Node.Constants;
@@ -1138,26 +1139,50 @@ public class PeerManagerTests
         var reply = CreateMessages(1)[0];
 
         // Act
-        var refused = !outbox.TryEnqueueGossip(_mockPeerService.Object, new Mock<IMessage>().Object);
+        var result = outbox.EnqueueGossip(_mockPeerService.Object, new Mock<IMessage>().Object, 100);
+        var depth = outbox.GetGossipDepth(_mockPeerService.Object);
         RaiseResponse(reply);
         var gauge = recorder.ObserveQueue("outbox_gossip");
         release.SetResult();
         await Task.Delay(50, TestContext.Current.CancellationToken);
 
-        // Assert
-        Assert.True(refused);
+        // Assert: Full (the connection is up), not Gone
+        Assert.Equal(GossipEnqueueResult.Full, result);
+        Assert.Equal(2, depth?.QueuedMessages);
+        Assert.Equal(2, depth?.MaxMessages);
         Assert.Equal(2, gauge);
-        Assert.Equal(1, recorder.Sum("nlightning.gossip.messages.dropped", ("reason", PeerManager.OutboxFullReason)));
+        Assert.Equal(1, recorder.Sum("nlightning.gossip.outbox.refused"));
+        Assert.Equal(1, peerManager.RefusedOutboxGossipCount);
         _mockPeerService.Verify(p => p.SendGossipMessageAsync(It.IsAny<IMessage>()), Times.Exactly(3));
         _mockPeerService.Verify(p => p.SendMessageAsync(reply), Times.Once);
         Assert.Equal(0, peerManager.QueuedOutboxGossipCount);
     }
 
     [Fact]
-    public async Task Given_DefaultGossipOptions_When_AReadingPeerFallsBehind_Then_NoGossipIsRefused()
+    public async Task Given_AReplacedConnection_When_GossipIsOfferedForIt_Then_ItIsGoneAndHasNoDepth()
     {
-        // Arrange: the cap is off by default (NL-360) until the relay pauses on a full outbox instead of dropping
-        // the peer's backlog; 12,000 relayed messages wait behind a peer that stopped reading
+        // Arrange
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        RaiseInboundConnection();
+        IPeerGossipOutbox outbox = peerManager;
+        var stranger = CreateMockPeerService();
+
+        // Act
+        var result = outbox.EnqueueGossip(stranger.Object, new Mock<IMessage>().Object, 10);
+        var depth = outbox.GetGossipDepth(stranger.Object);
+
+        // Assert
+        Assert.Equal(GossipEnqueueResult.Gone, result);
+        Assert.Null(depth);
+        Assert.NotNull(outbox.GetGossipDepth(_mockPeerService.Object));
+    }
+
+    [Fact]
+    public async Task Given_DefaultGossipOptions_When_AReadingPeerFallsBehind_Then_TheDefaultCapRefusesTheRest()
+    {
+        // Arrange: the cap is on by default (NL-360, 10,000 messages): the relay pauses the connection on Full
+        // instead of dropping; 12,000 relayed messages offered to a peer that stopped reading
         _fakeServiceProvider.AddService(typeof(IOptions<GossipSyncOptions>), Options.Create(new GossipSyncOptions()));
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var sending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1181,9 +1206,9 @@ public class PeerManagerTests
         release.SetResult();
 
         // Assert
-        Assert.Equal(0, new GossipSyncOptions().MaxOutboxGossipPerPeer);
-        Assert.Equal(0, refused);
-        Assert.Equal(12_000, queued);
+        Assert.Equal(10_000, new GossipSyncOptions().MaxOutboxGossipPerPeer);
+        Assert.Equal(2_000, refused);
+        Assert.Equal(10_000, queued);
     }
 
     [Theory]

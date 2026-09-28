@@ -3,17 +3,22 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Handlers;
 
 using Application.Gossip.Graph;
+using Application.Gossip.Relay;
+using Application.Gossip.Relay.Interfaces;
+using Application.Node.Managers;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
 using Domain.Client.Exceptions;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
+using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Interfaces;
 
 /// <summary>
 /// Describes the gossip graph (ClientCommand 20, BOLT 7 plan G5-T4): the counts, the store's memory estimate, the
-/// process memory against <c>Gossip:MaxMemoryMb</c> (<see cref="GossipMemoryBudget"/>, NL-373), pending writes, the ingress queue, dropped messages and orphans, and each connection's sync state; on request one
+/// process memory against <c>Gossip:MaxMemoryMb</c> (<see cref="GossipMemoryBudget"/>, NL-373), pending writes, the ingress queue, dropped messages and orphans, the relay and outbox depths
+/// (<see cref="GossipRelayScheduler.GetStatus"/>, NL-360), and each connection's sync state; on request one
 /// page of channels (by short channel id) and one of node announcements (by node id), at most
 /// <see cref="DescribeGraphClientRequest.MaxLimit"/> each. Refused with <c>invalid_operation</c> while the graph is
 /// disabled, and for a negative offset or a limit outside 1 to the maximum.
@@ -25,14 +30,19 @@ public sealed class DescribeGraphClientHandler
     private readonly GossipGraphOptions _options;
     private readonly NodeOptions _nodeOptions;
     private readonly GossipMemoryBudget? _memoryBudget;
+    private readonly GossipRelayScheduler? _relayScheduler;
+    private readonly PeerManager? _peerManager;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.DescribeGraph;
 
     public DescribeGraphClientHandler(GossipGraphDescriber describer, IOptions<GossipGraphOptions> options,
-                                      IOptions<NodeOptions> nodeOptions, GossipMemoryBudget? memoryBudget = null)
+                                      IOptions<NodeOptions> nodeOptions, GossipMemoryBudget? memoryBudget = null,
+                                      IGossipRelayScheduler? relayScheduler = null, IPeerManager? peerManager = null)
     {
         _memoryBudget = memoryBudget;
+        _relayScheduler = relayScheduler as GossipRelayScheduler;
+        _peerManager = peerManager as PeerManager;
         _describer = describer;
         _options = options.Value;
         _nodeOptions = nodeOptions.Value;
@@ -56,6 +66,7 @@ public sealed class DescribeGraphClientHandler
         var description = _describer.Describe();
         var snapshot = description.Snapshot;
         var budget = _memoryBudget?.GetState();
+        var relay = _relayScheduler?.GetStatus();
         var response = new DescribeGraphClientResponse
         {
             IsLoaded = description.IsLoaded,
@@ -91,7 +102,13 @@ public sealed class DescribeGraphClientHandler
             ProcessWorkingSetBytes = budget?.WorkingSetBytes,
             ProcessManagedHeapBytes = budget?.ManagedHeapBytes,
             IsOverMemoryBudget = budget?.IsOverBudget,
-            MemoryBudgetRefused = budget?.Refused
+            MemoryBudgetRefused = budget?.Refused,
+            IsRelayingOthers = relay?.IsRelayingOthers,
+            RelayPending = relay?.PendingMessages,
+            RelayPausedConnections = relay?.PausedConnections,
+            OutboxGossipMessages = relay?.OutboxMessages ?? _peerManager?.QueuedOutboxGossipCount,
+            OutboxGossipBytes = relay?.OutboxBytes ?? _peerManager?.QueuedOutboxGossipBytes,
+            OutboxGossipRefused = _peerManager?.RefusedOutboxGossipCount
         };
 
         if (request.IncludeChannels)

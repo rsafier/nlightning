@@ -95,18 +95,32 @@ public sealed class GossipSyncOptions
     /// <remarks>Configuration key <c>Gossip:QueriedChannelTtl</c>.</remarks>
     public TimeSpan QueriedChannelTtl { get; set; } = TimeSpan.FromMinutes(10);
 
+    /// <summary>The default of <see cref="MaxOutboxGossipPerPeer"/>.</summary>
+    public const int DefaultMaxOutboxGossipPerPeer = 10_000;
+
+    /// <summary>The default of <see cref="MaxOutboxGossipBytesPerPeer"/> (4 MiB).</summary>
+    public const long DefaultMaxOutboxGossipBytesPerPeer = 4L * 1024 * 1024;
+
     /// <summary>
-    /// Gossip messages (our own and relayed) one peer's <c>PeerOutbox</c> holds unsent at most (NL-360); beyond it
-    /// gossip for that connection is refused (counted as <c>outbox_full</c> in <c>nlightning.gossip.messages.dropped</c>)
-    /// while channel messages are always queued. Zero (the default) means no cap.
+    /// Gossip messages (our own and relayed) one peer's <c>PeerOutbox</c> holds unsent at most (NL-360); one more is
+    /// refused (counted in <c>nlightning.gossip.outbox.refused</c>) while channel messages are always queued, and the
+    /// relay pauses that connection until its outbox drained to half (<c>GossipRelayOptions.RelayResumePercent</c>),
+    /// keeping its place in the backlog and its pending messages. Zero means no cap.
     /// </summary>
     /// <remarks>
-    /// Configuration key <c>Gossip:MaxOutboxGossipPerPeer</c>. Off by default until the relay pauses on a full outbox:
-    /// today it reads a refusal as a gone connection and drops the rest of that flush and of the peer's
-    /// <c>gossip_timestamp_filter</c> backlog, so a peer that reads slower than the backlog pace would lose the graph
-    /// dump it asked for. The <c>outbox_gossip</c> queue gauge is reported either way.
+    /// Configuration key <c>Gossip:MaxOutboxGossipPerPeer</c>, default <see cref="DefaultMaxOutboxGossipPerPeer"/>
+    /// (10,000: ten seconds of the backlog pace, about 3 MB of typical gossip; mainnet's graph backlog is about
+    /// 110,000 messages). The <c>outbox_gossip</c> queue gauge is reported either way.
     /// </remarks>
-    public int MaxOutboxGossipPerPeer { get; set; }
+    public int MaxOutboxGossipPerPeer { get; set; } = DefaultMaxOutboxGossipPerPeer;
+
+    /// <summary>
+    /// The wire bytes of gossip one peer's <c>PeerOutbox</c> holds unsent at most (NL-360), next to
+    /// <see cref="MaxOutboxGossipPerPeer"/>: it bounds a queue of large <c>node_announcement</c>s (up to 64 KiB each).
+    /// An empty gossip share always takes one message. Zero means no byte cap.
+    /// </summary>
+    /// <remarks>Configuration key <c>Gossip:MaxOutboxGossipBytesPerPeer</c>, default 4 MiB.</remarks>
+    public long MaxOutboxGossipBytesPerPeer { get; set; } = DefaultMaxOutboxGossipBytesPerPeer;
 
     /// <summary>The effective switch: <see cref="SyncEnabled"/> when set, otherwise true on every chain (D12).</summary>
     public bool IsSyncEnabledFor(BitcoinNetwork network)
@@ -142,6 +156,8 @@ public sealed class GossipSyncOptions
             errors.Add($"{nameof(QueriedChannelTtl)} must not be negative");
         if (MaxOutboxGossipPerPeer < 0)
             errors.Add($"{nameof(MaxOutboxGossipPerPeer)} must not be negative");
+        if (MaxOutboxGossipBytesPerPeer < 0)
+            errors.Add($"{nameof(MaxOutboxGossipBytesPerPeer)} must not be negative");
         return errors;
     }
 }

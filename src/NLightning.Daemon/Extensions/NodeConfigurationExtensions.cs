@@ -415,7 +415,9 @@ public static class NodeConfigurationExtensions
                    "RelayEnabled": {{GOSSIP_RELAY_ON}},
                    "AcceptPublicChannels": true,
                    "AllowPublicChannelsOnMainnet": false,
-                   "MaxMemoryMb": 1024
+                   "MaxMemoryMb": 1024,
+                   "MaxOutboxGossipPerPeer": 10000,
+                   "MaxOutboxGossipBytesPerPeer": 4194304
                  },
                  "OnionMessages": {
                    "MaxOutboxPerPeer": {{OM_MAX_OUTBOX}},
