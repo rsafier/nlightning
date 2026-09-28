@@ -714,6 +714,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("Signature")
                         .HasColumnType("varbinary(64)");
 
+                    b.Property<byte[]>("SignedOnFundings")
+                        .HasColumnType("varbinary(max)");
+
                     b.HasKey("ChannelId", "Slot", "FundingTxId");
 
                     b.ToTable("Commitments");
@@ -1105,6 +1108,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<string>("Host")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("IsInboundOnly")
+                        .HasColumnType("bit");
 
                     b.Property<DateTime>("LastSeenAt")
                         .HasColumnType("datetime2");

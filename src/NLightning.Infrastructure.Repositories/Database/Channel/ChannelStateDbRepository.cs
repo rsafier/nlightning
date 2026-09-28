@@ -94,9 +94,11 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         if (transition.RemoteCommitChanged)
         {
             var remote = next.RemoteCommit;
+            // NL-494: the fundings each remote commitment was signed on are stored with the state machine's slots, so
+            // a restart still logs its revocation on every one of them
             await UpsertCommitmentAsync(channelId, CommitmentEntity.RemoteCurrentSlot, fundingTxId, remote.Number,
-                                        remote.Spec, remote.PerCommitmentPoint, null);
-            await SyncRemoteNextAsync(channelId, fundingTxId, next.RemoteNextCommit);
+                                        remote.Spec, remote.PerCommitmentPoint, null, remote.SignedOnFundings);
+            await SyncRemoteNextAsync(channelId, fundingTxId, next.RemoteNextCommit, withSignedOnFundings: true);
         }
 
         // SP-I2: every pending funding's commitments follow the state machine's in the same save, so our latest
@@ -205,13 +207,14 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
             return null;
         var feeUpdates = await _context.FeeUpdates.AsNoTracking().Where(f => f.ChannelId == channelId).ToListAsync();
         var shachain = await _remoteShachainDbRepository.GetByChannelIdAsync(channelId);
-        var pendingRows = await _context.ChannelFundings.AsNoTracking()
-                                        .Where(f => f.ChannelId == channelId
-                                                 && f.Status == (byte)ChannelFundingStatus.Pending)
+        var fundingRows = await _context.ChannelFundings.AsNoTracking()
+                                        .Where(f => f.ChannelId == channelId)
                                         .OrderBy(f => f.Sequence)
                                         .ToListAsync();
+        var pendingRows = fundingRows.Where(f => f.Status == (byte)ChannelFundingStatus.Pending).ToList();
+        var fundings = fundingRows.Select(ChannelFundingDbRepository.MapToDomain).ToList();
 
-        var state = MapToDomain(channel, commitments, htlcs, feeUpdates, shachain, @params);
+        var state = MapToDomain(channel, commitments, htlcs, feeUpdates, shachain, @params, fundings: fundings);
         if (pendingRows.Count == 0)
             return state;
 
@@ -238,7 +241,8 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
 
         try
         {
-            return MapToDomain(channel, commitments, htlcs, feeUpdates, shachain, @params, pendingFundings);
+            return MapToDomain(channel, commitments, htlcs, feeUpdates, shachain, @params, pendingFundings,
+                               fundings);
         }
         catch (InvalidOperationException)
         {
@@ -364,13 +368,17 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
     /// <summary>
     /// Rebuilds the state of a channel from its rows (also used by <see cref="ChannelDbRepository"/> on reload).
     /// </summary>
+    /// <param name="fundings">Every <c>ChannelFundings</c> row of the channel, whatever its status: the remote
+    /// commitments' <see cref="RemoteCommit.SignedOnFundings"/> are resolved against them (NL-494).</param>
     internal static PersistedChannelState MapToDomain(ChannelEntity channel, IReadOnlyCollection<CommitmentEntity> rows,
                                                       IEnumerable<HtlcEntity> htlcRows,
                                                       IEnumerable<FeeUpdateEntity> feeUpdateRows,
                                                       IReadOnlyList<Domain.Protocol.Models.ShachainEntry> shachain,
                                                       CommitmentParams @params,
-                                                      IReadOnlyList<PendingFundingState>? pendingFundings = null)
+                                                      IReadOnlyList<PendingFundingState>? pendingFundings = null,
+                                                      IReadOnlyCollection<ChannelFunding>? fundings = null)
     {
+        fundings ??= [];
         // The current funding's slots (splicing plan §3.8): a pending splice has rows of its own
         rows = rows.Where(c => c.FundingTxId == channel.FundingTxId).ToList();
         var localRow = rows.SingleOrDefault(c => c.Slot == CommitmentEntity.LocalCurrentSlot)
@@ -402,13 +410,16 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                                        .Select(p => new FundingSignatures(p.Funding.FundingTxId, p.LocalSignatures))
                                        .ToList()
         };
-        var remoteCommit = new RemoteCommit(remoteRow.Number, MapSpec(remoteRow, CommitmentSide.Remote),
-                                            MapPoint(remoteRow));
+        var remoteCommit = RestoreSignedOnFundings(
+            new RemoteCommit(remoteRow.Number, MapSpec(remoteRow, CommitmentSide.Remote), MapPoint(remoteRow)),
+            remoteRow, fundings);
         RemoteNextCommit? remoteNextCommit = null;
         if (remoteNextRow is not null)
             remoteNextCommit = new RemoteNextCommit(
-                new RemoteCommit(remoteNextRow.Number, MapSpec(remoteNextRow, CommitmentSide.Remote),
-                                 MapPoint(remoteNextRow)),
+                RestoreSignedOnFundings(
+                    new RemoteCommit(remoteNextRow.Number, MapSpec(remoteNextRow, CommitmentSide.Remote),
+                                     MapPoint(remoteNextRow)),
+                    remoteNextRow, fundings),
                 MapSignatures(remoteNextRow)
              ?? throw new InvalidOperationException(
                     $"Channel {channel.ChannelId} has an unacked remote commitment without signatures"))
@@ -444,6 +455,37 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
             sentCommitDiff = channel.SentCommitDiff;
         return new PersistedChannelState(commitments, settledHtlcs, sentCommitDiff,
                                          (LastSentCommitmentMessage)channel.LastSentOrder, shachain);
+    }
+
+    /// <summary>
+    /// The commitment with the fundings it was signed on (NL-494), as stored on its row: each txid resolved against the
+    /// channel's funding rows (<see cref="RemoteCommit.WithSignedOnFundings"/>), with the engine's balance deltas stored
+    /// next to it (the rows' own deltas are against the funding current when each row was written, not the current
+    /// one). A row without the column (written before migration <c>AddSpliceHardening</c>, or signed on the current
+    /// funding only) leaves it null, as does a txid that names no stored funding: the engine then falls back to the
+    /// pending fundings, as before NL-494.
+    /// </summary>
+    internal static RemoteCommit RestoreSignedOnFundings(RemoteCommit commit, CommitmentEntity row,
+                                                         IReadOnlyCollection<ChannelFunding> fundings)
+    {
+        if (row.SignedOnFundings is not { } blob)
+            return commit;
+
+        var entries = CommitmentStateEncoding.DecodeSignedOnFundings(blob);
+        if (entries.Any(e => fundings.All(f => f.FundingTxId != e.FundingTxId)))
+            return commit;
+
+        var restored = commit.WithSignedOnFundings(entries.Select(e => e.FundingTxId).ToList(), fundings);
+        return restored with
+        {
+            SignedOnFundings = restored.SignedOnFundings!
+                                       .Select((f, i) => f with
+                                       {
+                                           LocalBalanceDeltaMsat = entries[i].LocalBalanceDeltaMsat,
+                                           RemoteBalanceDeltaMsat = entries[i].RemoteBalanceDeltaMsat
+                                       })
+                                       .ToList()
+        };
     }
 
     /// <summary>
@@ -627,13 +669,17 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
     /// Stages the unacked remote commitment slot of <paramref name="fundingTxId"/>: written when there is one, removed
     /// otherwise.
     /// </summary>
-    internal async Task SyncRemoteNextAsync(ChannelId channelId, TxId fundingTxId, RemoteNextCommit? pending)
+    /// <param name="withSignedOnFundings">True for the state machine's slot, which stores the commitment's
+    /// <see cref="RemoteCommit.SignedOnFundings"/> (NL-494); a pending splice funding's slot stores none.</param>
+    internal async Task SyncRemoteNextAsync(ChannelId channelId, TxId fundingTxId, RemoteNextCommit? pending,
+                                            bool withSignedOnFundings = false)
     {
         if (pending is not null)
         {
             await UpsertCommitmentAsync(channelId, CommitmentEntity.RemoteNextSlot, fundingTxId, pending.Commit.Number,
                                         pending.Commit.Spec, pending.Commit.PerCommitmentPoint,
-                                        pending.SentSignatures);
+                                        pending.SentSignatures,
+                                        withSignedOnFundings ? pending.Commit.SignedOnFundings : null);
             return;
         }
 
@@ -645,7 +691,8 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
     /// <summary>Stages one commitment slot of one funding, inserted or rewritten by primary key.</summary>
     internal async Task UpsertCommitmentAsync(ChannelId channelId, byte slot, TxId fundingTxId, ulong number,
                                               CommitmentSpec spec, CompactPubKey? point,
-                                              CommitmentSignatures? signatures)
+                                              CommitmentSignatures? signatures,
+                                              IReadOnlyList<ChannelFunding>? signedOnFundings = null)
     {
         var entity = await FindCommitmentAsync(channelId, slot, fundingTxId);
         var isNew = entity is null;
@@ -671,6 +718,7 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         entity.HtlcSignatures = signatures is null
                                     ? null
                                     : CommitmentStateEncoding.EncodeSignatures(signatures.HtlcSignatures);
+        entity.SignedOnFundings = CommitmentStateEncoding.EncodeSignedOnFundings(signedOnFundings);
 
         if (isNew)
             _context.Commitments.Add(entity);

@@ -35,8 +35,20 @@ public sealed record RemoteCommit(ulong Number, CommitmentSpec Spec, CompactPubK
     /// </summary>
     /// <exception cref="InvalidOperationException">A stored txid names no funding of the channel.</exception>
     public RemoteCommit WithSignedOnFundings(IReadOnlyList<TxId>? fundingTxIds,
-                                             IReadOnlyCollection<ChannelFunding> fundings) =>
-        throw new NotImplementedException("NL-494 (wave spr, the migration owner lane)");
+                                             IReadOnlyCollection<ChannelFunding> fundings)
+    {
+        ArgumentNullException.ThrowIfNull(fundings);
+        if (fundingTxIds is null)
+            return this with { SignedOnFundings = null };
+
+        var restored = new List<ChannelFunding>(fundingTxIds.Count);
+        foreach (var fundingTxId in fundingTxIds)
+            restored.Add(fundings.FirstOrDefault(f => f.FundingTxId == fundingTxId)
+                      ?? throw new InvalidOperationException(
+                             $"Remote commitment {Number} was signed on funding {fundingTxId}, which is not a funding of the channel"));
+
+        return this with { SignedOnFundings = restored };
+    }
 
     public bool Equals(RemoteCommit? other) =>
         other is not null

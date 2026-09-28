@@ -69,7 +69,8 @@ public class PeerDbRepository : BaseDbRepository<PeerEntity>, IPeerDbRepository
             Host = peerModel.Host,
             Port = peerModel.Port,
             Type = peerModel.Type,
-            LastSeenAt = peerModel.LastSeenAt
+            LastSeenAt = peerModel.LastSeenAt,
+            IsInboundOnly = peerModel.IsInboundOnly
         };
     }
 
@@ -77,7 +78,8 @@ public class PeerDbRepository : BaseDbRepository<PeerEntity>, IPeerDbRepository
     {
         return new PeerModel(peerEntity.NodeId, peerEntity.Host, peerEntity.Port, peerEntity.Type)
         {
-            LastSeenAt = peerEntity.LastSeenAt
+            LastSeenAt = peerEntity.LastSeenAt,
+            IsInboundOnly = peerEntity.IsInboundOnly
         };
     }
 }

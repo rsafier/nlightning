@@ -92,6 +92,15 @@ public class CommitmentEntity
     public byte[]? HtlcSignatures { get; set; }
 
     /// <summary>
+    /// The fundings a remote commitment of the state machine was signed on when splices were pending at signing
+    /// (<c>RemoteCommit.SignedOnFundings</c>, migration <c>AddSpliceHardening</c>, NL-494): per funding its txid (32
+    /// bytes) and the engine's local and remote balance deltas against the current funding (8 bytes each, big-endian
+    /// two's complement), in order. Null when the commitment was signed on the current funding only, and on our own
+    /// commitment and every pending splice funding's slot.
+    /// </summary>
+    public byte[]? SignedOnFundings { get; set; }
+
+    /// <summary>
     /// Default constructor for EF Core.
     /// </summary>
     internal CommitmentEntity()
