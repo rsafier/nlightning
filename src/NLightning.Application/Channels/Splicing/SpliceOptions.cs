@@ -67,4 +67,26 @@ public sealed class SpliceOptions
     /// (<c>ISpliceAutoBumper</c>).
     /// </summary>
     public uint? AutoBumpAfterBlocks { get; set; }
+
+    /// <summary>
+    /// SPR-T3: the highest feerate the auto-bump proposes on its own (an operator's spending limit, unlike
+    /// <see cref="MaxFeeratePerKw"/>, which bounds a peer's <c>splice_init</c>). A fee estimate above it is clamped to
+    /// it; a splice whose IT-RBF-01 minimum is already above it is left to <c>bumpsplice</c>. Default 25,000 sat/kw
+    /// (100 sat/vB).
+    /// </summary>
+    public uint AutoBumpMaxFeeratePerKw { get; set; } = 25_000;
+
+    /// <summary>
+    /// SPR-T3: the most our side may pay for one auto-bump attempt (<see cref="Domain.Channels.Splicing.Models
+    /// .SpliceBumpRequest.MaxFeeSatoshis"/>); the splice service refuses a bump above it before anything is sent.
+    /// Default 100,000 sat; null = no cap beyond <see cref="AutoBumpMaxFeeratePerKw"/>.
+    /// </summary>
+    public ulong? AutoBumpMaxFeeSat { get; set; } = 100_000;
+
+    /// <summary>
+    /// SPR-T3: how long an auto-bump round waits for one bump's negotiation before it moves on (the negotiation is not
+    /// cancelled; its channel is skipped until it ends), so a slow peer never delays another channel's bump. Default
+    /// 120 s, as the <c>bumpsplice</c> command's wait.
+    /// </summary>
+    public TimeSpan AutoBumpMaxWait { get; set; } = TimeSpan.FromSeconds(120);
 }

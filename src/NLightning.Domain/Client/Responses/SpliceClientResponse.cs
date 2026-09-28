@@ -28,4 +28,10 @@ public sealed class SpliceClientResponse
 
     /// <summary>Why the splice did not go through, or null.</summary>
     public string? FailureReason { get; init; }
+
+    /// <summary>
+    /// Information about a splice that is not a failure, or null: a splice stopped at
+    /// <see cref="SpliceNegotiationState.CommitmentSigned"/> names itself here and says it completes on the reconnection.
+    /// </summary>
+    public string? Note { get; init; }
 }

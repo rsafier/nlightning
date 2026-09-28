@@ -133,8 +133,8 @@ public sealed class BumpSpliceClientHandler : IClientCommandHandler<BumpSpliceCl
 /// <para>Stopped at the disconnection: a result in <see cref="SpliceNegotiationState.CommitmentSigned"/> with a txid
 /// means the negotiation stopped after the commitments were exchanged (a disconnection before <c>tx_signatures</c>);
 /// the splice is kept and completes on the reconnection (the <c>channel_reestablish</c> retransmission,
-/// SP-RE-01..06). The answer then names the splice and says so in its reason
-/// (<see cref="DescribeStoppedAtCommitmentSigned"/>), which the CLI shows as a note, not a failure.</para>
+/// SP-RE-01..06). The answer then names the splice and says so in its <c>Note</c>
+/// (<see cref="DescribeStoppedAtCommitmentSigned"/>), with no <c>FailureReason</c>: it is not a failure.</para>
 /// </remarks>
 internal sealed class SpliceCommand
 {
@@ -267,21 +267,27 @@ internal sealed class SpliceCommand
                                       "Splice RBF is not available in this build of the node.", e);
         }
 
+        // A splice stopped at CommitmentSigned is kept, not failed: its description is a note (NL-487 follow-up)
         var failureReason = result.FailureReason;
+        string? note = null;
         if (result is { State: SpliceNegotiationState.CommitmentSigned, SpliceTxId: { } stoppedTxId })
-            failureReason = DescribeStoppedAtCommitmentSigned(stoppedTxId, result.FailureReason);
+        {
+            note = DescribeStoppedAtCommitmentSigned(stoppedTxId, result.FailureReason);
+            failureReason = null;
+        }
 
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("splice on {ChannelId} ({Description}): {State}, txid {TxId}, new capacity "
                                  + "{Capacity} sat{Reason}", channelId, description, result.State, result.SpliceTxId,
                                    result.NewCapacitySatoshis,
-                                   failureReason is null ? string.Empty : $" ({failureReason})");
+                                   (failureReason ?? note) is { } text ? $" ({text})" : string.Empty);
 
         return new SpliceClientResponse(result.ChannelId, result.State)
         {
             SpliceTxId = result.SpliceTxId,
             NewCapacitySat = result.NewCapacitySatoshis,
-            FailureReason = failureReason
+            FailureReason = failureReason,
+            Note = note
         };
     }
 

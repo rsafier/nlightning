@@ -89,17 +89,16 @@ internal static class SpliceCommands
     }
 
     /// <summary>
-    /// A splice that was not aborted and carries no failure reason, or one that stopped at
+    /// A splice that was not aborted and carries no failure reason. One that stopped at
     /// <see cref="SpliceNegotiationState.CommitmentSigned"/> with its txid (the peer disconnected before
-    /// <c>tx_signatures</c>: the daemon keeps it and completes it on the reconnection, and its reason says so).
+    /// <c>tx_signatures</c>: the daemon keeps it and completes it on the reconnection) carries a <c>Note</c> instead.
     /// </summary>
     internal static bool IsSuccess(SpliceIpcResponse response) =>
-        response.State != SpliceNegotiationState.Aborted
-     && (response.FailureReason is null || IsStoppedAtCommitmentSigned(response));
+        response.State != SpliceNegotiationState.Aborted && response.FailureReason is null;
 
     /// <summary>The splice stopped at <see cref="SpliceNegotiationState.CommitmentSigned"/> and is kept.</summary>
     internal static bool IsStoppedAtCommitmentSigned(SpliceIpcResponse response) =>
-        response is { State: SpliceNegotiationState.CommitmentSigned, SpliceTxId: not null, FailureReason: not null };
+        response is { State: SpliceNegotiationState.CommitmentSigned, SpliceTxId: not null, Note: not null };
 
     /// <summary>
     /// <c>&lt;channel_id&gt; &lt;feerate_per_kw&gt;</c> and <c>--max-fee-sat</c> (also as <c>--max-fee-sat=value</c>,

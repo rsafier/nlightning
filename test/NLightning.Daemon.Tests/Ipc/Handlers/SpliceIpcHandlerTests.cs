@@ -369,7 +369,8 @@ public class SpliceIpcHandlerTests
         Assert.Equal("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100", payload.SpliceTxId);
         Assert.Equal("Splice 1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100 stopped at "
                    + "CommitmentSigned (stopped before tx_signatures: Disconnected); it is kept and completes when the "
-                   + "peer reconnects (channel_reestablish), see listchannels.", payload.FailureReason);
+                   + "peer reconnects (channel_reestablish), see listchannels.", payload.Note);
+        Assert.Null(payload.FailureReason);
     }
 
     [Fact]
@@ -550,6 +551,28 @@ public class SpliceIpcHandlerTests
         Assert.Equal(SpliceNegotiationState.AwaitingQuiescence, read.State);
         Assert.Null(read.SpliceTxId);
         Assert.Null(read.NewCapacitySat);
+        Assert.Null(read.FailureReason);
+    }
+
+    [Fact]
+    public void Given_AResponseWithANote_When_RoundTripped_Then_TheNoteIsKeptApartFromTheFailureReason()
+    {
+        // Arrange: a splice stopped at CommitmentSigned carries its note on key 5, not in FailureReason
+        var response = new SpliceIpcResponse
+        {
+            ChannelId = s_channelId,
+            State = SpliceNegotiationState.CommitmentSigned,
+            SpliceTxId = "00",
+            Note = "kept"
+        };
+
+        // Act
+        var bytes = MessagePackSerializer.Serialize(response, s_options, TestContext.Current.CancellationToken);
+        var read = MessagePackSerializer.Deserialize<SpliceIpcResponse>(bytes, s_options,
+                                                                        TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal("kept", read.Note);
         Assert.Null(read.FailureReason);
     }
 

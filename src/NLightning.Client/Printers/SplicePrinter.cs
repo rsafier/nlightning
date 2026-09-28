@@ -11,7 +11,7 @@ using Transport.Ipc.Responses;
 /// <remarks>
 /// A splice that stopped at <see cref="SpliceNegotiationState.CommitmentSigned"/> with its txid (the peer disconnected
 /// before <c>tx_signatures</c>) is kept by the daemon and completes when the peer reconnects: it is printed as waiting
-/// for the reconnection, with the daemon's reason as a note, not as a failure.
+/// for the reconnection, with the daemon's <c>Note</c>, not as a failure.
 /// </remarks>
 public sealed class SplicePrinter : IPrinter<SpliceIpcResponse>
 {
@@ -34,7 +34,7 @@ public sealed class SplicePrinter : IPrinter<SpliceIpcResponse>
         var inv = CultureInfo.InvariantCulture;
         var waitsForReconnection = item is
         {
-            State: SpliceNegotiationState.CommitmentSigned, SpliceTxId: not null, FailureReason: not null
+            State: SpliceNegotiationState.CommitmentSigned, SpliceTxId: not null, Note: not null
         };
         _output.WriteLine(item.State switch
         {
@@ -50,9 +50,9 @@ public sealed class SplicePrinter : IPrinter<SpliceIpcResponse>
         if (item.NewCapacitySat is { } capacity)
             _output.WriteLine(string.Format(inv, "  New capacity: {0} sats", capacity));
         if (item.FailureReason is not null)
-            _output.WriteLine(waitsForReconnection
-                                  ? $"  Note:         {item.FailureReason}"
-                                  : $"  Reason:       {item.FailureReason}");
+            _output.WriteLine($"  Reason:       {item.FailureReason}");
+        if (item.Note is not null)
+            _output.WriteLine($"  Note:         {item.Note}");
 
         switch (item.State)
         {
