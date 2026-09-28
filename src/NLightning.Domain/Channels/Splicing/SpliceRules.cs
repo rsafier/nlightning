@@ -154,6 +154,37 @@ public static class SpliceRules
     public const int MaxRbfAttemptsAtAnyFeerate = 10;
 
     /// <summary>
+    /// SPR-T1 receiver, BOLT 2 "If another RBF attempt has been created recently: SHOULD send <c>tx_abort</c> ... and
+    /// wait for the previous RBF attempt to confirm" (no number in the spec; NL-520). With
+    /// <paramref name="minRbfInterval"/> set (<c>Splice:MinRbfInterval</c>, an operator override) the attempt is recent
+    /// while younger than that wall-clock interval, and the block rule is not used. Otherwise (the default) it is recent
+    /// until at least <paramref name="minRbfBlocks"/> new blocks (<c>Splice:MinRbfBlocks</c>, default 1) were processed
+    /// since it was created: the attempt then had its chance to confirm, whatever the network's block interval.
+    /// </summary>
+    /// <param name="createdAtHeight">The tip when the previous attempt was stored (its broadcast row's
+    /// <c>FirstBroadcastHeight</c>); null or 0 when unknown.</param>
+    /// <param name="tipHeight">Our last processed block; null or 0 when unknown.</param>
+    /// <param name="createdAt">When the previous attempt was stored; null when unknown.</param>
+    /// <param name="now">The current time.</param>
+    /// <param name="minRbfBlocks">New blocks needed before an RBF is no longer "recent"; 0 turns the block rule off.
+    /// </param>
+    /// <param name="minRbfInterval">The wall-clock override; null uses the block rule, <see cref="TimeSpan.Zero"/> turns
+    /// the recency rule off.</param>
+    /// <returns>Whether a peer's <c>tx_init_rbf</c> now gets <c>tx_abort</c> for recency. Unknown heights (no chain
+    /// monitor, or an attempt stored without a height) never make an attempt recent.</returns>
+    public static bool IsLastAttemptRecent(uint? createdAtHeight, uint? tipHeight, DateTimeOffset? createdAt,
+                                           DateTimeOffset now, uint minRbfBlocks, TimeSpan? minRbfInterval)
+    {
+        if (minRbfInterval is { } interval)
+            return interval > TimeSpan.Zero && createdAt is { } created && now - created < interval;
+
+        if (minRbfBlocks == 0 || createdAtHeight is not (> 0 and var height) || tipHeight is not (> 0 and var tip))
+            return false;
+
+        return tip < (ulong)height + minRbfBlocks;
+    }
+
+    /// <summary>
     /// SPR-T1, the sender of a splice <c>tx_init_rbf</c> (BOLT 2 "Channel Splicing", <c>tx_init_rbf</c>, and
     /// interactive-tx IT-RBF-01): "MUST NOT send <c>tx_init_rbf</c> if the channel is not quiescent; if it is not the
     /// quiescence initiator"; "MAY send <c>tx_init_rbf</c> even if it is not the splice initiator" (so nothing is
@@ -511,8 +542,8 @@ public static class SpliceRules
 /// <param name="RemoteSentSpliceLocked">The peer sent <c>splice_locked</c> for an attempt (its <c>tx_init_rbf</c> is
 /// then a warning and close).</param>
 /// <param name="ZeroconfNegotiated"><c>option_zeroconf</c> is negotiated (no splice RBF at all).</param>
-/// <param name="LastAttemptIsRecent">The last attempt was created "recently" by our policy (BOLT 2: SHOULD
-/// <c>tx_abort</c> a peer's RBF then).</param>
+/// <param name="LastAttemptIsRecent">The last attempt was created "recently" by our policy
+/// (<see cref="SpliceRules.IsLastAttemptRecent"/>; BOLT 2: SHOULD <c>tx_abort</c> a peer's RBF then).</param>
 /// <param name="QuickConfirmationFeeratePerKw">The feerate our fee service deems "high enough to ensure quick
 /// confirmation" (the next-block estimate), or null when unknown; used past
 /// <see cref="SpliceRules.MaxRbfAttemptsAtAnyFeerate"/> attempts.</param>

@@ -54,11 +54,21 @@ public sealed class SpliceOptions
     public int MaxRbfAttempts { get; set; } = 8;
 
     /// <summary>
-    /// SPR-T1: an attempt younger than this is "created recently": a peer's <c>tx_init_rbf</c> then gets
-    /// <c>tx_abort</c> (BOLT 2 SHOULD, <c>SpliceRbfConditions.LastAttemptIsRecent</c>). Wave SPR contract; the default
-    /// may be tuned by lane SPR-A.
+    /// SPR-T1 (NL-520): a peer's <c>tx_init_rbf</c> gets <c>tx_abort</c> while the latest attempt was "created
+    /// recently" (BOLT 2 SHOULD, "and wait for the previous RBF attempt to confirm";
+    /// <c>SpliceRules.IsLastAttemptRecent</c>): until at least this many new blocks were processed since that attempt
+    /// was stored, so it had a chance to confirm (about 10 minutes on mainnet, 30 seconds on Mutinynet). Default 1;
+    /// 0 turns the recency rule off. Not used while <see cref="MinRbfInterval"/> is set.
     /// </summary>
-    public TimeSpan MinRbfInterval { get; set; } = TimeSpan.FromMinutes(1);
+    public uint MinRbfBlocks { get; set; } = 1;
+
+    /// <summary>
+    /// SPR-T1 (NL-520): an optional wall-clock recency rule that replaces <see cref="MinRbfBlocks"/> when set: an attempt
+    /// younger than this is "created recently". Null (the default) uses the block rule; <see cref="TimeSpan.Zero"/>
+    /// turns the recency rule off. Before NL-520 this was the rule itself, with a default of one minute; a configured
+    /// value keeps working (test networks may set a few seconds to rehearse RBF quickly).
+    /// </summary>
+    public TimeSpan? MinRbfInterval { get; set; }
 
     /// <summary>
     /// SPR-T3: RBF our unconfirmed splice automatically once it has waited this many blocks since its latest attempt

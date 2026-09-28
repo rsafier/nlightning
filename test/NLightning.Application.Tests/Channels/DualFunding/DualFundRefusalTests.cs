@@ -2,6 +2,7 @@ namespace NLightning.Application.Tests.Channels.DualFunding;
 
 using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
@@ -26,7 +27,8 @@ public class DualFundRefusalTests
         // Arrange
         await using var harness = await DualFundHarness.CreateAsync(0, TimeSpan.FromSeconds(1));
         harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
-        harness.NegotiatedFeatures = new FeatureOptions();
+        // option_dual_fund is on by default since D13: pin it off
+        harness.NegotiatedFeatures = new FeatureOptions { DualFund = FeatureSupport.No };
 
         // Act
         var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(

@@ -9,6 +9,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Protocol.Messages;
@@ -209,7 +210,9 @@ public class ChannelReestablishMessageHandlerTests
             new NextFundingTlv(new byte[32], 1));
 
         // Act
-        var replies = await handler.HandleAsync(message, ChannelState.Open, new FeatureOptions(), s_peer);
+        // option_splice is on by default since D13; a v1 channel without it is what this row is about
+        var replies = await handler.HandleAsync(message, ChannelState.Open,
+                                                new FeatureOptions { OptionSplice = FeatureSupport.No }, s_peer);
 
         // Assert
         Assert.IsType<TxAbortMessage>(replies[0]);

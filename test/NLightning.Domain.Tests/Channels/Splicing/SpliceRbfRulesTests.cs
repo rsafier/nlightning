@@ -181,6 +181,49 @@ public class SpliceRbfRulesTests
 
     #endregion
 
+    #region "another RBF attempt has been created recently" (NL-520)
+
+    private static readonly DateTimeOffset s_now = new(2026, 9, 28, 12, 0, 0, TimeSpan.Zero);
+
+    public static TheoryData<string, uint?, uint?, TimeSpan?, uint, TimeSpan?, bool> RecencyRows => new()
+    {
+        // row, created at height, tip, attempt age, MinRbfBlocks, MinRbfInterval, recent
+        { "same block: recent", 800_000, 800_000, TimeSpan.FromHours(3), 1, null, true },
+        { "one block later: not recent", 800_000, 800_001, TimeSpan.FromSeconds(1), 1, null, false },
+        { "two blocks needed, one seen", 800_000, 800_001, TimeSpan.FromHours(1), 2, null, true },
+        { "two blocks needed, two seen", 800_000, 800_002, TimeSpan.Zero, 2, null, false },
+        { "a reorg below the creation height: still recent", 800_000, 799_999, TimeSpan.FromHours(1), 1, null, true },
+        { "MinRbfBlocks 0 turns the rule off", 800_000, 800_000, TimeSpan.Zero, 0, null, false },
+        { "unknown creation height: never recent", null, 800_000, TimeSpan.Zero, 1, null, false },
+        { "creation height 0 (no chain monitor): never recent", 0u, 800_000, TimeSpan.Zero, 1, null, false },
+        { "unknown tip: never recent", 800_000, null, TimeSpan.Zero, 1, null, false },
+        { "overflow-safe near the top", uint.MaxValue, uint.MaxValue, TimeSpan.Zero, uint.MaxValue, null, true },
+        { "MinRbfInterval replaces the block rule: young", 800_000, 800_005, TimeSpan.FromSeconds(3), 1,
+          TimeSpan.FromSeconds(5), true },
+        { "MinRbfInterval replaces the block rule: old", 800_000, 800_000, TimeSpan.FromSeconds(6), 1,
+          TimeSpan.FromSeconds(5), false },
+        { "MinRbfInterval zero turns the rule off", 800_000, 800_000, TimeSpan.Zero, 1, TimeSpan.Zero, false },
+        { "MinRbfInterval without a creation time", 800_000, 800_000, null, 1, TimeSpan.FromMinutes(1), false }
+    };
+
+    [Theory]
+    [MemberData(nameof(RecencyRows))]
+    public void Given_ThePreviousAttempt_When_CheckingRecency_Then_TheRuleDecides(string row, uint? createdAtHeight,
+        uint? tip, TimeSpan? age, uint minRbfBlocks, TimeSpan? minRbfInterval, bool expected)
+    {
+        // Arrange
+        var createdAt = age is { } a ? s_now - a : (DateTimeOffset?)null;
+
+        // Act
+        var recent = SpliceRules.IsLastAttemptRecent(createdAtHeight, tip, createdAt, s_now, minRbfBlocks,
+                                                     minRbfInterval);
+
+        // Assert
+        Assert.True(expected == recent, row);
+    }
+
+    #endregion
+
     #region tx_ack_rbf receiver
 
     public static TheoryData<string, long?, bool, string?> AckRows => new()

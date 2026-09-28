@@ -98,6 +98,12 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         _logger = logger;
         _options = options?.Value ?? new SpliceOptions();
         _nodeOptions = nodeOptions?.Value ?? new NodeOptions();
+        if (_options.MinRbfInterval is { } minRbfInterval)
+            // NL-520: the operator's wall-clock rule replaces the default block rule (Splice:MinRbfBlocks)
+            _logger.LogInformation("Splice:MinRbfInterval is set ({MinRbfInterval}): a peer's splice RBF is refused "
+                                 + "while the latest attempt is younger than that, instead of until "
+                                 + "Splice:MinRbfBlocks ({MinRbfBlocks}) new block(s)", minRbfInterval,
+                                   _options.MinRbfBlocks);
 
         _quiescenceEvents = serviceProvider.GetService<QuiescenceService>();
         if (_quiescenceEvents is not null)

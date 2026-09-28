@@ -80,7 +80,7 @@ using SpliceWireRecorder = ClnSpliceTests.SpliceWireRecorder;
 /// initiator; the in-process harness of lane SPR-A covers the other case).</item>
 /// </list>
 /// <para>Our <c>Splice:MinRbfInterval</c> ("an attempt created recently": a peer's <c>tx_init_rbf</c> gets
-/// <c>tx_abort</c>) is set to <see cref="s_minRbfInterval"/> on the test node so CLN's RBF, seconds after its first
+/// <c>tx_abort</c>; when set it replaces the default rule of one new block, NL-520) is set to <see cref="s_minRbfInterval"/> on the test node so CLN's RBF, seconds after its first
 /// attempt, is judged on its feerate; every RBF waits past it first. Our bumps go through the daemon's
 /// <c>bumpsplice</c> client handler (<see cref="BumpSpliceClientRequest"/>, lane SPR-B). Written against the SPR
 /// contracts (<c>b72a42ea</c>); the RBF protocol (lane SPR-A) and <c>bumpsplice</c> (lane SPR-B) land in parallel and
@@ -122,7 +122,8 @@ public sealed class ClnSpliceRbfTests : IAsyncLifetime
     private static readonly TimeSpan s_stepTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan s_settleTimeout = TimeSpan.FromSeconds(60);
 
-    /// <summary>Our <c>Splice:MinRbfInterval</c> in this proof (the default is a minute).</summary>
+    /// <summary>Our <c>Splice:MinRbfInterval</c> in this proof: the wall-clock override that replaces the default block
+    /// rule (<c>Splice:MinRbfBlocks</c> 1, NL-520), since mining a block here could confirm an attempt.</summary>
     private static readonly TimeSpan s_minRbfInterval = TimeSpan.FromSeconds(2);
 
     private readonly ClnFixture _fixture;
