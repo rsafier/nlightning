@@ -31,8 +31,8 @@ payments with three attempts pending, a bumped splice across a reconnection and 
 - [ ] **Tests green at that commit** (root `CLAUDE.md` "Build / test / format"): Release and Release.Native builds
       with only the baseline warnings, `dotnet format --verify-no-changes`, the non-Docker tests on net10.0, and the
       Docker proofs above plus the LND, CLN, ABCD, gossip and on-chain suites of the SP2 integration record.
-- [ ] **Features.** After the SP2 integration `option_splice` and `option_quiesce` are Optional by default (plan D13);
-      `option_dual_fund` stays experimental (plan DF3), so dual funding needs `AllowExperimentalFeatures`. The runbook
+- [ ] **Features.** `option_splice`, `option_quiesce` and `option_dual_fund` all stay No and experimental through
+      wave spr (plan D13 not applied, DF3 not scheduled), so splicing and dual funding need `AllowExperimentalFeatures`. The runbook
       sets all four explicitly, so it does not depend on the defaults of the commit:
 
       ```jsonc
@@ -63,14 +63,12 @@ payments with three attempts pending, a bumped splice across a reconnection and 
     (`FeeEstimation`). Check `walletbalance`/logs for the estimate before opening.
   - No standard seed (NL-159): the key file plus its password is the only backup of the on-chain funds.
   - Relay of other nodes' gossip stays off on mainnet (NL-417); our own announcements still go to our peers.
-  - **A peer that connects to us from `127.0.0.1` is not saved** (`PeerManager` stores an inbound peer only when its
-    host is not loopback), and a restarted node loads its channels peer by peer from that table: the channel is
-    forgotten at the restart and the peer's `channel_reestablish` gets `error` "unknown channel" (found by
-    `Day0UpgradeInPlaceTests` in wave sp2, reported to the ledger). Never run the day-0 connection through a local
-    tunnel (SSH port forward, Tor on the same host). An inbound peer from any other address is saved with its host
-    and port 9735 (not the port it dialed from), so the side that dials must itself listen on 9735 for the other
-    side's reconnects. Check with `listpeers` on both sides, and after the first restart that `listchannels` still
-    lists the channel.
+  - **A peer that connects to us from `127.0.0.1`** is saved as inbound-only since wave spr (NL-497): its channels
+    are registered at startup and it reconnects to us (it is never dialed at the loopback address; a dialable row
+    saved before is kept and used). An inbound peer from any other address is still saved with its host and port
+    9735 (not the port it listens on, NL-514), so the side that dials must itself listen on 9735 for the other side's
+    reconnects. Check with `listpeers` on both sides, and after the first restart that `listchannels` still lists the
+    channel.
   - **Each node needs its own well-connected peers** besides the other day-0 node. Our node sends its own
     `channel_announcement`, `channel_update` and `node_announcement` to its connected peers, but relays the other
     end's `channel_update` of our channel only as others' gossip, i.e. only to peers that sent a
