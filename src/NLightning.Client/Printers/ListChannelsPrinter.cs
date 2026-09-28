@@ -68,7 +68,11 @@ public sealed class ListChannelsPrinter : IPrinter<ListChannelsIpcResponse>
             _output.WriteLine("  Fundings:");
             foreach (var funding in fundings)
             {
-                _output.WriteLine("    - {0} ({1})", funding.Status, funding.Kind);
+                // A pending initial funding is another signed attempt of a dual-funded open (RBF, NL-535)
+                if (funding is { Status: ChannelFundingStatus.Pending, Kind: ChannelFundingKind.Initial })
+                    _output.WriteLine("    - Pending (another attempt of the dual-funded open)");
+                else
+                    _output.WriteLine("    - {0} ({1})", funding.Status, funding.Kind);
                 _output.WriteLine("      Outpoint:         {0}:{1}", DisplayOrder.ToHex(funding.FundingTxId),
                                   Invariant(funding.OutputIndex));
                 _output.WriteLine("      Capacity (sat):   {0}", Invariant(funding.Capacity.Satoshi));

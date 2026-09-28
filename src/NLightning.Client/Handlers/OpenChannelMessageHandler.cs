@@ -1,8 +1,11 @@
 namespace NLightning.Client.Handlers;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
+using Domain.Channels.ValueObjects;
 using Ipc;
 using Printers;
+using Transport.Ipc.Responses;
 
 internal class OpenChannelMessageHandler
 {
@@ -17,49 +20,116 @@ internal class OpenChannelMessageHandler
     /// </summary>
     internal const string DualFundOption = "--dual-fund";
 
-    internal const string Usage = "<node> <amount_sats> [push_sats] [--public] [--dual-fund]";
+    /// <summary>
+    /// The option that returns as soon as the funding transaction is printed instead of waiting for
+    /// <c>channel_ready</c> (NL-535); the open continues either way.
+    /// </summary>
+    internal const string NoWaitOption = "--no-wait";
+
+    internal const string Usage = "<node> <amount_sats> [push_sats] [--public] [--dual-fund] [--no-wait]";
 
     internal static async Task HandleAsync(string[] commandArgs, NamedPipeIpcClient client,
                                            CancellationToken cancellationToken)
     {
-        var positional = ParseArguments(commandArgs, out var isPublic, out var isDualFunded, out var error);
+        var positional = ParseArguments(commandArgs, out var isPublic, out var isDualFunded, out var noWait,
+                                        out var error);
         if (error is not null)
             throw new ArgumentException(error, nameof(commandArgs));
 
         if (positional.Length < 2)
             throw new ArgumentException($"Missing arguments. Usage: openchannel {Usage}", nameof(commandArgs));
 
-        var channelResponse = await client.OpenChannelAsync(positional[0], positional[1],
-                                                           positional.Length > 2 ? positional[2] : null,
-                                                           cancellationToken, isPublic, isDualFunded);
-        new OpenChannelPrinter().Print(channelResponse);
+        await RunAsync(ct => client.OpenChannelAsync(positional[0], positional[1],
+                                                     positional.Length > 2 ? positional[2] : null, ct, isPublic,
+                                                     isDualFunded),
+                       client.OpenChannelSubscriptionAsync, noWait, Console.Out, cancellationToken);
+    }
 
-        while (!cancellationToken.IsCancellationRequested)
+    /// <summary>
+    /// Opens the channel and follows it: prints the funding transaction as soon as it is published (at once for a
+    /// dual-funded open, whose response carries it), then every new funding transaction (an RBF attempt of either side,
+    /// NL-535), until the channel is ready. With <paramref name="noWait"/> it returns once the first funding is printed.
+    /// Cancelling (Ctrl-C) after a funding was printed stops the wait only: the open continues on the node.
+    /// </summary>
+    /// <param name="open">Sends <c>openchannel</c>.</param>
+    /// <param name="subscribe">One long-poll of the open subscription, given the funding printed last.</param>
+    /// <param name="noWait">Return once the first funding transaction is printed.</param>
+    /// <param name="output">Where to print.</param>
+    /// <param name="cancellationToken">Ctrl-C.</param>
+    internal static async Task RunAsync(Func<CancellationToken, Task<OpenChannelIpcResponse>> open,
+                                        Func<ChannelId, TxId?, CancellationToken,
+                                            Task<OpenChannelSubscriptionIpcResponse>> subscribe, bool noWait,
+                                        TextWriter output, CancellationToken cancellationToken)
+    {
+        var channelResponse = await open(cancellationToken);
+        new OpenChannelPrinter(output).Print(channelResponse);
+
+        var printed = channelResponse.FundingTxId;
+        if (printed is not null && noWait)
         {
-            var subscriptionResponse =
-                await client.OpenChannelSubscriptionAsync(channelResponse.ChannelId, cancellationToken);
-
-            new OpenChannelSubscriptionPrinter().Print(subscriptionResponse);
-
-            if (subscriptionResponse.ChannelState is ChannelState.ReadyForUs or ChannelState.ReadyForThem)
-                break;
+            PrintNotWaiting(output, channelResponse.ChannelId);
+            return;
         }
+
+        var subscriptionPrinter = new OpenChannelSubscriptionPrinter(output);
+        try
+        {
+            while (true)
+            {
+                var subscriptionResponse = await subscribe(channelResponse.ChannelId, printed, cancellationToken);
+                if (subscriptionResponse.ChannelState is ChannelState.ReadyForUs or ChannelState.ReadyForThem)
+                {
+                    subscriptionPrinter.Print(subscriptionResponse);
+                    return;
+                }
+
+                // The daemon answers once per new funding transaction; an answer without one is printed as it is
+                if (subscriptionResponse.ChannelState == ChannelState.V1FundingSigned
+                 && subscriptionResponse.TxId is not null && subscriptionResponse.TxId == printed)
+                    continue;
+
+                subscriptionPrinter.Print(subscriptionResponse, printed);
+                if (subscriptionResponse.ChannelState == ChannelState.V1FundingSigned)
+                {
+                    printed = subscriptionResponse.TxId ?? printed;
+                    if (noWait)
+                    {
+                        PrintNotWaiting(output, channelResponse.ChannelId);
+                        return;
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && printed is not null)
+        {
+            // Ctrl-C after the funding was printed: stop waiting, the node keeps the open
+            PrintNotWaiting(output, channelResponse.ChannelId);
+        }
+    }
+
+    private static void PrintNotWaiting(TextWriter output, ChannelId channelId)
+    {
+        output.WriteLine("Not waiting for the channel to be ready; the open continues on the node.");
+        output.WriteLine("Follow it with: listchannels (channel {0})", channelId);
     }
 
     /// <summary>
     /// Splits the arguments of <c>openchannel</c> into the positional ones (node, amount, push) and the
-    /// <see cref="PublicOption"/> and <see cref="DualFundOption"/> flags, which may appear anywhere after the command.
+    /// <see cref="PublicOption"/>, <see cref="DualFundOption"/> and <see cref="NoWaitOption"/> flags, which may appear
+    /// anywhere after the command.
     /// </summary>
     /// <param name="commandArgs">The arguments after the command name.</param>
     /// <param name="isPublic">True when <see cref="PublicOption"/> was given.</param>
     /// <param name="isDualFunded">True when <see cref="DualFundOption"/> was given.</param>
+    /// <param name="noWait">True when <see cref="NoWaitOption"/> was given.</param>
     /// <param name="error">The usage error for an unknown option or too many arguments, else null.</param>
     /// <returns>The positional arguments, in order.</returns>
     internal static string[] ParseArguments(string[] commandArgs, out bool isPublic, out bool isDualFunded,
-                                            out string? error)
+                                            out bool noWait, out string? error)
     {
         isPublic = false;
         isDualFunded = false;
+        noWait = false;
         error = null;
         var positional = new List<string>(commandArgs.Length);
         foreach (var arg in commandArgs)
@@ -76,11 +146,17 @@ internal class OpenChannelMessageHandler
                 continue;
             }
 
+            if (string.Equals(arg, NoWaitOption, StringComparison.OrdinalIgnoreCase))
+            {
+                noWait = true;
+                continue;
+            }
+
             // A negative push ("-1") stays positional and is refused by the amount check; anything else starting with
             // "--" is an option we don't know
             if (arg.StartsWith("--", StringComparison.Ordinal))
             {
-                error = $"Unknown option '{arg}': expected {PublicOption} or {DualFundOption}.";
+                error = $"Unknown option '{arg}': expected {PublicOption}, {DualFundOption} or {NoWaitOption}.";
                 return [];
             }
 

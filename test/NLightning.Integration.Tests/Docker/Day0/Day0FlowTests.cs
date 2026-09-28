@@ -164,6 +164,15 @@ public sealed class Day0FlowTests : IAsyncLifetime
         // Step 1 (b), lane dfrbf: A bumps the unconfirmed public open (bumpopen, RBF on by default since NL-528); both
         // nodes move to the replacement, which is the funding that confirms and is announced
         var firstFunding = Channel(a, channelId).FundingOutput!.TransactionId!.Value;
+        // NL-535: openchannel's own response carries the published first attempt (before any confirmation), and the
+        // open subscription answers at once with it, so the operator can bumpopen it from the same shell
+        Assert.Equal(firstFunding, opened.FundingTxId);
+        var reported = await Day0Harness.HandleAsync<OpenChannelClientSubscriptionRequest,
+                           OpenChannelClientSubscriptionResponse>(
+                           a, new OpenChannelClientSubscriptionRequest(channelId) { ReportFundingChanges = true }, ct)
+                                     .WaitAsync(Day0Harness.StepTimeout, ct);
+        Assert.Equal(ChannelState.V1FundingSigned, reported.ChannelState);
+        Assert.Equal(firstFunding, reported.TxId);
         var bumped = await Day0Harness.HandleAsync<BumpOpenClientRequest, BumpOpenClientResponse>(
                          a, new BumpOpenClientRequest(channelId, OpenBumpFeeRatePerKw), ct);
         Assert.NotEqual(firstFunding, bumped.FundingTxId);
@@ -183,6 +192,18 @@ public sealed class Day0FlowTests : IAsyncLifetime
                               "A on B's bumped funding", ct);
         Console.WriteLine($"[day0] step 1 (c): B's bumpopen replaced {bumped.FundingTxId} with "
                         + $"{bumpedByB.FundingTxId}");
+        // NL-535: a client that printed the first attempt is told about B's attempt at once, on either node
+        foreach (var node in new[] { a, b })
+        {
+            var latest = await Day0Harness.HandleAsync<OpenChannelClientSubscriptionRequest,
+                             OpenChannelClientSubscriptionResponse>(
+                             node, new OpenChannelClientSubscriptionRequest(channelId)
+                             {
+                                 ReportFundingChanges = true,
+                                 KnownFundingTxId = firstFunding
+                             }, ct).WaitAsync(Day0Harness.StepTimeout, ct);
+            Assert.Equal(bumpedByB.FundingTxId, latest.TxId);
+        }
         var (openA, openB) = await Day0Harness.MineUntilUsableAsync(_fixture, observers, a, b, channelId, ct);
         Assert.Equal(bumpedByB.FundingTxId, Channel(a, channelId).FundingOutput!.TransactionId);
         Assert.Equal(bumpedByB.FundingTxId, Channel(b, channelId).FundingOutput!.TransactionId);

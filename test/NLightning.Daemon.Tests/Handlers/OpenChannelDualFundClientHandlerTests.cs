@@ -5,10 +5,13 @@ namespace NLightning.Daemon.Tests.Handlers;
 
 using Daemon.Handlers;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.DualFunding.Interfaces;
 using Domain.Channels.DualFunding.Models;
+using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Constants;
 using Domain.Client.Exceptions;
@@ -21,6 +24,7 @@ using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Transport.Ipc.Responses;
 
 /// <summary>
 /// <c>openchannel --dual-fund</c> (wave sp1 lane SP1-F, NL-037): the client handler hands the open to
@@ -72,6 +76,49 @@ public class OpenChannelDualFundClientHandlerTests
         Assert.Equal(channelId, response.ChannelId);
         _channelFactory.VerifyNoOtherCalls();
         _channelManager.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_ADualFundedOpen_When_Handled_Then_TheResponseCarriesThePublishedFunding()
+    {
+        // Arrange (NL-535): the open returns once both tx_signatures went out and the funding was published, long
+        // before it confirms; the client prints the txid at once so the operator can bumpopen it
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x6C, 32).ToArray());
+        var txId = new TxId(Enumerable.Repeat((byte)0x6D, 32).ToArray());
+        _dualFund.Setup(s => s.OpenAsync(It.IsAny<DualFundedOpenRequest>(), It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new DualFundedOpenResult(channelId, txId));
+        var channel = new ChannelModel(new ChannelParams(), channelId, null,
+                                       new FundingOutputInfo(LightningMoney.Satoshis(800_000), s_peer, s_peer, txId, 1),
+                                       true, null, null, LightningMoney.Satoshis(400_000),
+                                       new ChannelKeySetModel(0, s_peer, s_peer, s_peer, s_peer, s_peer, s_peer), 0, 0,
+                                       LightningMoney.Satoshis(400_000), null, 0, s_peer, 0,
+                                       ChannelState.V1FundingSigned, ChannelVersion.V2);
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        var handler = new OpenChannelClientHandler(_monitor.Object, _channelFactory.Object, _channelManager.Object,
+                                                   memory.Object, new Mock<ILogger<OpenChannelClientHandler>>().Object,
+                                                   new Mock<IMessageFactory>().Object, _peerManager.Object,
+                                                   _utxos.Object,
+                                                   nodeOptions: Options.Create(new NodeOptions
+                                                   {
+                                                       BitcoinNetwork = BitcoinNetwork.Regtest
+                                                   }),
+                                                   dualFundedOpenService: _dualFund.Object);
+        var request = new OpenChannelClientRequest(s_peer.ToString(), LightningMoney.Satoshis(400_000))
+        {
+            IsDualFunded = true
+        };
+
+        // Act
+        var response = await handler.HandleAsync(request, TestContext.Current.CancellationToken);
+        var ipc = OpenChannelIpcResponse.FromClientResponse(response);
+
+        // Assert
+        Assert.Equal(channelId, response.ChannelId);
+        Assert.Equal(txId, response.FundingTxId);
+        Assert.Equal(1u, response.FundingOutputIndex);
+        Assert.Equal(txId, ipc.FundingTxId);
+        Assert.Equal(1u, ipc.FundingOutputIndex);
     }
 
     [Fact]

@@ -8,6 +8,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.ValueObjects;
 using Transport.Ipc.MessagePack;
+using Transport.Ipc.Requests;
 using Transport.Ipc.Responses;
 
 public class FormatterTests
@@ -138,5 +139,69 @@ public class FormatterTests
         Assert.Equal(response.TxId, result.TxId);
         Assert.Equal(response.Index, result.Index);
         Assert.Equal(response.ChannelState, result.ChannelState);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void GivenOpenChannelResponseWithOptionalFunding_WhenRoundTripped_ThenValuesArePreserved(bool hasTxId)
+    {
+        // Arrange (NL-535: keys 1 and 2, absent for a v1 open)
+        var response = new OpenChannelIpcResponse
+        {
+            ChannelId = new ChannelId(s_bytes32),
+            FundingTxId = hasTxId ? new TxId(s_bytes32) : (TxId?)null,
+            FundingOutputIndex = hasTxId ? 2u : null
+        };
+
+        // Act
+        var bytes = MessagePackSerializer.Serialize(response, s_options, TestContext.Current.CancellationToken);
+        var result = MessagePackSerializer.Deserialize<OpenChannelIpcResponse>(
+            bytes, s_options, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(response.ChannelId, result.ChannelId);
+        Assert.Equal(response.FundingTxId, result.FundingTxId);
+        Assert.Equal(response.FundingOutputIndex, result.FundingOutputIndex);
+    }
+
+    [Fact]
+    public void GivenSubscriptionRequestWithAKnownFunding_WhenRoundTripped_ThenTheClientRequestCarriesIt()
+    {
+        // Arrange (NL-535: keys 1 and 2)
+        var request = new OpenChannelSubscriptionIpcRequest
+        {
+            ChannelId = new ChannelId(s_bytes32),
+            KnownFundingTxId = new TxId(s_bytes32),
+            ReportFundingChanges = true
+        };
+
+        // Act
+        var bytes = MessagePackSerializer.Serialize(request, s_options, TestContext.Current.CancellationToken);
+        var result = MessagePackSerializer.Deserialize<OpenChannelSubscriptionIpcRequest>(
+                                              bytes, s_options, TestContext.Current.CancellationToken)
+                                          .ToClientRequest();
+
+        // Assert
+        Assert.Equal(request.ChannelId, result.ChannelId);
+        Assert.Equal(request.KnownFundingTxId, result.KnownFundingTxId);
+        Assert.True(result.ReportFundingChanges);
+    }
+
+    [Fact]
+    public void GivenAnOlderClientsSubscriptionRequest_WhenRead_ThenNoFundingChangesAreReported()
+    {
+        // Arrange: only key 0, as a client before NL-535 writes it
+        var older = MessagePackSerializer.Serialize(new object[] { new ChannelId(s_bytes32) }, s_options,
+                                                    TestContext.Current.CancellationToken);
+
+        // Act
+        var result = MessagePackSerializer.Deserialize<OpenChannelSubscriptionIpcRequest>(
+                                              older, s_options, TestContext.Current.CancellationToken)
+                                          .ToClientRequest();
+
+        // Assert
+        Assert.Null(result.KnownFundingTxId);
+        Assert.False(result.ReportFundingChanges);
     }
 }

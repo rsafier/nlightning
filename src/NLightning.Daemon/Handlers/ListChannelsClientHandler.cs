@@ -20,6 +20,8 @@ using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.InteractiveTx;
+using Domain.Protocol.InteractiveTx.Enums;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
@@ -104,10 +106,61 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
             var fundings = fundingRepository is null || IsFinished(channel)
                                ? []
                                : await fundingRepository.GetByChannelIdAsync(channel.ChannelId);
-            infos.Add(ToChannelInfo(channel, fundings, tipHeight));
+            infos.Add(ToChannelInfo(channel, fundings, tipHeight, await GetOtherOpenAttemptsAsync(channel)));
         }
 
         return new ListChannelsClientResponse(infos);
+    }
+
+    /// <summary>
+    /// NL-535: the other signed attempts of a dual-funded open still waiting for its funding (RBF, either side's), from
+    /// their interactive-tx rows, listed after the channel's current funding as <see cref="ChannelFundingStatus.Pending"/>
+    /// <see cref="ChannelFundingKind.Initial"/> fundings: any of them may be the one that confirms.
+    /// </summary>
+    private async Task<IReadOnlyList<ChannelFundingInfoClientResponse>> GetOtherOpenAttemptsAsync(ChannelModel channel)
+    {
+        if (channel is not { Version: ChannelVersion.V2, State: ChannelState.V1FundingSigned })
+            return [];
+
+        IReadOnlyList<InteractiveTxSessionModel> sessions;
+        try
+        {
+            if (_unitOfWork.InteractiveTxSessionDbRepository is not { } repository)
+                return [];
+
+            sessions = await repository.GetByChannelIdAsync(channel.ChannelId);
+        }
+        catch (NotSupportedException)
+        {
+            // A unit of work without the interactive-tx schema
+            return [];
+        }
+
+        var currentTxId = channel.FundingOutput?.TransactionId;
+        var attempts = new List<ChannelFundingInfoClientResponse>();
+        foreach (var session in sessions)
+        {
+            if (session is not
+                {
+                    Purpose: InteractiveTxPurpose.DualFund or InteractiveTxPurpose.DualFundRbf,
+                    State: InteractiveTxSessionState.Signed or InteractiveTxSessionState.TxSignaturesSent,
+                    ConstructedTx: { SharedOutputIndex: { } index } transaction
+                }
+             || transaction.TxId == currentTxId || index >= transaction.Outputs.Count
+             || attempts.Any(a => a.FundingTxId == transaction.TxId))
+                continue;
+
+            attempts.Add(new ChannelFundingInfoClientResponse
+            {
+                FundingTxId = transaction.TxId,
+                OutputIndex = checked((ushort)index),
+                Capacity = transaction.Outputs[(int)index].Amount,
+                Status = ChannelFundingStatus.Pending,
+                Kind = ChannelFundingKind.Initial
+            });
+        }
+
+        return attempts;
     }
 
     private IChannelFundingDbRepository? GetFundingRepository()
@@ -130,7 +183,8 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
         request.PeerId is null || channel.RemoteNodeId == request.PeerId.Value;
 
     private ChannelInfoClientResponse ToChannelInfo(ChannelModel channel, IReadOnlyList<ChannelFunding> fundings,
-                                                    uint tipHeight)
+                                                    uint tipHeight,
+                                                    IReadOnlyList<ChannelFundingInfoClientResponse> openAttempts)
     {
         var retired = _retiredScidMap?.GetByChannel(channel.ChannelId) ?? [];
         var policy = _channelPolicyProvider?.GetEffectivePolicy(channel)
@@ -164,7 +218,7 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
             HtlcMinimumMsat = policy.HtlcMinimumMsat,
             HtlcMaximumMsat = policy.HtlcMaximumMsat,
             HasPolicyOverride = policy.Override is not null,
-            Fundings = ToFundingInfos(channel, fundings, retired, tipHeight),
+            Fundings = [.. ToFundingInfos(channel, fundings, retired, tipHeight), .. openAttempts],
             RetiredShortChannelIds = retired.Select(r => new RetiredScidInfoClientResponse
             {
                 ShortChannelId = r.ShortChannelId,

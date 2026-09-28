@@ -23,6 +23,10 @@ using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.InteractiveTx;
+using Domain.Protocol.InteractiveTx.Enums;
+using Domain.Protocol.InteractiveTx.Interfaces;
+using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
 using Domain.Protocol.Payloads;
@@ -462,6 +466,83 @@ public class ListChannelsClientHandlerTests
         Assert.Equal(fundingTxId, funding.FundingTxId);
         Assert.Null(funding.ShortChannelId);
         Assert.Null(funding.Depth);
+    }
+
+    [Fact]
+    public async Task Given_ADualFundedOpenWithRbfAttempts_When_HandleAsync_Then_TheOtherSignedAttemptsAreListed()
+    {
+        // Arrange (NL-535): the open runs on the latest attempt; the first is signed too and may still confirm, a
+        // third was aborted
+        var channelId = CreateChannelId(0x35);
+        var first = CreateTxId(0xD1);
+        var second = CreateTxId(0xD2);
+        var aborted = CreateTxId(0xD3);
+        var channel = new ChannelModel(new ChannelParams(), channelId, null,
+                                       new FundingOutputInfo(LightningMoney.Satoshis(900_000), CreatePubKey(3),
+                                                             CreatePubKey(4), second, 0), true, null, null,
+                                       LightningMoney.Satoshis(450_000),
+                                       new ChannelKeySetModel(0, s_alice, s_alice, s_alice, s_alice, s_alice,
+                                                              s_alice), 0, 0, LightningMoney.Satoshis(450_000), null,
+                                       0, s_alice, 0, ChannelState.V1FundingSigned, ChannelVersion.V2);
+        SetupMemory(channel);
+        var sessions = new Mock<IInteractiveTxSessionDbRepository>();
+        sessions.Setup(x => x.GetByChannelIdAsync(channelId))
+                .ReturnsAsync([
+                     Session(channelId, first, InteractiveTxPurpose.DualFund, InteractiveTxSessionState.Signed, 1,
+                             800_000),
+                     Session(channelId, second, InteractiveTxPurpose.DualFundRbf, InteractiveTxSessionState.Signed, 0,
+                             900_000),
+                     Session(channelId, aborted, InteractiveTxPurpose.DualFundRbf, InteractiveTxSessionState.Aborted,
+                             0, 950_000)
+                 ]);
+        _unitOfWorkMock.SetupGet(x => x.InteractiveTxSessionDbRepository).Returns(sessions.Object);
+
+        // Act
+        var response = await CreateHandler().HandleAsync(new ListChannelsClientRequest(),
+                                                         TestContext.Current.CancellationToken);
+
+        // Assert: the current funding, then the first attempt as a pending initial funding
+        var info = Assert.Single(response.Channels);
+        Assert.Collection(info.Fundings,
+                          current =>
+                          {
+                              Assert.Equal(second, current.FundingTxId);
+                              Assert.Equal(ChannelFundingStatus.Current, current.Status);
+                          },
+                          other =>
+                          {
+                              Assert.Equal(first, other.FundingTxId);
+                              Assert.Equal((ushort)1, other.OutputIndex);
+                              Assert.Equal(LightningMoney.Satoshis(800_000), other.Capacity);
+                              Assert.Equal(ChannelFundingStatus.Pending, other.Status);
+                              Assert.Equal(ChannelFundingKind.Initial, other.Kind);
+                          });
+    }
+
+    private static InteractiveTxSessionModel Session(ChannelId channelId, TxId txId, InteractiveTxPurpose purpose,
+                                                     InteractiveTxSessionState state, uint sharedIndex,
+                                                     long capacitySat)
+    {
+        var outputs = new List<InteractiveTxOutput>();
+        for (var i = 0u; i <= sharedIndex; i++)
+            outputs.Add(new InteractiveTxOutput(i * 2, InteractiveTxParty.Local,
+                                                LightningMoney.Satoshis(i == sharedIndex ? capacitySat : 10_000),
+                                                new byte[34], i == sharedIndex));
+        return new InteractiveTxSessionModel
+        {
+            ChannelId = channelId,
+            SessionId = Guid.NewGuid(),
+            Purpose = purpose,
+            IsInitiator = true,
+            FeeratePerKw = 2_500,
+            Locktime = 100,
+            Inputs = [],
+            Outputs = outputs,
+            LocalContribution = InteractiveTxContribution.Empty,
+            ConstructedTx = new ConstructedInteractiveTx(txId, [], 100, [], outputs, 1_000, sharedIndex),
+            State = state,
+            CreatedAt = DateTimeOffset.UnixEpoch
+        };
     }
 
     private ListChannelsClientHandler CreateHandler(bool withSpliceServices = false) =>

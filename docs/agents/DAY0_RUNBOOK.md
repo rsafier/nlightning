@@ -81,10 +81,14 @@ payments with three attempts pending, a bumped splice across a reconnection and 
     the peer's RBF is followed; a CLN peer refuses an accepter's bump). Every
     signed attempt may confirm, and the channel follows the one that does, so a bump is safe; still pick a funding
     feerate that confirms: each bump needs both nodes online, and a peer that sent or received `channel_ready` refuses
-    it. On an older build there is no RBF of a dual-funded open. `openchannel` returns only at `channel_ready`
-    (NL-535): to bump, run it in the background or in a second terminal, read the funding txid from `listchannels`,
-    and run `bumpopen` before the first confirmation (Mutinynet: within one ~30 s block; dry run 2 bumped twice in
-    one second). A node config that sets `Node:DualFund:AllowRbf=false` (the first dry run's did) refuses it.
+    it. On an older build there is no RBF of a dual-funded open. `openchannel --dual-fund` prints the channel id and
+    the funding txid as soon as the funding is signed and published (NL-535; before that fix it returned only at
+    `channel_ready` and needed a second terminal), then keeps waiting for `channel_ready` and prints each new attempt's
+    txid (a bump by either node). Add `--no-wait` to get the shell back right after the txid, or press Ctrl-C once
+    it is printed: the open goes on either way. Run `bumpopen` before the first confirmation (Mutinynet: within one
+    ~30 s block; dry run 2 bumped twice in one second); `listchannels` lists the other signed attempts under
+    `Fundings` as `Pending (another attempt of the dual-funded open)`. A node config that sets
+    `Node:DualFund:AllowRbf=false` (the first dry run's did) refuses it.
   - `openchannel` has no `--feerate`: the dual-funded funding transaction uses the node's fee estimate
     (`FeeEstimation`). Check `walletbalance`/logs for the estimate before opening.
   - No standard seed (NL-159): the key file plus its password is the only backup of the on-chain funds.
@@ -283,9 +287,10 @@ $U info; $N info; $U walletbalance; $N walletbalance
 # 1. dual-funded public open (we are the opener, Nick contributes as accepter); a loopback address works since NL-497
 #    (the accepter needs 3 confirmations on the outputs that back its anchors reserve: fund it, wait, then open)
 $U connect $NICK
-$U openchannel $NICK 300000 --public --dual-fund      # prints the channel id: CH; returns at channel_ready (NL-535)
-# optional open RBF (lane dfrbf/accrbf): run the openchannel above with `&`, then before the first confirmation
+$U openchannel $NICK 300000 --public --dual-fund --no-wait   # prints CH and the funding txid at once (NL-535)
+# optional open RBF (lane dfrbf/accrbf), before the first confirmation:
 #   $U bumpopen $CH 1000; $N bumpopen $CH 1500        # opener, then accepter (NL-530); both follow each attempt
+# (without --no-wait, openchannel prints each attempt's txid and returns at channel_ready; Ctrl-C keeps the open)
 $U listchannels; $N listchannels                     # capacity = 300,000 + Nick's share; wait Open (~3 blocks)
 # after 6 blocks (~3 min): our announcements go out; check mutinynet.com lists the channel with both nodes
 $U exportchanbackup --output ~/day0/mutinynet/01-open.backup && $U verifychanbackup ~/day0/mutinynet/01-open.backup
@@ -389,7 +394,7 @@ The §2.2 script with mainnet amounts and feerates: `C` = `~/.nltg/mainnet/bin/c
 mainnet` on each side.
 
 1. `connect`, then `openchannel <nick>@<host>:9735 <U amount> --public --dual-fund`. Record the funding txid and
-   channel id. Wait for the confirmations and `Open` on both; after 6 confirmations check
+   channel id (both printed as soon as the funding is published, NL-535). Wait for the confirmations and `Open` on both; after 6 confirmations check
    `mempool.space/lightning/channel/<scid>` and both nodes' pages. Backups.
 2. Small payments both ways (1,000-10,000 sat); a third party through the channel once the channel is in the
    network's graph. Backups.

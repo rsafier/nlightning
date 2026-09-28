@@ -350,7 +350,19 @@ public sealed class OpenChannelClientHandler
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Dual-funded channel {ChannelId} opened with funding {TxId}", result.ChannelId,
                                    result.FundingTxId);
-        return new OpenChannelClientResponse(result.ChannelId);
+
+        // NL-535: the funding is signed and published now, long before it confirms; the client prints it at once so
+        // the operator can bumpopen it
+        uint? outputIndex = _channelMemoryRepository.TryGetChannel(result.ChannelId, out var channel)
+                         && channel.FundingOutput is { TransactionId: { } txId, Index: { } index }
+                         && txId == result.FundingTxId
+                                ? index
+                                : null;
+        return new OpenChannelClientResponse(result.ChannelId)
+        {
+            FundingTxId = result.FundingTxId,
+            FundingOutputIndex = outputIndex
+        };
     }
 
     /// <summary>

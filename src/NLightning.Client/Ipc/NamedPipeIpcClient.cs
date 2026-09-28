@@ -6,6 +6,7 @@ using NLightning.Domain.Channels.ValueObjects;
 namespace NLightning.Client.Ipc;
 
 using Domain.Bitcoin.Enums;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Client.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -197,12 +198,18 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
         throw new InvalidOperationException($"IPC error {err.Code}: {err.Message}");
     }
 
+    /// <summary>
+    /// One long-poll of the open subscription (ClientCommand 7): answers when the channel runs on a published funding
+    /// transaction other than <paramref name="knownFundingTxId"/> and when it is ready (NL-535).
+    /// </summary>
     public async Task<OpenChannelSubscriptionIpcResponse> OpenChannelSubscriptionAsync(
-        ChannelId channelId, CancellationToken ct = default)
+        ChannelId channelId, TxId? knownFundingTxId = null, CancellationToken ct = default)
     {
         var req = new OpenChannelSubscriptionIpcRequest
         {
-            ChannelId = channelId
+            ChannelId = channelId,
+            KnownFundingTxId = knownFundingTxId,
+            ReportFundingChanges = true
         };
         var payload = MessagePackSerializer.Serialize(req, cancellationToken: ct);
         var env = new IpcEnvelope
