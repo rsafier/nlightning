@@ -1,7 +1,7 @@
 # NLightning.Application — agent guide
 
 Orchestration layer. It sits between the peer/transport layer (Infrastructure) and the domain plus crypto (Domain, Infrastructure.Bitcoin), and holds:
-- PeerManager: the peer table, connect/accept, routing channel messages.
+- PeerManager: the peer table, connect/accept, routing channel messages. Every inbound peer is saved (NL-497): one from a loopback address (`PeerManager.IsLoopback`: `127.0.0.0/8`, `::1`, `localhost`) as `PeerModel.IsInboundOnly`, never replacing a saved dialable address (only its last-seen time moves); `StartAsync` registers the channels of every peer, inbound-only ones included, but dials only the others, and `ReconnectIfNeeded` never dials an inbound-only session's peer.
 - ChannelManager: dispatches channel messages and reacts to blockchain events.
 - The BOLT 2 v1 channel-open handlers and the BOLT 2 normal-operation receive handlers (update_add/fulfill/fail/fail_malformed_htlc, commitment_signed, revoke_and_ack, update_fee; BOLT2 plan N6-T1).
 - MessageFactory: builds outbound protocol messages (Infrastructure's `PeerCommunicationService` still constructs error/warning messages directly).

@@ -29,6 +29,7 @@ using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Gossip.Interfaces;
 using Domain.Money;
+using Domain.Node.Constants;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
@@ -1840,6 +1841,131 @@ public class PeerManagerTests
             new ChannelUpdatePayload(ChannelUpdatePayload.EmptySignature, new ChainHash(new byte[32]),
                                      new ShortChannelId(103, 1, 0), 1, ChannelUpdatePayload.MessageFlagMustBeOne, 0,
                                      40, 1_000, 1_000, 1, 990_000_000));
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1")]
+    [InlineData("::1")]
+    [InlineData("localhost")]
+    [InlineData("::ffff:127.0.0.1")]
+    [InlineData("127.0.0.2")]
+    public async Task Given_AnInboundPeerFromALoopbackAddress_When_Connected_Then_SavedAsInboundOnly(string host)
+    {
+        // Arrange - NL-497: a loopback peer (a local tunnel, Tor on this host) was not saved, so its channels were
+        // forgotten at our restart
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        PeerModel? saved = null;
+        _mockPeerDbRepository.Setup(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()))
+                             .Callback((PeerModel peer) => saved = peer)
+                             .Returns(Task.CompletedTask);
+
+        // Act
+        RaiseInboundConnection(host);
+        await WaitUntilAsync(() => saved is not null);
+
+        // Assert
+        Assert.Equal(_compactPubKey, saved!.NodeId);
+        Assert.True(saved.IsInboundOnly);
+        Assert.True(peerManager.GetPeer(_compactPubKey)!.IsInboundOnly);
+        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(), Times.AtLeast(2));
+    }
+
+    [Fact]
+    public async Task Given_AnInboundPeerFromAnotherAddress_When_Connected_Then_SavedAsDialable()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        PeerModel? saved = null;
+        _mockPeerDbRepository.Setup(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()))
+                             .Callback((PeerModel peer) => saved = peer)
+                             .Returns(Task.CompletedTask);
+
+        // Act
+        RaiseInboundConnection(RemoteHost);
+        await WaitUntilAsync(() => saved is not null);
+
+        // Assert: its host with the default port, dialed at our restart as before
+        Assert.False(saved!.IsInboundOnly);
+        Assert.Equal(RemoteHost, saved.Host);
+        Assert.Equal((uint)NodeConstants.DefaultPort, saved.Port);
+    }
+
+    [Fact]
+    public async Task Given_ASavedDialablePeer_When_ItConnectsFromALoopbackAddress_Then_ItsAddressIsKept()
+    {
+        // Arrange: we know where to dial it; a local tunnel connection must not replace that with inbound-only
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var known = new PeerModel(_compactPubKey, RemoteHost, 9736, ExpectedType);
+        _mockPeerDbRepository.Setup(r => r.GetByNodeIdAsync(_compactPubKey)).ReturnsAsync(known);
+        PeerModel? updated = null;
+        _mockPeerDbRepository.Setup(r => r.Update(It.IsAny<PeerModel>())).Callback((PeerModel peer) => updated = peer);
+
+        // Act
+        RaiseInboundConnection(ExpectedHost);
+        await WaitUntilAsync(() => updated is not null);
+
+        // Assert
+        Assert.Same(known, updated);
+        Assert.False(updated!.IsInboundOnly);
+        Assert.Equal(RemoteHost, updated.Host);
+        Assert.Equal(9736U, updated.Port);
+        Assert.NotEqual(default, updated.LastSeenAt);
+        _mockPeerDbRepository.Verify(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AnInboundOnlyPeerWithChannels_When_StartAsync_Then_ChannelsRegisteredAndNeverDialed()
+    {
+        // Arrange - NL-497: its channels are registered before any connection, and we wait for it to connect
+        var peerManager = CreatePeerManager();
+        peerManager.ReconnectInitialDelay = TimeSpan.FromMilliseconds(10);
+        peerManager.ReconnectMaxDelay = TimeSpan.FromMilliseconds(10);
+        var channel = CreateChannel(ChannelState.Open, 1);
+        var peer = new PeerModel(_compactPubKey, ExpectedHost, ExpectedPort, ExpectedType)
+        {
+            IsInboundOnly = true,
+            Channels = [channel]
+        };
+        _mockUnitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync([peer]);
+
+        // Act
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+
+        // Assert
+        _mockChannelManager.Verify(cm => cm.RegisterExistingChannelAsync(channel), Times.Once);
+        _mockTcpService.Verify(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()), Times.Never);
+        _mockTcpService.Verify(t => t.StartListeningAsync(It.IsAny<CancellationToken>()), Times.Once);
+
+        // It connects to us: accepted as usual
+        RaiseInboundConnection(ExpectedHost);
+        await WaitUntilAsync(() => peerManager.GetPeer(_compactPubKey) is not null);
+        await peerManager.StopAsync();
+    }
+
+    [Fact]
+    public async Task Given_AnInboundOnlyPeerWithActiveChannels_When_ItDrops_Then_WeDoNotDialIt()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        peerManager.ReconnectInitialDelay = TimeSpan.FromMilliseconds(10);
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        _mockChannelMemoryRepository.Setup(r => r.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+                                    .Returns([CreateChannel(ChannelState.Open, 1)]);
+        RaiseInboundConnection(ExpectedHost);
+        await WaitUntilAsync(() => peerManager.GetPeer(_compactPubKey) is not null);
+
+        // Act
+        RaiseDisconnect(_mockPeerService);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+
+        // Assert: 127.0.0.1:9735 is not the peer's address (it may be our own listener)
+        Assert.Null(peerManager.GetPeer(_compactPubKey));
+        _mockTcpService.Verify(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()), Times.Never);
+        await peerManager.StopAsync();
     }
 
     private int _sendsStarted;

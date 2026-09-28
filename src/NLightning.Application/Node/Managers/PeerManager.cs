@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Sockets;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
@@ -208,6 +209,14 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
 
         foreach (var peer in peers)
         {
+            // A peer we know no address of (it connected to us from a loopback address, NL-497): its channels are
+            // registered above and we wait for it to connect again
+            if (peer.IsInboundOnly)
+            {
+                _logger.LogInformation("Not dialing peer {PeerId}: it only connects to us", peer.NodeId);
+                continue;
+            }
+
             try
             {
                 _ = await ConnectToPeerAsync(peer.PeerAddressInfo, uow);
@@ -464,6 +473,10 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         if (_stopping || _cts is null || session.ReconnectSuppressed || _reconnectCts.IsCancellationRequested)
             return;
 
+        // A peer we cannot dial reconnects to us (NL-497)
+        if (session.Peer.IsInboundOnly)
+            return;
+
         var peerId = session.Peer.NodeId;
         var channels = _channelMemoryRepository.FindChannels(c => c.RemoteNodeId == peerId && IsActiveChannel(c));
         if (channels is not { Count: > 0 })
@@ -596,11 +609,14 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             await WaitForInitAsync(peerService);
 
             // An inbound peer's listening address is unknown (init remote_addr is our address, NL-344): keep its
-            // host with the default port
+            // host with the default port. From a loopback address (a local tunnel, Tor on the same host) that host is
+            // not the peer's: it is saved as inbound-only, never dialed (NL-497)
+            var isInboundOnly = IsLoopback(args.Host);
             var peer = new PeerModel(peerService.PeerPubKey, args.Host, NodeConstants.DefaultPort,
                                      args.TcpClient.Client.ProtocolType == ProtocolType.IPv6 ? "IPv6" : "IPv4")
             {
-                LastSeenAt = DateTime.UtcNow
+                LastSeenAt = DateTime.UtcNow,
+                IsInboundOnly = isInboundOnly
             };
             peer.SetPeerService(peerService);
 
@@ -620,15 +636,8 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
                     return;
             }
 
-            if (args.Host != "127.0.0.1")
-            {
-                // Get a context to save the peer to the database
-                using var scope = _serviceProvider.CreateScope();
-                using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-
-                await uow.PeerDbRepository.AddOrUpdateAsync(peer);
-                await uow.SaveChangesAsync();
-            }
+            // Every inbound peer is saved, so its channels are registered at our next start (NL-497)
+            await SaveInboundPeerAsync(peer);
         }
         catch (ConnectionException e)
         {
@@ -641,6 +650,37 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             _logger.LogError(e, "Error handling new peer connection from {Host}:{Port}", args.Host, args.Port);
         }
     }
+
+    /// <summary>
+    /// Saves a peer that connected to us. An inbound-only peer (loopback) never replaces the address we dial a saved
+    /// peer at: only its last-seen time is updated then.
+    /// </summary>
+    private async Task SaveInboundPeerAsync(PeerModel peer)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        var saved = peer.IsInboundOnly ? await uow.PeerDbRepository.GetByNodeIdAsync(peer.NodeId) : null;
+        if (saved is { IsInboundOnly: false })
+        {
+            saved.LastSeenAt = peer.LastSeenAt;
+            uow.PeerDbRepository.Update(saved);
+        }
+        else
+        {
+            await uow.PeerDbRepository.AddOrUpdateAsync(peer);
+        }
+
+        await uow.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Whether a connection came from this host: a loopback IP address (IPv4-mapped included) or <c>localhost</c>.
+    /// </summary>
+    internal static bool IsLoopback(string host) =>
+        string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase)
+     || (IPAddress.TryParse(host, out var address)
+      && IPAddress.IsLoopback(address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address));
 
     /// <summary>
     /// Creates the session of a new connection and subscribes to its peer service right away. A peer service keeps
