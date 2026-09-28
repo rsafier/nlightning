@@ -8,7 +8,7 @@ using Transport.Ipc.Responses;
 
 /// <summary>
 /// <c>bumpopen|bump-open &lt;channel_id&gt; &lt;feerate_per_kw&gt; [--contribution-sat &lt;sats&gt;]</c> (ClientCommand 38,
-/// lane dfrbf): RBF of our unconfirmed dual-funded open.
+/// lane dfrbf): RBF of an unconfirmed dual-funded open, as its opener or its accepter (NL-530).
 /// </summary>
 internal static class BumpOpenCommands
 {
@@ -96,9 +96,9 @@ internal static class BumpOpenCommands
             }
 
             if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var sats)
-             || sats == 0 || sats > MaxAmountSat)
+             || sats > MaxAmountSat)
             {
-                error = $"Invalid contribution '{value}': expected a positive number of sats up to {MaxAmountSat}.";
+                error = $"Invalid contribution '{value}': expected a number of sats up to {MaxAmountSat}.";
                 return null;
             }
 

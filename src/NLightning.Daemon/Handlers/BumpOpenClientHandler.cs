@@ -12,14 +12,16 @@ using Domain.Money;
 using Interfaces;
 
 /// <summary>
-/// <c>bumpopen</c> (ClientCommand 38, lane dfrbf): RBF of our unconfirmed dual-funded open through
+/// <c>bumpopen</c> (ClientCommand 38, lane dfrbf): RBF of an unconfirmed dual-funded open, as its opener or its
+/// accepter (NL-530), through
 /// <see cref="IDualFundedOpenService.BumpAsync(Domain.Channels.ValueObjects.ChannelId, uint, LightningMoney?, CancellationToken)"/>.
 /// </summary>
 /// <remarks>
 /// Checks here: a feerate of <see cref="MinFeeRatePerKw"/> (BOLT 3's floor) to <see cref="MaxFeeRatePerKw"/> (1,000
-/// sat/vB, the <c>withdraw</c> cap) and a contribution, when given, of 1 sat up to the 21M BTC supply; everything else
-/// (the channel is a dual-funded open of ours waiting for its funding, RBF allowed by <c>Node:DualFund:AllowRbf</c>, the
-/// IT-RBF-01 feerate floor, the new contribution, our inputs) is the service's. A refusal or a failed attempt (the
+/// sat/vB, the <c>withdraw</c> cap) and a contribution, when given, of 0 up to the 21M BTC supply (0 is an accepter
+/// that stops contributing; the service refuses it for the opener); everything else (the channel is a dual-funded open
+/// waiting for its funding, RBF allowed by <c>Node:DualFund:AllowRbf</c>, the IT-RBF-01 feerate floor, the new
+/// contribution, our inputs) is the service's. A refusal or a failed attempt (the
 /// peer's <c>tx_abort</c>, a timeout) is <see cref="ErrorCodes.InvalidOperation"/> with the reason; a node without
 /// dual funding answers "not available".
 /// </remarks>
@@ -56,9 +58,9 @@ public sealed class BumpOpenClientHandler : IClientCommandHandler<BumpOpenClient
         if (request.FeeRatePerKw is < MinFeeRatePerKw or > MaxFeeRatePerKw)
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       $"The feerate must be {MinFeeRatePerKw} to {MaxFeeRatePerKw} sat/kw");
-        if (request.ContributionSat is 0 or > MaxAmountSat)
+        if (request.ContributionSat is > MaxAmountSat)
             throw new ClientException(ErrorCodes.InvalidOperation,
-                                      $"The contribution must be 1 to {MaxAmountSat} sat");
+                                      $"The contribution must be 0 to {MaxAmountSat} sat");
 
         var contribution = request.ContributionSat is { } sat ? LightningMoney.Satoshis(sat) : null;
         Domain.Channels.DualFunding.Models.DualFundedOpenResult result;

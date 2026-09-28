@@ -55,12 +55,15 @@ public interface IDualFundedOpenService
                                                                    CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// RBF of our unconfirmed dual-funded open (<c>tx_init_rbf</c>, IT-RBF-01 feerate floor): the peer's answer
-    /// (<c>tx_ack_rbf</c> or <c>tx_abort</c>) goes through the interactive-tx handlers. A peer's <c>tx_init_rbf</c> for
-    /// the open reaches the host's <c>OnRbfRequestedAsync</c>.
+    /// RBF of an unconfirmed dual-funded open, as its opener or its accepter (BOLT 2 "Fee bumping", NL-530): our
+    /// <c>tx_init_rbf</c> (IT-RBF-01 feerate floor) makes us the interactive-tx initiator of the new attempt (we add the
+    /// funding output and pay the common fields); the peer's answer (<c>tx_ack_rbf</c> or <c>tx_abort</c>) goes
+    /// through the interactive-tx handlers. A peer's <c>tx_init_rbf</c> for the open reaches the host's
+    /// <c>OnRbfRequestedAsync</c>.
     /// </summary>
-    /// <exception cref="InvalidOperationException">No unconfirmed dual-funded open on the channel, we are not its
-    /// initiator, or the feerate is below the floor.</exception>
+    /// <exception cref="InvalidOperationException">No unconfirmed dual-funded open on the channel, RBF refused
+    /// (channel_ready exchanged, an attempt confirmed, RBF not allowed), the feerate below the floor, or our inputs
+    /// cannot pay our share and the initiator's fees.</exception>
     Task<DualFundedOpenResult> BumpAsync(ChannelId channelId, uint feeratePerKw,
                                          CancellationToken cancellationToken = default);
 

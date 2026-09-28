@@ -332,6 +332,9 @@ internal sealed class DualFundNode
     public List<IChannelMessage> Dropped { get; } = [];
     public List<Exception> Errors { get; } = [];
 
+    /// <summary>This node's <c>Node:DualFund:AllowRbf</c> instead of the harness's, from its next start.</summary>
+    public bool? AllowRbfOverride { get; set; }
+
     public bool IsRunning => _provider is not null;
     public IServiceProvider Services => _provider ?? throw new InvalidOperationException($"{Name} is stopped");
     public ChannelManager ChannelManager { get; private set; } = null!;
@@ -465,7 +468,7 @@ internal sealed class DualFundNode
         {
             AcceptContributionSat = _acceptContributionSat,
             OpenTimeout = _harness.OpenTimeout,
-            AllowRbf = _harness.AllowRbf
+            AllowRbf = AllowRbfOverride ?? _harness.AllowRbf
         }));
         if (_harness.WithPeerServices)
         {

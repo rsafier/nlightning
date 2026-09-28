@@ -80,6 +80,13 @@ internal sealed class DualFundNegotiation
     /// </summary>
     public SignedFunding? LastSignedFunding { get; set; }
 
+    /// <summary>
+    /// A wallet contribution reserved for our own <c>tx_init_rbf</c> that no earlier attempt holds (an accepter that
+    /// funded nothing before starts the RBF, NL-530): released when the RBF request ends before an attempt exists (the
+    /// driver releases an attempt's own contribution). Memory only.
+    /// </summary>
+    public InteractiveTxContribution? FreshRbfContribution { get; set; }
+
     /// <summary>Whether an anchors channel counts toward the anchors reserve while it is being opened.</summary>
     public bool HoldsAnchorReserve { get; set; }
 
