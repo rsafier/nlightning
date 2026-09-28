@@ -9,6 +9,7 @@ using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Extensions;
 using Domain.Protocol.Onion.Interfaces;
@@ -46,23 +47,40 @@ using Domain.Serialization.Interfaces;
 ///   <c>invalid_onion_blinding</c> when the path_key came in <c>update_add_htlc</c>, else (introduction node)
 ///   <c>update_fail_htlc</c> + <c>invalid_onion_blinding</c>. Without the feature, a blinded HTLC is refused the same
 ///   way (BOLT 2 <c>update_add_htlc</c> receiver rules).</item>
+///   <item>Dummy hops (NL-440): a non-final blinded hop whose <c>next_node_id</c> is our own node id (and no
+///   <c>short_channel_id</c>) is a hop of a path we made that relays to ourselves (BOLT 4: the writer "MAY add
+///   additional dummy hops at the end of the path (which it will ignore on receipt)"; <c>BlindedPathBuilder</c> writes
+///   them the way LND does). Its <c>payment_relay</c> is applied to the amount and expiry as a forward would, then the
+///   next layer is peeled here with the next path_key, at most <see cref="MaxSelfRelayHops"/> times, and the result is
+///   that of the last layer (final: <see cref="IncomingBlindedHop.DummyHops"/> and the amount and expiry our final hop
+///   would have received). Every failure inside is the blinded failure of the outer layer; the shared secret is the
+///   outer layer's (the one the sender reads errors with). No replay entry is kept for the inner layers: their HMAC
+///   is covered by the outer one.</item>
 /// </list>
 /// <para>Pure apart from the replay store (which persists the HMAC before this returns): no channel calls.
 /// Thread-safe.</para>
 /// </remarks>
 public sealed class IncomingOnionProcessor
 {
+    /// <summary>
+    /// The most hops relaying to ourselves peeled for one HTLC (a 1300-byte onion holds about 20 blinded hops).
+    /// </summary>
+    public const int MaxSelfRelayHops = 20;
+
     private readonly ISphinxService _sphinxService;
     private readonly IHopPayloadSerializer _hopPayloadSerializer;
     private readonly IOnionReplayStore _replayStore;
     private readonly ILogger<IncomingOnionProcessor> _logger;
     private readonly IRouteBlindingService? _routeBlindingService;
+    private readonly ISecureKeyManager? _secureKeyManager;
 
     public IncomingOnionProcessor(ISphinxService sphinxService, IHopPayloadSerializer hopPayloadSerializer,
                                   IOnionReplayStore replayStore, ILogger<IncomingOnionProcessor> logger,
                                   IRouteBlindingService? routeBlindingService = null,
-                                  IOptions<NodeOptions>? nodeOptions = null)
+                                  IOptions<NodeOptions>? nodeOptions = null,
+                                  ISecureKeyManager? secureKeyManager = null)
     {
+        _secureKeyManager = secureKeyManager;
         _sphinxService = sphinxService;
         _hopPayloadSerializer = hopPayloadSerializer;
         _replayStore = replayStore;
@@ -150,8 +168,8 @@ public sealed class IncomingOnionProcessor
 
         // 4. Route blinding (ONION M5)
         if (hasPathKey || payload.IsBlinded)
-            return ProcessBlinded(peeled, payload, onionRoutingPacket, updateAddPathKey, incomingAmount,
-                                  incomingCltvExpiry);
+            return await ProcessBlindedAsync(peeled, payload, onionRoutingPacket, paymentHash, updateAddPathKey,
+                                             incomingAmount, incomingCltvExpiry);
 
         // 5. Classify
         if (peeled.IsFinal)
@@ -160,9 +178,11 @@ public sealed class IncomingOnionProcessor
         return new IncomingOnionForward(peeled.SharedSecret, payload, peeled.NextPacket!.Value);
     }
 
-    private IncomingOnionResult ProcessBlinded(PeeledOnion peeled, HopPayload payload, ReadOnlyMemory<byte> onion,
-                                               CompactPubKey? updateAddPathKey, LightningMoney? incomingAmount,
-                                               uint? incomingCltvExpiry)
+    private async Task<IncomingOnionResult> ProcessBlindedAsync(PeeledOnion peeled, HopPayload payload,
+                                                                ReadOnlyMemory<byte> onion, Hash paymentHash,
+                                                                CompactPubKey? updateAddPathKey,
+                                                                LightningMoney? incomingAmount,
+                                                                uint? incomingCltvExpiry)
     {
         IncomingOnionResult Refuse(string reason)
         {
@@ -220,9 +240,104 @@ public sealed class IncomingOnionProcessor
             outgoingCltvValue = outgoing;
         }
 
+        // A hop that relays to ourselves (a dummy hop of our own path, NL-440): peel the next layer here
+        if (IsSelfRelay(data))
+            return await PeelSelfRelaysAsync(peeled, isIntroduction, peeled.NextPacket!.Value, paymentHash,
+                                             unblinded.NextPathKey, amountToForward, outgoingCltvValue, Refuse);
+
         return new IncomingOnionForward(peeled.SharedSecret, payload, peeled.NextPacket!.Value,
                                         new IncomingBlindedHop(isIntroduction, data, unblinded.NextPathKey,
                                                                amountToForward, outgoingCltvValue));
+    }
+
+    /// <summary>
+    /// Whether <paramref name="data"/> sends the HTLC on to this very node: <c>next_node_id</c> = our node id and no
+    /// <c>short_channel_id</c>.
+    /// </summary>
+    private bool IsSelfRelay(BlindedRecipientData data) =>
+        data.ShortChannelId is null && data.NextNodeId is { } next && _secureKeyManager is not null
+     && next == _secureKeyManager.GetNodePubKey();
+
+    /// <summary>
+    /// Peels the layers of the hops that relay to ourselves (dummy hops) until one is final or names another node,
+    /// applying each hop's <c>payment_relay</c> to the amount and expiry (BOLT 4 reader of a non-final blinded hop).
+    /// </summary>
+    private async Task<IncomingOnionResult> PeelSelfRelaysAsync(PeeledOnion outer, bool isIntroduction,
+                                                                 OnionPacket packet, Hash paymentHash,
+                                                                 CompactPubKey pathKey, LightningMoney? amount,
+                                                                 uint? cltvExpiry,
+                                                                 Func<string, IncomingOnionResult> refuse)
+    {
+        for (var depth = 1; depth <= MaxSelfRelayHops; depth++)
+        {
+            PeeledOnion inner;
+            HopPayload payload;
+            BlindedHopUnblinding unblinded;
+            try
+            {
+                inner = _sphinxService.PeelAsLocalNode(packet, paymentHash, pathKey);
+                payload = await _hopPayloadSerializer.DeserializeAsync(inner.Payload);
+                if (!HopPayloadValidator.TryValidate(payload, inner.IsFinal, true, out var validationError))
+                    return refuse($"hop {depth} relayed to ourselves: {validationError.Message}");
+
+                unblinded = _routeBlindingService!.UnblindAsLocalNode(pathKey, payload.EncryptedRecipientData!.Value,
+                                                                      inner.PathKeySharedSecret);
+            }
+            catch (OnionException e)
+            {
+                return refuse($"hop {depth} relayed to ourselves: {e.Message}");
+            }
+
+            var data = unblinded.RecipientData;
+            if (!BlindedRecipientDataValidator.TryValidate(data, inner.IsFinal, amount?.MilliSatoshi, cltvExpiry,
+                                                           out var reason))
+                return refuse($"hop {depth} relayed to ourselves: {reason}");
+
+            if (inner.IsFinal)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug("Blinded HTLC for {PaymentHash} reached us after {Count} dummy hop(s)",
+                                     paymentHash, depth);
+
+                return new IncomingOnionFinal(outer.SharedSecret, payload,
+                                              new IncomingBlindedHop(isIntroduction, data, unblinded.NextPathKey)
+                                              {
+                                                  DummyHops = depth,
+                                                  ReceivedAmount = amount,
+                                                  ReceivedCltvExpiry = cltvExpiry
+                                              });
+            }
+
+            var relay = data.PaymentRelay!;
+            if (amount is not null)
+            {
+                if (!relay.TryComputeAmountToForward(amount.MilliSatoshi, out var forwardMsat))
+                    return refuse($"hop {depth} relayed to ourselves: {amount.MilliSatoshi} msat does not cover "
+                                + $"fee_base_msat {relay.FeeBaseMsat}.");
+                amount = LightningMoney.MilliSatoshis(forwardMsat);
+            }
+
+            if (cltvExpiry is { } expiry)
+            {
+                if (!relay.TryComputeOutgoingCltvValue(expiry, out var outgoing))
+                    return refuse($"hop {depth} relayed to ourselves: cltv_expiry {expiry} is below "
+                                + $"payment_relay.cltv_expiry_delta {relay.CltvExpiryDelta}.");
+                cltvExpiry = outgoing;
+            }
+
+            if (!IsSelfRelay(data))
+                return new IncomingOnionForward(outer.SharedSecret, payload, inner.NextPacket!.Value,
+                                                new IncomingBlindedHop(isIntroduction, data, unblinded.NextPathKey,
+                                                                       amount, cltvExpiry)
+                                                {
+                                                    DummyHops = depth
+                                                });
+
+            packet = inner.NextPacket!.Value;
+            pathKey = unblinded.NextPathKey;
+        }
+
+        return refuse($"more than {MaxSelfRelayHops} hops relay to ourselves.");
     }
 
     private async Task<bool> CarriesCurrentPathKeyAsync(PeeledOnion peeled)

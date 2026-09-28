@@ -14,6 +14,8 @@ using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.Interfaces;
+using Domain.Protocol.Onion.Models;
 
 /// <summary>
 /// ONION M5 step 2 in-process: Carol makes a blinded path to herself with the production
@@ -25,18 +27,23 @@ public class BlindedSendThreeNodeTests
 {
     private static readonly LightningMoney s_amount = LightningMoney.MilliSatoshis(40_000_321);
 
-    [Fact]
-    public async Task Given_CarolsBlindedPathThroughBob_When_AlicePaysIt_Then_PaymentSucceedsAndCarolSettles()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task Given_CarolsBlindedPathThroughBob_When_AlicePaysIt_Then_PaymentSucceedsAndCarolSettles(
+        int dummyHops)
     {
-        // Arrange
+        // Arrange: BOLT 4 "MAY add additional dummy hops at the end of the path (which it will ignore on receipt)" and
+        // "SHOULD add padding data to ensure all encrypted_data_tlv[i] have the same length"
         var ct = TestContext.Current.CancellationToken;
         await using var harness = await CreateAsync();
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "blinded receive", null, ct);
-        var paths = await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry);
+        var paths = await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, dummyHops);
         var path = Assert.Single(paths);
         Assert.Equal(harness.Bob.NodeId, path.Path.FirstNodeId);
-        Assert.Equal(2, path.Path.Hops.Count);
-        Assert.Equal(path.Path.Hops[0].EncryptedRecipientData.Length, path.Path.Hops[1].EncryptedRecipientData.Length);
+        Assert.Equal(2 + dummyHops, path.Path.Hops.Count);
+        Assert.Single(path.Path.Hops.Select(h => h.EncryptedRecipientData.Length).Distinct());
         var payments = harness.Alice.Services.GetRequiredService<IPaymentService>();
 
         // Act
@@ -52,10 +59,70 @@ public class BlindedSendThreeNodeTests
         var forwarded = Assert.IsType<UpdateAddHtlcMessage>(
             Assert.Single(harness.Carol.Received, m => m is UpdateAddHtlcMessage));
         Assert.NotNull(forwarded.BlindedPathTlv);
-        Assert.Equal(s_amount, forwarded.Payload.Amount);
+        if (dummyHops == 0)
+            Assert.Equal(s_amount, forwarded.Payload.Amount);
+        else
+            Assert.True(forwarded.Payload.Amount > s_amount, "Carol keeps the dummy hops' relay fees");
         var stored = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
                                                              .GetByPaymentHashAsync(invoice.PaymentHash));
         Assert.Equal(InvoiceStatus.Settled, stored!.Status);
+    }
+
+    [Fact]
+    public async Task Given_TwoDummyHops_When_CarolBuildsAPath_Then_EachHopDecryptsToTheBolt4Layout()
+    {
+        // Arrange: BOLT 4 writer: dummy hops "at the end of the path", every encrypted_data_tlv padded to one length
+        var ct = TestContext.Current.CancellationToken;
+        await using var harness = await CreateAsync();
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "layout", null, ct);
+
+        // Act
+        var path = Assert.Single(await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, 2));
+
+        // Assert: Bob's hop names the channel; Carol's two relays name Carol with Bob's relay policy and a chained
+        // max_cltv_expiry; the last hop carries the path_id; the pay info aggregates three relays
+        var bobBlinding = harness.Bob.Services.GetRequiredService<IRouteBlindingService>();
+        var carolBlinding = harness.Carol.Services.GetRequiredService<IRouteBlindingService>();
+        var bob = bobBlinding.UnblindAsLocalNode(path.Path.FirstPathKey, path.Path.Hops[0].EncryptedRecipientData);
+        Assert.NotNull(bob.RecipientData.ShortChannelId);
+        var relay = bob.RecipientData.PaymentRelay!;
+        var pathKey = bob.NextPathKey;
+        var maxCltv = bob.RecipientData.PaymentConstraints!.MaxCltvExpiry;
+        for (var i = 1; i <= 2; i++)
+        {
+            var dummy = carolBlinding.UnblindAsLocalNode(pathKey, path.Path.Hops[i].EncryptedRecipientData);
+            Assert.Equal(harness.Carol.NodeId, dummy.RecipientData.NextNodeId);
+            Assert.Null(dummy.RecipientData.ShortChannelId);
+            Assert.Null(dummy.RecipientData.PathId);
+            Assert.Equal(relay, dummy.RecipientData.PaymentRelay);
+            Assert.Equal(maxCltv - relay.CltvExpiryDelta, dummy.RecipientData.PaymentConstraints!.MaxCltvExpiry);
+            maxCltv = dummy.RecipientData.PaymentConstraints.MaxCltvExpiry;
+            pathKey = dummy.NextPathKey;
+        }
+
+        var final = carolBlinding.UnblindAsLocalNode(pathKey, path.Path.Hops[3].EncryptedRecipientData);
+        Assert.True(BlindedPathId.Matches(final.RecipientData.PathId!.Value.Span, invoice.Preimage));
+        Assert.Null(final.RecipientData.NextNodeId);
+        Assert.Equal(maxCltv - relay.CltvExpiryDelta, final.RecipientData.PaymentConstraints!.MaxCltvExpiry);
+        Assert.Single(path.Path.Hops.Select(h => h.EncryptedRecipientData.Length).Distinct());
+        var (feeBase, feeProportional, cltvDelta) = BlindedPayInfo.Aggregate([relay, relay, relay],
+                                                                              invoice.MinFinalCltvExpiry);
+        Assert.Equal(feeBase, path.PayInfo.FeeBaseMsat);
+        Assert.Equal(feeProportional, path.PayInfo.FeeProportionalMillionths);
+        Assert.Equal(cltvDelta, path.PayInfo.CltvExpiryDelta);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(InvoiceOptions.MaxBlindedPathDummyHops + 1)]
+    public async Task Given_ADummyHopCountOutOfRange_When_Building_Then_ArgumentOutOfRange(int dummyHops)
+    {
+        // Arrange
+        await using var harness = await CreateAsync();
+
+        // Act / Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => BuildPathsAsync(harness, new Secret(new byte[32]), 18, dummyHops));
     }
 
     [Fact]
@@ -107,7 +174,7 @@ public class BlindedSendThreeNodeTests
     }
 
     private static async Task<IReadOnlyList<Domain.Protocol.Onion.Models.BlindedPaymentPath>> BuildPathsAsync(
-        ThreeNodeHarness harness, Secret preimage, ushort minFinalCltvExpiryDelta)
+        ThreeNodeHarness harness, Secret preimage, ushort minFinalCltvExpiryDelta, int? dummyHops = null)
     {
         // Carol holds Bob's signed channel_update of their channel (the gossip exchange the harness leaves out)
         Assert.True(harness.Bob.Services.GetRequiredService<IChannelUpdateService>()
@@ -117,7 +184,8 @@ public class BlindedSendThreeNodeTests
 
         var builder = harness.Carol.Services.GetRequiredService<BlindedPathBuilder>();
         return await builder.BuildAsync(new BlindedPathRequest(preimage, s_amount, minFinalCltvExpiryDelta, ThreeNodeHarness.BlockHeight,
-                                                               IncludePrivateChannels: true),
+                                                               IncludePrivateChannels: true,
+                                                               DummyHops: dummyHops),
                                         TestContext.Current.CancellationToken);
     }
 

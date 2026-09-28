@@ -21,4 +21,24 @@ using Domain.Protocol.Onion.Models;
 /// final hop, or when the incoming expiry was not given to the processor.</param>
 public sealed record IncomingBlindedHop(bool IsIntroduction, BlindedRecipientData RecipientData,
                                         CompactPubKey NextPathKey, LightningMoney? AmountToForward = null,
-                                        uint? OutgoingCltvValue = null);
+                                        uint? OutgoingCltvValue = null)
+{
+    /// <summary>
+    /// How many hops relaying to ourselves (dummy hops of a path we made, NL-440) were peeled before this one; 0 when
+    /// the HTLC reached this hop directly. <see cref="RecipientData"/> is then the last layer's.
+    /// </summary>
+    public int DummyHops { get; init; }
+
+    /// <summary>
+    /// Final hop after dummy hops: the amount our final hop would have received once every dummy hop's
+    /// <c>payment_relay</c> was applied to the HTLC's (null without dummy hops, or when the incoming amount was not
+    /// given). The final-hop checks compare the onion's <c>amt_to_forward</c> with it, as they would the HTLC's.
+    /// </summary>
+    public LightningMoney? ReceivedAmount { get; init; }
+
+    /// <summary>
+    /// Final hop after dummy hops: the <c>cltv_expiry</c> our final hop would have received (see
+    /// <see cref="ReceivedAmount"/>).
+    /// </summary>
+    public uint? ReceivedCltvExpiry { get; init; }
+}

@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NBitcoin;
 
 namespace NLightning.Application.Payments.Invoices;
 
@@ -27,6 +28,7 @@ using Domain.Protocol.Interfaces;
 using Gossip.Announcements;
 using Gossip.Graph.Interfaces;
 using Gossip.Interfaces;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Routing;
 
 /// <summary>
@@ -63,6 +65,15 @@ using Routing;
 /// gossip graph with both policies for <see cref="InvoiceOptions.PublicChannelGracePeriod"/> (so the announcement
 /// reached the network first). A node with only private channels keeps its hints. <see cref="InvoiceRouteHintMode.Always"/> forces the hints, <see cref="InvoiceRouteHintMode.Never"/> drops
 /// them.</para>
+/// <para>bLIP 39 blinded paths (NL-440, <see cref="InvoiceOptions.BlindedPaths"/>, off by default): the invoice carries
+/// the paths of <see cref="BlindedPathBuilder"/> (announced and private channels, dummy hops per
+/// <see cref="InvoiceOptions.BlindedPathDummyHops"/>, lifetime = the expiry in blocks plus
+/// <see cref="BlindedPathLifetimeMarginBlocks"/>; bLIP 39: "the invoice expiry field ... should be used to communicate
+/// the max_cltv_expiry of the blinded paths") in <c>b</c> fields, no <c>r</c> and no <c>s</c> field (bLIP 39 MUST NOT),
+/// and is signed by a fresh ephemeral key (bLIP 39 SHOULD), so it names neither our node nor our peers' channels. The
+/// payment secret is still stored with the invoice (unused: the final hop checks the paths' <c>path_id</c> instead).
+/// No path (no block processed, no usable channel) refuses the invoice with an
+/// <see cref="InvalidOperationException"/>.</para>
 /// <para>Singleton; thread-safe.</para>
 /// </remarks>
 public sealed class InvoiceService : IInvoiceService
@@ -71,6 +82,14 @@ public sealed class InvoiceService : IInvoiceService
     /// The most route hints an invoice carries.
     /// </summary>
     public const int MaxRouteHints = 3;
+
+    /// <summary>
+    /// Blocks added to a blinded BOLT 11 invoice's expiry (at 10 minutes a block) for its paths' lifetime, as BOLT 12
+    /// invoices get <c>Offers:PathLifetimeMarginBlocks</c>.
+    /// </summary>
+    public const uint BlindedPathLifetimeMarginBlocks = 144;
+
+    private const uint SecondsPerBlock = 600;
 
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ISecureKeyManager _secureKeyManager;
@@ -83,6 +102,7 @@ public sealed class InvoiceService : IInvoiceService
     private readonly TimeSpan _publicChannelGracePeriod;
     private readonly IGraphStore? _graphStore;
     private readonly TimeProvider _timeProvider;
+    private readonly bool _blindedPaths;
 
     /// <param name="serviceScopeFactory">Scopes for persistence.</param>
     /// <param name="secureKeyManager">The node key that signs the invoices.</param>
@@ -107,6 +127,7 @@ public sealed class InvoiceService : IInvoiceService
                           IOptions<InvoiceOptions>? invoiceOptions = null, IGraphStore? graphStore = null,
                           TimeProvider? timeProvider = null)
     {
+        _blindedPaths = invoiceOptions?.Value.BlindedPaths ?? false;
         _routeHintMode = invoiceOptions?.Value.RouteHints ?? InvoiceRouteHintMode.Auto;
         _publicChannelGracePeriod = invoiceOptions?.Value.PublicChannelGracePeriod
                                  ?? InvoiceOptions.DefaultPublicChannelGracePeriod;
@@ -161,10 +182,19 @@ public sealed class InvoiceService : IInvoiceService
         }
 
         invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp + expiry);
-        foreach (var routeHint in await BuildRouteHintsAsync(amount, cancellationToken))
-            invoice.AddRouteHint(routeHint);
+        string bolt11;
+        if (_blindedPaths)
+        {
+            bolt11 = await EncodeWithBlindedPathsAsync(invoice, new Secret(preimage), amount, expiry,
+                                                       routing.InvoiceMinFinalCltvExpiry, cancellationToken);
+        }
+        else
+        {
+            foreach (var routeHint in await BuildRouteHintsAsync(amount, cancellationToken))
+                invoice.AddRouteHint(routeHint);
 
-        var bolt11 = invoice.Encode();
+            bolt11 = invoice.Encode();
+        }
 
         var model = new InvoiceModel(new Hash(paymentHash), new Secret(preimage), new Secret(paymentSecret), amount,
                                      description, bolt11, DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp),
@@ -186,6 +216,50 @@ public sealed class InvoiceService : IInvoiceService
                                    amount is null ? "any amount" : $"{amount.MilliSatoshi} msat");
 
         return model;
+    }
+
+    /// <summary>
+    /// bLIP 39: adds our blinded paths to <paramref name="invoice"/>, drops its payment secret and signs it with a fresh
+    /// ephemeral key (see the class remarks).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">If no path can be built.</exception>
+    private async Task<string> EncodeWithBlindedPathsAsync(Invoice invoice, Secret preimage, LightningMoney? amount,
+                                                           uint expirySeconds, ushort minFinalCltvExpiryDelta,
+                                                           CancellationToken cancellationToken)
+    {
+        // Resolved only here: the builder and the chain monitor are needed only with the option on
+        BlindedPathBuilder? builder;
+        uint height;
+        using (var scope = _serviceScopeFactory.CreateScope())
+        {
+            builder = scope.ServiceProvider.GetService<BlindedPathBuilder>();
+            height = scope.ServiceProvider.GetService<IBlockchainMonitor>()?.LastProcessedBlockHeight ?? 0;
+        }
+
+        if (height == 0)
+            throw new InvalidOperationException("No block has been processed yet; cannot build the invoice's blinded "
+                                              + "paths (Node:Invoices:BlindedPaths).");
+
+        if (builder is null)
+            throw new InvalidOperationException("Route blinding is not available; cannot build the invoice's blinded "
+                                              + "paths (Node:Invoices:BlindedPaths).");
+
+        var lifetime = checked((expirySeconds + SecondsPerBlock - 1) / SecondsPerBlock + BlindedPathLifetimeMarginBlocks);
+        var paths = await builder.BuildAsync(new BlindedPathRequest(preimage, amount, minFinalCltvExpiryDelta, height,
+                                                                    lifetime, IncludePrivateChannels: true),
+                                             cancellationToken);
+        if (paths.Count == 0)
+            throw new InvalidOperationException("No blinded path to us can be built (no usable channel whose peer's "
+                                              + "channel_update we hold); the invoice was not created "
+                                              + "(Node:Invoices:BlindedPaths).");
+
+        foreach (var path in paths)
+            invoice.AddBlindedPaymentPath(path);
+        invoice.RemovePaymentSecret();
+
+        // bLIP 39: "SHOULD sign the invoice with a private key that is not the same as their public node ID"
+        using var ephemeralKey = new Key();
+        return invoice.Encode(ephemeralKey);
     }
 
     /// <summary>

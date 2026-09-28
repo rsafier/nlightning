@@ -19,6 +19,7 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Gossip.Interfaces;
 using Domain.Money;
@@ -233,7 +234,14 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             throw new ArgumentOutOfRangeException(nameof(options),
                                                   $"The part limit must be 1 to {PaymentSendOptions.MaxPartsLimit}.");
 
-        var target = DecodeInvoice(bolt11);
+        var invoice = DecodeInvoice(bolt11);
+
+        // bLIP 39 (NL-440): an invoice with blinded paths names its recipient only through them (it is signed by an
+        // ephemeral key and carries no payment secret), so it is paid over the paths
+        if (invoice.BlindedPaymentPaths.Count > 0)
+            return await PayBlindedInvoiceAsync(invoice, bolt11, amount, options, cancellationToken);
+
+        var target = PaymentTarget.FromInvoice(invoice);
         var paymentAmount = ResolveAmount(target.Amount, amount);
         var ourNodeId = _secureKeyManager.GetNodePubKey();
         if (target.PayeeNodeId == ourNodeId)
@@ -1701,7 +1709,32 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
     private static string DescribeHop(IReadOnlyList<PaymentHop> route, int index) =>
         index < route.Count ? route[index].NodeId.ToString() : "unknown node";
 
-    private PaymentTarget DecodeInvoice(string bolt11)
+    /// <summary>
+    /// Pays a BOLT 11 invoice with bLIP 39 blinded paths through <see cref="PayBlindedAsync"/>: the amount, the
+    /// payment hash and the paths from the invoice, several parts only when it sets <c>basic_mpp</c> (BOLT 4: the
+    /// payer MUST NOT split otherwise). Its <c>c</c> field is ignored (bLIP 39: the paths' <c>cltv_expiry_delta</c>
+    /// already holds the recipient's final delta) and so is its signing key, an ephemeral one that names no node.
+    /// </summary>
+    private async Task<PayInvoiceResult> PayBlindedInvoiceAsync(Invoice invoice, string bolt11, LightningMoney? amount,
+                                                                PayInvoiceOptions options,
+                                                                CancellationToken cancellationToken)
+    {
+        var paymentHash = invoice.PaymentHash
+                       ?? throw new ArgumentException("The invoice has no payment hash.", nameof(bolt11));
+        var paymentAmount = ResolveAmount(invoice.Amount.IsZero ? null : invoice.Amount, amount);
+        var request = new PayBlindedRequest(PaymentTarget.ToWireBytes(paymentHash), paymentAmount,
+                                            invoice.BlindedPaymentPaths, bolt11.Trim())
+        {
+            AllowMpp = invoice.Features?.IsFeatureSet(Feature.BasicMpp) ?? false
+        };
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Paying invoice {PaymentHash} over its {Count} blinded path(s) (bLIP 39)",
+                                   request.PaymentHash, request.Paths.Count);
+
+        return await PayBlindedAsync(request, options, cancellationToken);
+    }
+
+    private Invoice DecodeInvoice(string bolt11)
     {
         Invoice invoice;
         try
@@ -1717,7 +1750,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         if (invoice.ExpiryDate <= _timeProvider.GetUtcNow())
             throw new ArgumentException($"The invoice expired at {invoice.ExpiryDate:O}.", nameof(bolt11));
 
-        return PaymentTarget.FromInvoice(invoice);
+        return invoice;
     }
 
     private static LightningMoney ResolveAmount(LightningMoney? invoiceAmount, LightningMoney? amount)
