@@ -31,8 +31,8 @@ public sealed class ClnInteropTests : IAsyncLifetime
 {
     private const int TestTimeoutMs = 6 * 60 * 1_000;
 
-    /// <summary>CLN's <c>opening</c> estimate on an idle regtest chain: BOLT 3's 253 sat/kw floor (NL-486).</summary>
-    private const string IdleClnOpeningFeerate = "253perkw";
+    /// <summary>BOLT 3's 253 sat/kw floor, CLN's <c>opening</c> estimate on an idle regtest chain (NL-486).</summary>
+    private const string FloorFeerate = "253perkw";
     private static readonly TimeSpan s_settleTimeout = TimeSpan.FromSeconds(60);
 
     private readonly ClnFixture _fixture;
@@ -149,7 +149,7 @@ public sealed class ClnInteropTests : IAsyncLifetime
     /// CLN funds a private channel to us (we are the fundee, static_remotekey) at 10,000 sat/kw, above our estimate,
     /// both ends reach <c>CHANNELD_NORMAL</c>/usable, and payments work both ways (CLN pays first: all the funds are
     /// on its side). CLN, as the opener, chooses the feerate itself, so its fee limits (enforced by the fixture) do not
-    /// apply to it. <see cref="Given_ClnFundsAtItsOwnEstimate_When_Opening_Then_WeAccept"/> covers CLN's own estimate.
+    /// apply to it. <see cref="Given_ClnFundsAtTheFeerateFloor_When_Opening_Then_WeAccept"/> covers the 253 sat/kw floor.
     /// CLN sends <c>update_fee</c> only when its estimate changes after the channel is normal, so this test does not
     /// wait for one.
     /// </summary>
@@ -170,31 +170,31 @@ public sealed class ClnInteropTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// NL-289 regression (the W3-E reproducer): CLN funds at its own estimate, which on an idle regtest is the
-    /// 253 sat/kw relay floor, while our estimate is 2,500 sat/kw. We used to refuse the <c>open_channel</c> ("Fee rate
+    /// NL-289 regression (the W3-E reproducer): CLN funds at the 253 sat/kw relay floor (its own estimate on an idle
+    /// regtest), while our estimate is 2,500 sat/kw. We used to refuse the <c>open_channel</c> ("Fee rate
     /// per kw is too small": below 1,000 sat/kw and below 80 % of our estimate); BOLT 2 only lets the fundee fail a
     /// feerate too small for timely processing, and we now accept anything from the 253 sat/kw floor. Payments work
     /// both ways over the channel. Our node turns <c>option_anchors</c> off (on by default since wave O7b): on an
     /// anchors channel CLN opens at a higher commitment feerate (1,250 sat/kw seen), which would not exercise the old
-    /// floor. The feerate is pinned to CLN's idle-chain estimate, 253 sat/kw, instead of asking for <c>opening</c>:
-    /// after the splice classes have mined fee-paying transactions CLN's estimate is about 2,500 sat/kw, which does not
-    /// exercise the floor either (NL-486, the test must not depend on the classes run before it).
+    /// floor. The feerate is pinned to the floor, 253 sat/kw, instead of asking for CLN's <c>opening</c> estimate: after
+    /// the splice classes have mined fee-paying transactions CLN's estimate is about 2,500 sat/kw, which does not
+    /// exercise the floor (NL-486: the test must not depend on the classes run before it).
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
-    public async Task Given_ClnFundsAtItsOwnEstimate_When_Opening_Then_WeAccept()
+    public async Task Given_ClnFundsAtTheFeerateFloor_When_Opening_Then_WeAccept()
     {
-        // Arrange + Act: fundchannel at CLN's idle-chain opening estimate, on a static_remotekey channel
+        // Arrange + Act: fundchannel at the 253 sat/kw floor, on a static_remotekey channel
         var ct = TestContext.Current.CancellationToken;
         await using var session = await ClnChannelSession.BuildClnFundedAsync(
                                       _fixture, "nltg-fee-floor", LightningMoney.Satoshis(500_000),
-                                      IdleClnOpeningFeerate, ct,
+                                      FloorFeerate, ct,
                                       options => options.Features.OptionAnchors = FeatureSupport.No);
 
         // Assert: usable at our end, at a feerate our old floor refused
         Assert.True((await session.GetOurChannelAsync(ct)).IsUsable());
         var theirs = await session.GetClnChannelAsync(ct);
         var feerate = theirs["feerate"]!["perkw"]!.GetValue<long>();
-        Console.WriteLine($"[cln] CLN-funded channel at its estimate: {ClnChannelSession.DescribeCln(theirs)}");
+        Console.WriteLine($"[cln] CLN-funded channel at the floor: {ClnChannelSession.DescribeCln(theirs)}");
         Assert.InRange(feerate, 253, 999);
         await AssertClnPaysUsAsync(session, LightningMoney.Satoshis(20_000), ct);
         await AssertWePayClnAsync(session, LightningMoney.Satoshis(5_000), ct);
