@@ -81,6 +81,21 @@ public class BumpOpenIpcHandlerTests
         Assert.Equal((3_000U, (LightningMoney?)null), _call);
     }
 
+    [Fact]
+    public async Task Given_AZeroContribution_When_Handled_Then_TheServiceDecides()
+    {
+        // Act: NL-530, an accepter that stops contributing (the service refuses 0 for the opener)
+        await GetHandler().HandleAsync(CreateEnvelope(new BumpOpenIpcRequest
+        {
+            ChannelId = s_channelId,
+            FeeRatePerKw = 3_000,
+            ContributionSat = 0
+        }), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal((3_000U, LightningMoney.Zero), _call);
+    }
+
     [Theory]
     [InlineData("RBF of a dual-funded open is not enabled")]
     [InlineData("[IT-RBF-01] 2550 sat/kw is below the minimum 2604 sat/kw")]
@@ -125,7 +140,6 @@ public class BumpOpenIpcHandlerTests
     [Theory]
     [InlineData(252U, null)]
     [InlineData(250_001U, null)]
-    [InlineData(2_604U, 0UL)]
     [InlineData(2_604U, 2_100_000_000_000_001UL)]
     public async Task Given_ArgumentsOutOfBounds_When_Handled_Then_RefusedBeforeTheService(uint feeRatePerKw,
                                                                                           ulong? contributionSat)
@@ -169,6 +183,7 @@ public class BumpOpenIpcHandlerTests
     [InlineData(new[] { ChannelIdHex, "2604" }, 2604U, null)]
     [InlineData(new[] { ChannelIdHex, "2604", "--contribution-sat", "650000" }, 2604U, 650000UL)]
     [InlineData(new[] { "--contribution-sat=1", ChannelIdHex, "253" }, 253U, 1UL)]
+    [InlineData(new[] { ChannelIdHex, "2604", "--contribution-sat", "0" }, 2604U, 0UL)]
     public void Given_ValidArguments_When_Parsed_Then_ChannelFeerateAndContribution(string[] args, uint feeRate,
                                                                                     ulong? contributionSat)
     {
@@ -187,7 +202,7 @@ public class BumpOpenIpcHandlerTests
     [InlineData(new[] { "abcd", "2604" }, "Invalid channel id")]
     [InlineData(new[] { ChannelIdHex, "252" }, "Invalid feerate '252'")]
     [InlineData(new[] { ChannelIdHex, "2604", "extra" }, "Unexpected argument 'extra'")]
-    [InlineData(new[] { ChannelIdHex, "2604", "--contribution-sat", "0" }, "Invalid contribution '0'")]
+    [InlineData(new[] { ChannelIdHex, "2604", "--contribution-sat", "-1" }, "Invalid contribution '-1'")]
     [InlineData(new[] { ChannelIdHex, "2604", "--contribution-sat" }, "Missing value for --contribution-sat")]
     [InlineData(new[] { ChannelIdHex, "2604", "--max-fee-sat", "1" }, "Unknown option '--max-fee-sat'")]
     public void Given_BadArguments_When_Validated_Then_UsageError(string[] args, string expected)

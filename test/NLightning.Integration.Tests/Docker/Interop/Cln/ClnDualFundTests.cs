@@ -30,7 +30,10 @@ using Utils;
 /// its own open to us (<c>openchannel_bump</c>/<c>openchannel_update</c>/<c>openchannel_signed</c> over the inputs
 /// it reserved for the first attempt) and we follow the replacement; and after our bump the <b>first</b> attempt is
 /// mined instead (<c>generateblock</c> with its raw transaction from our broadcast row), and both nodes follow it.
-/// Each channel is used for payments both ways.
+/// NL-530: our <c>bumpopen</c> as the accepter of CLN's open is refused by CLN v26.06.8 with
+/// <c>tx_abort</c> "Only the channel initiator is allowed to initiate RBF" (BOLT 2 lets the accepter send
+/// <c>tx_init_rbf</c>, and the recipient "MAY fail the negotiation for any reason"); the open stays on its first
+/// funding and confirms. Each channel is used for payments both ways.
 /// </summary>
 /// <remarks>
 /// <para>CLN v26.06.8 advertises <c>option_dual_fund</c> only with <c>--experimental-dual-fund</c> (checked with
@@ -291,6 +294,47 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
         // ...and it confirms and carries payments
         await MineUntilUsableAsync(node, channelId, ct);
         Assert.Equal(bumpedTxIdHex, TxIdDisplay(Channel(node, channelId).FundingOutput!.TransactionId!.Value));
+        await PayBothWaysAsync(node, ct);
+    }
+
+    [Fact]
+    public async Task Given_ClnsUnconfirmedDualFundedOpen_When_WeBumpItAsTheAccepter_Then_ClnRefusesAndTheOpenConfirms()
+    {
+        // Arrange: CLN opens 500,000 sat to us, we contribute 200,000 sat
+        var ct = TestContext.Current.CancellationToken;
+        var node = await CreateNodeAsync("df-rbf-accepter-bump", 200_000, ct);
+        var (minimum, maximum) = await GetClnAcceptableFeerateRangeAsync(ct);
+        var openFeerate = Math.Clamp(1_000u, minimum, maximum);
+        var bumpFeerate = Math.Max(Math.Min(2 * openFeerate, maximum),
+                                   (uint)InteractiveTxDriver.GetMinimumRbfFeeratePerKw(openFeerate));
+        var opened = await _cln.CallAsync("fundchannel", ct, ("id", node.NodeIdHex), ("amount", "500000"),
+                                          ("announce", "false"), ("feerate", $"{openFeerate}perkw"));
+        var channelId = new ChannelId(Convert.FromHexString(opened["channel_id"]!.GetValue<string>()));
+        var firstTxIdHex = opened["txid"]!.GetValue<string>();
+        await Poll.UntilAsync(() => Task.FromResult(TryGetChannel(node, channelId)?.FundingOutput?.TransactionId
+                                                                  is { } txId && TxIdDisplay(txId) == firstTxIdHex),
+                              TimeSpan.FromSeconds(30), "our channel on CLN's first funding", ct);
+
+        // Act: NL-530, our bumpopen as the accepter (BOLT 2 "Fee bumping": the sender of tx_init_rbf "MAY be either the
+        // initiator or the accepter")
+        var refusal = await Assert.ThrowsAsync<Domain.Client.Exceptions.ClientException>(
+                          () => BumpThroughClientAsync(node, channelId, bumpFeerate, ct));
+        Console.WriteLine($"[cln-df] our accepter bump: {refusal.Message}");
+
+        // Assert: CLN v26.06.8 refuses an RBF from the accepter ("Only the channel initiator is allowed to initiate
+        // RBF", dualopend's tx_init_rbf handler); we stay on the first funding, and so does CLN
+        var clnLog = await _cln.GetLogLinesAsync("initiator is allowed to initiate RBF", ct, 5);
+        Console.WriteLine($"[cln-df] CLN on our tx_init_rbf: {clnLog}");
+        Assert.Contains("Only the channel initiator is allowed to initiate RBF", clnLog);
+        Assert.Equal(firstTxIdHex, TxIdDisplay(Channel(node, channelId).FundingOutput!.TransactionId!.Value));
+        Assert.Single(node.Services.GetRequiredService<DualFundedOpenService>().GetSignedFundingTxIds(channelId));
+
+        // ...and the open confirms and carries payments both ways (reconnected when CLN dropped the connection)
+        await Poll.UntilAsync(async () => node.IsConnectedTo(ClnPubKey) && await _cln.IsConnectedAsync(node.NodeIdHex, ct),
+                              TimeSpan.FromSeconds(60), "we and CLN connected again", ct);
+        await MineUntilUsableAsync(node, channelId, ct);
+        Assert.Equal(firstTxIdHex, TxIdDisplay(Channel(node, channelId).FundingOutput!.TransactionId!.Value));
+        Assert.Equal(LightningMoney.Satoshis(200_000), Channel(node, channelId).LocalBalance);
         await PayBothWaysAsync(node, ct);
     }
 

@@ -35,7 +35,8 @@ using Domain.Protocol.InteractiveTx.Models;
 /// key path input weighs less, the peer charges 107) and a P2WPKH change output. The change goes back to a fresh wallet
 /// change address and is added only when it is at least the P2WPKH dust limit (294 sat); otherwise the excess is fee.
 /// Without a wallet amount the request's outputs are returned without inputs (a splice-out whose fees come from the
-/// channel balance, plan D16).</para>
+/// channel balance, plan D16), unless <see cref="InteractiveTxContributionRequest.FundWeightWithoutAmount"/> asks for
+/// inputs that only pay our fee (an accepter starting the RBF of a dual-funded open it did not fund, NL-530).</para>
 /// <para><b>prevtx size.</b> A <c>tx_add_input</c> carries <c>prevtx</c> with a u16 length inside a message of at most
 /// 65,535 bytes, so a wallet output paid by a larger transaction (a big batch payout) cannot be contributed
 /// (<see cref="MaxPrevTxLength"/>). Its reservation is held while the selector picks again (so those outputs are not
@@ -142,7 +143,7 @@ public sealed class WalletInteractiveTxContributor : IInteractiveTxContributor
                                             nameof(request));
         }
 
-        if (request.WalletAmount.IsZero)
+        if (request.WalletAmount.IsZero && !request.FundWeightWithoutAmount)
             return request.Outputs.Count == 0
                        ? InteractiveTxContribution.Empty
                        : new InteractiveTxContribution([], request.Outputs.ToList(), null);

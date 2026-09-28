@@ -70,8 +70,9 @@ using Interfaces;
 /// <para>RBF (<see cref="DualFundingOptions.AllowRbf"/>, on by default): an RBF may change either contribution (BOLT 2,
 /// NL-521: the capacity, balances and reserve follow the attempt); every fully signed attempt is stored with the peer's
 /// signature of our first commitment and our share, so the channel follows whichever attempt confirms
-/// (<see cref="OnFundingConfirmedAsync"/>, NL-528). Only the opener starts an RBF here (BOLT 2 lets the accepter too,
-/// "MAY"); a peer's RBF is followed in either role.</para>
+/// (<see cref="OnFundingConfirmedAsync"/>, NL-528). Either role starts an RBF (BOLT 2 "Fee bumping": the sender "MAY be
+/// either the <i>initiator</i> or the <i>accepter</i>", NL-530; the sender is the new attempt's interactive-tx initiator),
+/// and a peer's RBF is followed in either role.</para>
 /// </remarks>
 public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 {
@@ -356,8 +357,13 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
     /// <summary>
     /// <see cref="BumpAsync(ChannelId, uint, CancellationToken)"/> with our <c>funding_output_contribution</c> changed
-    /// to <paramref name="localContribution"/> (BOLT 2: "MAY set <c>funding_output_contribution</c> to a different
-    /// value", NL-521), paid from the inputs of our last attempt (their change pays the difference); null keeps it.
+    /// to <paramref name="localContribution"/> (BOLT 2: the sender "MAY set <c>funding_output_contribution</c> to a
+    /// different value", NL-521); null keeps it. Either role may bump (BOLT 2 "Fee bumping": the sender of
+    /// <c>tx_init_rbf</c> "MAY be either the <i>initiator</i> or the <i>accepter</i>", NL-530): the sender becomes the
+    /// interactive-tx initiator of the new attempt, adds the funding output and pays the common fields, whichever side
+    /// opened the channel (the opener still pays the first commitment's fee). Our contribution: the previous attempt's
+    /// inputs re-added (IT-RBF-01) with the change paying the new fee, or, when we contributed nothing before (an
+    /// accepter), fresh wallet inputs that pay our share and the initiator's weight, also for a share of 0.
     /// </summary>
     /// <exception cref="InvalidOperationException">As the other overload, or the new contribution is refused
     /// (<see cref="GetRbfShareViolation"/>) or our inputs cannot pay it.</exception>
@@ -370,8 +376,6 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         {
             var negotiation = await GetOrLoadAsync(channelId, null, cancellationToken)
                            ?? throw new InvalidOperationException($"No dual-funded open on channel {channelId}");
-            if (!negotiation.IsOpener)
-                throw new InvalidOperationException($"We are not the opener of channel {channelId}");
             if (negotiation.Channel is not { State: ChannelState.V1FundingSigned } channel)
                 throw new InvalidOperationException(
                     $"Channel {channelId} is not waiting for its funding (channel_ready sent or received)");
@@ -389,17 +393,14 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                     $"[IT-RBF-01] {feeratePerKw} sat/kw is below the minimum {minimum} sat/kw");
 
             var share = localContribution ?? negotiation.LocalShare;
-            if (share.IsZero)
+            if (negotiation.IsOpener && share.IsZero)
                 throw new InvalidOperationException("The opener must contribute to a dual-funded open");
             if (GetRbfShareViolation(negotiation, share, negotiation.RemoteShare.Satoshi) is { } violation)
                 throw new InvalidOperationException($"Channel {channelId}: {violation}");
 
-            var contribution = DualFundingRules.RebuildContributionForFeerate(
-                                   previous, share, true, GetSharedFunding(negotiation), feeratePerKw,
-                                   LightningMoney.Satoshis(ChangeDustLimitSat))
-                            ?? throw new InvalidOperationException(
-                                   $"Our inputs cannot pay {share} at {feeratePerKw} sat/kw; add funds and try again");
-
+            var contribution = await CreateInitiatorRbfContributionAsync(negotiation, channel, previous, share,
+                                                                         feeratePerKw, cancellationToken);
+            var fresh = previous.Inputs.Count == 0 && contribution.ReservationId is not null ? contribution : null;
             var terms = CreateTerms(negotiation, true, feeratePerKw, GetLocktime(), contribution: contribution);
             ChangeSharesForRbf(negotiation, share, negotiation.RemoteShare);
             IReadOnlyList<IChannelMessage> messages;
@@ -410,15 +411,19 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             catch
             {
                 negotiation.RestoreShares();
+                if (fresh is not null)
+                    await ReleaseContributionAsync(fresh);
                 throw;
             }
 
+            negotiation.FreshRbfContribution = fresh;
             completion = new TaskCompletionSource<DualFundedOpenResult>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             negotiation.BumpCompletion = completion;
             _serviceProvider.GetRequiredService<IChannelMessagePublisher>().Publish(channel.RemoteNodeId, messages);
-            _logger.LogInformation("tx_init_rbf of channel {ChannelId} at {Feerate} sat/kw", channelId,
-                                   feeratePerKw);
+            _logger.LogInformation("tx_init_rbf of channel {ChannelId} at {Feerate} sat/kw as the {Role}, our share "
+                                 + "{Share} sat", channelId, feeratePerKw,
+                                   negotiation.IsOpener ? "opener" : "accepter", share.Satoshi);
         }
 
         try
@@ -428,6 +433,55 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         catch (TimeoutException)
         {
             return new DualFundedOpenResult(channelId, null, "the RBF timed out");
+        }
+    }
+
+    /// <summary>
+    /// Our contribution to an RBF attempt we start, as its interactive-tx initiator (we add the funding output and pay
+    /// the common fields, BOLT 2 "Fee bumping"): the previous attempt's inputs again with the change lowered (IT-RBF-01:
+    /// "MUST ensure that the new transaction double-spends all other attempts"), or, when none of our inputs is in the
+    /// earlier attempts (an accepter that funded nothing; the opener's re-added inputs double-spend them), fresh wallet
+    /// inputs for our share plus the initiator's weight.
+    /// </summary>
+    private async Task<InteractiveTxContribution> CreateInitiatorRbfContributionAsync(
+        DualFundNegotiation negotiation, ChannelModel channel, InteractiveTxContribution previous,
+        LightningMoney share, uint feeratePerKw, CancellationToken cancellationToken)
+    {
+        if (previous.Inputs.Count > 0)
+            return DualFundingRules.RebuildContributionForFeerate(
+                       previous, share, true, GetSharedFunding(negotiation), feeratePerKw,
+                       LightningMoney.Satoshis(ChangeDustLimitSat))
+                ?? throw new InvalidOperationException(
+                       $"Our inputs cannot pay {share} and the initiator's fees at {feeratePerKw} sat/kw; add funds "
+                     + "and try again");
+
+        try
+        {
+            return await GetContributor().ContributeAsync(
+                       new InteractiveTxContributionRequest(negotiation.ChannelId, InteractiveTxPurpose.DualFundRbf,
+                                                            share, [], feeratePerKw,
+                                                            DualFundingRules.GetOpenerExtraWeight(
+                                                                GetFundingScript(channel)),
+                                                            negotiation.RemoteRequiresConfirmedInputs,
+                                                            FundWeightWithoutAmount: true), cancellationToken);
+        }
+        catch (InsufficientFundsException e)
+        {
+            throw new InvalidOperationException(
+                $"The wallet cannot pay {share} and the initiator's fees at {feeratePerKw} sat/kw: {e.Message}", e);
+        }
+    }
+
+    /// <summary>Releases a contribution's wallet reservation (logged, never thrown).</summary>
+    private async Task ReleaseContributionAsync(InteractiveTxContribution contribution)
+    {
+        try
+        {
+            await GetContributor().ReleaseAsync(contribution, CancellationToken.None);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Could not release the RBF reservation {ReservationId}", contribution.ReservationId);
         }
     }
 
@@ -838,6 +892,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         negotiation.PendingTxId = null;
         negotiation.LastSignedFunding = null;
         negotiation.SharesBeforeRbf = null;
+        negotiation.FreshRbfContribution = null;
         TrackAfterSave(negotiation, txId, () => PublishAsync(negotiation, txId, fundingWatch, outpointWatch,
                                                               broadcast));
         return [];
@@ -851,6 +906,14 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     internal async Task OnAbortedAsync(DualFundNegotiation negotiation, string reason)
     {
         negotiation.PendingTxId = null;
+        if (negotiation.FreshRbfContribution is { } fresh)
+        {
+            // Our tx_init_rbf ended (before or after its attempt existed): the reservation it took goes back; a stored,
+            // signed or completed negotiation that holds it keeps it (the contributor's IT-ABT-01 guard)
+            negotiation.FreshRbfContribution = null;
+            await ReleaseContributionAsync(fresh);
+        }
+
         if (negotiation.CompletedTxIds.Count > 0)
         {
             negotiation.RestoreShares();

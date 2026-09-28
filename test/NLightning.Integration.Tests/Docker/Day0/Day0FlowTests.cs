@@ -25,7 +25,8 @@ using Utils;
 /// <summary>
 /// The day-0 proof (wave sp2 lane SP2-F, <c>docs/agents/DAY0_RUNBOOK.md</c>): the script the owner and Nick run on
 /// mainnet, between two NLightning nodes A and B on regtest, with LND alice as the network that watches. (1) A opens
-/// a dual-funded public channel to B and both contribute; after 6 confirmations alice has its
+/// a dual-funded public channel to B and both contribute; (1 b) A bumps the unconfirmed open with <c>bumpopen</c>,
+/// (1 c) B, the accepter, bumps it again (NL-530); after 6 confirmations of B's attempt alice has its
 /// <c>channel_announcement</c> and both policies. (2) Payments A to B, B to A, and alice to B through A. (3) A splices
 /// in; the splice locks, the channel is announced again under its new short channel id and alice forgets the old
 /// one. (4) B splices out to a bitcoind address; the same, and the address holds the amount in a confirmed
@@ -82,6 +83,11 @@ public sealed class Day0FlowTests : IAsyncLifetime
     /// IT-RBF-01 asks for at least 2,604).
     /// </summary>
     private const uint OpenBumpFeeRatePerKw = 5_000;
+
+    /// <summary>
+    /// Step 1 (c): the feerate B, the accepter, bumps the open to after A's bump (IT-RBF-01 asks for at least 5,208).
+    /// </summary>
+    private const uint AccepterBumpFeeRatePerKw = 7_000;
 
     /// <summary>Step 9's first attempt: BOLT 3's floor, the feerate the runbook warns about.</summary>
     private const uint RbfLowFeeRatePerKw = 253;
@@ -165,9 +171,21 @@ public sealed class Day0FlowTests : IAsyncLifetime
                                                  == bumped.FundingTxId), Day0Harness.StepTimeout,
                               "B on the bumped funding", ct);
         Console.WriteLine($"[day0] step 1 (b): bumpopen replaced {firstFunding} with {bumped.FundingTxId}");
+
+        // Step 1 (c), NL-530: B, the accepter, bumps it again (bumpopen works in either role; B is the interactive-tx
+        // initiator of this attempt, adds the funding output and pays the shared fields); A follows, and this third
+        // attempt is the funding that confirms and is announced
+        var bumpedByB = await Day0Harness.HandleAsync<BumpOpenClientRequest, BumpOpenClientResponse>(
+                            b, new BumpOpenClientRequest(channelId, AccepterBumpFeeRatePerKw), ct);
+        Assert.NotEqual(bumped.FundingTxId, bumpedByB.FundingTxId);
+        await Poll.UntilAsync(() => Task.FromResult(Channel(a, channelId).FundingOutput!.TransactionId
+                                                 == bumpedByB.FundingTxId), Day0Harness.StepTimeout,
+                              "A on B's bumped funding", ct);
+        Console.WriteLine($"[day0] step 1 (c): B's bumpopen replaced {bumped.FundingTxId} with "
+                        + $"{bumpedByB.FundingTxId}");
         var (openA, openB) = await Day0Harness.MineUntilUsableAsync(_fixture, observers, a, b, channelId, ct);
-        Assert.Equal(bumped.FundingTxId, Channel(a, channelId).FundingOutput!.TransactionId);
-        Assert.Equal(bumped.FundingTxId, Channel(b, channelId).FundingOutput!.TransactionId);
+        Assert.Equal(bumpedByB.FundingTxId, Channel(a, channelId).FundingOutput!.TransactionId);
+        Assert.Equal(bumpedByB.FundingTxId, Channel(b, channelId).FundingOutput!.TransactionId);
 
         Assert.True(openA.IsInitiator);
         Assert.False(openB.IsInitiator);

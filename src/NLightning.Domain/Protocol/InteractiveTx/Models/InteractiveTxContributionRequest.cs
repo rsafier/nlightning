@@ -17,6 +17,10 @@ using Money;
 /// for a splice, the shared input and output (IT-S-03); zero as non-initiator.</param>
 /// <param name="RequireConfirmedInputs">The peer sent <c>require_confirmed_inputs</c>: pick only confirmed
 /// outputs.</param>
+/// <param name="FundWeightWithoutAmount">With a zero <paramref name="WalletAmount"/>, still add wallet inputs that pay
+/// for <paramref name="ExtraWeight"/> and our own weight (the change goes back to the wallet): an accepter that
+/// contributed nothing to a dual-funded open and starts its RBF becomes the interactive-tx initiator and pays the common
+/// fields and the funding output (BOLT 2 "Fee bumping", NL-530). False: no wallet input without a wallet amount.</param>
 public sealed record InteractiveTxContributionRequest(
     ChannelId ChannelId,
     InteractiveTxPurpose Purpose,
@@ -24,4 +28,5 @@ public sealed record InteractiveTxContributionRequest(
     IReadOnlyList<ContributedOutput> Outputs,
     uint FeeratePerKw,
     int ExtraWeight,
-    bool RequireConfirmedInputs);
+    bool RequireConfirmedInputs,
+    bool FundWeightWithoutAmount = false);

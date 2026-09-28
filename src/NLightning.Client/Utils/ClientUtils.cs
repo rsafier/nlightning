@@ -77,9 +77,10 @@ public static class ClientUtils
         Console.WriteLine("                               bump-splice); at least max(25/24 x, +25) of the latest");
         Console.WriteLine("                               attempt; --max-fee-sat caps our share of the new fee");
         Console.WriteLine("  bumpopen <channel_id> <feerate_per_kw> [--contribution-sat <sats>]");
-        Console.WriteLine("                               RBF our unconfirmed dual-funded open at a higher feerate");
-        Console.WriteLine("                               (alias: bump-open); at least max(25/24 x, +25) of the latest");
-        Console.WriteLine("                               attempt; --contribution-sat changes our contribution");
+        Console.WriteLine("                               RBF an unconfirmed dual-funded open (ours or the peer's) at");
+        Console.WriteLine("                               a higher feerate (alias: bump-open); at least max(25/24 x,");
+        Console.WriteLine("                               +25) of the latest attempt; --contribution-sat changes our");
+        Console.WriteLine("                               contribution (0: the accepter stops contributing)");
         Console.WriteLine("  forceclosechannel <channel_id>");
         Console.WriteLine("                               Fail a channel and broadcast our latest commitment (alias:");
         Console.WriteLine("                               force-close-channel)");

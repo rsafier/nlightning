@@ -75,7 +75,8 @@ payments with three attempts pending, a bumped splice across a reconnection and 
     contributes nothing to an RBF it did not start (Proof SPR header), so an RBF of the other side's splice drops that
     side's contribution.
   - **RBF of a dual-funded open only from a build with lane dfrbf** (NL-528: `Node:DualFund:AllowRbf` true by default,
-    public opens included, `bumpopen <channel_id> <feerate_per_kw>` as the opener; the peer's RBF is followed). Every
+    public opens included, `bumpopen <channel_id> <feerate_per_kw>` from either node, the accepter too since NL-530;
+    the peer's RBF is followed; a CLN peer refuses an accepter's bump). Every
     signed attempt may confirm, and the channel follows the one that does, so a bump is safe; still pick a funding
     feerate that confirms: each bump needs both nodes online, and a peer that sent or received `channel_ready` refuses
     it. On an older build there is no RBF of a dual-funded open.

@@ -274,6 +274,24 @@ public class WalletInteractiveTxContributorTests
     }
 
     [Fact]
+    public async Task Given_NoWalletAmountButWeightToFund_When_Contributing_Then_AnInputPaysTheFeeAndTheRestIsChange()
+    {
+        // Arrange: NL-530, an accepter that funded nothing starts the open's RBF and pays the initiator's weight
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
+        var request = Request(0, extraWeight: 1_000) with { FundWeightWithoutAmount = true };
+
+        // Act
+        var contribution = await _contributor.ContributeAsync(request, TestContext.Current.CancellationToken);
+
+        // Assert: fee = 253 x (1,000 + 272 (input) + 124 (change)) = 354 sat, everything else back as change
+        Assert.Equal(utxo.Model.TxId, Assert.Single(contribution.Inputs).PrevTxId);
+        var change = Assert.Single(contribution.Outputs);
+        Assert.True(change.IsChange);
+        Assert.Equal(500_000 - 354, change.Amount.Satoshi);
+        Assert.Equal(Assert.Single(_stored).Id, contribution.ReservationId);
+    }
+
+    [Fact]
     public async Task Given_AnAbortBeforeOurSignatures_When_Releasing_Then_TheOutputsReturnToTheWallet()
     {
         // Arrange
