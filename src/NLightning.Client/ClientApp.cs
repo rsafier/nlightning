@@ -291,6 +291,8 @@ internal static class ClientApp
                 case "splice-in":
                 case "spliceout":
                 case "splice-out":
+                case "bumpsplice":
+                case "bump-splice":
                     if (!await SpliceCommands.RunAsync(cmd, commandArgs, client, cancellationToken))
                         return Failure;
                     break;
@@ -488,6 +490,8 @@ internal static class ClientApp
             case "splice-in":
             case "spliceout":
             case "splice-out":
+            case "bumpsplice":
+            case "bump-splice":
                 return SpliceCommands.Validate(cmd, commandArgs);
             case "listinvoices":
             case "list-invoices":

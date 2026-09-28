@@ -8,8 +8,8 @@ using NLightning.Client.Printers;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// The CLI side of <c>splicein</c>/<c>spliceout</c> (ClientCommand 33/34, splicing plan SP1-E-T1): argument parsing
-/// (usage errors before any IPC) and the printed result.
+/// The CLI side of <c>splicein</c>/<c>spliceout</c> (ClientCommand 33/34, splicing plan SP1-E-T1) and
+/// <c>bumpsplice</c> (37, wave SPR lane SPR-B): argument parsing (usage errors before any IPC) and the printed result.
 /// </summary>
 public class SpliceCommandTests
 {
@@ -150,5 +150,148 @@ public class SpliceCommandTests
         Assert.StartsWith("Splice in progress", printed);
         Assert.Contains("goes on in the daemon", printed);
         Assert.True(SpliceCommands.IsSuccess(response));
+    }
+
+    [Fact]
+    public void Given_ASpliceStoppedAtCommitmentSigned_When_Printed_Then_ItNamesTheSpliceAndWaitsForTheReconnection()
+    {
+        // Arrange: the peer disconnected after both commitment_signed, before tx_signatures; the daemon keeps the splice
+        const string reason = "Splice 83c00c02dd85fdc21350d141ec1872ca0f49819936b5c7d0c931084835269fc2 stopped at "
+                            + "CommitmentSigned (stopped before tx_signatures: Disconnected); it is kept and completes "
+                            + "when the peer reconnects (channel_reestablish), see listchannels.";
+        var response = new SpliceIpcResponse
+        {
+            ChannelId = s_channelId,
+            State = SpliceNegotiationState.CommitmentSigned,
+            SpliceTxId = "83c00c02dd85fdc21350d141ec1872ca0f49819936b5c7d0c931084835269fc2",
+            NewCapacitySat = 1_100_000,
+            FailureReason = reason
+        };
+        using var output = new StringWriter();
+
+        // Act
+        new SplicePrinter(output).Print(response);
+
+        // Assert
+        var printed = output.ToString();
+        Assert.StartsWith("Splice waiting for the peer to reconnect", printed);
+        Assert.Contains("State:        CommitmentSigned", printed);
+        Assert.Contains("Splice TxId:  83c00c02dd85fdc21350d141ec1872ca0f49819936b5c7d0c931084835269fc2", printed);
+        Assert.Contains($"Note:         {reason}", printed);
+        Assert.Contains("completes (tx_signatures,", printed);
+        Assert.DoesNotContain("Reason:", printed);
+        Assert.True(SpliceCommands.IsSuccess(response));
+    }
+
+    [Fact]
+    public void Given_ACommitmentSignedWithoutATxId_When_Printed_Then_InProgressAndItsReason()
+    {
+        // Arrange: no txid, so nothing names a kept splice
+        var response = new SpliceIpcResponse
+        {
+            ChannelId = s_channelId,
+            State = SpliceNegotiationState.CommitmentSigned,
+            FailureReason = "stopped"
+        };
+        using var output = new StringWriter();
+
+        // Act
+        new SplicePrinter(output).Print(response);
+
+        // Assert
+        var printed = output.ToString();
+        Assert.StartsWith("Splice in progress", printed);
+        Assert.Contains("Reason:       stopped", printed);
+        Assert.False(SpliceCommands.IsSuccess(response));
+    }
+
+    [Theory]
+    [InlineData(new[] { ChannelIdHex, "2604" }, 2604U, null)]
+    [InlineData(new[] { ChannelIdHex, "2604", "--max-fee-sat", "5000" }, 2604U, 5000UL)]
+    [InlineData(new[] { "--max-fee-sat=1", ChannelIdHex, "253" }, 253U, 1UL)]
+    [InlineData(new[] { ChannelIdHex, "250000", "--max-fee-sat", "2100000000000000" }, 250000U, 2100000000000000UL)]
+    public void Given_ValidBumpSpliceArguments_When_Parsed_Then_ChannelFeerateAndFeeCap(string[] args, uint feeRate,
+                                                                                        ulong? maxFeeSat)
+    {
+        // Act
+        var parsed = SpliceCommands.ParseBump(args, out var error);
+
+        // Assert
+        Assert.Null(error);
+        Assert.NotNull(parsed);
+        Assert.Equal(s_channelId, parsed.ChannelId);
+        Assert.Equal(feeRate, parsed.FeeRatePerKw);
+        Assert.Equal(maxFeeSat, parsed.MaxFeeSat);
+        Assert.Null(ClientApp.ValidateArguments("bumpsplice", args));
+        Assert.Null(ClientApp.ValidateArguments("bump-splice", args));
+    }
+
+    [Theory]
+    [InlineData(new string[0], "Missing arguments.")]
+    [InlineData(new[] { ChannelIdHex }, "Missing arguments.")]
+    [InlineData(new[] { "abcd", "2604" }, "Invalid channel id")]
+    [InlineData(new[] { ChannelIdHex, "252" }, "Invalid feerate '252'")]
+    [InlineData(new[] { ChannelIdHex, "250001" }, "Invalid feerate '250001'")]
+    [InlineData(new[] { ChannelIdHex, "fast" }, "Invalid feerate 'fast'")]
+    [InlineData(new[] { ChannelIdHex, "2604", "extra" }, "Unexpected argument 'extra'")]
+    [InlineData(new[] { ChannelIdHex, "2604", "--max-fee-sat", "0" }, "Invalid fee cap '0'")]
+    [InlineData(new[] { ChannelIdHex, "2604", "--max-fee-sat", "2100000000000001" }, "Invalid fee cap")]
+    [InlineData(new[] { ChannelIdHex, "2604", "--max-fee-sat" }, "Missing value for --max-fee-sat")]
+    [InlineData(new[] { ChannelIdHex, "2604", "--feerate", "3000" }, "Unknown option '--feerate'")]
+    public void Given_BadBumpSpliceArguments_When_Validated_Then_UsageErrorWithTheUsage(string[] args, string expected)
+    {
+        // Act
+        var error = ClientApp.ValidateArguments("bumpsplice", args);
+
+        // Assert
+        Assert.NotNull(error);
+        Assert.Contains(expected, error);
+        Assert.Contains(SpliceCommands.BumpUsage, error);
+    }
+
+    [Fact]
+    public void Given_ASignedBump_When_Printed_Then_TheNewAttemptReplacesThePreviousOne()
+    {
+        // Arrange
+        var response = new SpliceIpcResponse
+        {
+            ChannelId = s_channelId,
+            State = SpliceNegotiationState.Signed,
+            SpliceTxId = "c29f2635480831c9d0c7b5369981490fca7218ec41d15013c2fd85dd020cc083",
+            NewCapacitySat = 1_099_000
+        };
+        using var output = new StringWriter();
+
+        // Act
+        new SplicePrinter(output, bump: true).Print(response);
+
+        // Assert
+        var printed = output.ToString();
+        Assert.StartsWith("Splice RBF signed", printed);
+        Assert.Contains("Splice TxId:  c29f2635480831c9d0c7b5369981490fca7218ec41d15013c2fd85dd020cc083", printed);
+        Assert.Contains("replaces the previous one", printed);
+        Assert.True(SpliceCommands.IsSuccess(response));
+    }
+
+    [Fact]
+    public void Given_AnAbortedBump_When_Printed_Then_TheReasonAndAFailure()
+    {
+        // Arrange
+        var response = new SpliceIpcResponse
+        {
+            ChannelId = s_channelId,
+            State = SpliceNegotiationState.Aborted,
+            FailureReason = "tx_abort: rbf not allowed"
+        };
+        using var output = new StringWriter();
+
+        // Act
+        new SplicePrinter(output, bump: true).Print(response);
+
+        // Assert
+        var printed = output.ToString();
+        Assert.StartsWith("Splice RBF aborted", printed);
+        Assert.Contains("Reason:       tx_abort: rbf not allowed", printed);
+        Assert.False(SpliceCommands.IsSuccess(response));
     }
 }

@@ -347,6 +347,32 @@ public class SpliceIpcHandlerTests
     }
 
     [Fact]
+    public async Task Given_TheSpliceStopsAtCommitmentSigned_When_SplicingIn_Then_TheAnswerNamesItAndTheReconnection()
+    {
+        // Arrange: the peer disconnected after both commitment_signed; the service resolves the wait there and keeps the
+        // splice for the reconnection (day-0 step 5 (a))
+        _spliceService.Setup(s => s.StartAsync(It.IsAny<SpliceRequest>(), It.IsAny<CancellationToken>()))
+                      .ReturnsAsync(new SpliceResult(s_channelId, SpliceNegotiationState.CommitmentSigned, s_txId,
+                                                     1_100_000,
+                                                     "stopped before tx_signatures: Disconnected"));
+        var handler = GetHandler(ClientCommand.SpliceIn);
+
+        // Act
+        var response = await handler.HandleAsync(
+                           CreateEnvelope(ClientCommand.SpliceIn,
+                                          new SpliceInIpcRequest { ChannelId = s_channelId, AmountSat = 100_000 }),
+                           TestContext.Current.CancellationToken);
+
+        // Assert
+        var payload = AssertResponse(response);
+        Assert.Equal(SpliceNegotiationState.CommitmentSigned, payload.State);
+        Assert.Equal("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100", payload.SpliceTxId);
+        Assert.Equal("Splice 1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100 stopped at "
+                   + "CommitmentSigned (stopped before tx_signatures: Disconnected); it is kept and completes when the "
+                   + "peer reconnects (channel_reestablish), see listchannels.", payload.FailureReason);
+    }
+
+    [Fact]
     public async Task Given_TheNegotiationOutlastsTheWait_When_SplicingIn_Then_ItsCurrentStateAndTheSpliceGoesOn()
     {
         // Arrange: the service never completes; the negotiation has its transaction already
