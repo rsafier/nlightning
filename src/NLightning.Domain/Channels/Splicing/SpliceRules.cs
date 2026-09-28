@@ -142,6 +142,82 @@ public static class SpliceRules
 
     #endregion
 
+    #region Splice RBF (wave SPR: tx_init_rbf / tx_ack_rbf on a pending splice)
+
+    /// <summary>
+    /// BOLT 2 splicing <c>tx_init_rbf</c>: "If there are more than 10 pending RBF attempts", the sender "MUST set a high
+    /// enough <c>feerate</c> to ensure quick confirmation" and the receiver "SHOULD send <c>tx_abort</c>" when it is
+    /// not.
+    /// </summary>
+    public const int MaxRbfAttemptsAtAnyFeerate = 10;
+
+    /// <summary>
+    /// SPR-T1, the sender of a splice <c>tx_init_rbf</c> (BOLT 2 "Channel Splicing", <c>tx_init_rbf</c>, and
+    /// interactive-tx IT-RBF-01): "MUST NOT send <c>tx_init_rbf</c> if the channel is not quiescent; if it is not the
+    /// quiescence initiator"; "MAY send <c>tx_init_rbf</c> even if it is not the splice initiator" (so nothing is
+    /// refused for that); "If there are more than 10 pending RBF attempts: MUST set a high enough <c>feerate</c>";
+    /// "MUST NOT send <c>tx_init_rbf</c> if it has previously sent <c>splice_locked</c>"; "MUST NOT send
+    /// <c>tx_init_rbf</c> if <c>option_zeroconf</c> has been negotiated"; the feerate at least
+    /// max(floor(25/24 x previous), previous + 25) (<c>InteractiveTxRbfRules.GetMinimumNextFeerate</c>). Also refused:
+    /// no pending splice to replace, a negotiation in progress, a batch above <c>ChannelCommitments.MaxActiveFundings</c>
+    /// (SP-OP-04), our own cap <see cref="SpliceRbfConditions.MaxRbfAttempts"/> (<c>Splice:MaxRbfAttempts</c>) and a
+    /// splice-out above our balance (SP-S-02). Every violation is <see cref="SpliceRuleAction.Refuse"/>.
+    /// </summary>
+    /// <param name="conditions">The channel and its pending splice, gathered under the lock.</param>
+    /// <param name="feeratePerKw">The <c>tx_init_rbf.feerate</c> we would send.</param>
+    /// <param name="contributionSatoshis">Our <c>funding_output_contribution</c> for the new attempt.</param>
+    public static SpliceRuleViolation? CheckSendRbf(SpliceRbfConditions conditions, uint feeratePerKw,
+                                                    long contributionSatoshis) =>
+        throw new NotImplementedException("Lane SPR-A (SPR-T1, NL-489)");
+
+    /// <summary>
+    /// SPR-T1, the receiver of a splice <c>tx_init_rbf</c>, in the BOLT 2 order. "MUST send a <c>warning</c> and close
+    /// the connection or send an <c>error</c> and fail the channel" (we take <see cref="SpliceRuleAction.WarningAndClose"/>)
+    /// when: the channel is not quiescent; the sender is not the quiescence initiator; the sender previously sent
+    /// <c>splice_locked</c> (SP-LK-04 receive side, NL-489); <c>option_zeroconf</c> is negotiated; a negative
+    /// <c>funding_output_contribution</c> is above the sender's current balance. <see cref="SpliceRuleAction.TxAbort"/>
+    /// when: the feerate is below max(floor(25/24 x last), last + 25) (interactive-tx: "MUST respond with
+    /// <c>tx_abort</c>"); "another RBF attempt has been created recently" (SHOULD); "more than 10 pending RBF attempts
+    /// and the <c>feerate</c> is not high enough to ensure quick confirmation" (SHOULD); and, under "MAY send
+    /// <c>tx_abort</c> for any reason", no pending splice to replace, a negotiation in progress, or a batch that would
+    /// exceed <c>ChannelCommitments.MaxActiveFundings</c>. D14 (not negotiated) is a warning and close.
+    /// </summary>
+    /// <param name="conditions">The channel and its pending splice, gathered under the lock.</param>
+    /// <param name="payload">The peer's <c>tx_init_rbf</c>.</param>
+    /// <param name="contributionSatoshis">Its <c>funding_output_contribution</c> (null: not contributing, 0).</param>
+    public static SpliceRuleViolation? CheckReceiveRbf(SpliceRbfConditions conditions, TxInitRbfPayload payload,
+                                                       long? contributionSatoshis) =>
+        throw new NotImplementedException("Lane SPR-A (SPR-T1, NL-489)");
+
+    /// <summary>
+    /// SPR-T1, the receiver of a splice <c>tx_ack_rbf</c>: a negative <c>funding_output_contribution</c> above the
+    /// sender's current balance is a <c>warning</c> and close (BOLT 2); a <c>tx_ack_rbf</c> without our
+    /// <c>tx_init_rbf</c> waiting for it is one too (as SP-R-02 for <c>splice_ack</c>).
+    /// </summary>
+    /// <param name="conditions">The channel and its pending splice, gathered under the lock.</param>
+    /// <param name="contributionSatoshis">The peer's <c>funding_output_contribution</c> (null: not contributing).</param>
+    /// <param name="rbfSent">Our <c>tx_init_rbf</c> waits for this answer.</param>
+    public static SpliceRuleViolation? CheckReceiveAckRbf(SpliceRbfConditions conditions, long? contributionSatoshis,
+                                                          bool rbfSent) =>
+        throw new NotImplementedException("Lane SPR-A (SPR-T1, NL-489)");
+
+    /// <summary>
+    /// SPR-T1, the double-spend duty of an RBF attempt (interactive-tx IT-RBF-01: the new transaction "double-spends
+    /// all other attempts"): for a splice it holds when the attempt's shared input (<c>shared_input_txid</c>, SP-TX-01)
+    /// is the current funding output that every pending attempt of <paramref name="fundings"/> spends ("Since splice
+    /// transactions always spend the current channel funding output, the RBF attempts automatically double-spend each
+    /// other"); anything else is a <c>tx_abort</c>. The fee rule of an attempt (its total fee at least the previous
+    /// attempt's, SP-TX-05) is <see cref="CheckTxComplete"/> with <see cref="SpliceTxCompleteFacts.PreviousAttemptFeeSatoshis"/>.
+    /// </summary>
+    /// <param name="sharedInputTxId">The attempt's shared input txid.</param>
+    /// <param name="sharedInputVout">The attempt's shared input output index.</param>
+    /// <param name="fundings">The channel's fundings with the pending splice the attempt replaces.</param>
+    public static SpliceRuleViolation? CheckRbfDoubleSpends(TxId sharedInputTxId, uint sharedInputVout,
+                                                            FundingSet fundings) =>
+        throw new NotImplementedException("Lane SPR-A (SPR-T1, NL-489)");
+
+    #endregion
+
     #region Transaction construction (SP-TX-01..05)
 
     /// <summary>
@@ -300,6 +376,35 @@ public static class SpliceRules
     private static SpliceRuleViolation TxAbort(string requirementId, string reason) =>
         new(requirementId, SpliceRuleAction.TxAbort, reason);
 }
+
+/// <summary>
+/// What the splice RBF rules (<see cref="SpliceRules.CheckSendRbf"/>, <see cref="SpliceRules.CheckReceiveRbf"/>,
+/// <see cref="SpliceRules.CheckReceiveAckRbf"/>) judge, gathered under the channel's lock (wave SPR).
+/// </summary>
+/// <param name="Channel">The splice facts (<see cref="SpliceConditions.HasUnlockedSplice"/> = a pending splice to
+/// replace; <see cref="SpliceConditions.SpliceNegotiating"/> = a splice or RBF negotiation in progress).</param>
+/// <param name="PendingAttemptCount">The pending attempts of the splice (the original and its RBF siblings).</param>
+/// <param name="LastAttemptFeeratePerKw">The feerate of the last successfully constructed attempt (IT-RBF-01).</param>
+/// <param name="LocalSentSpliceLocked">We sent <c>splice_locked</c> for an attempt (SP-LK-04: no RBF after it).</param>
+/// <param name="RemoteSentSpliceLocked">The peer sent <c>splice_locked</c> for an attempt (its <c>tx_init_rbf</c> is
+/// then a warning and close).</param>
+/// <param name="ZeroconfNegotiated"><c>option_zeroconf</c> is negotiated (no splice RBF at all).</param>
+/// <param name="LastAttemptIsRecent">The last attempt was created "recently" by our policy (BOLT 2: SHOULD
+/// <c>tx_abort</c> a peer's RBF then).</param>
+/// <param name="QuickConfirmationFeeratePerKw">The feerate our fee service deems "high enough to ensure quick
+/// confirmation" (the next-block estimate), or null when unknown; used past
+/// <see cref="SpliceRules.MaxRbfAttemptsAtAnyFeerate"/> attempts.</param>
+/// <param name="MaxRbfAttempts">Our own cap on RBF attempts we start (<c>Splice:MaxRbfAttempts</c>, SPR-T2).</param>
+public sealed record SpliceRbfConditions(
+    SpliceConditions Channel,
+    int PendingAttemptCount,
+    uint LastAttemptFeeratePerKw,
+    bool LocalSentSpliceLocked,
+    bool RemoteSentSpliceLocked,
+    bool ZeroconfNegotiated,
+    bool LastAttemptIsRecent,
+    uint? QuickConfirmationFeeratePerKw,
+    int MaxRbfAttempts);
 
 /// <summary>
 /// What <see cref="SpliceRules.CheckTxComplete"/> judges about a constructed splice transaction (SP-TX-05), from our

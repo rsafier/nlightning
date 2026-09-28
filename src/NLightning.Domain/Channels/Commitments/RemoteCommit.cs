@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Channels.Commitments;
 
+using Bitcoin.ValueObjects;
 using Crypto.ValueObjects;
 using Splicing;
 
@@ -18,6 +19,24 @@ public sealed record RemoteCommit(ulong Number, CommitmentSpec Spec, CompactPubK
     /// log also covers fundings discarded or replaced by a lock in between (SP-I5).
     /// </summary>
     public IReadOnlyList<ChannelFunding>? SignedOnFundings { get; init; }
+
+    /// <summary>
+    /// What the snapshot stores of <see cref="SignedOnFundings"/> (NL-494): the funding txids in order, null when it is
+    /// null. The funding records themselves are the channel's <c>ChannelFundings</c> rows, discarded and replaced ones
+    /// included, so <see cref="WithSignedOnFundings"/> rebuilds the list from the txids at load time.
+    /// </summary>
+    public IReadOnlyList<TxId>? GetSignedOnFundingTxIds() =>
+        SignedOnFundings?.Select(f => f.FundingTxId).ToList();
+
+    /// <summary>
+    /// The commitment with <see cref="SignedOnFundings"/> restored from the stored txids (NL-494;
+    /// <c>IChannelStateDbRepository.LoadAsync</c>): each txid resolved against <paramref name="fundings"/> (every
+    /// funding row of the channel, whatever its status), in the stored order; null txids leave it null.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">A stored txid names no funding of the channel.</exception>
+    public RemoteCommit WithSignedOnFundings(IReadOnlyList<TxId>? fundingTxIds,
+                                             IReadOnlyCollection<ChannelFunding> fundings) =>
+        throw new NotImplementedException("NL-494 (wave spr, the migration owner lane)");
 
     public bool Equals(RemoteCommit? other) =>
         other is not null

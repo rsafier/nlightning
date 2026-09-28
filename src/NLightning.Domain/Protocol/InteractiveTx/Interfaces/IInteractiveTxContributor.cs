@@ -46,4 +46,20 @@ public interface IInteractiveTxContributor
     /// not seen the spend yet (call again on a later block).
     /// </summary>
     Task<bool> ConfirmAsync(InteractiveTxContribution contribution, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns to the wallet the outputs our side added to <paramref name="discarded"/>, a signed attempt (a splice or
+    /// one of its RBF siblings, or a dual-funded open's RBF candidate) that can no longer confirm: the transaction that
+    /// conflicts with it (a commitment of the funding it spends, or the sibling that locked) is irrevocably confirmed
+    /// (NL-492, splicing plan §3.6; SPR-T2 for the siblings of a locked splice). Outputs in
+    /// <paramref name="keptOutpoints"/> (spent by the confirmed transaction, e.g. an input the locked RBF sibling re-added)
+    /// stay reserved. Works from the attempt alone, without the in-memory contribution (after a restart the
+    /// reservation is found by outpoint). Idempotent; returns how many outputs were released. Call it only after the
+    /// conflict is irrevocable: releasing earlier (IT-ABT-01) could hand the outputs to another spend while the
+    /// discarded attempt may still confirm after a reorg.
+    /// </summary>
+    Task<int> ReleaseDiscardedAsync(ConstructedInteractiveTx discarded,
+                                    IReadOnlyCollection<(TxId TxId, uint Vout)> keptOutpoints,
+                                    CancellationToken cancellationToken = default) =>
+        throw new NotImplementedException("NL-492 (wave spr)");
 }

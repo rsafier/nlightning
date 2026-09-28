@@ -61,3 +61,28 @@ public sealed class SpliceOutClientRequest
     /// </summary>
     public SpliceRequest ToSpliceRequest() => new(ChannelId, -checked((long)AmountSat), FeeRatePerKw, Address);
 }
+
+/// <summary>
+/// RBFs a channel's pending splice (<c>ClientCommand.BumpSplice</c>, splicing plan §3.10, wave SPR). DTO shell of the
+/// SPR contracts; the handlers, the CLI and the auto-bump are lane SPR-B's. Answered with a
+/// <c>SpliceClientResponse</c> (the new attempt's txid).
+/// </summary>
+public sealed class BumpSpliceClientRequest
+{
+    public BumpSpliceClientRequest(ChannelId channelId, uint feeRatePerKw)
+    {
+        ChannelId = channelId;
+        FeeRatePerKw = feeRatePerKw;
+    }
+
+    public ChannelId ChannelId { get; }
+
+    /// <summary>The new attempt's feerate, at least max(floor(25/24 x previous), previous + 25) sat/kw.</summary>
+    public uint FeeRatePerKw { get; }
+
+    /// <summary>The most our side may pay for the new attempt, in satoshis, or null for no cap.</summary>
+    public ulong? MaxFeeSat { get; init; }
+
+    /// <summary>The <c>ISpliceService</c> request: our contribution is kept from the latest attempt.</summary>
+    public SpliceBumpRequest ToSpliceBumpRequest() => new(ChannelId, FeeRatePerKw, MaxFeeSat);
+}

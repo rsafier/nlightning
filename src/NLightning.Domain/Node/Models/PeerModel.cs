@@ -20,6 +20,15 @@ public class PeerModel
     public string Type { get; }
     public DateTime LastSeenAt { get; set; }
 
+    /// <summary>
+    /// We know no address to dial this peer at (NL-497, wave spr): it connected to us, from a loopback address (a local
+    /// tunnel, Tor on the same host) or from an ephemeral port, so <see cref="Host"/>/<see cref="Port"/> are only where
+    /// it came from. Such a peer is still saved, so its channels are registered at startup, but it is never dialed
+    /// (not at startup, not by the reconnect loop): we wait for it to connect again. Persisted by the wave's migration
+    /// owner lane.
+    /// </summary>
+    public bool IsInboundOnly { get; init; }
+
     public FeatureSet Features
     {
         get

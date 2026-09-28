@@ -77,4 +77,32 @@ public interface ISpliceService
                                                                       IUnitOfWork unitOfWork,
                                                                       CancellationToken cancellationToken = default) =>
         throw new NotImplementedException("Lane SP2-B (SP2-B-T1, SP-RE-04)");
+
+    /// <summary>
+    /// Bumps the pending splice of <paramref name="channelId"/> by RBF (wave SPR, SPR-T1/T3: <c>bumpsplice</c> and the
+    /// auto-bump): takes the channel's lock itself like <see cref="StartAsync"/>, checks
+    /// <see cref="SpliceRules.CheckSendRbf"/>, requests quiescence (<c>QuiescencePurpose.SpliceRbf</c>), sends
+    /// <c>tx_init_rbf</c> at <paramref name="feeratePerKw"/> and drives the new attempt, which becomes an RBF sibling of
+    /// the pending splice (<see cref="FundingSet.AddRbfSibling"/>) once both <c>tx_signatures</c> are exchanged.
+    /// </summary>
+    /// <param name="channelId">The channel whose pending splice is bumped.</param>
+    /// <param name="feeratePerKw">The new attempt's feerate: at least
+    /// <c>InteractiveTxRbfRules.GetMinimumNextFeerate</c> of the latest attempt (IT-RBF-01).</param>
+    /// <param name="cancellationToken">Cancels the wait.</param>
+    /// <returns>Completes once the new attempt is signed or ended, with where it got (<see cref="SpliceResult.SpliceTxId"/>
+    /// = the new attempt's txid).</returns>
+    /// <exception cref="InvalidOperationException">A rule refuses the bump (no pending splice, <c>splice_locked</c>
+    /// sent, <c>option_zeroconf</c>, feerate too low, too many attempts).</exception>
+    /// <exception cref="KeyNotFoundException">Unknown channel.</exception>
+    Task<SpliceResult> BumpAsync(ChannelId channelId, uint feeratePerKw,
+                                 CancellationToken cancellationToken = default) =>
+        BumpAsync(new SpliceBumpRequest(channelId, feeratePerKw), cancellationToken);
+
+    /// <summary>
+    /// <see cref="BumpAsync(ChannelId, uint, CancellationToken)"/> with the operator's limits and a changed contribution
+    /// (<c>bumpsplice --max-fee-sat</c>, BOLT 2: <c>tx_init_rbf</c> "MAY set <c>funding_output_contribution</c> to a
+    /// different value"; NL-481 for a negative one). Implemented by lane SPR-A.
+    /// </summary>
+    Task<SpliceResult> BumpAsync(SpliceBumpRequest request, CancellationToken cancellationToken = default) =>
+        throw new NotImplementedException("Lane SPR-A (SPR-T1, NL-489)");
 }
