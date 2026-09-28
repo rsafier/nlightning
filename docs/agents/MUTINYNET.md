@@ -241,7 +241,9 @@ machine:
   build `988bbde` (migration `AddGraphFundingTxId`) to `d5d8b184` and then `91591787`: nine migrations up to
   `AddSpliceHardening`, the faucet channel `3458334x7x0` reestablished at the recorded commitment numbers. Its
   `appsettings.json` now has the day-0 feature block (`AllowExperimentalFeatures`, `OptionQuiesce`/`OptionSplice`/
-  `DualFund` Optional, `Node:DualFund`) and `Splice:MinRbfInterval` 5 s; the pre-upgrade file is
+  `DualFund` Optional, `Node:DualFund`) and `Splice:MinRbfInterval` 5 s (kept after D13/NL-520: on a D13 build the
+  feature keys are the defaults and `MinRbfInterval` stays a supported override that replaces the one-block rule;
+  see `DAY0_RUNBOOK.md` §1); the pre-upgrade file is
   `appsettings.json.pre-day0` and the cold backup `backup-20260928T053808Z/`. The soak's old staged build was moved
   to `soak/bin-988bbde-retired`; the gossip soak no longer runs this node.
 - **NLightningFAFO2** (`~/.nltg/mutinynet-fafo2`, node id
