@@ -95,7 +95,7 @@ Requirement IDs are used by the tasks and by the traceability matrix (§6).
 | OM-S-05 | To use a blinded path it was given, the sender builds unblinded hops up to the introduction node. It encrypts the first blinded hop to the first `blinded_node_id` and sets `next_path_key_override = first_path_key` in the previous hop's payload, which it built itself |
 | OM-S-06 | Final hop: set `reply_path` only if a reply is allowed; the creator MAY put a secret in `path_id`. Without a reply allowed, MUST NOT set `reply_path` |
 | OM-S-07 | SHOULD retry through a different path when an expected reply does not come |
-| OM-S-08 | Route-blinding creator rules (M5): SHOULD pad all `encrypted_recipient_data` to the same length, and MAY add dummy hops (not done, §0) |
+| OM-S-08 | Route-blinding creator rules (M5): SHOULD pad all `encrypted_recipient_data` to the same length, and MAY add dummy hops (payment paths since NL-440; message paths not done, NL-525) |
 
 ### 1.3 Reader (every node)
 | ID | Requirement |
@@ -461,7 +461,7 @@ Deviations from this plan (spec wins):
 - The codec file is `SciddirOrPubkeyCodec.cs`; `SciddirOrPubkey.cs` is M6-0's record.
 - A message path may carry both `next_node_id` and `short_channel_id`; `next_node_id` wins (BOLT 4 onion-message reader). M5's payment validator refuses that case, so the rule sets differ on purpose.
 - `payment_relay`/`payment_constraints` in a message path are accepted and ignored by the reader (§3.2 step 5); the writer refuses them.
-- A forward to ourselves is dropped as `loop` rather than processed as a dummy hop (our paths have no dummy hops).
+- A forward to ourselves is dropped as `loop` rather than processed as a dummy hop (our message paths have no dummy hops; payment paths have them since NL-440, message paths are NL-525).
 - D7 relaxed: the reply path's introduction node is a connected onion-message peer with an open channel first, then any connected onion-message peer, then us, so channelless topologies (the CLN proof) work.
 - A malformed 513 still takes the NL-207 warning-and-close path (NL-444; fixed in wave lh1, 8035c63b: ignored and counted).
 - The rate-limit values beyond §3.4 were chosen by lane M6-C (NL-446).
