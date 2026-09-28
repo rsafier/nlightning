@@ -274,6 +274,16 @@ machine:
   sat) kept as the reference for the rehearsal with Nick, and FAFO's faucet channel `3458334x7x0`. The pass-1
   channel `a83a746a...73e6` was closed cooperatively
   (`b078b3cb813007a8932f50784ff3a97ac705e3bb13b48240fed54aa97d320be6`).
+- **Dry run 2 on .NET 11 (2026-09-28, 16:33-17:03 UTC).** Both nodes were upgraded in place to `2a209a5e`
+  published self-contained for `net11.0` (osx-arm64, runtime 11.0.0-rc.1; `<dir>/bin-2a209a5e-net11`, each
+  `bin-current`, so `nodectl` and the CLI wrappers are unchanged), migration `AddDualFundAttempts` applied at start,
+  every channel reestablished with unchanged balances. Both configs lost `AllowExperimentalFeatures` and got
+  `Node:DualFund:AllowRbf=true` (it was `false`). The §2.2 script passed again with a new dual-funded public channel
+  `b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4` whose open was RBF'd by FAFO and then by FAFO2
+  (`bumpopen`), spliced in, out, in twice across a restart of each node and RBF-bumped (`bumpsplice`), final SCID
+  `3463315x4x1` (459,816 sat); a first dual-funded channel `f20939f0...` (`3463271x11x0`, 350,000 sat) could not be
+  bumped because `openchannel` returns only at `channel_ready` (NL-535) and stays open. Details in `DAY0_RUNBOOK.md`
+  §5 "Mutinynet dry run 2" and `run2_net11` in `day0-mutinynet-dryrun.json`.
 
 ## Known gaps
 

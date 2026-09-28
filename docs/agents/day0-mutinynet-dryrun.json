@@ -1355,5 +1355,1184 @@
   "NL-518": "low, open (splice mempool warning)",
   "NL-519": "low, fixed 8e852a18 (txids in logs)"
  },
- "transactions_verified_with": "~/mutinynet/cli.sh getrawtransaction <txid> true (confirmed ones; fee from the prevouts, height from getblockheader); the two replaced RBF attempts via decoderawtransaction of the nodes' BroadcastTransactions rows"
+ "transactions_verified_with": "~/mutinynet/cli.sh getrawtransaction <txid> true (confirmed ones; fee from the prevouts, height from getblockheader); the two replaced RBF attempts via decoderawtransaction of the nodes' BroadcastTransactions rows",
+ "run2_net11": {
+  "title": "Mutinynet dry run 2 on the .NET 11 build (DAY0_RUNBOOK.md \u00a72.2, \u00a75)",
+  "date": "2026-09-28",
+  "build": {
+   "commit": "2a209a5ed9ce517ecf88c66161c5fe4e76542456",
+   "branch": "wip/fafo",
+   "target": "net11.0, dotnet publish -c Release -r osx-arm64 --self-contained true (SDK 11.0.100-rc.1.26425.128, Microsoft.NETCore.App 11.0.0-rc.1.26425.128)",
+   "staged": "~/.nltg/mutinynet/bin-2a209a5e-net11 and ~/.nltg/mutinynet-fafo2/bin-2a209a5e-net11 (daemon/, client/, commit, runtime), each node's bin-current",
+   "previous": "dbbcba28 on net10.0 (framework-dependent), bin-dbbcba28 kept for rollback"
+  },
+  "config_changes": "both appsettings.json: Node:Features:AllowExperimentalFeatures removed (D13 defaults), Node:DualFund:AllowRbf false -> true (the first run's configs had it false, which refuses bumpopen); Splice:MinRbfInterval 00:00:05 kept; previous files appsettings.json.pre-net11",
+  "window": "2026-09-28T16:33:11Z..17:03:25Z",
+  "channel_id": "b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4",
+  "channels_opened": {
+   "f20939f0c87038c0aec6c2de0587d20dd93b2acc2d6f40b1393a64cc1958e51c": "P2-1a, no RBF, 3463271x11x0, 350,000 sat, kept open",
+   "b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4": "P2-1, RBF by both sides, then every splice; 3463315x4x1, 459,816 sat"
+  },
+  "stages": [
+   {
+    "stage": "U0 upgrade in place to the .NET 11 build",
+    "proves": "both nodes stopped with nodectl, cold backups, bin-current switched to the self-contained net11.0 build, migration AddDualFundAttempts applied at start, every open channel reestablished with unchanged balances and commitment numbers, gossip synced",
+    "start_utc": "2026-09-28T16:33:11Z",
+    "end_utc": "2026-09-28T16:34:53Z",
+    "commands": [
+     "~/day0/nodectl fafo2 stop; ~/day0/nodectl fafo stop",
+     "sqlite3 <dir>/nltg.db \".backup <dir>/backup-20260928T163311Z/nltg.db\" (+ nltg.key.json, appsettings.json, channel.backup, SHA256SUMS)",
+     "jq 'del(.Node.Features.AllowExperimentalFeatures) | .Node.DualFund.AllowRbf = true' (both configs; previous file appsettings.json.pre-net11)",
+     "ln -sfn <dir>/bin-2a209a5e-net11 <dir>/bin-current (both)",
+     "~/day0/nodectl fafo2 start; ~/day0/nodectl fafo start",
+     "~/day0/u listchannels; ~/day0/n listchannels; ~/day0/u describegraph; ~/day0/u chainstatus",
+     "~/day0/u payinvoice \"$(scripts/mutinynet/faucet.sh invoice 1000)\""
+    ],
+    "transactions": [],
+    "results": {
+     "last_migration_before": "20260928024953_AddSpliceHardening",
+     "migrations_applied": [
+      "20260928133020_AddDualFundAttempts"
+     ],
+     "stopped": "16:33:11Z",
+     "started": "16:33:35Z (both)",
+     "reestablished": "faucet 3458334x7x0 at 16:33:38Z (19/19, FAFO 196,003,007 msat, as before); FAFO-FAFO2 3462164x1x0 at 16:33:43Z (16/16, 335,001,002 / 114,814,998 msat, as before)",
+     "runtime_proof": "lsof of both daemon pids: libcoreclr.dylib and System.Private.CoreLib.dll loaded from <dir>/bin-2a209a5e-net11/daemon/ (self-contained publish); that CoreLib is 11.0.0-rc.1.26425.128+3551975be08744f0418857c5bed8ab1545c5dd47; NLightning.Daemon.runtimeconfig.json: tfm net11.0, includedFrameworks Microsoft.NETCore.App 11.0.0-rc.1.26425.128",
+     "gossip": "describegraph: 900 channels, 282 nodes, initial sync complete, both peers sync peers",
+     "upgrade_check_payment": {
+      "hash": "d09556c1354cb51f31e484850062b7e2faf0c1a5c319f2495f44c9534e1382e3",
+      "amount_sat": 1000,
+      "direction": "FAFO -> faucet LND hub",
+      "first_hop_or_forward": "0c8daa69... (3458334x7x0)"
+     },
+     "cold_backup_sha256": {
+      "FAFO nltg.db": "f9d632219de8ee89436664698c5a2cb16aca6a83554f924bc6e4b36866f0b4e4",
+      "FAFO2 nltg.db": "5679107dfacb85159638a9febb16b730bd1a70501433af85b54e8ef36ca5ee01"
+     }
+    },
+    "backups": {
+     "n11-00-upgrade-u.backup": {
+      "node": "FAFO",
+      "sha256": "429fae50142cb5b69d1f362557277150a069fda7416b5e6d30528438eb2be4a9",
+      "verifychanbackup": "valid"
+     },
+     "n11-00-upgrade-n.backup": {
+      "node": "FAFO2",
+      "sha256": "48004fbd1a5ee4d8c8be48a1fa7f256b7861eecee289daf48323236de07e9cdc",
+      "verifychanbackup": "valid"
+     }
+    }
+   },
+   {
+    "stage": "P2-1a dual-funded public open (no RBF)",
+    "proves": "v2 open on the net11 build, both contribute, announced at 6 confirmations; `openchannel` blocks until channel_ready, so bumpopen from the same shell comes too late (NL-535)",
+    "start_utc": "2026-09-28T16:35:38Z",
+    "end_utc": "2026-09-28T16:39:03Z",
+    "commands": [
+     "~/day0/u openchannel 02c8416ac6ac57fccb5a39dfe7324dcc4677dbb03c99798e1eab1090c1202d2431@127.0.0.1:9736 200000 --public --dual-fund",
+     "~/day0/u bumpopen f20939f0c87038c0aec6c2de0587d20dd93b2acc2d6f40b1393a64cc1958e51c 1000   (after the CLI returned: refused, channel_ready exchanged)"
+    ],
+    "transactions": [
+     "79760d18e1ffc92596f89f567a5d886e1c753fb2540d20c7aee4beb99be33ee1"
+    ],
+    "results": {
+     "channel_id": "f20939f0c87038c0aec6c2de0587d20dd93b2acc2d6f40b1393a64cc1958e51c",
+     "funding_outpoint": "79760d18e1ffc92596f89f567a5d886e1c753fb2540d20c7aee4beb99be33ee1:0",
+     "scid": "3463271x11x0",
+     "capacity_sat": 350000,
+     "broadcast": "16:35:38Z",
+     "mined": "3463271 (16:36:26Z)",
+     "open_confirmed_by": "16:37:30Z (depth 3)",
+     "announced": "16:39:03Z (both nodes)",
+     "balance_after": {
+      "FAFO_msat": 200000000,
+      "FAFO2_msat": 150000000
+     },
+     "note": "kept open: closing it was not authorised in this run (the lead allowed only the old day-0 channel to be closed, and only if the runbook closes it)"
+    },
+    "backups": {
+     "n11-01-open-u.backup": {
+      "node": "FAFO",
+      "sha256": "82a73f1d1007a48ff429314607d8d0a3a881eb9bbd20bb50a7cf80160e198318",
+      "verifychanbackup": "valid"
+     },
+     "n11-01-open-n.backup": {
+      "node": "FAFO2",
+      "sha256": "ad2353041db9a217bf7417b45623d413c1477ceac947cfdd8ba03709f553ae77",
+      "verifychanbackup": "valid"
+     }
+    }
+   },
+   {
+    "stage": "P2-1 dual-funded public open with opener and accepter RBF",
+    "proves": "bumpopen by the opener (FAFO) and then by the accepter (FAFO2, NL-530) before the first confirmation; each attempt replaces the previous one in the mempool, both nodes follow every attempt, the last (the accepter's) confirms and is announced; the losing attempts are marked Replaced",
+    "start_utc": "2026-09-28T16:42:25Z",
+    "end_utc": "2026-09-28T16:45:32Z",
+    "commands": [
+     "~/day0/u withdraw tb1qvr9a7rp7540gxawu0dxxjn3lhjdaw9ungf0rcs 250000   (16:39:47Z, FAFO2's contribution; waited for 4 confirmations)",
+     "~/mutinynet/cli.sh waitfornewblock",
+     "~/day0/u openchannel 02c8416ac6ac57fccb5a39dfe7324dcc4677dbb03c99798e1eab1090c1202d2431@127.0.0.1:9736 200000 --public --dual-fund &   (background)",
+     "~/day0/u bumpopen b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 1000",
+     "~/day0/n bumpopen b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 1500",
+     "~/mutinynet/cli.sh getrawmempool"
+    ],
+    "transactions": [
+     "e8a46402f190ed12bfd7c65ce3ca286edc48f03123539329711748e7477161e3",
+     "22fb4544f2ee1eca4a9bcddb4f70a884721033507d420ac6301786e4663593ba",
+     "9be7406b747aa207b439b5e5cda78a3a699f770f030c5f085e5ba032fc55527d",
+     "f54cf06aa89d94e9327a302efa133564a60d5a4d6de8c9dc60c984cc6831bf77"
+    ],
+    "results": {
+     "channel_id": "b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4",
+     "T0": "22fb4544... 253 sat/kw 16:42:25Z (FAFO initiator)",
+     "T1": "9be7406b... 1,000 sat/kw 16:42:26Z (FAFO bumpopen, opener)",
+     "T2": "f54cf06a... 1,500 sat/kw 16:42:26Z (FAFO2 bumpopen, accepter as interactive-tx initiator; fee 1,917 sat, 319 vB)",
+     "mempool_after_bumps": "only T2 (T0 and T1 unknown to bitcoind)",
+     "mined": "T2 in 3463283 at 16:42:56Z; T0 and T1 marked Replaced by both chain monitors",
+     "open_confirmed_by": "16:43:57Z (depth 3; openchannel returned \"Channel is now open!\")",
+     "scid": "3463283x1x0",
+     "capacity_sat": 350000,
+     "announced": "16:45:32Z (both nodes)",
+     "balance_after": {
+      "FAFO_msat": 200000000,
+      "FAFO2_msat": 150000000
+     },
+     "cli_note": "the background openchannel printed the funding of T1 and T2 but never T0 (NL-535)"
+    },
+    "backups": {
+     "n11-01b-rbfopen-u.backup": {
+      "node": "FAFO",
+      "sha256": "7236e356b4bcb0a54c788a2dc0bfcfcb17d86866ccefca123c7659531fda88b4",
+      "verifychanbackup": "valid"
+     },
+     "n11-01b-rbfopen-n.backup": {
+      "node": "FAFO2",
+      "sha256": "d8abb19842f50f2fe33ee599dde1e83e5051a9c8ee0f2d2063b7a6868486bceb",
+      "verifychanbackup": "valid"
+     }
+    }
+   },
+   {
+    "stage": "P2-2 payments both ways and through the hub",
+    "proves": "HTLCs both directions between the nodes and forwarding by FAFO to and from the faucet hub; with three FAFO-FAFO2 channels the sender picks the direct channel with the most outbound, so not every payment takes the new one",
+    "start_utc": "2026-09-28T16:45:50Z",
+    "end_utc": "2026-09-28T16:46:03Z",
+    "commands": [
+     "~/day0/n createinvoice 20000000 \"n11 u->n\"; ~/day0/u payinvoice <bolt11>",
+     "~/day0/u createinvoice 10000000 \"n11 n->u\"; ~/day0/n payinvoice <bolt11>",
+     "~/day0/n payinvoice \"$(scripts/mutinynet/faucet.sh invoice 2000)\"",
+     "~/day0/n createinvoice 2000000 \"n11 faucet->n\"; scripts/mutinynet/faucet.sh withdraw <bolt11>"
+    ],
+    "transactions": [],
+    "results": {
+     "payments": [
+      {
+       "hash": "fe9266b99a71d4224b0cce58ddb8ee2961c268568e071db97d98afdb8044f118",
+       "amount_sat": 20000,
+       "direction": "FAFO -> FAFO2",
+       "first_hop_or_forward": "fede6471... (the old day-0 channel)"
+      },
+      {
+       "hash": "3968545db6af8b25cc68120eab14df6ac0259e740870a186d35deac1c4ef2aa0",
+       "amount_sat": 10000,
+       "direction": "FAFO2 -> FAFO",
+       "first_hop_or_forward": "b78b95b7... (new channel)"
+      },
+      {
+       "hash": "c9f20fbee11dc70c19aa30d1da229147759e25fe2356d3e7c2e2296ba10ff681",
+       "amount_sat": 2000,
+       "direction": "FAFO2 -> FAFO -> faucet LND hub (fee 1,002 msat)",
+       "first_hop_or_forward": "fede6471..."
+      },
+      {
+       "hash": "e8c163c75a75b7e4fa187734371306532bbed66565a4797cfc7218fd57ab90af",
+       "amount_sat": 2000,
+       "direction": "faucet LND hub -> FAFO -> FAFO2 (LNURL-withdraw)",
+       "first_hop_or_forward": "forwarded over b78b95b7... (3463283x1x0)"
+      }
+     ],
+     "balance_after": {
+      "FAFO_msat": 208000000,
+      "FAFO2_msat": 142000000
+     }
+    },
+    "backups": {
+     "n11-02-pay-u.backup": {
+      "node": "FAFO",
+      "sha256": "3754dffbf9dce067e102cd7717c25222ecdb85bce4ada8ca4be7efb92b71873d",
+      "verifychanbackup": "valid"
+     },
+     "n11-02-pay-n.backup": {
+      "node": "FAFO2",
+      "sha256": "850fd1784baabfcf4e38e524c271466870c4a943387540c7094fd5af274459e7",
+      "verifychanbackup": "valid"
+     }
+    }
+   },
+   {
+    "stage": "P2-3 FAFO splices in 100,000 sat",
+    "proves": "splice-in with a wallet input on a channel whose funding was RBF'd by both sides, lock at depth 3, new SCID announced at depth 6, old SCID retired for 72 blocks",
+    "start_utc": "2026-09-28T16:46:15Z",
+    "end_utc": "2026-09-28T16:49:24Z",
+    "commands": [
+     "~/day0/u splicein b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 100000 --feerate 253",
+     "~/day0/u listchannels; ~/day0/n listchannels",
+     "~/day0/u createinvoice 1000000 ...; ~/day0/n payinvoice <bolt11>   (while pending)"
+    ],
+    "transactions": [
+     "e525de6b77796f658e844e1688330bd960d76774c3acceef0751ebd8543f00ee"
+    ],
+    "results": {
+     "scid_before": "3463283x1x0",
+     "scid_after": "3463290x10x1",
+     "capacity_after_sat": 450000,
+     "mined": 3463290,
+     "locked": "16:47:52Z",
+     "announced": "16:49:24Z",
+     "retired": "3463283x1x0 at 3463290, resolves until 3463362",
+     "payment_while_pending": {
+      "hash": "5a50761e6fd4883b92ff00d96b5bc17c61705082656fa801d12d8cdb41a597f4",
+      "amount_sat": 1000,
+      "direction": "FAFO2 -> FAFO",
+      "first_hop_or_forward": "f20939f0... (not the splicing channel)"
+     },
+     "balance_after": {
+      "FAFO_msat": 308000000,
+      "FAFO2_msat": 142000000
+     }
+    },
+    "backups": {
+     "n11-03-splicein-u.backup": {
+      "node": "FAFO",
+      "sha256": "3df04a3cb88935c60c31f0c9a092fc4e19346deefa8545875dca36a1d78645a5",
+      "verifychanbackup": "valid"
+     },
+     "n11-03-splicein-n.backup": {
+      "node": "FAFO2",
+      "sha256": "81d9b27f75c05c0b0707161c3e479103467521dc03aebf0834743d761c689cd1",
+      "verifychanbackup": "valid"
+     }
+    }
+   },
+   {
+    "stage": "P2-4 FAFO2 splices out 50,000 sat to a FAFO address",
+    "proves": "splice-out paying an external address, fee from the splicer's channel balance, amount received on chain, new SCID announced",
+    "start_utc": "2026-09-28T16:49:36Z",
+    "end_utc": "2026-09-28T16:52:47Z",
+    "commands": [
+     "~/day0/u getaddress p2wpkh   (tb1q4cvd2r4jv6vhzpep5ypzna46kta24hztzhdvlg)",
+     "~/day0/n spliceout b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 50000 --address tb1q4cvd2r4jv6vhzpep5ypzna46kta24hztzhdvlg --feerate 253"
+    ],
+    "transactions": [
+     "35154edcf5ac73cd95394a1a5554fbd4a7b146e7eeaf875de66aa057fd38022f"
+    ],
+    "results": {
+     "splice_out_output": "35154edcf5ac73cd95394a1a5554fbd4a7b146e7eeaf875de66aa057fd38022f:1, 50,000 sat to tb1q4cvd2r4jv6vhzpep5ypzna46kta24hztzhdvlg (FAFO wallet)",
+     "scid_before": "3463290x10x1",
+     "scid_after": "3463296x6x0",
+     "capacity_after_sat": 399816,
+     "mined": 3463296,
+     "locked": "16:50:57Z",
+     "announced": "16:52:47Z",
+     "balance_after": {
+      "FAFO_msat": 308000000,
+      "FAFO2_msat": 91816000
+     }
+    },
+    "backups": {
+     "n11-04-spliceout-u.backup": {
+      "node": "FAFO",
+      "sha256": "042c32842b7ac76019bd8eb6ff30194169b8e1117781885e5f61f71b8ac7dc15",
+      "verifychanbackup": "valid"
+     },
+     "n11-04-spliceout-n.backup": {
+      "node": "FAFO2",
+      "sha256": "6d3e0d249096b928495203f924ce81b62b8d2d63d830a038614e3c68632c0809",
+      "verifychanbackup": "valid"
+     }
+    }
+   },
+   {
+    "stage": "P2-5 restart drill: FAFO2 stopped mid-splice",
+    "proves": "a node stopped with a signed, unconfirmed splice resumes it after 3 blocks: channel_reestablish (my_current_funding_locked taken as splice_locked), lock completes, every channel back",
+    "start_utc": "2026-09-28T16:52:56Z",
+    "end_utc": "2026-09-28T16:55:31Z",
+    "commands": [
+     "~/day0/u splicein b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 20000 --feerate 253",
+     "~/day0/nodectl fafo2 stop   (16:52:56Z, SIGTERM, 1 s)",
+     "(3 blocks: 3463301 -> 3463304)",
+     "~/day0/nodectl fafo2 start   (16:54:20Z)"
+    ],
+    "transactions": [
+     "d8ea5114dec4163c4a06af4f0d8446f25471cd65e6bf6c16c888f9210eb51f3c"
+    ],
+    "results": {
+     "reconnect": "FAFO's backoff redialed at 16:55:31Z (71 s after the start; FAFO2 never dials FAFO)",
+     "scid_before": "3463296x6x0",
+     "scid_after": "3463302x13x0",
+     "capacity_after_sat": 419816,
+     "mined": 3463302,
+     "locked": "16:55:31Z (FAFO2 at its restart saw the depth, FAFO's splice_locked came in channel_reestablish)",
+     "announced": "never: replaced by the P2-5b lock before its 6th confirmation",
+     "balance_after": {
+      "FAFO_msat": 328000000,
+      "FAFO2_msat": 91816000
+     }
+    },
+    "backups": {
+     "n11-05-restart-n-u.backup": {
+      "node": "FAFO",
+      "sha256": "24f2ef9c5e1bf98f75ff2245937b1a743db51a3e77818047c011ab18bd3fc145",
+      "verifychanbackup": "valid"
+     },
+     "n11-05-restart-n-n.backup": {
+      "node": "FAFO2",
+      "sha256": "460799aac3b02535fef467d70cf3df5d01d310fcd97c9dfcd8b631523c3e25d9",
+      "verifychanbackup": "valid"
+     }
+    }
+   },
+   {
+    "stage": "P2-5b restart drill: FAFO stopped mid-splice (FAFO2 splices in)",
+    "proves": "the other node restarted across a pending splice started by the accepter side; FAFO dials on start and every channel (faucet included) reestablishes at once",
+    "start_utc": "2026-09-28T16:55:51Z",
+    "end_utc": "2026-09-28T16:57:30Z",
+    "commands": [
+     "~/day0/n splicein b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 10000 --feerate 253",
+     "~/day0/nodectl fafo stop   (16:55:51Z)",
+     "(3 blocks: 3463307 -> 3463310)",
+     "~/day0/nodectl fafo start   (16:57:28Z)"
+    ],
+    "transactions": [
+     "8e60b4787eeb59e82a0c0cb48c1e3cc2f9adde7087c98b1b3cbb497e17aad259"
+    ],
+    "results": {
+     "reestablished": "all four channels at 16:57:30Z (2 s after the start)",
+     "scid_before": "3463302x13x0",
+     "scid_after": "3463308x9x0",
+     "capacity_after_sat": 429816,
+     "mined": 3463308,
+     "locked": "16:57:30Z",
+     "announced": "16:59:13Z",
+     "balance_after": {
+      "FAFO_msat": 328000000,
+      "FAFO2_msat": 101816000
+     }
+    },
+    "backups": {
+     "n11-05b-restart-u-u.backup": {
+      "node": "FAFO",
+      "sha256": "bc227a160160d440516e8a286408404c90ce9f5ed5df8f57ae783ff8168b0c58",
+      "verifychanbackup": "valid"
+     },
+     "n11-05b-restart-u-n.backup": {
+      "node": "FAFO2",
+      "sha256": "0277d4349c3a1b94b8d20dcb6f66012f8294f186e047031d91a6dbc2c214ba4e",
+      "verifychanbackup": "valid"
+     }
+    }
+   },
+   {
+    "stage": "P2-6 setchannelpolicy",
+    "proves": "a per-channel policy change is signed, sent as channel_update and seen by the peer's graph",
+    "start_utc": "2026-09-28T16:57:51Z",
+    "end_utc": "2026-09-28T16:59:13Z",
+    "commands": [
+     "~/day0/u setchannelpolicy b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 --htlc-max-msat 150000000",
+     "~/day0/u getchannelpolicy b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4",
+     "~/day0/n listgraphchannels 3463308x9x0",
+     "curl https://mutinynet.com/api/v1/lightning/search?searchText=3463315x4x1, then /api/v1/lightning/channels/<id>"
+    ],
+    "transactions": [],
+    "results": {
+     "htlc_maximum_msat_before": 280000000,
+     "htlc_maximum_msat_after": 150000000,
+     "seen_by_peer": "FAFO2's graph: Policy 2 -> 1 htlc 1000-150000000 msat, updated 16:59:13Z",
+     "seen_by_network": "mutinynet.com lists 3463315x4x1 (459,816 sat, active) with both policies at 17:12Z (10 min after its announcement), NLightningFAFO max_htlc 150,000,000 msat, NLightningFAFO2 160,000,000; 3463271x11x0 listed by 17:03Z"
+    },
+    "backups": {
+     "n11-06-policy-u.backup": {
+      "node": "FAFO",
+      "sha256": "f99c7d99f3654e87c5d3d432c9b87bbedbdc1cd717e33975961c3224d6913569",
+      "verifychanbackup": "valid"
+     },
+     "n11-06-policy-n.backup": {
+      "node": "FAFO2",
+      "sha256": "95e9f6452224fe26f6fd99d490590e579222cee48a1ffc649d1db98a0006250c",
+      "verifychanbackup": "valid"
+     }
+    }
+   },
+   {
+    "stage": "P2-6b splice RBF drill",
+    "proves": "bumpsplice replaces the first attempt in the mempool, both nodes list both attempts, a payment over the channel while both are pending, only the bump confirms and locks, the first is Abandoned",
+    "start_utc": "2026-09-28T16:59:43Z",
+    "end_utc": "2026-09-28T17:02:48Z",
+    "commands": [
+     "~/day0/u splicein b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 30000 --feerate 253",
+     "sleep 6",
+     "~/day0/u bumpsplice b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 1000",
+     "~/day0/u payinvoice <bolt11>; ~/day0/n payinvoice <bolt11>   (tip unchanged, 3463314)",
+     "~/day0/u listchannels; ~/day0/n listchannels"
+    ],
+    "transactions": [
+     "f4689a94e6dd283f07dccf678314fc69eb8ac13e28a88e32cddcb66d309ea058",
+     "79fd98aea79c2c349615741350b79a092c130d2a3d1e795c2a564ad43f495563"
+    ],
+    "results": {
+     "T1": "f4689a94... 253 sat/kw 16:59:43Z, left the mempool when T2 arrived, refused rebroadcasts logged as ERR (NL-534) until Abandoned at 17:01:46Z",
+     "T2": "79fd98ae... 1,003 sat/kw (bumpsplice asked 1,000) 16:59:50Z, mined in 3463315, locked 17:01:15Z",
+     "both_listed": "Pending (Splice) f4689a94...:0 and Pending (SpliceRbf) 79fd98ae...:1 on both nodes",
+     "payments_while_pending": [
+      {
+       "hash": "2ff32573e7bdf1494b7b7fd3e86a59d3aca29602bfb02014c546b3647461b0f3",
+       "amount_sat": 3000,
+       "direction": "FAFO -> FAFO2",
+       "first_hop_or_forward": "fede6471..."
+      },
+      {
+       "hash": "1407c6f93ea61a4cd86946018a12826ca2c645f7353d870dee79b61c6ac267c4",
+       "amount_sat": 2000,
+       "direction": "FAFO2 -> FAFO",
+       "first_hop_or_forward": "f20939f0..."
+      },
+      {
+       "hash": "c39816d534ce4aa4d7d468ffbb372403c457a0fd89cb45885bbe4c0f70fbbd8f",
+       "amount_sat": 160000,
+       "direction": "FAFO -> FAFO2",
+       "first_hop_or_forward": "fede6471...",
+       "note": "moved FAFO's outbound so the next payment takes the splicing channel"
+      },
+      {
+       "hash": "41b218774e06c83032bc4ba456b8a99ea03ab930d1c72f6e4f8f41597b0fddbb",
+       "amount_sat": 3000,
+       "direction": "FAFO -> FAFO2",
+       "first_hop_or_forward": "b78b95b7... #1, signed on both pending attempts (17:00:06Z, tip 3463314)"
+      }
+     ],
+     "scid_before": "3463308x9x0",
+     "scid_after": "3463315x4x1",
+     "capacity_after_sat": 459816,
+     "announced": "17:02:48Z",
+     "balance_after": {
+      "FAFO_msat": 355000000,
+      "FAFO2_msat": 104816000
+     }
+    },
+    "backups": {
+     "n11-06b-rbf-u.backup": {
+      "node": "FAFO",
+      "sha256": "c77f12f3ac7ec45f91bc87c2adcb138b12303586d2ba439e253645e976a01e8f",
+      "verifychanbackup": "valid"
+     },
+     "n11-06b-rbf-n.backup": {
+      "node": "FAFO2",
+      "sha256": "b675751b7aaf2bcda5d0403d3811f65287588fc7c3a6418e3d0a3f7ffb53728c",
+      "verifychanbackup": "valid"
+     }
+    }
+   },
+   {
+    "stage": "P2-7 hub routes to FAFO2 through FAFO",
+    "proves": "third-party payments (faucet LND hub) forwarded by FAFO to FAFO2 after the splices; the hub chose the path (f20939f0's 3463271x11x0 both times; mutinynet.com had not indexed 3463315x4x1 yet)",
+    "start_utc": "2026-09-28T17:02:54Z",
+    "end_utc": "2026-09-28T17:03:25Z",
+    "commands": [
+     "~/day0/n createinvoice 3000000 ...; scripts/mutinynet/faucet.sh withdraw <bolt11>   (NoRoute: the hub's side of the faucet channel, 4,995,991 msat, minus its 2,000 sat reserve was below 3,000 sat)",
+     "~/day0/n createinvoice 2000000 ...; scripts/mutinynet/faucet.sh withdraw <bolt11>",
+     "~/day0/u payinvoice \"$(scripts/mutinynet/faucet.sh invoice 5000)\"",
+     "~/day0/n createinvoice 3000000 ...; scripts/mutinynet/faucet.sh withdraw <bolt11>"
+    ],
+    "transactions": [],
+    "results": {
+     "payments": [
+      {
+       "hash": "d6efe026fc1611ef68d1f01fe97eac86ed568b89dbd21178060492984dcb74fe",
+       "amount_sat": 3000,
+       "direction": "faucet LND hub -> FAFO -> FAFO2",
+       "first_hop_or_forward": "-",
+       "note": "FailureReasonNoRoute at the hub: its side of the faucet channel minus its reserve was below 3,000 sat"
+      },
+      {
+       "hash": "75e24bdf6134048550657dd13c0d00ad95eb14d2709b48101d0858f4d130c5db",
+       "amount_sat": 2000,
+       "direction": "faucet LND hub -> FAFO -> FAFO2",
+       "first_hop_or_forward": "forwarded over f20939f0... (3463271x11x0)"
+      },
+      {
+       "hash": "a7a7bef6eef4cf7df259f65a7eb67890dba47df5063d64e46310221cc20b465d",
+       "amount_sat": 5000,
+       "direction": "FAFO -> faucet LND hub",
+       "first_hop_or_forward": "0c8daa69..."
+      },
+      {
+       "hash": "9a6f3e4ffd773d2ce9e64cc941d9679b4d980649dd953b09b890eadb072201f5",
+       "amount_sat": 3000,
+       "direction": "faucet LND hub -> FAFO -> FAFO2",
+       "first_hop_or_forward": "forwarded over f20939f0... (3463271x11x0)"
+      }
+     ]
+    },
+    "backups": {}
+   }
+  ],
+  "scid_history": [
+   {
+    "scid": "3463283x1x0",
+    "capacity_sat": 350000,
+    "funding": "f54cf06a...:0",
+    "status": "retired at 3463290"
+   },
+   {
+    "scid": "3463290x10x1",
+    "capacity_sat": 450000,
+    "funding": "e525de6b...:1",
+    "status": "retired at 3463296"
+   },
+   {
+    "scid": "3463296x6x0",
+    "capacity_sat": 399816,
+    "funding": "35154edc...:0",
+    "status": "retired at 3463302"
+   },
+   {
+    "scid": "3463302x13x0",
+    "capacity_sat": 419816,
+    "funding": "d8ea5114...:0",
+    "status": "retired at 3463308, never announced"
+   },
+   {
+    "scid": "3463308x9x0",
+    "capacity_sat": 429816,
+    "funding": "8e60b478...:0",
+    "status": "retired at 3463315"
+   },
+   {
+    "scid": "3463315x4x1",
+    "capacity_sat": 459816,
+    "funding": "79fd98ae...:1",
+    "status": "current (open, public)"
+   }
+  ],
+  "final_state": {
+   "at": "2026-09-28T17:04Z",
+   "channels": [
+    {
+     "channel_id": "0c8daa6911e26a307473fe0c59e16dd1dc773a0cd44a3745494af8ba422a4812",
+     "scid": "3458334x7x0",
+     "peer": "faucet LND hub",
+     "capacity_sat": 200000,
+     "FAFO_msat": 195006014,
+     "hub_msat": 4993986,
+     "commitments": "31/31"
+    },
+    {
+     "channel_id": "fede6471bad5b816c1845c331ecd2e2313db50bf953de743f7b01f9476720b47",
+     "scid": "3462164x1x0",
+     "capacity_sat": 449816,
+     "FAFO_msat": 154002004,
+     "FAFO2_msat": 295813996,
+     "commitments": "24/24"
+    },
+    {
+     "channel_id": "f20939f0c87038c0aec6c2de0587d20dd93b2acc2d6f40b1393a64cc1958e51c",
+     "scid": "3463271x11x0",
+     "capacity_sat": 350000,
+     "FAFO_msat": 198000000,
+     "FAFO2_msat": 152000000,
+     "commitments": "8/8"
+    },
+    {
+     "channel_id": "b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4",
+     "scid": "3463315x4x1",
+     "capacity_sat": 459816,
+     "FAFO_msat": 355000000,
+     "FAFO2_msat": 104816000,
+     "commitments": "6/6"
+    }
+   ],
+   "wallets_confirmed_sat": {
+    "FAFO": 218101,
+    "FAFO2": 167274
+   }
+  },
+  "issues": {
+   "NL-535": "low, open (openchannel CLI blocks until channel_ready and never prints the first attempt of a dual-funded open)",
+   "NL-518": "seen again (MempoolReactor warning per splice)",
+   "NL-534": "seen again (refused rebroadcast of the replaced splice attempt at ERR)"
+  },
+  "transactions_verified_with": "~/mutinynet/cli.sh getrawtransaction <txid> true (confirmed ones; fee from the prevouts, height from getblockheader); the two replaced RBF attempts via decoderawtransaction of the nodes' BroadcastTransactions rows",
+  "transactions": [
+   {
+    "pass": "run2-net11",
+    "txid": "79760d18e1ffc92596f89f567a5d886e1c753fb2540d20c7aee4beb99be33ee1",
+    "role": "P2-1a dual-funded public open without RBF (channel f20939f0..., stays open)",
+    "funding_outputs": [
+     {
+      "vout": 0,
+      "label": "channel funding output (f20939f0..., 350,000 sat)"
+     }
+    ],
+    "confirmations_at_record": 52,
+    "confirmed": true,
+    "block_height": 3463271,
+    "block_time": 1790613385,
+    "vsize": 319,
+    "weight": 1276,
+    "fee_sat": 325,
+    "feerate_sat_per_vb": 1.019,
+    "feerate_sat_per_kw": 254.7,
+    "inputs": [
+     {
+      "outpoint": "6348a8a4fb4b34b5489f78f885ef2e78ae8a59734b4d902064d65e6d06e57674:0",
+      "amount_sat": 99798,
+      "address": "tb1q42w8n3ccxrzexfw2fh7hgvfs4q6e35nln7jrz0",
+      "owner": "FAFO2 wallet"
+     },
+     {
+      "outpoint": "b078b3cb813007a8932f50784ff3a97ac705e3bb13b48240fed54aa97d320be6:0",
+      "amount_sat": 128813,
+      "address": "tb1qv5unza4msg4r4zy9a7yphelyk4vstp8cmeeumm",
+      "owner": "FAFO2 wallet"
+     },
+     {
+      "outpoint": "5e85170aef6bf0d6074d2e250110a95a08ff581eca4fae69493fe51edf09c183:1",
+      "amount_sat": 269583,
+      "address": "tb1qkv4a4pqj7lwkeznclt9duyuh25q8gvh4pk9xn8",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "outputs": [
+     {
+      "vout": 0,
+      "amount_sat": 350000,
+      "address": "tb1qhg3r8dxvh5mhxsx8paejcr3t3sy8gs2wp2svcvhhgt4dqwpa07jsx5jk58",
+      "owner": "channel funding output (f20939f0..., 350,000 sat)"
+     },
+     {
+      "vout": 1,
+      "amount_sat": 69428,
+      "address": "tb1q7l73cak9x8j68cnxcuwj9jpcu63k7a8mtn0p9w",
+      "owner": "FAFO wallet"
+     },
+     {
+      "vout": 2,
+      "amount_sat": 78441,
+      "address": "tb1q2tdxsd43qv4jmstsd6fu54f9fvn02ee6l342zf",
+      "owner": "FAFO2 wallet"
+     }
+    ],
+    "explorer": "https://mutinynet.com/tx/79760d18e1ffc92596f89f567a5d886e1c753fb2540d20c7aee4beb99be33ee1"
+   },
+   {
+    "pass": "run2-net11",
+    "txid": "e8a46402f190ed12bfd7c65ce3ca286edc48f03123539329711748e7477161e3",
+    "role": "FAFO withdraw of 250,000 sat to FAFO2's wallet (its contribution for the RBF open)",
+    "funding_outputs": [],
+    "confirmations_at_record": 45,
+    "confirmed": true,
+    "block_height": 3463278,
+    "block_time": 1790613604,
+    "vsize": 141,
+    "weight": 561,
+    "fee_sat": 143,
+    "feerate_sat_per_vb": 1.014,
+    "feerate_sat_per_kw": 254.9,
+    "inputs": [
+     {
+      "outpoint": "49ebd5e4db5ee493f0427acc6782496dfcbeb5532a76c1dd57325d1ab0dd0e28:0",
+      "amount_sat": 268192,
+      "address": "tb1q894e334ucpswkp9jrrnmcaddvltxkcm6maq7s8",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "outputs": [
+     {
+      "vout": 0,
+      "amount_sat": 250000,
+      "address": "tb1qvr9a7rp7540gxawu0dxxjn3lhjdaw9ungf0rcs",
+      "owner": "FAFO2 wallet"
+     },
+     {
+      "vout": 1,
+      "amount_sat": 18049,
+      "address": "tb1qlaqsd82fdjhnsqr3ksqwl8fhrqesnlcavzrnzp",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "explorer": "https://mutinynet.com/tx/e8a46402f190ed12bfd7c65ce3ca286edc48f03123539329711748e7477161e3"
+   },
+   {
+    "pass": "run2-net11",
+    "txid": "22fb4544f2ee1eca4a9bcddb4f70a884721033507d420ac6301786e4663593ba",
+    "role": "P2-1 dual-funded open attempt T0 at 253 sat/kw (replaced by FAFO's bump, never confirmed)",
+    "funding_outputs": [
+     {
+      "vout": 2,
+      "label": "channel funding output of T0 (b78b95b7..., 350,000 sat)"
+     }
+    ],
+    "confirmations_at_record": 0,
+    "confirmed": false,
+    "block_height": null,
+    "block_time": null,
+    "vsize": 320,
+    "weight": 1278,
+    "fee_sat": 325,
+    "feerate_sat_per_vb": 1.016,
+    "feerate_sat_per_kw": 254.3,
+    "inputs": [
+     {
+      "outpoint": "6348a8a4fb4b34b5489f78f885ef2e78ae8a59734b4d902064d65e6d06e57674:1",
+      "amount_sat": 179306,
+      "address": "tb1q3d9q97zhzcfv7ree46q9thuzv4jswa5vj5tglf",
+      "owner": "FAFO wallet"
+     },
+     {
+      "outpoint": "e8a46402f190ed12bfd7c65ce3ca286edc48f03123539329711748e7477161e3:0",
+      "amount_sat": 250000,
+      "address": "tb1qvr9a7rp7540gxawu0dxxjn3lhjdaw9ungf0rcs",
+      "owner": "FAFO2 wallet"
+     },
+     {
+      "outpoint": "ac6b8f9aa3b0853e3f28b924425be8167d41100ed5e834eddf926c4159bb5465:1",
+      "amount_sat": 153820,
+      "address": "tb1qf2fzcfvzempdv97tvqlj5qpugk0vxl4jxd75xt",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "outputs": [
+     {
+      "vout": 0,
+      "amount_sat": 132902,
+      "address": "tb1qzgddnjc7yvjvqkyhrqhak8945d5skxws4mtn7m",
+      "owner": "FAFO wallet"
+     },
+     {
+      "vout": 1,
+      "amount_sat": 99899,
+      "address": "tb1qxc5uarzczdpfjd2fsfmk4j3ll50v65hrj2q7qr",
+      "owner": "FAFO2 wallet"
+     },
+     {
+      "vout": 2,
+      "amount_sat": 350000,
+      "address": "tb1q7tfe95z2ctvjrps632y7fy4r80n6323qc68al3vacpxu7xh653fspt5e4g",
+      "owner": "channel funding output of T0 (b78b95b7..., 350,000 sat)"
+     }
+    ],
+    "explorer": "https://mutinynet.com/tx/22fb4544f2ee1eca4a9bcddb4f70a884721033507d420ac6301786e4663593ba"
+   },
+   {
+    "pass": "run2-net11",
+    "txid": "9be7406b747aa207b439b5e5cda78a3a699f770f030c5f085e5ba032fc55527d",
+    "role": "P2-1 opener RBF (bumpopen by FAFO) T1 at 1,000 sat/kw (replaced by FAFO2's bump, never confirmed)",
+    "funding_outputs": [
+     {
+      "vout": 0,
+      "label": "channel funding output of T1 (b78b95b7..., 350,000 sat)"
+     }
+    ],
+    "confirmations_at_record": 0,
+    "confirmed": false,
+    "block_height": null,
+    "block_time": null,
+    "vsize": 320,
+    "weight": 1277,
+    "fee_sat": 1278,
+    "feerate_sat_per_vb": 3.994,
+    "feerate_sat_per_kw": 1000.8,
+    "inputs": [
+     {
+      "outpoint": "ac6b8f9aa3b0853e3f28b924425be8167d41100ed5e834eddf926c4159bb5465:1",
+      "amount_sat": 153820,
+      "address": "tb1qf2fzcfvzempdv97tvqlj5qpugk0vxl4jxd75xt",
+      "owner": "FAFO wallet"
+     },
+     {
+      "outpoint": "e8a46402f190ed12bfd7c65ce3ca286edc48f03123539329711748e7477161e3:0",
+      "amount_sat": 250000,
+      "address": "tb1qvr9a7rp7540gxawu0dxxjn3lhjdaw9ungf0rcs",
+      "owner": "FAFO2 wallet"
+     },
+     {
+      "outpoint": "6348a8a4fb4b34b5489f78f885ef2e78ae8a59734b4d902064d65e6d06e57674:1",
+      "amount_sat": 179306,
+      "address": "tb1q3d9q97zhzcfv7ree46q9thuzv4jswa5vj5tglf",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "outputs": [
+     {
+      "vout": 0,
+      "amount_sat": 350000,
+      "address": "tb1q7tfe95z2ctvjrps632y7fy4r80n6323qc68al3vacpxu7xh653fspt5e4g",
+      "owner": "channel funding output of T1 (b78b95b7..., 350,000 sat)"
+     },
+     {
+      "vout": 1,
+      "amount_sat": 132244,
+      "address": "tb1qzgddnjc7yvjvqkyhrqhak8945d5skxws4mtn7m",
+      "owner": "FAFO wallet"
+     },
+     {
+      "vout": 2,
+      "amount_sat": 99604,
+      "address": "tb1qxc5uarzczdpfjd2fsfmk4j3ll50v65hrj2q7qr",
+      "owner": "FAFO2 wallet"
+     }
+    ],
+    "explorer": "https://mutinynet.com/tx/9be7406b747aa207b439b5e5cda78a3a699f770f030c5f085e5ba032fc55527d"
+   },
+   {
+    "pass": "run2-net11",
+    "txid": "f54cf06aa89d94e9327a302efa133564a60d5a4d6de8c9dc60c984cc6831bf77",
+    "role": "P2-1 accepter RBF (bumpopen by FAFO2, NL-530) T2 at 1,500 sat/kw (confirmed, the channel's funding)",
+    "funding_outputs": [
+     {
+      "vout": 0,
+      "label": "channel funding output (b78b95b7..., 350,000 sat)"
+     }
+    ],
+    "confirmations_at_record": 40,
+    "confirmed": true,
+    "block_height": 3463283,
+    "block_time": 1790613775,
+    "vsize": 319,
+    "weight": 1276,
+    "fee_sat": 1917,
+    "feerate_sat_per_vb": 6.009,
+    "feerate_sat_per_kw": 1502.4,
+    "inputs": [
+     {
+      "outpoint": "ac6b8f9aa3b0853e3f28b924425be8167d41100ed5e834eddf926c4159bb5465:1",
+      "amount_sat": 153820,
+      "address": "tb1qf2fzcfvzempdv97tvqlj5qpugk0vxl4jxd75xt",
+      "owner": "FAFO wallet"
+     },
+     {
+      "outpoint": "e8a46402f190ed12bfd7c65ce3ca286edc48f03123539329711748e7477161e3:0",
+      "amount_sat": 250000,
+      "address": "tb1qvr9a7rp7540gxawu0dxxjn3lhjdaw9ungf0rcs",
+      "owner": "FAFO2 wallet"
+     },
+     {
+      "outpoint": "6348a8a4fb4b34b5489f78f885ef2e78ae8a59734b4d902064d65e6d06e57674:1",
+      "amount_sat": 179306,
+      "address": "tb1q3d9q97zhzcfv7ree46q9thuzv4jswa5vj5tglf",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "outputs": [
+     {
+      "vout": 0,
+      "amount_sat": 350000,
+      "address": "tb1q7tfe95z2ctvjrps632y7fy4r80n6323qc68al3vacpxu7xh653fspt5e4g",
+      "owner": "channel funding output (b78b95b7..., 350,000 sat)"
+     },
+     {
+      "vout": 1,
+      "amount_sat": 99085,
+      "address": "tb1qxc5uarzczdpfjd2fsfmk4j3ll50v65hrj2q7qr",
+      "owner": "FAFO2 wallet"
+     },
+     {
+      "vout": 2,
+      "amount_sat": 132124,
+      "address": "tb1qzgddnjc7yvjvqkyhrqhak8945d5skxws4mtn7m",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "explorer": "https://mutinynet.com/tx/f54cf06aa89d94e9327a302efa133564a60d5a4d6de8c9dc60c984cc6831bf77"
+   },
+   {
+    "pass": "run2-net11",
+    "txid": "e525de6b77796f658e844e1688330bd960d76774c3acceef0751ebd8543f00ee",
+    "role": "P2-3 splice-in (FAFO +100,000)",
+    "funding_outputs": [
+     {
+      "vout": 1,
+      "label": "channel funding output (450,000 sat)"
+     }
+    ],
+    "confirmations_at_record": 33,
+    "confirmed": true,
+    "block_height": 3463290,
+    "block_time": 1790613993,
+    "vsize": 248,
+    "weight": 992,
+    "fee_sat": 252,
+    "feerate_sat_per_vb": 1.016,
+    "feerate_sat_per_kw": 254.0,
+    "inputs": [
+     {
+      "outpoint": "f54cf06aa89d94e9327a302efa133564a60d5a4d6de8c9dc60c984cc6831bf77:0",
+      "amount_sat": 350000,
+      "address": "tb1q7tfe95z2ctvjrps632y7fy4r80n6323qc68al3vacpxu7xh653fspt5e4g",
+      "owner": "channel funding output (b78b95b7..., 350,000 sat)"
+     },
+     {
+      "outpoint": "f54cf06aa89d94e9327a302efa133564a60d5a4d6de8c9dc60c984cc6831bf77:2",
+      "amount_sat": 132124,
+      "address": "tb1qzgddnjc7yvjvqkyhrqhak8945d5skxws4mtn7m",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "outputs": [
+     {
+      "vout": 0,
+      "amount_sat": 31872,
+      "address": "tb1qn6zwl3wf7ue9rkht4xkaygr36x0787etum39ln",
+      "owner": "FAFO wallet"
+     },
+     {
+      "vout": 1,
+      "amount_sat": 450000,
+      "address": "tb1qwupdrwj076dyvapq0ycdumh4kaxln695fa0vjzdps0ce4cvhxewqc3mdeh",
+      "owner": "channel funding output (450,000 sat)"
+     }
+    ],
+    "explorer": "https://mutinynet.com/tx/e525de6b77796f658e844e1688330bd960d76774c3acceef0751ebd8543f00ee"
+   },
+   {
+    "pass": "run2-net11",
+    "txid": "35154edcf5ac73cd95394a1a5554fbd4a7b146e7eeaf875de66aa057fd38022f",
+    "role": "P2-4 splice-out (FAFO2 -50,000 to FAFO's tb1q4cvd2r4jv6vhzpep5ypzna46kta24hztzhdvlg)",
+    "funding_outputs": [
+     {
+      "vout": 0,
+      "label": "channel funding output (399,816 sat)"
+     }
+    ],
+    "confirmations_at_record": 27,
+    "confirmed": true,
+    "block_height": 3463296,
+    "block_time": 1790614194,
+    "vsize": 181,
+    "weight": 722,
+    "fee_sat": 184,
+    "feerate_sat_per_vb": 1.017,
+    "feerate_sat_per_kw": 254.8,
+    "inputs": [
+     {
+      "outpoint": "e525de6b77796f658e844e1688330bd960d76774c3acceef0751ebd8543f00ee:1",
+      "amount_sat": 450000,
+      "address": "tb1qwupdrwj076dyvapq0ycdumh4kaxln695fa0vjzdps0ce4cvhxewqc3mdeh",
+      "owner": "channel funding output (450,000 sat)"
+     }
+    ],
+    "outputs": [
+     {
+      "vout": 0,
+      "amount_sat": 399816,
+      "address": "tb1q5fvncjrdpe0r7hlyh20lqmexf49334lm8xzexj4lwdxf2wamgegqcaedse",
+      "owner": "channel funding output (399,816 sat)"
+     },
+     {
+      "vout": 1,
+      "amount_sat": 50000,
+      "address": "tb1q4cvd2r4jv6vhzpep5ypzna46kta24hztzhdvlg",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "explorer": "https://mutinynet.com/tx/35154edcf5ac73cd95394a1a5554fbd4a7b146e7eeaf875de66aa057fd38022f"
+   },
+   {
+    "pass": "run2-net11",
+    "txid": "d8ea5114dec4163c4a06af4f0d8446f25471cd65e6bf6c16c888f9210eb51f3c",
+    "role": "P2-5 restart drill splice-in (FAFO +20,000; FAFO2 stopped)",
+    "funding_outputs": [
+     {
+      "vout": 0,
+      "label": "channel funding output (419,816 sat)"
+     }
+    ],
+    "confirmations_at_record": 21,
+    "confirmed": true,
+    "block_height": 3463302,
+    "block_time": 1790614397,
+    "vsize": 248,
+    "weight": 992,
+    "fee_sat": 252,
+    "feerate_sat_per_vb": 1.016,
+    "feerate_sat_per_kw": 254.0,
+    "inputs": [
+     {
+      "outpoint": "35154edcf5ac73cd95394a1a5554fbd4a7b146e7eeaf875de66aa057fd38022f:0",
+      "amount_sat": 399816,
+      "address": "tb1q5fvncjrdpe0r7hlyh20lqmexf49334lm8xzexj4lwdxf2wamgegqcaedse",
+      "owner": "channel funding output (399,816 sat)"
+     },
+     {
+      "outpoint": "79760d18e1ffc92596f89f567a5d886e1c753fb2540d20c7aee4beb99be33ee1:1",
+      "amount_sat": 69428,
+      "address": "tb1q7l73cak9x8j68cnxcuwj9jpcu63k7a8mtn0p9w",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "outputs": [
+     {
+      "vout": 0,
+      "amount_sat": 419816,
+      "address": "tb1qpkufl7jngtlvcazxjlfc6r68vuuxyfjk8n8j5jgugvmuumy54pfstvy4pt",
+      "owner": "channel funding output (419,816 sat)"
+     },
+     {
+      "vout": 1,
+      "amount_sat": 49176,
+      "address": "tb1qcvakl569e64pwxzuhjxz5c8ae3jr9czca2gpqa",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "explorer": "https://mutinynet.com/tx/d8ea5114dec4163c4a06af4f0d8446f25471cd65e6bf6c16c888f9210eb51f3c"
+   },
+   {
+    "pass": "run2-net11",
+    "txid": "8e60b4787eeb59e82a0c0cb48c1e3cc2f9adde7087c98b1b3cbb497e17aad259",
+    "role": "P2-5b restart drill splice-in (FAFO2 +10,000; FAFO stopped)",
+    "funding_outputs": [
+     {
+      "vout": 0,
+      "label": "channel funding output (429,816 sat)"
+     }
+    ],
+    "confirmations_at_record": 15,
+    "confirmed": true,
+    "block_height": 3463308,
+    "block_time": 1790614581,
+    "vsize": 248,
+    "weight": 992,
+    "fee_sat": 252,
+    "feerate_sat_per_vb": 1.016,
+    "feerate_sat_per_kw": 254.0,
+    "inputs": [
+     {
+      "outpoint": "d8ea5114dec4163c4a06af4f0d8446f25471cd65e6bf6c16c888f9210eb51f3c:0",
+      "amount_sat": 419816,
+      "address": "tb1qpkufl7jngtlvcazxjlfc6r68vuuxyfjk8n8j5jgugvmuumy54pfstvy4pt",
+      "owner": "channel funding output (419,816 sat)"
+     },
+     {
+      "outpoint": "f54cf06aa89d94e9327a302efa133564a60d5a4d6de8c9dc60c984cc6831bf77:1",
+      "amount_sat": 99085,
+      "address": "tb1qxc5uarzczdpfjd2fsfmk4j3ll50v65hrj2q7qr",
+      "owner": "FAFO2 wallet"
+     }
+    ],
+    "outputs": [
+     {
+      "vout": 0,
+      "amount_sat": 429816,
+      "address": "tb1qpdjcp6085v8gt3qc6lylpqnryskpmza6unafl7n7u8u3zhlqj0hsntn68w",
+      "owner": "channel funding output (429,816 sat)"
+     },
+     {
+      "vout": 1,
+      "amount_sat": 88833,
+      "address": "tb1qclrlg6mmw2m4wn3728c664g6aewpj2zakcjkr7",
+      "owner": "FAFO2 wallet"
+     }
+    ],
+    "explorer": "https://mutinynet.com/tx/8e60b4787eeb59e82a0c0cb48c1e3cc2f9adde7087c98b1b3cbb497e17aad259"
+   },
+   {
+    "pass": "run2-net11",
+    "txid": "f4689a94e6dd283f07dccf678314fc69eb8ac13e28a88e32cddcb66d309ea058",
+    "role": "P2-6b splice-in RBF attempt T1 at 253 sat/kw (replaced, never confirmed)",
+    "funding_outputs": [
+     {
+      "vout": 0,
+      "label": "channel funding output of T1 (459,816 sat)"
+     }
+    ],
+    "confirmations_at_record": 0,
+    "confirmed": false,
+    "block_height": null,
+    "block_time": null,
+    "vsize": 248,
+    "weight": 992,
+    "fee_sat": 252,
+    "feerate_sat_per_vb": 1.016,
+    "feerate_sat_per_kw": 254.0,
+    "inputs": [
+     {
+      "outpoint": "8e60b4787eeb59e82a0c0cb48c1e3cc2f9adde7087c98b1b3cbb497e17aad259:0",
+      "amount_sat": 429816,
+      "address": "tb1qpdjcp6085v8gt3qc6lylpqnryskpmza6unafl7n7u8u3zhlqj0hsntn68w",
+      "owner": "channel funding output (429,816 sat)"
+     },
+     {
+      "outpoint": "35154edcf5ac73cd95394a1a5554fbd4a7b146e7eeaf875de66aa057fd38022f:1",
+      "amount_sat": 50000,
+      "address": "tb1q4cvd2r4jv6vhzpep5ypzna46kta24hztzhdvlg",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "outputs": [
+     {
+      "vout": 0,
+      "amount_sat": 459816,
+      "address": "tb1qzszw0twlf3y3l3ylh6eh9eqra929tgljfpvs2jaya53mxwu7junqfq62gv",
+      "owner": "channel funding output of T1 (459,816 sat)"
+     },
+     {
+      "vout": 1,
+      "amount_sat": 19748,
+      "address": "tb1qyf5yl2pc6nlv8k98qfy20vmefy496tzvc6r9r3",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "explorer": "https://mutinynet.com/tx/f4689a94e6dd283f07dccf678314fc69eb8ac13e28a88e32cddcb66d309ea058"
+   },
+   {
+    "pass": "run2-net11",
+    "txid": "79fd98aea79c2c349615741350b79a092c130d2a3d1e795c2a564ad43f495563",
+    "role": "P2-6b splice-in RBF attempt T2 at 1,000 sat/kw (confirmed)",
+    "funding_outputs": [
+     {
+      "vout": 1,
+      "label": "channel funding output (459,816 sat, current)"
+     }
+    ],
+    "confirmations_at_record": 8,
+    "confirmed": true,
+    "block_height": 3463315,
+    "block_time": 1790614813,
+    "vsize": 249,
+    "weight": 993,
+    "fee_sat": 996,
+    "feerate_sat_per_vb": 4.0,
+    "feerate_sat_per_kw": 1003.0,
+    "inputs": [
+     {
+      "outpoint": "8e60b4787eeb59e82a0c0cb48c1e3cc2f9adde7087c98b1b3cbb497e17aad259:0",
+      "amount_sat": 429816,
+      "address": "tb1qpdjcp6085v8gt3qc6lylpqnryskpmza6unafl7n7u8u3zhlqj0hsntn68w",
+      "owner": "channel funding output (429,816 sat)"
+     },
+     {
+      "outpoint": "35154edcf5ac73cd95394a1a5554fbd4a7b146e7eeaf875de66aa057fd38022f:1",
+      "amount_sat": 50000,
+      "address": "tb1q4cvd2r4jv6vhzpep5ypzna46kta24hztzhdvlg",
+      "owner": "FAFO wallet"
+     }
+    ],
+    "outputs": [
+     {
+      "vout": 0,
+      "amount_sat": 19004,
+      "address": "tb1qyf5yl2pc6nlv8k98qfy20vmefy496tzvc6r9r3",
+      "owner": "FAFO wallet"
+     },
+     {
+      "vout": 1,
+      "amount_sat": 459816,
+      "address": "tb1qzszw0twlf3y3l3ylh6eh9eqra929tgljfpvs2jaya53mxwu7junqfq62gv",
+      "owner": "channel funding output (459,816 sat, current)"
+     }
+    ],
+    "explorer": "https://mutinynet.com/tx/79fd98aea79c2c349615741350b79a092c130d2a3d1e795c2a564ad43f495563"
+   }
+  ]
+ }
 }
