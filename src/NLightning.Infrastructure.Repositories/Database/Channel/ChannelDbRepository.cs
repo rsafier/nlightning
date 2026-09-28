@@ -96,8 +96,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     {
         _context = context;
         _sha256 = sha256 ?? throw new ArgumentNullException(nameof(sha256));
-        _channelStateDbRepository = new ChannelStateDbRepository(context);
         _logger = logger ?? NullLogger.Instance;
+        _channelStateDbRepository = new ChannelStateDbRepository(context, logger: _logger);
     }
 
     /// <summary>

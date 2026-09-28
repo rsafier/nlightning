@@ -6,6 +6,8 @@ namespace NLightning.Integration.Tests.Persistence;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
+using Domain.Channels.Enums;
+using Domain.Channels.Reestablish;
 using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
@@ -89,6 +91,140 @@ public class SignedOnFundingsReloadTests
     }
 
     [Fact]
+    public async Task Given_ACommitmentSignedByTheEngineOnAPendingSplice_When_TheNodeRestarts_Then_ItsFundingsAndSignaturesSurviveAndNothingIsSignedAgain()
+    {
+        // Arrange: the splice made pending by the engine (the peer's splice commitment_signed), then commitment 1
+        // (with an HTLC) signed by the engine on the current funding and on the splice (SP-OP-03)
+        await using var harness = await Harness.CreateAsync();
+        var splice = harness.Splice(0x9A);
+        await harness.SaveAsync(uow => uow.ChannelFundingDbRepository.UpsertAsync(harness.ChannelId, splice));
+        await harness.PersistAsync(harness.Driver.UsReceiveSplice(splice));
+        await harness.PersistAsync(harness.Driver.TryUsAdd(5_000_000)!);
+        var commit = harness.Driver.TryUsCommit()!;
+        await harness.PersistAsync(commit);
+        var sent = commit.Next.RemoteNextCommit!;
+        Assert.Equal([harness.CurrentFundingTxId, splice.FundingTxId], sent.Commit.GetSignedOnFundingTxIds()!);
+        var sentOnSplice = Assert.Single(sent.PendingFundingSignatures);
+        Assert.Equal(splice.FundingTxId, sentOnSplice.FundingTxId);
+
+        // Act: restart while the splice is still pending
+        var reloaded = await harness.ReloadAsync();
+
+        // Assert: the pending funding, the fundings commitment 1 was signed on (with the engine's deltas) and the
+        // signatures we sent on each funding come back byte-exact
+        Assert.Equal(splice.FundingTxId, Assert.Single(reloaded.PendingFundings).FundingTxId);
+        var unacked = reloaded.RemoteNextCommit!;
+        Assert.Equal(sent.Commit.Number, unacked.Commit.Number);
+        Assert.Equal(sent.Commit.GetSignedOnFundingTxIds()!, unacked.Commit.GetSignedOnFundingTxIds()!);
+        Assert.Equal(sent.Commit.SignedOnFundings!.Select(f => (f.LocalBalanceDeltaMsat, f.RemoteBalanceDeltaMsat)),
+                     unacked.Commit.SignedOnFundings!.Select(f => (f.LocalBalanceDeltaMsat, f.RemoteBalanceDeltaMsat)));
+        AssertSameSignatures(sent.SentSignatures, unacked.SentSignatures);
+        var reloadedOnSplice = Assert.Single(unacked.PendingFundingSignatures);
+        Assert.Equal(splice.FundingTxId, reloadedOnSplice.FundingTxId);
+        AssertSameSignatures(sentOnSplice.Signatures, reloadedOnSplice.Signatures);
+
+        // Commitment 1 is never signed again: the engine waits for its revoke_and_ack, and a peer that did not get it
+        // is sent the stored diff verbatim (B2-RE-18), never a new signature
+        var afterRevert = reloaded.RevertUncommitted().Next;
+        Assert.False(afterRevert.CanSendCommit);
+        var plan = ReestablishPlanner.Plan(
+            ReestablishLocalState.From(afterRevert, true, LastSentCommitmentMessage.CommitmentSigned),
+            new PeerReestablish(1, 0, new byte[32]), (_, _) => false);
+        Assert.Equal(ReestablishOutcome.Resume, plan.Outcome);
+        Assert.Contains(ReestablishStep.CommitDiff, plan.Steps);
+
+        // The peer revokes commitment 0; after a second restart commitment 1 is its current one, still with its
+        // fundings, and the revocation of commitment 1 (after commitment 2) is logged on both
+        harness.Driver.ReplaceUs(reloaded);
+        await harness.PersistAsync(harness.Driver.TryDeliverRevokeToUs()!);
+        reloaded = await harness.ReloadAsync();
+        Assert.Equal(1UL, reloaded.RemoteCommit.Number);
+        Assert.Equal([harness.CurrentFundingTxId, splice.FundingTxId], reloaded.RemoteCommit.GetSignedOnFundingTxIds()!);
+        harness.Driver.ReplaceUs(reloaded);
+        await harness.PersistAsync(harness.Driver.TryUsAdd(6_000_000)!);
+        await harness.PersistAsync(harness.Driver.TryUsCommit()!);
+        var raa = harness.Driver.TryDeliverRevokeToUs()!;
+        await harness.PersistAsync(raa);
+        Assert.Equal(splice.FundingTxId, Assert.Single(raa.Transition.RevokedRemoteCommitFundings!).FundingTxId);
+        using var reader = harness.CreateUnitOfWork();
+        var onSplice = Assert.Single(await reader.RevokedCommitmentDbRepository.GetByFundingAsync(harness.ChannelId,
+                                                                                               splice.FundingTxId));
+        Assert.Equal(1UL, onSplice.Number);
+    }
+
+    [Fact]
+    public async Task Given_ASpliceDiscardedByTheEngineBeforeTheRevocation_When_TheNodeRestarts_Then_ItsRevocationIsStillLoggedOnTheSplice()
+    {
+        // Arrange: commitment 1 (with an HTLC) signed by the engine on the current funding and a pending splice, and
+        // the peer's revocation of commitment 0 ...
+        await using var harness = await Harness.CreateAsync();
+        var splice = harness.Splice(0x9B);
+        await harness.SaveAsync(uow => uow.ChannelFundingDbRepository.UpsertAsync(harness.ChannelId, splice));
+        await harness.PersistAsync(harness.Driver.UsReceiveSplice(splice));
+        await harness.PersistAsync(harness.Driver.TryUsAdd(5_000_000)!);
+        await harness.PersistAsync(harness.Driver.TryUsCommit()!);
+        await harness.PersistAsync(harness.Driver.TryDeliverRevokeToUs()!);
+
+        // ... then the engine discards the splice (tx_abort), saved as the splice state port saves it
+        var discard = harness.Driver.UsDiscard(splice.FundingTxId);
+        await harness.SaveAsync(async uow =>
+        {
+            await uow.ChannelStateDbRepository.ApplyAsync(discard.Next, discard.Transition);
+            await uow.ChannelFundingDbRepository.UpsertAsync(
+                harness.ChannelId, splice with { Status = ChannelFundingStatus.Discarded });
+        });
+
+        // Act: restart, then commitment 2 and the peer's revocation of commitment 1
+        var reloaded = await harness.ReloadAsync();
+        harness.Driver.ReplaceUs(reloaded);
+        await harness.PersistAsync(harness.Driver.TryUsAdd(6_000_000)!);
+        var next = harness.Driver.TryUsCommit()!;
+        await harness.PersistAsync(next);
+        var raa = harness.Driver.TryDeliverRevokeToUs()!;
+        await harness.PersistAsync(raa);
+
+        // Assert: no pending funding any more (commitment 2 is signed on the current funding only), but the record
+        // of what commitment 1 was signed on survived, so its revocation is logged on the discarded splice
+        Assert.Empty(reloaded.PendingFundings);
+        Assert.Equal([harness.CurrentFundingTxId, splice.FundingTxId], reloaded.RemoteCommit.GetSignedOnFundingTxIds()!);
+        Assert.Single(next.Outbound.OfType<OutboundCommitmentSigned>());
+        Assert.Equal(splice.FundingTxId, Assert.Single(raa.Transition.RevokedRemoteCommitFundings!).FundingTxId);
+        using var reader = harness.CreateUnitOfWork();
+        var onSplice = Assert.Single(await reader.RevokedCommitmentDbRepository.GetByFundingAsync(harness.ChannelId,
+                                                                                               splice.FundingTxId));
+        Assert.Equal(1UL, onSplice.Number);
+        Assert.Equal(ChannelCommitments.SpecFor(reloaded.RemoteCommit.Spec, splice), onSplice.Spec);
+    }
+
+    [Fact]
+    public async Task Given_AnUnreadableSignedOnFundingsBlob_When_Reloaded_Then_TheChannelStillLoads()
+    {
+        // Arrange: a blob whose length is not a multiple of an entry's
+        await using var harness = await Harness.CreateAsync();
+        var splice = harness.Splice(0x9C);
+        await harness.SaveAsync(uow => uow.ChannelFundingDbRepository.UpsertAsync(harness.ChannelId, splice));
+        await harness.PersistAsync(harness.Driver.TryUsAdd(5_000_000)!);
+        var commit = harness.Driver.TryUsCommit()!;
+        await harness.SaveAsync(uow => uow.ChannelStateDbRepository.ApplyAsync(
+                                    harness.WithRemoteNextSignedOn(commit.Next, [harness.CurrentFunding, splice]),
+                                    commit.Transition));
+        await using (var context = harness.Db.CreateDbContext())
+        {
+            var row = await context.Commitments.SingleAsync(c => c.Slot == CommitmentEntity.RemoteNextSlot,
+                                                            TestContext.Current.CancellationToken);
+            row.SignedOnFundings = row.SignedOnFundings![..47];
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Act
+        var reloaded = await harness.ReloadAsync();
+
+        // Assert: read as no record (the engine falls back to the pending fundings), the state is intact
+        Assert.Null(reloaded.RemoteNextCommit!.Commit.SignedOnFundings);
+        Assert.Equal(commit.Next.RemoteNextCommit!.Commit.Number, reloaded.RemoteNextCommit.Commit.Number);
+    }
+
+    [Fact]
     public async Task Given_RebasedDeltas_When_Reloaded_Then_TheStoredDeltasWinOverTheFundingRows()
     {
         // Arrange: after a lock the engine rebases every entry on the locked funding, while the rows keep the deltas
@@ -161,8 +297,9 @@ public class SignedOnFundingsReloadTests
         // Act
         var reloaded = await harness.ReloadAsync();
 
-        // Assert: the list is left out (the engine falls back to the pending fundings), the state is intact
-        Assert.Null(reloaded.RemoteNextCommit!.Commit.SignedOnFundings);
+        // Assert: the entry that resolves is kept and the one without a row dropped (NL-494 review), the state is
+        // intact
+        Assert.Equal([harness.CurrentFundingTxId], reloaded.RemoteNextCommit!.Commit.GetSignedOnFundingTxIds()!);
         Assert.Equal(commit.Next.RemoteNextCommit!.Commit.Number, reloaded.RemoteNextCommit.Commit.Number);
     }
 
@@ -183,6 +320,12 @@ public class SignedOnFundingsReloadTests
         Assert.Equal([b, a], restored.SignedOnFundings!);
         Assert.Null(none.SignedOnFundings);
         Assert.Throws<InvalidOperationException>(() => commit.WithSignedOnFundings([TxIdOf(0x03)], [a, b]));
+    }
+
+    private static void AssertSameSignatures(CommitmentSignatures expected, CommitmentSignatures actual)
+    {
+        Assert.Equal((byte[])expected.Signature, (byte[])actual.Signature);
+        Assert.Equal(expected.HtlcSignatures.Select(h => (byte[])h), actual.HtlcSignatures.Select(h => (byte[])h));
     }
 
     private static ChannelFunding SpliceOf(byte seed, ChannelFundingStatus status) =>

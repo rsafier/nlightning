@@ -121,7 +121,7 @@ public class UnitOfWork : IUnitOfWork
         _channelKeySetDbRepository ??= new ChannelKeySetDbRepository(_context);
 
     public IChannelStateDbRepository ChannelStateDbRepository =>
-        _channelStateDbRepository ??= new ChannelStateDbRepository(_context, _timeProvider);
+        _channelStateDbRepository ??= new ChannelStateDbRepository(_context, _timeProvider, _logger);
 
     public IRemoteShachainDbRepository RemoteShachainDbRepository =>
         _remoteShachainDbRepository ??= new RemoteShachainDbRepository(_context);

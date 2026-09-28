@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Infrastructure.Repositories.Database.Channel;
 
@@ -30,14 +32,18 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
     private readonly RemoteShachainDbRepository _remoteShachainDbRepository;
     private readonly RevokedCommitmentDbRepository _revokedCommitmentDbRepository;
     private readonly TimeProvider _timeProvider;
+    private readonly ILogger _logger;
 
     /// <param name="context">The unit of work's database context.</param>
     /// <param name="timeProvider">The clock that stamps a new HTLC row's <see cref="HtlcEntity.AddedAt"/>;
     /// <see cref="TimeProvider.System"/> when null.</param>
-    public ChannelStateDbRepository(NLightningDbContext context, TimeProvider? timeProvider = null)
+    /// <param name="logger">Warnings about stored rows that could not be read back in full.</param>
+    public ChannelStateDbRepository(NLightningDbContext context, TimeProvider? timeProvider = null,
+                                    ILogger? logger = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _logger = logger ?? NullLogger.Instance;
         _remoteShachainDbRepository = new RemoteShachainDbRepository(context);
         _revokedCommitmentDbRepository = new RevokedCommitmentDbRepository(context);
     }
@@ -214,7 +220,8 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         var pendingRows = fundingRows.Where(f => f.Status == (byte)ChannelFundingStatus.Pending).ToList();
         var fundings = fundingRows.Select(ChannelFundingDbRepository.MapToDomain).ToList();
 
-        var state = MapToDomain(channel, commitments, htlcs, feeUpdates, shachain, @params, fundings: fundings);
+        var state = MapToDomain(channel, commitments, htlcs, feeUpdates, shachain, @params, fundings: fundings,
+                                logger: _logger);
         if (pendingRows.Count == 0)
             return state;
 
@@ -242,7 +249,7 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         try
         {
             return MapToDomain(channel, commitments, htlcs, feeUpdates, shachain, @params, pendingFundings,
-                               fundings);
+                               fundings, _logger);
         }
         catch (InvalidOperationException)
         {
@@ -376,9 +383,12 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                                                       IReadOnlyList<Domain.Protocol.Models.ShachainEntry> shachain,
                                                       CommitmentParams @params,
                                                       IReadOnlyList<PendingFundingState>? pendingFundings = null,
-                                                      IReadOnlyCollection<ChannelFunding>? fundings = null)
+                                                      IReadOnlyCollection<ChannelFunding>? fundings = null,
+                                                      ILogger? logger = null)
     {
         fundings ??= [];
+        logger ??= NullLogger.Instance;
+        var pendingFundingModels = (pendingFundings ?? []).Select(p => p.Funding).ToList();
         // The current funding's slots (splicing plan §3.8): a pending splice has rows of its own
         rows = rows.Where(c => c.FundingTxId == channel.FundingTxId).ToList();
         var localRow = rows.SingleOrDefault(c => c.Slot == CommitmentEntity.LocalCurrentSlot)
@@ -412,14 +422,14 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         };
         var remoteCommit = RestoreSignedOnFundings(
             new RemoteCommit(remoteRow.Number, MapSpec(remoteRow, CommitmentSide.Remote), MapPoint(remoteRow)),
-            remoteRow, fundings);
+            remoteRow, fundings, pendingFundingModels, logger);
         RemoteNextCommit? remoteNextCommit = null;
         if (remoteNextRow is not null)
             remoteNextCommit = new RemoteNextCommit(
                 RestoreSignedOnFundings(
                     new RemoteCommit(remoteNextRow.Number, MapSpec(remoteNextRow, CommitmentSide.Remote),
                                      MapPoint(remoteNextRow)),
-                    remoteNextRow, fundings),
+                    remoteNextRow, fundings, pendingFundingModels, logger),
                 MapSignatures(remoteNextRow)
              ?? throw new InvalidOperationException(
                     $"Channel {channel.ChannelId} has an unacked remote commitment without signatures"))
@@ -462,30 +472,55 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
     /// channel's funding rows (<see cref="RemoteCommit.WithSignedOnFundings"/>), with the engine's balance deltas stored
     /// next to it (the rows' own deltas are against the funding current when each row was written, not the current
     /// one). A row without the column (written before migration <c>AddSpliceHardening</c>, or signed on the current
-    /// funding only) leaves it null, as does a txid that names no stored funding: the engine then falls back to the
-    /// pending fundings, as before NL-494.
+    /// funding only) leaves it null: the engine then falls back to the pending fundings, as before NL-494.
     /// </summary>
+    /// <remarks>
+    /// A damaged record never fails the channel's load: an unreadable blob is logged and read as null, and a txid that
+    /// names no stored funding is logged and dropped while the entries that resolve are kept, with every pending
+    /// funding not among them added, so the revocation is still logged on every funding we know.
+    /// </remarks>
     internal static RemoteCommit RestoreSignedOnFundings(RemoteCommit commit, CommitmentEntity row,
-                                                         IReadOnlyCollection<ChannelFunding> fundings)
+                                                         IReadOnlyCollection<ChannelFunding> fundings,
+                                                         IReadOnlyCollection<ChannelFunding>? pendingFundings = null,
+                                                         ILogger? logger = null)
     {
         if (row.SignedOnFundings is not { } blob)
             return commit;
 
-        var entries = CommitmentStateEncoding.DecodeSignedOnFundings(blob);
-        if (entries.Any(e => fundings.All(f => f.FundingTxId != e.FundingTxId)))
-            return commit;
-
-        var restored = commit.WithSignedOnFundings(entries.Select(e => e.FundingTxId).ToList(), fundings);
-        return restored with
+        List<CommitmentStateEncoding.SignedOnFundingEntry> entries;
+        try
         {
-            SignedOnFundings = restored.SignedOnFundings!
-                                       .Select((f, i) => f with
-                                       {
-                                           LocalBalanceDeltaMsat = entries[i].LocalBalanceDeltaMsat,
-                                           RemoteBalanceDeltaMsat = entries[i].RemoteBalanceDeltaMsat
-                                       })
-                                       .ToList()
-        };
+            entries = CommitmentStateEncoding.DecodeSignedOnFundings(blob);
+        }
+        catch (InvalidOperationException e)
+        {
+            logger?.LogWarning(e, "Remote commitment {Number} of channel {ChannelId} has an unreadable signed-on "
+                                + "fundings record; the pending fundings stand in for it", commit.Number,
+                               row.ChannelId);
+            return commit;
+        }
+
+        var resolved = new List<CommitmentStateEncoding.SignedOnFundingEntry>(entries.Count);
+        foreach (var entry in entries)
+            if (fundings.Any(f => f.FundingTxId == entry.FundingTxId))
+                resolved.Add(entry);
+            else
+                logger?.LogWarning("Remote commitment {Number} of channel {ChannelId} was signed on funding "
+                                 + "{FundingTxId}, which has no funding row; it is dropped from the record",
+                                   commit.Number, row.ChannelId, entry.FundingTxId);
+
+        var restored = commit.WithSignedOnFundings(resolved.Select(e => e.FundingTxId).ToList(), fundings);
+        var list = restored.SignedOnFundings!
+                           .Select((f, i) => f with
+                           {
+                               LocalBalanceDeltaMsat = resolved[i].LocalBalanceDeltaMsat,
+                               RemoteBalanceDeltaMsat = resolved[i].RemoteBalanceDeltaMsat
+                           })
+                           .ToList();
+        if (resolved.Count < entries.Count)
+            list.AddRange((pendingFundings ?? []).Where(p => list.All(f => f.FundingTxId != p.FundingTxId)));
+
+        return restored with { SignedOnFundings = list.Count == 0 ? null : list };
     }
 
     /// <summary>
