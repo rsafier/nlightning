@@ -85,6 +85,20 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresRowsOfAddSpliceHardening_When_RolledBack_Then_RefusedWhileASignedOnRecordExistsAndInboundOnlyPeersDropped()
+    {
+        // Arrange (wave spr review: the provider's own hand-written Down guard and data step run on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_splice_hardening");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await SpliceHardeningSchemaRoundTrip.AssertDownAsync(() => new NLightningDbContext(options,
+                                                                                           databaseTypeProvider),
+                                                             DatabaseType.PostgreSql,
+                                                             TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresChannelsFromBeforeAddChainWatchAndBroadcasts_When_Migrated_Then_FundingOutputsAreWatchedAndTheNewTablesRoundTrip()
     {
         // Arrange (BOLT 5 plan O0-T4: the funding-outpoint backfill runs on real rows; watched outpoints, broadcasts
