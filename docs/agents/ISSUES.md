@@ -4553,7 +4553,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` "Lane dfrbf record"
 
 ### NL-530 The accepter of a dual-funded open cannot start an RBF of it
-- **Status:** fixed (5329c08d)
+- **Status:** fixed (0b9f67b8)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`BumpAsync`: "We are not the opener")
@@ -4574,7 +4574,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` "Lane dfrbf record"
 
 ### NL-532 A peer closing the connection is logged at Error level
-- **Status:** fixed (3a813c88)
+- **Status:** fixed (20062e88)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure/Node/Services/PeerService.cs` ("Exception occurred with peer")
@@ -4585,7 +4585,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G5-T5
 
 ### NL-533 Day0FlowTests step 4 read the splice-out transaction before it reached bitcoind
-- **Status:** fixed (08774008)
+- **Status:** fixed (8968ebfa)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Day0/Day0FlowTests.cs` (step 4)
