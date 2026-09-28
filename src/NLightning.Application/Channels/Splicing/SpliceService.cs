@@ -66,10 +66,11 @@ using Quiescence;
 /// is off. D16: a splice-out we initiate pays its fee share from our channel balance (the contribution is the amount
 /// plus the fee of the common fields, the shared input and output and the splice-out output).</para>
 /// </remarks>
-public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, IDisposable
+public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentReceiver, IDisposable
 {
     private readonly IChannelLockProvider _channelLockProvider;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
+    private readonly ConcurrentDictionary<ChannelId, SpliceNegotiationHost> _hosts = new();
     private readonly ConcurrentDictionary<ChannelId, SpliceNegotiationModel> _lastSigned = new();
     private readonly ILogger<SpliceService> _logger;
     private readonly IMessageFactory _messageFactory;
@@ -423,7 +424,8 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
                                             latest.Locktime, funding.LocalFundingPubKey, funding.LocalFundingKeyIndex,
                                             funding.RemoteFundingPubKey, false, false, null, null,
                                             SpliceNegotiationState.CommitmentSigned);
-        negotiation.Model = negotiation.Model with { SpliceTxId = txId };
+        // An RBF attempt stays one (its funding row names the attempt it replaces, wave SPR)
+        negotiation.Model = negotiation.Model with { SpliceTxId = txId, RbfOf = funding.RbfOf };
         if (!TryPrepareSharedFunding(negotiation, out var reason))
         {
             _logger.LogWarning("Cannot resume splice {TxId} of channel {ChannelId}: {Reason}", txId, channelId, reason);
@@ -510,8 +512,12 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         if (!_channelMemoryRepository.TryGetChannel(negotiation.ChannelId, out var channel))
             throw new InvalidOperationException($"Channel {negotiation.ChannelId} is not loaded");
 
-        // SP-TX-01..05 on the whole transaction (the session checked most of them already; the reserve row is ours)
-        var facts = GetFacts(negotiation, transaction);
+        // SP-TX-01..05 on the whole transaction (the session checked most of them already; the reserve row is ours,
+        // and for an RBF attempt the fee of the attempt it replaces)
+        var facts = GetFacts(negotiation, transaction) with
+        {
+            PreviousAttemptFeeSatoshis = negotiation.PreviousAttemptFeeSatoshis
+        };
         if (SpliceRules.CheckTxComplete(facts) is { } violation)
             throw new InvalidOperationException($"[{violation.RequirementId}] {violation.Reason}");
 
@@ -521,8 +527,15 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
                                          model.RemoteFundingPubKey!.Value, model.LocalFundingKeyIndex,
                                          checked(model.LocalContributionSatoshis * 1_000),
                                          checked(model.RemoteContributionSatoshis!.Value * 1_000),
-                                         ChannelFundingKind.Splice, ChannelFundingStatus.Pending, model.FeeratePerKw,
-                                         model.Locktime);
+                                         model.IsRbf ? ChannelFundingKind.SpliceRbf : ChannelFundingKind.Splice,
+                                         ChannelFundingStatus.Pending, model.FeeratePerKw, model.Locktime,
+                                         model.RbfOf);
+
+        // SPR-T1/T2: an RBF attempt spends the current funding output like every pending attempt (so they
+        // double-spend each other, IT-RBF-01) and is a valid sibling of the latest one (feerate, batch of 20), checked
+        // before anything is signed for it
+        if (model.IsRbf)
+            CheckRbfAttempt(channel, transaction, funding);
 
         // SP-CS-01: our commitment_signed for the peer's commitment on the new funding (same number, no RAA)
         var commitmentSigned = await _statePort.SignSpliceCommitmentAsync(channel, funding, unitOfWork,
@@ -598,8 +611,14 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         var fundings = _statePort.AddPending(_statePort.GetFundings(channel), funding);
         await _statePort.StageFundingsAsync(channel, fundings, [], unitOfWork, cancellationToken);
         var broadcast = new BroadcastTransactionModel(completion.SignedTransaction, BroadcastPurpose.Funding,
-                                                      channel.ChannelId, GetTip(), completion.FeeratePerKw);
+                                                      channel.ChannelId, GetTip(), completion.FeeratePerKw,
+                                                      negotiation.Model.RbfOf);
         unitOfWork.BroadcastTransactionDbRepository.Add(broadcast);
+
+        // SPR-T1: an RBF attempt replaces the one it bumps in the rebroadcast set (both stay watched: whichever
+        // confirms is locked, SP-LK-03)
+        if (negotiation.Model.RbfOf is { } replaced)
+            await unitOfWork.BroadcastTransactionDbRepository.MarkReplacedAsync(replaced);
         var watch = new WatchedTransactionModel(channel.ChannelId, funding.FundingTxId, GetLockDepth(channel));
         unitOfWork.WatchedTransactionDbRepository.Add(watch);
         negotiation.Completion = new SpliceNegotiation.StagedCompletion(completion.Session.SessionId, fundings,
@@ -836,6 +855,14 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         }
 
         await _statePort.StageFundingsAsync(channel, next, retired, unitOfWork, cancellationToken);
+
+        // SP-LK-03 with RBF siblings (NL-489): the lock discards the other attempts of the splice in the same save, and
+        // their transactions, which double-spend the locked one, are no longer rebroadcast
+        foreach (var discarded in retired.Where(f => f.Status == ChannelFundingStatus.Discarded))
+        {
+            if (unitOfWork.BroadcastTransactionDbRepository is { } broadcasts)
+                await broadcasts.MarkAbandonedAsync(discarded.FundingTxId);
+        }
 
         // The lock moves the channel's funding output: the new outpoint is watched for a spend from this save on (a
         // commitment on it, revoked or not, must reach the on-chain watcher), as the funding output of an open is
@@ -1282,6 +1309,7 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
     {
         var host = new SpliceNegotiationHost(this, negotiation);
         negotiation.Host = host;
+        _hosts[negotiation.ChannelId] = host;
         return host;
     }
 

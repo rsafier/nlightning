@@ -29,18 +29,31 @@ using InteractiveTx.Models;
 /// (SP-SIG-01, refused by the signer before SP-I1 holds) and the 2-of-2 witness.</item>
 /// <item><see cref="OnCompletedAsync"/>: the splice transaction as a pending <c>BroadcastTransactions</c> row, its
 /// confirmation watch and the pending funding, in the driver's save; quiescence then ends (SP-Q-01).</item>
-/// <item><see cref="OnRbfRequestedAsync"/>: splice RBF is wave SPR, so it is rejected.</item>
+/// <item><see cref="OnRbfRequestedAsync"/>: the peer's <c>tx_init_rbf</c> of the pending splice (wave SPR), accepted
+/// with the RBF negotiation <see cref="SpliceService"/> prepared for it after the splice rules
+/// (<c>SpliceService.HandleTxInitRbfAsync</c>), rejected otherwise.</item>
 /// </list>
+/// <para>The interactive-tx driver keeps one host per channel for a splice and its RBF attempts (its completed
+/// attempts belong to the host), so an RBF points this host at the new attempt's negotiation
+/// (<see cref="Negotiation"/>) instead of creating another one.</para>
 /// </remarks>
 public sealed class SpliceNegotiationHost : IInteractiveTxHost
 {
-    private readonly SpliceNegotiation _negotiation;
     private readonly SpliceService _service;
+    private SpliceNegotiation _negotiation;
 
     internal SpliceNegotiationHost(SpliceService service, SpliceNegotiation negotiation)
     {
         _service = service;
         _negotiation = negotiation;
+    }
+
+    /// <summary>The negotiation the callbacks serve: the splice, then each RBF attempt (set under the channel's
+    /// lock).</summary>
+    internal SpliceNegotiation Negotiation
+    {
+        get => _negotiation;
+        set => _negotiation = value ?? throw new ArgumentNullException(nameof(value));
     }
 
     /// <inheritdoc />
@@ -81,5 +94,5 @@ public sealed class SpliceNegotiationHost : IInteractiveTxHost
     public Task<InteractiveTxRbfDecision> OnRbfRequestedAsync(TxInitRbfMessage message,
                                                               IReadOnlyList<ConstructedInteractiveTx> previousAttempts,
                                                               CancellationToken cancellationToken) =>
-        Task.FromResult(InteractiveTxRbfDecision.Reject("splice rbf is not supported yet"));
+        Task.FromResult(_service.OnRbfRequested(_negotiation, message));
 }

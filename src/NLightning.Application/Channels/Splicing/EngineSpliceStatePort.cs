@@ -194,7 +194,9 @@ public sealed class EngineSpliceStatePort : ISpliceStatePort
                        Pending = fundings.Pending.Select(f => f.FundingTxId == funding.FundingTxId ? pending : f)
                                          .ToList()
                    }
-                   : fundings.AddPending(pending);
+                   : pending.Kind == ChannelFundingKind.SpliceRbf
+                       ? fundings.AddRbfSibling(pending)
+                       : fundings.AddPending(pending);
     }
 
     /// <inheritdoc />

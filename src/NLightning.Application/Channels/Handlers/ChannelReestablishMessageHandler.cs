@@ -190,7 +190,7 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
 
         // SP-RE-04: the peer's my_current_funding_locked processed as its splice_locked, before the retransmissions
         if (plan.PeerSpliceLocked is { } lockedTxId && plan.Outcome == ReestablishOutcome.Resume)
-            replies.AddRange(await ProcessPeerSpliceLockedAsync(channel, lockedTxId, peerPubKey));
+            replies.AddRange(await ProcessPeerSpliceLockedAsync(channel, lockedTxId));
 
         foreach (var step in plan.Steps)
             replies.AddRange(await BuildStepAsync(channel, step, local, peer, peerPubKey));
@@ -345,12 +345,10 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
 
     /// <summary>
     /// SP-RE-04: the peer's <c>my_current_funding_locked</c> for a pending splice whose <c>splice_locked</c> we lack is
-    /// processed as that <c>splice_locked</c> (lane SP2-B's <see cref="ISpliceService.HandlePeerFundingLockedAsync"/>;
-    /// until it is implemented, the splice service's own <c>splice_locked</c> handling, which is what the spec asks).
+    /// processed as that <c>splice_locked</c> (<see cref="ISpliceService.HandlePeerFundingLockedAsync"/>).
     /// </summary>
     private async Task<IReadOnlyList<IChannelMessage>> ProcessPeerSpliceLockedAsync(ChannelModel channel,
-                                                                                    TxId fundingTxId,
-                                                                                    CompactPubKey peerPubKey)
+                                                                                    TxId fundingTxId)
     {
         if (_serviceProvider?.GetService<ISpliceService>() is not { } spliceService)
         {
@@ -362,16 +360,7 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         _logger.LogInformation(
             "my_current_funding_locked {TxId} of channel {ChannelId} taken as the peer's splice_locked (SP-RE-04)",
             fundingTxId, channel.ChannelId);
-        try
-        {
-            return await spliceService.HandlePeerFundingLockedAsync(channel, fundingTxId, _unitOfWork);
-        }
-        catch (NotImplementedException) when (spliceService is SpliceService splices)
-        {
-            return await splices.HandleSpliceLockedAsync(
-                       _messageFactory.CreateSpliceLockedMessage(channel.ChannelId, fundingTxId), peerPubKey,
-                       _unitOfWork);
-        }
+        return await spliceService.HandlePeerFundingLockedAsync(channel, fundingTxId, _unitOfWork);
     }
 
     /// <summary>

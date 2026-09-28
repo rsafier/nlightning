@@ -62,6 +62,17 @@ internal sealed class SpliceNegotiation
     /// <summary>Our wallet contribution chosen before quiescence (a splice-in we initiate), or null.</summary>
     public InteractiveTxContribution? WalletContribution { get; set; }
 
+    /// <summary>
+    /// For an RBF attempt (<see cref="SpliceNegotiationModel.RbfOf"/> set, wave SPR): our contribution to the new
+    /// attempt, rebuilt from the latest attempt's (the same wallet inputs and reservation, so every attempt
+    /// double-spends the others and an abort never releases inputs a signed attempt still spends).
+    /// </summary>
+    public InteractiveTxContribution? RbfContribution { get; set; }
+
+    /// <summary>For an RBF attempt: the total fee of the attempt it replaces (SP-TX-05: the new one pays at least
+    /// as much).</summary>
+    public ulong? PreviousAttemptFeeSatoshis { get; set; }
+
     /// <summary>The shared input and output (set once both funding keys are known).</summary>
     public SharedFundingSpec? SharedFunding { get; set; }
 
