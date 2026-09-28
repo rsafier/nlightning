@@ -71,7 +71,7 @@ Copy the build output elsewhere before a long run if you keep working in the che
 gracefully: the graph is flushed and the summary written. Options: `--dir`, `--peer`, `--max-minutes`,
 `--min-minutes`, `--plateau-minutes`, `--sample-seconds`, `--sync-peers`, `--tip`, `--listen-port` (19735),
 `--log-level`, `--label`, `--chain`, `--rpc-env`, `--chain-concurrency`, `--chain-rate`, `--sync-tip`,
-`--block-poll-seconds`, `--max-blocks-per-poll`; for `verify`: `--sample`, `--rate`, `--esplora`.
+`--block-poll-seconds`, `--max-blocks-per-poll`, `--relay-to`, `--bootstrap`; for `verify`: `--sample`, `--rate`, `--esplora`.
 
 ### Relay run (`--relay-to`, D12)
 
@@ -86,6 +86,31 @@ probe still has no channel and announces nothing of its own. The relay backlog i
 dotnet tools/NLightning.GossipProbe/bin/Release/net10.0/NLightning.GossipProbe.dll run --chain rpc \
     --dir ~/.nltg-gossip-probe/verified --relay-to ACINQ --min-minutes 20 --max-minutes 25 --label relay
 ```
+
+### BOLT 10 bootstrap run (`--bootstrap`, NL-113)
+
+`--bootstrap` (a flag without value; no `--peer` or `--relay-to` with it) configures no peer: the probe starts the
+product's `PeerBootstrapService` right after `PeerManager.StartAsync`, as `NltgDaemonService` does, with
+`Node:Bootstrap` at its mainnet default (on since 2026-09-28; every other run sets `Node:Bootstrap:Enabled=false`),
+so the peers come only from the DNS seeds and the sync runs from them (`Gossip:SyncPeers` at its product default, 3,
+unless `--sync-peers` is given). The probe never dials. Use a fresh `--dir` so the node knows no peer and no graph
+node (the bootstrap skips its run while the graph knows nodes with addresses, NL-543). After the run the probe asks
+every mainnet seed once more through the product's seed client (the "seed census", not part of the discovery).
+
+```bash
+dotnet tools/NLightning.GossipProbe/bin/Release/net10.0/NLightning.GossipProbe.dll run --bootstrap --chain rpc \
+    --dir ~/.nltg-gossip-probe/b10-bootstrap --min-minutes 40 --max-minutes 40 --sample-seconds 30 --label b10
+```
+
+Extra output: `bootstrap-seeds.csv` (every seed query: seed, outcome, candidates, rejected, whether the fallback
+resolvers answered and what the system resolver said, seconds), `bootstrap-dials.csv` (every dial: seed, node id,
+address, port, family, outcome `Connected`/`AlreadyConnected`/`Failed`/`TimedOut`, seconds, error),
+`bootstrap-runs.csv` (every run: skip reason, candidates collected and selected, dials, connections, peers after),
+`bootstrap-peers.csv` (every peer seen connected: address, first and last sample, alias and feature bits of its
+node_announcement once gossip has it, init feature bits), six `bootstrap_*` columns in `samples.csv`, the discovered
+peers in `peers.csv`, and `summary.json` → `bootstrap` (the status, dials by outcome, seed, family and port, minutes
+to the first and third peer and to `sync_complete`, the seed census, the peers with an implementation guess: LND by
+its node_announcement bit 2023 or its default alias, the first 20 hex digits of its node id).
 
 ## Output (`<dir>/runs/<UTC time>[-label]/`)
 

@@ -39,7 +39,7 @@ public class NodeOptions
     public List<string> DnsSeedServers { get; set; } = [];
 
     /// <summary>
-    /// BOLT 10 DNS seed bootstrap (NL-113), from <c>Node:Bootstrap</c>; off by default.
+    /// BOLT 10 DNS seed bootstrap (NL-113), from <c>Node:Bootstrap</c>; on by default on mainnet only.
     /// </summary>
     /// <see cref="BootstrapOptions"/>
     public BootstrapOptions Bootstrap { get; set; } = new();
@@ -221,7 +221,9 @@ public class NodeOptions
         errors.AddRange(Keysend.GetValidationErrors());
         errors.AddRange(Quiescence.GetValidationErrors());
         errors.AddRange(Bootstrap.GetValidationErrors());
-        if (Bootstrap.IsEnabled && Bootstrap.ConnectTimeout < NetworkTimeout)
+        // Only an explicit Enabled = true: the mainnet default must never stop a node whose operator raised
+        // NetworkTimeout (the bootstrap then waits NetworkTimeout, BootstrapOptions.GetEffectiveConnectTimeout)
+        if (Bootstrap.Enabled == true && Bootstrap.ConnectTimeout < NetworkTimeout)
             errors.Add($"Bootstrap:ConnectTimeout ({Bootstrap.ConnectTimeout}) must be at least NetworkTimeout "
                      + $"({NetworkTimeout}), the TCP connect alone, when bootstrap is enabled.");
         if (CustomSignet is not null)

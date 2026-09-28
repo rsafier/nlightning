@@ -7,7 +7,7 @@ using Domain.Protocol.ValueObjects;
 public class BootstrapOptionsTests
 {
     [Fact]
-    public void Given_DefaultOptions_When_Read_Then_BootstrapIsOffAndValid()
+    public void Given_DefaultOptions_When_Read_Then_BootstrapIsUnsetAndValid()
     {
         // Arrange
         var options = new BootstrapOptions();
@@ -17,11 +17,90 @@ public class BootstrapOptionsTests
 
         // Assert
         Assert.Null(options.Enabled);
-        Assert.False(options.IsEnabled);
         Assert.Empty(errors);
         Assert.Equal(DnsSeedTransport.Tcp, options.Transport);
         Assert.Equal(DnsSeedAddressTypes.Both, options.AddressFamilies);
         Assert.Empty(new NodeOptions().GetValidationErrors());
+    }
+
+    [Theory]
+    [InlineData("mainnet", true)]
+    [InlineData("testnet", false)]
+    [InlineData("regtest", false)]
+    [InlineData("signet", false)]
+    [InlineData("mutinynet", false)]
+    public void Given_EnabledUnset_When_ReadOnANetwork_Then_OnlyMainnetBootstraps(string network, bool expected)
+    {
+        // Arrange: D-B10-1 as reversed by the owner on 2026-09-28
+        var options = new BootstrapOptions();
+
+        // Act
+        var enabled = options.IsEnabledOn(BitcoinNetwork.Resolve(network));
+
+        // Assert
+        Assert.Equal(expected, enabled);
+    }
+
+    [Theory]
+    [InlineData("mainnet", false)]
+    [InlineData("mainnet", true)]
+    [InlineData("regtest", true)]
+    [InlineData("testnet", true)]
+    public void Given_EnabledSet_When_ReadOnANetwork_Then_TheSettingWins(string network, bool enabled)
+    {
+        // Arrange
+        var options = new BootstrapOptions { Enabled = enabled };
+
+        // Act & Assert
+        Assert.Equal(enabled, options.IsEnabledOn(BitcoinNetwork.Resolve(network)));
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_Read_Then_ThePublicFallbackResolversAreUsed()
+    {
+        // Arrange: D-B10-7, the system resolver first, then 1.1.1.1 and 8.8.8.8
+        var options = new BootstrapOptions();
+
+        // Act & Assert
+        Assert.True(options.FallbackToPublicResolvers);
+        Assert.Equal(["1.1.1.1", "8.8.8.8"], options.FallbackNameServers);
+        Assert.Equal(BootstrapOptions.DefaultFallbackNameServers, options.FallbackNameServers);
+        Assert.True(options.UsesFallbackResolvers);
+    }
+
+    [Fact]
+    public void Given_ConfiguredNameServers_When_Read_Then_NoFallbackIsUsed()
+    {
+        // Arrange: an operator who names resolvers gets exactly those
+        var options = new BootstrapOptions { NameServers = ["9.9.9.9"] };
+
+        // Act & Assert
+        Assert.False(options.UsesFallbackResolvers);
+    }
+
+    [Fact]
+    public void Given_TheFallbackTurnedOffOrEmpty_When_Read_Then_NoFallbackIsUsed()
+    {
+        // Arrange
+        var off = new BootstrapOptions { FallbackToPublicResolvers = false };
+        var empty = new BootstrapOptions { FallbackNameServers = [] };
+
+        // Act & Assert
+        Assert.False(off.UsesFallbackResolvers);
+        Assert.False(empty.UsesFallbackResolvers);
+    }
+
+    [Fact]
+    public void Given_AnInvalidFallbackNameServer_When_Validated_Then_ItIsAnError()
+    {
+        // Arrange
+        var options = new BootstrapOptions { FallbackNameServers = ["1.1.1.1", "resolver.example"] };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains("FallbackNameServers 'resolver.example'"));
     }
 
     [Theory]
@@ -151,16 +230,20 @@ public class BootstrapOptionsTests
     }
 
     [Theory]
-    [InlineData(true, 10, true)]
-    [InlineData(true, 15, false)]
-    [InlineData(true, 30, false)]
-    [InlineData(false, 10, false)]
+    [InlineData(true, 10, "regtest", true)]
+    [InlineData(true, 15, "regtest", false)]
+    [InlineData(true, 30, "regtest", false)]
+    [InlineData(false, 10, "mainnet", false)]
+    [InlineData(null, 10, "mainnet", false)]
+    [InlineData(null, 10, "regtest", false)]
     public void Given_AConnectTimeoutAgainstTheNetworkTimeout_When_Validated_Then_ShorterIsAnErrorWhenEnabled(
-        bool enabled, int connectSeconds, bool expectError)
+        bool? enabled, int connectSeconds, string network, bool expectError)
     {
-        // Arrange: the TCP connect alone may take NetworkTimeout (15 s by default)
+        // Arrange: the TCP connect alone may take NetworkTimeout (15 s by default). Unset is on on mainnet, but only an
+        // explicit Enabled = true makes a short ConnectTimeout an error (the dial then waits NetworkTimeout)
         var nodeOptions = new NodeOptions
         {
+            BitcoinNetwork = BitcoinNetwork.Resolve(network),
             Bootstrap = { Enabled = enabled, ConnectTimeout = TimeSpan.FromSeconds(connectSeconds) }
         };
 
@@ -188,5 +271,22 @@ public class BootstrapOptionsTests
     {
         // Assert (BOLT 10 names no seed list; these are what LND and CLN ship with)
         Assert.Equal(["nodes.lightning.directory", "nodes.lightning.wiki"], BootstrapOptions.MainnetSeeds);
+    }
+
+    [Theory]
+    [InlineData(30, 15, 30)]
+    [InlineData(30, 60, 60)]
+    [InlineData(30, 30, 30)]
+    public void Given_ANetworkTimeout_When_ReadingTheEffectiveConnectTimeout_Then_ItIsNeverShorter(int connectSeconds,
+        int networkSeconds, int expectedSeconds)
+    {
+        // Arrange
+        var options = new BootstrapOptions { ConnectTimeout = TimeSpan.FromSeconds(connectSeconds) };
+
+        // Act
+        var effective = options.GetEffectiveConnectTimeout(TimeSpan.FromSeconds(networkSeconds));
+
+        // Assert
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), effective);
     }
 }

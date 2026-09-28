@@ -312,6 +312,11 @@ public static class NodeServiceExtensions
                      if (nameServers is not null)
                          options.Bootstrap.NameServers = nameServers.ToList();
 
+                     var fallbackNameServers =
+                         configuration.GetSection("Node:Bootstrap:FallbackNameServers").Get<string[]?>();
+                     if (fallbackNameServers is not null)
+                         options.Bootstrap.FallbackNameServers = fallbackNameServers.ToList();
+
                      var networkString = configuration.GetValue<string>("Node:Network");
                      if (!string.IsNullOrWhiteSpace(networkString))
                      {

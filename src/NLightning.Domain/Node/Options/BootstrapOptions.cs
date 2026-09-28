@@ -8,8 +8,9 @@ using Protocol.ValueObjects;
 
 /// <summary>
 /// BOLT 10 DNS seed bootstrap (NL-113), configuration section <c>Node:Bootstrap</c> (it is
-/// <see cref="NodeOptions.Bootstrap"/>). Off by default (D-B10-1): seed answers are unauthenticated DNS and every peer
-/// connected through them is saved as a permanent <c>Peers</c> row.
+/// <see cref="NodeOptions.Bootstrap"/>). On by default on mainnet only (D-B10-1, reversed by the owner on 2026-09-28:
+/// a fresh mainnet node finds its first peers without configuration); off elsewhere. Seed answers are unauthenticated
+/// DNS (the BOLT 8 handshake proves the node id) and every peer connected through them is saved as a <c>Peers</c> row.
 /// </summary>
 public class BootstrapOptions
 {
@@ -28,11 +29,23 @@ public class BootstrapOptions
     /// <summary>The largest <see cref="MaxDialConcurrency"/>.</summary>
     public const int MaxDialConcurrencyLimit = 8;
 
-    /// <summary>Bootstrap from DNS seeds; unset means off. Read the effective value from <see cref="IsEnabled"/>.</summary>
+    /// <summary>
+    /// The public resolvers asked when the system resolvers give no usable answer for a seed (D-B10-7): Cloudflare and
+    /// Google, IPv4 (reachable from IPv4-only hosts).
+    /// </summary>
+    public static IReadOnlyList<string> DefaultFallbackNameServers { get; } = ["1.1.1.1", "8.8.8.8"];
+
+    /// <summary>
+    /// Bootstrap from DNS seeds; unset means on on mainnet and off on every other network (D-B10-1 as reversed on
+    /// 2026-09-28). Read the effective value from <see cref="IsEnabledOn"/>.
+    /// </summary>
     public bool? Enabled { get; set; }
 
-    /// <summary>The effective switch: <see cref="Enabled"/> when set, otherwise false.</summary>
-    public bool IsEnabled => Enabled ?? false;
+    /// <summary>
+    /// The effective switch on <paramref name="network"/>: <see cref="Enabled"/> when set, otherwise true on mainnet
+    /// only (testnet has a seed but stays off: testnet3 is being replaced by testnet4, which has no seed, NL-545).
+    /// </summary>
+    public bool IsEnabledOn(BitcoinNetwork network) => Enabled ?? network.Name == NetworkConstants.Mainnet;
 
     /// <summary>
     /// The seed roots to query; unset means the network's own list (<see cref="GetDefaultSeeds"/>). Seeds are used on
@@ -74,6 +87,27 @@ public class BootstrapOptions
     /// </summary>
     public List<string> NameServers { get; set; } = [];
 
+    /// <summary>
+    /// Ask <see cref="FallbackNameServers"/> for a seed the system resolvers gave no candidate for (SERVFAIL, timeout,
+    /// no records). On by default (D-B10-7): home routers and some ISP resolvers fail the seeds' SRV answers, and
+    /// the system resolver learns of the seed query anyway. Used only when <see cref="NameServers"/> is empty: an
+    /// operator who names resolvers gets exactly those.
+    /// </summary>
+    public bool FallbackToPublicResolvers { get; set; } = true;
+
+    /// <summary>
+    /// The resolvers of the fallback, <c>ip[:port]</c>; <see cref="DefaultFallbackNameServers"/> by default.
+    /// </summary>
+    public List<string> FallbackNameServers { get; set; } = [.. DefaultFallbackNameServers];
+
+    /// <summary>
+    /// True when a seed without candidates from the system resolvers is asked again through
+    /// <see cref="FallbackNameServers"/>: <see cref="FallbackToPublicResolvers"/>, no <see cref="NameServers"/> and a
+    /// fallback list.
+    /// </summary>
+    public bool UsesFallbackResolvers =>
+        FallbackToPublicResolvers && NameServers.Count == 0 && FallbackNameServers.Count > 0;
+
     /// <summary>How DNS queries travel; TCP by default (D-B10-3: 25 SRV records do not fit in 512 bytes).</summary>
     public DnsSeedTransport Transport { get; set; } = DnsSeedTransport.Tcp;
 
@@ -100,6 +134,14 @@ public class BootstrapOptions
     /// the default <c>Node:NetworkTimeout</c> (15 s) of the TCP connect alone, so a slow honest peer is not cut off.
     /// </summary>
     public TimeSpan ConnectTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// The time a dial gets: <see cref="ConnectTimeout"/>, but never less than <paramref name="networkTimeout"/>
+    /// (<c>Node:NetworkTimeout</c>, the TCP connect alone), so an operator who raised that one is not cut off by the
+    /// mainnet default of the bootstrap.
+    /// </summary>
+    public TimeSpan GetEffectiveConnectTimeout(TimeSpan networkTimeout) =>
+        ConnectTimeout >= networkTimeout ? ConnectTimeout : networkTimeout;
 
     /// <summary>The wait before another run while the node stays under <see cref="MinPeers"/>.</summary>
     public TimeSpan RetryInterval { get; set; } = TimeSpan.FromMinutes(5);
@@ -187,6 +229,10 @@ public class BootstrapOptions
         foreach (var nameServer in NameServers)
             if (!TryParseNameServer(nameServer, out _))
                 errors.Add($"{prefix}{nameof(NameServers)} '{nameServer}' is not ip[:port].");
+
+        foreach (var nameServer in FallbackNameServers)
+            if (!TryParseNameServer(nameServer, out _))
+                errors.Add($"{prefix}{nameof(FallbackNameServers)} '{nameServer}' is not ip[:port].");
 
         return errors;
 

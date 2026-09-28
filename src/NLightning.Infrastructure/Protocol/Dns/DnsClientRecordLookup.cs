@@ -14,19 +14,25 @@ using Domain.Node.Options;
 /// <remarks>
 /// Over TCP by default (<see cref="BootstrapOptions.Transport"/>); UDP asks with EDNS0 (4096 bytes) and retries over
 /// TCP on a truncated answer. No cache: a seed's answer is used once. A failing name server passes the query to the
-/// next one. Names come back without their final dot; nothing is validated here.
+/// next one. Names come back without their final dot; nothing is validated here. The same class, built over
+/// <see cref="BootstrapOptions.FallbackNameServers"/>, serves <see cref="FallbackDnsRecordLookup"/>. A host without
+/// any system resolver answers every query <see cref="DnsLookupStatus.Other"/> (the fallback may still answer).
 /// </remarks>
 internal sealed class DnsClientRecordLookup : IDnsRecordLookup
 {
-    private readonly ILogger<DnsClientRecordLookup> _logger;
-    private readonly BootstrapOptions _options;
+    private readonly ILogger _logger;
     private readonly Lazy<LookupClient> _client;
 
     public DnsClientRecordLookup(IOptions<NodeOptions> nodeOptions, ILogger<DnsClientRecordLookup> logger)
+        : this(nodeOptions.Value.Bootstrap, nodeOptions.Value.Bootstrap.NameServers, logger)
+    {
+    }
+
+    /// <summary>A lookup over <paramref name="nameServers"/> (empty: the system resolvers).</summary>
+    internal DnsClientRecordLookup(BootstrapOptions options, IReadOnlyList<string> nameServers, ILogger logger)
     {
         _logger = logger;
-        _options = nodeOptions.Value.Bootstrap;
-        _client = new Lazy<LookupClient>(() => new LookupClient(BuildOptions(_options)),
+        _client = new Lazy<LookupClient>(() => new LookupClient(BuildOptions(options, nameServers)),
                                          LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
@@ -44,10 +50,22 @@ internal sealed class DnsClientRecordLookup : IDnsRecordLookup
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
         };
 
+        LookupClient client;
+        try
+        {
+            client = _client.Value;
+        }
+        catch (Exception e)
+        {
+            // No name server found on the host (DnsClient reads the system's list when it is built)
+            _logger.LogDebug(e, "No DNS resolver for {Name} {Type}", name, queryType);
+            return DnsLookupResponse.Of(DnsLookupStatus.Other);
+        }
+
         IDnsQueryResponse response;
         try
         {
-            response = await _client.Value.QueryAsync(name, queryType, QueryClass.IN, ct);
+            response = await client.QueryAsync(name, queryType, QueryClass.IN, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -71,13 +89,16 @@ internal sealed class DnsClientRecordLookup : IDnsRecordLookup
     }
 
     /// <summary>The DnsClient settings of <paramref name="options"/> (no I/O; also read by tests).</summary>
-    internal static LookupClientOptions BuildOptions(BootstrapOptions options)
+    internal static LookupClientOptions BuildOptions(BootstrapOptions options) =>
+        BuildOptions(options, options.NameServers);
+
+    /// <summary>The DnsClient settings of <paramref name="options"/> over <paramref name="nameServers"/>.</summary>
+    internal static LookupClientOptions BuildOptions(BootstrapOptions options, IReadOnlyList<string> nameServers)
     {
-        var servers = options.NameServers
-                             .Select(s => BootstrapOptions.TryParseNameServer(s, out var endPoint)
-                                              ? endPoint
-                                              : throw new ArgumentException($"Invalid name server '{s}'"))
-                             .ToArray();
+        var servers = nameServers.Select(s => BootstrapOptions.TryParseNameServer(s, out var endPoint)
+                                                  ? endPoint
+                                                  : throw new ArgumentException($"Invalid name server '{s}'"))
+                                 .ToArray();
         var clientOptions = servers.Length > 0 ? new LookupClientOptions(servers) : new LookupClientOptions();
         clientOptions.UseTcpOnly = options.Transport == DnsSeedTransport.Tcp;
         clientOptions.UseTcpFallback = true;

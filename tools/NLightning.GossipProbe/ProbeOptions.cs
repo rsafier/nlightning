@@ -74,6 +74,12 @@ public sealed class ProbeOptions
     /// </summary>
     public string? RelayTo { get; private set; }
 
+    /// <summary>
+    /// The BOLT 10 run (NL-113): no configured peer; the product's <c>PeerBootstrapService</c> (the daemon's code path,
+    /// <c>Node:Bootstrap</c> at its mainnet default) finds the peers through the DNS seeds, and the probe never dials.
+    /// </summary>
+    public bool Bootstrap { get; private set; }
+
     public static string Usage =>
         """
         nltg gossip probe (test harness; mainnet, gossip-only, no channels, no funds)
@@ -84,7 +90,7 @@ public sealed class ProbeOptions
                              [--listen-port 19735] [--log-level Information|Debug] [--label <text>]
                              [--chain stub|rpc] [--rpc-env <file>] [--chain-concurrency <n>] [--chain-rate <n/s>]
                              [--sync-tip headers|blocks] [--block-poll-seconds 15] [--max-blocks-per-poll 10]
-                             [--relay-to <node id|alias>]
+                             [--relay-to <node id|alias>] [--bootstrap]
           GossipProbe verify [--dir <path>] [--sample 300] [--rate 2] [--esplora https://mempool.space/api]
           GossipProbe chaininfo [--rpc-env <file>]
 
@@ -95,6 +101,8 @@ public sealed class ProbeOptions
                 With --chain rpc the funding outputs are checked against the bitcoind of --rpc-env (the product's
                 FundingOutputLookup, AssumeChannelValid off) and new blocks are followed for the spend detection.
                 --relay-to (needs --chain rpc) turns the relay of other nodes' gossip on toward that one peer only.
+                --bootstrap takes no peer: the node finds its peers through the BOLT 10 DNS seeds (the product's
+                PeerBootstrapService, as the daemon starts it) and syncs from them; bootstrap-*.csv record it.
         chaininfo  checks that this process reaches the bitcoind of --rpc-env (getblockchaininfo).
         verify  checks a random sample of the stored channels' funding outputs against an Esplora API (at most
                 --rate requests per second; stops on HTTP 429).
@@ -112,6 +120,12 @@ public sealed class ProbeOptions
         for (; i < args.Length; i++)
         {
             var name = args[i];
+            if (name == "--bootstrap")
+            {
+                options.Bootstrap = true;
+                continue;
+            }
+
             if (i + 1 >= args.Length)
                 return null;
 
@@ -149,6 +163,9 @@ public sealed class ProbeOptions
                 default: return null;
             }
         }
+
+        if (options.Bootstrap)
+            return options.Peers.Count == 0 && options.RelayTo is null ? options : null;
 
         if (options.Peers.Count == 0)
             options.Peers.AddRange(DefaultPeers);

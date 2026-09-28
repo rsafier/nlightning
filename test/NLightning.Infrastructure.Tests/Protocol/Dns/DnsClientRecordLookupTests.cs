@@ -66,4 +66,53 @@ public class DnsClientRecordLookupTests
         Assert.True(clientOptions.UseTcpFallback);
         Assert.Equal(4096, clientOptions.ExtendedDnsBufferSize);
     }
+
+    [Fact]
+    public void Given_DefaultOptions_When_TheFallbackIsConstructed_Then_ItIsAvailableOverThePublicResolversWithoutIo()
+    {
+        // Arrange: D-B10-7, the system resolver first, then 1.1.1.1 and 8.8.8.8
+        var nodeOptions = new NodeOptions();
+
+        // Act
+        var fallback = new FallbackDnsRecordLookup(Options.Create(nodeOptions),
+                                                   NullLogger<FallbackDnsRecordLookup>.Instance);
+
+        // Assert
+        Assert.True(fallback.IsAvailable);
+        Assert.Equal(["1.1.1.1", "8.8.8.8"], fallback.NameServers);
+        Assert.False(fallback.IsClientCreated);
+    }
+
+    [Fact]
+    public async Task Given_ConfiguredNameServers_When_TheFallbackIsAsked_Then_ItAnswersWithoutAQuery()
+    {
+        // Arrange: an operator who names resolvers gets exactly those
+        var nodeOptions = new NodeOptions { Bootstrap = { NameServers = ["9.9.9.9"] } };
+        var fallback = new FallbackDnsRecordLookup(Options.Create(nodeOptions),
+                                                   NullLogger<FallbackDnsRecordLookup>.Instance);
+
+        // Act
+        var response = await fallback.QueryAsync("nodes.lightning.directory", DnsRecordKind.Srv,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(fallback.IsAvailable);
+        Assert.Equal(DnsLookupStatus.Other, response.Status);
+        Assert.False(fallback.IsClientCreated);
+    }
+
+    [Fact]
+    public void Given_FallbackServers_When_BuildingTheClientOptions_Then_TheyAreTheNameServers()
+    {
+        // Arrange
+        var options = new BootstrapOptions();
+
+        // Act
+        var clientOptions = DnsClientRecordLookup.BuildOptions(options, options.FallbackNameServers);
+
+        // Assert
+        Assert.Equal([("1.1.1.1", 53), ("8.8.8.8", 53)],
+                     clientOptions.NameServers.Select(n => (n.Address, n.Port)).ToArray());
+        Assert.True(clientOptions.UseTcpOnly);
+    }
 }

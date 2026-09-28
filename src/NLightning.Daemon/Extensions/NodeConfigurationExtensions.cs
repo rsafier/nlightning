@@ -258,6 +258,8 @@ public static class NodeConfigurationExtensions
     /// <c>docs/agents/MUTINYNET.md</c>. <c>OnionMessages</c> carries the <see cref="OnionMessageOptions"/> defaults
     /// (BOLT 4 onion messages, wave M6); they apply only once <c>Node:Features:OptionOnionMessages</c> is advertised.
     /// <c>Offers</c> carries the <see cref="OfferOptions"/> defaults (BOLT 12 offers, wave B12; NL-454).
+    /// <c>Node:Bootstrap</c> (BOLT 10, NL-113) is on on mainnet and off elsewhere (D-B10-1 as reversed on 2026-09-28),
+    /// with the network's seeds and the public fallback resolvers (D-B10-7).
     /// </remarks>
     /// <exception cref="ArgumentException">The network is unknown.</exception>
     internal static string CreateDefaultConfigJson(string network)
@@ -301,9 +303,11 @@ public static class NodeConfigurationExtensions
             _ => 8332
         };
         var (zmqHost, zmqBlockPort, zmqTxPort) = isSignet ? ("127.0.0.1", 28332, 28333) : ("bitcoinzmq", 8334, 8335);
-        // BOLT 10 bootstrap (NL-113): off; the network's own seeds (mainnet 2, testnet 1, none elsewhere, D-B10-2)
+        // BOLT 10 bootstrap (NL-113): on on mainnet only (D-B10-1 as reversed on 2026-09-28); the network's own seeds
+        // (mainnet 2, testnet 1, none elsewhere, D-B10-2); the public fallback resolvers (D-B10-7)
         var bootstrap = new BootstrapOptions();
         var bootstrapSeeds = string.Join(", ", BootstrapOptions.GetDefaultSeeds(resolved).Select(seed => $"\"{seed}\""));
+        var bootstrapFallbackServers = string.Join(", ", bootstrap.FallbackNameServers.Select(server => $"\"{server}\""));
         var customSignet = isSignet
                                ? $"\n    \"CustomSignet\": {{ \"Name\": \"{customSignetName}\" }},"
                                : string.Empty;
@@ -342,10 +346,12 @@ public static class NodeConfigurationExtensions
                    "Network": "{{NETWORK}}",{{CUSTOM_SIGNET}}
                    "Daemon": false,
                    "Bootstrap": {
-                     "Enabled": false,
+                     "Enabled": {{BOOTSTRAP_ENABLED}},
                      "Seeds": [{{BOOTSTRAP_SEEDS}}],
                      "AllowSeedsOnThisNetwork": false,
                      "NameServers": [],
+                     "FallbackToPublicResolvers": true,
+                     "FallbackNameServers": [{{BOOTSTRAP_FALLBACK_SERVERS}}],
                      "Transport": "{{BOOTSTRAP_TRANSPORT}}",
                      "MinPeers": {{BOOTSTRAP_MIN_PEERS}},
                      "MaxPeersFromBootstrap": {{BOOTSTRAP_MAX_PEERS}},
@@ -469,7 +475,9 @@ public static class NodeConfigurationExtensions
                }
                """.Replace("{{NETWORK}}", resolved.Name)
                   .Replace("{{CUSTOM_SIGNET}}", customSignet)
+                  .Replace("{{BOOTSTRAP_ENABLED}}", bootstrap.IsEnabledOn(resolved) ? "true" : "false")
                   .Replace("{{BOOTSTRAP_SEEDS}}", bootstrapSeeds)
+                  .Replace("{{BOOTSTRAP_FALLBACK_SERVERS}}", bootstrapFallbackServers)
                   .Replace("{{BOOTSTRAP_TRANSPORT}}", bootstrap.Transport.ToString())
                   .Replace("{{BOOTSTRAP_MIN_PEERS}}", Invariant(bootstrap.MinPeers))
                   .Replace("{{BOOTSTRAP_MAX_PEERS}}", Invariant(bootstrap.MaxPeersFromBootstrap))

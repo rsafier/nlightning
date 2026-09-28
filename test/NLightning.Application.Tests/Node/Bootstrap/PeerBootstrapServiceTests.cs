@@ -127,7 +127,48 @@ public class PeerBootstrapServiceTests
     [Fact]
     public async Task Given_BootstrapDisabled_When_Started_Then_NoSeedIsQueried()
     {
-        // Arrange
+        // Arrange: explicitly off, also on mainnet
+        _nodeOptions.Bootstrap.Enabled = false;
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Null(service.Loop);
+        VerifyNoSeedQuery();
+        var status = service.GetStatus();
+        Assert.False(status.Enabled);
+        Assert.Null(status.StartedAt);
+    }
+
+    [Fact]
+    public async Task Given_EnabledUnsetOnMainnet_When_Started_Then_TheSeedsAreQueried()
+    {
+        // Arrange: D-B10-1 as reversed by the owner on 2026-09-28
+        _nodeOptions.Bootstrap.Enabled = null;
+        SetupSeed(SeedA, Ok(SeedA, Candidate(SeedA)));
+        SetupSeed(SeedB, Ok(SeedB, Candidate(SeedB)));
+        DialsSucceed();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.NotNull(service.Loop);
+        Assert.Equal(2, _connected.Count);
+        Assert.True(service.GetStatus().Enabled);
+    }
+
+    [Theory]
+    [InlineData("testnet")]
+    [InlineData("regtest")]
+    [InlineData("signet")]
+    public async Task Given_EnabledUnsetOffMainnet_When_Started_Then_NoSeedIsQueried(string network)
+    {
+        // Arrange: testnet has a seed but stays off by default
+        _nodeOptions.BitcoinNetwork = BitcoinNetwork.Resolve(network);
         _nodeOptions.Bootstrap.Enabled = null;
         var service = CreateService();
 
@@ -137,6 +178,65 @@ public class PeerBootstrapServiceTests
         // Assert
         Assert.Null(service.Loop);
         VerifyNoSeedQuery();
+    }
+
+    [Fact]
+    public async Task Given_ARun_When_ItEnds_Then_TheStatusRecordsItsSeedQueriesDialsAndEnd()
+    {
+        // Arrange: seed A answers through the fallback resolvers, seed B fails; one dial connects, one is refused
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        var good = Candidate(SeedA);
+        var refused = Candidate(SeedA);
+        SetupSeed(SeedA, new DnsSeedResult(SeedA, DnsSeedOutcome.Ok, [good, refused], 2, UsedFallbackResolver: true,
+                                           SystemResolverOutcome: DnsSeedOutcome.ServerFailure));
+        SetupSeed(SeedB, new DnsSeedResult(SeedB, DnsSeedOutcome.NxDomain, [], 0));
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .Returns((PeerAddressInfo info, CancellationToken _) =>
+                                 info == refused.ToPeerAddressInfo()
+                                     ? Task.FromException<PeerModel>(new ConnectionException("refused"))
+                                     : Task.FromResult(Connect(info)));
+        _nodeOptions.Bootstrap.MaxDialConcurrency = 2;
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        var status = service.GetStatus();
+        Assert.True(status.Enabled);
+        Assert.NotNull(status.StartedAt);
+        Assert.NotNull(status.FinishedAt);
+        Assert.Contains("MinPeers", status.EndReason);
+        var run = Assert.Single(status.Runs);
+        Assert.Null(run.SkipReason);
+        Assert.Equal(1, run.Connected);
+        Assert.Equal(1, run.PeersAfter);
+        var queryA = Assert.Single(status.SeedQueries, q => q.Seed == SeedA);
+        Assert.True(queryA.UsedFallbackResolver);
+        Assert.Equal(DnsSeedOutcome.ServerFailure, queryA.SystemResolverOutcome);
+        Assert.Equal(2, queryA.Candidates);
+        Assert.Equal(2, queryA.Rejected);
+        Assert.Contains(status.Dials, d => d.Candidate == good && d.Outcome == BootstrapDialOutcome.Connected);
+        Assert.All(status.Dials.Where(d => d.Candidate == refused),
+                   d => Assert.Equal(BootstrapDialOutcome.Failed, d.Outcome));
+    }
+
+    [Fact]
+    public async Task Given_ASkippedRun_When_ItEnds_Then_TheStatusRecordsTheSkipReason()
+    {
+        // Arrange
+        _blockchainMonitor.SetupGet(m => m.IsChainProcessingHalted).Returns(true);
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        var status = service.GetStatus();
+        var run = Assert.Single(status.Runs);
+        Assert.Equal("chain processing is halted", run.SkipReason);
+        Assert.Empty(status.SeedQueries);
+        Assert.Contains("MaxRuns", status.EndReason);
     }
 
     [Theory]
@@ -638,6 +738,7 @@ public class PeerBootstrapServiceTests
         // Arrange: one candidate hangs until its token is cancelled; the others connect. Three wanted from three
         // candidates, so every one is dialed whatever the shuffle
         _nodeOptions.Bootstrap.ConnectTimeout = TimeSpan.FromMilliseconds(100);
+        _nodeOptions.NetworkTimeout = TimeSpan.FromMilliseconds(50);
         _nodeOptions.Bootstrap.MaxDialConcurrency = 1;
         _nodeOptions.Bootstrap.MaxPeersFromBootstrap = 3;
         var slow = Candidate(SeedA, address: "1.1.1.1");
@@ -684,6 +785,8 @@ public class PeerBootstrapServiceTests
         Assert.Equal(1, maxInFlight);
         Assert.Equal(2, _connected.Count);
         Assert.DoesNotContain(slow.NodeId, _connected.Keys);
+        var timedOut = Assert.Single(service.GetStatus().Dials, d => d.Candidate == slow);
+        Assert.Equal(BootstrapDialOutcome.TimedOut, timedOut.Outcome);
     }
 
     [Fact]

@@ -39,6 +39,8 @@ public static class DependencyInjection
 
         // BOLT 10 bootstrap's raw DNS queries (NL-113); the resolver is built on the first query, never here
         services.TryAddSingleton<IDnsRecordLookup, DnsClientRecordLookup>();
+        // The public resolvers asked when the system resolvers give a seed no candidate (D-B10-7)
+        services.TryAddSingleton<IFallbackDnsRecordLookup, FallbackDnsRecordLookup>();
 
         // Transient services (new instance each time requested)
         services.AddTransient<IPingPongService, PingPongService>();

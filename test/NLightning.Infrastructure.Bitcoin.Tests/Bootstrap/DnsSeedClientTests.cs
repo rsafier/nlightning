@@ -427,4 +427,132 @@ public class DnsSeedClientTests
         Assert.Equal(IPAddress.Parse("139.59.143.87"),
                      result.Candidates.Single(c => c.Port == 6331).Address);
     }
+
+    private DnsSeedClient CreateClientWithFallback(Mock<IFallbackDnsRecordLookup> fallback) =>
+        new(_lookup.Object, Microsoft.Extensions.Options.Options.Create(_nodeOptions),
+            NullLogger<DnsSeedClient>.Instance, fallback.Object);
+
+    private static Mock<IFallbackDnsRecordLookup> NewFallback(bool available)
+    {
+        var fallback = new Mock<IFallbackDnsRecordLookup>(MockBehavior.Strict);
+        fallback.SetupGet(f => f.IsAvailable).Returns(available);
+        fallback.SetupGet(f => f.NameServers).Returns(["1.1.1.1", "8.8.8.8"]);
+        return fallback;
+    }
+
+    [Fact]
+    public async Task Given_TheSystemResolverFailsTheSeed_When_Queried_Then_TheFallbackAnswers()
+    {
+        // Arrange: D-B10-7, a home router answering SERVFAIL to the seed's SRV query
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        SetupQuery($"_nodes._tcp.{Root}", DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        var fallback = NewFallback(available: true);
+        fallback.Setup(f => f.QueryAsync(Root, DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        fallback.Setup(f => f.QueryAsync(node.Target, DnsRecordKind.A, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Addresses("1.2.3.4"));
+        var client = CreateClientWithFallback(fallback);
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Ok, result.Outcome);
+        Assert.True(result.UsedFallbackResolver);
+        Assert.Equal(DnsSeedOutcome.ServerFailure, result.SystemResolverOutcome);
+        var candidate = Assert.Single(result.Candidates);
+        Assert.Equal(node.Key, candidate.NodeId);
+        Assert.Equal(IPAddress.Parse("1.2.3.4"), candidate.Address);
+    }
+
+    [Fact]
+    public async Task Given_TheSystemResolverAnswers_When_Queried_Then_TheFallbackIsNeverAsked()
+    {
+        // Arrange: the fallback is strict with no setup, so any query to it fails the test
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var fallback = NewFallback(available: true);
+        var client = CreateClientWithFallback(fallback);
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(result.UsedFallbackResolver);
+        Assert.Null(result.SystemResolverOutcome);
+        Assert.Single(result.Candidates);
+        fallback.Verify(f => f.QueryAsync(It.IsAny<string>(), It.IsAny<DnsRecordKind>(),
+                                          It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_SrvRecordsWhoseAddressesFail_When_Queried_Then_TheFallbackIsAsked()
+    {
+        // Arrange: the system resolver lists the targets but resolves none of them
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        var fallback = NewFallback(available: true);
+        fallback.Setup(f => f.QueryAsync(Root, DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        fallback.Setup(f => f.QueryAsync(node.Target, DnsRecordKind.A, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Addresses("5.6.7.8"));
+        var client = CreateClientWithFallback(fallback);
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert: the system resolver's outcome was Ok, only without a candidate
+        Assert.True(result.UsedFallbackResolver);
+        Assert.Equal(DnsSeedOutcome.Ok, result.SystemResolverOutcome);
+        Assert.Equal(IPAddress.Parse("5.6.7.8"), Assert.Single(result.Candidates).Address);
+    }
+
+    [Fact]
+    public async Task Given_AnUnavailableFallback_When_TheSystemResolverFails_Then_TheFailureIsReported()
+    {
+        // Arrange: configured NameServers or FallbackToPublicResolvers false
+        SetupQuery(Root, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        SetupQuery($"_nodes._tcp.{Root}", DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        var fallback = NewFallback(available: false);
+        var client = CreateClientWithFallback(fallback);
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.ServerFailure, result.Outcome);
+        Assert.False(result.UsedFallbackResolver);
+        Assert.Empty(result.Candidates);
+        fallback.Verify(f => f.QueryAsync(It.IsAny<string>(), It.IsAny<DnsRecordKind>(),
+                                          It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_BothResolversFail_When_Queried_Then_TheFallbacksOutcomeIsReported()
+    {
+        // Arrange
+        SetupQuery(Root, DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        SetupQuery($"_nodes._tcp.{Root}", DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.ServFail));
+        var fallback = NewFallback(available: true);
+        fallback.Setup(f => f.QueryAsync(It.IsAny<string>(), DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(DnsLookupResponse.Of(DnsLookupStatus.NxDomain));
+        var client = CreateClientWithFallback(fallback);
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.NxDomain, result.Outcome);
+        Assert.True(result.UsedFallbackResolver);
+        Assert.Equal(DnsSeedOutcome.ServerFailure, result.SystemResolverOutcome);
+        Assert.Empty(result.Candidates);
+    }
 }

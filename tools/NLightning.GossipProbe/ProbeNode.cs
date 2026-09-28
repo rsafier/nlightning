@@ -73,7 +73,7 @@ public sealed class ProbeNode : IAsyncDisposable
         _provider ?? throw new InvalidOperationException("The probe node has not been built");
 
     /// <summary>Builds the service graph and checks every option the daemon validates on start.</summary>
-    public void Build(int syncPeers)
+    public void Build(int? syncPeers)
     {
         var keyManager = LoadOrCreateKey();
         var settings = new Dictionary<string, string?>
@@ -104,8 +104,12 @@ public sealed class ProbeNode : IAsyncDisposable
             ["Gossip:FundingValidation"] = "Full",
             ["Gossip:AllowPublicChannelsOnMainnet"] = "false",
             ["Gossip:AcceptPublicChannels"] = "false",
-            ["Gossip:SyncPeers"] = syncPeers.ToString(CultureInfo.InvariantCulture)
+            // BOLT 10: a bootstrap run leaves Node:Bootstrap at its mainnet default (on); every other run keeps it off, so
+            // the configured peers are the only ones
+            ["Node:Bootstrap:Enabled"] = _options.Bootstrap ? null : "false"
         };
+        if (syncPeers is { } peers)
+            settings["Gossip:SyncPeers"] = peers.ToString(CultureInfo.InvariantCulture);
         if (_options.ChainConcurrency is { } concurrency)
             settings["Gossip:ChainLookupConcurrency"] = concurrency.ToString(CultureInfo.InvariantCulture);
         if (_options.ChainRate is { } rate)
@@ -172,6 +176,10 @@ public sealed class ProbeNode : IAsyncDisposable
             throw new InvalidOperationException(
                 "The probe must run with relay off (on only with --relay-to), and AssumeChannelValid on without a "
               + "chain, off with one");
+        if (Services.GetRequiredService<IOptions<NodeOptions>>().Value.Bootstrap.IsEnabledOn(network)
+         != _options.Bootstrap)
+            throw new InvalidOperationException(
+                "BOLT 10 bootstrap must be on (by its mainnet default) with --bootstrap and off without it");
 
         if (_rpc is not null)
         {

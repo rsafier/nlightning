@@ -8,11 +8,16 @@ namespace NLightning.Domain.Node.Bootstrap;
 /// <param name="Candidates">The validated peers (node id, routable address, SRV port); may be non-empty with an outcome
 /// other than <see cref="DnsSeedOutcome.Ok"/> when the seed timed out part way.</param>
 /// <param name="Rejected">The records or addresses dropped (bad node id, unusable address, wrong family).</param>
+/// <param name="UsedFallbackResolver">True when this answer came from the fallback resolvers
+/// (<c>Node:Bootstrap:FallbackNameServers</c>) after the system resolvers gave no candidate.</param>
+/// <param name="SystemResolverOutcome">When the fallback was asked: what the system resolvers answered first.</param>
 public sealed record DnsSeedResult(
     string Seed,
     DnsSeedOutcome Outcome,
     IReadOnlyList<SeedPeerCandidate> Candidates,
-    int Rejected);
+    int Rejected,
+    bool UsedFallbackResolver = false,
+    DnsSeedOutcome? SystemResolverOutcome = null);
 
 /// <summary>
 /// The outcome of a BOLT 10 DNS seed query.

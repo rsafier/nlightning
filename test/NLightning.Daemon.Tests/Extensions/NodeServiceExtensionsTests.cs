@@ -693,6 +693,7 @@ public class NodeServiceExtensionsTests
         Assert.Empty(configuration.GetSection("Node:DnsSeedServers").GetChildren());
         Assert.Empty(configuration.GetSection("Node:Bootstrap:Seeds").GetChildren());
         Assert.False(configuration.GetValue<bool>("Node:Bootstrap:Enabled"));
+        Assert.False(options.Bootstrap.IsEnabledOn(options.BitcoinNetwork));
         Assert.Empty(options.Bootstrap.GetEffectiveSeeds(options.BitcoinNetwork, out _));
         Assert.Equal(FeeEstimationOptions.SourceHttp, fees.Source);
         Assert.Equal(feeUrl, fees.Url);
@@ -1045,15 +1046,15 @@ public class NodeServiceExtensionsTests
     }
 
     [Theory]
-    [InlineData("mainnet", new[] { "nodes.lightning.directory", "nodes.lightning.wiki" })]
-    [InlineData("testnet", new[] { "test.nodes.lightning.directory" })]
-    [InlineData("regtest", new string[0])]
-    [InlineData("signet", new string[0])]
-    [InlineData("mutinynet", new string[0])]
-    public void Given_DefaultConfigJson_When_Bound_Then_BootstrapIsOffWithTheNetworksSeeds(string network,
-        string[] seeds)
+    [InlineData("mainnet", true, new[] { "nodes.lightning.directory", "nodes.lightning.wiki" })]
+    [InlineData("testnet", false, new[] { "test.nodes.lightning.directory" })]
+    [InlineData("regtest", false, new string[0])]
+    [InlineData("signet", false, new string[0])]
+    [InlineData("mutinynet", false, new string[0])]
+    public void Given_DefaultConfigJson_When_Bound_Then_BootstrapIsOnOnlyOnMainnetWithTheNetworksSeeds(string network,
+        bool enabled, string[] seeds)
     {
-        // Arrange (NL-113, D-B10-1/2)
+        // Arrange (NL-113, D-B10-1 as reversed on 2026-09-28, D-B10-2, D-B10-7)
         var json = NodeConfigurationExtensions.CreateDefaultConfigJson(network);
         var configuration = new ConfigurationBuilder()
                            .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
@@ -1065,11 +1066,17 @@ public class NodeServiceExtensionsTests
         // Act
         var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
 
-        // Assert: every key is written at its code default, Enabled explicitly false
-        Assert.False(configuration.GetValue<bool?>("Node:Bootstrap:Enabled"));
+        // Assert: every key is written at its code default, Enabled explicitly (true on mainnet only)
+        Assert.Equal(enabled, configuration.GetValue<bool?>("Node:Bootstrap:Enabled"));
         Assert.Equal(seeds, configuration.GetSection("Node:Bootstrap:Seeds").Get<string[]>() ?? []);
         Assert.Null(configuration["Node:DnsSeedServers"]);
-        Assert.False(options.Bootstrap.IsEnabled);
+        Assert.Equal(enabled, options.Bootstrap.IsEnabledOn(options.BitcoinNetwork));
+        Assert.Equal(new BootstrapOptions().IsEnabledOn(options.BitcoinNetwork), enabled);
+        Assert.True(configuration.GetValue<bool?>("Node:Bootstrap:FallbackToPublicResolvers"));
+        Assert.Equal(["1.1.1.1", "8.8.8.8"],
+                     configuration.GetSection("Node:Bootstrap:FallbackNameServers").Get<string[]>());
+        Assert.Equal(["1.1.1.1", "8.8.8.8"], options.Bootstrap.FallbackNameServers);
+        Assert.True(options.Bootstrap.UsesFallbackResolvers);
         Assert.Equal(seeds, options.Bootstrap.GetEffectiveSeeds(options.BitcoinNetwork, out _));
         Assert.False(options.Bootstrap.ObsoleteSeedsIgnored);
         var defaults = new BootstrapOptions();
@@ -1108,6 +1115,43 @@ public class NodeServiceExtensionsTests
         Assert.Equal(["seed.example.org"], options.Bootstrap.Seeds);
         Assert.Equal(["seed.example.org"], options.Bootstrap.GetEffectiveSeeds(BitcoinNetwork.Mainnet, out _));
         Assert.Equal(["1.1.1.1", "8.8.8.8:53"], options.Bootstrap.NameServers);
+        Assert.False(options.Bootstrap.UsesFallbackResolvers);
+    }
+
+    [Fact]
+    public void Given_FallbackNameServers_When_Bound_Then_TheyReplaceThePublicDefaults()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
+                                                        ("Node:Bootstrap:FallbackNameServers:0", "9.9.9.9")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+
+        // Assert: replaced, not appended to 1.1.1.1 and 8.8.8.8
+        Assert.Equal(["9.9.9.9"], options.Bootstrap.FallbackNameServers);
+        Assert.True(options.Bootstrap.UsesFallbackResolvers);
+        Assert.True(provider.GetRequiredService<IFallbackDnsRecordLookup>().IsAvailable);
+    }
+
+    [Fact]
+    public void Given_TheFallbackTurnedOff_When_Bound_Then_TheFallbackIsUnavailable()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
+                                                        ("Node:Bootstrap:FallbackToPublicResolvers", "false")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var fallback = provider.GetRequiredService<IFallbackDnsRecordLookup>();
+
+        // Assert
+        Assert.False(fallback.IsAvailable);
     }
 
     [Theory]
@@ -1180,10 +1224,12 @@ public class NodeServiceExtensionsTests
     [InlineData("true")]
     public async Task Given_NodeServicesOnRegtest_When_TheBootstrapRuns_Then_NoDnsQueryIsMade(string? enabled)
     {
-        // Arrange: a counting lookup registered first (AddInfrastructureServices only TryAdds its own)
+        // Arrange: counting lookups registered first (AddInfrastructureServices only TryAdds its own)
         var lookup = new CountingDnsRecordLookup();
+        var fallback = new CountingDnsRecordLookup();
         var services = new ServiceCollection();
         services.AddSingleton<IDnsRecordLookup>(lookup);
+        services.AddSingleton<IFallbackDnsRecordLookup>(fallback);
         var extra = new List<(string, string)> { ("Node:Bootstrap:StartupDelay", "00:00:00") };
         if (enabled is not null)
             extra.Add(("Node:Bootstrap:Enabled", enabled));
@@ -1202,10 +1248,52 @@ public class NodeServiceExtensionsTests
         // Assert
         Assert.Same(lookup, provider.GetRequiredService<IDnsRecordLookup>());
         Assert.Equal(0, lookup.Queries);
+        Assert.Equal(0, fallback.Queries);
     }
 
-    private sealed class CountingDnsRecordLookup : IDnsRecordLookup
+    [Fact]
+    public async Task Given_NodeServicesOnMainnetWithDefaults_When_TheBootstrapRuns_Then_TheSeedsAreAskedThenTheFallback()
     {
+        // Arrange: D-B10-1 as reversed (Enabled unset = on on mainnet) and D-B10-7 (a system resolver that answers
+        // nothing sends the seed to the fallback); no saved peer, an empty graph
+        var lookup = new CountingDnsRecordLookup();
+        var fallback = new CountingDnsRecordLookup();
+        var services = new ServiceCollection();
+        services.AddSingleton<IDnsRecordLookup>(lookup);
+        services.AddSingleton<IFallbackDnsRecordLookup>(fallback);
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
+                                                        ("Node:Bootstrap:StartupDelay", "00:00:00"),
+                                                        ("Node:Bootstrap:MaxRuns", "1")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync(new List<Domain.Node.Models.PeerModel>());
+        services.AddScoped(_ => unitOfWork.Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var bootstrap = provider.GetRequiredService<IPeerBootstrapService>();
+        await bootstrap.StartAsync(TestContext.Current.CancellationToken);
+        for (var i = 0; i < 100 && bootstrap.GetStatus().FinishedAt is null; i++)
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+        await bootstrap.StopAsync(TestContext.Current.CancellationToken);
+
+        // Assert: both mainnet seeds, each through the system resolver, then through the fallback
+        var status = bootstrap.GetStatus();
+        Assert.True(status.Enabled);
+        Assert.Equal(2, status.SeedQueries.Count);
+        Assert.All(status.SeedQueries, q => Assert.True(q.UsedFallbackResolver));
+        Assert.True(lookup.Queries >= 2);
+        Assert.True(fallback.Queries >= 2);
+    }
+
+    private sealed class CountingDnsRecordLookup : IFallbackDnsRecordLookup
+    {
+        public bool IsAvailable => true;
+
+        public IReadOnlyList<string> NameServers => ["1.1.1.1"];
+
         private int _queries;
 
         public int Queries => Volatile.Read(ref _queries);

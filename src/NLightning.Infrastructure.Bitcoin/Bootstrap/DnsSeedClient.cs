@@ -25,22 +25,44 @@ using Infrastructure.Protocol.Dns;
 internal sealed class DnsSeedClient : IDnsSeedClient
 {
     private readonly IDnsRecordLookup _lookup;
+    private readonly IFallbackDnsRecordLookup? _fallback;
     private readonly ILogger<DnsSeedClient> _logger;
     private readonly BootstrapOptions _options;
 
-    public DnsSeedClient(IDnsRecordLookup lookup, IOptions<NodeOptions> nodeOptions, ILogger<DnsSeedClient> logger)
+    public DnsSeedClient(IDnsRecordLookup lookup, IOptions<NodeOptions> nodeOptions, ILogger<DnsSeedClient> logger,
+                         IFallbackDnsRecordLookup? fallback = null)
     {
         _lookup = lookup;
+        _fallback = fallback;
         _logger = logger;
         _options = nodeOptions.Value.Bootstrap;
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The system (or configured) resolvers first; when they give no candidate and the fallback is available
+    /// (<see cref="BootstrapOptions.UsesFallbackResolvers"/>, D-B10-7) the seed is asked again, with its own
+    /// <see cref="BootstrapOptions.PerSeedTimeout"/>, through <see cref="BootstrapOptions.FallbackNameServers"/>.
+    /// </remarks>
     public async Task<DnsSeedResult> QuerySeedAsync(string seedRoot, DnsSeedAddressTypes families, int maxResults,
                                                     CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(seedRoot);
         var root = seedRoot.Trim().TrimEnd('.').ToLowerInvariant();
+        var result = await QuerySeedWithAsync(_lookup, root, families, maxResults, ct);
+        if (result.Candidates.Count > 0 || maxResults <= 0 || _fallback is not { IsAvailable: true } fallback)
+            return result;
+
+        _logger.LogInformation("Seed {Seed}: the system resolver answered {Outcome} with no candidate; asking {Servers}",
+                               root, result.Outcome, string.Join(", ", fallback.NameServers));
+        var fallbackResult = await QuerySeedWithAsync(fallback, root, families, maxResults, ct);
+        return fallbackResult with { UsedFallbackResolver = true, SystemResolverOutcome = result.Outcome };
+    }
+
+    private async Task<DnsSeedResult> QuerySeedWithAsync(IDnsRecordLookup lookup, string root,
+                                                         DnsSeedAddressTypes families, int maxResults,
+                                                         CancellationToken ct)
+    {
         var candidates = new List<SeedPeerCandidate>();
         var rejected = 0;
         if (maxResults <= 0)
@@ -51,7 +73,7 @@ internal sealed class DnsSeedClient : IDnsSeedClient
         var token = seedCts.Token;
         try
         {
-            var (outcome, srvResponse) = await QuerySrvAsync(root, families, maxResults, token);
+            var (outcome, srvResponse) = await QuerySrvAsync(lookup, root, families, maxResults, token);
             if (srvResponse is null)
                 return new DnsSeedResult(root, outcome, candidates, rejected);
 
@@ -84,7 +106,7 @@ internal sealed class DnsSeedClient : IDnsSeedClient
 
                 if (!addressesByTarget.TryGetValue(target, out var addresses))
                 {
-                    addresses = await GetAddressesAsync(root, target, srvResponse, families, token);
+                    addresses = await GetAddressesAsync(lookup, root, target, srvResponse, families, token);
                     addressesByTarget[target] = addresses;
                 }
 
@@ -132,7 +154,7 @@ internal sealed class DnsSeedClient : IDnsSeedClient
     /// <c>_nodes._tcp.&lt;root&gt;</c>. Null (with the outcome) when none answered records.
     /// </summary>
     private async Task<(DnsSeedOutcome Outcome, DnsLookupResponse? Response)> QuerySrvAsync(
-        string root, DnsSeedAddressTypes families, int maxResults, CancellationToken ct)
+        IDnsRecordLookup lookup, string root, DnsSeedAddressTypes families, int maxResults, CancellationToken ct)
     {
         var names = new List<string>(3);
         if (_options.UseQueryConditions)
@@ -146,7 +168,7 @@ internal sealed class DnsSeedClient : IDnsSeedClient
         var outcome = DnsSeedOutcome.Empty;
         foreach (var name in names)
         {
-            var response = await _lookup.QueryAsync(name, DnsRecordKind.Srv, ct);
+            var response = await lookup.QueryAsync(name, DnsRecordKind.Srv, ct);
             if (response.Status == DnsLookupStatus.NoError && response.Srv.Count > 0)
                 return (DnsSeedOutcome.Ok, response);
 
@@ -159,7 +181,7 @@ internal sealed class DnsSeedClient : IDnsSeedClient
         return (outcome, null);
     }
 
-    private async Task<IReadOnlyList<IPAddress>> GetAddressesAsync(string root, string target,
+    private async Task<IReadOnlyList<IPAddress>> GetAddressesAsync(IDnsRecordLookup lookup, string root, string target,
                                                                    DnsLookupResponse srvResponse,
                                                                    DnsSeedAddressTypes families, CancellationToken ct)
     {
@@ -174,16 +196,17 @@ internal sealed class DnsSeedClient : IDnsSeedClient
 
         var addresses = new List<IPAddress>();
         if (families.HasFlag(DnsSeedAddressTypes.IPv4))
-            addresses.AddRange(await QueryAddressesAsync(root, target, DnsRecordKind.A, ct));
+            addresses.AddRange(await QueryAddressesAsync(lookup, root, target, DnsRecordKind.A, ct));
         if (families.HasFlag(DnsSeedAddressTypes.IPv6))
-            addresses.AddRange(await QueryAddressesAsync(root, target, DnsRecordKind.Aaaa, ct));
+            addresses.AddRange(await QueryAddressesAsync(lookup, root, target, DnsRecordKind.Aaaa, ct));
         return addresses;
     }
 
-    private async Task<IReadOnlyList<IPAddress>> QueryAddressesAsync(string root, string target, DnsRecordKind kind,
+    private async Task<IReadOnlyList<IPAddress>> QueryAddressesAsync(IDnsRecordLookup lookup, string root, string target,
+                                                                     DnsRecordKind kind,
                                                                      CancellationToken ct)
     {
-        var response = await _lookup.QueryAsync(target, kind, ct);
+        var response = await lookup.QueryAsync(target, kind, ct);
         if (response.Status == DnsLookupStatus.NoError)
             return response.Addresses;
 

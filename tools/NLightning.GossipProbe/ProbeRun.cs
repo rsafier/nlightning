@@ -27,6 +27,7 @@ public sealed class ProbeRun
     private RpcSettings? _rpc;
     private TimeSpan _lastCpu;
     private double _lastWallSeconds;
+    private BootstrapProbe? _bootstrap;
 
     public ProbeRun(ProbeOptions options)
     {
@@ -75,7 +76,8 @@ public sealed class ProbeRun
         _summary["wal_bytes_at_start"] = FileSize(node.DatabasePath + "-wal");
 
         _clock.Start();
-        node.Build(_options.SyncPeers ?? _options.Peers.Count);
+        // A bootstrap run keeps the product's Gossip:SyncPeers unless --sync-peers is given
+        node.Build(_options.Bootstrap ? _options.SyncPeers : _options.SyncPeers ?? _options.Peers.Count);
         _summary["node_id"] = node.Services.GetRequiredService<Domain.Protocol.Interfaces.ISecureKeyManager>()
                                   .GetNodePubKey().ToString();
         var watch = Stopwatch.StartNew();
@@ -114,6 +116,13 @@ public sealed class ProbeRun
 
         var peerManager = node.Services.GetRequiredService<IPeerManager>();
         await peerManager.StartAsync(cancellationToken);
+        if (_options.Bootstrap)
+        {
+            // BOLT 10 (NL-113): the daemon's order, the bootstrap after the peer manager; no configured peer
+            _bootstrap = new BootstrapProbe(node.Services, _clock, _runDirectory);
+            await _bootstrap.StartAsync(cancellationToken);
+        }
+
         foreach (var peer in _options.Peers)
             _peers[peer.Split('@')[0]] = new PeerRecord(peer);
 
@@ -152,6 +161,12 @@ public sealed class ProbeRun
         _summary["stop_reason"] = stopReason;
         _summary["run_minutes"] = _clock.Elapsed.TotalMinutes;
         Console.WriteLine($"Stopping ({stopReason}) after {_clock.Elapsed.TotalMinutes:F1} min");
+
+        if (_bootstrap is not null)
+        {
+            await _bootstrap.StopAsync();
+            await _bootstrap.CensusAsync(CancellationToken.None);
+        }
 
         // Stop as the daemon does; the ingress writes the pending graph changes last (timed)
         watch.Restart();
@@ -218,6 +233,8 @@ public sealed class ProbeRun
                                           .ToDictionary(g => g.Key,
                                                         g => g.OrderBy(t => t.Key.Kind, StringComparer.Ordinal)
                                                               .ToDictionary(t => t.Key.Kind, t => t.Value));
+        if (_bootstrap is not null)
+            _summary["bootstrap"] = _bootstrap.Summarize();
         _summary["peers"] = _peers.Values.ToDictionary(p => ProbeOptions.AliasOf(p.NodeId), p => p);
         _summary["time_to_share_of_final_channels_minutes"] = TimeToShare();
         _summary["graph_shape"] = DescribeShape(store);
@@ -235,7 +252,8 @@ public sealed class ProbeRun
       + "private_mb,managed_heap_mb,gc_heap_size_mb,gc0,gc1,gc2,cpu_pct_one_core,db_mb,wal_mb,warnings,errors,"
       + "funding_lookups,flushes,flush_seconds_sum,flush_seconds_max,http_requests,http_failures,"
       + "bitcoind_blocks,follower_height,follower_blocks,verified,spent_marked,pending_announcements,"
-      + "q_relay_pending,q_outbox_gossip,over_memory_budget,memory_budget_refused";
+      + "q_relay_pending,q_outbox_gossip,over_memory_budget,memory_budget_refused,bootstrap_seed_queries,"
+      + "bootstrap_candidates,bootstrap_dials,bootstrap_connected,bootstrap_failed,bootstrap_timed_out";
 
     private const string PeerHeader =
         "utc,elapsed_min,peer,connected,connects,disconnects_seen,initialized,queries,queries_ex,sync_peer,"
@@ -288,7 +306,7 @@ public sealed class ProbeRun
             I(node.Follower?.LastBlockHeight ?? 0), I(node.Follower?.BlocksProcessed ?? 0), I(verified), I(d.SpentChannels),
             I(d.Ingress?.PendingAnnouncements ?? 0), I(gauges.GetValueOrDefault("relay_pending")),
             I(gauges.GetValueOrDefault("outbox_gossip")), budget?.IsOverBudget == true ? "1" : "0",
-            I(budget?.RefusedCount ?? 0)
+            I(budget?.RefusedCount ?? 0), .. (_bootstrap?.SampleColumns() ?? ["", "", "", "", "", ""])
         ]);
         node.TimedLookups?.Flush();
         await samples.WriteLineAsync(row);
@@ -302,6 +320,19 @@ public sealed class ProbeRun
                                ? ""
                                : $" verified {verified} lookups {node.FundingLookupCount} rpc {http?.Requests.Count} "
                                + $"bitcoind {chainNow?.Blocks}"));
+
+        if (_bootstrap is not null)
+        {
+            // The peers the bootstrap connected join peers.csv as they appear
+            await _bootstrap.SampleAsync(connected, d.Sync?.HasCompletedInitialSync == true);
+            foreach (var peer in connected.Where(p => !_peers.ContainsKey(p.NodeId.ToString())))
+                _peers[peer.NodeId.ToString()] = new PeerRecord($"{peer.NodeId}@{peer.Host}:{peer.Port}")
+                {
+                    Connects = 1,
+                    FirstConnectedAtMinutes = minutes,
+                    Features = peer.Features.ToString()
+                };
+        }
 
         var states = d.Sync?.Peers ?? [];
         foreach (var record in _peers.Values)
@@ -340,6 +371,10 @@ public sealed class ProbeRun
 
     private async Task ConnectMissingPeersAsync(IPeerManager peerManager)
     {
+        // A bootstrap run dials nothing itself: its peers are the bootstrap's
+        if (_options.Bootstrap)
+            return;
+
         var connected = peerManager.ListPeers().Select(p => p.NodeId.ToString()).ToHashSet(StringComparer.Ordinal);
         var tasks = _peers.Values.Where(p => !connected.Contains(p.NodeId)).Select(async record =>
         {

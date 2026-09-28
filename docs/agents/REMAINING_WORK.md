@@ -66,7 +66,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 - **Splicing** (NL-021; user priority). Quiescence done in wave qit; waves SP1 and SP2 done in waves sp1/sp2; **wave SPR done in wave spr** (`a0800ac2`: splice RBF both directions, `bumpsplice` (IPC 37) and the optional auto-bump, Proof SPR green against CLN v26.06.8, `Day0FlowTests` RBF step; day-0 hardening NL-490, NL-492, NL-494, NL-495, NL-497 fixed; LND 0.20 observes a spliced channel). **D13 applied in wave d13** (`option_splice`/`option_quiesce` Optional by default on every network, mainnet included; splice RBF recency by blocks, NL-520). Follow-ups NL-477 (CLN-side), NL-480, NL-483, NL-488, NL-493, NL-496, NL-507..NL-510, NL-515, NL-467, NL-468, NL-470; CLN-side NL-502, NL-511. From the day-0 work: NL-498, NL-514.
 - **Zero-conf and scid-alias channels** as first-class options (low priority per the user, 2026-09-27).
 - ~~**Keysend / spontaneous payments, custom TLV records.**~~ **Done in wave lh1** (NL-459). Left: a dedicated custom-records column (NL-460).
-- ~~**Peer storage** (`option_provide_storage`)~~ (done, NL-010) and ~~**DNS bootstrap** (BOLT 10)~~ (done in lane bolt10, NL-113: off by default; left NL-541..NL-545).
+- ~~**Peer storage** (`option_provide_storage`)~~ (done, NL-010) and ~~**DNS bootstrap** (BOLT 10)~~ (done in lane bolt10, NL-113: on by default on mainnet since 2026-09-28, with public fallback resolvers; left NL-541..NL-545).
 
 ## Payments and wallet
 
