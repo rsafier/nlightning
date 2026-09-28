@@ -405,3 +405,54 @@ unexercised**: a leech with no channels is not a gossip source for them. Proving
 channel with, or a peer we control that asks for everything (NL-417).
 
 **D12 decision:** see the BOLT 7 plan, "D12 wave record".
+
+## 24 h mainnet soak (NL-376, 2026-09-27/28)
+
+The long run the D12 record asked for (NL-376): `tools/NLightning.GossipProbe` built at `d929b879` (staged under
+`~/.nltg-gossip-probe/soak/bin`), mainnet, `--chain rpc` against the owner's unpruned bitcoind (verified sync,
+`Gossip:AssumeChannelValid` off), relay off, SQLite, the same five sync peers as the verified run (ACINQ (Eclair),
+bfx-lnd0 and LNBiG-Hub-1 (LND), Blockstream Store and noserver4u (CLN)). Started 2026-09-27 14:28:06 UTC on the
+database of the earlier runs, ended by its own 24 h timer at 2026-09-28 14:28:25 UTC. 288 samples, one every
+5 minutes, in `~/.nltg-gossip-probe/soak/runs/20260927T142806Z-mainnet-soak-24h/` (`samples.csv`, `peers.csv`,
+`lookups.csv`, `range-replies.csv`, `probe.log`).
+
+| | Start (first sample, 5 min) | End (24 h) |
+|---|---|---|
+| Graph channels (all chain-verified) | 11,809 | **30,673** (peak 30,673) |
+| Announcements without an update, held outside the graph (NL-406) | 6,868 | 9,762 (peak 9,784) |
+| Graph nodes / announced | 5,701 / 5,539 | 10,000 / 9,929 |
+| Channel policies | 18,714 | 54,576 |
+| Channels pruned as spent on chain | 0 | 110 |
+| Gossip messages received / accepted | 66,876 / 36,071 | 2,818,158 / 330,866 |
+| Funding lookups (bitcoind) | 11,822 | 32,701, 0 HTTP failures |
+| Block height followed | 968,850 | 969,006 (every block, level with bitcoind) |
+| Database / WAL | 16.8 / 5.0 MiB | 43.0 / 5.3 MiB |
+| Peers connected | 5 | 5 |
+
+- **Sync:** `sync_complete` after 15 minutes; after that the graph grows only with new gossip.
+- **Memory:**
+  - Resident size 447 to 637 MB over the whole run: median 584 MB, 624 MB at the end, and flat after the first 2 hours with no upward trend.
+  - Managed heap 180 to 352 MB.
+  - `Gossip:MaxMemoryMb` (1,024 MB) was never crossed, and nothing was refused.
+- **CPU:** median 1.2 % of one core, peak 35 % during the initial sync.
+- **Writes:**
+  - Graph flushes take at most 0.43 s.
+  - The write-behind queue peaked at 522 and drained.
+  - The ingress queue peaked at 7,513 in the initial sync and sat at 0 afterwards.
+- **WAL:** stays at 5.0 to 5.3 MiB, so the WAL growth NL-376 was opened for does not reproduce over 24 h.
+- **Peers:**
+  - Two disconnections in 24 h, each followed by a reconnect:
+    - noserver4u at 15:16 UTC (no `pong` within our timeout);
+    - ACINQ at 14:11 UTC on day 2 (the peer closed the stream).
+  - No bans and no warnings from any peer.
+  - The CLN peers keep streaming the graph (Blockstream Store sent 533k `channel_update`s, noserver4u 526k). That is most of the 2.35M rejected messages, which were already known or stale.
+- **Log:** 30 warnings and 2 errors.
+  - Warnings:
+    - 14 are EF migration notices at start;
+    - 14 are the dropped-message counter (every 1,000, mostly in the first minutes);
+    - 2 are the disconnections.
+  - Errors: the 2 disconnections above.
+  - A remote end-of-stream is logged at Error level. That is louder than it deserves; a Warning would do.
+
+NL-376 is closed with this run and the Mutinynet 24 h soak (`MUTINYNET.md`, "Gossip soak (G5-T5)"). What mainnet
+gossip still lacks is the relay proof from a node with a public channel (NL-417) and the outbox pause (NL-360).
