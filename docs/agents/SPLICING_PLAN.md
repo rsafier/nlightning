@@ -623,6 +623,17 @@ One lane, no migration. Ledger: NL-021 and NL-042 fixed, NL-037 DF3 done (the ep
 
 Gate (net10.0; Docker in the SDK container, SQL Server skipped): Release and Release.Native builds with the 5 baseline CS86xx, SDK 11 build of net10.0 + net11.0 (0 errors), `dotnet format` clean, non-Docker green (NL-466 flake green alone). Docker: CLN 64/70 in two full runs (NL-521, NL-522; the classes alone 12/12; `ClnQuiescenceTests.Given_OurHtlcInFlight_*`, NL-477, now passes), gossip 28/28, Day0 3/3, `SpliceLndObserverTests` 1/3 (NL-523; the pre-D13 build 2/2), LND suite 70/71 Postgres only (NL-524, the class 5/5 alone), on-chain legacy + anchors 47/47, `BackupRestoreFlowTests` 6/6, ABCD 3 x 10/10. Behaviour seen with peers: every Docker node now advertises 29/35/63; LND 0.20 keeps opening v1 channels to us and CLN's main fixture (no `--experimental-dual-fund`) too, so no v1 proof changed path; CLN now sees our nodes as splicing peers in every class.
 
+### Lane rbf record (2026-09-28; branch `wip/fafo-rbf` from `wip/fafo` at `2b5dffd2`)
+
+No migration. Ledger: NL-521 and NL-522 fixed, new NL-526 and NL-527.
+
+| Task | Status | SHAs |
+|---|---|---|
+| NL-521 changed contribution in a dual-funded RBF | done: the driver hands `tx_ack_rbf` to the host (`IInteractiveTxHost.OnRbfAcknowledgedAsync`); either side's new `funding_output_contribution` is checked and followed (capacity, balances, reserve, in-flight limit, the signer's pending funding locked at completion, the `Initial` funding row), restored when the attempt ends unsigned; `BumpAsync` may change ours; an accepter that funded nothing may contribute in a peer's RBF. The splice ack side already read the peer's contribution (no change) | 7b8dacd6 |
+| NL-522 CLN full-run failures | done: our SP-TX-05 fee reading is right (CLN's `splicein` paid its wallet part above the feerate its `splice_init` named); Proof SPR (b) derives CLN's bump feerate from its first attempt, Proof DF (c) picks feerates inside CLN's funder bounds, `ClnOfferPayTests` gives CLN's offers a path CLN introduces | f1068fce |
+
+Gate (net10.0, Release): `dotnet format` clean, non-Docker green apart from the known flakes (NL-466, NL-472; green alone). Docker (CLN, host): `ClnSpliceRbfTests` 5/5, `ClnDualFundTests` 3/3, `ClnOfferPayTests` 4/4; one full CLN run 67/70 (+4 Explicit), the misses NL-526 (`ClnOfferReceiveTests` exact amounts vs NL-440's dummy hop, fails alone too). Dual-funded RBF stays off by default (`Node:DualFund:AllowRbf`).
+
 ### Waves and lanes (for the multi-agent wave workflow)
 | Wave | Lane | Files owned (exclusive) | Depends on | Proof |
 |---|---|---|---|---|
