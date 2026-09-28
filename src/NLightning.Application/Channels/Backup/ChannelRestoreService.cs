@@ -682,6 +682,7 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                 live.ReplaceFundingOutput(new FundingOutputInfo(LightningMoney.Satoshis(to.CapacitySat),
                                                                 to.LocalFundingPubKey, to.RemoteFundingPubKey,
                                                                 to.FundingTxId, to.FundingOutputIndex));
+                live.SetLocalFundingKeyIndex(to.LocalFundingKeyIndex);
                 if (to.ShortChannelId is { } shortChannelId)
                     live.ShortChannelId = shortChannelId;
                 live.FundingCreatedAtBlockHeight = to.FundingHeight;

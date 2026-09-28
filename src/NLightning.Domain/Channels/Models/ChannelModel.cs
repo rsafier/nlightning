@@ -505,19 +505,20 @@ public class ChannelModel
     /// The signer's view of the channel. Contract (NL-495, wave spr): the funding fields are the <b>current</b>
     /// funding's (<see cref="FundingOutput"/>'s outpoint, capacity and keys, <see cref="LocalFundingPubKey"/>/
     /// <see cref="RemoteFundingPubKey"/>, and <see cref="LocalFundingKeyIndex"/>), not the key sets' original funding
-    /// keys; until the lane lands it still reports the key sets' keys, which the signer tolerates as a refresh of a
-    /// known splice funding.
+    /// keys, so a signer that first learns the channel from the model after a splice lock (a restart without an
+    /// <c>IChannelSigningInfoSource</c>) signs the spliced funding with the rotated key.
     /// </summary>
     public ChannelSigningInfo GetSigningInfo()
     {
         return new ChannelSigningInfo(FundingOutput!.TransactionId!.Value, FundingOutput.Index!.Value,
-                                      FundingOutput.Amount, LocalKeySet.FundingCompactPubKey,
-                                      RemoteKeySet!.FundingCompactPubKey, LocalKeySet.KeyIndex,
-                                      RemoteKeySet.HtlcCompactBasepoint, LocalCommitmentNumber, DataLossDetected)
+                                      FundingOutput.Amount, LocalFundingPubKey,
+                                      RemoteFundingPubKey ?? RemoteKeySet!.FundingCompactPubKey, LocalKeySet.KeyIndex,
+                                      RemoteKeySet!.HtlcCompactBasepoint, LocalCommitmentNumber, DataLossDetected)
         {
             RemoteNodeId = RemoteNodeId,
             ShortChannelId = ((byte[]?)ShortChannelId)?.Length > 0 ? ShortChannelId : (ShortChannelId?)null,
-            AnnounceChannel = AnnounceChannel
+            AnnounceChannel = AnnounceChannel,
+            LocalFundingKeyIndex = LocalFundingKeyIndex
         };
     }
 }

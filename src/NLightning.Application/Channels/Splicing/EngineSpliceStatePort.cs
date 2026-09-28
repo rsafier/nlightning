@@ -300,6 +300,9 @@ public sealed class EngineSpliceStatePort : ISpliceStatePort
             channel.ReplaceFundingOutput(new FundingOutputInfo(LightningMoney.Satoshis(locked.CapacitySatoshis),
                                                                locked.LocalFundingPubKey, locked.RemoteFundingPubKey,
                                                                locked.FundingTxId, locked.OutputIndex));
+            // The rotated key's index goes with it, so the signing info the model reports is the locked funding's
+            // (NL-495)
+            channel.SetLocalFundingKeyIndex(locked.LocalFundingKeyIndex);
             // The channel's short channel id follows the lock too (the ChannelFundings save wrote it to the channel
             // row); the signer needs it to sign the new channel_announcement
             if (locked.ShortChannelId is { } shortChannelId)
