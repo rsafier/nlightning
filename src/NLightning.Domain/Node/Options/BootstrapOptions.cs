@@ -13,10 +13,13 @@ using Protocol.ValueObjects;
 /// </summary>
 public class BootstrapOptions
 {
-    /// <summary>The mainnet seeds (BOLT 10 lists these; both answer SRV with bech32 node ids).</summary>
+    /// <summary>
+    /// The mainnet seeds. BOLT 10 defines no seed list (its examples use <c>lseed.bitcoinstats.com</c>); these are the
+    /// seeds LND and CLN ship with, checked on 2026-09-28 (both answer SRV with bech32 node ids).
+    /// </summary>
     public static IReadOnlyList<string> MainnetSeeds { get; } = ["nodes.lightning.directory", "nodes.lightning.wiki"];
 
-    /// <summary>The testnet (testnet3) seeds.</summary>
+    /// <summary>The testnet (testnet3) seed LND ships with (checked on 2026-09-28).</summary>
     public static IReadOnlyList<string> TestnetSeeds { get; } = ["test.nodes.lightning.directory"];
 
     /// <summary>The largest <see cref="MaxPerSeed"/>.</summary>
@@ -44,10 +47,27 @@ public class BootstrapOptions
     public bool AllowSeedsOnThisNetwork { get; set; }
 
     /// <summary>
-    /// Set when <see cref="Seeds"/> was copied from the obsolete <c>Node:DnsSeedServers</c> key; the bootstrap
-    /// service logs a warning. Not a configuration key.
+    /// The seeds older config templates wrote into the obsolete <c>Node:DnsSeedServers</c> key on every network but
+    /// signets. The operator never chose them, so such a list is ignored without a warning.
     /// </summary>
-    public bool SeedsFromObsoleteKey { get; set; }
+    public static IReadOnlyList<string> ObsoleteTemplateSeeds { get; } =
+        ["nlseed.nlightn.ing", "nodes.lightning.directory", "lseed.bitcoinstats.com"];
+
+    /// <summary>
+    /// Set by the host when the obsolete <c>Node:DnsSeedServers</c> key carries seeds that are not the old template's
+    /// (<see cref="ObsoleteTemplateSeeds"/>). The key is never used; the bootstrap service warns once, when enabled,
+    /// that it is ignored. Not a configuration key.
+    /// </summary>
+    public bool ObsoleteSeedsIgnored { get; set; }
+
+    /// <summary>
+    /// True when <paramref name="obsoleteSeeds"/> (the <c>Node:DnsSeedServers</c> entries) holds a seed the old
+    /// template did not write, i.e. an operator edited the list.
+    /// </summary>
+    public static bool IsEditedObsoleteSeedList(IEnumerable<string?>? obsoleteSeeds) =>
+        obsoleteSeeds?.Where(s => !string.IsNullOrWhiteSpace(s))
+                      .Any(s => !ObsoleteTemplateSeeds.Contains(s!.Trim().TrimEnd('.'),
+                                                                StringComparer.OrdinalIgnoreCase)) == true;
 
     /// <summary>
     /// The DNS servers to ask, <c>ip[:port]</c> (IPv6 in brackets with a port); empty means the system resolvers.
@@ -75,8 +95,11 @@ public class BootstrapOptions
     /// <summary>The time one DNS query gets.</summary>
     public TimeSpan QueryTimeout { get; set; } = TimeSpan.FromSeconds(3);
 
-    /// <summary>The time one connection (TCP and BOLT 8 handshake, init) gets.</summary>
-    public TimeSpan ConnectTimeout { get; set; } = TimeSpan.FromSeconds(10);
+    /// <summary>
+    /// The time one connection (TCP, BOLT 8 handshake, init) gets; the dial is cancelled when it runs out. Longer than
+    /// the default <c>Node:NetworkTimeout</c> (15 s) of the TCP connect alone, so a slow honest peer is not cut off.
+    /// </summary>
+    public TimeSpan ConnectTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>The wait before another run while the node stays under <see cref="MinPeers"/>.</summary>
     public TimeSpan RetryInterval { get; set; } = TimeSpan.FromMinutes(5);

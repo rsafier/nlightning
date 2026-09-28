@@ -174,6 +174,50 @@ public class PeerManagerTests
     }
 
     [Fact]
+    public async Task Given_ADialWhoseInitNeverComes_When_ItIsCancelled_Then_TheConnectionIsClosedAndNothingSaved()
+    {
+        // Arrange (NL-113: the bootstrap's connect timeout cancels the dial instead of abandoning it)
+        var peerManager = CreatePeerManager();
+        var peerAddressInfo = new PeerAddressInfo($"{_compactPubKey}@127.0.0.1:9735");
+        var connectedPeer = new ConnectedPeer(_compactPubKey, ExpectedHost, ExpectedPort, new Mock<TcpClient>().Object);
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>())).ReturnsAsync(connectedPeer);
+        _mockPeerService.Setup(p => p.WaitForInitAsync(It.IsAny<CancellationToken>()))
+                        .Returns((CancellationToken ct) => Task.Delay(Timeout.Infinite, ct));
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        // Act & Assert
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => peerManager.DialPeerAsync(peerAddressInfo,
+                                                                    cts.Token));
+        Assert.Empty(peerManager.ListPeers());
+        _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception>()), Times.Once);
+        _mockPeerService.Verify(p => p.Dispose(), Times.Once);
+        _mockPeerDbRepository.Verify(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()), Times.Never);
+        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ADialWhoseTcpConnectHangs_When_ItIsCancelled_Then_NoHandshakeStarts()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        var peerAddressInfo = new PeerAddressInfo($"{_compactPubKey}@127.0.0.1:9735");
+        var connect = new TaskCompletionSource<ConnectedPeer>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>())).Returns(connect.Task);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        // Act
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => peerManager.DialPeerAsync(peerAddressInfo,
+                                                                    cts.Token));
+        using var tcpClient = new TcpClient();
+        connect.SetResult(new ConnectedPeer(_compactPubKey, ExpectedHost, ExpectedPort, tcpClient));
+
+        // Assert
+        _mockPeerServiceFactory.Verify(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(),
+                                                                       It.IsAny<TcpClient>()), Times.Never);
+        Assert.Empty(peerManager.ListPeers());
+    }
+
+    [Fact]
     public async Task Given_ConnectedPeer_When_ConnectToPeerAsyncAgain_Then_InvalidOperationException()
     {
         // Arrange

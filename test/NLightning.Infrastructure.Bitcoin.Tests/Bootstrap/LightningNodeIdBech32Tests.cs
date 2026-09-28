@@ -198,4 +198,27 @@ public class LightningNodeIdBech32Tests
         Assert.False(decoded);
         Assert.False(LightningNodeIdBech32.TryDecode("l" + LiveLabel, out _, out _));
     }
+
+    [Theory]
+    [InlineData("ln1qwktpe6jxltmpphyl578eax6fcjc2m807qalr76a5gfmx7k9qqfjwy4mctz")]
+    [InlineData("ln1qv2w3tledmzczw227nnkqrrltvmydl8gu4w4d70g9td7avke6nmz2tdefqp")]
+    [InlineData("ln1qtynyymv99pqf0r9cuexvvqtxrlgejuecf8myfsa96vcpflgll5cqmr2xsu")]
+    [InlineData("ln1qdfvlysfpyh96apy3w3qdwlu8jjkdhnuxa689ka540tnde6gnx86cf7ga2d")]
+    [InlineData("ln1qwf789tlcpe4n34649xrqllxt97whsvfk5pm07ggqms3vrjwdj3cu6332zs")]
+    [InlineData("ln1q2jy22cg2nckgxttjf8txmamwe9rtw325v4m04ug2dm9sxlrh9cagrrpy86")]
+    [InlineData("ln1qfrkq32xayuq63anmc2zp5vtd2jxafhdzzudmuws0hvxshtgd2zd7jsqv7f")]
+    [InlineData("ln1qwx3prnvmxuwsnaqhzwsrrpwy4pjf5m8fv4m8kcjkdvyrzymlcmj5dakwrx")]
+    [InlineData("ln1qwr7x7q2gvj7kwzzr7urqq9x7mq0lf9xn6svs8dn7q8gu5q4e852znqj3j7")]
+    public void Given_ABolt10ExampleLabel_When_Decoded_Then_ItIsACurvePointThatEncodesBackToTheLabel(string label)
+    {
+        // Act (BOLT 10 "Examples": the virtual hosts of the lseed.bitcoinstats.com answers)
+        var decoded = LightningNodeIdBech32.TryDecode(label, out var key, out var reason);
+
+        // Assert
+        Assert.True(decoded, reason);
+        Assert.Equal(LightningNodeIdBech32.LabelLength, label.Length);
+        Assert.True(PubKey.TryCreatePubKey(key, out var point));
+        Assert.True(point.IsCompressed);
+        Assert.Equal(label, LightningNodeIdBech32.Encode(key));
+    }
 }

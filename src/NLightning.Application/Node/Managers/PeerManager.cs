@@ -34,6 +34,7 @@ using Gossip.Events;
 using Gossip.Interfaces;
 using Gossip.Metrics;
 using Gossip.Sync;
+using Infrastructure.Node.ValueObjects;
 using Infrastructure.Protocol.Models;
 using Infrastructure.Transport.Events;
 using Infrastructure.Transport.Interfaces;
@@ -343,12 +344,18 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// <inheritdoc />
     /// <exception cref="ConnectionException">Thrown when the connection to the peer fails.</exception>
     /// <exception cref="InvalidOperationException">Thrown when the connection to the peer already exists.</exception>
-    public async Task<PeerModel> ConnectToPeerAsync(PeerAddressInfo peerAddressInfo)
+    public Task<PeerModel> ConnectToPeerAsync(PeerAddressInfo peerAddressInfo) =>
+        DialPeerAsync(peerAddressInfo, CancellationToken.None);
+
+    /// <inheritdoc />
+    /// <exception cref="ConnectionException">Thrown when the connection to the peer fails.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when the connection to the peer already exists.</exception>
+    public async Task<PeerModel> DialPeerAsync(PeerAddressInfo peerAddressInfo, CancellationToken cancellationToken)
     {
         using var scope = _serviceProvider.CreateScope();
         using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        var peer = await ConnectToPeerAsync(peerAddressInfo, uow);
+        var peer = await ConnectToPeerAsync(peerAddressInfo, uow, cancellationToken);
 
         await uow.SaveChangesAsync();
 
@@ -488,7 +495,8 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         StartReconnectLoop(dialable);
     }
 
-    private async Task<PeerModel> ConnectToPeerAsync(PeerAddressInfo peerAddressInfo, IUnitOfWork uow)
+    private async Task<PeerModel> ConnectToPeerAsync(PeerAddressInfo peerAddressInfo, IUnitOfWork uow,
+                                                     CancellationToken cancellationToken = default)
     {
         // Convert and validate the address
         var peerAddress = new PeerAddress(peerAddressInfo.Address);
@@ -499,14 +507,42 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             throw new InvalidOperationException($"Already connected to peer {peerAddress.PubKey}");
         }
 
-        // Connect to the peer
-        var connectedPeer = await _tcpService.ConnectToPeerAsync(peerAddress);
+        // Connect to the peer. A cancelled dial closes whatever it opened (the TCP connect itself is bounded by
+        // NetworkTimeout), so it never outlives its caller's timeout as a session
+        cancellationToken.ThrowIfCancellationRequested();
+        var connectTask = _tcpService.ConnectToPeerAsync(peerAddress);
+        ConnectedPeer connectedPeer;
+        try
+        {
+            connectedPeer = await connectTask.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            _ = connectTask.ContinueWith(t => t.Result.TcpClient.Dispose(), CancellationToken.None,
+                                         TaskContinuationOptions.OnlyOnRanToCompletion
+                                       | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            throw;
+        }
 
-        var peerService = await _peerServiceFactory.CreateConnectedPeerAsync(connectedPeer.CompactPubKey,
-                                                                             connectedPeer.TcpClient);
+        var createTask = _peerServiceFactory.CreateConnectedPeerAsync(connectedPeer.CompactPubKey,
+                                                                      connectedPeer.TcpClient);
+        IPeerService peerService;
+        try
+        {
+            peerService = await createTask.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Closing the socket ends the handshake; a service built anyway is released
+            connectedPeer.TcpClient.Dispose();
+            _ = createTask.ContinueWith(t => t.Result.Dispose(), CancellationToken.None,
+                                        TaskContinuationOptions.OnlyOnRanToCompletion
+                                      | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            throw;
+        }
 
         // The peer's preferred address and features come with its init
-        await WaitForInitAsync(peerService);
+        await WaitForInitAsync(peerService, cancellationToken);
 
         // BOLT 1 has no preferred address (init remote_addr is our address, NL-344): keep the one we connected to
         var peer = new PeerModel(connectedPeer.CompactPubKey, connectedPeer.Host, connectedPeer.Port,
@@ -543,18 +579,26 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// <exception cref="ConnectionException">
     /// The connection closed before the init exchange was done, or the manager is stopping.
     /// </exception>
-    private async Task WaitForInitAsync(IPeerService peerService)
+    private async Task WaitForInitAsync(IPeerService peerService, CancellationToken cancellationToken = default)
     {
         var stoppingToken = _stoppingCts.Token;
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, cancellationToken);
         try
         {
-            await peerService.WaitForInitAsync(stoppingToken).WaitAsync(stoppingToken);
+            await peerService.WaitForInitAsync(linked.Token).WaitAsync(linked.Token);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             peerService.Disconnect(new ConnectionException("Shutting down"));
             peerService.Dispose();
             throw new ConnectionException($"Not keeping the connection to peer {peerService.PeerPubKey}: stopping");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // The caller gave up (a dial timeout): the connection is not kept
+            peerService.Disconnect(new ConnectionException("Dial cancelled"));
+            peerService.Dispose();
+            throw;
         }
         catch (Exception e)
         {

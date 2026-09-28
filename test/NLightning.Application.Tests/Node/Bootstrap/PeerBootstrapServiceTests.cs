@@ -4,15 +4,21 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NBitcoin;
+using NLightning.Tests.Utils.Channels;
 
 namespace NLightning.Application.Tests.Node.Bootstrap;
 
 using Application.Gossip.Graph.Interfaces;
 using Application.Node.Bootstrap;
+using Domain.Channels.Enums;
+using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Gossip.Addresses;
 using Domain.Gossip.Graph;
+using Domain.Money;
 using Domain.Node.Bootstrap;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
@@ -61,9 +67,17 @@ public class PeerBootstrapServiceTests
 
     private static CompactPubKey NewKey() => new(new Key().PubKey.ToBytes());
 
-    private static SeedPeerCandidate Candidate(string seed, CompactPubKey? nodeId = null, string address = "1.2.3.4",
-                                               ushort port = 9735) =>
-        new(nodeId ?? NewKey(), IPAddress.Parse(address), port, seed);
+    private static int s_nextAddress;
+
+    /// <summary>A candidate; without an address each gets its own (one endpoint is dialed at most once).</summary>
+    private static SeedPeerCandidate Candidate(string seed, CompactPubKey? nodeId = null, string? address = null,
+                                               ushort port = 9735)
+    {
+        var n = Interlocked.Increment(ref s_nextAddress);
+        return new SeedPeerCandidate(nodeId ?? NewKey(),
+                                     IPAddress.Parse(address ?? $"11.{(n >> 16) & 0xff}.{(n >> 8) & 0xff}.{n & 0xff}"),
+                                     port, seed);
+    }
 
     private static DnsSeedResult Ok(string seed, params SeedPeerCandidate[] candidates) =>
         new(seed, DnsSeedOutcome.Ok, candidates, 0);
@@ -75,8 +89,8 @@ public class PeerBootstrapServiceTests
 
     /// <summary>Every dial succeeds and the peer shows as connected.</summary>
     private void DialsSucceed() =>
-        _peerManager.Setup(p => p.ConnectToPeerAsync(It.IsAny<PeerAddressInfo>()))
-                    .ReturnsAsync((PeerAddressInfo info) => Connect(info));
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync((PeerAddressInfo info, CancellationToken _) => Connect(info));
 
     private PeerModel Connect(PeerAddressInfo info)
     {
@@ -108,7 +122,7 @@ public class PeerBootstrapServiceTests
                                                     It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
 
     private int DialCount() =>
-        _peerManager.Invocations.Count(i => i.Method.Name == nameof(IPeerManager.ConnectToPeerAsync));
+        _peerManager.Invocations.Count(i => i.Method.Name == nameof(IPeerManager.DialPeerAsync));
 
     [Fact]
     public async Task Given_BootstrapDisabled_When_Started_Then_NoSeedIsQueried()
@@ -165,10 +179,10 @@ public class PeerBootstrapServiceTests
     }
 
     [Fact]
-    public async Task Given_ASavedDialablePeer_When_Started_Then_BootstrapIsSkipped()
+    public async Task Given_ASavedPeerWithAnActiveChannelToReconnect_When_Started_Then_BootstrapIsSkipped()
     {
-        // Arrange
-        _saved.Add(new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4"));
+        // Arrange: the peer manager keeps reconnecting it
+        _saved.Add(new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4") { Channels = [CreateChannel(ChannelState.Open)] });
         var service = CreateService();
 
         // Act
@@ -176,7 +190,30 @@ public class PeerBootstrapServiceTests
 
         // Assert
         VerifyNoSeedQuery();
-        Assert.Contains(_logger.Entries, e => e.Message.Contains("saved peers to dial"));
+        Assert.Contains(_logger.Entries, e => e.Message.Contains("saved peers with channels to reconnect"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_ASavedDisconnectedPeerWithoutActiveChannels_When_Started_Then_BootstrapRuns(
+        bool closedChannel)
+    {
+        // Arrange: an earlier bootstrap peer that went away; the peer manager dialed it once at start and never again
+        _saved.Add(new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4")
+        {
+            Channels = closedChannel ? [CreateChannel(ChannelState.Closed)] : null
+        });
+        SetupSeed(SeedA, Ok(SeedA, Candidate(SeedA)));
+        SetupSeed(SeedB, Ok(SeedB, Candidate(SeedB)));
+        DialsSucceed();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(2, _connected.Count);
     }
 
     [Fact]
@@ -255,6 +292,45 @@ public class PeerBootstrapServiceTests
     }
 
     [Fact]
+    public async Task Given_AHaltThatClearsBeforeTheSecondRun_When_Bootstrapping_Then_TheSeedsAreQueriedThen()
+    {
+        // Arrange
+        _nodeOptions.Bootstrap.MaxRuns = 3;
+        _blockchainMonitor.SetupSequence(m => m.IsChainProcessingHalted).Returns(true).Returns(false);
+        SetupSeed(SeedA, Ok(SeedA, Enumerable.Range(0, 24).Select(_ => Candidate(SeedA)).ToArray()));
+        SetupSeed(SeedB, Ok(SeedB, Enumerable.Range(0, 24).Select(_ => Candidate(SeedB)).ToArray()));
+        DialsSucceed();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Single(_dnsSeedClient.Invocations);
+        Assert.Equal(_nodeOptions.Bootstrap.MaxPeersFromBootstrap, _connected.Count);
+        Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Information && e.Message.Contains("halted")
+                                                                          && e.Message.Contains("checking again"));
+    }
+
+    [Fact]
+    public async Task Given_AGateThatNeverClears_When_Bootstrapping_Then_ItIsCheckedMaxRunsTimesAndLoggedOnce()
+    {
+        // Arrange
+        _nodeOptions.Bootstrap.MaxRuns = 4;
+        _blockchainMonitor.Setup(m => m.IsChainProcessingHalted).Returns(true);
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        VerifyNoSeedQuery();
+        _blockchainMonitor.Verify(m => m.IsChainProcessingHalted, Times.Exactly(4));
+        Assert.Single(_logger.Entries, e => e.Level == LogLevel.Information && e.Message.Contains("halted"));
+        Assert.Contains(_logger.Entries, e => e.Message.Contains("after 4 runs"));
+    }
+
+    [Fact]
     public async Task Given_TheFirstSeedFails_When_Bootstrapping_Then_TheSecondIsQueriedAndItsPeersDialed()
     {
         // Arrange
@@ -301,8 +377,8 @@ public class PeerBootstrapServiceTests
         SetupSeed(SeedA, Ok(SeedA, Enumerable.Range(0, 20).Select(_ => Candidate(SeedA)).ToArray()));
         SetupSeed(SeedB, new DnsSeedResult(SeedB, DnsSeedOutcome.NxDomain, [], 0));
         var dials = 0;
-        _peerManager.Setup(p => p.ConnectToPeerAsync(It.IsAny<PeerAddressInfo>()))
-                    .Returns((PeerAddressInfo info) => Interlocked.Increment(ref dials) % 2 == 0
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .Returns((PeerAddressInfo info, CancellationToken _) => Interlocked.Increment(ref dials) % 2 == 0
                                                            ? Task.FromResult(Connect(info))
                                                            : Task.FromException<PeerModel>(
                                                                new ConnectionException("refused")));
@@ -355,8 +431,9 @@ public class PeerBootstrapServiceTests
 
         // Assert
         Assert.Equal(1, DialCount());
-        _peerManager.Verify(p => p.ConnectToPeerAsync(It.Is<PeerAddressInfo>(i => i.Address.StartsWith(
-                                                                                   fresh.ToString()))),
+        _peerManager.Verify(p => p.DialPeerAsync(It.Is<PeerAddressInfo>(i => i.Address.StartsWith(
+                                                                                   fresh.ToString())),
+                                                 It.IsAny<CancellationToken>()),
                             Times.Once);
     }
 
@@ -405,8 +482,8 @@ public class PeerBootstrapServiceTests
         var good = Candidate(SeedA);
         SetupSeed(SeedA, Ok(SeedA, already, refused, good));
         SetupSeed(SeedB, Ok(SeedB));
-        _peerManager.Setup(p => p.ConnectToPeerAsync(It.IsAny<PeerAddressInfo>()))
-                    .Returns((PeerAddressInfo info) =>
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .Returns((PeerAddressInfo info, CancellationToken _) =>
                      {
                          if (info == already.ToPeerAddressInfo())
                              return Task.FromException<PeerModel>(new InvalidOperationException("Already connected"));
@@ -434,8 +511,8 @@ public class PeerBootstrapServiceTests
         SetupSeed(SeedB, Ok(SeedB));
         var inFlight = 0;
         var maxInFlight = 0;
-        _peerManager.Setup(p => p.ConnectToPeerAsync(It.IsAny<PeerAddressInfo>()))
-                    .Returns(async (PeerAddressInfo info) =>
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .Returns(async (PeerAddressInfo info, CancellationToken _) =>
                      {
                          var now = Interlocked.Increment(ref inFlight);
                          lock (_connected)
@@ -534,19 +611,131 @@ public class PeerBootstrapServiceTests
         Assert.DoesNotContain(_logger.Entries, e => e.Level >= LogLevel.Error);
     }
 
-    [Fact]
-    public async Task Given_SeedsFromTheObsoleteKey_When_Started_Then_AWarningIsLogged()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_AnIgnoredObsoleteSeedList_When_Started_Then_AWarningOnlyWhenEnabled(bool enabled)
     {
         // Arrange
-        _nodeOptions.Bootstrap.Enabled = false;
-        _nodeOptions.Bootstrap.SeedsFromObsoleteKey = true;
+        _nodeOptions.Bootstrap.Enabled = enabled;
+        _nodeOptions.Bootstrap.ObsoleteSeedsIgnored = true;
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        var peer = new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4");
+        _connected[peer.NodeId] = peer;
         var service = CreateService();
 
         // Act
         await RunToEndAsync(service);
 
         // Assert
-        Assert.Contains(_logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("DnsSeedServers"));
+        Assert.Equal(enabled ? 1 : 0,
+                     _logger.Entries.Count(e => e.Level == LogLevel.Warning && e.Message.Contains("DnsSeedServers")));
+    }
+
+    [Fact]
+    public async Task Given_ADialThatOutlivesTheConnectTimeout_When_Bootstrapping_Then_ItIsCancelledAndItsSlotReused()
+    {
+        // Arrange: one candidate hangs until its token is cancelled; the others connect. Three wanted from three
+        // candidates, so every one is dialed whatever the shuffle
+        _nodeOptions.Bootstrap.ConnectTimeout = TimeSpan.FromMilliseconds(100);
+        _nodeOptions.Bootstrap.MaxDialConcurrency = 1;
+        _nodeOptions.Bootstrap.MaxPeersFromBootstrap = 3;
+        var slow = Candidate(SeedA, address: "1.1.1.1");
+        SetupSeed(SeedA, Ok(SeedA, slow, Candidate(SeedA, address: "2.2.2.2"), Candidate(SeedA, address: "3.3.3.3")));
+        SetupSeed(SeedB, new DnsSeedResult(SeedB, DnsSeedOutcome.NxDomain, [], 0));
+        var cancelledDials = 0;
+        var inFlight = 0;
+        var maxInFlight = 0;
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .Returns(async (PeerAddressInfo info, CancellationToken ct) =>
+                     {
+                         var now = Interlocked.Increment(ref inFlight);
+                         lock (_connected)
+                             maxInFlight = Math.Max(maxInFlight, now);
+                         try
+                         {
+                             if (info == slow.ToPeerAddressInfo())
+                             {
+                                 try
+                                 {
+                                     await Task.Delay(Timeout.Infinite, ct);
+                                 }
+                                 catch (OperationCanceledException)
+                                 {
+                                     Interlocked.Increment(ref cancelledDials);
+                                     throw;
+                                 }
+                             }
+
+                             return Connect(info);
+                         }
+                         finally
+                         {
+                             Interlocked.Decrement(ref inFlight);
+                         }
+                     });
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert: the slow dial was cancelled (not abandoned) before the next one started
+        Assert.Equal(1, cancelledDials);
+        Assert.Equal(1, maxInFlight);
+        Assert.Equal(2, _connected.Count);
+        Assert.DoesNotContain(slow.NodeId, _connected.Keys);
+    }
+
+    [Fact]
+    public async Task Given_ManyNodeIdsAtOneEndpoint_When_Bootstrapping_Then_ThatEndpointIsDialedOnce()
+    {
+        // Arrange: a seed points every node id at one third party
+        SetupSeed(SeedA, Ok(SeedA, Enumerable.Range(0, 20).Select(_ => Candidate(SeedA, address: "9.9.9.9"))
+                                             .ToArray()));
+        SetupSeed(SeedB, Ok(SeedB));
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .ThrowsAsync(new ConnectionException("wrong node id"));
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(1, DialCount());
+    }
+
+    [Fact]
+    public async Task Given_AnEndpointThatFailed_When_TheNextRunComes_Then_ItIsNotDialedAgain()
+    {
+        // Arrange
+        _nodeOptions.Bootstrap.MaxRuns = 2;
+        var failing = Candidate(SeedA, address: "9.9.9.9");
+        SetupSeed(SeedA, Ok(SeedA, failing));
+        SetupSeed(SeedB, Ok(SeedB));
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .ThrowsAsync(new ConnectionException("refused"));
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert: two runs, each seed asked twice, the endpoint dialed once
+        Assert.Equal(4, _dnsSeedClient.Invocations.Count);
+        Assert.Equal(1, DialCount());
+    }
+
+    private ChannelModel CreateChannel(ChannelState state)
+    {
+        var channelIdBytes = new byte[32];
+        Random.Shared.NextBytes(channelIdBytes);
+        var channelConfig = TestChannelParams.Create(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero,
+                                                     LightningMoney.Zero, 0, LightningMoney.Zero, 3, false,
+                                                     LightningMoney.Zero, 144, FeatureSupport.No);
+        var keySet = new ChannelKeySetModel(0, _ourNodeId, _ourNodeId, _ourNodeId, _ourNodeId, _ourNodeId,
+                                            _ourNodeId);
+        return new ChannelModel(channelConfig, new ChannelId(channelIdBytes), null, null, false, null, null,
+                                LightningMoney.Zero, keySet, 0, 0, LightningMoney.Zero, keySet, 0, _ourNodeId, 0,
+                                state, ChannelVersion.V1);
     }
 
     private sealed class CapturingLogger : ILogger<PeerBootstrapService>

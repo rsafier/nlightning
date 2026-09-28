@@ -149,4 +149,44 @@ public class BootstrapOptionsTests
         Assert.Equal(System.Net.IPAddress.Parse(address), endPoint.Address);
         Assert.Equal(port, endPoint.Port);
     }
+
+    [Theory]
+    [InlineData(true, 10, true)]
+    [InlineData(true, 15, false)]
+    [InlineData(true, 30, false)]
+    [InlineData(false, 10, false)]
+    public void Given_AConnectTimeoutAgainstTheNetworkTimeout_When_Validated_Then_ShorterIsAnErrorWhenEnabled(
+        bool enabled, int connectSeconds, bool expectError)
+    {
+        // Arrange: the TCP connect alone may take NetworkTimeout (15 s by default)
+        var nodeOptions = new NodeOptions
+        {
+            Bootstrap = { Enabled = enabled, ConnectTimeout = TimeSpan.FromSeconds(connectSeconds) }
+        };
+
+        // Act
+        var errors = nodeOptions.GetValidationErrors();
+
+        // Assert
+        Assert.Equal(expectError, errors.Any(e => e.Contains("Bootstrap:ConnectTimeout")));
+    }
+
+    [Theory]
+    [InlineData(new string[0], false)]
+    [InlineData(new[] { "nlseed.nlightn.ing", "nodes.lightning.directory", "lseed.bitcoinstats.com" }, false)]
+    [InlineData(new[] { "LSEED.bitcoinstats.com.", "nlseed.nlightn.ing" }, false)]
+    [InlineData(new[] { "nlseed.nlightn.ing", "my.seed.example" }, true)]
+    [InlineData(new[] { "host:53" }, true)]
+    public void Given_AnObsoleteSeedList_When_Checked_Then_OnlyAnEditedOneCounts(string[] seeds, bool edited)
+    {
+        // Act & Assert
+        Assert.Equal(edited, BootstrapOptions.IsEditedObsoleteSeedList(seeds));
+    }
+
+    [Fact]
+    public void Given_TheMainnetSeeds_When_Read_Then_TheyAreTheLndAndClnDefaults()
+    {
+        // Assert (BOLT 10 names no seed list; these are what LND and CLN ship with)
+        Assert.Equal(["nodes.lightning.directory", "nodes.lightning.wiki"], BootstrapOptions.MainnetSeeds);
+    }
 }

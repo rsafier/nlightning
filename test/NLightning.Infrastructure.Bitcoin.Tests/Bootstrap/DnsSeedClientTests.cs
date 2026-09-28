@@ -331,7 +331,7 @@ public class DnsSeedClientTests
         // Arrange
         _nodeOptions.Bootstrap.UseQueryConditions = true;
         var node = NewNode();
-        SetupQuery($"a2.r0.{Root}", DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.NoError));
+        SetupQuery($"n25.a2.r0.{Root}", DnsRecordKind.Srv, DnsLookupResponse.Of(DnsLookupStatus.NoError));
         SetupQuery(Root, DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 9735, node.Target)]));
         SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
         var client = CreateClient();
@@ -342,7 +342,89 @@ public class DnsSeedClientTests
 
         // Assert
         Assert.Equal(node.Key, Assert.Single(result.Candidates).NodeId);
-        _lookup.Verify(l => l.QueryAsync($"a2.r0.{Root}", DnsRecordKind.Srv, It.IsAny<CancellationToken>()),
+        _lookup.Verify(l => l.QueryAsync($"n25.a2.r0.{Root}", DnsRecordKind.Srv, It.IsAny<CancellationToken>()),
                        Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_QueryConditionsAndACapOf40_When_Queried_Then_TheConditionalQueryAsksFor40Records()
+    {
+        // Arrange: BOLT 10's n defaults to 25, so a cap above it must be asked for
+        _nodeOptions.Bootstrap.UseQueryConditions = true;
+        var node = NewNode();
+        SetupQuery($"n40.a6.r0.{Root}", DnsRecordKind.Srv, Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        SetupQuery(node.Target, DnsRecordKind.Aaaa, Addresses());
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.Both, 40,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(node.Key, Assert.Single(result.Candidates).NodeId);
+        _lookup.Verify(l => l.QueryAsync($"n40.a6.r0.{Root}", DnsRecordKind.Srv, It.IsAny<CancellationToken>()),
+                       Times.Once);
+        _lookup.Verify(l => l.QueryAsync(Root, DnsRecordKind.Srv, It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_OneTargetOnTwoPorts_When_Queried_Then_BothPortsAreKeptAndTheTargetIsResolvedOnce()
+    {
+        // Arrange
+        var node = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv,
+                   Srv([new DnsSrv(10, 10, 9735, node.Target), new DnsSrv(10, 10, 9736, node.Target + ".")]));
+        SetupQuery(node.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(new ushort[] { 9735, 9736 }, result.Candidates.Select(c => c.Port).Order());
+        Assert.All(result.Candidates, c => Assert.Equal(node.Key, c.NodeId));
+        _lookup.Verify(l => l.QueryAsync(It.IsAny<string>(), DnsRecordKind.A, It.IsAny<CancellationToken>()),
+                       Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_TheBolt10SrvExample_When_Queried_Then_EveryTupleKeepsItsNodeIdAndPort()
+    {
+        // Arrange: BOLT 10 "Examples", dig lseed.bitcoinstats.com SRV (non-default ports 6331, 4280, 4281)
+        const string specRoot = "lseed.bitcoinstats.com";
+        (ushort Port, string Label)[] tuples =
+        [
+            (6331, "ln1qwktpe6jxltmpphyl578eax6fcjc2m807qalr76a5gfmx7k9qqfjwy4mctz"),
+            (9735, "ln1qv2w3tledmzczw227nnkqrrltvmydl8gu4w4d70g9td7avke6nmz2tdefqp"),
+            (9735, "ln1qtynyymv99pqf0r9cuexvvqtxrlgejuecf8myfsa96vcpflgll5cqmr2xsu"),
+            (4280, "ln1qdfvlysfpyh96apy3w3qdwlu8jjkdhnuxa689ka540tnde6gnx86cf7ga2d"),
+            (4281, "ln1qwf789tlcpe4n34649xrqllxt97whsvfk5pm07ggqms3vrjwdj3cu6332zs")
+        ];
+        SetupQuery(specRoot, DnsRecordKind.Srv,
+                   Srv(tuples.Select(t => new DnsSrv(10, 10, t.Port, $"{t.Label}.{specRoot}."))));
+        for (var i = 0; i < tuples.Length; i++)
+            SetupQuery($"{tuples[i].Label}.{specRoot}", DnsRecordKind.A,
+                       Addresses(i == 0 ? "139.59.143.87" : $"139.59.143.{90 + i}"));
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(specRoot, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Ok, result.Outcome);
+        Assert.Equal(0, result.Rejected);
+        Assert.Equal(tuples.Length, result.Candidates.Count);
+        foreach (var (port, label) in tuples)
+        {
+            Assert.True(LightningNodeIdBech32.TryDecode(label, out var nodeId, out var reason), reason);
+            var candidate = Assert.Single(result.Candidates, c => c.NodeId == nodeId);
+            Assert.Equal(port, candidate.Port);
+        }
+
+        Assert.Equal(IPAddress.Parse("139.59.143.87"),
+                     result.Candidates.Single(c => c.Port == 6331).Address);
     }
 }

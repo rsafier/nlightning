@@ -30,9 +30,10 @@ public class NodeOptions
     public bool Daemon { get; set; }
 
     /// <summary>
-    /// The old DNS seed list, read by nothing before BOLT 10 bootstrap (NL-113). Still bound: when
-    /// <c>Node:Bootstrap:Seeds</c> is absent, the host copies it into <see cref="BootstrapOptions.Seeds"/> and the
-    /// bootstrap service warns. Empty by default.
+    /// The old DNS seed list, read by nothing before BOLT 10 bootstrap (NL-113) and ignored since: older templates
+    /// wrote mainnet seeds into it on every network. When it holds seeds the old template did not write, the host sets
+    /// <see cref="BootstrapOptions.ObsoleteSeedsIgnored"/> and an enabled bootstrap warns; the seeds come from
+    /// <c>Node:Bootstrap:Seeds</c> or the network's defaults. Empty by default.
     /// </summary>
     [Obsolete("Use Bootstrap.Seeds (Node:Bootstrap:Seeds).")]
     public List<string> DnsSeedServers { get; set; } = [];
@@ -220,6 +221,9 @@ public class NodeOptions
         errors.AddRange(Keysend.GetValidationErrors());
         errors.AddRange(Quiescence.GetValidationErrors());
         errors.AddRange(Bootstrap.GetValidationErrors());
+        if (Bootstrap.IsEnabled && Bootstrap.ConnectTimeout < NetworkTimeout)
+            errors.Add($"Bootstrap:ConnectTimeout ({Bootstrap.ConnectTimeout}) must be at least NetworkTimeout "
+                     + $"({NetworkTimeout}), the TCP connect alone, when bootstrap is enabled.");
         if (CustomSignet is not null)
             errors.AddRange(CustomSignet.GetValidationErrors(BitcoinNetwork));
         return errors;
