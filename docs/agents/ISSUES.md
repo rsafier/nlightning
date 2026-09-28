@@ -92,9 +92,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 8 | 166 | 174 |
+| open | 0 | 0 | 8 | 165 | 173 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 145 | 119 | 339 |
+| fixed | 14 | 61 | 145 | 120 | 340 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **61** | **156** | **291** | **522** |
@@ -4519,12 +4519,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT12_PLAN.md` Proof B12
 
 ### NL-527 A peer's tx_abort of our pending tx_init_rbf never reaches the dual-funding host
-- **Status:** open
+- **Status:** fixed (SHA_527)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`ReceiveAbortAsync` without a negotiation, `ReceiveAckRbfAsync` catch branches), `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`BumpAsync`)
 - **Evidence:** Found by lane rbf reading the driver for NL-521: when the peer refuses our `tx_init_rbf` with `tx_abort` (before any attempt exists), or our own attempt cannot be built after its `tx_ack_rbf`, the driver clears `PendingRbf` without `IInteractiveTxHost.OnAbortedAsync`, so `DualFundedOpenService.BumpAsync` waits for its `OpenTimeout` (2 min) instead of returning the peer's reason. The shares an RBF took are dropped at the next `BumpAsync`/`DecideRbfAsync` (`RestoreShares`), so nothing is left inconsistent. The splice path handles its own `tx_abort`s and is not affected. A `tx_ack_rbf` whose contribution we refuse does call `OnAbortedAsync` (NL-521).
 - **Fix sketch:** Tell the host from the driver's no-negotiation `tx_abort` branch when `PendingRbf` was set (after checking the splice host's `OnAbortedAsync` stays idempotent), and from the two `RejectRbf` catch branches of `ReceiveAckRbfAsync`; test with the dual-funded harness.
+- **Update (lane dfrbf, branch `wip/fafo-dfrbf`):** Fixed with a new host callback, `IInteractiveTxHost.OnRbfRequestEndedAsync` (default: nothing), which the driver calls whenever our pending `tx_init_rbf` ends before an attempt exists: the peer's `tx_abort` (no-negotiation branch, with the peer's text), a simultaneous `tx_init_rbf` (ours withdrawn), our attempt that cannot be funded or built after `tx_ack_rbf`, and a disconnection. `DualFundHost` maps it to `DualFundedOpenService.OnAbortedAsync`, so `BumpAsync` returns the reason at once and the RBF's shares are put back. The splice host keeps the default: `SpliceService.BumpAsync` already ends with the quiescence, which the driver terminates on the peer's `tx_abort` and which a disconnection ends (`SpliceRbfHarnessTests.Given_TheDefaultBlockRule_*` covers the refused bump); calling `OnSpliceAbortedAsync` there would end the negotiation before `OnQuiescenceEnded` could release its wallet contribution. Proof: `DualFundRbfEndTests` (the peer's `tx_abort` returns "not today" within 10 s of a 60 s timeout and a later bump completes; a disconnection returns "disconnected").
 - **Blocks/Blocked-by:** Part of NL-037; related NL-521
 - **Plan ref:** `SPLICING_PLAN.md` wave DF
 

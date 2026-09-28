@@ -256,7 +256,13 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
         entry.AbortSentAt = null;
         entry.EchoedWithoutActivity = false;
-        entry.PendingRbf = null;
+        if (entry.PendingRbf is not null)
+        {
+            // NL-527: our tx_init_rbf is gone with the connection
+            entry.PendingRbf = null;
+            await entry.Host!.OnRbfRequestEndedAsync(channelId, "disconnected", cancellationToken);
+        }
+
         if (entry.Current is { Model: null } attempt)
         {
             // BOLT 2: a negotiation without our commitment_signed is not remembered across a disconnection
@@ -486,12 +492,17 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             // BOLT 2: the receiver MUST echo tx_abort if it has not sent one (also ends a quiescence without a
             // negotiation, e.g. a withdrawn tx_init_rbf of the peer's or a quiescence the peer gives up)
             entry ??= _channels.GetOrAdd(channelId, _ => new ChannelEntry(peerPubKey));
+            var rbfRefused = entry.PendingRbf is not null;
             entry.PendingRbf = null;
             entry.EchoedWithoutActivity = true;
 
             _logger.LogInformation("tx_abort from {Peer} on channel {ChannelId} without a negotiation ({Data}); "
                                  + "echoing it", peerPubKey, channelId, data);
             _quiescenceService?.Terminate(channelId, QuiescenceEndReason.TxAbort);
+
+            // NL-527: the peer refused our tx_init_rbf; whoever waits for the RBF gets the peer's reason now
+            if (rbfRefused && entry.Host is not null)
+                await entry.Host.OnRbfRequestEndedAsync(channelId, $"peer sent tx_abort: {data}", cancellationToken);
             return [CreateTxAbort(channelId, "tx_abort acknowledged")];
         }
 
@@ -548,6 +559,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         {
             // Both sides asked for an RBF at once: ours is withdrawn and theirs rejected, either may retry
             entry.PendingRbf = null;
+            await entry.Host.OnRbfRequestEndedAsync(channelId, "simultaneous tx_init_rbf", cancellationToken);
             return RejectRbf(channelId, entry, "simultaneous tx_init_rbf");
         }
 
@@ -628,11 +640,13 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         }
         catch (InsufficientFundsException e)
         {
-            return RejectRbf(channelId, entry, $"cannot fund the rbf attempt: {e.Message}");
+            return await EndRequestedRbfAsync(channelId, entry, $"cannot fund the rbf attempt: {e.Message}",
+                                              cancellationToken);
         }
         catch (ArgumentException e)
         {
-            return RejectRbf(channelId, entry, $"cannot build the rbf attempt: {e.Message}");
+            return await EndRequestedRbfAsync(channelId, entry, $"cannot build the rbf attempt: {e.Message}",
+                                              cancellationToken);
         }
 
         entry.Current = attempt;
@@ -886,6 +900,19 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
                              + "negotiation; answering tx_abort", messageType, peerPubKey, channelId);
         MarkAbortSent(_channels.GetOrAdd(channelId, _ => new ChannelEntry(peerPubKey)));
         return [CreateTxAbort(channelId, NoNegotiationText)];
+    }
+
+    /// <summary>
+    /// Our own RBF attempt could not be built after the peer's <c>tx_ack_rbf</c> (NL-527): <c>tx_abort</c>, and the host
+    /// learns that its RBF ended (nothing of the attempt exists, its contribution was released).
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> EndRequestedRbfAsync(ChannelId channelId, ChannelEntry entry,
+                                                                            string reason,
+                                                                            CancellationToken cancellationToken)
+    {
+        var messages = RejectRbf(channelId, entry, reason);
+        await entry.Host!.OnRbfRequestEndedAsync(channelId, reason, cancellationToken);
+        return messages;
     }
 
     private IReadOnlyList<IChannelMessage> RejectRbf(ChannelId channelId, ChannelEntry entry, string reason)

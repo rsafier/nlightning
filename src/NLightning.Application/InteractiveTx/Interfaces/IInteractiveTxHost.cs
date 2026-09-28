@@ -85,4 +85,14 @@ public interface IInteractiveTxHost
     /// </summary>
     Task<string?> OnRbfAcknowledgedAsync(TxAckRbfMessage message, CancellationToken cancellationToken) =>
         Task.FromResult<string?>(null);
+
+    /// <summary>
+    /// Our <c>tx_init_rbf</c> ended before any attempt of it existed (NL-527): the peer answered it with
+    /// <c>tx_abort</c>, both sides sent <c>tx_init_rbf</c> at once, our attempt could not be built after the peer's
+    /// <c>tx_ack_rbf</c>, or the connection dropped. Whoever waits for the RBF learns why; the completed attempts stay
+    /// valid. A host that follows the end of the RBF otherwise (a splice ends with its quiescence, which the driver
+    /// terminates on <c>tx_abort</c>) keeps the default.
+    /// </summary>
+    Task OnRbfRequestEndedAsync(ChannelId channelId, string reason, CancellationToken cancellationToken) =>
+        Task.CompletedTask;
 }
