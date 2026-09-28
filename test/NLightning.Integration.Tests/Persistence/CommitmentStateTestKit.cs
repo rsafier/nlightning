@@ -4,7 +4,9 @@ using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Integration.Tests.Persistence;
 
+using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
@@ -227,7 +229,9 @@ internal sealed class CommitmentDanceDriver
 
         var signer = new FakeCommitmentSigner(Us.Params.Remote.DustLimitSatoshis, Us.Params.OptionAnchors);
         var result = Us.SendCommit(signer);
-        var cs = result.Outbound.OfType<OutboundCommitmentSigned>().Single();
+        // With a pending splice the batch carries one per funding, the current funding's first; the peer's engine
+        // does not follow splices
+        var cs = result.Outbound.OfType<OutboundCommitmentSigned>().First();
         var received = Peer.ReceiveCommit(cs.Signatures, _verifier);
         _pendingRevokeForUs = received.Outbound.OfType<OutboundRevokeAndAck>().Single();
         Peer = received.Next;
@@ -270,6 +274,29 @@ internal sealed class CommitmentDanceDriver
     /// state and its pending <c>revoke_and_ack</c> as they were.
     /// </summary>
     public void ReplaceUs(ChannelCommitments reloaded) => Us = reloaded;
+
+    /// <summary>
+    /// The peer's splice <c>commitment_signed</c> for our commitment on <paramref name="funding"/> (SP-CS-01): the
+    /// funding becomes pending in our engine, and our splice step's signature of the peer's current commitment on it
+    /// is recorded (NL-494 review). The peer's own engine does not follow the splice.
+    /// </summary>
+    public CommitmentsResult UsReceiveSplice(ChannelFunding funding)
+    {
+        var htlcCount = CommitmentFeeCalculator.UntrimmedHtlcCount(Us.BuildSpec(CommitmentSide.Local, funding),
+                                                                   Us.Params.Local.DustLimitSatoshis,
+                                                                   Us.Params.OptionAnchors);
+        var result = Us.ReceiveSpliceCommitment(funding, Signatures(0x5C, htlcCount), _verifier);
+        Us = result.Next;
+        return result;
+    }
+
+    /// <summary>Our engine discards the pending funding <paramref name="fundingTxId"/> (a <c>tx_abort</c>).</summary>
+    public CommitmentsResult UsDiscard(TxId fundingTxId)
+    {
+        var result = Us.DiscardPendingFundings(fundingTxId);
+        Us = result.Next;
+        return result;
+    }
 
     /// <summary>A disconnection seen from our side only (<see cref="ChannelCommitments.RevertUncommitted"/>).</summary>
     public CommitmentsResult RevertUs()
