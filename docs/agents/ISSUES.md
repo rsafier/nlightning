@@ -92,9 +92,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 7 | 168 | 175 |
+| open | 0 | 0 | 7 | 167 | 174 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 147 | 124 | 346 |
+| fixed | 14 | 61 | 147 | 125 | 347 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **61** | **157** | **298** | **530** |
@@ -1595,12 +1595,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` D5; `DAY0_RUNBOOK.md` §5
 
 ### NL-518 MempoolReactor logs every splice of ours as a warning
-- **Status:** open
+- **Status:** fixed (this commit)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Onchain/Mempool/MempoolReactor.cs` (the `Unconfirmed {Kind} ... waiting for it to confirm` line)
 - **Evidence:** Mutinynet day-0 rehearsal (2026-09-28): each splice and splice RBF logged `WRN [MempoolReactor] Unconfirmed Splice <txid> (commitment null) spends the funding output of channel ...` on both nodes; a cooperative close (`Mutual`) takes the same path. An operator watching warnings (the soak sampler counts them) sees one per splice.
 - **Fix sketch:** Log `Splice` and `Mutual` at Information (no commitment number), keep Warning for commitments, with a test on a capturing logger.
+- **Fix:** Lane cli535. `MempoolReactor.GetFundingSpendLogLevel`: an unconfirmed `Splice` or `Mutual` funding spend is logged at Information (without the "(commitment null)" part when there is no number); commitments (local, remote, next, revoked, future) and unknown spends stay Warning. Tests: `MempoolReactorTests` (a capturing logger: our commitment at Warning, a mutual close paying our shutdown script at Information with no Warning; the level table).
 - **Blocks/Blocked-by:** Related NL-021, NL-098
 - **Plan ref:** `DAY0_RUNBOOK.md` §5
 

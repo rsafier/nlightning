@@ -443,6 +443,65 @@ public sealed class MempoolReactorTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_OurOwnCommitmentInTheMempool_When_Seen_Then_LoggedAsAWarning()
+    {
+        // Arrange: a force close in the mempool is worth an operator's attention (NL-518)
+        var logger = new LevelRecordingLogger<MempoolReactor>();
+        var local = _pair.Alice.State.LocalCommit;
+        var ours = BuildCommitment(CommitmentSide.Local, local.Spec, local.Number, null);
+
+        // Act
+        await CreateReactor(logger).HandleSpendAsync(FundingSpend(ours), TestContext.Current.CancellationToken);
+
+        // Assert
+        var (level, message) = Assert.Single(logger.Entries, e => e.Message.Contains("spends the funding output"));
+        Assert.Equal(LogLevel.Warning, level);
+        Assert.Contains("LocalCommit", message);
+        Assert.Contains($"(commitment {local.Number})", message);
+    }
+
+    [Fact]
+    public async Task Given_OurMutualCloseInTheMempool_When_Seen_Then_LoggedAsInformationWithoutACommitment()
+    {
+        // Arrange (NL-518): a cooperative close paying our shutdown script is routine, not a warning
+        var logger = new LevelRecordingLogger<MempoolReactor>();
+        var script = new Key(Enumerable.Repeat((byte)0x42, 32).ToArray()).PubKey.WitHash.ScriptPubKey;
+        _channel.SetLocalShutdownScript(script.ToBytes());
+        var close = Network.RegTest.CreateTransaction();
+        close.Inputs.Add(new OutPoint(new uint256((byte[])_channel.FundingOutput!.TransactionId!.Value),
+                                      _channel.FundingOutput.Index!.Value));
+        close.Outputs.Add(Money.Satoshis(500_000), script);
+        var spend = new SignedTransaction(new TxId(close.GetHash().ToBytes()), close.ToBytes());
+
+        // Act
+        var reaction = await CreateReactor(logger).HandleSpendAsync(FundingSpend(spend),
+                                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FundingSpendKind.Mutual, reaction.FundingSpendKind);
+        var (level, message) = Assert.Single(logger.Entries, e => e.Message.Contains("spends the funding output"));
+        Assert.Equal(LogLevel.Information, level);
+        Assert.DoesNotContain("commitment", message);
+        Assert.DoesNotContain(logger.Entries, e => e.Level >= LogLevel.Warning);
+    }
+
+    [Theory]
+    [InlineData(FundingSpendKind.Splice, LogLevel.Information)]
+    [InlineData(FundingSpendKind.Mutual, LogLevel.Information)]
+    [InlineData(FundingSpendKind.LocalCommit, LogLevel.Warning)]
+    [InlineData(FundingSpendKind.RemoteCommit, LogLevel.Warning)]
+    [InlineData(FundingSpendKind.RemoteNextCommit, LogLevel.Warning)]
+    [InlineData(FundingSpendKind.Revoked, LogLevel.Warning)]
+    [InlineData(FundingSpendKind.FutureRemote, LogLevel.Warning)]
+    [InlineData(FundingSpendKind.Unknown, LogLevel.Warning)]
+    public void Given_AFundingSpendKind_When_ItsLogLevelIsRead_Then_OnlyOurSpliceAndMutualCloseAreRoutine(
+        FundingSpendKind kind, LogLevel expected)
+    {
+        // Act & Assert (NL-518)
+        Assert.Equal(expected, MempoolReactor.GetFundingSpendLogLevel(kind));
+    }
+
+    [Fact]
     public async Task Given_StartedReactor_When_TheMonitorRaisesASpend_Then_ItIsHandledOnTheLoop()
     {
         // Arrange
@@ -487,6 +546,10 @@ public sealed class MempoolReactorTests : IDisposable
     }
 
     private OnchainChannelWatcher Watcher => _provider.GetRequiredService<OnchainChannelWatcher>();
+
+    private MempoolReactor CreateReactor(ILogger<MempoolReactor> logger) =>
+        new(_monitor.Object, _provider.GetRequiredService<IChannelLockProvider>(), _memory.Object, logger,
+            Options.Create(new OnchainOptions()), _provider.GetRequiredService<IServiceScopeFactory>(), Watcher);
 
     /// <summary>bitcoind forgets the commitment for the grace blocks (monitor at its tip): the penalty is abandoned.</summary>
     private async Task EvictAsync(BroadcastTransactionModel penalty)
@@ -590,5 +653,30 @@ public sealed class MempoolReactorTests : IDisposable
                                                                                  .ToBytes());
 
         public Task<uint> GetFeeratePerKwAsync(CancellationToken cancellationToken) => Task.FromResult(2_500u);
+    }
+
+    private sealed class LevelRecordingLogger<T> : ILogger<T>
+    {
+        private readonly List<(LogLevel Level, string Message)> _entries = [];
+
+        public IReadOnlyList<(LogLevel Level, string Message)> Entries
+        {
+            get
+            {
+                lock (_entries)
+                    return _entries.ToList();
+            }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                                Func<TState, Exception?, string> formatter)
+        {
+            lock (_entries)
+                _entries.Add((logLevel, formatter(state, exception)));
+        }
     }
 }

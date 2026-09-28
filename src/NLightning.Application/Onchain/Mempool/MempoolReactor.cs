@@ -409,9 +409,7 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
             if (classification is null)
                 return (null, []);
 
-            _logger.LogWarning("Unconfirmed {Kind} {TxId} (commitment {Number}) spends the funding output of channel "
-                             + "{ChannelId}; waiting for it to confirm", classification.Kind, Display(spend.TxId),
-                               classification.CommitmentNumber, channelId);
+            LogUnconfirmedFundingSpend(classification, spend.TxId, channelId);
             if (classification is not { Kind: FundingSpendKind.Revoked, CommitmentNumber: { } number })
                 return (classification.Kind, []);
 
@@ -601,6 +599,29 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
 
     /// <summary>A txid in the display (RPC) byte order, for logs (NL-275).</summary>
     private static string Display(TxId txId) => new uint256((byte[])txId).ToString();
+
+    /// <summary>
+    /// The level of an unconfirmed funding spend (NL-518): our own splice and a mutual close are routine (Information);
+    /// a commitment in the mempool (ours, the peer's, revoked or future) or an unknown spend is a force close (Warning).
+    /// </summary>
+    internal static LogLevel GetFundingSpendLogLevel(FundingSpendKind kind) =>
+        kind is FundingSpendKind.Splice or FundingSpendKind.Mutual ? LogLevel.Information : LogLevel.Warning;
+
+    private void LogUnconfirmedFundingSpend(FundingSpendClassification classification, TxId spendTxId,
+                                            ChannelId channelId)
+    {
+        var level = GetFundingSpendLogLevel(classification.Kind);
+        if (!_logger.IsEnabled(level))
+            return;
+
+        if (classification.CommitmentNumber is null)
+            _logger.Log(level, "Unconfirmed {Kind} {TxId} spends the funding output of channel {ChannelId}; waiting for "
+                             + "it to confirm", classification.Kind, Display(spendTxId), channelId);
+        else
+            _logger.Log(level, "Unconfirmed {Kind} {TxId} (commitment {Number}) spends the funding output of channel "
+                             + "{ChannelId}; waiting for it to confirm", classification.Kind, Display(spendTxId),
+                        classification.CommitmentNumber, channelId);
+    }
 
     private sealed record WorkItem(MempoolSpendEventArgs? Spend, uint? BlockHeight, bool Restore);
 
