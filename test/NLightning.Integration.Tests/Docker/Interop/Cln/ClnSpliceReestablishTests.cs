@@ -580,6 +580,9 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
         node.ExtraConfiguration["Gossip:Enabled"] = "true";
         node.ExtraConfiguration["Gossip:AcceptPublicChannels"] = "true";
         node.ExtraConfiguration["Node:Alias"] = nodeName;
+        // Our own gossip (channel_announcement, channel_update, node_announcement) goes out every 5 s instead of 60 s,
+        // so CLN hears the announcement of each funding within the proof's block budget (as Day0FlowTests does)
+        node.ExtraConfiguration["Gossip:OwnGossipFlushInterval"] = "00:00:05";
         node.ConfigureServices = services =>
         {
             services.PostConfigure<NodeOptions>(o =>
@@ -943,7 +946,10 @@ public sealed class ClnSpliceReestablishTests : IAsyncLifetime
         var invoice = await cln.CallAsync("invoice", ct, ("amount_msat", amountMsat), ("label", label),
                                           ("description", "circular through nltg"));
         var decoded = await cln.CallAsync("decode", ct, ("string", invoice["bolt11"]!.GetValue<string>()));
-        var finalDelay = decoded["min_final_cltv_expiry"]!.GetValue<long>() + 6;
+        // The HTLC we forward back to CLN must expire more than our expiry_too_soon margin
+        // (Routing:ExpiryTooSoonBlocks, 18) after the tip, whatever CLN's own min_final_cltv_expiry is
+        var finalDelay = Math.Max(decoded["min_final_cltv_expiry"]!.GetValue<long>(),
+                                  RoutingOptions.MinimumFinalCltvExpiryDelta) + 6;
         var ours = await channel.GetOurChannelAsync(ct);
         var fee = ours.FeeBaseMsat + amountMsat * ours.FeePpm / 1_000_000;
         var route = new JsonArray(
