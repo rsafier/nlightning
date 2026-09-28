@@ -15,11 +15,13 @@ first (§2), mainnet after (§3).
 
 | Proof | What it shows |
 |---|---|
-| `Day0FlowTests` | Two NLightning nodes A and B, LND alice watching: (1) dual-funded public open, both contribute, alice has the `channel_announcement` and both policies at 6 confirmations; (2) payments A→B, B→A, alice→A→B; (3) A splices in: lock, new SCID announced, old SCID gone from alice's graph (blocks mined up to BOLT 7's 72-block delay; the test prints the delay LND used); (4) B splices out to an address: same, and the address holds the amount in a confirmed tx; (5) B crashes before its `tx_signatures` of a splice reach the wire, restarts, retransmits them on `channel_reestablish` and the splice completes; B is down while it confirms, restarts, the lock completes; (6) `setchannelpolicy` on A, alice sees the new `htlc_maximum_msat`; (7) `exportchanbackup` + `verifychanbackup` on both after every step, on the current funding; (8) cooperative close. |
+| `Day0FlowTests` | Two NLightning nodes A and B, LND alice watching: (1) dual-funded public open, both contribute, alice has the `channel_announcement` and both policies at 6 confirmations; (2) payments A→B, B→A, alice→A→B; (3) A splices in: lock, new SCID announced, old SCID gone from alice's graph (blocks mined up to BOLT 7's 72-block delay; the test prints the delay LND used); (4) B splices out to an address: same, and the address holds the amount in a confirmed tx; (5) B crashes before its `tx_signatures` of a splice reach the wire, restarts, retransmits them on `channel_reestablish` and the splice completes; B is down while it confirms, restarts, the lock completes; (6) `setchannelpolicy` on A, alice sees the new `htlc_maximum_msat`; (7) `exportchanbackup` + `verifychanbackup` on both after every step, on the current funding; (9) (wave SPR, run before the close) A splices in at 253 sat/kw and bumps it with `bumpsplice`: the bump replaces the first attempt in the mempool, both nodes list both attempts pending, a payment while they are, the bump confirms and locks, the first never confirms, alice has the new SCID and forgets the old one; (8) cooperative close. |
 | `Day0UpgradeInPlaceTests` | A SQLite database holding a used v1 channel, rolled back with EF's migrator to (a) the live Mutinynet node's schema (`AddGraphFundingTxId`, an `option_static_remotekey` channel) and (b) the migration before `AddSpliceFundings` (an anchors channel), migrates at startup, the channel reestablishes with unchanged balances and commitment numbers, pays both ways and then splices. The rows are written by the new build and rolled back by EF, not produced by an old build: values an old build wrote differently are not covered. |
 
-Also required green: Proof SP1 (`Docker/Interop/Cln/ClnSpliceTests`), Proof DF (`ClnDualFundTests`) and Proof SP2
-(`ClnSpliceReestablishTests`, `Docker/Onchain/OnchainSpliceTests`, lane SP2-D).
+Also required green: Proof SP1 (`Docker/Interop/Cln/ClnSpliceTests`), Proof DF (`ClnDualFundTests`), Proof SP2
+(`ClnSpliceReestablishTests`, `Docker/Onchain/OnchainSpliceTests`, lane SP2-D) and Proof SPR
+(`ClnSpliceRbfTests`, wave SPR lane SPR-C: we bump our splice, CLN bumps its splice, CLN's same-feerate RBF refused,
+payments with three attempts pending, a bumped splice across a reconnection and a restart).
 
 ## 1. Preconditions and go/no-go (both phases)
 
@@ -49,8 +51,12 @@ Also required green: Proof SP1 (`Docker/Interop/Cln/ClnSpliceTests`), Proof DF (
       (for example `OptionAttributionData` stays `No`).
 - [ ] **Known gaps accepted** (check [`ISSUES.md`](ISSUES.md) at the commit for the NL-021/NL-037 follow-ups, e.g.
       NL-470 and NL-478..NL-483):
-  - **No splice RBF** (wave SPR not done). A splice whose feerate is too low cannot be bumped by the splice protocol;
-    the channel keeps working on the old funding until it confirms. Pick a feerate that confirms (§3.3).
+  - **Splice RBF only from a build with wave SPR integrated** (`bumpsplice`, Proof SPR and `Day0FlowTests` step 9
+    green at the commit). Without it a splice whose feerate is too low cannot be bumped and the channel keeps working
+    on the old funding until it confirms. Even with it, pick a feerate that confirms (§3.3): every bump is a new
+    negotiation with the peer (both online, quiescence), and the peer refuses a bump of an attempt it considers created
+    recently (`Splice:MinRbfInterval` on its side). Bump only **your own** splice: a CLN peer contributes nothing to an
+    RBF it did not start (Proof SPR header), so an RBF of the other side's splice drops that side's contribution.
   - **No RBF of a dual-funded public open** (`DualFundingOptions.AllowRbf`: refused for a public channel). Same rule:
     pick a funding feerate that confirms.
   - `openchannel` has no `--feerate`: the dual-funded funding transaction uses the node's fee estimate
@@ -243,6 +249,15 @@ $U listchannels; $N listchannels                     # Reestablished Yes on both
 $U setchannelpolicy $CH --htlc-max-msat 150000000
 $U getchannelpolicy $CH                              # and mutinynet.com / the faucet LND show the new maximum
 
+# 6b. splice RBF drill (only with wave SPR in the build; Day0FlowTests step 9): a splice at the floor, then bumped
+$U splicein $CH 30000 --feerate 253
+$U listchannels                                      # fundings: one pending splice; note its txid (T1)
+# wait at least Nick's Splice:MinRbfInterval (1 min by default), and do it before the next block if you can
+$U bumpsplice $CH --feerate 1000                     # syntax: see `nltg` usage (lane SPR-B); prints the new txid (T2)
+$U listchannels; $N listchannels                     # both list T1 and T2 pending (T2 an RBF attempt)
+# mutinynet.com: T2 replaced T1 in the mempool. Pay once each way while both are pending, then wait for the lock:
+# both ends run on T2, the new SCID is announced after 6 blocks, T1 never confirms; backups on both
+
 # 7. keep the channel for mainnet day -1, or close it
 $U closechannel $CH 0 300
 ```
@@ -276,8 +291,10 @@ Record every txid, SCID and payment hash in the results template (§5). Anything
 - [ ] **Fee and feerate.** Read `https://mempool.space/api/v1/fees/recommended` right before each step.
   - The open's feerate is the node's estimate (`FeeEstimation`; `Bitcoind` with `ConfirmationTarget` 6 as in the
     canary runbook). Check the log's estimate; do not open when it is below the current "hour" fee.
-  - For `splicein`/`spliceout`, pass `--feerate <sat/kw>` = the "halfHourFee" (sat/vB) x 250, at least 253. There is
-    no RBF of a splice yet, so err high: a stuck splice leaves the channel on its old funding until it confirms.
+  - For `splicein`/`spliceout`, pass `--feerate <sat/kw>` = the "halfHourFee" (sat/vB) x 250, at least 253. Err
+    high: a stuck splice leaves the channel on its old funding until it confirms. With wave SPR in the build the
+    initiator can `bumpsplice <CH> --feerate <sat/kw>` (at least 25/24 of the previous attempt's feerate and, for
+    bitcoind's replacement rule, about 1 sat/vB = 250 sat/kw more); without it there is no way to bump a splice.
   - `closechannel <CH> 0 300` uses the estimator; pass a sat/kw feerate instead to pin it.
 - [ ] **Backups after every step, on both nodes:** `exportchanbackup --output <dir>/<NN-step>.backup`, then
       `verifychanbackup <file>` (valid, the channel on its current funding, `KeysMatch` true), and a copy off the
@@ -309,7 +326,8 @@ mainnet` on each side.
 | Open, before the funding tx is broadcast | refusal, `tx_abort`, timeout (`Node:DualFund:OpenTimeout`) | nothing is lost: the wallet reservation is released (restart if `walletbalance` still shows it locked, NL-462); investigate, retry later |
 | Open, funding tx unconfirmed for long | feerate too low, and no RBF for a public dual-funded open | wait; do not open another channel from the same inputs; a CPFP from a change output of ours is possible with an external wallet tool only (unverified) |
 | Splice negotiating | `tx_abort`, a disconnect before both `tx_signatures` | the splice is dropped, the channel stays on its funding; retry |
-| Splice signed, unconfirmed | feerate too low | the channel keeps working (payments are signed for both fundings); wait for the confirmation; never restart on an old database |
+| Splice signed, unconfirmed | feerate too low | the channel keeps working (payments are signed for every pending funding); with wave SPR the side that started the splice runs `bumpsplice` (both online; the old attempt stays listed until the bump locks and then never confirms), otherwise wait for the confirmation; never restart on an old database |
+| `bumpsplice` refused or `tx_abort` | feerate below 25/24 of the last attempt, the last attempt too recent for the peer, too many attempts, or a `splice_locked` already sent | the pending attempts stay as they were; retry later with a higher feerate, or wait |
 | A node restarts mid-splice | crash, reboot | start it again on the **same** database: `channel_reestablish` retransmits what is missing (Day0 proof step 5) |
 | Either side misbehaves or the channel fails | `Failed`, peer `error` | **keep the node running**: it broadcasts the commitment of the current funding (a pending splice's if that one confirmed) and sweeps (BOLT 5; `pendingsweeps`); `forceclosechannel <CH>` only as the last resort |
 | Upgrade went wrong | migration or reestablish failure, `DATA LOSS DETECTED` | §2.1 steps 6 and 8: the pre-upgrade copy only if the migration failed before any peer connection or the commitment numbers are still those recorded before the upgrade; otherwise keep the upgraded database and investigate (never an old `nltg.db` after a channel update) |
@@ -333,6 +351,7 @@ Contributions (U / N) / funding txid / channel id / SCID:
 Payments (hash, amount, direction):
 Splice-in: txid / feerate / lock height / new SCID:
 Splice-out: txid / feerate / destination / lock height / new SCID:
+Splice RBF (if run): first txid and feerate / bump txid and feerate / which one locked, lock height / new SCID:
 Restart drill: what was stopped, when, outcome:
 Backups (step, file, verifychanbackup result):
 Close (if any): txid:

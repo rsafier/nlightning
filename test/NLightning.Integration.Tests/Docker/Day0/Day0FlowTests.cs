@@ -1,10 +1,13 @@
 using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using NBitcoin;
+using NBitcoin.RPC;
 
 namespace NLightning.Integration.Tests.Docker.Day0;
 
 using Abcd;
+using Application.Channels.Splicing;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
@@ -30,7 +33,11 @@ using Utils;
 /// retransmits them on <c>channel_reestablish</c> and the splice completes; then B is stopped while the splice confirms and restarted: the lock completes through
 /// <c>channel_reestablish</c>. (6) <c>setchannelpolicy</c> on A lowers <c>htlc_maximum_msat</c> and alice sees it. (7)
 /// <c>exportchanbackup</c> + <c>verifychanbackup</c> on both nodes after every step, always on the channel's current
-/// funding. (8) A closes cooperatively and alice forgets the channel.
+/// funding. (9) A splices in at BOLT 3's floor feerate and bumps the splice with <c>bumpsplice</c> (RBF, wave SPR):
+/// the bump replaces the first attempt in the mempool, both nodes list both attempts pending, a payment goes through
+/// while they are, the bumped attempt confirms and locks, the first never confirms, and alice has the new short channel
+/// id and forgets the old one. (8) A closes cooperatively and alice forgets the channel (the close runs last, after
+/// step 9).
 /// </summary>
 /// <remarks>
 /// <para>Written against the SP2 contracts (<c>3560f3a9</c>); the splice completion lands in lanes SP2-A (reestablish
@@ -50,6 +57,10 @@ using Utils;
 /// <c>tx_signatures</c> in step 5 (a) is kept off the wire by a hook that runs before B's outbox
 /// (<see cref="Day0Harness.HookSentChannelMessages"/>), so the splice can only complete through B's retransmission,
 /// which the test counts.</para>
+/// <para>Step 9 was added in wave spr (lane SPR-C) against the SPR contracts (<c>b72a42ea</c>); the RBF protocol lands
+/// in lane SPR-A and <c>bumpsplice</c> in lane SPR-B, and the integrator runs it after the merge. B refuses an RBF of
+/// an attempt "created recently" (<c>Splice:MinRbfInterval</c>), so A bumps only once B's interval has passed; nothing
+/// is mined between the two attempts, so only the bump can confirm.</para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public sealed class Day0FlowTests : IAsyncLifetime
@@ -63,6 +74,10 @@ public sealed class Day0FlowTests : IAsyncLifetime
     private const ulong SpliceOutSat = 100_000;
     private const ulong RestartSpliceInSat = 50_000;
     private const ulong PolicyHtlcMaximumMsat = 150_000_000;
+    private const ulong RbfSpliceInSat = 40_000;
+
+    /// <summary>Step 9's first attempt: BOLT 3's floor, the feerate the runbook warns about.</summary>
+    private const uint RbfLowFeeRatePerKw = 253;
 
     private readonly LightningRegtestNetworkFixture _fixture;
     private readonly List<NLightningTestNode> _nodes = [];
@@ -279,6 +294,68 @@ public sealed class Day0FlowTests : IAsyncLifetime
         Assert.True(listed.HasPolicyOverride);
         await BackupBothAsync(a, b, channelId, "step 6 (setchannelpolicy)", ct);
 
+        // ---- Step 9: A splices in at the floor feerate and bumps it (bumpsplice, RBF); the bump locks ----
+        var before9 = await Day0Harness.WaitSettledAsync(a, channelId, ct);
+        Assert.NotNull(before9.FundingTxId);
+        Assert.NotNull(before9.FundingOutputIndex);
+        var funding9 = new OutPoint(Day0Harness.ToUint256(before9.FundingTxId.Value), before9.FundingOutputIndex.Value);
+        var lowSplice = await Day0Harness.HandleAsync<SpliceInClientRequest, SpliceClientResponse>(
+                            a, new SpliceInClientRequest(channelId, RbfSpliceInSat)
+                            {
+                                FeeRatePerKw = RbfLowFeeRatePerKw
+                            }, ct);
+        var lowTxId = Day0Harness.AssertSigned(lowSplice);
+        Console.WriteLine($"[day0] step 9: first attempt {lowTxId} at {RbfLowFeeRatePerKw} sat/kw");
+        await Day0Harness.WaitInMempoolAsync(_fixture, lowTxId, ct);
+        var lowTx = await _fixture.Bitcoin.GetRawTransactionAsync(lowTxId, true, ct);
+        var lowFee = await Day0Harness.GetFeeAsync(_fixture, lowTxId, ct);
+        await WaitPendingAttemptsAsync(a, b, channelId, [lowTxId], ct);
+
+        // ...B judges the RBF: the first attempt must not be "created recently" on B's side
+        var minRbfInterval = b.Services.GetRequiredService<IOptions<SpliceOptions>>().Value.MinRbfInterval;
+        await Task.Delay(minRbfInterval + TimeSpan.FromSeconds(2), ct);
+        var bump = await Day0Harness.HandleAsync<BumpSpliceClientRequest, SpliceClientResponse>(
+                       a, new BumpSpliceClientRequest(channelId, Day0Harness.SpliceFeeRatePerKw), ct);
+        Console.WriteLine($"[day0] step 9: bumpsplice at {Day0Harness.SpliceFeeRatePerKw} sat/kw: {bump.State}, txid "
+                        + $"{Day0Harness.Display(bump.SpliceTxId)}, capacity {bump.NewCapacitySat}, reason "
+                        + bump.FailureReason);
+        var bumpTxId = Day0Harness.AssertSigned(bump);
+        Assert.NotEqual(lowTxId, bumpTxId);
+        Assert.Equal((ulong)before9.Capacity.Satoshi + RbfSpliceInSat, bump.NewCapacitySat);
+
+        // ...the bump replaced the first attempt: both spend the current funding output, the bump pays more
+        await Poll.UntilAsync(async () =>
+        {
+            var mempool = await _fixture.Bitcoin.GetRawMempoolAsync(ct);
+            return mempool.Contains(bumpTxId) && !mempool.Contains(lowTxId);
+        }, Day0Harness.StepTimeout, $"{bumpTxId} replaced {lowTxId} in the mempool", ct);
+        var bumpTx = await _fixture.Bitcoin.GetRawTransactionAsync(bumpTxId, true, ct);
+        Assert.Contains(lowTx.Inputs, i => i.PrevOut == funding9);
+        Assert.Contains(bumpTx.Inputs, i => i.PrevOut == funding9);
+        var bumpFee = await Day0Harness.GetFeeAsync(_fixture, bumpTxId, ct);
+        Assert.True(bumpFee > lowFee, $"the bump pays {bumpFee} sat, not more than the first attempt's {lowFee}");
+        await WaitPendingAttemptsAsync(a, b, channelId, [lowTxId, bumpTxId], ct);
+
+        // ...a payment while both attempts are pending (every commitment update signs for three fundings)
+        await Day0Harness.PayAsync(a, b, 8_000, "day0 step 9 a->b (rbf pending)", ct);
+
+        // ...the bumped attempt confirms and locks; the first never confirms
+        var (lockedA9, lockedB9) = await Day0Harness.MineUntilSpliceLockedAsync(_fixture, observers, a, b, channelId,
+                                                                                bumpTxId, ct);
+        Assert.Equal(before9.Capacity.Satoshi + (long)RbfSpliceInSat, lockedA9.Capacity.Satoshi);
+        Assert.Equal(before9.LocalBalance.MilliSatoshi + RbfSpliceInSat * 1_000 - 8_000_000,
+                     lockedA9.LocalBalance.MilliSatoshi);
+        foreach (var locked in new[] { lockedA9, lockedB9 })
+            Assert.DoesNotContain(locked.Fundings, f => f.Status == ChannelFundingStatus.Pending);
+        await AssertNeverConfirmedAsync(lowTxId, ct);
+        var scidSplice9 = AssertNewShortChannelId(lockedA9, lockedB9, scidSplice5);
+        await Day0Harness.WaitLndHasChannelAsync(_fixture, alice, scidSplice9, a, b, ct);
+        await Day0Harness.WaitLndForgotChannelAsync(_fixture, alice, scidSplice5, a, b, ct);
+        await Day0Harness.PayAsync(a, b, 7_000, "day0 step 9 a->b", ct);
+        await Day0Harness.PayAsync(b, a, 3_000, "day0 step 9 b->a", ct);
+        AssertRoutedThroughA(await Day0Harness.LndPaysAsync(alice, b, 6_000, "day0 step 9 alice->a->b", ct), a, b);
+        await BackupBothAsync(a, b, channelId, "step 9 (splice rbf)", ct);
+
         // ---- Step 8: cooperative close ----
         var close = await Day0Harness.HandleAsync<CloseChannelClientRequest, CloseChannelClientResponse>(
                         a, new CloseChannelClientRequest(channelId) { WaitSeconds = 60 }, ct);
@@ -288,12 +365,52 @@ public sealed class Day0FlowTests : IAsyncLifetime
         await Day0Harness.WaitInMempoolAsync(_fixture, closingTxId, ct);
         var closingTx = await _fixture.Bitcoin.GetRawTransactionAsync(closingTxId, true, ct);
         Assert.Single(closingTx.Inputs);
-        Assert.Equal(Day0Harness.ToUint256(lockedA5.FundingTxId!.Value), closingTx.Inputs[0].PrevOut.Hash);
+        Assert.Equal(Day0Harness.ToUint256(lockedA9.FundingTxId!.Value), closingTx.Inputs[0].PrevOut.Hash);
         await ChainSync.MineAndWaitAsync(_fixture, 6, observers, [a, b], ct);
         foreach (var node in new[] { a, b })
             await Poll.UntilAsync(() => IsClosed(node, channelId), Day0Harness.StepTimeout,
                                   $"{node.Name}: channel {channelId} Closed", ct, TimeSpan.FromMilliseconds(500));
-        await Day0Harness.WaitLndForgotChannelAsync(_fixture, alice, scidSplice5, a, b, ct);
+        await Day0Harness.WaitLndForgotChannelAsync(_fixture, alice, scidSplice9, a, b, ct);
+    }
+
+    /// <summary>
+    /// Both nodes list exactly <paramref name="attempts"/> as the channel's pending fundings (<c>listchannels</c>
+    /// fundings): the first a <c>Splice</c>, the others its <c>SpliceRbf</c> attempts.
+    /// </summary>
+    private static async Task WaitPendingAttemptsAsync(NLightningTestNode a, NLightningTestNode b, ChannelId channelId,
+                                                       IReadOnlyList<uint256> attempts, CancellationToken ct)
+    {
+        var expected = attempts.ToHashSet();
+        foreach (var node in new[] { a, b })
+        {
+            var channel = await Poll.ForAsync(async () =>
+            {
+                var c = await node.GetChannelAsync(channelId, ct);
+                var pending = c.Fundings.Where(f => f.Status == ChannelFundingStatus.Pending)
+                               .Select(f => Day0Harness.ToUint256(f.FundingTxId)).ToHashSet();
+                return pending.SetEquals(expected) ? c : null;
+            }, Day0Harness.StepTimeout, $"{node.Name}: pending fundings {string.Join(", ", expected)}", ct,
+                                              TimeSpan.FromMilliseconds(500));
+            foreach (var funding in channel.Fundings.Where(f => f.Status == ChannelFundingStatus.Pending))
+                Assert.Equal(Day0Harness.ToUint256(funding.FundingTxId) == attempts[0]
+                                 ? ChannelFundingKind.Splice
+                                 : ChannelFundingKind.SpliceRbf, funding.Kind);
+        }
+    }
+
+    /// <summary>bitcoind knows <paramref name="txId"/> neither in a block nor in its mempool.</summary>
+    private async Task AssertNeverConfirmedAsync(uint256 txId, CancellationToken ct)
+    {
+        Assert.DoesNotContain(txId, await _fixture.Bitcoin.GetRawMempoolAsync(ct));
+        try
+        {
+            var info = await _fixture.Bitcoin.GetRawTransactionInfoAsync(txId, ct);
+            Assert.Fail($"bitcoind knows the replaced attempt {txId} ({info.Confirmations} confirmations)");
+        }
+        catch (RPCException)
+        {
+            Console.WriteLine($"[day0] step 9: the first attempt {txId} never confirmed");
+        }
     }
 
     /// <summary>Closed in memory, or no longer loaded (a closed channel may be dropped from memory).</summary>
