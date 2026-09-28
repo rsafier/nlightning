@@ -4509,7 +4509,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `DAY0_RUNBOOK.md` §5
 
 ### NL-526 ClnOfferReceiveTests assert the exact amount but our BOLT 12 invoice paths now carry a dummy hop
-- **Status:** fixed (SHA_526)
+- **Status:** fixed (51b40ea8)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnOfferReceiveTests.cs` (`AssertSettledAsync`), `src/NLightning.Application/Payments/` (invoice `AmountReceived` with dummy hops)
