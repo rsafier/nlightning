@@ -72,7 +72,8 @@ public class SpliceRbfHarnessTests
         Assert.Contains("Bob:CommitmentSigned", sequence);
         Assert.Equal(2, sequence.Count(s => s.EndsWith(":TxSignatures")));
         Assert.Equal(SpliceIn, RbfContribution(harness, mark, "Alice"));
-        Assert.Null(RbfContribution(harness, mark, "Bob"));
+        // NL-503: a zero contribution is still sent as the TLV (Core Lightning requires it)
+        Assert.Equal(0, RbfContribution(harness, mark, "Bob"));
 
         foreach (var node in new[] { harness.Alice, harness.Bob })
         {
@@ -561,7 +562,7 @@ public class SpliceRbfHarnessTests
         // Assert
         Assert.True(result.State == SpliceNegotiationState.Signed, $"{result.State}: {result.FailureReason}");
         Assert.Empty(harness.Failures);
-        Assert.Null(RbfContribution(harness, mark, "Alice"));
+        Assert.Equal(0, RbfContribution(harness, mark, "Alice"));
         Assert.Equal(0, harness.Alice.Node.State.PendingFundings[1].LocalBalanceDeltaMsat);
         Assert.Equal(0, harness.Bob.Node.State.PendingFundings[1].RemoteBalanceDeltaMsat);
         var tx = Parse(harness.Alice.Broadcasts.Single(b => b.TransactionId == result.SpliceTxId!.Value)
@@ -591,7 +592,7 @@ public class SpliceRbfHarnessTests
 
         // Assert
         Assert.True(result.State == SpliceNegotiationState.Signed, $"{result.State}: {result.FailureReason}");
-        Assert.Null(RbfContribution(harness, mark, "Alice"));
+        Assert.Equal(0, RbfContribution(harness, mark, "Alice"));
         Assert.Equal(0, harness.Alice.Node.State.PendingFundings[1].LocalBalanceDeltaMsat);
     }
 

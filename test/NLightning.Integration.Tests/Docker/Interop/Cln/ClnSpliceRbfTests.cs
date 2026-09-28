@@ -300,8 +300,9 @@ public sealed class ClnSpliceRbfTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Proof SPR (c): CLN splices in, then calls <c>splicein</c> again while the splice is pending. CLN sends
-    /// <c>tx_init_rbf</c> at its estimate, the feerate of the attempt it would replace; BOLT 2 (IT-RBF-01) makes us
+    /// Proof SPR (c): CLN splices in, then RBFs it at the same feerate (the low-level <c>splice_init</c>: CLN's own
+    /// <c>splicein</c> RBF goes out at the same estimate, but CLN fails the channel when that command aborts after our
+    /// refusal, NL-502). CLN sends <c>tx_init_rbf</c> at the feerate of the attempt it would replace; BOLT 2 (IT-RBF-01) makes us
     /// answer <c>tx_abort</c> (never <c>tx_ack_rbf</c>); CLN's call fails, the first attempt stays the only pending one on
     /// both ends and in bitcoind's mempool, and it locks.
     /// </summary>
@@ -329,14 +330,18 @@ public sealed class ClnSpliceRbfTests : IAsyncLifetime
         ClnRpcException? refused = null;
         try
         {
-            var second = await session.Cln.CallAsync("splicein", ct, ("channel", session.ChannelIdHex),
-                                                     ("amount", 50_000));
-            Console.WriteLine($"[cln] second splicein returned {second.ToJsonString()}");
+            // CLN's low-level RBF at the first attempt's feerate: its `splicein` RBF goes out at the same estimate,
+            // but on our tx_abort the splicein command then aborts the splice itself, and CLN v26.06.8 fails the
+            // channel when it aborts while the first attempt holds its signatures ("I needed to abort a splice where I
+            // have already sent my signatures", channeld's splice_abort on last_inflight; wave spr integration,
+            // NL-502). The low-level splice_init only reports our tx_abort.
+            var second = await ClnBumpAsync(session, 50_000, firstInit.SpliceFeeratePerKw, [firstTxId], ct);
+            Console.WriteLine($"[cln] same-feerate RBF returned {second}");
         }
         catch (ClnRpcException e)
         {
             refused = e;
-            Console.WriteLine($"[cln] second splicein refused: {e.Message}");
+            Console.WriteLine($"[cln] same-feerate RBF refused: {e.Message}");
         }
 
         // Assert: CLN's tx_init_rbf did not raise the feerate; we answered tx_abort, never tx_ack_rbf

@@ -23,6 +23,7 @@ using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Tlv;
 using InteractiveTx;
 using InteractiveTx.Models;
 using Interfaces;
@@ -718,17 +719,19 @@ public sealed partial class SpliceService
 
     /// <summary>
     /// The driver's <c>tx_init_rbf</c>/<c>tx_ack_rbf</c> with our signed <c>funding_output_contribution</c> (NL-481: a
-    /// splice-out RBF carries a negative one; 0 omits the TLV).
+    /// splice-out RBF carries a negative one). A splice RBF always carries the TLV, 0 included (NL-503): BOLT 2 reads an
+    /// omitted one as 0, but Core Lightning v26.06.8 fails a splice RBF whose <c>tx_init_rbf</c>/<c>tx_ack_rbf</c> has
+    /// none ("tx_ack_rbf must contain tlv with a funding_output_contribution value") and always sends it itself.
     /// </summary>
     private static IReadOnlyList<IChannelMessage> WithContribution(IReadOnlyList<IChannelMessage> messages,
                                                                    long contributionSatoshis) =>
         messages.Select(m => m switch
                  {
                      TxInitRbfMessage init => new TxInitRbfMessage(
-                         init.Payload, InteractiveTxDriver.CreateContributionTlv(contributionSatoshis),
+                         init.Payload, new FundingOutputContributionTlv(contributionSatoshis),
                          init.RequireConfirmedInputsTlv),
                      TxAckRbfMessage ack => new TxAckRbfMessage(
-                         ack.Payload, InteractiveTxDriver.CreateContributionTlv(contributionSatoshis),
+                         ack.Payload, new FundingOutputContributionTlv(contributionSatoshis),
                          ack.RequireConfirmedInputsTlv),
                      _ => m
                  })
