@@ -542,6 +542,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                 ? null
                                 : WalletAddressesDbRepository.MapEntityToModel(channelEntity.ChangeAddress)
         };
+        // The current funding's key index (NL-495): the signer's view of a spliced channel uses its rotated key
+        channelModel.SetLocalFundingKeyIndex(splicedFunding?.LocalFundingKeyIndex ?? 0);
         if (channelEntity.ErrorSent is not null)
             channelModel.MarkErrorSent(channelEntity.ErrorSent);
         if (channelEntity.DataLossDetected)

@@ -244,6 +244,53 @@ public class ChannelRoundTripTests
         Assert.Equal(3, set.ActiveCount);
     }
 
+    [Fact]
+    public async Task Given_ALockedSplice_When_Reloaded_Then_TheCurrentFundingAndItsKeyIndexAreTheSplices()
+    {
+        // Arrange (NL-495): the splice's lock moves the channel to its funding, with our key rotated to index 3
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        await AddChangeAddressAsync(db);
+        var channel = CreateFullChannel(true);
+        await SaveAndReloadAsync(db, channel);
+        var splice = new ChannelFunding(TxIdOf(0x44), 1, 1_250_000, s_key6, s_key5, 3, 250_000_000, 0,
+                                        ChannelFundingKind.Splice, ChannelFundingStatus.Pending, 2_536, 812_345,
+                                        null, 812_350, new ShortChannelId(812_350, 9, 1), true, true, false);
+        await using (var writeContext = db.CreateDbContext())
+        {
+            await new ChannelFundingDbRepository(writeContext).UpsertAsync(channel.ChannelId, splice);
+            await writeContext.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Act
+        await using (var writeContext = db.CreateDbContext())
+        {
+            var repository = new ChannelFundingDbRepository(writeContext);
+            var (next, retired) = (await repository.GetFundingSetAsync(channel.ChannelId))!.Lock(splice.FundingTxId);
+            await repository.ApplyLockAsync(channel.ChannelId, next.Current, retired);
+            await writeContext.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using var readContext = db.CreateDbContext();
+        var reloaded = await new ChannelDbRepository(readContext, db.Sha256).GetByIdAsync(channel.ChannelId);
+
+        // Assert: as the lock left the live model (the commitment rows move to the splice in the lock's engine save,
+        // which this test does not run), and the signer's view is the splice's
+        Assert.NotNull(reloaded);
+        Assert.Equal(splice.LocalFundingKeyIndex, reloaded.LocalFundingKeyIndex);
+        Assert.Equal(LightningMoney.Satoshis(splice.CapacitySatoshis), reloaded.FundingOutput!.Amount);
+        Assert.Equal(splice.FundingTxId, reloaded.FundingOutput.TransactionId);
+        Assert.Equal(splice.OutputIndex, reloaded.FundingOutput.Index);
+        Assert.Equal(splice.LocalFundingPubKey, reloaded.LocalFundingPubKey);
+        Assert.Equal(splice.RemoteFundingPubKey, reloaded.RemoteFundingPubKey);
+        Assert.Equal(splice.ShortChannelId, reloaded.ShortChannelId);
+        AssertKeySetsEqual(channel.LocalKeySet, reloaded.LocalKeySet);
+        var info = reloaded.GetSigningInfo();
+        Assert.Equal(splice.FundingTxId, info.FundingTxId);
+        Assert.Equal(splice.LocalFundingPubKey, info.LocalFundingPubKey);
+        Assert.Equal(splice.RemoteFundingPubKey, info.RemoteFundingPubKey);
+        Assert.Equal(3U, info.LocalFundingKeyIndex);
+    }
+
     private static TxId TxIdOf(byte seed) => new(Enumerable.Repeat(seed, 32).ToArray());
 
     private static async Task<ChannelModel> SaveAndReloadAsync(SqliteDbTestContext db, ChannelModel channel)
@@ -388,6 +435,7 @@ public class ChannelRoundTripTests
         Assert.Equal(expected.FundingOutput.RemoteFundingPubKey, actual.FundingOutput.RemoteFundingPubKey);
         Assert.Equal(expected.FundingOutput.TransactionId, actual.FundingOutput.TransactionId);
         Assert.Equal(expected.FundingOutput.Index, actual.FundingOutput.Index);
+        Assert.Equal(expected.LocalFundingKeyIndex, actual.LocalFundingKeyIndex);
         Assert.Equal(expected.IsInitiator, actual.IsInitiator);
         Assert.Equal(expected.RemoteNodeId, actual.RemoteNodeId);
         Assert.Equal(expected.State, actual.State);
