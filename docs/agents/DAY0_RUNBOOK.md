@@ -253,7 +253,7 @@ $U getchannelpolicy $CH                              # and mutinynet.com / the f
 $U splicein $CH 30000 --feerate 253
 $U listchannels                                      # fundings: one pending splice; note its txid (T1)
 # wait at least Nick's Splice:MinRbfInterval (1 min by default), and do it before the next block if you can
-$U bumpsplice $CH --feerate 1000                     # syntax: see `nltg` usage (lane SPR-B); prints the new txid (T2)
+$U bumpsplice $CH 1000                               # bumpsplice <channel_id> <feerate_per_kw> [--max-fee-sat <sats>]; prints the new txid (T2)
 $U listchannels; $N listchannels                     # both list T1 and T2 pending (T2 an RBF attempt)
 # mutinynet.com: T2 replaced T1 in the mempool. Pay once each way while both are pending, then wait for the lock:
 # both ends run on T2, the new SCID is announced after 6 blocks, T1 never confirms; backups on both
@@ -293,8 +293,9 @@ Record every txid, SCID and payment hash in the results template (§5). Anything
     canary runbook). Check the log's estimate; do not open when it is below the current "hour" fee.
   - For `splicein`/`spliceout`, pass `--feerate <sat/kw>` = the "halfHourFee" (sat/vB) x 250, at least 253. Err
     high: a stuck splice leaves the channel on its old funding until it confirms. With wave SPR in the build the
-    initiator can `bumpsplice <CH> --feerate <sat/kw>` (at least 25/24 of the previous attempt's feerate and, for
-    bitcoind's replacement rule, about 1 sat/vB = 250 sat/kw more); without it there is no way to bump a splice.
+    initiator can `bumpsplice <CH> <sat/kw>` (BOLT 2's minimum is max(floor(25/24 x previous), previous + 25 sat/kw),
+    e.g. 278 after 253; for bitcoind's replacement rule add about 1 sat/vB = 250 sat/kw to the previous feerate);
+    without it there is no way to bump a splice.
   - `closechannel <CH> 0 300` uses the estimator; pass a sat/kw feerate instead to pin it.
 - [ ] **Backups after every step, on both nodes:** `exportchanbackup --output <dir>/<NN-step>.backup`, then
       `verifychanbackup <file>` (valid, the channel on its current funding, `KeysMatch` true), and a copy off the
@@ -327,7 +328,7 @@ mainnet` on each side.
 | Open, funding tx unconfirmed for long | feerate too low, and no RBF for a public dual-funded open | wait; do not open another channel from the same inputs; a CPFP from a change output of ours is possible with an external wallet tool only (unverified) |
 | Splice negotiating | `tx_abort`, a disconnect before both `tx_signatures` | the splice is dropped, the channel stays on its funding; retry |
 | Splice signed, unconfirmed | feerate too low | the channel keeps working (payments are signed for every pending funding); with wave SPR the side that started the splice runs `bumpsplice` (both online; the old attempt stays listed until the bump locks and then never confirms), otherwise wait for the confirmation; never restart on an old database |
-| `bumpsplice` refused or `tx_abort` | feerate below 25/24 of the last attempt, the last attempt too recent for the peer, too many attempts, or a `splice_locked` already sent | the pending attempts stay as they were; retry later with a higher feerate, or wait |
+| `bumpsplice` refused or `tx_abort` | feerate below max(floor(25/24 x the last attempt's feerate), that feerate + 25 sat/kw), the last attempt too recent for the peer, too many attempts, or a `splice_locked` already sent | the pending attempts stay as they were; retry later with a higher feerate, or wait |
 | A node restarts mid-splice | crash, reboot | start it again on the **same** database: `channel_reestablish` retransmits what is missing (Day0 proof step 5) |
 | Either side misbehaves or the channel fails | `Failed`, peer `error` | **keep the node running**: it broadcasts the commitment of the current funding (a pending splice's if that one confirmed) and sweeps (BOLT 5; `pendingsweeps`); `forceclosechannel <CH>` only as the last resort |
 | Upgrade went wrong | migration or reestablish failure, `DATA LOSS DETECTED` | §2.1 steps 6 and 8: the pre-upgrade copy only if the migration failed before any peer connection or the commitment numbers are still those recorded before the upgrade; otherwise keep the upgraded database and investigate (never an old `nltg.db` after a channel update) |
