@@ -738,12 +738,18 @@ public sealed partial class SpliceService
                    : null;
     }
 
-    /// <summary>A stored attempt's total fee (inputs minus outputs), or null without one.</summary>
-    private static ulong? GetFee(InteractiveTxSessionModel? attempt)
-    {
-        if (attempt?.ConstructedTx is not { } transaction)
-            return null;
+    /// <summary>A stored attempt's total fee (<see cref="GetTotalFee"/>), or null without one.</summary>
+    internal static ulong? GetFee(InteractiveTxSessionModel? attempt) =>
+        attempt?.ConstructedTx is { } transaction ? GetTotalFee(transaction) : null;
 
+    /// <summary>
+    /// A splice transaction's total fee (SP-TX-05, NL-522): every input's amount (the shared input's is the current
+    /// funding's capacity, each wallet input's the output it spends) minus every output's (the new funding output, each
+    /// side's change and splice-out outputs), whoever added them. Both the RBF attempt's fee and the fee of the attempt
+    /// it replaces are read this way.
+    /// </summary>
+    internal static ulong GetTotalFee(ConstructedInteractiveTx transaction)
+    {
         var inputs = transaction.Inputs.Aggregate(0UL, (sum, i) => checked(sum + (ulong)i.Amount.Satoshi));
         var outputs = transaction.Outputs.Aggregate(0UL, (sum, o) => checked(sum + (ulong)o.Amount.Satoshi));
         return inputs >= outputs ? inputs - outputs : 0;

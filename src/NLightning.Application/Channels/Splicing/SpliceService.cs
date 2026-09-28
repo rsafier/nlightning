@@ -1293,8 +1293,6 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         var script = negotiation.NewFundingScript
                   ?? throw new InvalidOperationException("The new funding script is not known");
         var fundingOutputs = transaction.Outputs.Where(o => o.ScriptPubKey == script).ToList();
-        var inputTotal = transaction.Inputs.Aggregate(0UL, (sum, i) => checked(sum + (ulong)i.Amount.Satoshi));
-        var outputTotal = transaction.Outputs.Aggregate(0UL, (sum, o) => checked(sum + (ulong)o.Amount.Satoshi));
         var model = negotiation.Model;
         return new SpliceTxCompleteFacts(
             transaction.Inputs.Count(i => i.IsShared
@@ -1305,7 +1303,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             negotiation.RemoteReserveSatoshis,
             transaction.Outputs.Any(o => o.AddedBy == InteractiveTxParty.Local && o.ScriptPubKey != script),
             transaction.Outputs.Any(o => o.AddedBy == InteractiveTxParty.Remote && o.ScriptPubKey != script),
-            inputTotal >= outputTotal ? inputTotal - outputTotal : 0);
+            GetTotalFee(transaction));
     }
 
     private InteractiveTxTerms CreateTerms(SpliceNegotiation negotiation, InteractiveTxContribution contribution)

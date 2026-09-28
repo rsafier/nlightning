@@ -30,6 +30,32 @@ public class ClnSpliceRbfHelperTests
         Assert.Equal(expected, minimum);
     }
 
+    /// <summary>
+    /// NL-522: CLN's first splice paid 3,178 sat (about 2,650 sat/kw of its weight) while its <c>splice_init</c> named a
+    /// much lower feerate; a 1,000 sat/kw bump then paid 1,202 sat and was refused. The proof's bump pays more than the
+    /// first fee plus BIP 125's incremental relay fee, and never less than the IT-RBF-01 floor or 1,000 sat/kw.
+    /// </summary>
+    [Theory]
+    [InlineData(253u, 3_178ul, 1_196ul)]
+    [InlineData(253u, 300ul, 1_196ul)]
+    [InlineData(2_500u, 3_178ul, 1_196ul)]
+    [InlineData(10_000u, 3_178ul, 1_196ul)]
+    public void Given_ClnsFirstAttempt_When_TheProofPicksTheBumpFeerate_Then_ItBeatsTheFeeAndTheFloor(
+        uint firstFeerate, ulong firstFee, ulong firstWeight)
+    {
+        // Arrange
+        var vsize = (firstWeight + 3) / 4;
+
+        // Act
+        var feerate = ClnSpliceRbfTests.GetClnBumpFeerate(firstFeerate, firstFee, firstWeight);
+
+        // Assert: at the first attempt's weight the bump pays at least its fee plus 1 sat/vB
+        Assert.True(feerate >= 1_000);
+        Assert.True(feerate >= ClnSpliceRbfTests.GetMinimumNextFeerate(firstFeerate));
+        Assert.True(feerate * firstWeight / 1_000 >= firstFee + vsize,
+                    $"{feerate} sat/kw pays {feerate * firstWeight / 1_000} sat, not more than {firstFee} + {vsize}");
+    }
+
     [Theory]
     [InlineData(264u)]
     [InlineData(277u)]

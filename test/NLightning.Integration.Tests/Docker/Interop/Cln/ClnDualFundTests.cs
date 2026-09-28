@@ -6,6 +6,7 @@ namespace NLightning.Integration.Tests.Docker.Interop.Cln;
 
 using Abcd;
 using Application.Channels.DualFunding;
+using Application.InteractiveTx;
 using Domain.Bitcoin.Enums;
 using Domain.Channels.DualFunding;
 using Domain.Channels.DualFunding.Interfaces;
@@ -24,7 +25,8 @@ using Utils;
 /// Proof DF of the splicing plan (<c>docs/agents/SPLICING_PLAN.md</c> "Optional wave DF", NL-037): BOLT 2 "Channel
 /// Establishment v2" (<c>open_channel2</c>/<c>accept_channel2</c>, <c>option_dual_fund</c> 28/29) against Core
 /// Lightning v26.06.8: CLN opens a dual-funded channel to us with our contribution, we open one to CLN and CLN matches
-/// ours (<c>--funder-policy=match</c>), and we RBF our unconfirmed open. Each channel is used for payments both ways.
+/// ours (<c>--funder-policy=match</c>), and we RBF our unconfirmed open (CLN may change its contribution in its
+/// <c>tx_ack_rbf</c>, NL-521). Each channel is used for payments both ways.
 /// </summary>
 /// <remarks>
 /// <para>CLN v26.06.8 advertises <c>option_dual_fund</c> only with <c>--experimental-dual-fund</c> (checked with
@@ -173,19 +175,29 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
     [Fact]
     public async Task Given_OurUnconfirmedDualFundedOpen_When_WeBumpIt_Then_ClnFollowsTheReplacementAndItConfirms()
     {
-        // Arrange: our open, not mined
+        // Arrange: our open, not mined. CLN's funder matches only a funding feerate inside its own acceptable range
+        // (plugins/funder.c: "their feerate ... is out of range", from CLN's estimates; 253..2,530 sat/kw on the idle
+        // regtest, higher once earlier classes of a full run mined fee-paying transactions), so both feerates are
+        // chosen inside the range CLN reports now. Whether CLN contributes to each attempt is still its own decision
+        // (NL-521: in a wave d13 full run it matched only the RBF, and BOLT 2 lets it change its contribution in
+        // tx_ack_rbf), so the channel is checked against what CLN says it put in.
         var ct = TestContext.Current.CancellationToken;
         var node = await CreateNodeAsync("df-rbf", 0, ct);
         var service = node.Services.GetRequiredService<IDualFundedOpenService>();
-        // at 1,000 sat/kw: CLN's funder matches only inside its feerate bounds (253..2,530 sat/kw on the idle regtest),
-        // and our RBF keeps both contributions, so the bump must stay inside them too
+        var (minimum, maximum) = await GetClnAcceptableFeerateRangeAsync(ct);
+        var openFeerate = Math.Clamp(1_000u, minimum, maximum);
+        var bumpFeerate = Math.Max(Math.Min(2 * openFeerate, maximum),
+                                   (uint)InteractiveTxDriver.GetMinimumRbfFeeratePerKw(openFeerate));
+        Console.WriteLine($"[cln-df] CLN accepts {minimum}..{maximum} sat/kw: open at {openFeerate}, bump at "
+                        + $"{bumpFeerate}");
         var first = await service.OpenAsync(new DualFundedOpenRequest(ClnPubKey, LightningMoney.Satoshis(300_000),
-                                                                      1_000), ct);
+                                                                      openFeerate), ct);
         Assert.True(first.FailureReason is null, first.FailureReason);
         await WaitInMempoolAsync(first.FundingTxId!.Value, ct);
+        var firstCapacity = Channel(node, first.ChannelId).FundingOutput!.Amount;
 
-        // Act: RBF at 2,000 sat/kw (IT-RBF-01 floor: 1,041)
-        var bumped = await service.BumpAsync(first.ChannelId, 2_000, ct);
+        // Act
+        var bumped = await service.BumpAsync(first.ChannelId, bumpFeerate, ct);
 
         // Assert: a new funding transaction that CLN follows, in the mempool instead of the first
         Assert.True(bumped.FailureReason is null, bumped.FailureReason);
@@ -195,11 +207,34 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
         Console.WriteLine($"[cln-df] CLN after the RBF: {theirs?.ToJsonString()}");
         Assert.Equal(TxIdDisplay(bumped.FundingTxId!.Value), theirs!["funding_txid"]!.GetValue<string>());
 
+        // ...with the capacity CLN reports: our 300,000 sat plus whatever CLN put into the replacement
+        var capacity = LightningMoney.MilliSatoshis(theirs["total_msat"]!.GetValue<ulong>());
+        var clnShare = LightningMoney.MilliSatoshis(capacity.MilliSatoshi - 300_000_000);
+        Console.WriteLine($"[cln-df] CLN contributed {firstCapacity.Satoshi - 300_000} sat to the open and "
+                        + $"{clnShare.Satoshi} sat to the RBF");
+        var ours = Channel(node, first.ChannelId);
+        Assert.Equal(capacity, ours.FundingOutput!.Amount);
+        Assert.Equal(LightningMoney.Satoshis(300_000), ours.LocalBalance);
+        Assert.Equal(clnShare, ours.RemoteBalance);
+        if (bumpFeerate >= minimum && bumpFeerate <= maximum)
+            Assert.Equal(LightningMoney.Satoshis(600_000), capacity);
+
         // Act & Assert: it confirms and the channel works
         await MineUntilUsableAsync(node, first.ChannelId, ct);
         Assert.Equal(bumped.FundingTxId, Channel(node, first.ChannelId).FundingOutput!.TransactionId);
-        Assert.Equal(LightningMoney.Satoshis(600_000), Channel(node, first.ChannelId).FundingOutput!.Amount);
+        Assert.Equal(capacity, Channel(node, first.ChannelId).FundingOutput!.Amount);
         await PayBothWaysAsync(node, ct);
+    }
+
+    /// <summary>
+    /// CLN's <c>feerates perkw</c> <c>min_acceptable</c>/<c>max_acceptable</c>: its funder plugin contributes only to a
+    /// funding feerate inside them (<c>feerate_our_min</c>/<c>feerate_our_max</c> of the <c>openchannel2</c> and
+    /// <c>rbf_channel</c> hooks).
+    /// </summary>
+    private async Task<(uint Min, uint Max)> GetClnAcceptableFeerateRangeAsync(CancellationToken ct)
+    {
+        var perKw = (await _cln.CallAsync("feerates", ct, ("style", "perkw")))["perkw"]!;
+        return (perKw["min_acceptable"]!.GetValue<uint>(), perKw["max_acceptable"]!.GetValue<uint>());
     }
 
     private async Task<NLightningTestNode> CreateNodeAsync(string name, long acceptContributionSat,

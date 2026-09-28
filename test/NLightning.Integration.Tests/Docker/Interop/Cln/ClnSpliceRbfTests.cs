@@ -263,17 +263,28 @@ public sealed class ClnSpliceRbfTests : IAsyncLifetime
         await Task.Delay(s_minRbfInterval + TimeSpan.FromSeconds(1), ct);
         var rbfFrom = wire.CurrentSequence;
 
-        // Act
-        var bumpTxId = await ClnBumpAsync(session, (long)SpliceInSat, BumpFeeRatePerKw, [firstTxId], ct);
+        // CLN's splicein funds its part at its own estimate, which the earlier classes of a full run move, so its first
+        // attempt can pay far more than the feerate its splice_init carries (NL-522: 3,178 sat, then 1,202 sat for a
+        // 1,000 sat/kw bump, which we refused under BOLT 2's RBF fee rule). The bump beats both the IT-RBF-01 floor over
+        // that feerate and the first attempt's fee.
+        var firstFee = await GetFeeAsync(firstTx, ct);
+        var firstWeight = await GetWeightAsync(firstTxId, ct);
+        var bumpFeerate = GetClnBumpFeerate(firstInit.SpliceFeeratePerKw, firstFee, firstWeight);
+        Console.WriteLine($"[proof] CLN's first attempt: splice_init at {firstInit.SpliceFeeratePerKw} sat/kw, paid "
+                        + $"{firstFee} sat for {firstWeight} WU ({firstFee * 1_000 / firstWeight} sat/kw); bump at "
+                        + $"{bumpFeerate} sat/kw");
 
-        // Assert: CLN's tx_init_rbf at 1,000 sat/kw with its +100,000, our tx_ack_rbf with 0
+        // Act
+        var bumpTxId = await ClnBumpAsync(session, (long)SpliceInSat, bumpFeerate, [firstTxId], ct);
+
+        // Assert: CLN's tx_init_rbf at the bump feerate with its +100,000, our tx_ack_rbf with 0
         var initRbf = await Poll.ForAsync(() => wire.FirstOrDefault(inbound: true, MessageTypes.TxInitRbf, rbfFrom),
                                           s_stepTimeout, "CLN's tx_init_rbf", ct);
         var ackRbf = await Poll.ForAsync(() => wire.FirstOrDefault(inbound: false, MessageTypes.TxAckRbf, rbfFrom),
                                          s_stepTimeout, "our tx_ack_rbf", ct);
         Console.WriteLine($"[proof] CLN's first attempt at {firstInit.SpliceFeeratePerKw} sat/kw, its RBF at "
                         + $"{RbfFeerate(initRbf)} sat/kw");
-        Assert.Equal(BumpFeeRatePerKw, RbfFeerate(initRbf));
+        Assert.Equal(bumpFeerate, RbfFeerate(initRbf));
         Assert.Equal((long)SpliceInSat, InitRbfContribution(initRbf));
         Assert.Equal(0, AckRbfContribution(ackRbf) ?? 0);
         Assert.True(initRbf.Sequence < ackRbf.Sequence);
@@ -936,6 +947,23 @@ public sealed class ClnSpliceRbfTests : IAsyncLifetime
     /// previous), previous + 25) (BOLT 2 <c>tx_init_rbf</c>; the product rule).
     /// </summary>
     internal static uint GetMinimumNextFeerate(uint previous) => InteractiveTxRbfRules.GetMinimumNextFeerate(previous);
+
+    /// <summary>
+    /// The feerate of CLN's bump in proof (b) (NL-522): at least <see cref="BumpFeeRatePerKw"/> and the IT-RBF-01 floor
+    /// over the first attempt's <c>splice_init</c> feerate, and high enough that the bump, which has the first
+    /// attempt's shape (the shared input, one CLN input, the funding output and CLN's change), pays more than the first
+    /// attempt's total fee plus BIP 125's incremental relay fee (1 sat/vB of the replacement): BOLT 2 splice
+    /// <c>tx_complete</c> ("the transaction's total fees is less than the last successfully negotiated splice
+    /// transaction's fees": <c>tx_abort</c>) and bitcoind's replacement rules. A quarter more covers CLN's own weight
+    /// estimate for its PSBT (<see cref="ClnRbfStartWeight"/> plus its input and change).
+    /// </summary>
+    internal static uint GetClnBumpFeerate(uint firstFeeratePerKw, ulong firstFeeSat, ulong firstWeight)
+    {
+        ArgumentOutOfRangeException.ThrowIfZero(firstWeight);
+        var vsize = (firstWeight + 3) / 4;
+        var byFee = (uint)Math.Ceiling((firstFeeSat + vsize) * 1.25 * 1_000 / firstWeight);
+        return Math.Max(Math.Max(BumpFeeRatePerKw, GetMinimumNextFeerate(firstFeeratePerKw)), byFee);
+    }
 
     /// <summary>
     /// The reason our node writes into the <c>tx_abort</c> that refuses a <c>tx_init_rbf</c> at
