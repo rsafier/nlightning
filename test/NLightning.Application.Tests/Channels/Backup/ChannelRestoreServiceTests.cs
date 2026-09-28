@@ -42,6 +42,7 @@ public partial class ChannelRestoreServiceTests : IDisposable
     private readonly List<string> _calls = [];
     private readonly Mock<IPeerManager> _peerManager = new();
     private readonly Mock<IChannelManager> _channelManager = new();
+    private readonly Mock<Infrastructure.Bitcoin.Wallet.Interfaces.IBlockchainMonitor> _chainMonitor = new();
     private readonly Sha256 _sha256 = new();
     private readonly List<(TxId TxId, uint Index, TxId Spender, uint Height)> _markedSpent = [];
     private readonly List<ChannelRestoreService> _services = [];
@@ -732,7 +733,8 @@ public partial class ChannelRestoreServiceTests : IDisposable
                                                 IGraphStore? graphStore = null, TimeSpan? reconnectDelay = null,
                                                 IChannelMemoryRepository? channelMemory = null,
                                                 TimeSpan? connectBudget = null, TimeSpan? resumeTimeout = null,
-                                                IChannelFundingKeySource? fundingKeySource = null)
+                                                IChannelFundingKeySource? fundingKeySource = null,
+                                                bool asChainMonitor = false)
     {
         var channelRepository = new Mock<IChannelDbRepository>();
         channelRepository.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
@@ -802,7 +804,7 @@ public partial class ChannelRestoreServiceTests : IDisposable
                      })
                     .ReturnsAsync((PeerAddressInfo _) => new PeerModel(BackupTestData.Key(0x03, 1, 9), "h", 1,
                                                                        "IPv4"));
-        var watcher = new Mock<IOutpointWatcher>();
+        var watcher = asChainMonitor ? _chainMonitor.As<IOutpointWatcher>() : new Mock<IOutpointWatcher>();
         watcher.Setup(w => w.TrackWatchedOutpoint(It.IsAny<WatchedOutpointModel>()))
                .Callback((WatchedOutpointModel w) => _tracked.Add(w));
         var serializer = new Mock<IMessageSerializer>();

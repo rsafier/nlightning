@@ -1,6 +1,7 @@
 namespace NLightning.Application.Channels.Backup.Models;
 
 using Domain.Channels.Enums;
+using Domain.Channels.ValueObjects;
 
 /// <summary>
 /// What <c>verifychanbackup</c> found in a backup.
@@ -47,8 +48,12 @@ public enum ChannelBackupWriteOutcome
 /// <see cref="ChannelBackupWriteOutcome.KeptExisting"/>).</param>
 /// <param name="FilePath">The file, when one is configured.</param>
 /// <param name="MovedAsidePath">Where an existing file that did not decrypt with our key was moved.</param>
+/// <param name="UnverifiedChannels">Channels whose funding key derives at no funding key index of this node's key
+/// file (a restore would refuse them): the file keeps their previous entry, or leaves them out when it has none. Null
+/// when every channel checked out.</param>
 public sealed record ChannelBackupWriteResult(
     ChannelBackupWriteOutcome Outcome,
     int ChannelCount,
     string? FilePath,
-    string? MovedAsidePath = null);
+    string? MovedAsidePath = null,
+    IReadOnlyList<ChannelId>? UnverifiedChannels = null);

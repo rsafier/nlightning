@@ -23,6 +23,8 @@ using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.InteractiveTx;
+using Domain.Protocol.InteractiveTx.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Payments;
 
@@ -36,6 +38,12 @@ internal sealed class BackupTestData
 
     /// <summary>The stored fundings of a channel (the <c>ChannelFundings</c> rows), read by the backup.</summary>
     public Dictionary<ChannelId, FundingSet> FundingSets { get; } = [];
+
+    /// <summary>The stored interactive-tx negotiations of a channel (<c>InteractiveTxSessions</c>).</summary>
+    public Dictionary<ChannelId, List<InteractiveTxSessionModel>> Sessions { get; } = [];
+
+    /// <summary>Makes every read of the stored fundings throw (a database error).</summary>
+    public bool FailFundingReads { get; set; }
     public TestNodeKeyManager KeyManager { get; }
     public Mock<ILightningSigner> Signer { get; } = new();
     public ChannelBackupOptions Options { get; } = new() { WriteDelay = TimeSpan.Zero };
@@ -116,8 +124,16 @@ internal sealed class BackupTestData
         unitOfWork.SetupGet(u => u.PeerDbRepository).Returns(peerRepository.Object);
         var fundingRepository = new Mock<IChannelFundingDbRepository>();
         fundingRepository.Setup(r => r.GetFundingSetAsync(It.IsAny<ChannelId>()))
-                         .ReturnsAsync((ChannelId id) => FundingSets.GetValueOrDefault(id));
+                         .Returns((ChannelId id) => FailFundingReads
+                                                        ? Task.FromException<FundingSet?>(
+                                                            new InvalidOperationException("database is locked"))
+                                                        : Task.FromResult(FundingSets.GetValueOrDefault(id)));
         unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(fundingRepository.Object);
+        var sessionRepository = new Mock<IInteractiveTxSessionDbRepository>();
+        sessionRepository.Setup(r => r.GetByChannelIdAsync(It.IsAny<ChannelId>()))
+                         .ReturnsAsync((ChannelId id) => (IReadOnlyList<InteractiveTxSessionModel>)
+                                                         (Sessions.TryGetValue(id, out var rows) ? rows.ToList() : []));
+        unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(sessionRepository.Object);
 
         var services = new ServiceCollection();
         services.AddScoped(_ => unitOfWork.Object);

@@ -86,45 +86,95 @@ public sealed class ChainFundingSpendLocator : IFundingSpendLocator
             return next;
 
         // The peer rotated its key too: the witness of the new funding output's spend shows both keys
-        var txId = new TxId(transaction.GetHash().ToBytes());
-        for (var vout = 0; vout < transaction.Outputs.Count && vout <= ushort.MaxValue; vout++)
+        foreach (var vout in SpliceSpendFollower.GetCandidateOutputs(transaction))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var output = transaction.Outputs[vout];
-            if (!output.ScriptPubKey.IsScriptType(ScriptType.P2WSH))
-                continue;
-
-            var candidate = SpliceSpendFollower.MoveTo(entry, txId, (ushort)vout, (ulong)output.Value.Satoshi,
-                                                       entry.LocalFundingKeyIndex, entry.LocalFundingPubKey,
-                                                       entry.RemoteFundingPubKey, spend.BlockHeight,
-                                                       spend.TransactionIndex);
-            var location = await SearchAsync(candidate, null, cancellationToken);
-            if (location is not { Status: FundingSpendStatus.SpentFound, Spend: { } outputSpend })
-                continue;
-
-            try
-            {
-                var spender = Transaction.Load(outputSpend.SpendingTransaction.RawTxBytes, Network.Main);
-                var outPoint = new OutPoint(transaction.GetHash(), vout);
-                var input = spender.Inputs.FirstOrDefault(i => i.PrevOut == outPoint);
-                if (input is not null
-                 && SpliceSpendFollower.TryParseFundingWitness(entry, input.WitScript, deriveLocalFundingKey) is
-                 { } keys)
-                    return candidate with
-                    {
-                        LocalFundingKeyIndex = keys.Index,
-                        LocalFundingPubKey = keys.Local,
-                        RemoteFundingPubKey = keys.Remote
-                    };
-            }
-            catch (Exception e) when (e is not OperationCanceledException)
-            {
-                _logger.LogWarning(e, "The spend of output {Vout} of splice {TxId} of channel {ChannelId} can't be read",
-                                   vout, txId, entry.ChannelId);
-            }
+            var check = await CheckOutputAsync(entry, transaction, spend, vout, deriveLocalFundingKey,
+                                               cancellationToken);
+            if (check is { Status: SpliceOutputStatus.Followed, Next: { } followed })
+                return followed;
         }
 
         return null;
+    }
+
+    /// <inheritdoc />
+    public async Task<SpliceOutputCheck> CheckSpliceOutputAsync(ChannelBackupEntry entry,
+                                                                OutpointSpentEventArgs spend, ushort outputIndex,
+                                                                Func<uint, CompactPubKey?> deriveLocalFundingKey,
+                                                                CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentNullException.ThrowIfNull(spend);
+        ArgumentNullException.ThrowIfNull(deriveLocalFundingKey);
+
+        Transaction transaction;
+        try
+        {
+            transaction = Transaction.Load(spend.SpendingTransaction.RawTxBytes, Network.Main);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "The spend of the funding output of channel {ChannelId} can't be read",
+                               entry.ChannelId);
+            return new SpliceOutputCheck(SpliceOutputStatus.Unknown);
+        }
+
+        if (outputIndex >= transaction.Outputs.Count
+         || !transaction.Outputs[outputIndex].ScriptPubKey.IsScriptType(ScriptType.P2WSH))
+            return new SpliceOutputCheck(SpliceOutputStatus.NotTheChannel);
+
+        return await CheckOutputAsync(entry, transaction, spend, outputIndex, deriveLocalFundingKey,
+                                      cancellationToken);
+    }
+
+    /// <summary>
+    /// One P2WSH output of <paramref name="transaction"/> (a spend of <paramref name="entry"/>'s funding that is no
+    /// commitment): unspent, spent with a 2-of-2 witness holding our key (followed), spent otherwise, or unknown.
+    /// </summary>
+    private async Task<SpliceOutputCheck> CheckOutputAsync(ChannelBackupEntry entry, Transaction transaction,
+                                                           OutpointSpentEventArgs spend, ushort vout,
+                                                           Func<uint, CompactPubKey?> deriveLocalFundingKey,
+                                                           CancellationToken cancellationToken)
+    {
+        var txId = new TxId(transaction.GetHash().ToBytes());
+        var output = transaction.Outputs[vout];
+        var candidate = SpliceSpendFollower.MoveTo(entry, txId, vout, (ulong)output.Value.Satoshi,
+                                                   entry.LocalFundingKeyIndex, entry.LocalFundingPubKey,
+                                                   entry.RemoteFundingPubKey, spend.BlockHeight,
+                                                   spend.TransactionIndex);
+        var location = await SearchAsync(candidate, null, cancellationToken);
+        switch (location)
+        {
+            case { Status: FundingSpendStatus.Unspent }:
+                return new SpliceOutputCheck(SpliceOutputStatus.Unspent);
+            case { Status: FundingSpendStatus.SpentFound, Spend: { } outputSpend }:
+                try
+                {
+                    var spender = Transaction.Load(outputSpend.SpendingTransaction.RawTxBytes, Network.Main);
+                    var outPoint = new OutPoint(transaction.GetHash(), vout);
+                    var input = spender.Inputs.FirstOrDefault(i => i.PrevOut == outPoint);
+                    if (input is not null
+                     && SpliceSpendFollower.TryParseFundingWitness(entry, input.WitScript, deriveLocalFundingKey) is
+                     { } keys)
+                        return new SpliceOutputCheck(SpliceOutputStatus.Followed, candidate with
+                        {
+                            LocalFundingKeyIndex = keys.Index,
+                            LocalFundingPubKey = keys.Local,
+                            RemoteFundingPubKey = keys.Remote
+                        });
+
+                    return new SpliceOutputCheck(SpliceOutputStatus.NotTheChannel);
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    _logger.LogWarning(e, "The spend of output {Vout} of splice {TxId} of channel {ChannelId} can't be "
+                                        + "read", vout, txId, entry.ChannelId);
+                    return new SpliceOutputCheck(SpliceOutputStatus.Unknown);
+                }
+            default:
+                return new SpliceOutputCheck(SpliceOutputStatus.Unknown);
+        }
     }
 
     /// <summary>

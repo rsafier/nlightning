@@ -16,6 +16,7 @@ using Domain.Serialization.Interfaces;
 using Gossip.Graph.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Onchain;
 using Onchain.Interfaces;
 
 public static class ChannelBackupServiceCollectionExtensions
@@ -33,7 +34,10 @@ public static class ChannelBackupServiceCollectionExtensions
     /// the peer's announced addresses from <see cref="IGraphStore"/> when it is registered (NL-431). Spliced channels
     /// (NL-478): both derive our rotated funding keys through <see cref="IChannelFundingKeySource"/> (TryAdd'ed over the
     /// signer), and the restore moves a stored recovery channel to a splice under the channel's
-    /// <see cref="IChannelLockProvider"/> when one is registered.
+    /// <see cref="IChannelLockProvider"/> when one is registered. The registered <see cref="IOnchainChannelWatcher"/>
+    /// (or, registered later, <see cref="OnchainChannelWatcher"/>) is wrapped in a
+    /// <see cref="SpliceFollowingOnchainChannelWatcher"/>, so a splice of a recovery channel that the chain monitor
+    /// reports moves the channel instead of closing it; the restore service uses the unwrapped watcher.
     /// </summary>
     public static IServiceCollection AddChannelBackupServices(this IServiceCollection services)
     {
@@ -66,7 +70,7 @@ public static class ChannelBackupServiceCollectionExtensions
                                                              sp.GetRequiredService<ILightningSigner>(),
                                                              sp.GetService<ILogger<ChannelRestoreService>>(),
                                                              sp.GetService<IFundingSpendLocator>(),
-                                                             sp.GetService<IOnchainChannelWatcher>(),
+                                                             GetOwnOnchainWatcher(sp),
                                                              sp.GetService<IChannelKeyIndexReserver>(),
                                                              sp.GetService<IGraphStore>(),
                                                              sp.GetService<IChannelMemoryRepository>(),
@@ -83,6 +87,45 @@ public static class ChannelBackupServiceCollectionExtensions
         services.TryAddSingleton<IChannelKeyIndexReserver>(sp => new SecureKeyManagerKeyIndexReserver(
                                                                sp.GetRequiredService<ISecureKeyManager>(),
                                                                sp.GetService<ILogger<SecureKeyManagerKeyIndexReserver>>()));
+        AddSpliceFollowingOnchainWatcher(services);
         return services;
     }
+
+    /// <summary>
+    /// Wraps the <see cref="IOnchainChannelWatcher"/> in a <see cref="SpliceFollowingOnchainChannelWatcher"/> (once):
+    /// over the registration found now, else over the <see cref="OnchainChannelWatcher"/> a later
+    /// <c>AddOnchainServices</c> registers (whose TryAdd of the interface then keeps the wrapper).
+    /// </summary>
+    private static void AddSpliceFollowingOnchainWatcher(IServiceCollection services)
+    {
+        if (services.Any(d => d.ServiceType == typeof(SpliceFollowingOnchainChannelWatcher)))
+            return;
+
+        var existing = services.LastOrDefault(d => d.ServiceType == typeof(IOnchainChannelWatcher)
+                                                 && !d.IsKeyedService);
+        if (existing is not null)
+            services.Remove(existing);
+
+        services.AddSingleton(sp => new SpliceFollowingOnchainChannelWatcher(
+                                  () => existing is null
+                                            ? sp.GetService<OnchainChannelWatcher>()
+                                            : Resolve(existing, sp),
+                                  () => sp.GetService<IChannelRestoreService>(),
+                                  sp.GetService<ILogger<SpliceFollowingOnchainChannelWatcher>>()));
+        services.AddSingleton<IOnchainChannelWatcher>(sp =>
+                                                          sp.GetRequiredService<SpliceFollowingOnchainChannelWatcher>());
+    }
+
+    /// <summary>The node's own on-chain watcher, without the wrapper (the restore service's hand-overs).</summary>
+    private static IOnchainChannelWatcher? GetOwnOnchainWatcher(IServiceProvider serviceProvider) =>
+        serviceProvider.GetService<IOnchainChannelWatcher>() is SpliceFollowingOnchainChannelWatcher wrapper
+            ? wrapper.Inner
+            : serviceProvider.GetService<IOnchainChannelWatcher>();
+
+    private static IOnchainChannelWatcher? Resolve(ServiceDescriptor descriptor, IServiceProvider serviceProvider) =>
+        descriptor.ImplementationInstance as IOnchainChannelWatcher
+     ?? descriptor.ImplementationFactory?.Invoke(serviceProvider) as IOnchainChannelWatcher
+     ?? (descriptor.ImplementationType is { } type
+             ? ActivatorUtilities.GetServiceOrCreateInstance(serviceProvider, type) as IOnchainChannelWatcher
+             : null);
 }

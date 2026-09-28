@@ -1,5 +1,6 @@
 namespace NLightning.Application.Channels.Backup.Interfaces;
 
+using Domain.Bitcoin.Events;
 using Models;
 
 /// <summary>
@@ -25,4 +26,13 @@ public interface IChannelRestoreService
     void ResumeSpendSearches()
     {
     }
+
+    /// <summary>
+    /// A funding spend the chain monitor reported, before the on-chain watcher sees it (NL-478 review): when the channel
+    /// is a recovery channel and the spend is no commitment (a splice that confirmed after the restore), the channel is
+    /// moved to the splice's funding output (or waits at this one while that output can't be recognized yet) instead of
+    /// being closed, and true is returned; false leaves the spend to the on-chain watcher. The default returns false.
+    /// </summary>
+    Task<bool> TryHandleRecoveryFundingSpendAsync(OutpointSpentEventArgs spend, CancellationToken cancellationToken) =>
+        Task.FromResult(false);
 }
