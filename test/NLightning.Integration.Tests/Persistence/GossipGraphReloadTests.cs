@@ -267,6 +267,10 @@ public sealed class GossipGraphReloadTests : IDisposable
         services.AddPersistenceInfrastructureServices(configuration);
         services.AddRepositoriesInfrastructureServices();
         services.AddGossipGraphServices();
+
+        // NL-466: the memory budget (Gossip:MaxMemoryMb, 1 GiB) reads this process's RSS, which a loaded full test
+        // run can take over 1 GiB: the ingress then refuses every new channel and node and the graph stays empty
+        services.Configure<GossipGraphOptions>(options => options.MaxMemoryMb = 0);
         services.AddSingleton(monitor);
         services.AddSingleton(monitor.Object);
         var provider = services.BuildServiceProvider();
