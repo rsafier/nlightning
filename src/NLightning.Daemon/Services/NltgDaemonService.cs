@@ -51,6 +51,7 @@ public class NltgDaemonService : BackgroundService
     private readonly SpliceDepthWatcher? _spliceDepthWatcher;
     private readonly IRetiredScidMap? _retiredScidMap;
     private readonly SpliceAutoBumper? _spliceAutoBumper;
+    private readonly IPeerBootstrapService? _peerBootstrapService;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
                              IConfiguration configuration, IFeeService feeService,
@@ -65,8 +66,10 @@ public class NltgDaemonService : BackgroundService
                              ChannelPolicyStore? channelPolicyStore = null,
                              SpliceDepthWatcher? spliceDepthWatcher = null,
                              IRetiredScidMap? retiredScidMap = null,
-                             SpliceAutoBumper? spliceAutoBumper = null)
+                             SpliceAutoBumper? spliceAutoBumper = null,
+                             IPeerBootstrapService? peerBootstrapService = null)
     {
+        _peerBootstrapService = peerBootstrapService;
         _spliceAutoBumper = spliceAutoBumper;
         _retiredScidMap = retiredScidMap;
         _channelPolicyStore = channelPolicyStore;
@@ -130,6 +133,10 @@ public class NltgDaemonService : BackgroundService
             // Start the peer manager service
             await _peerManager.StartAsync(stoppingToken);
 
+            // BOLT 10 DNS seed bootstrap (NL-113): runs in the background (off unless Node:Bootstrap:Enabled)
+            if (_peerBootstrapService is not null)
+                await _peerBootstrapService.StartAsync(stoppingToken);
+
             // Every stored channel is in memory now: settle the payments a crash left without an HTLC id (W2-C)
             await _paymentOutcomeHandler.ReconcileInFlightPaymentsAsync(stoppingToken);
 
@@ -190,6 +197,10 @@ public class NltgDaemonService : BackgroundService
         // The replay pruner and the mempool reactor stop before the chain monitor that drives them
         await Task.WhenAll(_onionReplayBlockPruner.StopAsync(), _mempoolReactor.StopAsync(),
                            _spliceAutoBumper?.StopAsync() ?? Task.CompletedTask);
+
+        // The bootstrap dials through the peer manager, so it stops first (NL-113)
+        if (_peerBootstrapService is not null)
+            await _peerBootstrapService.StopAsync(cancellationToken);
 
         await Task.WhenAll(_blockchainMonitor.StopAsync(), _feeService.StopAsync(), _peerManager.StopAsync(),
                            _namedPipeIpcService.StopAsync(), base.StopAsync(cancellationToken));

@@ -53,7 +53,9 @@ public class PeerModel
     {
         get
         {
-            _peerAddressInfo ??= new PeerAddressInfo($"{NodeId}@{Host}:{Port}");
+            // An IPv6 host goes in brackets (pubkey@[2001:db8::1]:9735, NL-113 D-B10-6)
+            var host = Host.Contains(':') && !Host.StartsWith('[') ? $"[{Host}]" : Host;
+            _peerAddressInfo ??= new PeerAddressInfo($"{NodeId}@{host}:{Port}");
 
             return _peerAddressInfo.Value;
         }

@@ -31,6 +31,7 @@ using Domain.Protocol.Interfaces;
 using Gossip;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using InteractiveTx;
+using Node.Bootstrap;
 using Node.Managers;
 using Offers;
 using Offers.Send;
@@ -148,6 +149,8 @@ public static class DependencyInjection
                 peerManager.MaxOutboxOnionMessagesPerPeer = onionMessageOptions.MaxOutboxPerPeer;
             return peerManager;
         });
+        // BOLT 10 DNS seed bootstrap (NL-113): off unless Node:Bootstrap:Enabled; the host starts it after the peers
+        services.AddSingleton<IPeerBootstrapService, PeerBootstrapService>();
         // NL-351: own and relayed gossip goes through the peer's outbox (PeerGossipSender resolves it lazily)
         services.AddSingleton<IPeerGossipOutbox>(sp => (IPeerGossipOutbox)sp.GetRequiredService<IPeerManager>());
         // M6 OM2-T1: onion messages go through the peer's outbox as a bounded low-priority class
