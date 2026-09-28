@@ -1,10 +1,11 @@
-# Day-0 runbook: a dual-funded public channel between two NLightning nodes, then splices (draft)
+# Day-0 runbook: a dual-funded public channel between two NLightning nodes, then splices
 
-Status: **draft, nothing run yet.** Written on 2026-09-27 in wave sp2 (lane SP2-F) against the SP2 contracts
-(`wip/fafo-sp2-contracts` @ `3560f3a9`). The splice completion it relies on (reestablish across a splice, the lock
-and new short channel id, re-announcement, on-chain handling across fundings, backups of the current funding) lands in
-the other SP2 lanes. Items marked **(unverified)** have not been checked on any live network. Never paste secrets (RPC
-password, key password) into this file, a shell history, a log or a chat.
+Status: **the Mutinynet phase passed** on 2026-09-28 (dry run with two NLightning nodes on the owner's machine, the
+live NLightningFAFO upgraded in place as U and a new NLightningFAFO2 as N): a first pass on `d5d8b184` found NL-517
+(fixed in `d5be5b73`), the clean pass on `91591787` ran every step of §2.2 including the splice RBF drill (results in
+§5). The rehearsal with Nick's own node and mainnet (§3) are still to do. Written on 2026-09-27 in wave sp2 (lane
+SP2-F). Items marked **(unverified)** have not been checked on any live network. Never paste secrets (RPC password,
+key password) into this file, a shell history, a log or a chat.
 
 **Goal (day 0).** The owner's node (**U**) and Nick's node (**N**) open a **dual-funded public** channel on mainnet
 (both contribute), pay both ways, then **splice in** and **splice out**, with a backup after every step. Mutinynet
@@ -27,13 +28,17 @@ payments with three attempts pending, a bumped splice across a reconnection and 
 
 - [ ] **One build, both sides.** U and N run the **same commit** (compare `git log -1` and the staged `bin/SHA`
       files). Client and daemon come from the same build (NL-210). Wire behavior of splicing and dual funding changed
-      in every wave so far; mixed builds are not supported.
+      in every wave so far; mixed builds are not supported. The build must contain `d5be5b73` (NL-517): an older one
+      rewrites a spliced funding's row at the next lock after a restart and the signer refuses the channel at the start
+      after that (found in the Mutinynet dry run, §5).
 - [ ] **Tests green at that commit** (root `CLAUDE.md` "Build / test / format"): Release and Release.Native builds
       with only the baseline warnings, `dotnet format --verify-no-changes`, the non-Docker tests on net10.0, and the
       Docker proofs above plus the LND, CLN, ABCD, gossip and on-chain suites of the SP2 integration record.
 - [ ] **Features.** `option_splice`, `option_quiesce` and `option_dual_fund` all stay No and experimental through
-      wave spr (plan D13 not applied, DF3 not scheduled), so splicing and dual funding need `AllowExperimentalFeatures`. The runbook
-      sets all four explicitly, so it does not depend on the defaults of the commit:
+      wave spr and at `91591787` (plan D13 not applied, DF3 not scheduled): `FeatureOptions` defaults them to `No`
+      and lists them in `ExperimentalFeatures`, so splicing and dual funding need `AllowExperimentalFeatures`. The
+      runbook sets all four explicitly, so it does not depend on the defaults of the commit (the keys are under
+      `Node:Features`; `DualFund` is the property name of `option_dual_fund`):
 
       ```jsonc
       "Node": {
@@ -48,7 +53,9 @@ payments with three attempts pending, a bumped splice across a reconnection and 
       ```
 
       `AllowExperimentalFeatures` also allows every other experimental feature; leave the others at their defaults
-      (for example `OptionAttributionData` stays `No`).
+      (for example `OptionAttributionData` stays `No`). For a rehearsal of the splice RBF drill (§2.2 step 6b) on
+      Mutinynet's ~30 s blocks also set `"Splice": { "MinRbfInterval": "00:00:05" }` on both nodes (default 1 min,
+      longer than a Mutinynet block); leave the default on mainnet.
 - [ ] **Known gaps accepted** (check [`ISSUES.md`](ISSUES.md) at the commit for the NL-021/NL-037 follow-ups, e.g.
       NL-470 and NL-478..NL-483):
   - **Splice RBF only from a build with wave SPR integrated** (`bumpsplice`, Proof SPR and `Day0FlowTests` step 9
@@ -68,7 +75,9 @@ payments with three attempts pending, a bumped splice across a reconnection and 
     saved before is kept and used). An inbound peer from any other address is still saved with its host and port
     9735 (not the port it listens on, NL-514), so the side that dials must itself listen on 9735 for the other side's
     reconnects. Check with `listpeers` on both sides, and after the first restart that `listchannels` still lists the
-    channel.
+    channel. The side without a dialable row never dials: after **it** restarts, the channel comes back when the
+    other side's reconnect backoff (`Node:ReconnectInitialDelay` 5 s doubling to `ReconnectMaxDelay`) fires again,
+    57-72 s in the Mutinynet dry run; `connect <its id>@<host>:<port>` from the dialing side brings it back at once.
   - **Each node needs its own well-connected peers** besides the other day-0 node. Our node sends its own
     `channel_announcement`, `channel_update` and `node_announcement` to its connected peers, but relays the other
     end's `channel_update` of our channel only as others' gossip, i.e. only to peers that sent a
@@ -88,6 +97,10 @@ The node: `~/.nltg/mutinynet` on the owner's machine, node id
 `12482a42baf84a4945374ad40c3a77dcd16de1590cfe7374306ae21169aa8d0c:0`, [`MUTINYNET.md`](MUTINYNET.md) "Public
 channel"). The faucet LND cannot splice; this channel only proves the upgrade. `U=scripts/mutinynet/cli.sh`.
 
+Done on 2026-09-28 (05:37-05:40 UTC) from the soak's staged build `988bbde` to `d5d8b184`, then `91591787`: nine
+migrations (`AddFeeInputReservations` ... `AddSpliceHardening`), the channel reestablished at commitment 1/1 as
+recorded, payments both ways; details in §5. Notes from that run are in the steps below.
+
 1. **Record the state** (keep the output with the backup):
 
    ```bash
@@ -104,10 +117,12 @@ channel"). The faucet LND cannot splice; this channel only proves the upgrade. `
      migrations `AddFeeInputReservations` ... `AddSpliceFundings`);
    - the **build SHA** of the old binaries (`git log -1 --format=%H` of the checkout they were built from).
 
-   Continue only when `listchannels` shows the channel `Open`, `HTLCs (out/in): 0/0`.
+   Continue only when `listchannels` shows the channel `Open`, `HTLCs (out/in): 0/0`. A build older than wave rf1
+   (the soak's `988bbde` was) has no `exportchanbackup`; the cold copy of step 3 is the backup then.
 2. **Stop the node.** If the gossip soak runs it: `scripts/mutinynet/soak-gossip.sh stop` (it stops the daemon it
    started); otherwise Ctrl-C in the `start-daemon.sh` terminal, or the daemon's `--stop`. Check nothing is left:
-   `pgrep -fl NLightning.Daemon` prints nothing.
+   `pgrep -fl NLightning.Daemon` prints nothing. In the dry run the sampler had already exited (its pid file was
+   stale) and the daemon was stopped with `kill -TERM <soak/daemon.pid>`: it disconnected the faucet and exited in 2 s.
 3. **Back up, with the node stopped** (a cold copy; never copy `nltg.db` alone while the daemon runs):
 
    ```bash
@@ -144,8 +159,12 @@ channel"). The faucet LND cannot splice; this channel only proves the upgrade. `
        | .Node.FeeUpdates.Enabled = false' appsettings.json.pre-day0 > appsettings.json
    chmod 600 appsettings.json
    ```
-6. **Start and watch the migration.** `scripts/mutinynet/start-daemon.sh &`. The log shows EF applying every
-   migration after the node's last one, at least `..._AddSpliceFundings` (and any SP2 migration). Then:
+6. **Start and watch the migration.** `scripts/mutinynet/start-daemon.sh &`. The template's log levels
+   (`Default: Error`) hide EF's migration lines, so read the applied migrations from the database instead:
+   `sqlite3 ~/.nltg/mutinynet/nltg.db 'select MigrationId from __EFMigrationsHistory where MigrationId > "<step 1
+   migration>"'` lists every migration after the node's last one, at least `..._AddSpliceFundings` and
+   `..._AddSpliceHardening`. A `The configuration directory ... is accessible by other users (mode 755)` warning
+   means `chmod 700 ~/.nltg/mutinynet`. Then:
 
    ```bash
    $U chainstatus                  # Processing: running, last block == tip
@@ -177,7 +196,9 @@ channel"). The faucet LND cannot splice; this channel only proves the upgrade. `
    $U verifychanbackup ~/day0/mutinynet/post-upgrade.backup   # valid, the channel, keys match
    ```
 
-   mutinynet.com still lists NLightningFAFO with its channel `3458334x7x0`.
+   mutinynet.com still lists NLightningFAFO with its channel `3458334x7x0`. The faucet can pay us only what it holds
+   above its channel reserve (1 %, 2,000 sat on this channel): with 1,000 sat on its side the first `withdraw` answered
+   `FailureReasonNoRoute`; pay it 5,000 sat first, then withdraw 1,000.
 8. **Rollback, if needed.** Stop the daemon first. The step 3 copy of `nltg.db` may be restored **only** when
    (a) the migration failed before the daemon connected to any peer (step 6), or (b) `listchannels` on the upgraded
    node, read before the stop, still shows **exactly** the commitment numbers recorded in step 1 (no commitment was
@@ -208,11 +229,36 @@ same `Node:Features` block and his contribution as accepter: `Node:DualFund:Acce
 connections (announced address and open port). Variables: `U` as above, `N` = Nick's `cli.sh`,
 `NICK=<nick node id>@<host>:9735`, `CH=<channel id>` once known. Amounts are examples.
 
+**Dry run with a second node on the same machine (2026-09-28).** The script below passed with NLightningFAFO as U
+and a new node NLightningFAFO2 (`02c8416ac6ac57fccb5a39dfe7324dcc4677dbb03c99798e1eab1090c1202d2431`) as N, both on
+the owner's machine and the same Mutinynet bitcoind. Nothing new was needed in the code to run two nodes:
+
+- The daemon takes `--config <dir>` (`-c`): that directory holds `appsettings.json` (it must exist; the template is
+  written only for `~/.nltg/<network>`), the key file, the IPC pipe `nltg.ipc`, the cookie and `channel.backup`, and
+  the network comes from the file's `Node:Network`. The CLI finds that node with `--cookie <dir>`. Start the daemon
+  from that directory (relative `nltg.db` and `logs/`, NL-306).
+- FAFO2's directory `~/.nltg/mutinynet-fafo2` was a copy of FAFO's `appsettings.json` with `Node:Alias`
+  `NLightningFAFO2`, `Node:Color` `0000ff`, `Node:ListenAddresses` `["0.0.0.0:9736"]`,
+  `Node:DualFund:AcceptContributionSat` 150000, its own `.password` (`openssl rand -hex 24`, mode 600) and no
+  database: the first start created the key (a new node), migrated and started the wallet at the tip. It shares the
+  bitcoind RPC and ZMQ settings with FAFO.
+- Each node runs a staged copy of the build (`~/.nltg/mutinynet/bin-<sha>/{daemon,client}`, both nodes'
+  `bin-current` symlinks point at it) so a rebuild of the checkout never changes a running binary. On the owner's
+  machine `~/day0/nodectl fafo|fafo2 start|stop|status` starts a node with `nohup` from its directory (output
+  appended to its `daemon.out`, pid in `<dir>/day0.pid`) and stops it with SIGTERM (60 s bound); `~/day0/u` and
+  `~/day0/n` are the two CLIs (`--network mutinynet` and `--cookie ~/.nltg/mutinynet-fafo2`).
+- FAFO dialed FAFO2 at `127.0.0.1:9736` (U is the opener and the dialing side; FAFO2 saves FAFO as inbound-only,
+  NL-497), and FAFO2 connected to the faucet LND itself, so the network learns FAFO2's direction and node (§1).
+- With more than one channel between the two nodes a payment may take either: close the older one first (the dry
+  run's first U→N payment of the clean pass went over the pass-1 channel, which was then closed and the payment
+  repeated) or check `Outgoing HTLC` in the `payinvoice` output.
+
 ```bash
 # 0. both: funded wallets (contribution + anchors reserve 10,000 sat + fees), same commit
 $U info; $N info; $U walletbalance; $N walletbalance
 
-# 1. dual-funded public open (we are the opener, Nick contributes as accepter); not over a loopback tunnel (§1)
+# 1. dual-funded public open (we are the opener, Nick contributes as accepter); a loopback address works since NL-497
+#    (the accepter needs 3 confirmations on the outputs that back its anchors reserve: fund it, wait, then open)
 $U connect $NICK
 $U openchannel $NICK 300000 --public --dual-fund      # prints the channel id: CH
 $U listchannels; $N listchannels                     # capacity = 300,000 + Nick's share; wait Open (~3 blocks)
@@ -224,6 +270,8 @@ $N exportchanbackup --output ~/day0/mutinynet/01-open.backup && $N verifychanbac
 $N createinvoice 20000000 "day0 u->n"               # then: $U payinvoice <that invoice>
 $U createinvoice 10000000 "day0 n->u"               # then: $N payinvoice <that invoice>
 $N payinvoice "$(scripts/mutinynet/faucet.sh invoice 2000)"        # Nick -> us -> faucet
+$N createinvoice 2000000 "faucet -> us -> nick"       # then: scripts/mutinynet/faucet.sh withdraw <that invoice>
+# (the faucet pays through us; it needs more than its reserve on its side of our channel, §2.1 step 7)
 # backups (as in 1) on both
 
 # 3. we splice in (feerate in sat/kw; Mutinynet: 253)
@@ -241,7 +289,10 @@ $N spliceout $CH 50000 --address $ADDR --feerate 253
 # 5. restart drill: start a splice, stop Nick's daemon while it is pending, restart it
 $U splicein $CH 20000 --feerate 253
 # (Nick) stop the daemon once `listchannels` shows the splice pending; wait 3 blocks; start it again
+# (if Nick's node is the one that does not dial, the channel is back when our backoff redials, about a minute;
+#  `$U connect $NICK` does it at once, §1)
 $U listchannels; $N listchannels                     # Reestablished Yes on both, the splice locks; backups
+# a splice replaced by the next lock before its 6th confirmation is never announced (BOLT 7): expected
 
 # 6. routing policy
 $U setchannelpolicy $CH --htlc-max-msat 150000000
@@ -250,11 +301,14 @@ $U getchannelpolicy $CH                              # and mutinynet.com / the f
 # 6b. splice RBF drill (only with wave SPR in the build; Day0FlowTests step 9): a splice at the floor, then bumped
 $U splicein $CH 30000 --feerate 253
 $U listchannels                                      # fundings: one pending splice; note its txid (T1)
-# wait at least Nick's Splice:MinRbfInterval (1 min by default), and do it before the next block if you can
+# wait at least Nick's Splice:MinRbfInterval (1 min by default; 5 s for the Mutinynet rehearsal, §1), and do it
+# before the next block: on 30 s blocks create both invoices first and run splicein, bumpsplice and both payinvoice
+# back to back (the dry run's first pass bumped 6 s after T1 and T2 was mined 11 s later, before any payment)
 $U bumpsplice $CH 1000                               # bumpsplice <channel_id> <feerate_per_kw> [--max-fee-sat <sats>]; prints the new txid (T2)
-$U listchannels; $N listchannels                     # both list T1 and T2 pending (T2 an RBF attempt)
-# mutinynet.com: T2 replaced T1 in the mempool. Pay once each way while both are pending, then wait for the lock:
-# both ends run on T2, the new SCID is announced after 6 blocks, T1 never confirms; backups on both
+$U listchannels; $N listchannels                     # both list T1 (Pending (Splice)) and T2 (Pending (SpliceRbf))
+# bitcoind: T1 left the mempool at once (getrawtransaction finds only T2). Pay once each way while both are pending,
+# then wait for the lock: both ends run on T2, the new SCID is announced after 6 blocks, T1 never confirms (our chain
+# monitor logs its refused rebroadcasts as ERR until one block after the lock marks it Abandoned); backups on both
 
 # 7. keep the channel for mainnet day -1, or close it
 $U closechannel $CH 0 300
@@ -356,3 +410,105 @@ Backups (step, file, verifychanbackup result):
 Close (if any): txid:
 Deviations from the Docker proof / new NL entries:
 ```
+### Mutinynet dry run, 2026-09-28 (two NLightning nodes on the owner's machine)
+
+U = NLightningFAFO (`~/.nltg/mutinynet`, upgraded in place as in §2.1), N = NLightningFAFO2 (`~/.nltg/mutinynet-fafo2`,
+new, §2.2 "Dry run"). Times UTC, heights of Mutinynet (~30 s blocks); a splice's SCID block is its confirmation block,
+the lock comes at depth 3. Every step ended with `exportchanbackup` + `verifychanbackup` on both nodes (`valid`, the
+channel on its current funding, "derive from this key file"), in `~/day0/mutinynet/` (`01-open-*` ... `06-rbf-*`
+for pass 1, `p2-01-open-*` ... `p2-06-rbf-*` for pass 2).
+
+**Pass 1 (build `d5d8b184` on both, found NL-517).**
+
+```text
+Commit SHA (U / N): d5d8b184755fbd1dbbf7c5087820fb21cfb8e1d8 / same (staged ~/.nltg/mutinynet/bin-d5d8b184)
+Upgrade (§2.1): old build 988bbde, last migration 20260926163333_AddGraphFundingTxId, stopped 05:38:00, nine
+  migrations applied (AddFeeInputReservations .. AddSpliceHardening), 3458334x7x0 reestablished 05:38:25 at 1/1;
+  faucet paid 1,000 sat (0dad5436...0a74); faucet withdraw 1,000 sat: NoRoute (1,000 sat on its side, below its
+  reserve); paid it 5,000 (5b2278e0...adc4), then received 1,000 (d14069ca...1842, Settled)
+N funded: U withdraw 400,000 sat to N, deac18b2666be7604967acde3491f8fcbb180f0e99e058de91ac57860ef6b6f4 (132 sat fee)
+U node id / N node id: 030f7defc57e05273c109870dbc15ec0f1ade96872852a06247c42c75bfac2495a /
+  02c8416ac6ac57fccb5a39dfe7324dcc4677dbb03c99798e1eab1090c1202d2431
+Contributions (U / N) / funding txid / channel id / SCID: 200,000 / 150,000 /
+  5f92ad89d32c30c04210f599f819a6e76bafa05b32d0299333edeef1b84be997:1 /
+  a83a746a5bff8c671af3c502720389d842f9575afeb213482ae96d02013173e6 / 3462074x5x1 (open 05:44:05 -> Open 05:45:20,
+  announced 05:46:53)
+Payments: U->N 20,000 51c8667d...0c70; N->U 10,000 d59391d3...5bf5; N->U->faucet 2,000 6822b33e...db4e (fee 1,002
+  msat); faucet->U->N 5,000 NoRoute (faucet's side 7,000 minus its 2,000 reserve), 2,000 8d6d7e4b...1281 Settled
+Splice-in: c653d8c958ce2e7e7f0820d4139123da76a6ed005651c2beef25028608f232c8 / 253 sat/kw (252 sat, 248 vB) / block
+  3462083, locked 05:50:30 / 3462083x13x0 (450,000), announced 05:51:50, listed by mutinynet.com at 05:52
+Splice-out: 2cb71d6bd786015425667c00a8ac61920cdfd12507ea57a571b970567de0c693 / 253 sat/kw (184 sat, from N's side)
+  / 50,000 to U's tb1qs639qw5xt7w0s9chcpyhdpv8s9y24at5xvsdas (received) / block 3462091, locked 05:54:46 /
+  3462091x12x1 (399,816)
+Restart drill: U splicein 20,000 (763b4b890785e00f77052c35eea591dd03b7987aec09e537043080f965b0e995) 05:57:05, N
+  stopped 05:57:06 (SIGTERM, 1 s), 3 blocks, N started 05:58:28; U redialed at 05:59:40 (backoff), reestablished,
+  both splice_locked, 3462098x9x1 (419,816), commitments 8/8
+Policy: U setchannelpolicy --htlc-max-msat 150000000 at 06:00:14; mutinynet.com later showed NLightningFAFO's
+  max_htlc 150,000,000 on 3462104x1x1
+Splice RBF: T1 c02bc824f16cd8e6b3543c78cc126333753935a66063ae6024e8d3a0a30f2923 at 253 sat/kw 06:00:27 / bump T2
+  20aebfd534abdb206765ab8ffe88ef26f07ebce72abfde4e539f9805640a0776 at 1,000 sat/kw 06:00:33 (996 sat) / T2 mined in
+  3462104 at 06:00:45 (before the payments), locked 06:01:46 / 3462104x1x1 (449,816); T1 out of the mempool at once,
+  rebroadcast refused until Abandoned at 06:02:16; payments after the lock db063fbd...1396, c27514b0...6772
+Close: the pass-1 channel was closed at 06:22:02 during pass 2 (below)
+Deviations / new NL entries: NL-517 (high): N restarted in the drill while its own splice-out 2cb71d6b (key index
+  2) was the current funding; the reload gave the engine the initial funding (kind Initial, key index 0) and the
+  next lock (763b4b) rewrote 2cb71d6b's row with them; the signer would have refused that row at N's next start.
+  Fixed in d5be5b73 (ledger 91591787); N's row repaired by hand, node stopped (Kind 1, key index 2, checked against
+  U's row and by the signer's registration at the next start). NL-518 (low): every splice logs a MempoolReactor
+  warning.
+```
+
+**Pass 2, the clean pass (build `91591787` on both, one continuous run 06:17-06:37).**
+
+```text
+Commit SHA (U / N): 91591787 (d5be5b73 + ledger) / same (staged ~/.nltg/mutinynet/bin-91591787)
+Contributions (U / N) / funding txid / channel id / SCID: 200,000 / 150,000 /
+  6348a8a4fb4b34b5489f78f885ef2e78ae8a59734b4d902064d65e6d06e57674:2 /
+  fede6471bad5b816c1845c331ecd2e2313db50bf953de743f7b01f9476720b47 / 3462136x3x2 (open 06:17:42 -> Open 06:19:05,
+  both announcements 06:20:55)
+Payments: N->U 10,000 2c719094a21980a28c56582ae5257b53160dc18c8e3aeae61d3f5847209683a9; U->N 20,000
+  3550f3d645fc98bd4bdb783c9f5ddac91658048e5a04dabcb61432306c01764f and N->U->faucet 2,000
+  b013abaeba1c424901d73978376b15433e914af50ae56dd10f202192b972d6e4 (fee 1,002 msat), both repeated after closing
+  the pass-1 channel (their first attempts took it); faucet->U->N 2,000 over a hint-free invoice (routed from the
+  faucet LND's graph) 190cb1ab15df1d3684646aad4d4e0171c00b9e1ccd4be58b77e3eb7f98b0eb19 Settled
+Splice-in: 49ebd5e4db5ee493f0427acc6782496dfcbeb5532a76c1dd57325d1ab0dd0e28 / 253 sat/kw / block 3462145, locked by
+  06:24:06 / 3462145x9x1 (450,000), announced 06:25:36; 3462136x3x2 retired (expires 3462217)
+Splice-out: c73f862f752d07dc6e9ea2e059f8dbf51a98e3fe5d9f26ab91f45b22c394ad47 / 253 sat/kw (181 vB) / 50,000 to
+  U's tb1qn6km2hznaaq86e0t2r34rex0qt2qzvqq5ulvqr (output 1 of the splice, received) / block 3462154, locked by
+  06:29:12 / 3462154x6x0 (399,816; replaced before its 6th confirmation, so never announced)
+Restart drill: U splicein 20,000 9bccd56b0bb7d28db705a6474db7cf0df82ebb1bddea245f1e47256d4906a03d at 06:29:36, N
+  stopped 06:29:39 (SIGTERM, 2 s) with it pending, 3 blocks (3462157 -> 3462160), N started 06:31:16, U redialed
+  06:32:13, reestablished, lock 06:32:24, 3462158x9x1 (419,816), commitments 8/8; N's row of c73f862f (its own
+  splice, current at the restart) kept kind Splice / key index 2 after the lock, same as U's (NL-517 fixed)
+Policy: U setchannelpolicy --htlc-max-msat 150000000 at 06:32:45, in N's graph at 06:32:49
+Splice RBF: T1 f7d54bb2dd3612e1a8b5a572369c48d26f4e1104493591b1bda09c6d47c642bf at 253 sat/kw 06:33:01 / bump T2
+  5e85170aef6bf0d6074d2e250110a95a08ff581eca4fae69493fe51edf09c183 at 1,000 sat/kw 06:33:09 / both listed pending
+  on both nodes, U->N 3,000 (95ff317c...db37) and N->U 2,000 (7d18211b...25c0) paid while both were pending (tip
+  unchanged), T1 left the mempool at once, T2 mined in 3462164, locked 06:34:30 / 3462164x1x0 (449,816), announced
+  06:35:56; faucet->U->N 3,000 over it at 06:37 (8b2d0853...2e8c, with an r hint: new SCID, grace period)
+Close: the pass-1 channel a83a746a... cooperatively, b078b3cb813007a8932f50784ff3a97ac705e3bb13b48240fed54aa97d320be6
+  (168 vB) at 06:22:02, Closed by 06:26; the pass-2 channel stays open (the Nick rehearsal reference)
+Deviations from the Docker proof / new NL entries: none in pass 2 beyond the notes in §1/§2.2 (the non-dialing
+  side waits for the other's backoff after its restart; a splice replaced before 6 confirmations is not announced).
+  mutinynet.com listed 3462164x1x0 (449,816 sat) with both policies, NLightningFAFO's max_htlc 150,000,000, at 06:43
+  (7 min after the announcement); the short-lived 3462145x9x1 and 3462158x9x1 never showed up in its index.
+  NL-518 (log level) seen again.
+```
+
+**Nodes left running (2026-09-28, build `91591787`).** Both on the staged build `~/.nltg/mutinynet/bin-91591787`
+(`bin-current` symlinks), started with `~/day0/nodectl` (pid in `<dir>/day0.pid`: FAFO 46538, FAFO2 62617 at the end
+of the run):
+
+```bash
+~/day0/nodectl fafo status;  ~/day0/nodectl fafo stop;  ~/day0/nodectl fafo start     # ~/.nltg/mutinynet
+~/day0/nodectl fafo2 status; ~/day0/nodectl fafo2 stop; ~/day0/nodectl fafo2 start    # ~/.nltg/mutinynet-fafo2
+~/day0/u listchannels; ~/day0/n listchannels                                           # the two CLIs
+```
+
+The open channels: U-N `fede6471...0b47` (3462164x1x0, 449,816 sat, U 336,001 / N 113,815 sat at the end) and U's
+original public channel to the faucet LND `3458334x7x0`. Stop N before U when both must stop (U dials N); after a
+restart of N, `~/day0/u connect 02c8416ac6ac57fccb5a39dfe7324dcc4677dbb03c99798e1eab1090c1202d2431@127.0.0.1:9736`
+skips the backoff wait. The soak's old staged build was moved to `~/.nltg/mutinynet/soak/bin-988bbde-retired` (it
+must never run on the migrated database). Do not run `scripts/mutinynet/soak-gossip.sh` while `nodectl` runs FAFO: its
+`daemon_pid` looks only for its own staged binary, so it would start a second daemon on the same key and database
+(§4); stop FAFO with `nodectl` first.

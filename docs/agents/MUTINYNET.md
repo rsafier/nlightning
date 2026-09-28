@@ -232,6 +232,33 @@ Lightning API at 20:21 UTC: alias NLightningFAFO, 1 channel, capacity 200,000 sa
 | node_announcement | alias `NLightningFAFO`, color `#ff0000`, at 20:02:10 UTC |
 | Explorer | mutinynet.com lists the node with 1 active channel of 200,000 sat |
 
+## Day-0 dry run: NLightningFAFO upgraded, NLightningFAFO2 (2026-09-28)
+
+The day-0 runbook's Mutinynet phase ([`DAY0_RUNBOOK.md`](DAY0_RUNBOOK.md) §2, results in §5) ran on this machine:
+
+- **NLightningFAFO** (`~/.nltg/mutinynet`, node id `030f7def...495a`) was upgraded in place from the soak's staged
+  build `988bbde` (migration `AddGraphFundingTxId`) to `d5d8b184` and then `91591787`: nine migrations up to
+  `AddSpliceHardening`, the faucet channel `3458334x7x0` reestablished at the recorded commitment numbers. Its
+  `appsettings.json` now has the day-0 feature block (`AllowExperimentalFeatures`, `OptionQuiesce`/`OptionSplice`/
+  `DualFund` Optional, `Node:DualFund`) and `Splice:MinRbfInterval` 5 s; the pre-upgrade file is
+  `appsettings.json.pre-day0` and the cold backup `backup-20260928T053808Z/`. The soak's old staged build was moved
+  to `soak/bin-988bbde-retired`; the gossip soak no longer runs this node.
+- **NLightningFAFO2** (`~/.nltg/mutinynet-fafo2`, node id
+  `02c8416ac6ac57fccb5a39dfe7324dcc4677dbb03c99798e1eab1090c1202d2431`, alias `NLightningFAFO2`, color `#0000ff`) is a
+  second node on the same bitcoind: the daemon runs with `--config ~/.nltg/mutinynet-fafo2` (its own key, password,
+  SQLite database, IPC pipe and cookie), listens on `0.0.0.0:9736`, and the CLI reaches it with `--cookie
+  ~/.nltg/mutinynet-fafo2`. It was funded from FAFO with `withdraw` (400,000 sat,
+  `deac18b2666be7604967acde3491f8fcbb180f0e99e058de91ac57860ef6b6f4`) and connects to the faucet LND itself.
+- Both run the staged build `~/.nltg/mutinynet/bin-91591787` (each directory's `bin-current` symlink) through
+  `~/day0/nodectl fafo|fafo2 start|stop|status` (`nohup`, output appended to the directory's `daemon.out`, pid in
+  `day0.pid`); `~/day0/u` and `~/day0/n` are their CLIs. `start-daemon.sh` and `soak-gossip.sh` are not used for
+  them (do not start either while `nodectl` runs FAFO: two daemons on one key and database, runbook §4).
+- Open channels at the end: FAFO-FAFO2 `fede6471bad5b816c1845c331ecd2e2313db50bf953de743f7b01f9476720b47`, a
+  dual-funded public channel (200,000 + 150,000 sat, spliced in, out, in and RBF-bumped; SCID `3462164x1x0`, 449,816
+  sat) kept as the reference for the rehearsal with Nick, and FAFO's faucet channel `3458334x7x0`. The pass-1
+  channel `a83a746a...73e6` was closed cooperatively
+  (`b078b3cb813007a8932f50784ff3a97ac705e3bb13b48240fed54aa97d320be6`).
+
 ## Known gaps
 
 - Network resolution is not unified (NL-298): the `Wallet/` services (including `BlockchainMonitorService`, since the wave 4 integration 53accb1) use `NBitcoinNetworkResolver`; the builders, `LocalLightningSigner`, `SecureKeyManager`, `ShutdownScriptProvider` and `FallbackAddressTaggedField` resolve with `Network.GetNetwork(name)` (which knows `signet`) and throw otherwise; `ChannelFailureService` falls back to `Network.RegTest`; `ChannelManager` and `ChannelCloseCoordinator` load transactions with `Network.Main` (harmless for parsing).

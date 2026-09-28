@@ -88,12 +88,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 9 | 163 | 172 |
+| open | 0 | 0 | 9 | 164 | 173 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 61 | 144 | 112 | 331 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **156** | **281** | **512** |
+| **Total** | **14** | **61** | **156** | **282** | **513** |
 
 ### Epics
 
@@ -1534,6 +1534,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Done: the reload puts the stored current funding row into the engine's params when it is a splice. Proof: `SpliceFundingsPersistenceTests.Given_ALockedSplice_When_ReloadedAndTheNextSpliceLocks_Then_TheRetiredRowKeepsItsKindAndKeyIndex` (fails without the fix). The one corrupted row (FAFO2) was repaired by hand with the node stopped (`Kind` 1, `LocalFundingKeyIndex` 2, checked against the peer's row).
 - **Blocks/Blocked-by:** Part of NL-021
 - **Plan ref:** `SPLICING_PLAN.md` D5; `DAY0_RUNBOOK.md` §5
+
+### NL-518 MempoolReactor logs every splice of ours as a warning
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Onchain/Mempool/MempoolReactor.cs` (the `Unconfirmed {Kind} ... waiting for it to confirm` line)
+- **Evidence:** Mutinynet day-0 rehearsal (2026-09-28): each splice and splice RBF logged `WRN [MempoolReactor] Unconfirmed Splice <txid> (commitment null) spends the funding output of channel ...` on both nodes; a cooperative close (`Mutual`) takes the same path. An operator watching warnings (the soak sampler counts them) sees one per splice.
+- **Fix sketch:** Log `Splice` and `Mutual` at Information (no commitment number), keep Warning for commitments, with a test on a capturing logger.
+- **Blocks/Blocked-by:** Related NL-021, NL-098
+- **Plan ref:** `DAY0_RUNBOOK.md` §5
 
 ### NL-510 Splice RBF cannot add fresh wallet inputs to our contribution
 - **Status:** open
