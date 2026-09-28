@@ -1595,7 +1595,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` D5; `DAY0_RUNBOOK.md` §5
 
 ### NL-518 MempoolReactor logs every splice of ours as a warning
-- **Status:** fixed (this commit)
+- **Status:** fixed (a981bd45)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Onchain/Mempool/MempoolReactor.cs` (the `Unconfirmed {Kind} ... waiting for it to confirm` line)
@@ -4596,7 +4596,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` "Lane accrbf record"
 
 ### NL-534 A refused rebroadcast of a pending transaction is logged at Error by BitcoinChainService
-- **Status:** fixed (this commit)
+- **Status:** fixed (58fb0c47)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs` ("Failed to broadcast transaction")
@@ -4606,17 +4606,17 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-532, NL-294, NL-461
 - **Plan ref:** —
 ### NL-535 openchannel blocks until channel_ready and never prints the first attempt of a dual-funded open
-- **Status:** fixed (this commit)
+- **Status:** fixed (a254f9f2)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Client/Handlers/OpenChannelMessageHandler.cs` (the subscription loop), `src/NLightning.Daemon/Handlers/OpenChannelClientSubscriptionHandler.cs` (`HandleAsync`)
 - **Evidence:** Mutinynet dry run 2 on the .NET 11 build (`DAY0_RUNBOOK.md` §5, 2026-09-28). `openchannel ... --dual-fund` returns only at `channel_ready` (about 2 min on Mutinynet, 3 blocks), so `bumpopen` run after it in the same shell was refused ("channel_ready sent or received") and the first open (`f20939f0...`) could not be bumped. The dual-funded open signs and broadcasts its funding before the client's first subscription call; that call finds the channel already in `V1FundingSigned`, returns at once only for the ready states, and waits for the next channel update. Without an RBF the CLI therefore never prints the funding txid ("Opening Channel", "Peer accepted", "Channel is now open!"); with RBFs it printed T1 and T2 of the second open (`b78b95b7...`) but never its first attempt T0 `22fb4544...`. The run went on with `openchannel` in the background, the txid read from `listchannels`, then both `bumpopen`s (opener and accepter, both followed, the accepter's attempt confirmed).
 - **Fix sketch:** Return the funding txid of a dual-funded open in the open's own response (a new `ClientCommand` or response key, NL-210 rules), or let the subscription request carry the txid the client last printed so the daemon answers at once when the channel's current funding differs; and document `openchannel ... &` (or a second terminal) for `bumpopen` in the runbook meanwhile.
-- **Fix:** Lane cli535, no new `ClientCommand` (NL-210: new keys on the existing ones). `OpenChannelIpcResponse` keys 1/2 carry a dual-funded open's published funding txid and output index (`OpenChannelClientHandler`, from `DualFundedOpenResult.FundingTxId`); `OpenChannelSubscriptionIpcRequest` keys 1 `KnownFundingTxId` and 2 `ReportFundingChanges` (absent = the old wait for the next update): the daemon subscribes first, then answers at once or on the next update when the channel is ready or runs on a published funding other than the known one (a V2 attempt counts once its `BroadcastTransactions` row exists), so every attempt of either side is reported; a signed funding no longer needs the peer connected nor fails on its disconnection, and a cancelled call never releases the channel's UTXOs. The CLI (`OpenChannelMessageHandler.RunAsync`) prints the channel id and txid as soon as they are published, each new attempt ("The channel's funding transaction changed (replaces ...)"), returns early with `--no-wait`, and exits 0 on Ctrl-C after a txid. `listchannels` lists a V2 open's other signed attempts as `Pending`/`Initial` fundings ("Pending (another attempt of the dual-funded open)"). Tests: `Daemon.Tests` `OpenChannelSubscriptionFundingTests`, `OpenChannelDualFundClientHandlerTests`, `Client/OpenChannelCommandTests`, `ClientAppTests`, `FormatterTests`, `ListChannelsClientHandlerTests`; Docker `Day0FlowTests` step 1 asserts the open's response carries the first attempt, the subscription answers with it at once, and after both bumps with B's attempt on both nodes. `DAY0_RUNBOOK.md` §1/§2.2 no longer need a second terminal.
+- **Fix:** Lane cli535, no new `ClientCommand` (NL-210: new keys on the existing ones). `OpenChannelIpcResponse` keys 1/2 carry a dual-funded open's published funding txid and output index (`OpenChannelClientHandler`, from `DualFundedOpenResult.FundingTxId`); `OpenChannelSubscriptionIpcRequest` keys 1 `KnownFundingTxId` and 2 `ReportFundingChanges` (absent = the old wait for the next update): the daemon subscribes first, then answers at once or on the next update when the channel is ready or runs on a published funding other than the known one (a V2 attempt counts once its `BroadcastTransactions` row exists), so every attempt of either side is reported; a signed funding no longer needs the peer connected nor fails on its disconnection, and a cancelled call never releases the channel's UTXOs. The CLI (`OpenChannelMessageHandler.RunAsync`) prints the channel id and txid as soon as they are published, each new attempt ("The channel's funding transaction changed (replaces ...)"), returns early with `--no-wait`, and exits 0 on Ctrl-C after a txid. `listchannels` lists a V2 open's other signed attempts as `Pending`/`Initial` fundings ("Pending (another attempt of the dual-funded open)"). Tests: `Daemon.Tests` `OpenChannelSubscriptionFundingTests`, `OpenChannelDualFundClientHandlerTests`, `Client/OpenChannelCommandTests`, `ClientAppTests`, `FormatterTests`, `ListChannelsClientHandlerTests`; Docker `Day0FlowTests` step 1 asserts the open's response carries the first attempt, the subscription answers with it at once, and after both bumps with B's attempt on both nodes (green, 1/1, 274 s). `DAY0_RUNBOOK.md` §1/§2.2 no longer need a second terminal.
 - **Blocks/Blocked-by:** Related NL-528, NL-530
 - **Plan ref:** `DAY0_RUNBOOK.md` §2.2
 ### NL-536 Routine startup and splice events in the Mutinynet logs were warnings or misleading
-- **Status:** fixed (this commit)
+- **Status:** fixed (b0e2f645)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` ("Processing missed blocks"), `src/NLightning.Application/Node/Managers/PeerManager.cs` ("not connected, dropping"), `src/NLightning.Application/Channels/Splicing/RetiredScidMap.cs` (`LoadAsync`), `src/NLightning.Application/Gossip/Graph/GraphPruner.cs` ("Graph channel ... closed")
