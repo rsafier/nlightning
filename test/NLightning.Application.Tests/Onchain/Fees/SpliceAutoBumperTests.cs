@@ -264,7 +264,7 @@ public class SpliceAutoBumperTests
         var whileRunning = await bumper.BumpStaleSplicesAsync(BroadcastHeight + 2 * Interval, ct);
         pending.SetResult(new SpliceResult(s_channelId, SpliceNegotiationState.Aborted,
                                            FailureReason: "tx_abort: not now"));
-        await WaitUntilAsync(() => bumper.BumpStaleSplicesAsync(BroadcastHeight + 3 * Interval, ct), ct);
+        await WaitUntilAsync(h => bumper.BumpStaleSplicesAsync(h, ct), BroadcastHeight + 3 * Interval, ct);
 
         // Assert
         Assert.Equal(SpliceNegotiationState.InitSent, Assert.Single(first).State);
@@ -488,12 +488,15 @@ public class SpliceAutoBumperTests
         Assert.False(provider.GetRequiredService<SpliceAutoBumper>().IsEnabled);
     }
 
-    private static async Task WaitUntilAsync(Func<Task<IReadOnlyList<SpliceResult>>> round, CancellationToken ct)
+    private static async Task WaitUntilAsync(Func<uint, Task<IReadOnlyList<SpliceResult>>> round, uint fromHeight,
+                                             CancellationToken ct)
     {
-        // The released bump leaves _running on its continuation; the round bumps once it has
-        for (var i = 0; i < 200; i++)
+        // The released bump leaves _running on its continuation; the round bumps once it has. A round is idempotent
+        // per height, so each try runs at the next block (a round at a height seen while the bump was still running
+        // would otherwise return nothing forever)
+        for (var i = 0U; i < 200; i++)
         {
-            if ((await round()).Count > 0)
+            if ((await round(fromHeight + i)).Count > 0)
                 return;
 
             await Task.Delay(10, ct);
