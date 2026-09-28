@@ -485,9 +485,16 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
     private async Task FundClnAsync(LightningMoney amount, CancellationToken ct)
     {
         var address = (await _cln.CallAsync("newaddr", ct, ("addresstype", "bech32")))["bech32"]!.GetValue<string>();
-        var txId = await fixture.Bitcoin.Rpc.SendToAddressAsync(
-                       NBitcoin.BitcoinAddress.Create(address, NBitcoin.Network.RegTest),
-                       NBitcoin.Money.Satoshis(amount.Satoshi), cancellationToken: ct);
+
+        // At 1 sat/vB (bitcoind's wallet default pays far more): the fixture's bitcoind is shared with the other CLN
+        // classes, and every fee-paying transaction this class gets mined raises bitcoind's estimate, which CLN's
+        // min_acceptable feerate follows; the lane dfrbf proofs pushed it above our 2,500 sat/kw opens, failing the
+        // classes that ran after this one in a full run
+        var sent = await fixture.Bitcoin.Rpc.SendCommandAsync(
+                       "sendtoaddress", ct, address,
+                       NBitcoin.Money.Satoshis(amount.Satoshi).ToDecimal(NBitcoin.MoneyUnit.BTC), "", "", false,
+                       true, null, "unset", null, 1);
+        var txId = NBitcoin.uint256.Parse(sent.Result.ToString());
         await fixture.MineAsync(6, ct);
         await Poll.UntilAsync(async () =>
         {
