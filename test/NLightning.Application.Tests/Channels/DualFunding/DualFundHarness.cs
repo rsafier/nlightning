@@ -112,8 +112,13 @@ internal sealed class DualFundHarness : IAsyncDisposable
         Bob = new DualFundNode(this, "Bob", 0xB0, Path.Combine(directory, "bob.db"), bobContributionSat);
     }
 
+    /// <summary>The nodes' open timeout unless a test sets one.</summary>
+    public static readonly TimeSpan DefaultOpenTimeout = TimeSpan.FromSeconds(60);
+
     /// <param name="bobContributionSat">What Bob (the accepter) contributes to Alice's opens.</param>
-    /// <param name="openTimeout">The nodes' open timeout (default 10 s).</param>
+    /// <param name="openTimeout">The nodes' open timeout (default 60 s: the open watchdog runs on the wall clock, and
+    /// under a loaded full run a 10 s default fired before the pump reached <c>commitment_signed</c>, failing tests
+    /// that never meant to time out after about 30 s; tests of the timeout pass their own).</param>
     /// <param name="allowRbf">The nodes' <c>Node:DualFund:AllowRbf</c> (default false, as in production).</param>
     /// <param name="withPeerServices">See <see cref="WithPeerServices"/>.</param>
     public static async Task<DualFundHarness> CreateAsync(long bobContributionSat, TimeSpan? openTimeout = null,
@@ -121,7 +126,7 @@ internal sealed class DualFundHarness : IAsyncDisposable
     {
         var directory = Path.Combine(Path.GetTempPath(), $"nltg-dual-fund-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
-        var harness = new DualFundHarness(directory, bobContributionSat, openTimeout ?? TimeSpan.FromSeconds(10),
+        var harness = new DualFundHarness(directory, bobContributionSat, openTimeout ?? DefaultOpenTimeout,
                                           allowRbf, withPeerServices);
         foreach (var node in harness.Nodes)
             await node.StartAsync(migrate: true);
