@@ -281,7 +281,8 @@ internal sealed class MessageService : IMessageService
                 break;
         }
 
-        _logger.LogError(exception, "Failed to deserialize message: {Message}", message);
+        // NL-532: the peer's malformed message is its fault, not ours
+        _logger.LogWarning(exception, "Failed to deserialize message: {Message}", message);
         SendMessageAsync(new WarningMessage(new ErrorPayload(message))).GetAwaiter().GetResult();
         RaiseException(this, exception);
     }

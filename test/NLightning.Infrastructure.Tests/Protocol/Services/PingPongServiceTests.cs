@@ -2,10 +2,10 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Infrastructure.Tests.Protocol.Services;
 
-using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Infrastructure.Exceptions;
 using Infrastructure.Protocol.Services;
 
 public class PingPongServiceTests
@@ -42,7 +42,7 @@ public class PingPongServiceTests
         // Assert
         await cts.CancelAsync();
         Assert.Same(disconnectTcs.Task, completed);
-        Assert.IsType<ConnectionException>(await disconnectTcs.Task);
+        Assert.IsType<PingTimeoutException>(await disconnectTcs.Task);
         Assert.Same(pingTask, await Task.WhenAny(pingTask, Task.Delay(s_testTimeout,
                                                                       TestContext.Current.CancellationToken)));
     }
@@ -157,7 +157,7 @@ public class PingPongServiceTests
 
         // Assert
         Assert.False(answered);
-        Assert.IsType<ConnectionException>(disconnect);
+        Assert.IsType<PingTimeoutException>(disconnect);
     }
 
     [Fact]

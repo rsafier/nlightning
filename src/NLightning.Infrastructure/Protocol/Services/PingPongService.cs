@@ -6,6 +6,7 @@ using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Exceptions;
 
 /// <summary>
 /// Service for managing the ping pong protocol.
@@ -66,7 +67,7 @@ internal class PingPongService : IPingPongService
                 if (completedTask != pongReceivedTask)
                 {
                     DisconnectEvent?
-                       .Invoke(this, new ConnectionException("Pong message not received within network timeout."));
+                       .Invoke(this, new PingTimeoutException("Pong message not received within network timeout."));
                     return;
                 }
             }
@@ -101,7 +102,7 @@ internal class PingPongService : IPingPongService
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        DisconnectEvent?.Invoke(this, new ConnectionException($"Pong message not received within {timeout}."));
+        DisconnectEvent?.Invoke(this, new PingTimeoutException($"Pong message not received within {timeout}."));
         return false;
     }
 
@@ -130,7 +131,8 @@ internal class PingPongService : IPingPongService
 
         if (answered is null)
         {
-            DisconnectEvent?.Invoke(this, new Exception("Pong message has different length than ping message."));
+            DisconnectEvent?.Invoke(this,
+                                    new ConnectionException("Pong message has different length than ping message."));
             return;
         }
 
