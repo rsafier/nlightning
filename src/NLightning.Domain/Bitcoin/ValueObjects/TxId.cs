@@ -68,8 +68,18 @@ public readonly struct TxId : IEquatable<TxId>
         return _value.GetByteArrayHashCode();
     }
 
+    /// <summary>
+    /// The txid as bitcoind, LND, CLN and block explorers show it: the hex of the reversed (display order) bytes, so a
+    /// txid copied from a log or an exception message can be looked up as it is (NL-519). The value itself stays in
+    /// internal (serialized) order; <see cref="ToInternalHex"/> prints that.
+    /// </summary>
     public override string ToString()
     {
-        return Convert.ToHexString(_value).ToLowerInvariant();
+        var reversed = (byte[])_value.Clone();
+        Array.Reverse(reversed);
+        return Convert.ToHexStringLower(reversed);
     }
+
+    /// <summary>The hex of the internal (serialized) byte order, for deterministic sort keys.</summary>
+    public string ToInternalHex() => Convert.ToHexStringLower(_value);
 }

@@ -20,7 +20,7 @@ public sealed class OpenChannelSubscriptionPrinter : IPrinter<OpenChannelSubscri
         {
             case ChannelState.V1FundingSigned:
                 _output.WriteLine("Peer sent their signature. Sending ours.");
-                // The txid in the display (bitcoind, block explorer) byte order, not TxId.ToString()'s internal one.
+                // The txid in the display (bitcoind, block explorer) byte order, as TxId.ToString() prints it since NL-519.
                 _output.WriteLine("Funding transaction published. TxId: {0}, Index: {1}",
                                   item.TxId is { } txId ? DisplayOrder.ToHex(txId) : "-",
                                   item.Index?.ToString(CultureInfo.InvariantCulture) ?? "-");

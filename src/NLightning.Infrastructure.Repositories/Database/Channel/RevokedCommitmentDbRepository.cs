@@ -52,7 +52,7 @@ public class RevokedCommitmentDbRepository : BaseDbRepository<RevokedCommitmentE
                                       .ToListAsync();
         var first = others.OrderBy(r => sequences.FirstOrDefault(f => f.FundingTxId == r.FundingTxId)?.Sequence
                                      ?? int.MaxValue)
-                          .ThenBy(r => r.FundingTxId.ToString(), StringComparer.Ordinal)
+                          .ThenBy(r => r.FundingTxId.ToInternalHex(), StringComparer.Ordinal)
                           .First();
         return MapEntityToDomain(first);
     }
@@ -70,7 +70,7 @@ public class RevokedCommitmentDbRepository : BaseDbRepository<RevokedCommitmentE
     public async Task<IReadOnlyList<RevokedCommitmentModel>> GetByChannelIdAsync(ChannelId channelId)
     {
         var entities = await DbSet.AsNoTracking().Where(r => r.ChannelId == channelId).ToListAsync();
-        return entities.OrderBy(r => r.Number).ThenBy(r => r.FundingTxId.ToString(), StringComparer.Ordinal)
+        return entities.OrderBy(r => r.Number).ThenBy(r => r.FundingTxId.ToInternalHex(), StringComparer.Ordinal)
                        .Select(MapEntityToDomain).ToList();
     }
 

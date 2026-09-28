@@ -11,7 +11,7 @@ using Transport.Ipc.Responses;
 
 /// <summary>
 /// The CLI shows every txid in the display (bitcoind, block explorer) byte order, the reverse of the internal order a
-/// <see cref="TxId"/> holds and prints with <c>ToString()</c>. Pinned against the Mutinynet funding tx of our first
+/// <see cref="TxId"/> holds; <c>ToString()</c> prints the display order too since NL-519. Pinned against the Mutinynet funding tx of our first
 /// public channel, whose <c>openchannel</c> and <c>listchannels</c> output showed the internal order.
 /// </summary>
 public class TxIdDisplayTests
@@ -39,7 +39,27 @@ public class TxIdDisplayTests
 
         // Assert
         Assert.Equal(DisplayHex, display);
-        Assert.Equal(InternalHex, txId.ToString());
+        Assert.Equal(InternalHex, txId.ToInternalHex());
+    }
+
+    [Fact]
+    public void Given_TxIdInInternalOrder_When_ToString_Then_PrintsTheDisplayOrderAsBitcoindAndExplorers()
+    {
+        // Arrange: NL-519, the Mutinynet day-0 dual-funded funding tx the daemon logged as 97e94bb8... while bitcoind
+        // and mutinynet.com name it 5f92ad89...
+        const string dayZeroDisplay = "5f92ad89d32c30c04210f599f819a6e76bafa05b32d0299333edeef1b84be997";
+        const string dayZeroInternal = "97e94bb8f1eeed339329d0325ba0af6be7a619f899f51042c0302cd389ad925f";
+        var txId = new TxId(Convert.FromHexString(dayZeroInternal));
+
+        // Act
+        var text = txId.ToString();
+        var interpolated = $"funding {txId}:1";
+
+        // Assert
+        Assert.Equal(dayZeroDisplay, text);
+        Assert.Equal($"funding {dayZeroDisplay}:1", interpolated);
+        Assert.Equal(DisplayHex, FundingTxId.ToString());
+        Assert.Equal(DisplayOrder.ToHex(FundingTxId), FundingTxId.ToString());
     }
 
     [Fact]

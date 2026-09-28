@@ -90,10 +90,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 9 | 164 | 173 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 144 | 112 | 331 |
+| fixed | 14 | 61 | 144 | 113 | 332 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **156** | **282** | **513** |
+| **Total** | **14** | **61** | **156** | **283** | **514** |
 
 ### Epics
 
@@ -4436,6 +4436,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Add them to the template with their defaults (`AutoBumpAfterBlocks` 0 = off) and to the config template test.
 - **Blocks/Blocked-by:** Related NL-489
 - **Plan ref:** —
+
+### NL-519 Logs and exception messages printed txids in internal byte order
+- **Status:** fixed (pending)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Bitcoin/ValueObjects/TxId.cs` (`ToString`)
+- **Evidence:** Mutinynet day-0 rehearsal (2026-09-28): the dual-funded funding tx that bitcoind and mutinynet.com call `5f92ad89...e997` was logged by `DualFundedOpenService`/`LocalLightningSigner`/`SpliceService`/`InteractiveTxDriver`/`BlockchainMonitorService` as `97e94bb8...925f` (the bytes reversed), while other lines of the same services (`BitcoinChainService`, the on-chain `Display` helpers) and the CLI (NL-303) printed the display order; one monitor line mixed both. Every structured-log and interpolated `TxId` went through `TxId.ToString()`, the hex of the internal order. An operator copying a txid from a log into an explorer found nothing.
+- **Fix sketch:** Done: `TxId.ToString()` prints the display order (bitcoind, explorers); `ToInternalHex()` keeps the internal hex for the three deterministic sort keys that used `ToString()` (`FeeInputSelector`, `OnchainResolutionDbRepository`, `RevokedCommitmentDbRepository`), so selection and ordering are unchanged. No code parses a `TxId` string back. Proof: `TxIdDisplayTests.Given_TxIdInInternalOrder_When_ToString_Then_PrintsTheDisplayOrderAsBitcoindAndExplorers` (the day-0 funding txid). `Hash.ToString()` (block hashes) still prints the internal order.
+- **Blocks/Blocked-by:** Related NL-303
+- **Plan ref:** `DAY0_RUNBOOK.md` §5
 
 ## Crypto providers and key management
 

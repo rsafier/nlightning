@@ -142,7 +142,7 @@ public class OnchainResolutionDbRepository : IOnchainResolutionDbRepository
     private static List<OutputResolutionModel> Ordered(IEnumerable<OutputResolutionEntity> entities) =>
         entities.Select(MapOutput)
                 .OrderBy(o => o.ChannelId.ToString(), StringComparer.Ordinal)
-                .ThenBy(o => o.TransactionId.ToString(), StringComparer.Ordinal)
+                .ThenBy(o => o.TransactionId.ToInternalHex(), StringComparer.Ordinal)
                 .ThenBy(o => o.OutputIndex)
                 .ToList();
 

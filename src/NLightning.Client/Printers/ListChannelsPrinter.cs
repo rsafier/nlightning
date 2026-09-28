@@ -33,7 +33,7 @@ public sealed class ListChannelsPrinter : IPrinter<ListChannelsIpcResponse>
             _output.WriteLine("  Reestablished:      {0}", channel.IsReestablished ? "Yes" : "No");
             _output.WriteLine("  Initiator:          {0}", channel.IsInitiator ? "Yes" : "No");
             _output.WriteLine("  Short Channel Id:   {0}", FormatShortChannelId(channel.ShortChannelId));
-            // The funding txid in the display (bitcoind, block explorer) byte order, not TxId.ToString()'s internal one.
+            // The funding txid in the display (bitcoind, block explorer) byte order, as TxId.ToString() prints it since NL-519.
             _output.WriteLine("  Funding Output:     {0}",
                               channel.FundingTxId is { } fundingTxId
                                   ? $"{DisplayOrder.ToHex(fundingTxId)}:{channel.FundingOutputIndex}"

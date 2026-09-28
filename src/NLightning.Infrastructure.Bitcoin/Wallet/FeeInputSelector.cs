@@ -256,7 +256,7 @@ public sealed class FeeInputSelector : IFeeInputSelector
 
         // Largest first (fewest inputs, so the least weight to pay for); ties in a stable order
         return candidates.OrderByDescending(c => c.Amount.Satoshi)
-                         .ThenBy(c => c.TxId.ToString(), StringComparer.Ordinal)
+                         .ThenBy(c => c.TxId.ToInternalHex(), StringComparer.Ordinal)
                          .ThenBy(c => c.Index)
                          .ToList();
     }
