@@ -35,36 +35,45 @@ payments with three attempts pending, a bumped splice across a reconnection and 
 - [ ] **Tests green at that commit** (root `CLAUDE.md` "Build / test / format"): Release and Release.Native builds
       with only the baseline warnings, `dotnet format --verify-no-changes`, the non-Docker tests on net10.0, and the
       Docker proofs above plus the LND, CLN, ABCD, gossip and on-chain suites of the SP2 integration record.
-- [ ] **Features.** `option_splice`, `option_quiesce` and `option_dual_fund` all stay No and experimental through
-      wave spr and at `91591787` (plan D13 not applied, DF3 not scheduled): `FeatureOptions` defaults them to `No`
-      and lists them in `ExperimentalFeatures`, so splicing and dual funding need `AllowExperimentalFeatures`. The
-      runbook sets all four explicitly, so it does not depend on the defaults of the commit (the keys are under
-      `Node:Features`; `DualFund` is the property name of `option_dual_fund`):
+- [ ] **Features.** Since splicing plan D13 (wave d13, NL-021/NL-042/NL-037) `option_splice`, `option_quiesce` and
+      `option_dual_fund` are advertised Optional by default on every network, mainnet included, and are no longer in
+      `ExperimentalFeatures`: a build with D13 needs **no** `Node:Features` keys and no `AllowExperimentalFeatures`.
+      A build from before D13 (wave spr and `91591787`..`29ce3126`) still defaults them to `No` and needs the block
+      below; it is harmless on a D13 build, except that `AllowExperimentalFeatures` also allows every other
+      experimental feature (leave the others at their defaults, e.g. `OptionAttributionData` stays `No`), so remove
+      `AllowExperimentalFeatures` once both nodes run D13 (the keys are under `Node:Features`; `DualFund` is the
+      property name of `option_dual_fund`):
 
       ```jsonc
       "Node": {
         "Features": {
-          "AllowExperimentalFeatures": true,
-          "OptionQuiesce": "Optional",
-          "OptionSplice": "Optional",
-          "DualFund": "Optional"
+          "AllowExperimentalFeatures": true,    // pre-D13 builds only
+          "OptionQuiesce": "Optional",          // the default since D13
+          "OptionSplice": "Optional",           // the default since D13
+          "DualFund": "Optional"                // the default since D13
         },
         "DualFund": { "AcceptContributionSat": 0, "MatchOpenerContribution": true, "AllowRbf": false }
       }
       ```
 
-      `AllowExperimentalFeatures` also allows every other experimental feature; leave the others at their defaults
-      (for example `OptionAttributionData` stays `No`). For a rehearsal of the splice RBF drill (§2.2 step 6b) on
-      Mutinynet's ~30 s blocks also set `"Splice": { "MinRbfInterval": "00:00:05" }` on both nodes (default 1 min,
-      longer than a Mutinynet block); leave the default on mainnet.
+      `openchannel` without `--dual-fund` still opens a v1 channel; a peer's `open_channel2` is accepted with
+      `Node:DualFund:AcceptContributionSat` (0 by default). **Splice RBF recency (NL-520):** a node refuses (`tx_abort`)
+      a peer's splice RBF while the latest attempt is "created recently", which since NL-520 means until one new block
+      (`Splice:MinRbfBlocks`, default 1; about 10 min on mainnet, about 30 s on Mutinynet) has been processed since
+      that attempt; nothing needs configuring for the Mutinynet rehearsal or mainnet. `Splice:MinRbfInterval` is still
+      supported as an optional wall-clock override for test networks: when set it **replaces** the block rule (the
+      live FAFO/FAFO2 Mutinynet nodes keep their `"Splice": { "MinRbfInterval": "00:00:05" }` from the dry run, so a
+      bump seconds after the first attempt is accepted there, as in the dry run). Do not set it on mainnet.
 - [ ] **Known gaps accepted** (check [`ISSUES.md`](ISSUES.md) at the commit for the NL-021/NL-037 follow-ups, e.g.
       NL-470 and NL-478..NL-483):
   - **Splice RBF only from a build with wave SPR integrated** (`bumpsplice`, Proof SPR and `Day0FlowTests` step 9
     green at the commit). Without it a splice whose feerate is too low cannot be bumped and the channel keeps working
     on the old funding until it confirms. Even with it, pick a feerate that confirms (§3.3): every bump is a new
     negotiation with the peer (both online, quiescence), and the peer refuses a bump of an attempt it considers created
-    recently (`Splice:MinRbfInterval` on its side). Bump only **your own** splice: a CLN peer contributes nothing to an
-    RBF it did not start (Proof SPR header), so an RBF of the other side's splice drops that side's contribution.
+    recently (since NL-520: in the block the attempt was created in, `Splice:MinRbfBlocks`; or younger than its
+    `Splice:MinRbfInterval` when that override is set on its side). Bump only **your own** splice: a CLN peer
+    contributes nothing to an RBF it did not start (Proof SPR header), so an RBF of the other side's splice drops that
+    side's contribution.
   - **No RBF of a dual-funded public open** (`DualFundingOptions.AllowRbf`: refused for a public channel). Same rule:
     pick a funding feerate that confirms.
   - `openchannel` has no `--feerate`: the dual-funded funding transaction uses the node's fee estimate
@@ -144,7 +153,7 @@ recorded, payments both ways; details in §5. Notes from that run are in the ste
    `git log -1 --format=%H > ~/.nltg/mutinynet/bin-SHA`. `start-daemon.sh` runs the binaries from the checkout's
    `bin/Release/net10.0`, so do not rebuild the checkout while the node runs (or stage copies as the soak does).
 5. **Configure** `~/.nltg/mutinynet/appsettings.json` (with `jq`, or by hand): `Database:RunMigrations=true` and the
-   `Node:Features`/`Node:DualFund` block of §1. For the rehearsal with Nick also set our reachable address so his
+   `Node:Features`/`Node:DualFund` block of §1 (a D13 build needs only `Node:DualFund`). For the rehearsal with Nick also set our reachable address so his
    node can dial us: `Gossip:AnnounceAddresses: ["<public ip>:9735"]` and a matching `Node:ListenAddresses`.
 
    For the **first start after the upgrade** also turn our `update_fee` rounds off (`Node:FeeUpdates:Enabled=false`),
@@ -160,6 +169,10 @@ recorded, payments both ways; details in §5. Notes from that run are in the ste
        | .Node.FeeUpdates.Enabled = false' appsettings.json.pre-day0 > appsettings.json
    chmod 600 appsettings.json
    ```
+
+   On a D13 build (§1) the three feature lines and `AllowExperimentalFeatures` can be left out; keeping them from an
+   earlier upgrade is harmless, but remove `AllowExperimentalFeatures` so no other experimental feature can be turned
+   on by mistake.
 6. **Start and watch the migration.** `scripts/mutinynet/start-daemon.sh &`. The template's log levels
    (`Default: Error`) hide EF's migration lines, so read the applied migrations from the database instead:
    `sqlite3 ~/.nltg/mutinynet/nltg.db 'select MigrationId from __EFMigrationsHistory where MigrationId > "<step 1
@@ -302,9 +315,12 @@ $U getchannelpolicy $CH                              # and mutinynet.com / the f
 # 6b. splice RBF drill (only with wave SPR in the build; Day0FlowTests step 9): a splice at the floor, then bumped
 $U splicein $CH 30000 --feerate 253
 $U listchannels                                      # fundings: one pending splice; note its txid (T1)
-# wait at least Nick's Splice:MinRbfInterval (1 min by default; 5 s for the Mutinynet rehearsal, §1), and do it
-# before the next block: on 30 s blocks create both invoices first and run splicein, bumpsplice and both payinvoice
-# back to back (the dry run's first pass bumped 6 s after T1 and T2 was mined 11 s later, before any payment)
+# wait until Nick's node no longer considers T1 "created recently" (§1, NL-520): by default one new block after T1
+# (a bump in T1's own block gets Nick's tx_abort and changes nothing; bump again after the next block, which may
+# already confirm T1 on 30 s blocks), or at least his Splice:MinRbfInterval when that override is set (5 s on the
+# dry-run nodes). With the override, do it before the next block: create both invoices first and run splicein,
+# bumpsplice and both payinvoice back to back (the dry run's first pass bumped 6 s after T1 and T2 was mined 11 s
+# later, before any payment)
 $U bumpsplice $CH 1000                               # bumpsplice <channel_id> <feerate_per_kw> [--max-fee-sat <sats>]; prints the new txid (T2)
 $U listchannels; $N listchannels                     # both list T1 (Pending (Splice)) and T2 (Pending (SpliceRbf))
 # bitcoind: T1 left the mempool at once (getrawtransaction finds only T2). Pay once each way while both are pending,
@@ -329,7 +345,8 @@ Record every txid, SCID and payment hash in the results template (§5). Anything
     open are refused);
   - `Gossip:AnnounceAddresses: ["<public ip>:9735"]` (and `Node:ListenAddresses`) on at least the node that accepts
     the connection, so the other can dial and the network sees an address; `Node:Alias`, `Node:Color`;
-  - the `Node:Features`/`Node:DualFund` block of §1, with `AcceptContributionSat` on the accepter only (Nick);
+  - the `Node:DualFund` block of §1 (a D13 build needs no `Node:Features` keys), with `AcceptContributionSat` on the
+    accepter only (Nick); no `Splice:MinRbfInterval` (the block rule, NL-520);
   - `Gossip:RelayEnabled` stays `false` (NL-417).
 - [ ] **Amounts, approved by the owner before anything is sent** (fill in):
 
