@@ -19,6 +19,7 @@ using Domain.Money;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
 using Domain.Protocol.Constants;
+using Domain.Protocol.InteractiveTx;
 using Fixtures;
 using Utils;
 using SpliceWireMessage = ClnSpliceTests.SpliceWireMessage;
@@ -348,6 +349,11 @@ public sealed class ClnSpliceRbfTests : IAsyncLifetime
         var abort = await Poll.ForAsync(() => wire.FirstOrDefault(inbound: false, MessageTypes.TxAbort, rbfFrom),
                                         s_stepTimeout, "our tx_abort", ct);
         Assert.True(initRbf.Sequence < abort.Sequence);
+        // ...and for the feerate rule, not for another reason (MinRbfInterval, attempt count, a refused initiator)
+        var abortReason = TxAbortData(abort.Wire);
+        Console.WriteLine($"[proof] our tx_abort: {abortReason}");
+        Assert.Contains(FeerateRefusal(RbfFeerate(initRbf), firstInit.SpliceFeeratePerKw), abortReason,
+                        StringComparison.Ordinal);
         Assert.Null(wire.FirstOrDefault(inbound: false, MessageTypes.TxAckRbf, rbfFrom));
         Assert.DoesNotContain(wire.Snapshot(), m => m.Sequence > rbfFrom
                                                  && m.Type == (ushort)MessageTypes.CommitmentSigned);
@@ -919,8 +925,27 @@ public sealed class ClnSpliceRbfTests : IAsyncLifetime
         Assert.True(theirStfu.Sequence < initRbf.Sequence);
     }
 
-    /// <summary>IT-RBF-01: the lowest feerate an RBF of an attempt at <paramref name="previous"/> may have.</summary>
-    private static uint GetMinimumNextFeerate(uint previous) => (uint)Math.Ceiling(previous * 25 / 24.0);
+    /// <summary>
+    /// IT-RBF-01: the lowest feerate an RBF of an attempt at <paramref name="previous"/> may have, max(floor(25/24 x
+    /// previous), previous + 25) (BOLT 2 <c>tx_init_rbf</c>; the product rule).
+    /// </summary>
+    internal static uint GetMinimumNextFeerate(uint previous) => InteractiveTxRbfRules.GetMinimumNextFeerate(previous);
+
+    /// <summary>
+    /// The reason our node writes into the <c>tx_abort</c> that refuses a <c>tx_init_rbf</c> at
+    /// <paramref name="feerate"/> after an attempt at <paramref name="previous"/> (IT-RBF-01; the splice rules and the
+    /// interactive-tx driver both write it).
+    /// </summary>
+    internal static string FeerateRefusal(uint feerate, uint previous) =>
+        $"feerate {feerate} sat/kw is below {GetMinimumNextFeerate(previous)} sat/kw";
+
+    /// <summary><c>tx_abort</c>: <c>data</c> (u16 length after <c>channel_id</c>) as ASCII text.</summary>
+    internal static string TxAbortData(byte[] wire)
+    {
+        const int lengthOffset = 2 + 32;
+        var length = BinaryPrimitives.ReadUInt16BigEndian(wire.AsSpan(lengthOffset, 2));
+        return System.Text.Encoding.ASCII.GetString(wire, lengthOffset + 2, length);
+    }
 
     /// <summary><c>tx_init_rbf</c>: <c>feerate</c> (u32 after <c>channel_id</c> and <c>locktime</c>).</summary>
     private static uint RbfFeerate(SpliceWireMessage message) =>
