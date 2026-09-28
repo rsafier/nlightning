@@ -59,8 +59,9 @@ using Utils;
 /// which the test counts.</para>
 /// <para>Step 9 was added in wave spr (lane SPR-C) against the SPR contracts (<c>b72a42ea</c>); the RBF protocol lands
 /// in lane SPR-A and <c>bumpsplice</c> in lane SPR-B, and the integrator runs it after the merge. B refuses an RBF of
-/// an attempt "created recently" (<c>Splice:MinRbfInterval</c>), so A bumps only once B's interval has passed; nothing
-/// is mined between the two attempts, so only the bump can confirm.</para>
+/// an attempt "created recently": since NL-520 until one new block (<c>Splice:MinRbfBlocks</c>, default 1), so A's
+/// bump in the first attempt's block gets B's <c>tx_abort</c> and the same bump after one empty block is accepted;
+/// nothing else is mined between the two attempts, so only the bump can confirm.</para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public sealed class Day0FlowTests : IAsyncLifetime
@@ -311,9 +312,23 @@ public sealed class Day0FlowTests : IAsyncLifetime
         var lowFee = await Day0Harness.GetFeeAsync(_fixture, lowTxId, ct);
         await WaitPendingAttemptsAsync(a, b, channelId, [lowTxId], ct);
 
-        // ...B judges the RBF: the first attempt must not be "created recently" on B's side
-        var minRbfInterval = b.Services.GetRequiredService<IOptions<SpliceOptions>>().Value.MinRbfInterval;
-        await Task.Delay(minRbfInterval + TimeSpan.FromSeconds(2), ct);
+        // ...B judges the RBF (NL-520): in the block the first attempt was created in, it is "created recently", so
+        // B answers A's bump with tx_abort and the first attempt stays the only one...
+        var spliceOptions = b.Services.GetRequiredService<IOptions<SpliceOptions>>().Value;
+        Assert.Null(spliceOptions.MinRbfInterval);
+        Assert.Equal(1u, spliceOptions.MinRbfBlocks);
+        var early = await Day0Harness.HandleAsync<BumpSpliceClientRequest, SpliceClientResponse>(
+                        a, new BumpSpliceClientRequest(channelId, Day0Harness.SpliceFeeRatePerKw), ct);
+        Console.WriteLine($"[day0] step 9: bumpsplice in the same block: {early.State}, reason {early.FailureReason}");
+        Assert.NotEqual(SpliceNegotiationState.Signed, early.State);
+        await WaitPendingAttemptsAsync(a, b, channelId, [lowTxId], ct);
+        Assert.Contains(lowTxId, await _fixture.Bitcoin.GetRawMempoolAsync(ct));
+
+        // ...one empty block later (nothing confirms the first attempt) the same bump is accepted
+        var emptyBlockAddress = await _fixture.Bitcoin.GetNewAddressAsync(ct);
+        await _fixture.Bitcoin.SendCommandAsync("generateblock", ct, emptyBlockAddress.ToString(),
+                                                Array.Empty<string>());
+        await ChainSync.WaitAllAtTipAsync(_fixture, [a, b], ct);
         var bump = await Day0Harness.HandleAsync<BumpSpliceClientRequest, SpliceClientResponse>(
                        a, new BumpSpliceClientRequest(channelId, Day0Harness.SpliceFeeRatePerKw), ct);
         Console.WriteLine($"[day0] step 9: bumpsplice at {Day0Harness.SpliceFeeRatePerKw} sat/kw: {bump.State}, txid "

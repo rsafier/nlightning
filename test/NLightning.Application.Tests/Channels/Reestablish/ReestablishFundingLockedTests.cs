@@ -28,7 +28,16 @@ public class ReestablishFundingLockedTests
     public async Task Given_NoOptionSplice_When_Reconnected_Then_NoFundingTlvIsSent()
     {
         // Arrange
-        using var harness = new TwoNodeHarness();
+        // option_splice is on by default since D13: pin it off (the handler reads the negotiated features, the
+        // reestablish we send reads our own options in a harness without a peer manager)
+        using var harness = new TwoNodeHarness(configureServices: (_, services) => services.AddSingleton(
+                                                   Options.Create(new NodeOptions
+                                                   {
+                                                       EnableHtlcs = true,
+                                                       Features = { OptionSplice = FeatureSupport.No }
+                                                   })));
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+            node.NegotiatedFeatures = new FeatureOptions { OptionSplice = FeatureSupport.No };
 
         // Act
         await harness.DisconnectAsync();

@@ -45,18 +45,20 @@ public static class Day0Harness
     private static readonly TimeSpan s_blockEvery = TimeSpan.FromSeconds(15);
 
     /// <summary>
-    /// The runbook's day-0 features, as <c>Node:Features</c> sets them on both nodes: experimental features allowed,
-    /// <c>option_quiesce</c>, <c>option_splice</c> and <c>option_dual_fund</c> Optional. Applied on every start through
-    /// <see cref="NLightningTestNode.ConfigureServices"/> (after the test node's own feature options, which
-    /// <c>Node:Features</c> in <see cref="NLightningTestNode.ExtraConfiguration"/> could not override).
+    /// The runbook's day-0 features: since splicing plan D13 (wave d13) they are the defaults, <c>option_quiesce</c>,
+    /// <c>option_splice</c> and <c>option_dual_fund</c> Optional without <c>AllowExperimentalFeatures</c>, which this
+    /// pins off so the day-0 proofs show the defaults suffice. Applied on every start through
+    /// <see cref="NLightningTestNode.ConfigureServices"/> (after the test node's own feature options).
     /// </summary>
     public static void EnableDay0Features(NLightningTestNode node) =>
         node.ConfigureServices = services => services.PostConfigure<NodeOptions>(o =>
         {
-            o.Features.AllowExperimentalFeatures = true;
-            o.Features.OptionQuiesce = FeatureSupport.Optional;
-            o.Features.OptionSplice = FeatureSupport.Optional;
-            o.Features.DualFund = FeatureSupport.Optional;
+            o.Features.AllowExperimentalFeatures = false;
+            if (o.Features.GetValidationErrors() is { Count: > 0 } errors)
+                throw new InvalidOperationException(string.Join("; ", errors));
+            if (o.Features.OptionQuiesce == FeatureSupport.No || o.Features.OptionSplice == FeatureSupport.No
+             || o.Features.DualFund == FeatureSupport.No)
+                throw new InvalidOperationException("D13: splice, quiesce and dual_fund are expected on by default");
         });
 
     /// <summary>

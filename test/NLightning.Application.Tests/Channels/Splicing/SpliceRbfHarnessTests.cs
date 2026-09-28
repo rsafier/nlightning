@@ -427,8 +427,45 @@ public class SpliceRbfHarnessTests
     }
 
     /// <summary>
-    /// BOLT 2: "If another RBF attempt has been created recently: SHOULD send tx_abort" (our
-    /// <c>Splice:MinRbfInterval</c>): Bob's bump right after the splice is rejected with <c>tx_abort</c>, which ends
+    /// NL-520, the default block rule (<c>Splice:MinRbfBlocks</c> 1, no <c>Splice:MinRbfInterval</c>): Bob's bump in the
+    /// block the splice was created in gets Alice's <c>tx_abort</c> ("created recently", BOLT 2 SHOULD); once one new
+    /// block was processed the same bump is accepted.
+    /// </summary>
+    [Fact]
+    public async Task Given_TheDefaultBlockRule_When_ThePeerBumpsInTheSameBlockThenOneBlockLater_Then_AbortThenAccepted()
+    {
+        // Arrange
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(SpliceIn + 200_000);
+        var first = (await harness.SpliceAsync(harness.Alice, SpliceIn)).SpliceTxId!.Value;
+        var mark = harness.Transcript.Count;
+
+        // Act: a bump in the same block
+        var early = await BumpAsync(harness, harness.Bob, 2_000);
+
+        // Assert
+        Assert.Equal(SpliceNegotiationState.Aborted, early.State);
+        Assert.Contains("Alice:TxAbort", Sequence(harness, mark));
+        Assert.Empty(harness.Failures);
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+            Assert.Equal([first], node.Node.State.PendingFundings.Select(f => f.FundingTxId));
+
+        // Act: one block later (the splice is still unconfirmed)
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+            node.Node.SetTip(TwoNodeHarness.BlockHeight + 1);
+        var late = await BumpAsync(harness, harness.Bob, 2_000);
+
+        // Assert
+        Assert.True(late.State == SpliceNegotiationState.Signed, $"{late.State}: {late.FailureReason}");
+        Assert.Empty(harness.Failures);
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+            Assert.Equal(2, node.Node.State.PendingFundings.Count);
+    }
+
+    /// <summary>
+    /// BOLT 2: "If another RBF attempt has been created recently: SHOULD send tx_abort" (the wall-clock override
+    /// <c>Splice:MinRbfInterval</c>, which replaces the block rule when set): Bob's bump right after the splice is
+    /// rejected with <c>tx_abort</c>, which ends
     /// the quiescence; the splice stays the only attempt.
     /// </summary>
     [Fact]

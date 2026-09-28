@@ -379,7 +379,8 @@ public static class NodeConfigurationExtensions
                    "RotateFundingKey": true,
                    "MinFeeratePerKw": 253,
                    "MaxFeeratePerKw": 250000,
-                   "RequireConfirmedInputs": false
+                   "RequireConfirmedInputs": false,
+                   "MinRbfBlocks": 1
                  },
                  "Gossip": {
                    "Enabled": {{GOSSIP_ON}},

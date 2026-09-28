@@ -299,7 +299,8 @@ public class CommitmentSignedBatchTests
         // Act
         var e = await Assert.ThrowsAsync<ChannelWarningException>(
             () => manager.HandleCommitmentSignedBatchAsync(PeerBatch(1, s_currentTxId, s_spliceTxId),
-                                                           new FeatureOptions(), PeerNodeId));
+                                                           new FeatureOptions { OptionSplice = FeatureSupport.No },
+                                                           PeerNodeId));
 
         // Assert
         Assert.True(e.CloseConnection);

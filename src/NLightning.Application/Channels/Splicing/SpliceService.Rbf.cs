@@ -100,7 +100,7 @@ public sealed partial class SpliceService
 
             // The rules that do not depend on the quiescence itself, now; the rest once quiescent
             var conditions = GetRbfConditions(channel, GetNegotiatedFeatures(channel.RemoteNodeId),
-                                              QuiescenceState.None, fundings, null, quickFeerate);
+                                              QuiescenceState.None, fundings, false, quickFeerate);
             conditions = conditions with
             {
                 Channel = conditions.Channel with { IsQuiescent = true, LocalIsQuiescenceInitiator = true }
@@ -150,7 +150,7 @@ public sealed partial class SpliceService
             var fundings = _statePort.GetFundings(channel);
             var previous = await GetLatestAttemptSessionAsync(channel, fundings, cancellationToken);
             var conditions = GetRbfConditions(channel, GetNegotiatedFeatures(channel.RemoteNodeId),
-                                              quiescence.GetState(channelId), fundings, null, quickFeerate);
+                                              quiescence.GetState(channelId), fundings, false, quickFeerate);
             string? reason = null;
             if (SpliceRules.CheckSendRbf(conditions, negotiation.Model.FeeratePerKw,
                                          negotiation.Model.LocalContributionSatoshis) is { } violation)
@@ -246,7 +246,8 @@ public sealed partial class SpliceService
         var fundings = _statePort.GetFundings(channel);
         var previous = await GetLatestAttemptSessionAsync(channel, fundings, cancellationToken, unitOfWork);
         var contribution = message.FundingOutputContributionTlv?.Satoshis;
-        var conditions = GetRbfConditions(channel, negotiatedFeatures, quiescenceState, fundings, previous?.CreatedAt,
+        var lastAttemptIsRecent = await IsLastAttemptRecentAsync(fundings, previous, unitOfWork);
+        var conditions = GetRbfConditions(channel, negotiatedFeatures, quiescenceState, fundings, lastAttemptIsRecent,
                                           await GetQuickConfirmationFeerateAsync(channel, cancellationToken));
         conditions = conditions with
         {
@@ -347,7 +348,7 @@ public sealed partial class SpliceService
         var rbfSent = negotiation is { State: SpliceNegotiationState.InitSent, IsInitiator: true, Model.IsRbf: true };
         var contribution = message.FundingOutputContributionTlv?.Satoshis;
         var conditions = GetRbfConditions(channel, negotiatedFeatures, quiescenceState,
-                                          _statePort.GetFundings(channel), null, null);
+                                          _statePort.GetFundings(channel), false, null);
         if (SpliceRules.CheckReceiveAckRbf(conditions, contribution, rbfSent) is { } violation)
             return Reject(channelId, peerPubKey, violation);
 
@@ -550,16 +551,47 @@ public sealed partial class SpliceService
     /// <summary>The splice RBF rules' facts (<see cref="SpliceRbfConditions"/>), under the channel's lock.</summary>
     private SpliceRbfConditions GetRbfConditions(ChannelModel channel, FeatureOptions? negotiatedFeatures,
                                                  QuiescenceState quiescence, FundingSet fundings,
-                                                 DateTimeOffset? lastAttemptCreatedAt, uint? quickFeerate) =>
+                                                 bool lastAttemptIsRecent, uint? quickFeerate) =>
         new(GetConditions(channel, negotiatedFeatures, quiescence, fundings),
             fundings.Pending.Count,
             fundings.LatestAttempt?.FeeratePerKw ?? 0,
             fundings.Pending.Any(f => f.SpliceLockedSent),
             fundings.Pending.Any(f => f.SpliceLockedReceived),
             negotiatedFeatures is { ZeroConf: not FeatureSupport.No },
-            lastAttemptCreatedAt is { } createdAt && DateTimeOffset.UtcNow - createdAt < _options.MinRbfInterval,
+            lastAttemptIsRecent,
             quickFeerate,
             _options.MaxRbfAttempts);
+
+    /// <summary>
+    /// BOLT 2 "another RBF attempt has been created recently" for a peer's <c>tx_init_rbf</c> (NL-520,
+    /// <see cref="SpliceRules.IsLastAttemptRecent"/>): the latest attempt's creation height is the
+    /// <c>FirstBroadcastHeight</c> of its broadcast row, stored in the same save as its signed session row, so the rule
+    /// survives a restart without a column of its own; its creation time is the session row's.
+    /// </summary>
+    private async Task<bool> IsLastAttemptRecentAsync(FundingSet fundings, InteractiveTxSessionModel? previous,
+                                                      IUnitOfWork unitOfWork)
+    {
+        if (fundings.LatestAttempt is not { } latest)
+            return false;
+
+        uint? createdAtHeight = null;
+        if (_options.MinRbfInterval is null && _options.MinRbfBlocks > 0)
+        {
+            var broadcast = await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(
+                                latest.FundingTxId);
+            createdAtHeight = broadcast?.FirstBroadcastHeight;
+        }
+
+        var tip = GetTip();
+        var recent = SpliceRules.IsLastAttemptRecent(createdAtHeight, tip, previous?.CreatedAt, DateTimeOffset.UtcNow,
+                                                     _options.MinRbfBlocks, _options.MinRbfInterval);
+        if (recent)
+            _logger.LogInformation("The latest splice attempt {TxId} was created recently (at height "
+                                 + "{CreatedAtHeight}, tip {Tip}; Splice:MinRbfBlocks {MinRbfBlocks}, "
+                                 + "Splice:MinRbfInterval {MinRbfInterval})", latest.FundingTxId, createdAtHeight,
+                                   tip, _options.MinRbfBlocks, _options.MinRbfInterval);
+        return recent;
+    }
 
     /// <summary>
     /// The feerate our fee service deems high enough for quick confirmation (the next-block estimate), asked only when

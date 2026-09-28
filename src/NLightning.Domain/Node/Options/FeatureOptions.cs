@@ -16,19 +16,16 @@ public class FeatureOptions
     /// fails <see cref="GetValidationErrors"/>) unless <see cref="AllowExperimentalFeatures"/> is set.
     /// </summary>
     /// <remarks>
-    /// Advertising a feature makes peers act on it: quiesce needs stfu handling, dual_fund the interactive-tx handlers,
-    /// attribution_data error attribution (onion M3b) and splice the splicing protocol (splicing plan D13: it leaves
-    /// the set together with quiesce after Proof SP2) (provide_storage left the set with the peer_storage handlers
-    /// and route_blinding with the blinded payloads (onion M5), wave rf1; onion_messages with the onion message service
-    /// after Proof M6, wave M6, plan D9).
+    /// Advertising a feature makes peers act on it: attribution_data needs error attribution (onion M3b), which LND 0.20
+    /// does not implement (NL-332). Features that left the set: quiesce, dual_fund and splice by splicing plan D13 after
+    /// Proofs SP2, SPR and DF (wave d13); provide_storage with the peer_storage handlers and route_blinding with the
+    /// blinded payloads (onion M5), wave rf1; onion_messages with the onion message service after Proof M6, wave M6,
+    /// plan D9.
     /// Remove a feature from this set when it is implemented.
     /// </remarks>
     public static readonly IReadOnlySet<Feature> ExperimentalFeatures = new HashSet<Feature>
     {
-        Feature.OptionQuiesce,
-        Feature.OptionDualFund,
-        Feature.OptionAttributionData,
-        Feature.OptionSplice
+        Feature.OptionAttributionData
     };
 
     /// <summary>
@@ -128,32 +125,36 @@ public class FeatureOptions
     public FeatureSupport BeyondSegwitShutdown { get; set; } = FeatureSupport.No;
 
     /// <summary>
-    /// Enable dual fund.
+    /// Enable dual fund (BOLT 2 "Channel Establishment v2", BOLT 9 <c>option_dual_fund</c> 28/29).
     /// </summary>
     /// <remarks>
-    /// Defaults to No and experimental: the v2 open (<c>open_channel2</c>/<c>accept_channel2</c>,
-    /// <c>IDualFundedOpenService</c>) lands in wave DF (lane SP1-F) and leaves the experimental set after Proof DF.
+    /// Optional by default since splicing plan D13 (wave d13), on every network: a peer's <c>open_channel2</c> is
+    /// accepted (<c>IDualFundedOpenService</c>, as accepter we contribute <c>Node:DualFund:AcceptContributionSat</c>,
+    /// 0 by default) and <c>openchannel --dual-fund</c> opens a v2 channel; <c>openchannel</c> without the flag still
+    /// opens a v1 channel. RBF of a v2 open stays off unless <c>Node:DualFund:AllowRbf</c>. BOLT 9 lists no
+    /// dependency. Set No to accept and open v1 channels only.
     /// </remarks>
-    public FeatureSupport DualFund { get; set; } = FeatureSupport.No;
+    public FeatureSupport DualFund { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
-    /// Enable quiescence (stfu).
+    /// Enable quiescence (<c>stfu</c>, BOLT 9 <c>option_quiesce</c> 34/35).
     /// </summary>
     /// <remarks>
-    /// Defaults to No: stfu is not handled.
+    /// Optional by default since splicing plan D13 (wave d13), together with <see cref="OptionSplice"/>: a peer may
+    /// quiesce a channel with us (<c>IQuiescenceService</c>) for a splice or its RBF. BOLT 9 lists no dependency.
     /// </remarks>
-    public FeatureSupport OptionQuiesce { get; set; } = FeatureSupport.No;
+    public FeatureSupport OptionQuiesce { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable splicing (BOLT 2 "Channel Splicing", BOLT 9 <c>option_splice</c> 62/63).
     /// </summary>
     /// <remarks>
-    /// Defaults to No and experimental (splicing plan SP1-0): the splice handlers land in wave SP1 and the reestablish,
-    /// lock and on-chain handling in wave SP2; it leaves <see cref="ExperimentalFeatures"/> together with
-    /// <see cref="OptionQuiesce"/> after Proof SP2 (D13). BOLT 9 lists no dependency, but a splice needs quiescence too:
-    /// splicing checks that both 35 and 63 were negotiated at use (D14). Pre-standard bits (154/155) are never used.
+    /// Optional by default since splicing plan D13 (wave d13, after Proofs SP2 and SPR), on every network, together
+    /// with <see cref="OptionQuiesce"/>. BOLT 9 lists no dependency, but a splice needs quiescence too: splicing checks
+    /// that both 35 and 63 were negotiated at use (D14), so turning <see cref="OptionQuiesce"/> off turns splicing off
+    /// as well. Pre-standard bits (154/155) are never used.
     /// </remarks>
-    public FeatureSupport OptionSplice { get; set; } = FeatureSupport.No;
+    public FeatureSupport OptionSplice { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable attribution data.

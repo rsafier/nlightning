@@ -375,6 +375,9 @@ internal sealed class SpliceNode(string name)
         var broadcasts = new Mock<IBroadcastTransactionDbRepository>();
         broadcasts.Setup(b => b.Add(It.IsAny<BroadcastTransactionModel>()))
                   .Callback<BroadcastTransactionModel>(stagedBroadcasts.Add);
+        // NL-520: the splice RBF recency rule reads the latest attempt's creation height from its broadcast row
+        broadcasts.Setup(b => b.GetByTransactionIdAsync(It.IsAny<TxId>()))
+                  .ReturnsAsync((TxId txId) => Broadcasts.LastOrDefault(b => b.TransactionId == txId));
         node.WatchedTransactions.Setup(w => w.Add(It.IsAny<WatchedTransactionModel>()))
             .Callback<WatchedTransactionModel>(stagedWatches.Add);
         unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(Sessions);

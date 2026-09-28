@@ -66,8 +66,6 @@ public class FeatureOptionsTests
     }
 
     [Theory]
-    [InlineData(Feature.OptionDualFund)]
-    [InlineData(Feature.OptionQuiesce)]
     [InlineData(Feature.OptionAttributionData)]
     [InlineData(Feature.OptionScidAlias)]
     [InlineData(Feature.OptionUpfrontShutdownScript)]
@@ -151,6 +149,7 @@ public class FeatureOptionsTests
         var remote = new FeatureOptions().GetNodeFeatures();
         remote.SetFeature(Feature.OptionUpfrontShutdownScript, false);
         remote.SetFeature(Feature.OptionSupportLargeChannel, false);
+        remote.SetFeature(Feature.OptionDualFund, false, false);
 
         // Act
         var result = local.IsCompatible(remote, out var negotiatedFeatureSet);
@@ -161,6 +160,62 @@ public class FeatureOptionsTests
         Assert.Equal(FeatureSupport.No, negotiated.UpfrontShutdownScript);
         Assert.Equal(FeatureSupport.Optional, negotiated.LargeChannels);
         Assert.Equal(FeatureSupport.No, negotiated.DualFund);
+        Assert.Equal(FeatureSupport.Optional, negotiated.OptionSplice);
+        Assert.Equal(FeatureSupport.Optional, negotiated.OptionQuiesce);
+    }
+
+    [Theory]
+    [InlineData(Feature.OptionQuiesce)]
+    [InlineData(Feature.OptionDualFund)]
+    [InlineData(Feature.OptionSplice)]
+    public void Given_DefaultOptions_When_GetNodeFeatures_Then_D13FeatureIsAdvertisedOptionalAndNotExperimental(
+        Feature feature)
+    {
+        // Arrange (splicing plan D13, wave d13: splice, quiesce and dual_fund on by default, on every network)
+        var options = new FeatureOptions();
+
+        // Act
+        var init = options.GetNodeFeatures(FeatureContext.Init);
+        var nodeAnnouncement = options.GetNodeFeatures(FeatureContext.NodeAnnouncement);
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.True(init.IsFeatureSet(feature, false));
+        Assert.False(init.IsFeatureSet(feature, true));
+        Assert.True(nodeAnnouncement.IsFeatureSet(feature, false));
+        Assert.DoesNotContain(feature, FeatureOptions.ExperimentalFeatures);
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void Given_TwoDefaultNodes_When_Negotiating_Then_SpliceIsNegotiatedWithQuiescence()
+    {
+        // Arrange (D14: a splice needs both 35 and 63)
+        var local = new FeatureOptions().GetNodeFeatures();
+        var remote = new FeatureOptions().GetNodeFeatures();
+
+        // Act
+        var result = local.IsCompatible(remote, out var negotiatedFeatureSet);
+
+        // Assert
+        Assert.True(result);
+        Assert.True(Domain.Channels.Splicing.SpliceRules.IsNegotiated(negotiatedFeatureSet!));
+    }
+
+    [Fact]
+    public void Given_QuiesceTurnedOff_When_Negotiating_Then_SpliceIsNotUsable()
+    {
+        // Arrange: option_splice alone is advertised (BOLT 9 lists no dependency) but D14 needs 35 too
+        var local = new FeatureOptions { OptionQuiesce = FeatureSupport.No }.GetNodeFeatures();
+        var remote = new FeatureOptions().GetNodeFeatures();
+
+        // Act
+        var result = local.IsCompatible(remote, out var negotiatedFeatureSet);
+
+        // Assert
+        Assert.True(result);
+        Assert.True(local.IsFeatureSet(Feature.OptionSplice, false));
+        Assert.False(Domain.Channels.Splicing.SpliceRules.IsNegotiated(negotiatedFeatureSet!));
     }
 
     [Fact]
@@ -199,7 +254,7 @@ public class FeatureOptionsTests
 
     public static TheoryData<Feature> RequiredExperimentalFeatures =>
     [
-        Feature.OptionQuiesce, Feature.OptionDualFund, Feature.OptionAttributionData, Feature.OptionSplice
+        Feature.OptionAttributionData
     ];
 
     [Fact]

@@ -237,10 +237,11 @@ public static class NodeServiceExtensions
         services.AddPeerStorageIpcServices();
 
         // BOLT 2 splicing (wave sp1): splicein/spliceout (ClientCommand 33/34) over the Application's splice service;
-        // option_splice stays experimental (default No)
+        // option_splice and option_quiesce are Optional by default since splicing plan D13 (wave d13)
         services.Configure<SpliceOptions>(configuration.GetSection(SpliceOptions.SectionName));
         services.AddSpliceIpcServices();
-        // BOLT 2 dual-funded opens (wave sp1 lane SP1-F, Node:DualFund); option_dual_fund stays experimental
+        // BOLT 2 dual-funded opens (wave sp1 lane SP1-F, Node:DualFund); option_dual_fund is Optional by default since
+        // D13 (a peer's open_channel2 is accepted; openchannel stays v1 unless --dual-fund)
         services.Configure<DualFundingOptions>(configuration.GetSection(DualFundingOptions.SectionName));
         // Per-channel routing policies (wave sp1 lane SP1-G): setchannelpolicy/getchannelpolicy (ClientCommand 35/36)
         services.AddChannelPolicyIpcServices();
