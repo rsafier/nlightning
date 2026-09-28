@@ -23,4 +23,10 @@ public interface IInvoiceValidationService
     /// BOLT 9 dependency set, and no known feature that BOLT 9 does not allow in invoices.
     /// </summary>
     ValidationResult ValidateFeatures(Invoice invoice);
+
+    /// <summary>
+    /// Validates the bLIP 39 writer rule a reader does not enforce: an invoice with blinded paths (<c>b</c>) carries no
+    /// payment secret (<c>s</c>).
+    /// </summary>
+    ValidationResult ValidateBlindedPathsForEncoding(Invoice invoice);
 }

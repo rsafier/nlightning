@@ -70,6 +70,14 @@ public enum TaggedFieldTypes : byte
     PayeePubKey = 19,
 
     /// <summary>
+    /// A blinded payment path (bLIP 39, a draft extension of BOLT 11 that LND emits)
+    /// </summary>
+    /// <remarks>
+    /// represented by the letter b; may repeat
+    /// </remarks>
+    BlindedPaymentPath = 20,
+
+    /// <summary>
     /// The Description Hash
     /// </summary>
     /// <remarks>

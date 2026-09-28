@@ -16,6 +16,13 @@ using Interfaces;
 /// <seealso cref="ITaggedField"/>
 internal sealed class FeaturesTaggedField : ITaggedField
 {
+    /// <summary>
+    /// bLIP 39's <c>bolt11_blinded_path</c> invoice feature, compulsory bit (LND's <c>Bolt11BlindedPathsRequired</c>,
+    /// 262/263): known here because this library reads the <c>b</c> field. Not a <see cref="Feature"/>: it only exists
+    /// in invoices.
+    /// </summary>
+    internal const int Bolt11BlindedPathsCompulsoryBit = 262;
+
     public TaggedFieldTypes Type => TaggedFieldTypes.Features;
     internal FeatureSet Value { get; }
 
@@ -83,7 +90,8 @@ internal sealed class FeaturesTaggedField : ITaggedField
         var unknownBits = new List<int>();
         for (var bit = 0; bit <= features.SizeInBits; bit += 2)
         {
-            if (features.IsFeatureSet(bit, false) && !Enum.IsDefined((Feature)(bit + 1)))
+            if (features.IsFeatureSet(bit, false) && !Enum.IsDefined((Feature)(bit + 1))
+             && bit != Bolt11BlindedPathsCompulsoryBit)
                 unknownBits.Add(bit);
         }
 
