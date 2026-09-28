@@ -4438,7 +4438,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-519 Logs and exception messages printed txids in internal byte order
-- **Status:** fixed (pending)
+- **Status:** fixed (8e852a18)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Bitcoin/ValueObjects/TxId.cs` (`ToString`)
