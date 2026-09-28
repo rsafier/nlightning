@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Infrastructure.Repositories;
@@ -12,6 +13,7 @@ using Database.Payment;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Crypto.Hashes;
@@ -175,10 +177,31 @@ public class UnitOfWork : IUnitOfWork
         _utxoMemoryRepository = utxoMemoryRepository;
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// A channel whose peer has no <c>Peers</c> row (an inbound peer from a loopback address, never saved before
+    /// NL-497) is not forgotten: its peer is returned as <see cref="PeerModel.IsInboundOnly"/> with no address, so its
+    /// channels are registered and it is never dialed.
+    /// </remarks>
     public async Task<ICollection<PeerModel>> GetPeersForStartupAsync()
     {
         var peers = await PeerDbRepository.GetAllAsync();
         var peerList = peers.ToList();
+
+        var known = peerList.Select(p => p.NodeId).ToHashSet();
+        var channelPeerIds = await _context.Channels.AsNoTracking()
+                                           .Where(c => c.State != (byte)ChannelState.Closed
+                                                    && c.State != (byte)ChannelState.Stale)
+                                           .Select(c => c.RemoteNodeId)
+                                           .Distinct()
+                                           .ToListAsync();
+        foreach (var nodeId in channelPeerIds.Where(n => !known.Contains(n)))
+        {
+            _logger.LogWarning("Peer {PeerId} has channels but no saved address; its channels are loaded and we wait "
+                             + "for it to connect", nodeId);
+            peerList.Add(new PeerModel(nodeId, string.Empty, 0, string.Empty) { IsInboundOnly = true });
+        }
+
         foreach (var peer in peerList)
         {
             var channels = await ChannelDbRepository.GetByPeerIdAsync(peer.NodeId);

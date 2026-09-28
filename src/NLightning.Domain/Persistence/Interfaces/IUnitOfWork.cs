@@ -85,6 +85,11 @@ public interface IUnitOfWork : IDisposable
     IChannelFundingDbRepository ChannelFundingDbRepository =>
         throw new NotSupportedException("This unit of work does not store channel fundings.");
 
+    /// <summary>
+    /// Every saved peer with its channels, plus a peer marked <see cref="PeerModel.IsInboundOnly"/> for every channel
+    /// (not Closed or Stale) whose peer has no saved row (NL-497): startup registers every such channel and dials only
+    /// the peers with an address.
+    /// </summary>
     Task<ICollection<PeerModel>> GetPeersForStartupAsync();
     void AddUtxo(UtxoModel utxoModel);
     void TrySpendUtxo(TxId transactionId, uint index);
