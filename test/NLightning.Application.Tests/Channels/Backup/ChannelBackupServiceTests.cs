@@ -5,6 +5,7 @@ using Application.Channels.Backup.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Gossip.Addresses;
+using Domain.Node.Models;
 using Domain.Protocol.ValueObjects;
 
 public sealed class ChannelBackupServiceTests : IDisposable
@@ -89,6 +90,27 @@ public sealed class ChannelBackupServiceTests : IDisposable
                          new ChannelBackupAddress("IPv6", "2001:db8::7", 9735),
                          new ChannelBackupAddress("DNS", "peer.example.com", 9737)
                      ], Assert.Single(decrypted.Channels).Addresses);
+    }
+
+    [Fact]
+    public void Given_AnInboundOnlyPeerRow_When_CreateEntry_Then_ItsHostIsNotBackedUp()
+    {
+        // Arrange - NL-497 review: a peer that connected from a loopback address has an inbound-only row; its host
+        // (a loopback one on rows written before the fix) is where it came from, and a restore would dial it
+        var data = new BackupTestData();
+        var channel = data.AddChannel(1);
+        var inboundOnly = new PeerModel(channel.RemoteNodeId, "127.0.0.1", 9735, "IPv4") { IsInboundOnly = true };
+        var announced = BackupTestData.GraphNodeWith(channel.RemoteNodeId,
+                                                     AddressDescriptor.FromHost(AddressDescriptorType.IPv4,
+                                                                                "203.0.113.5", 9735));
+
+        // Act
+        var withoutGraph = ChannelBackupService.CreateEntry(channel, inboundOnly);
+        var withGraph = ChannelBackupService.CreateEntry(channel, inboundOnly, announced);
+
+        // Assert: only the peer's announced address
+        Assert.Empty(withoutGraph.Addresses);
+        Assert.Equal(new ChannelBackupAddress("IPv4", "203.0.113.5", 9735), Assert.Single(withGraph.Addresses));
     }
 
     [Fact]

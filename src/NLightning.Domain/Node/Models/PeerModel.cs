@@ -23,9 +23,9 @@ public class PeerModel
     /// <summary>
     /// We know no address to dial this peer at (NL-497, wave spr): it connected to us, from a loopback address (a local
     /// tunnel, Tor on the same host) or from an ephemeral port, so <see cref="Host"/>/<see cref="Port"/> are only where
-    /// it came from. Such a peer is still saved, so its channels are registered at startup, but it is never dialed
-    /// (not at startup, not by the reconnect loop): we wait for it to connect again. Persisted by the wave's migration
-    /// owner lane.
+    /// it came from. Such a peer is still saved, without an address (empty host, port 0), so its channels are
+    /// registered at startup, but it is never dialed at that address (not at startup, not by the reconnect loop): we
+    /// wait for it to connect again. Channel backups and restores leave such a row out.
     /// </summary>
     public bool IsInboundOnly { get; init; }
 

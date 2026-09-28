@@ -1544,7 +1544,8 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
         {
             using var scope = _serviceScopeFactory.CreateScope();
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            if (await unitOfWork.PeerDbRepository.GetByNodeIdAsync(nodeId) is { } peer)
+            // An inbound-only peer's row holds no address of it (NL-497)
+            if (await unitOfWork.PeerDbRepository.GetByNodeIdAsync(nodeId) is { IsInboundOnly: false } peer)
                 Add(peer.Host, peer.Port);
         }
         catch (Exception e)

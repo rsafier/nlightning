@@ -1867,6 +1867,9 @@ public class PeerManagerTests
         // Assert
         Assert.Equal(_compactPubKey, saved!.NodeId);
         Assert.True(saved.IsInboundOnly);
+        // Saved without an address: nothing reading the row (the channel backup, a restore) dials the loopback host
+        Assert.Equal(string.Empty, saved.Host);
+        Assert.Equal(0U, saved.Port);
         Assert.True(peerManager.GetPeer(_compactPubKey)!.IsInboundOnly);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(), Times.AtLeast(2));
     }
@@ -1914,6 +1917,49 @@ public class PeerManagerTests
         Assert.Equal(9736U, updated.Port);
         Assert.NotEqual(default, updated.LastSeenAt);
         _mockPeerDbRepository.Verify(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ASavedDialablePeerConnectedFromALoopbackAddress_When_ItDrops_Then_WeDialItsSavedAddress()
+    {
+        // Arrange - NL-497 review: the loopback connection kept the saved dialable row, so the reconnect loop dials
+        // that row's address, not the loopback one
+        var peerManager = CreatePeerManager();
+        peerManager.ReconnectInitialDelay = TimeSpan.FromMilliseconds(10);
+        peerManager.ReconnectMaxDelay = TimeSpan.FromMilliseconds(10);
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var known = new PeerModel(_compactPubKey, RemoteHost, 9736, ExpectedType);
+        _mockPeerDbRepository.Setup(r => r.GetByNodeIdAsync(_compactPubKey)).ReturnsAsync(known);
+        var updated = false;
+        _mockPeerDbRepository.Setup(r => r.Update(It.IsAny<PeerModel>())).Callback(() => updated = true);
+        _mockChannelMemoryRepository.Setup(r => r.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+                                    .Returns([CreateChannel(ChannelState.Open, 1)]);
+        var dialed = new List<PeerAddress>();
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .Callback((PeerAddress a) =>
+                        {
+                            lock (dialed)
+                                dialed.Add(a);
+                        })
+                       .ThrowsAsync(new ConnectionException("unreachable"));
+        RaiseInboundConnection(ExpectedHost);
+        await WaitUntilAsync(() => updated);
+
+        // Act
+        RaiseDisconnect(_mockPeerService);
+        await WaitUntilAsync(() =>
+        {
+            lock (dialed)
+                return dialed.Count > 0;
+        });
+        await peerManager.StopAsync();
+
+        // Assert
+        PeerAddress first;
+        lock (dialed)
+            first = dialed[0];
+        Assert.Equal(RemoteHost, first.Host.ToString());
+        Assert.Equal(9736, first.Port);
     }
 
     [Fact]
