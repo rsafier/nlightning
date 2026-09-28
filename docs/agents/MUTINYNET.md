@@ -216,6 +216,18 @@ trends over a day; mainnet gossip stays off (template and code defaults).
 The soak has a restart gap from 19:51 to 20:02 UTC, around the public channel open below: the sampler stopped early
 with the `started_daemon` trap error above and did not restart the daemon, so there are no samples in that window.
 
+**24 h results (NL-376, closed 2026-09-28).**
+- **Run:** build `988bbde`, one sync peer (the faucet's LND). It ran from 2026-09-26 19:10:53 to 2026-09-27 20:06:51 UTC, 297 samples in `soak-20260926.log`, with the one restart at 20:02 UTC described above.
+- **Graph:** 895 to 899 channels and 194 to 197 nodes, 0 spent. Every new channel was taken from gossip, and the graph was reloaded after the restart.
+- **Memory (RSS):**
+  - It grew to 242 MB in the first 4 hours.
+  - It fell to 79 to 100 MB after a gen-2 collection around 05:00 UTC.
+  - It ended at 164 MB, so it did not keep growing over the day.
+- **Database:** 1.4 MB to 5.4 MB in 24 h. The WAL is checkpointed: the database stopped growing once the graph was complete.
+- **bitcoind load:** 3.2 RPC calls a minute (one block every 30 s) and under 1 % of bitcoind's CPU. The daemon's CPU is near 0 between blocks.
+- **Log:** 1 warning (the missed-block catch-up at start) and 1 error. The error was an `error` message the faucet LND sent for an earlier failed open ("funding failed due to internal error", 00:27 UTC). It is logged when received, not raised by us.
+- **Mainnet:** the mainnet 24 h soak with five peers and 30,673 verified channels is in `MAINNET_GOSSIP_PROBE.md`, "24 h mainnet soak".
+
 ## Public channel (gossip wave G-D, 2026-09-26)
 
 Our first announced channel on Mutinynet, opened with `openchannel --public` from the soak node (node id

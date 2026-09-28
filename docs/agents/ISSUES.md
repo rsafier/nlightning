@@ -92,9 +92,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 8 | 167 | 175 |
+| open | 0 | 0 | 7 | 167 | 174 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 146 | 121 | 342 |
+| fixed | 14 | 61 | 147 | 121 | 343 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **61** | **157** | **294** | **526** |
@@ -3293,11 +3293,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G5-T4
 
 ### NL-376 Mutinynet gossip soak: 24 h evaluation pending; RSS and SQLite WAL grow in the first 20 min
-- **Status:** open
+- **Status:** fixed (24 h soaks recorded, see Evidence)
 - **Severity:** medium
 - **Kind:** test
 - **Location:** `scripts/mutinynet/soak-gossip.sh`, `docs/agents/MUTINYNET.md` ("Gossip soak (G5-T5)")
 - **Evidence:** The soak started 2026-09-26 19:10:53 UTC (log `~/.nltg/mutinynet/soak/soak-20260926.log`, one sync peer, the faucet LND). In the first 20 min RSS went 178 -> 207 MB (flattening) and `nltg.db`'s WAL grew about 130 KB per 5 min with no checkpoint seen (e7c628e) (reported by lane D3, gossip wave G-D). D12 stays closed until the 24 h results are recorded. Update (wave O7, `8364a01`): the soak sampler sets its trap flags before its traps and `start` runs from the staged copy (lane X5, ddcc598; the script bug found during the soak); the Mutinynet public channel is recorded in `MUTINYNET.md`. The 24 h evaluation is still pending. Update (mainnet gossip probe, `docs/agents/MAINNET_GOSSIP_PROBE.md`): over a 60-minute mainnet run (about 40,000 channels) and a restart, the SQLite WAL stayed bounded (5.8 MiB, checkpointed; 5.2 MiB verified) and RSS flat at 400 MB after the sync, so the WAL concern does not reproduce at mainnet scale on a busy graph; the 24 h Mutinynet evaluation and a multi-day mainnet run are still pending. Update (ledger hygiene lh1 review): severity low to medium: this soak is the unmet proof of `BOLT7_GOSSIP_PLAN.md` G5-T5, the gate the plan set for mainnet sync, and D12 (wave d12, `aa1cc10`) opened graph and sync on mainnet by default without it; with NL-099 closed it is the only entry that tracks that proof.
+- **Update (2026-09-28, closed):** Both 24 h soaks are recorded. Mutinynet (`MUTINYNET.md` "24 h results"): RSS peaked at 242 MB and ended at 164 MB, the database ended at 5.4 MB and the WAL was checkpointed. Mainnet (`MAINNET_GOSSIP_PROBE.md` "24 h mainnet soak", five peers, verified against bitcoind): 30,673 channels, RSS flat at 450-640 MB against the 1,024 MB budget, WAL 5.0-5.3 MiB, median CPU 1.2 %, 2 peer disconnections and no bans. The WAL growth this entry was opened for does not reproduce. Relay on mainnet stays with NL-417 and NL-360.
 - **Fix sketch:** Record the 24 h samples in `MUTINYNET.md`; check RSS and WAL trends (add a periodic `wal_checkpoint` if the WAL keeps growing); repeat with a second sync peer to exercise rotation.
 - **Blocks/Blocked-by:** Part of NL-099 (G5-T5 proof); D12 was decided without it
 - **Plan ref:** BOLT7 G5-T5
