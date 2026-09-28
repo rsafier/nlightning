@@ -309,7 +309,8 @@ internal class TaggedFieldList : List<ITaggedField>
     /// </summary>
     internal static bool IsRepeatable(TaggedFieldTypes taggedFieldType)
     {
-        return taggedFieldType is TaggedFieldTypes.FallbackAddress or TaggedFieldTypes.RoutingInfo;
+        return taggedFieldType is TaggedFieldTypes.FallbackAddress or TaggedFieldTypes.RoutingInfo
+                                  or TaggedFieldTypes.BlindedPaymentPath;
     }
 
     private void OnChanged()

@@ -14,6 +14,7 @@ using Domain.Money;
 using Domain.Node;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Onion.Models;
 using Domain.Protocol.ValueObjects;
 using Domain.Utils;
 using Enums;
@@ -166,6 +167,26 @@ public partial class Invoice
             return _taggedFields.TryGetAll(TaggedFieldTypes.RoutingInfo,
                                            out List<RoutingInfoTaggedField>? routingInfoFields)
                        ? routingInfoFields.Select(x => x.Value).ToList()
+                       : [];
+        }
+    }
+
+    /// <summary>
+    /// The blinded payment paths of the invoice (bLIP 39 <c>b</c> fields, in invoice order), empty when there is none
+    /// </summary>
+    /// <remarks>
+    /// bLIP 39 is a draft extension of BOLT 11 (LND writes it; no BOLT defines tag 20). Such an invoice carries no
+    /// <c>s</c> and no <c>r</c> field and is usually signed by an ephemeral key, so <see cref="PayeePubKey"/> does
+    /// not name the recipient: pay it through these paths. Each path's first hop id is the introduction node's real
+    /// id (<see cref="BlindedPath.FirstNodeId"/>).
+    /// </remarks>
+    public IReadOnlyList<BlindedPaymentPath> BlindedPaymentPaths
+    {
+        get
+        {
+            return _taggedFields.TryGetAll(TaggedFieldTypes.BlindedPaymentPath,
+                                           out List<BlindedPaymentPathTaggedField>? fields)
+                       ? fields.Select(x => x.Value).ToList()
                        : [];
         }
     }
@@ -717,6 +738,30 @@ public partial class Invoice
     {
         _taggedFields.Add(new RoutingInfoTaggedField(routingInfos));
         routingInfos.Changed += OnTaggedFieldsChanged;
+    }
+
+    /// <summary>
+    /// Adds a blinded payment path (bLIP 39 <c>b</c> field) after the existing ones
+    /// </summary>
+    /// <param name="path">The path; its first hop is written as the introduction node's real id.</param>
+    /// <exception cref="ArgumentException">If the path has no hop or does not fit in one tagged field.</exception>
+    /// <remarks>
+    /// bLIP 39 writer: an invoice with <c>b</c> MUST NOT contain <c>r</c> or <c>s</c> (call
+    /// <see cref="RemovePaymentSecret"/>) and SHOULD be signed with a key that is not the node id; the encoder
+    /// refuses the first two.
+    /// </remarks>
+    public void AddBlindedPaymentPath(BlindedPaymentPath path)
+    {
+        _taggedFields.Add(new BlindedPaymentPathTaggedField(path));
+    }
+
+    /// <summary>
+    /// Removes the payment secret (<c>s</c> field): a bLIP 39 invoice with blinded paths carries none (the recipient
+    /// authenticates the payment with the <c>path_id</c> of its paths instead).
+    /// </summary>
+    public void RemovePaymentSecret()
+    {
+        _taggedFields.RemoveAll(x => x.Type.Equals(TaggedFieldTypes.PaymentSecret));
     }
 
     #region Overrides

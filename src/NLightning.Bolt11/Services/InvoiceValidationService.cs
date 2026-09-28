@@ -28,6 +28,7 @@ public class InvoiceValidationService : IInvoiceValidationService
         {
             ValidateInvoice(invoice),
             ValidateFeatures(invoice),
+            ValidateBlindedPathsForEncoding(invoice),
         };
 
         var errors = results.SelectMany(r => r.Errors).ToList();
@@ -42,8 +43,8 @@ public class InvoiceValidationService : IInvoiceValidationService
         if (invoice.PaymentHash is null)
             errors.Add($"{nameof(invoice.PaymentHash)} is required");
 
-        // Payment secret is required (s field)
-        if (invoice.PaymentSecret is null)
+        // Payment secret is required (s field), except in a bLIP 39 invoice with blinded paths, which carries none
+        if (invoice.PaymentSecret is null && invoice.BlindedPaymentPaths.Count == 0)
             errors.Add($"{nameof(invoice.PaymentSecret)} is required");
 
         // Either description or description hash is required (d or h field)
@@ -65,7 +66,24 @@ public class InvoiceValidationService : IInvoiceValidationService
         if (hasDescription && hasDescriptionHash)
             errors.Add($"{nameof(invoice.Description)} and {nameof(invoice.DescriptionHash)} cannot both be present");
 
+        // bLIP 39: an invoice containing the `b` field MUST not contain the `r` field (LND refuses such an invoice
+        // too): route hints and blinded paths would name two ways to a recipient that hides behind the paths
+        if (invoice.BlindedPaymentPaths.Count > 0 && invoice.RouteHints.Count > 0)
+            errors.Add($"{nameof(invoice.BlindedPaymentPaths)} and {nameof(invoice.RouteHints)} cannot both be "
+                     + "present");
+
         return new ValidationResult(errors.Count == 0, errors);
+    }
+
+    public ValidationResult ValidateBlindedPathsForEncoding(Invoice invoice)
+    {
+        // bLIP 39 writer: an invoice with blinded paths MUST not contain the `s` field (LND's reader accepts one, so
+        // the decoder does too)
+        if (invoice.BlindedPaymentPaths.Count > 0 && invoice.PaymentSecret is not null)
+            return ValidationResult.Failure($"An invoice with {nameof(invoice.BlindedPaymentPaths)} must not carry a "
+                                          + $"{nameof(invoice.PaymentSecret)} (bLIP 39)");
+
+        return ValidationResult.Success();
     }
 
     public ValidationResult ValidateFeatures(Invoice invoice)
