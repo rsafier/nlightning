@@ -62,6 +62,8 @@ Updated 2026-09-28 by lane bolt10 (branch `wip/fafo-bolt10` from `978ad275`, cod
 
 Updated 2026-09-28 by lane nl543 (branch `wip/fafo-nl543` from `wip/fafo` at `ef7ad335`, code at `d4eb9582`, not merged into `wip/fafo`): the bootstrap tops up from the gossip graph before the DNS seeds (owner decision, light testing). Fixed: NL-543. New: NL-547. Targeted tests only, net10.0 Release: Application `NLightning.Application.Tests.Node` 223, Domain `Node/Bootstrap` 158; no Docker, no full matrix, no live run.
 
+Updated 2026-09-28 by lane nl547 (branch `wip/fafo-nl547` from `wip/fafo` at `ac4d5d60`, code at `491cffb9`, not merged into `wip/fafo`): the bootstrap keeps `MinPeers` connected for the process lifetime (peer-count keeper with backoff, failed endpoints expire; owner decision, light testing). Fixed: NL-547. No new IDs. Targeted tests only, net10.0 Release: Application `NLightning.Application.Tests.Node` 235, Domain `Node.Bootstrap` 161, Daemon 822; no Docker, no full matrix, no live run.
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -96,9 +98,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 7 | 169 | 176 |
+| open | 0 | 0 | 7 | 168 | 175 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 147 | 131 | 353 |
+| fixed | 14 | 61 | 147 | 132 | 354 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **61** | **157** | **306** | **538** |
@@ -3810,12 +3812,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT 10
 
 ### NL-547 The peer top-up stops once MinPeers is reached or MaxRuns ran
-- **Status:** open
+- **Status:** fixed (491cffb9)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Node/Bootstrap/PeerBootstrapService.cs` (`RunLoopAsync`)
 - **Evidence:** Lane nl543 (NL-543). The graph top-up runs inside the bootstrap loop, which ends at `MinPeers` connected or after `MaxRuns` (12 x 5 min); a node whose peers drop below `MinPeers` later in its life is not topped up again (LND and CLN keep a minimum of gossip peers for the node's lifetime). Endpoints that failed stay skipped for the whole process.
-- **Fix sketch:** Keep a lightweight keeper after the loop: re-check every `RetryInterval` and top up from the graph (seeds only when the graph fails) when below `MinPeers`, with the failed endpoints expiring after a while.
+- **Fix sketch:** Keep a lightweight keeper after the loop: re-check every `RetryInterval` and top up from the graph (seeds only when the graph fails) when below `MinPeers`, with the failed endpoints expiring after a while. Done (lane nl547, branch `wip/fafo-nl547` from `ac4d5d60`, owner decision 2026-09-28, light testing): `PeerBootstrapService` runs a peer-count keeper for the process lifetime once the initial phase ends (`MaxRuns` now bounds that phase only; no keeper when it ended with no seeds and no graph). Every `Node:Bootstrap:MaintenanceInterval` (5 min) it counts the connected peers; below `MinPeers` it checks the same gate (a halted chain or a saved peer with active channels still being reconnected skips the check without backoff) and runs the same top-up (graph first, then the seeds, same dial limits). A top-up that leaves the node short backs off: the next waits `MaintenanceInterval`, doubling after each short top-up up to `MaxMaintenanceBackoff` (1 h); the backoff resets when a check finds `MinPeers`. Failed endpoints (graph and seeds) are skipped for `FailedEndpointTtl` (1 h) only, at most 1,024 remembered (the oldest failure forgotten first). Switch: follows `Node:Bootstrap:Enabled`, no new key (a separate switch buys nothing: a node that wants bootstrap wants to keep its peers). Logs: top-ups at Information, backing off at Debug, a zero-peer top-up warns once per backoff step (not again at the cap), never Error; stops with the service (`StopAsync` waits for both tasks). Status: `PeerBootstrapStatus.Maintaining`/`NextTopUpAt`, `BootstrapRunRecord.Maintenance`. The three new options are in the daemon template. `TimeProvider` injected (optional). No peer-disconnect event is used: polling only. Tests (net10.0 Release): Application `NLightning.Application.Tests.Node` 235 (12 new keeper tests in `PeerBootstrapServiceTests`: top-up after a later drop with the real loop, nothing at `MinPeers`, backoff 5/10/20/40/60/60 min and reset, one warning per step, a reaching top-up resets, seed and graph endpoints dialed again after the TTL, the bound, expiry, halted chain and channel peer skipped, clean stop, no keeper without seeds and graph), Domain `Node.Bootstrap` 161, Daemon 822.
 - **Blocks/Blocked-by:** Related NL-543
 - **Plan ref:** BOLT 10
 
