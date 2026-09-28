@@ -77,7 +77,7 @@ public sealed class SpliceDepthWatcher : ISpliceDepthWatcher, IDisposable
                                        .Where(f => !f.SpliceLockedSent)
                                        .Select(f => (channel.ChannelId, f.FundingTxId)));
             }
-            catch (Exception e) when (e is InvalidOperationException or NotImplementedException)
+            catch (InvalidOperationException)
             {
                 // A channel without a funding outpoint has no splice
             }
@@ -118,7 +118,7 @@ public sealed class SpliceDepthWatcher : ISpliceDepthWatcher, IDisposable
              || _statePort.GetFundings(channel).Pending.All(f => f.FundingTxId != watch.TransactionId))
                 return;
         }
-        catch (Exception e) when (e is InvalidOperationException or NotImplementedException)
+        catch (InvalidOperationException)
         {
             return;
         }

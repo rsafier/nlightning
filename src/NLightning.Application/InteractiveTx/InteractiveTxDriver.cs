@@ -1045,8 +1045,16 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         return outbound.Any(m => m is TxAbortMessage) ? outbound : [.. outbound, CreateTxAbort(channelId, reason)];
     }
 
+    /// <summary>
+    /// The <c>funding_output_contribution</c> TLV of a <c>tx_init_rbf</c>/<c>tx_ack_rbf</c> from a signed contribution
+    /// in satoshis (NL-481: an s64, negative for a splice-out RBF, BOLT 2 "Channel Splicing"), or null for none (0: the
+    /// sender does not contribute).
+    /// </summary>
+    public static FundingOutputContributionTlv? CreateContributionTlv(long satoshis) =>
+        satoshis == 0 ? null : new FundingOutputContributionTlv(satoshis);
+
     private static FundingOutputContributionTlv? CreateContributionTlv(LightningMoney amount) =>
-        amount > LightningMoney.Zero ? new FundingOutputContributionTlv(amount) : null;
+        CreateContributionTlv(amount.Satoshi);
 
     /// <summary>BOLT 2: a tx_abort's data SHOULD NOT be printed verbatim unless it is printable ASCII.</summary>
     internal static string DescribeAbortData(byte[] data)
