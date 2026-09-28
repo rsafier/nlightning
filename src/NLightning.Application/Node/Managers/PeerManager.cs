@@ -473,8 +473,10 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         if (_stopping || _cts is null || session.ReconnectSuppressed || _reconnectCts.IsCancellationRequested)
             return;
 
-        // A peer we cannot dial reconnects to us (NL-497)
-        if (session.Peer.IsInboundOnly)
+        // A peer we cannot dial reconnects to us (NL-497), unless we saved a dialable address of it before it
+        // connected from a loopback address: that one is dialed
+        var dialable = session.Peer.IsInboundOnly ? session.DialablePeer : session.Peer;
+        if (dialable is null)
             return;
 
         var peerId = session.Peer.NodeId;
@@ -483,7 +485,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             return;
 
         _logger.LogInformation("Peer {PeerId} has active channels, reconnecting", peerId);
-        StartReconnectLoop(session.Peer);
+        StartReconnectLoop(dialable);
     }
 
     private async Task<PeerModel> ConnectToPeerAsync(PeerAddressInfo peerAddressInfo, IUnitOfWork uow)
@@ -637,7 +639,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             }
 
             // Every inbound peer is saved, so its channels are registered at our next start (NL-497)
-            await SaveInboundPeerAsync(peer);
+            session.DialablePeer = await SaveInboundPeerAsync(peer);
         }
         catch (ConnectionException e)
         {
@@ -653,9 +655,12 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
 
     /// <summary>
     /// Saves a peer that connected to us. An inbound-only peer (loopback) never replaces the address we dial a saved
-    /// peer at: only its last-seen time is updated then.
+    /// peer at: only its last-seen time is updated then. Otherwise it is saved without an address (empty host, port
+    /// 0), so nothing that reads the peer rows (the static channel backup, a restore) takes the loopback host for the
+    /// peer's.
     /// </summary>
-    private async Task SaveInboundPeerAsync(PeerModel peer)
+    /// <returns>The saved dialable row of an inbound-only peer, the one the reconnect loop dials; else null.</returns>
+    private async Task<PeerModel?> SaveInboundPeerAsync(PeerModel peer)
     {
         using var scope = _serviceProvider.CreateScope();
         using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -668,10 +673,18 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         }
         else
         {
-            await uow.PeerDbRepository.AddOrUpdateAsync(peer);
+            await uow.PeerDbRepository.AddOrUpdateAsync(peer.IsInboundOnly
+                                                            ? new PeerModel(peer.NodeId, string.Empty, 0, peer.Type)
+                                                            {
+                                                                LastSeenAt = peer.LastSeenAt,
+                                                                IsInboundOnly = true
+                                                            }
+                                                            : peer);
+            saved = null;
         }
 
         await uow.SaveChangesAsync();
+        return saved;
     }
 
     /// <summary>
@@ -1385,6 +1398,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         private readonly CancellationTokenSource _closeCts = new();
         private int _disconnected;
         private volatile bool _reconnectSuppressed;
+        private PeerModel? _dialablePeer;
 
         public PeerModel Peer { get; }
         public IPeerService PeerService { get; }
@@ -1400,6 +1414,16 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         public EventHandler<ChannelUpdateMessage>? ChannelUpdateHandler { get; set; }
         public bool IsDisconnected => Volatile.Read(ref _disconnected) != 0;
         public bool ReconnectSuppressed => _reconnectSuppressed;
+
+        /// <summary>
+        /// The saved dialable row of an inbound-only peer (NL-497): the reconnect loop dials it when this connection
+        /// drops. Null for a peer we know no address of.
+        /// </summary>
+        public PeerModel? DialablePeer
+        {
+            get => Volatile.Read(ref _dialablePeer);
+            set => Volatile.Write(ref _dialablePeer, value);
+        }
 
         public PeerSession(PeerModel peer, IPeerService peerService, PeerOutbox outbox, bool isInbound)
         {

@@ -547,7 +547,9 @@ public sealed class ChannelBackupService : IChannelBackupService
             if (candidate.FundingTxId != fundingTxId && pending.All(p => p.FundingTxId != candidate.FundingTxId))
                 pending.Add(candidate);
         var addresses = new List<ChannelBackupAddress>();
-        if (peer is not null && !string.IsNullOrWhiteSpace(peer.Host) && peer.Port is > 0 and <= ushort.MaxValue)
+        // An inbound-only peer's row holds no address of it (it connected from a loopback address, NL-497)
+        if (peer is { IsInboundOnly: false } && !string.IsNullOrWhiteSpace(peer.Host)
+                                             && peer.Port is > 0 and <= ushort.MaxValue)
             addresses.Add(new ChannelBackupAddress(peer.Type, peer.Host, (ushort)peer.Port));
 
         // The peer's announced addresses: the peer row may hold only where it connected from (NL-431)
