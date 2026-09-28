@@ -45,6 +45,7 @@ public class PeerBootstrapServiceTests
     private readonly List<PeerModel> _saved = [];
     private readonly CompactPubKey _ourNodeId = NewKey();
     private IGraphStore? _graphStore;
+    private TimeProvider? _clock;
 
     private readonly NodeOptions _nodeOptions = new()
     {
@@ -108,7 +109,7 @@ public class PeerBootstrapServiceTests
         var provider = services.BuildServiceProvider();
         return new PeerBootstrapService(_dnsSeedClient.Object, _logger, Options.Create(_nodeOptions),
                                         _peerManager.Object, provider.GetRequiredService<IServiceScopeFactory>(),
-                                        _secureKeyManager.Object, _graphStore, _blockchainMonitor.Object);
+                                        _secureKeyManager.Object, _graphStore, _blockchainMonitor.Object, _clock);
     }
 
     private async Task RunToEndAsync(PeerBootstrapService service)
@@ -137,6 +138,7 @@ public class PeerBootstrapServiceTests
 
         // Assert
         Assert.Null(service.Loop);
+        Assert.Null(service.Keeper);
         VerifyNoSeedQuery();
         var status = service.GetStatus();
         Assert.False(status.Enabled);
@@ -1112,6 +1114,338 @@ public class PeerBootstrapServiceTests
 
         // Assert
         Assert.Equal(0, DialCount());
+    }
+
+    #endregion
+
+    #region Peer-count keeper (NL-547)
+
+    private ManualClock UseManualClock()
+    {
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        _clock = clock;
+        return clock;
+    }
+
+    private void SeedsFindNothing()
+    {
+        SetupSeed(SeedA, new DnsSeedResult(SeedA, DnsSeedOutcome.Empty, [], 0));
+        SetupSeed(SeedB, new DnsSeedResult(SeedB, DnsSeedOutcome.NxDomain, [], 0));
+    }
+
+    private void AddConnectedPeers(int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            var nodeId = NewKey();
+            _connected[nodeId] = new PeerModel(nodeId, "1.2.3.4", 9735, "IPv4");
+        }
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, "the condition did not hold within 10 s");
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task Given_PeersThatDropAfterTheInitialPhase_When_TheKeeperRuns_Then_ItTopsUpAgain()
+    {
+        // Arrange: the initial phase reaches MinPeers, then the peer goes away
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        _nodeOptions.Bootstrap.MaintenanceInterval = TimeSpan.FromMilliseconds(20);
+        _nodeOptions.Bootstrap.MaxMaintenanceBackoff = TimeSpan.FromMilliseconds(20);
+        SetupSeed(SeedA, Ok(SeedA, Candidate(SeedA)));
+        SetupSeed(SeedB, Ok(SeedB));
+        DialsSucceed();
+        var service = CreateService();
+        await RunToEndAsync(service);
+        Assert.Single(_connected);
+        Assert.Equal(1, DialCount());
+
+        // Act
+        _connected.Clear();
+        await WaitUntilAsync(() => !_connected.IsEmpty);
+
+        // Assert
+        Assert.Equal(2, DialCount());
+        var status = service.GetStatus();
+        Assert.True(status.Maintaining);
+        Assert.Contains("MinPeers", status.EndReason);
+        Assert.Contains(status.Runs, r => r is { Maintenance: true, Connected: 1 });
+        Assert.False(service.Keeper!.IsCompleted);
+        await service.StopAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Given_EnoughPeers_When_TheKeeperChecks_Then_NothingIsDoneAndNothingIsRecorded()
+    {
+        // Arrange: MinPeers 3 connected
+        UseGraph();
+        AddConnectedPeers(3);
+        var service = CreateService();
+
+        // Act
+        var check = await service.MaintainOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(MaintenanceCheck.EnoughPeers, check);
+        VerifyNoSeedQuery();
+        Assert.Equal(0, DialCount());
+        Assert.Empty(service.GetStatus().Runs);
+        Assert.Null(service.MaintenanceBackoff);
+    }
+
+    [Fact]
+    public async Task Given_TopUpsThatFindNoPeer_When_TheKeeperChecks_Then_TheBackoffGrowsToItsCapAndResets()
+    {
+        // Arrange
+        var clock = UseManualClock();
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        SeedsFindNothing();
+        var service = CreateService();
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act / Assert: 5, 10, 20, 40 minutes, then the 1 h cap
+        TimeSpan[] expected =
+        [
+            TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(20), TimeSpan.FromMinutes(40),
+            TimeSpan.FromHours(1), TimeSpan.FromHours(1)
+        ];
+        foreach (var backoff in expected)
+        {
+            Assert.Equal(MaintenanceCheck.StillShort, await service.MaintainOnceAsync(ct));
+            Assert.Equal(backoff, service.MaintenanceBackoff);
+            Assert.Equal(clock.GetUtcNow() + backoff, service.GetStatus().NextTopUpAt);
+
+            // Nothing before the backoff's time: no seed is asked
+            var queries = _dnsSeedClient.Invocations.Count;
+            clock.Advance(backoff - TimeSpan.FromSeconds(1));
+            Assert.Equal(MaintenanceCheck.BackingOff, await service.MaintainOnceAsync(ct));
+            Assert.Equal(queries, _dnsSeedClient.Invocations.Count);
+            clock.Advance(TimeSpan.FromSeconds(1));
+        }
+
+        // One warning per backoff step at zero peers, none again at the cap; never an error
+        Assert.Equal(5, _logger.Entries.Count(e => e.Level == LogLevel.Warning && e.Message.Contains("still no peer")));
+        Assert.DoesNotContain(_logger.Entries, e => e.Level >= LogLevel.Error);
+        Assert.DoesNotContain(_logger.Entries, e => e.Message.Contains("connected no peer"));
+
+        // The peers come back: the backoff resets
+        AddConnectedPeers(1);
+        Assert.Equal(MaintenanceCheck.EnoughPeers, await service.MaintainOnceAsync(ct));
+        Assert.Null(service.MaintenanceBackoff);
+        Assert.Null(service.GetStatus().NextTopUpAt);
+
+        // And they drop again: an immediate top-up, the backoff from its start
+        _connected.Clear();
+        Assert.Equal(MaintenanceCheck.StillShort, await service.MaintainOnceAsync(ct));
+        Assert.Equal(TimeSpan.FromMinutes(5), service.MaintenanceBackoff);
+        Assert.All(service.GetStatus().Runs, r => Assert.True(r.Maintenance));
+    }
+
+    [Fact]
+    public async Task Given_ATopUpThatReachesMinPeers_When_TheKeeperChecks_Then_TheBackoffResets()
+    {
+        // Arrange: a first top-up finds nothing, the second a peer
+        var clock = UseManualClock();
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        SeedsFindNothing();
+        var service = CreateService();
+        var ct = TestContext.Current.CancellationToken;
+        Assert.Equal(MaintenanceCheck.StillShort, await service.MaintainOnceAsync(ct));
+        SetupSeed(SeedA, Ok(SeedA, Candidate(SeedA)));
+        DialsSucceed();
+        clock.Advance(TimeSpan.FromMinutes(5));
+
+        // Act
+        var check = await service.MaintainOnceAsync(ct);
+
+        // Assert
+        Assert.Equal(MaintenanceCheck.ToppedUp, check);
+        Assert.Single(_connected);
+        Assert.Null(service.MaintenanceBackoff);
+    }
+
+    [Fact]
+    public async Task Given_AFailedEndpoint_When_ItsTtlPasses_Then_ItIsDialedAgain()
+    {
+        // Arrange
+        var clock = UseManualClock();
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        SetupSeed(SeedA, Ok(SeedA, Candidate(SeedA, address: "9.9.9.9")));
+        SetupSeed(SeedB, Ok(SeedB));
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .ThrowsAsync(new ConnectionException("refused"));
+        var service = CreateService();
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act / Assert: dialed, then skipped within the TTL, then dialed again
+        await service.MaintainOnceAsync(ct);
+        Assert.Equal(1, DialCount());
+        clock.Advance(TimeSpan.FromMinutes(5));
+        Assert.Equal(MaintenanceCheck.StillShort, await service.MaintainOnceAsync(ct));
+        Assert.Equal(1, DialCount());
+        clock.Advance(TimeSpan.FromMinutes(56));
+        Assert.Equal(MaintenanceCheck.StillShort, await service.MaintainOnceAsync(ct));
+        Assert.Equal(2, DialCount());
+    }
+
+    [Fact]
+    public async Task Given_AFailedGraphEndpoint_When_ItsTtlPasses_Then_ItIsDialedAgain()
+    {
+        // Arrange
+        var clock = UseManualClock();
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        _nodeOptions.Bootstrap.Seeds = [];
+        AddGraphNode();
+        UseGraph();
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .ThrowsAsync(new ConnectionException("refused"));
+        var service = CreateService();
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act: failed at 0, skipped at 59 min, dialed again at 70 min (the backoff is 10 min by then)
+        await service.MaintainOnceAsync(ct);
+        clock.Advance(TimeSpan.FromMinutes(59));
+        await service.MaintainOnceAsync(ct);
+        var dialsWithinTtl = DialCount();
+        clock.Advance(TimeSpan.FromMinutes(11));
+        await service.MaintainOnceAsync(ct);
+
+        // Assert
+        Assert.Equal(1, dialsWithinTtl);
+        Assert.Equal(2, DialCount());
+    }
+
+    [Fact]
+    public void Given_MoreFailuresThanTheBound_When_Recorded_Then_TheOldestAreForgotten()
+    {
+        // Arrange
+        var clock = UseManualClock();
+        var service = CreateService();
+        var start = clock.GetUtcNow();
+        var endpoints = Enumerable.Range(0, PeerBootstrapService.MaxFailedEndpoints + 10)
+                                  .Select(i => (IPAddress.Parse($"13.{(i >> 16) & 0xff}.{(i >> 8) & 0xff}.{i & 0xff}"),
+                                                (ushort)9735))
+                                  .ToList();
+
+        // Act
+        for (var i = 0; i < endpoints.Count; i++)
+            service.RecordFailedEndpoint(endpoints[i], start + TimeSpan.FromSeconds(i));
+
+        // Assert
+        Assert.Equal(PeerBootstrapService.MaxFailedEndpoints, service.FailedEndpointCount);
+        var failed = service.GetFailedEndpoints();
+        Assert.All(endpoints.Take(10), e => Assert.DoesNotContain(e, failed));
+        Assert.All(endpoints.Skip(10), e => Assert.Contains(e, failed));
+    }
+
+    [Fact]
+    public void Given_ExpiredFailures_When_Read_Then_TheyAreForgotten()
+    {
+        // Arrange
+        var clock = UseManualClock();
+        var service = CreateService();
+        service.RecordFailedEndpoint((IPAddress.Parse("13.0.0.1"), 9735), clock.GetUtcNow());
+        clock.Advance(TimeSpan.FromMinutes(30));
+        service.RecordFailedEndpoint((IPAddress.Parse("13.0.0.2"), 9735), clock.GetUtcNow());
+
+        // Act
+        clock.Advance(TimeSpan.FromMinutes(30));
+        var failed = service.GetFailedEndpoints();
+
+        // Assert
+        Assert.Equal((IPAddress.Parse("13.0.0.2"), (ushort)9735), Assert.Single(failed));
+        Assert.Equal(1, service.FailedEndpointCount);
+    }
+
+    [Fact]
+    public async Task Given_ChainProcessingHalted_When_TheKeeperChecks_Then_TheTopUpIsSkippedWithoutBackoff()
+    {
+        // Arrange
+        UseManualClock();
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        _blockchainMonitor.SetupGet(m => m.IsChainProcessingHalted).Returns(true);
+        var service = CreateService();
+
+        // Act
+        var check = await service.MaintainOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(MaintenanceCheck.Skipped, check);
+        VerifyNoSeedQuery();
+        Assert.Null(service.MaintenanceBackoff);
+        var run = Assert.Single(service.GetStatus().Runs);
+        Assert.True(run.Maintenance);
+        Assert.Equal("chain processing is halted", run.SkipReason);
+    }
+
+    [Fact]
+    public async Task Given_ASavedPeerWithAnActiveChannel_When_TheKeeperChecks_Then_TheTopUpIsSkipped()
+    {
+        // Arrange: the peer manager keeps reconnecting it
+        UseManualClock();
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        UseGraph();
+        _saved.Add(new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4") { Channels = [CreateChannel(ChannelState.Open)] });
+        var service = CreateService();
+
+        // Act
+        var check = await service.MaintainOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(MaintenanceCheck.Skipped, check);
+        VerifyNoSeedQuery();
+        Assert.Equal(0, DialCount());
+    }
+
+    [Fact]
+    public async Task Given_TheInitialPhaseReachedMinPeers_When_Stopped_Then_TheKeeperStopsCleanly()
+    {
+        // Arrange: the default 5 min interval, so the keeper waits when it is stopped
+        AddConnectedPeers(3);
+        var service = CreateService();
+        await RunToEndAsync(service);
+        await WaitUntilAsync(() => service.GetStatus().Maintaining);
+
+        // Act
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await service.StopAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(service.Keeper!.IsCompleted);
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(4));
+        Assert.False(service.GetStatus().Maintaining);
+        Assert.DoesNotContain(_logger.Entries, e => e.Level >= LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task Given_NoSeedsAndNoGraph_When_TheInitialPhaseEnds_Then_NoKeeperRuns()
+    {
+        // Arrange
+        _nodeOptions.BitcoinNetwork = BitcoinNetwork.Regtest;
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+        await service.Keeper!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(service.GetStatus().Maintaining);
+    }
+
+    private sealed class ManualClock(DateTimeOffset start) : TimeProvider
+    {
+        private DateTimeOffset _now = start;
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan by) => _now += by;
     }
 
     #endregion

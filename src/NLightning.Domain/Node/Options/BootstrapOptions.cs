@@ -143,11 +143,37 @@ public class BootstrapOptions
     public TimeSpan GetEffectiveConnectTimeout(TimeSpan networkTimeout) =>
         ConnectTimeout >= networkTimeout ? ConnectTimeout : networkTimeout;
 
-    /// <summary>The wait before another run while the node stays under <see cref="MinPeers"/>.</summary>
+    /// <summary>
+    /// The wait before another run of the initial phase while the node stays under <see cref="MinPeers"/>.
+    /// </summary>
     public TimeSpan RetryInterval { get; set; } = TimeSpan.FromMinutes(5);
 
-    /// <summary>The most runs; the loop then stops.</summary>
+    /// <summary>
+    /// The most runs of the initial phase (every <see cref="RetryInterval"/>); the peer-count keeper then takes over
+    /// (<see cref="MaintenanceInterval"/>, NL-547), so this bounds how long the start retries at its own pace, not how
+    /// long the node keeps its peers.
+    /// </summary>
     public int MaxRuns { get; set; } = 12;
+
+    /// <summary>
+    /// How often the peer-count keeper checks, after the initial phase, that at least <see cref="MinPeers"/> peers are
+    /// connected, for the process lifetime (NL-547). It is also the first backoff after a top-up that leaves the node
+    /// short.
+    /// </summary>
+    public TimeSpan MaintenanceInterval { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// The longest wait between two top-ups of the keeper while they leave the node below <see cref="MinPeers"/>: the
+    /// wait starts at <see cref="MaintenanceInterval"/> and doubles after each such top-up up to this; it resets once
+    /// enough peers are connected. At least <see cref="MaintenanceInterval"/>.
+    /// </summary>
+    public TimeSpan MaxMaintenanceBackoff { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// How long an endpoint whose dial failed is skipped (graph and seed candidates alike) before it may be dialed
+    /// again (NL-547).
+    /// </summary>
+    public TimeSpan FailedEndpointTtl { get; set; } = TimeSpan.FromHours(1);
 
     /// <summary>The wait before the first run, so saved peers connect first. Zero is allowed.</summary>
     public TimeSpan StartupDelay { get; set; } = TimeSpan.FromSeconds(15);
@@ -214,6 +240,10 @@ public class BootstrapOptions
         CheckPositiveTime(QueryTimeout, nameof(QueryTimeout));
         CheckPositiveTime(ConnectTimeout, nameof(ConnectTimeout));
         CheckPositiveTime(RetryInterval, nameof(RetryInterval));
+        CheckPositiveTime(MaintenanceInterval, nameof(MaintenanceInterval));
+        CheckPositiveTime(FailedEndpointTtl, nameof(FailedEndpointTtl));
+        if (MaxMaintenanceBackoff < MaintenanceInterval)
+            errors.Add($"{prefix}{nameof(MaxMaintenanceBackoff)} must be at least {nameof(MaintenanceInterval)}.");
         if (StartupDelay < TimeSpan.Zero)
             errors.Add($"{prefix}{nameof(StartupDelay)} must not be negative.");
 

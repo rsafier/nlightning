@@ -23,7 +23,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// BOLT 10 bootstrap (NL-113) and graph top-up (NL-543): a node with fewer than
 /// <see cref="BootstrapOptions.MinPeers"/> peers dials nodes of its gossip graph and, when those do not bring it there,
 /// asks the DNS seeds for more. On by default on mainnet only (<c>Node:Bootstrap:Enabled</c>, D-B10-1 as reversed on
-/// 2026-09-28; the graph top-up follows the same switch).
+/// 2026-09-28; the graph top-up and the peer-count keeper follow the same switch).
 /// </summary>
 /// <remarks>
 /// <para>The host starts it after <c>PeerManager.StartAsync</c>; it runs in the background and never blocks the start.
@@ -47,10 +47,24 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// manager saves the peers it connects. The BOLT 8 handshake is the only proof of a node id. Every run, seed query and
 /// dial is recorded for <see cref="GetStatus"/> (graph dials with the seed <see cref="GraphPeerCandidateSelector.GraphSource"/>).
 /// </para>
+/// <para>Peer-count keeper (NL-547): once that initial phase ends (at <see cref="BootstrapOptions.MinPeers"/> or after
+/// <see cref="BootstrapOptions.MaxRuns"/>, which bounds the initial phase only), the service keeps running for the
+/// process lifetime, unless the phase ended because nothing can ever find peers (no seeds and no graph). Every
+/// <see cref="BootstrapOptions.MaintenanceInterval"/> it counts the connected peers; below
+/// <see cref="BootstrapOptions.MinPeers"/> it checks the same gate (a halted chain or a saved peer with active channels
+/// that the peer manager is reconnecting skips that check, without backoff) and runs the same top-up (graph first,
+/// then the seeds, same limits). A top-up that leaves the node below <see cref="BootstrapOptions.MinPeers"/> backs off:
+/// the next one waits <see cref="BootstrapOptions.MaintenanceInterval"/>, then twice as long after each such top-up, up
+/// to <see cref="BootstrapOptions.MaxMaintenanceBackoff"/>; the backoff resets once a check finds enough peers. A failed
+/// endpoint is skipped for <see cref="BootstrapOptions.FailedEndpointTtl"/> only (initial phase and keeper alike), and
+/// at most <see cref="MaxFailedEndpoints"/> failures are remembered, the oldest forgotten first.</para>
 /// </remarks>
 internal sealed class PeerBootstrapService : IPeerBootstrapService
 {
     private static readonly TimeSpan s_stopTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>The most failed endpoints remembered; the oldest failure is forgotten first (NL-547).</summary>
+    internal const int MaxFailedEndpoints = 1024;
 
     private readonly IDnsSeedClient _dnsSeedClient;
     private readonly IGraphStore? _graphStore;
@@ -60,9 +74,16 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     private readonly IPeerManager _peerManager;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ISecureKeyManager _secureKeyManager;
+    private readonly TimeProvider _timeProvider;
 
-    // Endpoints whose dial failed in this process; only the loop touches it
-    private readonly HashSet<(IPAddress, ushort)> _failedEndpoints = [];
+    // Endpoints whose dial failed, with the failure's time: skipped until FailedEndpointTtl passed (NL-547)
+    private readonly Lock _failedEndpointsLock = new();
+    private readonly Dictionary<(IPAddress, ushort), DateTimeOffset> _failedEndpoints = [];
+
+    // The run counter and the keeper's backoff; only the initial phase, then the keeper, touch them (NL-547)
+    private int _runCount;
+    private bool _keepPeers;
+    private TimeSpan? _maintenanceBackoff;
 
     // What GetStatus reports; written by the loop (dials from concurrent tasks), read by any thread
     private readonly Lock _statusLock = new();
@@ -72,16 +93,20 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     private DateTimeOffset? _startedAt;
     private DateTimeOffset? _finishedAt;
     private string? _endReason;
+    private bool _maintaining;
+    private DateTimeOffset? _nextTopUpAt;
 
     private bool _warnedIgnoredSeeds;
 
     private CancellationTokenSource? _cts;
     private Task? _loop;
+    private Task? _keeper;
 
     public PeerBootstrapService(IDnsSeedClient dnsSeedClient, ILogger<PeerBootstrapService> logger,
                                 IOptions<NodeOptions> nodeOptions, IPeerManager peerManager,
                                 IServiceScopeFactory scopeFactory, ISecureKeyManager secureKeyManager,
-                                IGraphStore? graphStore = null, IBlockchainMonitor? blockchainMonitor = null)
+                                IGraphStore? graphStore = null, IBlockchainMonitor? blockchainMonitor = null,
+                                TimeProvider? timeProvider = null)
     {
         _dnsSeedClient = dnsSeedClient;
         _graphStore = graphStore;
@@ -91,14 +116,31 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         _peerManager = peerManager;
         _scopeFactory = scopeFactory;
         _secureKeyManager = secureKeyManager;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     private BootstrapOptions Options => _nodeOptions.Bootstrap;
 
     private bool IsEnabled => Options.IsEnabledOn(_nodeOptions.BitcoinNetwork);
 
-    /// <summary>The background loop, while it runs (tests).</summary>
+    /// <summary>The initial bootstrap phase (tests).</summary>
     internal Task? Loop => _loop;
+
+    /// <summary>The peer-count keeper that follows the initial phase (NL-547; tests).</summary>
+    internal Task? Keeper => _keeper;
+
+    /// <summary>The keeper's current backoff, null while it has none (tests).</summary>
+    internal TimeSpan? MaintenanceBackoff => _maintenanceBackoff;
+
+    /// <summary>The endpoints whose failure is remembered, expired ones included until the next read (tests).</summary>
+    internal int FailedEndpointCount
+    {
+        get
+        {
+            lock (_failedEndpointsLock)
+                return _failedEndpoints.Count;
+        }
+    }
 
     /// <inheritdoc />
     public Task StartAsync(CancellationToken cancellationToken)
@@ -118,11 +160,13 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
             throw new InvalidOperationException($"{nameof(PeerBootstrapService)} is already running");
 
         lock (_statusLock)
-            _startedAt = DateTimeOffset.UtcNow;
+            _startedAt = _timeProvider.GetUtcNow();
 
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var token = _cts.Token;
-        _loop = Task.Run(() => RunLoopAsync(token), CancellationToken.None);
+        var loop = Task.Run(() => RunLoopAsync(token), CancellationToken.None);
+        _loop = loop;
+        _keeper = Task.Run(() => RunKeeperAsync(loop, token), CancellationToken.None);
         return Task.CompletedTask;
     }
 
@@ -135,7 +179,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         await _cts.CancelAsync();
         try
         {
-            await _loop.WaitAsync(s_stopTimeout, cancellationToken);
+            await Task.WhenAll(_loop, _keeper ?? Task.CompletedTask).WaitAsync(s_stopTimeout, cancellationToken);
         }
         catch (TimeoutException)
         {
@@ -152,7 +196,11 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     {
         lock (_statusLock)
             return new PeerBootstrapStatus(IsEnabled, _startedAt, _finishedAt, _endReason, [.. _runs],
-                                           [.. _seedQueries], [.. _dials]);
+                                           [.. _seedQueries], [.. _dials])
+            {
+                Maintaining = _maintaining,
+                NextTopUpAt = _nextTopUpAt
+            };
     }
 
     private async Task RunLoopAsync(CancellationToken ct)
@@ -160,21 +208,25 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         var endReason = "stopped";
         try
         {
+            // The keeper follows the initial phase unless nothing can ever find peers (set below)
+            _keepPeers = true;
             if (Options.StartupDelay > TimeSpan.Zero)
-                await Task.Delay(Options.StartupDelay, ct);
+                await Task.Delay(Options.StartupDelay, _timeProvider, ct);
 
             string? lastSkip = null;
             for (var run = 1; run <= Options.MaxRuns; run++)
             {
                 ct.ThrowIfCancellationRequested();
-                var startedAt = DateTimeOffset.UtcNow;
+                _runCount = run;
+                var startedAt = _timeProvider.GetUtcNow();
                 try
                 {
                     var gate = await CheckGateAsync(ct);
-                    if (gate is { Final: true })
+                    if (gate is { Kind: not GateKind.Wait })
                     {
                         _logger.LogInformation("BOLT 10 bootstrap: {Reason}, skipped", gate.Value.Reason);
                         endReason = gate.Value.Reason;
+                        _keepPeers = gate.Value.Kind != GateKind.NoSource;
                         return;
                     }
 
@@ -193,7 +245,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
                     else
                     {
                         lastSkip = null;
-                        await RunOnceAsync(run, startedAt, ct);
+                        await RunOnceAsync(run, startedAt, false, ct);
                     }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -220,7 +272,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
                     return;
                 }
 
-                await Task.Delay(Options.RetryInterval, ct);
+                await Task.Delay(Options.RetryInterval, _timeProvider, ct);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -231,17 +283,156 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         {
             lock (_statusLock)
             {
-                _finishedAt = DateTimeOffset.UtcNow;
+                _finishedAt = _timeProvider.GetUtcNow();
                 _endReason = endReason;
             }
         }
     }
 
     /// <summary>
-    /// Why the node should not bootstrap now, or null when it should. <c>Final</c> reasons end the loop; the others
-    /// skip this run only.
+    /// The peer-count keeper (NL-547): after the initial phase, one check every
+    /// <see cref="BootstrapOptions.MaintenanceInterval"/> for the process lifetime.
     /// </summary>
-    private async Task<(string Reason, bool Final)?> CheckGateAsync(CancellationToken ct)
+    private async Task RunKeeperAsync(Task initialPhase, CancellationToken ct)
+    {
+        try
+        {
+            await initialPhase;
+        }
+        catch
+        {
+            // The initial phase logs its own failures
+        }
+
+        if (!_keepPeers || ct.IsCancellationRequested)
+            return;
+
+        lock (_statusLock)
+            _maintaining = true;
+        _logger.LogDebug("BOLT 10 bootstrap: keeping at least {MinPeers} peers, checking every {Interval}",
+                         Options.MinPeers, Options.MaintenanceInterval);
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(Options.MaintenanceInterval, _timeProvider, ct);
+                try
+                {
+                    await MaintainOnceAsync(ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception e)
+                {
+                    _logger.LogWarning(e, "BOLT 10 bootstrap: the peer top-up failed; checking again in {Interval}",
+                                       Options.MaintenanceInterval);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Stopping
+        }
+        finally
+        {
+            lock (_statusLock)
+                _maintaining = false;
+        }
+    }
+
+    /// <summary>
+    /// One check of the peer-count keeper (NL-547): nothing at or above <see cref="BootstrapOptions.MinPeers"/> (the
+    /// backoff resets), nothing while backing off or while the gate says to wait (no backoff for that), otherwise one
+    /// top-up (graph, then seeds) whose outcome resets or grows the backoff.
+    /// </summary>
+    internal async Task<MaintenanceCheck> MaintainOnceAsync(CancellationToken ct)
+    {
+        var now = _timeProvider.GetUtcNow();
+        var peers = _peerManager.ListPeers().Count;
+        if (peers >= Options.MinPeers)
+        {
+            if (_maintenanceBackoff is not null)
+                _logger.LogInformation("BOLT 10 bootstrap: {Peers} peers connected again (MinPeers {MinPeers})",
+                                       peers, Options.MinPeers);
+            ResetBackoff();
+            return MaintenanceCheck.EnoughPeers;
+        }
+
+        DateTimeOffset? nextTopUpAt;
+        lock (_statusLock)
+            nextTopUpAt = _nextTopUpAt;
+        if (nextTopUpAt is { } next && now < next)
+        {
+            _logger.LogDebug("BOLT 10 bootstrap: {Peers} peers (MinPeers {MinPeers}), next top-up at {Next}", peers,
+                             Options.MinPeers, next);
+            return MaintenanceCheck.BackingOff;
+        }
+
+        var gate = await CheckGateAsync(ct);
+        if (gate is { Kind: GateKind.EnoughPeers })
+        {
+            ResetBackoff();
+            return MaintenanceCheck.EnoughPeers;
+        }
+
+        var run = ++_runCount;
+        if (gate is { } skip)
+        {
+            // A halted chain and channel peers being reconnected clear on their own: checked again next time
+            _logger.LogDebug("BOLT 10 bootstrap: {Reason}, top-up {Run} skipped", skip.Reason, run);
+            Record(_runs, new BootstrapRunRecord(run, now, skip.Reason, 0, 0, 0, 0, _peerManager.ListPeers().Count)
+            {
+                Maintenance = true
+            });
+            return MaintenanceCheck.Skipped;
+        }
+
+        _logger.LogInformation("BOLT 10 bootstrap: {Peers} peers, fewer than MinPeers {MinPeers}; topping up (run "
+                             + "{Run})", peers, Options.MinPeers, run);
+        await RunOnceAsync(run, now, true, ct);
+
+        var after = _peerManager.ListPeers().Count;
+        if (after >= Options.MinPeers)
+        {
+            ResetBackoff();
+            return MaintenanceCheck.ToppedUp;
+        }
+
+        // Still short: back off, so a node without reachable peers does not hammer the graph and the seeds
+        var backoff = _maintenanceBackoff is { } current
+                          ? TimeSpan.FromTicks(Math.Min(current.Ticks * 2,
+                                                        Math.Max(Options.MaxMaintenanceBackoff.Ticks,
+                                                                 Options.MaintenanceInterval.Ticks)))
+                          : Options.MaintenanceInterval;
+        var grew = _maintenanceBackoff != backoff;
+        _maintenanceBackoff = backoff;
+        lock (_statusLock)
+            _nextTopUpAt = now + backoff;
+
+        // A sustained zero-peer state warns once per backoff step, never at the cap again
+        if (after == 0 && grew)
+            _logger.LogWarning("BOLT 10 bootstrap: still no peer after top-up {Run}; next top-up in {Backoff}", run,
+                               backoff);
+        else
+            _logger.LogInformation("BOLT 10 bootstrap: {Peers} peers after top-up {Run} (MinPeers {MinPeers}); next "
+                                 + "top-up in {Backoff}", after, run, Options.MinPeers, backoff);
+        return MaintenanceCheck.StillShort;
+    }
+
+    private void ResetBackoff()
+    {
+        _maintenanceBackoff = null;
+        lock (_statusLock)
+            _nextTopUpAt = null;
+    }
+
+    /// <summary>
+    /// Why the node should not bootstrap now, or null when it should. <see cref="GateKind.NoSource"/> and
+    /// <see cref="GateKind.EnoughPeers"/> end the initial phase; <see cref="GateKind.Wait"/> skips this run only.
+    /// </summary>
+    private async Task<Gate?> CheckGateAsync(CancellationToken ct)
     {
         var network = _nodeOptions.BitcoinNetwork;
         var seeds = Options.GetEffectiveSeeds(network, out var ignoredConfigured);
@@ -254,14 +445,14 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
 
         // Without seeds the graph top-up can still find peers (NL-543); without a graph either, nothing can
         if (seeds.Count == 0 && _graphStore is null)
-            return ($"no seeds for {network}", true);
+            return new Gate($"no seeds for {network}", GateKind.NoSource);
 
         var connected = _peerManager.ListPeers();
         if (connected.Count >= Options.MinPeers)
-            return ($"{connected.Count} peers connected (MinPeers {Options.MinPeers})", true);
+            return new Gate($"{connected.Count} peers connected (MinPeers {Options.MinPeers})", GateKind.EnoughPeers);
 
         if (_blockchainMonitor is { IsChainProcessingHalted: true })
-            return ("chain processing is halted", false);
+            return new Gate("chain processing is halted", GateKind.Wait);
 
         // Only saved peers with active channels: the peer manager keeps reconnecting those, while a saved peer
         // without channels was dialed once at start and is never retried, so it must not hold the bootstrap back
@@ -272,7 +463,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
                                                              && !connectedIds.Contains(p.NodeId)
                                                              && HasActiveChannels(p));
         if (reconnecting > 0)
-            return ($"{reconnecting} saved peers with channels to reconnect", false);
+            return new Gate($"{reconnecting} saved peers with channels to reconnect", GateKind.Wait);
 
         return null;
     }
@@ -281,7 +472,12 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         peer.Channels is { Count: > 0 } channels
      && channels.Any(c => c.State is not (ChannelState.Closed or ChannelState.Stale));
 
-    private async Task RunOnceAsync(int run, DateTimeOffset startedAt, CancellationToken ct)
+    /// <summary>One top-up: the graph, then the seeds when still below <see cref="BootstrapOptions.MinPeers"/>.</summary>
+    /// <param name="run">The run's number.</param>
+    /// <param name="startedAt">When it started.</param>
+    /// <param name="maintenance">True for a run of the peer-count keeper (NL-547).</param>
+    /// <param name="ct">Cancelled when the service stops.</param>
+    private async Task RunOnceAsync(int run, DateTimeOffset startedAt, bool maintenance, CancellationToken ct)
     {
         var maxPeers = Options.MaxPeersFromBootstrap;
 
@@ -300,7 +496,8 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
             {
                 GraphSelected = graphSelected,
                 GraphAttempted = graphAttempted,
-                GraphConnected = graphConnected
+                GraphConnected = graphConnected,
+                Maintenance = maintenance
             });
             return;
         }
@@ -337,13 +534,13 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
             catch (Exception e)
             {
                 _logger.LogWarning("BOLT 10 bootstrap: seed {Seed} failed: {Message}", seed, e.Message);
-                Record(_seedQueries, new BootstrapSeedQueryRecord(run, DateTimeOffset.UtcNow, seed,
+                Record(_seedQueries, new BootstrapSeedQueryRecord(run, _timeProvider.GetUtcNow(), seed,
                                                                   DnsSeedOutcome.Error, 0, 0, false, null,
                                                                   watch.Elapsed, e.Message));
                 continue;
             }
 
-            Record(_seedQueries, new BootstrapSeedQueryRecord(run, DateTimeOffset.UtcNow, seed, result.Outcome,
+            Record(_seedQueries, new BootstrapSeedQueryRecord(run, _timeProvider.GetUtcNow(), seed, result.Outcome,
                                                               result.Candidates.Count, result.Rejected,
                                                               result.UsedFallbackResolver,
                                                               result.SystemResolverOutcome, watch.Elapsed, null));
@@ -369,7 +566,8 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         var (connected, attempted) = await DialAsync(run, candidates, maxPeers - graphConnected, ct);
         _logger.LogInformation("BOLT 10 bootstrap: connected {Connected}/{Attempted} from {SeedsOk}/{SeedsTried} seeds",
                                connected, attempted, seedsOk, seedsTried);
-        if (connected + graphConnected == 0)
+        // The keeper's own backoff log says it once per step (NL-547)
+        if (connected + graphConnected == 0 && !maintenance)
             _logger.LogWarning("BOLT 10 bootstrap: run {Run} connected no peer", run);
 
         Record(_runs, new BootstrapRunRecord(run, startedAt, null, collected.Count, candidates.Count,
@@ -379,7 +577,8 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
             GraphSelected = graphSelected,
             GraphAttempted = graphAttempted,
             GraphConnected = graphConnected,
-            AskedSeeds = true
+            AskedSeeds = true,
+            Maintenance = maintenance
         });
     }
 
@@ -402,8 +601,9 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         foreach (var peer in connectedPeers)
             excluded.Add(peer.NodeId);
 
-        var now = (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        var candidates = GraphPeerCandidateSelector.Select(_graphStore.GetSnapshot(), now, excluded, _failedEndpoints,
+        var now = (ulong)_timeProvider.GetUtcNow().ToUnixTimeSeconds();
+        var candidates = GraphPeerCandidateSelector.Select(_graphStore.GetSnapshot(), now, excluded,
+                                                           GetFailedEndpoints(),
                                                            Options.AddressFamilies, Options.AllowNonRoutableAddresses,
                                                            maxPeers * 3, Random.Shared);
         if (candidates.Count == 0)
@@ -422,8 +622,8 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     }
 
     /// <summary>
-    /// Drops candidates already connected, saved or ourselves and endpoints that failed earlier in this process,
-    /// keeps the first address of each node and the first node of each address (so a seed cannot point many node ids
+    /// Drops candidates already connected, saved or ourselves and endpoints that failed within
+    /// <see cref="BootstrapOptions.FailedEndpointTtl"/>, keeps the first address of each node and the first node of each address (so a seed cannot point many node ids
     /// at one third party) and shuffles them.
     /// </summary>
     private async Task<List<SeedPeerCandidate>> SelectCandidatesAsync(List<SeedPeerCandidate> collected)
@@ -434,8 +634,8 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         foreach (var peer in await GetSavedPeersAsync())
             excluded.Add(peer.NodeId);
 
-        var candidates = collected.Where(c => !excluded.Contains(c.NodeId)
-                                           && !_failedEndpoints.Contains((c.Address, c.Port)))
+        var failed = GetFailedEndpoints();
+        var candidates = collected.Where(c => !excluded.Contains(c.NodeId) && !failed.Contains((c.Address, c.Port)))
                                   .DistinctBy(c => c.NodeId)
                                   .DistinctBy(c => (c.Address, c.Port))
                                   .ToArray();
@@ -491,7 +691,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
                         break;
                     case BootstrapDialOutcome.Failed or BootstrapDialOutcome.TimedOut:
                         perSeed[batch[i].Seed]--;
-                        _failedEndpoints.Add((batch[i].Address, batch[i].Port));
+                        RecordFailedEndpoint((batch[i].Address, batch[i].Port), _timeProvider.GetUtcNow());
                         break;
                     default:
                         perSeed[batch[i].Seed]--;
@@ -555,7 +755,8 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
             error = $"{e.GetType().Name}: {e.Message}";
         }
 
-        Record(_dials, new BootstrapDialRecord(run, DateTimeOffset.UtcNow, candidate, outcome, watch.Elapsed, error));
+        Record(_dials, new BootstrapDialRecord(run, _timeProvider.GetUtcNow(), candidate, outcome, watch.Elapsed,
+                                               error));
         return outcome;
     }
 
@@ -575,4 +776,71 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         return [.. await uow.GetPeersForStartupAsync()];
     }
+
+    /// <summary>
+    /// Remembers a failed dial of <paramref name="endpoint"/> (NL-547). Expired failures are forgotten first; when
+    /// <see cref="MaxFailedEndpoints"/> are still remembered, the oldest failure makes room.
+    /// </summary>
+    internal void RecordFailedEndpoint((IPAddress, ushort) endpoint, DateTimeOffset failedAt)
+    {
+        lock (_failedEndpointsLock)
+        {
+            PruneFailedEndpoints(failedAt);
+            if (!_failedEndpoints.ContainsKey(endpoint) && _failedEndpoints.Count >= MaxFailedEndpoints)
+                _failedEndpoints.Remove(_failedEndpoints.MinBy(e => e.Value).Key);
+            _failedEndpoints[endpoint] = failedAt;
+        }
+    }
+
+    /// <summary>The endpoints whose dial failed within <see cref="BootstrapOptions.FailedEndpointTtl"/>.</summary>
+    internal IReadOnlySet<(IPAddress, ushort)> GetFailedEndpoints()
+    {
+        lock (_failedEndpointsLock)
+        {
+            PruneFailedEndpoints(_timeProvider.GetUtcNow());
+            return _failedEndpoints.Keys.ToHashSet();
+        }
+    }
+
+    private void PruneFailedEndpoints(DateTimeOffset now)
+    {
+        var expiredBefore = now - Options.FailedEndpointTtl;
+        foreach (var (endpoint, failedAt) in _failedEndpoints.ToList())
+            if (failedAt <= expiredBefore)
+                _failedEndpoints.Remove(endpoint);
+    }
+
+    /// <summary>Why a run does not top up.</summary>
+    private readonly record struct Gate(string Reason, GateKind Kind);
+
+    private enum GateKind
+    {
+        /// <summary>No seeds and no graph: nothing can ever find peers; ends the initial phase, no keeper.</summary>
+        NoSource,
+
+        /// <summary><see cref="BootstrapOptions.MinPeers"/> connected; ends the initial phase.</summary>
+        EnoughPeers,
+
+        /// <summary>A reason that clears on its own; this run only is skipped.</summary>
+        Wait
+    }
+}
+
+/// <summary>What one check of the peer-count keeper did (NL-547).</summary>
+internal enum MaintenanceCheck
+{
+    /// <summary>At least <see cref="BootstrapOptions.MinPeers"/> connected: nothing done, the backoff reset.</summary>
+    EnoughPeers,
+
+    /// <summary>Below <see cref="BootstrapOptions.MinPeers"/>, but the backoff's time has not come.</summary>
+    BackingOff,
+
+    /// <summary>The gate said to wait (halted chain, channel peers being reconnected).</summary>
+    Skipped,
+
+    /// <summary>A top-up brought the node to <see cref="BootstrapOptions.MinPeers"/>.</summary>
+    ToppedUp,
+
+    /// <summary>A top-up left the node below <see cref="BootstrapOptions.MinPeers"/>; the backoff grew.</summary>
+    StillShort
 }

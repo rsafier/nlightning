@@ -1090,6 +1090,9 @@ public class NodeServiceExtensionsTests
         Assert.Equal(defaults.ConnectTimeout, options.Bootstrap.ConnectTimeout);
         Assert.Equal(defaults.RetryInterval, options.Bootstrap.RetryInterval);
         Assert.Equal(defaults.MaxRuns, options.Bootstrap.MaxRuns);
+        Assert.Equal(defaults.MaintenanceInterval, options.Bootstrap.MaintenanceInterval);
+        Assert.Equal(defaults.MaxMaintenanceBackoff, options.Bootstrap.MaxMaintenanceBackoff);
+        Assert.Equal(defaults.FailedEndpointTtl, options.Bootstrap.FailedEndpointTtl);
         Assert.Equal(defaults.StartupDelay, options.Bootstrap.StartupDelay);
         Assert.Equal(defaults.AddressFamilies, options.Bootstrap.AddressFamilies);
         Assert.Empty(options.Bootstrap.NameServers);

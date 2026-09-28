@@ -23,6 +23,15 @@ public sealed record PeerBootstrapStatus(
     /// <summary>The most records kept per list.</summary>
     public const int MaxRecords = 1000;
 
+    /// <summary>
+    /// True while the peer-count keeper runs (NL-547): after the initial phase (<paramref name="FinishedAt"/>,
+    /// <paramref name="EndReason"/>) it tops the node up again whenever it drops below <c>MinPeers</c>.
+    /// </summary>
+    public bool Maintaining { get; init; }
+
+    /// <summary>The earliest time of the keeper's next top-up while it backs off, null otherwise.</summary>
+    public DateTimeOffset? NextTopUpAt { get; init; }
+
     /// <summary>The status of a bootstrap that never started.</summary>
     public static PeerBootstrapStatus NotStarted(bool enabled) => new(enabled, null, null, null, [], [], []);
 }
@@ -61,6 +70,9 @@ public sealed record BootstrapRunRecord(
 
     /// <summary>True when the run asked the DNS seeds (the graph top-up did not reach <c>MinPeers</c>).</summary>
     public bool AskedSeeds { get; init; }
+
+    /// <summary>True for a run of the peer-count keeper, after the initial phase (NL-547).</summary>
+    public bool Maintenance { get; init; }
 }
 
 /// <summary>One seed query of a run.</summary>

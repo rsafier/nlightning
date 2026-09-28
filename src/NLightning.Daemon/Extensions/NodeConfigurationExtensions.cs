@@ -362,6 +362,9 @@ public static class NodeConfigurationExtensions
                      "ConnectTimeout": "{{BOOTSTRAP_CONNECT_TIMEOUT}}",
                      "RetryInterval": "{{BOOTSTRAP_RETRY_INTERVAL}}",
                      "MaxRuns": {{BOOTSTRAP_MAX_RUNS}},
+                     "MaintenanceInterval": "{{BOOTSTRAP_MAINTENANCE_INTERVAL}}",
+                     "MaxMaintenanceBackoff": "{{BOOTSTRAP_MAX_MAINTENANCE_BACKOFF}}",
+                     "FailedEndpointTtl": "{{BOOTSTRAP_FAILED_ENDPOINT_TTL}}",
                      "StartupDelay": "{{BOOTSTRAP_STARTUP_DELAY}}",
                      "AddressFamilies": "{{BOOTSTRAP_FAMILIES}}",
                      "AllowNonRoutableAddresses": false,
@@ -488,6 +491,9 @@ public static class NodeConfigurationExtensions
                   .Replace("{{BOOTSTRAP_CONNECT_TIMEOUT}}", Invariant(bootstrap.ConnectTimeout))
                   .Replace("{{BOOTSTRAP_RETRY_INTERVAL}}", Invariant(bootstrap.RetryInterval))
                   .Replace("{{BOOTSTRAP_MAX_RUNS}}", Invariant(bootstrap.MaxRuns))
+                  .Replace("{{BOOTSTRAP_MAINTENANCE_INTERVAL}}", Invariant(bootstrap.MaintenanceInterval))
+                  .Replace("{{BOOTSTRAP_MAX_MAINTENANCE_BACKOFF}}", Invariant(bootstrap.MaxMaintenanceBackoff))
+                  .Replace("{{BOOTSTRAP_FAILED_ENDPOINT_TTL}}", Invariant(bootstrap.FailedEndpointTtl))
                   .Replace("{{BOOTSTRAP_STARTUP_DELAY}}", Invariant(bootstrap.StartupDelay))
                   .Replace("{{BOOTSTRAP_FAMILIES}}", bootstrap.AddressFamilies.ToString())
                   .Replace("{{ENABLE_HTLCS}}", enableHtlcs)
