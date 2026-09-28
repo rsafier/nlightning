@@ -234,7 +234,8 @@ Lightning API at 20:21 UTC: alias NLightningFAFO, 1 channel, capacity 200,000 sa
 
 ## Day-0 dry run: NLightningFAFO upgraded, NLightningFAFO2 (2026-09-28)
 
-The day-0 runbook's Mutinynet phase ([`DAY0_RUNBOOK.md`](DAY0_RUNBOOK.md) §2, results in §5) ran on this machine:
+The day-0 runbook's Mutinynet phase ([`DAY0_RUNBOOK.md`](DAY0_RUNBOOK.md) §2, results in §5 and in [`day0-mutinynet-dryrun.json`](day0-mutinynet-dryrun.json)) ran on this
+machine:
 
 - **NLightningFAFO** (`~/.nltg/mutinynet`, node id `030f7def...495a`) was upgraded in place from the soak's staged
   build `988bbde` (migration `AddGraphFundingTxId`) to `d5d8b184` and then `91591787`: nine migrations up to
@@ -249,7 +250,8 @@ The day-0 runbook's Mutinynet phase ([`DAY0_RUNBOOK.md`](DAY0_RUNBOOK.md) §2, r
   SQLite database, IPC pipe and cookie), listens on `0.0.0.0:9736`, and the CLI reaches it with `--cookie
   ~/.nltg/mutinynet-fafo2`. It was funded from FAFO with `withdraw` (400,000 sat,
   `deac18b2666be7604967acde3491f8fcbb180f0e99e058de91ac57860ef6b6f4`) and connects to the faucet LND itself.
-- Both run the staged build `~/.nltg/mutinynet/bin-91591787` (each directory's `bin-current` symlink) through
+- Both run the staged build `~/.nltg/mutinynet/bin-dbbcba28` (the clean pass's `91591787` plus NL-519; each directory's
+  `bin-current` symlink) through
   `~/day0/nodectl fafo|fafo2 start|stop|status` (`nohup`, output appended to the directory's `daemon.out`, pid in
   `day0.pid`); `~/day0/u` and `~/day0/n` are their CLIs. `start-daemon.sh` and `soak-gossip.sh` are not used for
   them (do not start either while `nodectl` runs FAFO: two daemons on one key and database, runbook §4).
