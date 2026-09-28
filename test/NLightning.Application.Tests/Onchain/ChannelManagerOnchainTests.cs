@@ -125,6 +125,73 @@ public sealed class ChannelManagerOnchainTests : IDisposable
                                                        It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [Theory]
+    [InlineData(ChannelState.Failed, true)]
+    [InlineData(ChannelState.OnchainResolving, true)]
+    [InlineData(ChannelState.Open, false)]
+    public async Task Given_ASpliceSpendOfTheFundingOutput_When_Raised_Then_TheWatcherGetsItOnlyWhenTheChannelFailed(
+        ChannelState state, bool expectWatcher)
+    {
+        // Arrange (SP2-C-T2): a pending splice of the channel confirms. An open channel stays on its fundings; a failed
+        // one (or one whose recorded close the splice replaced after a reorg) needs our commitment on the splice funding
+        var spliceTx = Spend(0x44);
+        var current = Domain.Channels.Splicing.ChannelFunding.FromFundingOutput(_channel.FundingOutput!)!;
+        var splice = current with
+        {
+            FundingTxId = spliceTx.TxId,
+            Kind = Domain.Channels.Splicing.Enums.ChannelFundingKind.Splice,
+            Status = Domain.Channels.Splicing.Enums.ChannelFundingStatus.Pending
+        };
+        var port = new Mock<Application.Channels.Splicing.Interfaces.ISpliceStatePort>();
+        port.Setup(p => p.GetFundings(It.IsAny<ChannelModel>()))
+            .Returns(new Domain.Channels.Splicing.FundingSet(current, [splice]));
+        using var openPair = new RealSigningCommitmentPair(hasAnchors: false);
+        var channel = state == ChannelState.Open ? openPair.Alice.Channel : _channel;
+        Assert.Equal(state == ChannelState.Open, channel.State == ChannelState.Open);
+        if (state == ChannelState.OnchainResolving)
+            _channel.UpdateState(ChannelState.OnchainResolving);
+        _memory.Setup(m => m.TryGetChannel(It.IsAny<ChannelId>(), out It.Ref<ChannelModel?>.IsAny))
+               .Returns(new TryGetChannelCallback((ChannelId id, out ChannelModel? found) =>
+                {
+                    found = channel;
+                    return id == channel.ChannelId;
+                }));
+        var services = new ServiceCollection();
+        services.AddScoped(_ => _store.CreateUnitOfWork().Object);
+        services.AddScoped<ChannelDomainEventQueue>();
+        services.AddSingleton(_watcher.Object);
+        services.AddSingleton(_executor.Object);
+        services.AddSingleton(port.Object);
+        await using var provider = services.BuildServiceProvider();
+        _ = new ChannelManager(_monitor.Object, new ChannelLockProvider(), _memory.Object,
+                               NullLogger<ChannelManager>.Instance, _pair.Alice.Signer, provider);
+        var args = new OutpointSpentEventArgs(channel.ChannelId, spliceTx, 700, 1,
+                                              channel.FundingOutput!.TransactionId!.Value,
+                                              channel.FundingOutput.Index!.Value);
+        var handled = new TaskCompletionSource();
+        _watcher.Setup(w => w.HandleFundingSpentAsync(args, It.IsAny<CancellationToken>()))
+                .Callback(() => handled.TrySetResult())
+                .ReturnsAsync((FundingSpendOutcome?)null);
+
+        // Act
+        _monitor.Raise(m => m.OnWatchedOutpointSpent += null, args);
+
+        // Assert
+        if (expectWatcher)
+        {
+            await handled.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        }
+        else
+        {
+            await Task.Delay(200, TestContext.Current.CancellationToken);
+            _watcher.Verify(w => w.HandleFundingSpentAsync(It.IsAny<OutpointSpentEventArgs>(),
+                                                           It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        _executor.Verify(e => e.HandleOutputSpentAsync(It.IsAny<OutpointSpentEventArgs>(),
+                                                       It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     [Fact]
     public async Task Given_ResolutionOutputSpent_When_Raised_Then_TheExecutorGetsIt()
     {

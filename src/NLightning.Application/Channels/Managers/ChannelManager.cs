@@ -905,9 +905,11 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
             // A splice transaction of this channel spends the funding output (the current one, or the one a lock
             // replaced, on a replayed block) without closing it (splicing plan §3.6, FundingSpendKind.Splice): the
-            // channel stays open on its fundings and the lock moves it (SP1); the classification and the new
-            // funding's watch are wave SP2
-            if (_serviceProvider.GetService<Splicing.Interfaces.ISpliceStatePort>() is { } splicePort
+            // channel stays open on its fundings and the lock moves it (SP1). A failed channel, or one resolving on
+            // chain (a recorded close the splice replaced after a reorg), hands it to the on-chain watcher: our
+            // commitment must go out on the splice funding (splicing plan §3.6, SP2-C-T2)
+            if (channel.State is not (ChannelState.Failed or ChannelState.OnchainResolving)
+             && _serviceProvider.GetService<Splicing.Interfaces.ISpliceStatePort>() is { } splicePort
              && splicePort.GetFundings(channel).Find(spend.TxId) is not null)
             {
                 _logger.LogInformation("The funding output of channel {ChannelId} was spent by its splice {TxId}",

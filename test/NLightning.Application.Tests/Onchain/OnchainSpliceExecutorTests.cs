@@ -112,6 +112,35 @@ public sealed class OnchainSpliceExecutorTests : IDisposable
         Assert.False(executor.SpliceReorgs.IsSpliceReorgedOut(channel.ChannelId, old.FundingTxId));
     }
 
+    [Fact]
+    public async Task Given_AReplacedFundingWithoutAWatch_When_Checked_Then_ReportedAsUnwatched()
+    {
+        // Arrange (SP2-C-T4): the replaced funding's watch row is gone (removed at the lock by an older build)
+        using var pair = new Channels.Services.RealSigningCommitmentPair(false);
+        var channel = pair.Alice.Channel;
+        var old = Domain.Channels.Splicing.ChannelFunding.FromFundingOutput(channel.FundingOutput!)! with
+        {
+            FundingTxId = s_commitmentTxId,
+            Status = Domain.Channels.Splicing.Enums.ChannelFundingStatus.Replaced
+        };
+        var current = Domain.Channels.Splicing.ChannelFunding.FromFundingOutput(channel.FundingOutput!)!;
+        var fundings = new Mock<IChannelFundingDbRepository>();
+        fundings.Setup(f => f.GetByChannelIdAsync(channel.ChannelId)).ReturnsAsync([old, current]);
+        _unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(fundings.Object);
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(m => m.FindChannels(It.IsAny<Func<Domain.Channels.Models.ChannelModel, bool>>()))
+              .Returns((Func<Domain.Channels.Models.ChannelModel, bool> predicate) =>
+                           new[] { channel }.Where(predicate).ToList());
+        var executor = CreateExecutor(memory.Object);
+
+        // Act
+        await executor.RunRoundAsync(700, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(executor.SpliceReorgs.IsUnwatched(channel.ChannelId, old.FundingTxId));
+        Assert.False(executor.SpliceReorgs.IsSpliceReorgedOut(channel.ChannelId, old.FundingTxId));
+    }
+
     public void Dispose() => _provider.Dispose();
 
     private OnchainResolutionExecutor CreateExecutor(IChannelMemoryRepository? memory = null) =>

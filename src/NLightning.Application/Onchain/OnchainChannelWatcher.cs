@@ -163,7 +163,8 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                                          + "{TxId}; the close path records it", channelId, Display(spend.TxId));
                     return null;
                 case FundingSpendKind.Splice:
-                    spliceToBroadcastOn = OnSpliceConfirmed(channel, fundings, spentFunding, spend, existing);
+                    spliceToBroadcastOn =
+                        await OnSpliceConfirmedAsync(unitOfWork, channel, fundings, spentFunding, spend, existing);
                     break;
                 default:
                     if (existing is not null)
@@ -250,8 +251,19 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
     /// spends can no longer confirm), or a close recorded before was reorged out for it, the pending splice funding is
     /// returned: our commitment on it must be broadcast instead (SP2-C-T2).
     /// </summary>
-    private ChannelFunding? OnSpliceConfirmed(ChannelModel channel, IReadOnlyList<ChannelFunding> fundings,
-                                              ChannelFunding spentFunding, ChainTx spend, ChannelCloseModel? existing)
+    /// <remarks>
+    /// The reorged-out close: a close of the current funding discarded every pending splice in its save
+    /// (<see cref="DiscardConflictingSplicesAsync"/>), so a <see cref="ChannelFundingStatus.Discarded"/> splice that
+    /// confirms double-spends the recorded close, which is no longer in the chain. In one save before anything is
+    /// published (NL-292 on the splice path): the old close's rows are ignored and its pending transactions abandoned
+    /// (<see cref="RetireReplacedCloseAsync"/>), the close record is removed (the executor would otherwise revive our
+    /// commitment on the spent funding) and the splice funding is <see cref="ChannelFundingStatus.Pending"/> again. A
+    /// recorded close next to a splice that is still pending spent another funding (the splice's own output): it stands.
+    /// </remarks>
+    private async Task<ChannelFunding?> OnSpliceConfirmedAsync(IUnitOfWork unitOfWork, ChannelModel channel,
+                                                               IReadOnlyList<ChannelFunding> fundings,
+                                                               ChannelFunding spentFunding, ChainTx spend,
+                                                               ChannelCloseModel? existing)
     {
         var splice = fundings.FirstOrDefault(f => f.FundingTxId == spend.TxId);
         _logger.LogInformation("The funding output {FundingTxId} of channel {ChannelId} was spent by its splice {TxId} "
@@ -260,20 +272,34 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         if (splice is null || splice.Status is ChannelFundingStatus.Current or ChannelFundingStatus.Replaced)
             return null;
 
-        if (splice.Status == ChannelFundingStatus.Discarded)
-            _logger.LogCritical("[B5-GEN-06] Channel {ChannelId}: the discarded splice {TxId} confirmed; its funding "
-                              + "output holds the channel's funds now", channel.ChannelId, Display(spend.TxId));
-
-        if (existing is not null)
+        if (existing is null)
         {
-            _logger.LogCritical("[B5-GEN-06] Channel {ChannelId}: the recorded close {Recorded} left the chain and the "
-                              + "splice {TxId} spends the funding output instead; broadcasting our commitment on the "
-                              + "splice funding", channel.ChannelId, Display(existing.CommitmentTransactionId),
-                                Display(spend.TxId));
-            return splice;
+            if (splice.Status == ChannelFundingStatus.Discarded)
+                _logger.LogCritical("[B5-GEN-06] Channel {ChannelId}: the discarded splice {TxId} confirmed; its "
+                                  + "funding output holds the channel's funds now", channel.ChannelId,
+                                    Display(spend.TxId));
+
+            return channel.State is ChannelState.Failed or ChannelState.OnchainResolving ? splice : null;
         }
 
-        return channel.State is ChannelState.Failed ? splice : null;
+        if (splice.Status != ChannelFundingStatus.Discarded)
+        {
+            _logger.LogInformation("Channel {ChannelId}: splice {TxId} confirmed next to the recorded close {Recorded}, "
+                                 + "which spends another funding", channel.ChannelId, Display(spend.TxId),
+                                   Display(existing.CommitmentTransactionId));
+            return null;
+        }
+
+        _logger.LogCritical("[B5-GEN-06] Channel {ChannelId}: the recorded close {Recorded} left the chain and the "
+                          + "discarded splice {TxId} spends the funding output instead; retiring the close and "
+                          + "broadcasting our commitment on the splice funding", channel.ChannelId,
+                            Display(existing.CommitmentTransactionId), Display(spend.TxId));
+        await RetireReplacedCloseAsync(unitOfWork, channel.ChannelId, existing, spend.TxId);
+        await unitOfWork.OnchainResolutionDbRepository.DeleteCloseAsync(channel.ChannelId);
+        splice = splice with { Status = ChannelFundingStatus.Pending };
+        await unitOfWork.ChannelFundingDbRepository.UpsertAsync(channel.ChannelId, splice);
+        await unitOfWork.SaveChangesAsync();
+        return splice;
     }
 
     /// <summary>
@@ -710,9 +736,46 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
     {
         var log = unitOfWork.RevokedCommitmentDbRepository;
         var logged = await log.GetAsync(channelId, funding.FundingTxId, number);
-        if (logged is null && fundings.Count <= 1)
-            logged = await log.GetAsync(channelId, number);
-        return logged;
+        if (logged is not null)
+            return logged;
+
+        // No entry on the spent funding (a restart dropped the engine's pending fundings and SignedOnFundings, so the
+        // revocation was logged on the current funding only): the HTLC set and HTLC scripts are the same on every
+        // funding, so another funding's entry, rebased on the spent funding's balances, maps the same HTLC outputs
+        var other = await log.GetAsync(channelId, number);
+        if (other is null || fundings.Count <= 1 || other.FundingTxId is not { } otherTxId
+         || otherTxId == funding.FundingTxId)
+            return other;
+
+        return new RevokedCommitmentModel(channelId, number, Rebase(other.Spec, otherTxId, funding, fundings))
+        {
+            FundingTxId = funding.FundingTxId
+        };
+    }
+
+    /// <summary>
+    /// <paramref name="spec"/>, logged on the funding <paramref name="fromTxId"/>, with the main balances of
+    /// <paramref name="to"/> (the deltas are relative to the current funding); the spec itself when the balances can't
+    /// be derived (the HTLC outputs still map, and <c>to_local</c>/<c>to_remote</c> are matched by script).
+    /// </summary>
+    private static CommitmentSpec Rebase(CommitmentSpec spec, TxId fromTxId, ChannelFunding to,
+                                         IReadOnlyList<ChannelFunding> fundings)
+    {
+        var from = fundings.FirstOrDefault(f => f.FundingTxId == fromTxId);
+        var fromLocal = from?.LocalBalanceDeltaMsat ?? 0;
+        var fromRemote = from?.RemoteBalanceDeltaMsat ?? 0;
+        try
+        {
+            var local = checked((long)spec.LocalMsat - fromLocal + to.LocalBalanceDeltaMsat);
+            var remote = checked((long)spec.RemoteMsat - fromRemote + to.RemoteBalanceDeltaMsat);
+            return local < 0 || remote < 0
+                       ? spec
+                       : new CommitmentSpec(spec.Holder, spec.FeeratePerKw, (ulong)local, (ulong)remote, spec.Htlcs);
+        }
+        catch (OverflowException)
+        {
+            return spec;
+        }
     }
 
     private async Task<Recorded> PersistAsync(IServiceScope scope, ChannelModel channel, OutpointSpentEventArgs args,

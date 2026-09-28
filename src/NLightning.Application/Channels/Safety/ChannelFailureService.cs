@@ -568,13 +568,14 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
     /// <summary>
     /// Every block: a failed channel whose pending splice confirmed (its <c>WatchedTransactions</c> row has a block)
     /// gets our commitment on that splice's funding (the one on the funding the splice spent can never confirm), once
-    /// per process and funding. The on-chain watcher asks for it as soon as it sees the splice; this covers the splice
-    /// spends the channel manager keeps from it and a restart.
+    /// per process and funding. The on-chain watcher asks for it as soon as it sees the splice; this covers a restart
+    /// between the watcher's save and the broadcast. A channel resolving on chain whose recorded close the watcher
+    /// retired for the splice (a reorg, no close left) is checked the same way.
     /// </summary>
     public async Task CheckConfirmedSplicesAsync(CancellationToken cancellationToken = default)
     {
         var failed = _channelMemoryRepository.FindChannels(
-            c => c is { State: ChannelState.Failed, DataLossDetected: false });
+            c => c is { State: ChannelState.Failed or ChannelState.OnchainResolving, DataLossDetected: false });
         foreach (var channel in failed)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -584,6 +585,10 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
                 using (var scope = _serviceScopeFactory.CreateScope())
                 {
                     var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                    if (channel.State == ChannelState.OnchainResolving
+                     && await unitOfWork.OnchainResolutionDbRepository.GetCloseAsync(channel.ChannelId) is not null)
+                        continue;
+
                     var fundings = await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger);
                     foreach (var funding in fundings.Where(f => f.Status == ChannelFundingStatus.Pending
                                                              && !OnchainFundings.IsCurrent(channel, f)
@@ -630,6 +635,13 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
 
             using var scope = _serviceScopeFactory.CreateScope();
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            // A recorded close stands (the watcher retires one the splice replaced before it asks): a commitment
+            // already spends one of the channel's fundings
+            if (channel.State == ChannelState.OnchainResolving
+             && await unitOfWork.OnchainResolutionDbRepository.GetCloseAsync(channelId) is not null)
+                return new ChannelFailureOutcome(ChannelFailureStatus.NotApplicable, null);
+
             var fundings = await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger);
             var funding = fundings.FirstOrDefault(f => f.FundingTxId == spliceFundingTxId
                                                     && f.Status == ChannelFundingStatus.Pending

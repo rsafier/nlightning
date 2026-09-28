@@ -31,6 +31,7 @@ internal sealed class SpliceReorgMonitor
         new();
 
     private readonly ConcurrentDictionary<(ChannelId, TxId), uint> _unspentSince = new();
+    private readonly ConcurrentDictionary<(ChannelId, TxId), byte> _unwatched = new();
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ILogger _logger;
     private readonly IServiceScopeFactory _serviceScopeFactory;
@@ -47,6 +48,11 @@ internal sealed class SpliceReorgMonitor
     /// (tests, diagnostics).</summary>
     public bool IsSpliceReorgedOut(ChannelId channelId, TxId replacedFundingTxId) =>
         _unspentSince.ContainsKey((channelId, replacedFundingTxId));
+
+    /// <summary>True when the replaced funding <paramref name="replacedFundingTxId"/> was found without a spend watch
+    /// (tests, diagnostics).</summary>
+    public bool IsUnwatched(ChannelId channelId, TxId replacedFundingTxId) =>
+        _unwatched.ContainsKey((channelId, replacedFundingTxId));
 
     /// <summary>Checks every live channel with a replaced funding at <paramref name="height"/>.</summary>
     public async Task CheckAsync(uint height, CancellationToken cancellationToken)
@@ -75,10 +81,17 @@ internal sealed class SpliceReorgMonitor
             {
                 var watch = await unitOfWork.WatchedOutpointDbRepository.GetAsync(replaced.FundingTxId,
                                                                                   replaced.OutputIndex);
-                if (watch is null)
-                    continue;
-
                 var key = (channel.ChannelId, replaced.FundingTxId);
+                if (watch is null)
+                {
+                    // No watch row left (removed at the lock by an older build): this funding's reorg goes unseen
+                    if (_unwatched.TryAdd(key, 0))
+                        _logger.LogWarning("[SP2-C-T4] Channel {ChannelId}: replaced funding {FundingTxId} has no "
+                                         + "spend watch; a reorg of the splice that spent it is not detected",
+                                           channel.ChannelId, Display(replaced.FundingTxId));
+                    continue;
+                }
+
                 if (watch.IsSpent)
                 {
                     if (_unspentSince.TryRemove(key, out _))
