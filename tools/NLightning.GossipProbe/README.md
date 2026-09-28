@@ -15,7 +15,7 @@ method are in `docs/agents/MAINNET_GOSSIP_PROBE.md`.
   the Esplora API at start (for `query_channel_range(0, tip + 1)`), raises no block and throws on any publish;
   `IFundingOutputLookup` is a stub that counts calls (it must stay at 0). `--chain rpc`: see below.
 - Gossip settings: `Gossip:Enabled`, `SyncEnabled` and (stub mode only) `AssumeChannelValid` on (channel
-  announcements accepted on their signatures), `RelayEnabled` off (we relay nothing to mainnet peers), `AcceptPublicChannels` and
+  announcements accepted on their signatures), `RelayEnabled` off unless `--relay-to`/`--relay-to-all` (the probe sets it explicitly on every network), `AcceptPublicChannels` and
   `AllowPublicChannelsOnMainnet` off, `Node:EnableHtlcs` false (the `AssumeChannelValid` startup guard requires it),
   `Gossip:SyncPeers` = the number of peers (each peer runs a range sync, so every implementation's replies are
   checked).
@@ -71,7 +71,8 @@ Copy the build output elsewhere before a long run if you keep working in the che
 gracefully: the graph is flushed and the summary written. Options: `--dir`, `--peer`, `--max-minutes`,
 `--min-minutes`, `--plateau-minutes`, `--sample-seconds`, `--sync-peers`, `--tip`, `--listen-port` (19735),
 `--log-level`, `--label`, `--chain`, `--rpc-env`, `--chain-concurrency`, `--chain-rate`, `--sync-tip`,
-`--block-poll-seconds`, `--max-blocks-per-poll`, `--relay-to`, `--bootstrap`; for `verify`: `--sample`, `--rate`, `--esplora`.
+`--block-poll-seconds`, `--max-blocks-per-poll`, `--relay-to`, `--relay-to-all`, `--bootstrap`, `--sink`, `--read-phases`,
+`--proxy-port`, `--set`; for `verify`: `--sample`, `--rate`, `--esplora`.
 
 ### Relay run (`--relay-to`, D12)
 
@@ -85,6 +86,40 @@ probe still has no channel and announces nothing of its own. The relay backlog i
 ```bash
 dotnet tools/NLightning.GossipProbe/bin/Release/net10.0/NLightning.GossipProbe.dll run --chain rpc \
     --dir ~/.nltg-gossip-probe/verified --relay-to ACINQ --min-minutes 20 --max-minutes 25 --label relay
+```
+
+### Two-probe relay proof (`--relay-to-all` and `--sink`, NL-417)
+
+Two probe processes on one machine prove the relay over real TCP with a peer that asks for everything:
+
+- **Relayer** (`--relay-to-all`, needs `--chain rpc`): `Gossip:RelayEnabled` on toward every connected peer (the
+  product's peer directory, nothing filtered); works with `--bootstrap` or configured peers. Peers that connect to it
+  (the sink) join `peers.csv` and are never dialed. Extra output: `relay.csv` (per sample: the relay's
+  `GetStatus()` as `describegraph`'s `Relay:` line shows it, the relayed, `outbox.refused`, `relay.paused`,
+  `relay.stalled`, `relay_stalled`/`relay_backlog_full` drops, the gauges, peers with a filter, RSS) and
+  `relay-peers.csv` (per sample and peer the relay sent to: its filter, 256/258/257 sent, refused, echoes, and the
+  outbox depth: queued messages and bytes, caps, gossip sent so far).
+- **Sink** (`--sink`, exactly one `--peer`: the relayer at `127.0.0.1:<its --listen-port>`): its own sync is off (no
+  query, no filter); at each `init` the probe sends `gossip_timestamp_filter(0, 0xFFFFFFFF)`. Every received message
+  is checked in arrival order (`sink.csv`, `summary.json` → `sink`): per type, duplicates (same 256 scid, same
+  257/258 signature), a `channel_update` before any `channel_announcement` of its channel, a `node_announcement`
+  before any `channel_announcement` of its node, older updates after newer ones. Use `--chain stub` (it only
+  measures reception). `--read-phases <seconds:bytes-per-second,...>` reads the relayer through a local TCP proxy
+  (`--proxy-port`, 19835) that forwards the relayer's bytes at each phase's rate (`0` stops reading, `max`
+  unthrottled, the last phase lasts to the end; the phases start at the first connection; `proxy.csv` per second).
+
+`--set Key=Value` (repeatable) overrides one configuration key, e.g. a short `Gossip:RelayStallTimeout` for the run.
+A sink that stops reading gets no `pong` through either direction's stream, so raise `Node:NetworkTimeout` on both
+probes above the pause, or the ping closes the connection first.
+
+```bash
+P=tools/NLightning.GossipProbe/bin/Release/net10.0/NLightning.GossipProbe.dll
+dotnet $P run --bootstrap --relay-to-all --chain rpc --dir ~/.nltg-gossip-probe/r417-a --listen-port 19736 \
+    --set Gossip:RelayStallTimeout=00:01:30 --set Node:NetworkTimeout=00:05:00 --label relayer
+dotnet $P run --sink --peer <relayer id>@127.0.0.1:19736 --dir ~/.nltg-gossip-probe/r417-b --listen-port 19737 \
+    --sample-seconds 15 --label sink
+dotnet $P run --sink --peer <relayer id>@127.0.0.1:19736 --dir ~/.nltg-gossip-probe/r417-b-slow --listen-port 19738 \
+    --read-phases 240:50000,150:0,0:max --set Node:NetworkTimeout=00:05:00 --sample-seconds 15 --label sink-slow
 ```
 
 ### BOLT 10 bootstrap run (`--bootstrap`, NL-113)

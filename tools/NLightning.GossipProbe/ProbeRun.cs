@@ -28,6 +28,10 @@ public sealed class ProbeRun
     private TimeSpan _lastCpu;
     private double _lastWallSeconds;
     private BootstrapProbe? _bootstrap;
+    private ThrottledProxy? _proxy;
+    private StreamWriter? _relayLog;
+    private StreamWriter? _relayPeerLog;
+    private StreamWriter? _sinkLog;
 
     public ProbeRun(ProbeOptions options)
     {
@@ -80,6 +84,7 @@ public sealed class ProbeRun
         node.Build(_options.Bootstrap ? _options.SyncPeers : _options.SyncPeers ?? _options.Peers.Count);
         _summary["node_id"] = node.Services.GetRequiredService<Domain.Protocol.Interfaces.ISecureKeyManager>()
                                   .GetNodePubKey().ToString();
+        Console.WriteLine($"Node id {_summary["node_id"]}, listening on 127.0.0.1:{_options.ListenPort}");
         var watch = Stopwatch.StartNew();
         await node.MigrateAsync(cancellationToken);
         _summary["migrate_seconds"] = watch.Elapsed.TotalSeconds;
@@ -123,13 +128,44 @@ public sealed class ProbeRun
             await _bootstrap.StartAsync(cancellationToken);
         }
 
+        ThrottledProxy? proxy = null;
         foreach (var peer in _options.Peers)
-            _peers[peer.Split('@')[0]] = new PeerRecord(peer);
+        {
+            var address = peer;
+            if (_options.ReadPhases is { } phases)
+            {
+                // NL-417 sink with a slow reader: the relayer is reached through the throttled local proxy
+                var endpoint = peer.Split('@')[1];
+                var colon = endpoint.LastIndexOf(':');
+                var target = new System.Net.IPEndPoint(System.Net.IPAddress.Parse(endpoint[..colon]),
+                                                       int.Parse(endpoint[(colon + 1)..], CultureInfo.InvariantCulture));
+                proxy = new ThrottledProxy(_options.ProxyPort, target, phases, Path.Combine(_runDirectory, "proxy.csv"));
+                proxy.Start();
+                address = $"{peer.Split('@')[0]}@127.0.0.1:{_options.ProxyPort}";
+                Console.WriteLine($"Reading {endpoint} through the throttled proxy on 127.0.0.1:{_options.ProxyPort}");
+            }
 
+            _peers[peer.Split('@')[0]] = new PeerRecord(address);
+        }
+
+        _proxy = proxy;
         await using var samples = new StreamWriter(Path.Combine(_runDirectory, "samples.csv"));
         await using var peerSamples = new StreamWriter(Path.Combine(_runDirectory, "peers.csv"));
         await samples.WriteLineAsync(SampleHeader);
         await peerSamples.WriteLineAsync(PeerHeader);
+        if (node.Traffic.Relay is not null)
+        {
+            _relayLog = new StreamWriter(Path.Combine(_runDirectory, "relay.csv"));
+            _relayPeerLog = new StreamWriter(Path.Combine(_runDirectory, "relay-peers.csv"));
+            await _relayLog.WriteLineAsync(RelayHeader);
+            await _relayPeerLog.WriteLineAsync(RelayPeerHeader);
+        }
+
+        if (node.Traffic.Sink is not null)
+        {
+            _sinkLog = new StreamWriter(Path.Combine(_runDirectory, "sink.csv"));
+            await _sinkLog.WriteLineAsync(SinkHeader);
+        }
 
         var describer = node.Services.GetRequiredService<GossipGraphDescriber>();
         var stopReason = "max duration";
@@ -223,10 +259,29 @@ public sealed class ProbeRun
         if (traffic.Relay is { } relay)
         {
             _summary["relay"] = relay.Snapshot();
-            Console.WriteLine($"Relay to {_options.RelayTo}: {relay.Total("announcement") + relay.Total("update")} "
-                            + $"sent or queued, {relay.Total(".refused")} refused by the outbox, "
+            Console.WriteLine($"Relay to {_options.RelayTo ?? "every peer"}: "
+                            + $"{relay.Total("announcement") + relay.Total("update")} sent or queued, "
+                            + $"{relay.Total(".refused")} refused by the outbox, "
                             + $"{relay.Total(".echo_to_origin")} echoed to their origin");
         }
+
+        if (traffic.Sink is { } sink)
+        {
+            var summary = sink.Summarize();
+            summary["graph_channels_at_stop"] = store.ChannelCount;
+            summary["proxy_forwarded_bytes"] = _proxy?.ForwardedToSink;
+            _summary["sink"] = summary;
+            Console.WriteLine($"Sink: {sink.Total} gossip messages ({sink.Announcements} 256, {sink.Updates} 258, "
+                            + $"{sink.NodeAnnouncements} 257), {sink.Duplicates} duplicates, "
+                            + $"{sink.UpdatesBeforeAnnouncement} 258 before its 256, "
+                            + $"{sink.NodesBeforeChannel} 257 before a 256 of the node");
+        }
+
+        if (_proxy is not null)
+            await _proxy.DisposeAsync();
+        foreach (var log in new[] { _relayLog, _relayPeerLog, _sinkLog })
+            if (log is not null)
+                await log.DisposeAsync();
 
         _summary["peer_traffic"] = traffic.Snapshot()
                                           .GroupBy(t => ProbeOptions.AliasOf(t.Key.Peer.ToString()))
@@ -322,15 +377,18 @@ public sealed class ProbeRun
                                + $"bitcoind {chainNow?.Blocks}"));
 
         if (_bootstrap is not null)
-        {
-            // The peers the bootstrap connected join peers.csv as they appear
             await _bootstrap.SampleAsync(connected, d.Sync?.HasCompletedInitialSync == true);
+        if (_bootstrap is not null || _options.IsRelaying)
+        {
+            // The peers the bootstrap connected (and, relaying, the peers that connected to us) join peers.csv as they
+            // appear; the probe never dials them itself
             foreach (var peer in connected.Where(p => !_peers.ContainsKey(p.NodeId.ToString())))
                 _peers[peer.NodeId.ToString()] = new PeerRecord($"{peer.NodeId}@{peer.Host}:{peer.Port}")
                 {
                     Connects = 1,
                     FirstConnectedAtMinutes = minutes,
-                    Features = peer.Features.ToString()
+                    Features = peer.Features.ToString(),
+                    Discovered = true
                 };
         }
 
@@ -367,6 +425,98 @@ public sealed class ProbeRun
         }
 
         await peerSamples.FlushAsync();
+        await SampleRelayAsync(node, meters, states, connected, minutes, process.WorkingSet64);
+        await SampleSinkAsync(node, meters, d, connected.Count, minutes);
+    }
+
+    private const string RelayHeader =
+        "utc,elapsed_min,relay_on,relay_pending,paused_connections,outbox_messages,outbox_bytes,relayed_total,"
+      + "outbox_refused,relay_paused,relay_stalled,dropped_relay_stalled,dropped_relay_backlog_full,"
+      + "gauge_paused_connections,gauge_outbox_bytes,peers_connected,peers_with_filter,rss_mb";
+
+    private const string RelayPeerHeader =
+        "utc,elapsed_min,peer,connected,peer_filter,sent_256,sent_258,sent_257,refused,echo_to_origin,queued_messages,"
+      + "queued_bytes,max_messages,max_bytes,sent_messages";
+
+    private const string SinkHeader =
+        "utc,elapsed_min,connected,received_256,received_258,received_257,total,duplicates,update_before_announcement,"
+      + "node_before_channel,older_updates,channels,announced_nodes,policies,pending_announcements,orphaned,rejected,"
+      + "dropped,refused_at_door,proxy_forwarded_bytes,proxy_phase";
+
+    /// <summary>NL-417 relayer: the relay's state and every peer's relay share and outbox depth.</summary>
+    private async Task SampleRelayAsync(ProbeNode node, GossipMeterCollector meters,
+                                        IReadOnlyList<Application.Gossip.Sync.GossipSyncPeerState> states,
+                                        List<Domain.Node.Models.PeerModel> connected, double minutes, long rss)
+    {
+        if (_relayLog is null || _relayPeerLog is null || node.Traffic.Relay is not { } relay)
+            return;
+
+        var status = (node.Services.GetService<Application.Gossip.Relay.Interfaces.IGossipRelayScheduler>()
+                          as Application.Gossip.Relay.GossipRelayScheduler)?.GetStatus();
+        var gauges = meters.ReadGauges();
+        var utc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        await _relayLog.WriteLineAsync(string.Join(',', [
+            utc, F(minutes), B(status?.IsRelayingOthers), I(status?.PendingMessages ?? 0),
+            I(status?.PausedConnections ?? 0), I(status?.OutboxMessages ?? 0), I(status?.OutboxBytes ?? 0),
+            I(meters.Sum("nlightning.gossip.messages.relayed")), I(meters.Sum("nlightning.gossip.outbox.refused")),
+            I(meters.Sum("nlightning.gossip.relay.paused")), I(meters.Sum("nlightning.gossip.relay.stalled")),
+            I(meters.Counters.Where(c => c.Key.StartsWith("nlightning.gossip.messages.dropped", StringComparison.Ordinal)
+                                      && c.Key.Contains("relay_stalled", StringComparison.Ordinal)).Sum(c => c.Value)),
+            I(meters.Counters.Where(c => c.Key.StartsWith("nlightning.gossip.messages.dropped", StringComparison.Ordinal)
+                                      && c.Key.Contains("relay_backlog_full", StringComparison.Ordinal))
+                    .Sum(c => c.Value)),
+            I(gauges.GetValueOrDefault("nlightning.gossip.relay.paused_connections")),
+            I(gauges.GetValueOrDefault("nlightning.gossip.outbox.bytes")), I(connected.Count),
+            I(states.Count(s => s.PeerFilter is not null)), Mb(rss)
+        ]));
+        await _relayLog.FlushAsync();
+
+        foreach (var peer in node.RelaySender?.Peers ?? [])
+        {
+            var depth = node.RelaySender!.GetDepth(peer);
+            var state = states.FirstOrDefault(s => s.PeerId == peer.NodeId);
+            await _relayPeerLog.WriteLineAsync(string.Join(',', [
+                utc, F(minutes), ProbeOptions.AliasOf(peer.NodeId.ToString()),
+                connected.Any(p => p.NodeId == peer.NodeId) ? "1" : "0",
+                state?.PeerFilter is { } pf ? $"{pf.FirstTimestamp}+{pf.TimestampRange}" : "",
+                I(relay.Get(peer.NodeId, "channel_announcement")), I(relay.Get(peer.NodeId, "channel_update")),
+                I(relay.Get(peer.NodeId, "node_announcement")),
+                I(relay.Get(peer.NodeId, "channel_announcement.refused") + relay.Get(peer.NodeId, "channel_update.refused")
+                + relay.Get(peer.NodeId, "node_announcement.refused")),
+                I(relay.Get(peer.NodeId, "channel_announcement.echo_to_origin")
+                + relay.Get(peer.NodeId, "channel_update.echo_to_origin")
+                + relay.Get(peer.NodeId, "node_announcement.echo_to_origin")),
+                I(depth?.QueuedMessages ?? 0), I(depth?.QueuedBytes ?? 0), I(depth?.MaxMessages ?? 0),
+                I(depth?.MaxBytes ?? 0), I(depth?.SentMessages ?? 0)
+            ]));
+        }
+
+        await _relayPeerLog.FlushAsync();
+    }
+
+    /// <summary>NL-417 sink: what arrived from the relayer, in which order, and the graph it built.</summary>
+    private async Task SampleSinkAsync(ProbeNode node, GossipMeterCollector meters, GraphDescription d,
+                                       int connected, double minutes)
+    {
+        if (_sinkLog is null || node.Traffic.Sink is not { } sink)
+            return;
+
+        var refused = node.Traffic.Snapshot().Where(t => t.Key.Kind.EndsWith(".refused_at_door", StringComparison.Ordinal))
+                          .Sum(t => t.Value);
+        await _sinkLog.WriteLineAsync(string.Join(',', [
+            DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture), F(minutes), I(connected),
+            I(sink.Announcements), I(sink.Updates), I(sink.NodeAnnouncements), I(sink.Total), I(sink.Duplicates),
+            I(sink.UpdatesBeforeAnnouncement), I(sink.NodesBeforeChannel), I(sink.OlderUpdates), I(d.Channels),
+            I(d.AnnouncedNodes), I(d.Policies), I(d.Ingress?.PendingAnnouncements ?? 0),
+            I(meters.Sum("nlightning.gossip.messages.orphaned")), I(meters.Sum("nlightning.gossip.messages.rejected")),
+            I(meters.Sum("nlightning.gossip.messages.dropped")), I(refused), I(_proxy?.ForwardedToSink ?? 0),
+            _proxy?.CurrentPhaseLabel ?? ""
+        ]));
+        await _sinkLog.FlushAsync();
+        Console.WriteLine($"  sink: {sink.Total} received (256 {sink.Announcements}, 258 {sink.Updates}, 257 "
+                        + $"{sink.NodeAnnouncements}), dup {sink.Duplicates}, 258-before-256 "
+                        + $"{sink.UpdatesBeforeAnnouncement}, proxy {_proxy?.ForwardedToSink} B phase "
+                        + $"{_proxy?.CurrentPhaseLabel}");
     }
 
     private async Task ConnectMissingPeersAsync(IPeerManager peerManager)
@@ -376,7 +526,7 @@ public sealed class ProbeRun
             return;
 
         var connected = peerManager.ListPeers().Select(p => p.NodeId.ToString()).ToHashSet(StringComparer.Ordinal);
-        var tasks = _peers.Values.Where(p => !connected.Contains(p.NodeId)).Select(async record =>
+        var tasks = _peers.Values.Where(p => !p.Discovered && !connected.Contains(p.NodeId)).Select(async record =>
         {
             record.Attempts++;
             try
@@ -564,5 +714,8 @@ public sealed class ProbeRun
         public double? FirstConnectedAtMinutes { get; set; }
         public string? Features { get; set; }
         public string? LastError { get; set; }
+
+        /// <summary>Found connected (bootstrap, or an inbound peer of the relayer), never dialed by the probe.</summary>
+        public bool Discovered { get; set; }
     }
 }

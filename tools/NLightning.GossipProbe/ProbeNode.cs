@@ -66,6 +66,9 @@ public sealed class ProbeNode : IAsyncDisposable
     public PeerTraffic Traffic { get; }
     public uint Tip { get; }
     public CountingFundingOutputLookup FundingLookups { get; }
+
+    /// <summary>The NL-417 relayer's recording sender (<c>--relay-to-all</c>), for the per-peer outbox depths.</summary>
+    public RecordingGossipPeerSender? RelaySender { get; private set; }
     public string DatabasePath => Path.Combine(_options.Directory, "probe.db");
     public string KeyPath => Path.Combine(_options.Directory, "node-key.json");
 
@@ -98,8 +101,9 @@ public sealed class ProbeNode : IAsyncDisposable
             ["Node:FeeUpdates:Enabled"] = "false",
             // The test's gossip settings: a leech that syncs, never relays, and takes channels on their signatures
             ["Gossip:Enabled"] = "true",
-            ["Gossip:SyncEnabled"] = "true",
-            ["Gossip:RelayEnabled"] = _options.RelayTo is null ? "false" : "true",
+            // The NL-417 sink queries nothing and sends no filter of its own (the probe sends its one filter)
+            ["Gossip:SyncEnabled"] = _options.Sink ? "false" : "true",
+            ["Gossip:RelayEnabled"] = _options.IsRelaying ? "true" : "false",
             ["Gossip:AssumeChannelValid"] = _rpc is null ? "true" : "false",
             ["Gossip:FundingValidation"] = "Full",
             ["Gossip:AllowPublicChannelsOnMainnet"] = "false",
@@ -114,6 +118,8 @@ public sealed class ProbeNode : IAsyncDisposable
             settings["Gossip:ChainLookupConcurrency"] = concurrency.ToString(CultureInfo.InvariantCulture);
         if (_options.ChainRate is { } rate)
             settings["Gossip:ChainLookupsPerSecond"] = rate.ToString(CultureInfo.InvariantCulture);
+        foreach (var (key, value) in _options.Overrides)
+            settings[key] = value;
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
 
         var services = new ServiceCollection();
@@ -130,6 +136,10 @@ public sealed class ProbeNode : IAsyncDisposable
             var monitor = ChainMonitorStub.Create(Tip);
             services.Replace(ServiceDescriptor.Singleton(monitor));
             services.Replace(ServiceDescriptor.Singleton<IFundingOutputLookup>(FundingLookups));
+            // NL-415 registers the product's FundingOutputLookup as a pending-channel view, which would build the
+            // bitcoind client (an RPC at construction); the stub has no lookups in flight, and the sync still asks
+            // the ingress's view
+            services.RemoveAll<IGossipPendingChannels>();
         }
         else
         {
@@ -155,7 +165,25 @@ public sealed class ProbeNode : IAsyncDisposable
             var target = new CompactPubKey(Convert.FromHexString(relayTo));
             Traffic.Relay = new RelayRecorder();
             Decorate<IGossipPeerDirectory>(services, inner => new RelayTargetPeerDirectory(inner, target));
-            Decorate<IGossipPeerSender>(services, inner => new RecordingGossipPeerSender(inner, Traffic.Relay));
+            Decorate<IGossipPeerSender>(services, inner => RelaySender = new RecordingGossipPeerSender(inner,
+                                                                          Traffic.Relay));
+        }
+        else if (_options.RelayToAll)
+        {
+            // NL-417 relayer: relay on toward every connected peer (the product's directory), every send recorded
+            if (_rpc is null)
+                throw new InvalidOperationException("--relay-to-all needs --chain rpc (only chain-checked channels relay)");
+
+            Traffic.Relay = new RelayRecorder();
+            Decorate<IGossipPeerSender>(services, inner => RelaySender = new RecordingGossipPeerSender(inner,
+                                                                          Traffic.Relay));
+        }
+
+        if (_options.Sink)
+        {
+            // NL-417 sink: every received gossip message's order checked; our one filter asks for everything
+            Traffic.Sink = new SinkRecorder();
+            Decorate<IGossipSyncService>(services, inner => new SinkFilterSyncService(inner, Traffic.Sink));
         }
 
         // Per-peer traffic counters around the peer services' gossip ports
@@ -172,10 +200,10 @@ public sealed class ProbeNode : IAsyncDisposable
         var relayOptions = Services.GetRequiredService<IOptions<GossipRelayOptions>>().Value;
         var network = Services.GetRequiredService<IOptions<NodeOptions>>().Value.BitcoinNetwork;
         if (graphOptions.AssumeChannelValid != (_rpc is null)
-         || relayOptions.IsRelayEnabledFor(network) != _options.RelayTo is not null)
+         || relayOptions.IsRelayEnabledFor(network) != _options.IsRelaying)
             throw new InvalidOperationException(
-                "The probe must run with relay off (on only with --relay-to), and AssumeChannelValid on without a "
-              + "chain, off with one");
+                "The probe must run with relay off (on only with --relay-to or --relay-to-all), and AssumeChannelValid "
+              + "on without a chain, off with one");
         if (Services.GetRequiredService<IOptions<NodeOptions>>().Value.Bootstrap.IsEnabledOn(network)
          != _options.Bootstrap)
             throw new InvalidOperationException(

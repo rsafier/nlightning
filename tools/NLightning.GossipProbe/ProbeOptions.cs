@@ -80,6 +80,39 @@ public sealed class ProbeOptions
     /// </summary>
     public bool Bootstrap { get; private set; }
 
+    /// <summary>
+    /// The NL-417 relayer (<c>--relay-to-all</c>, with <c>--chain rpc</c>): the relay of other nodes' gossip is on toward
+    /// every connected peer (the product's peer directory, nothing filtered), as a node with <c>Gossip:RelayEnabled</c>
+    /// on runs it; works with <c>--bootstrap</c> and with configured peers.
+    /// </summary>
+    public bool RelayToAll { get; private set; }
+
+    /// <summary>
+    /// The NL-417 sink (<c>--sink</c>): a gossip-only receiver of one peer (the relayer): the sync is off (no query, no
+    /// filter of its own), relay off, and at each <c>init</c> the probe sends that peer
+    /// <c>gossip_timestamp_filter(0, 0xFFFFFFFF)</c> (everything); the order of every received message is checked.
+    /// </summary>
+    public bool Sink { get; private set; }
+
+    /// <summary>
+    /// The sink's read throttle (<c>--read-phases</c>): comma-separated <c>seconds:bytes-per-second</c> phases, counted
+    /// from the first connection through the probe's local TCP proxy; <c>0</c> stops reading, <c>max</c> is
+    /// unthrottled; the last phase lasts until the end. Null: no proxy, the sink connects directly.
+    /// </summary>
+    public IReadOnlyList<ReadPhase>? ReadPhases { get; private set; }
+
+    /// <summary>The sink's proxy listen port (<c>--proxy-port</c>, on 127.0.0.1).</summary>
+    public int ProxyPort { get; private set; } = 19835;
+
+    /// <summary>Extra configuration keys (<c>--set Key=Value</c>, repeatable), applied last.</summary>
+    public Dictionary<string, string?> Overrides { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>True when the relay of other nodes' gossip is on (<c>--relay-to</c> or <c>--relay-to-all</c>).</summary>
+    public bool IsRelaying => RelayTo is not null || RelayToAll;
+
+    /// <summary>One phase of the sink's read throttle; <see cref="BytesPerSecond"/> null means unthrottled.</summary>
+    public sealed record ReadPhase(double Seconds, long? BytesPerSecond);
+
     public static string Usage =>
         """
         nltg gossip probe (test harness; mainnet, gossip-only, no channels, no funds)
@@ -90,7 +123,8 @@ public sealed class ProbeOptions
                              [--listen-port 19735] [--log-level Information|Debug] [--label <text>]
                              [--chain stub|rpc] [--rpc-env <file>] [--chain-concurrency <n>] [--chain-rate <n/s>]
                              [--sync-tip headers|blocks] [--block-poll-seconds 15] [--max-blocks-per-poll 10]
-                             [--relay-to <node id|alias>] [--bootstrap]
+                             [--relay-to <node id|alias>] [--relay-to-all] [--bootstrap] [--set <Key=Value>]...
+                             [--sink] [--read-phases <sec:bytes/s,...>] [--proxy-port 19835]
           GossipProbe verify [--dir <path>] [--sample 300] [--rate 2] [--esplora https://mempool.space/api]
           GossipProbe chaininfo [--rpc-env <file>]
 
@@ -103,6 +137,11 @@ public sealed class ProbeOptions
                 --relay-to (needs --chain rpc) turns the relay of other nodes' gossip on toward that one peer only.
                 --bootstrap takes no peer: the node finds its peers through the BOLT 10 DNS seeds (the product's
                 PeerBootstrapService, as the daemon starts it) and syncs from them; bootstrap-*.csv record it.
+                --relay-to-all (needs --chain rpc) relays other nodes' gossip to every connected peer (NL-417 relayer).
+                --sink (one --peer) syncs nothing itself and asks that peer for everything with
+                gossip_timestamp_filter(0, 0xFFFFFFFF); --read-phases reads it through a throttled local proxy
+                (e.g. 300:50000,150:0,0:max); sink.csv and proxy.csv record what arrived (NL-417 sink).
+                --set Key=Value overrides one configuration key (e.g. Gossip:RelayStallTimeout=00:01:30).
         chaininfo  checks that this process reaches the bitcoind of --rpc-env (getblockchaininfo).
         verify  checks a random sample of the stored channels' funding outputs against an Esplora API (at most
                 --rate requests per second; stops on HTTP 429).
@@ -123,6 +162,18 @@ public sealed class ProbeOptions
             if (name == "--bootstrap")
             {
                 options.Bootstrap = true;
+                continue;
+            }
+
+            if (name == "--relay-to-all")
+            {
+                options.RelayToAll = true;
+                continue;
+            }
+
+            if (name == "--sink")
+            {
+                options.Sink = true;
                 continue;
             }
 
@@ -160,9 +211,22 @@ public sealed class ProbeOptions
                     options.MaxBlocksPerPoll = int.Parse(value, CultureInfo.InvariantCulture);
                     break;
                 case "--relay-to": options.RelayTo = ResolvePeer(value); break;
+                case "--set" when value.IndexOf('=') > 0:
+                    options.Overrides[value[..value.IndexOf('=')]] = value[(value.IndexOf('=') + 1)..];
+                    break;
+                case "--read-phases": options.ReadPhases = ParsePhases(value); break;
+                case "--proxy-port": options.ProxyPort = int.Parse(value, CultureInfo.InvariantCulture); break;
                 default: return null;
             }
         }
+
+        if (options.RelayTo is not null && options.RelayToAll)
+            return null;
+        if (options.Sink)
+            // The sink listens to exactly one peer, never relays and never bootstraps
+            return options.Peers.Count == 1 && !options.IsRelaying && !options.Bootstrap ? options : null;
+        if (options.ReadPhases is not null)
+            return null;
 
         if (options.Bootstrap)
             return options.Peers.Count == 0 && options.RelayTo is null ? options : null;
@@ -181,6 +245,16 @@ public sealed class ProbeOptions
             a => a.Value.StartsWith(value, StringComparison.OrdinalIgnoreCase));
         return match.Key ?? value.ToLowerInvariant();
     }
+
+    private static List<ReadPhase> ParsePhases(string value) =>
+        value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+             .Select(phase =>
+             {
+                 var parts = phase.Split(':');
+                 return new ReadPhase(ParseDouble(parts[0]),
+                                      parts[1] == "max" ? null : long.Parse(parts[1], CultureInfo.InvariantCulture));
+             })
+             .ToList();
 
     private static double ParseDouble(string value) => double.Parse(value, CultureInfo.InvariantCulture);
 }

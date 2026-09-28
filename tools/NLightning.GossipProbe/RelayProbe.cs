@@ -46,6 +46,9 @@ public sealed class RelayRecorder
     public IReadOnlyDictionary<string, long> Snapshot() =>
         _counts.ToDictionary(e => $"{ProbeOptions.AliasOf(e.Key.Peer.ToString())}/{e.Key.Kind}", e => e.Value);
 
+    /// <summary>One peer's count of <paramref name="kind"/> (e.g. <c>channel_update</c>, <c>channel_update.refused</c>).</summary>
+    public long Get(CompactPubKey peer, string kind) => _counts.GetValueOrDefault((peer, kind));
+
     public long Total(string suffix) => _counts.Where(e => e.Key.Kind.EndsWith(suffix, StringComparison.Ordinal))
                                                .Sum(e => e.Value);
 
@@ -64,8 +67,14 @@ public sealed class RelayRecorder
 /// <summary>Records every relay send through <see cref="RelayRecorder"/>, then passes it on.</summary>
 public sealed class RecordingGossipPeerSender(IGossipPeerSender inner, RelayRecorder recorder) : IGossipPeerSender
 {
+    private readonly ConcurrentDictionary<CompactPubKey, GossipPeer> _peers = new();
+
+    /// <summary>The latest connection of every peer the relay sent to (for the per-peer outbox depths).</summary>
+    public IReadOnlyCollection<GossipPeer> Peers => _peers.Values.ToList();
+
     public async ValueTask<GossipEnqueueResult> SendAsync(GossipPeer peer, IMessage message, int size)
     {
+        _peers[peer.NodeId] = peer;
         var result = await inner.SendAsync(peer, message, size);
         recorder.RecordSent(peer.NodeId, message, result == GossipEnqueueResult.Queued);
         return result;

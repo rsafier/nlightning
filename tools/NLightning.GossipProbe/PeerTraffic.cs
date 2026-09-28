@@ -37,9 +37,13 @@ public sealed class PeerTraffic
     /// <summary>The relay run's recorder (<c>--relay-to</c>), null otherwise.</summary>
     public RelayRecorder? Relay { get; set; }
 
+    /// <summary>The NL-417 sink's receive log (<c>--sink</c>), null otherwise.</summary>
+    public SinkRecorder? Sink { get; set; }
+
     public void RecordGossip(CompactPubKey peer, IMessage message)
     {
         Relay?.RecordReceived(peer, message);
+        Sink?.Record(message);
         switch (message)
         {
             case ChannelAnnouncementMessage announcement:
