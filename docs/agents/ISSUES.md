@@ -1526,7 +1526,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-517 After a restart on a locked splice, the engine's current funding is the initial one (kind, key index 0)
-- **Status:** fixed (pending)
+- **Status:** fixed (d5be5b73)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelDbRepository.cs` (`MapWithStateAsync`), `src/NLightning.Domain/Channels/Commitments/CommitmentParams.cs` (`FromChannel`)
