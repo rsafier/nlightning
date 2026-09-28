@@ -50,4 +50,9 @@ public sealed record SpliceNegotiationModel(
     SpliceNegotiationState State,
     TxId? SpliceTxId,
     DateTimeOffset CreatedAt,
-    TxId? RbfOf = null);
+    TxId? RbfOf = null)
+{
+    /// <summary>An RBF attempt of a pending splice (<see cref="RbfOf"/> set, wave SPR): its funding is a
+    /// <see cref="Enums.ChannelFundingKind.SpliceRbf"/> sibling of the attempt it replaces.</summary>
+    public bool IsRbf => RbfOf is not null;
+}

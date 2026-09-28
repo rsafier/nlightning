@@ -1,7 +1,9 @@
 namespace NLightning.Domain.Channels.Splicing;
 
 using Bitcoin.ValueObjects;
+using Commitments;
 using Enums;
+using Protocol.InteractiveTx;
 
 /// <summary>
 /// The fundings of a channel (splicing plan §3.3, D6, D7): the <see cref="Current"/> one and the ordered
@@ -96,8 +98,30 @@ public sealed record FundingSet(ChannelFunding Current, IReadOnlyList<ChannelFun
     /// current funding output, so the attempts double-spend each other (BOLT 2 splicing rationale).
     /// </summary>
     /// <exception cref="ArgumentException">One of those rules is broken, or nothing is pending.</exception>
-    public FundingSet AddRbfSibling(ChannelFunding attempt) =>
-        throw new NotImplementedException("Lane SPR-A (SPR-T2, NL-489)");
+    public FundingSet AddRbfSibling(ChannelFunding attempt)
+    {
+        ArgumentNullException.ThrowIfNull(attempt);
+        if (LatestAttempt is not { } latest)
+            throw new ArgumentException($"RBF attempt {attempt.FundingTxId}: no splice is pending", nameof(attempt));
+        if (attempt.Kind != ChannelFundingKind.SpliceRbf)
+            throw new ArgumentException($"Funding {attempt.FundingTxId} is a {attempt.Kind}, not an RBF attempt",
+                                        nameof(attempt));
+        if (attempt.RbfOf != latest.FundingTxId)
+            throw new ArgumentException(
+                $"RBF attempt {attempt.FundingTxId} replaces {attempt.RbfOf}, not the latest attempt {latest.FundingTxId}",
+                nameof(attempt));
+        if (latest.FeeratePerKw is { } previous
+         && (attempt.FeeratePerKw ?? 0) < InteractiveTxRbfRules.GetMinimumNextFeerate(previous))
+            throw new ArgumentException(
+                $"[IT-RBF-01] RBF attempt {attempt.FundingTxId} at {attempt.FeeratePerKw} sat/kw is below "
+              + $"{InteractiveTxRbfRules.GetMinimumNextFeerate(previous)} sat/kw", nameof(attempt));
+        if (ActiveCount >= ChannelCommitments.MaxActiveFundings)
+            throw new ArgumentException(
+                $"[SP-OP-04] a channel may have at most {ChannelCommitments.MaxActiveFundings} active fundings",
+                nameof(attempt));
+
+        return AddPending(attempt);
+    }
 
     /// <summary>
     /// The other attempts of the same splice as the pending <paramref name="fundingTxId"/> (its RBF siblings and
@@ -106,8 +130,14 @@ public sealed record FundingSet(ChannelFunding Current, IReadOnlyList<ChannelFun
     /// attempt.
     /// </summary>
     /// <exception cref="ArgumentException"><paramref name="fundingTxId"/> is not pending.</exception>
-    public IReadOnlyList<ChannelFunding> Siblings(TxId fundingTxId) =>
-        throw new NotImplementedException("Lane SPR-A (SPR-T2, NL-489)");
+    public IReadOnlyList<ChannelFunding> Siblings(TxId fundingTxId)
+    {
+        // SP-S-01: at most one splice is pending, so every other pending funding is an attempt of the same splice
+        if (Pending.All(p => p.FundingTxId != fundingTxId))
+            throw new ArgumentException($"Funding {fundingTxId} is not pending", nameof(fundingTxId));
+
+        return Pending.Where(p => p.FundingTxId != fundingTxId).ToList();
+    }
 
     /// <summary>
     /// Locks the pending funding <paramref name="fundingTxId"/> (<c>splice_locked</c> sent and received for it): it
@@ -130,8 +160,7 @@ public sealed record FundingSet(ChannelFunding Current, IReadOnlyList<ChannelFun
             RemoteBalanceDeltaMsat = 0
         };
         var retired = new List<ChannelFunding> { Current with { Status = ChannelFundingStatus.Replaced } };
-        retired.AddRange(Pending.Where(p => p.FundingTxId != fundingTxId)
-                                .Select(p => p with { Status = ChannelFundingStatus.Discarded }));
+        retired.AddRange(Siblings(fundingTxId).Select(p => p with { Status = ChannelFundingStatus.Discarded }));
         return (Single(current), retired);
     }
 

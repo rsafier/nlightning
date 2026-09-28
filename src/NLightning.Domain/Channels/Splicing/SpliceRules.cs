@@ -1,10 +1,12 @@
 namespace NLightning.Domain.Channels.Splicing;
 
 using Bitcoin.ValueObjects;
+using Commitments;
 using Domain.Enums;
 using Enums;
 using Models;
 using Node;
+using Protocol.InteractiveTx;
 using Protocol.Payloads;
 
 /// <summary>
@@ -167,8 +169,49 @@ public static class SpliceRules
     /// <param name="feeratePerKw">The <c>tx_init_rbf.feerate</c> we would send.</param>
     /// <param name="contributionSatoshis">Our <c>funding_output_contribution</c> for the new attempt.</param>
     public static SpliceRuleViolation? CheckSendRbf(SpliceRbfConditions conditions, uint feeratePerKw,
-                                                    long contributionSatoshis) =>
-        throw new NotImplementedException("Lane SPR-A (SPR-T1, NL-489)");
+                                                    long contributionSatoshis)
+    {
+        ArgumentNullException.ThrowIfNull(conditions);
+        var channel = conditions.Channel ?? throw new ArgumentException("No channel conditions", nameof(conditions));
+
+        if (!channel.IsNegotiated)
+            return Refuse("D14", "option_quiesce and option_splice are not both negotiated");
+        if (!channel.IsQuiescent)
+            return Refuse("SPR-T1", "the channel is not quiescent");
+        if (!channel.LocalIsQuiescenceInitiator)
+            return Refuse("SPR-T1", "we are not the quiescence initiator");
+        if (conditions.ZeroconfNegotiated)
+            return Refuse("SPR-T1", "option_zeroconf is negotiated: no splice RBF");
+        if (conditions.LocalSentSpliceLocked)
+            return Refuse("SP-LK-04", "we sent splice_locked");
+        if (!channel.HasUnlockedSplice || conditions.PendingAttemptCount == 0)
+            return Refuse("SPR-T1", "no pending splice to replace");
+        if (channel.SpliceNegotiating)
+            return Refuse("SPR-T1", "a splice negotiation is in progress");
+
+        var minimum = InteractiveTxRbfRules.GetMinimumNextFeerate(conditions.LastAttemptFeeratePerKw);
+        if (feeratePerKw < minimum)
+            return Refuse("IT-RBF-01",
+                          $"feerate {feeratePerKw} sat/kw is below {minimum} sat/kw (previous "
+                        + $"{conditions.LastAttemptFeeratePerKw})");
+        if (HasTooManyAttemptsForFeerate(conditions, feeratePerKw))
+            return Refuse("SPR-T1",
+                          $"{GetRbfAttemptCount(conditions)} RBF attempts are pending and {feeratePerKw} sat/kw does "
+                        + "not ensure quick confirmation");
+        if (WouldExceedBatch(conditions))
+            return Refuse("SP-OP-04",
+                          $"another attempt would exceed {ChannelCommitments.MaxActiveFundings} active fundings");
+        if (GetRbfAttemptCount(conditions) >= conditions.MaxRbfAttempts)
+            return Refuse("SPR-T2",
+                          $"{GetRbfAttemptCount(conditions)} RBF attempts reach Splice:MaxRbfAttempts "
+                        + $"({conditions.MaxRbfAttempts})");
+        if (IsSpliceOutAboveBalance(contributionSatoshis, channel.LocalBalanceMsat))
+            return Refuse("SP-S-02",
+                          $"a contribution of {contributionSatoshis} sat is above our balance of "
+                        + $"{channel.LocalBalanceMsat / 1_000} sat");
+
+        return null;
+    }
 
     /// <summary>
     /// SPR-T1, the receiver of a splice <c>tx_init_rbf</c>, in the BOLT 2 order. "MUST send a <c>warning</c> and close
@@ -186,8 +229,49 @@ public static class SpliceRules
     /// <param name="payload">The peer's <c>tx_init_rbf</c>.</param>
     /// <param name="contributionSatoshis">Its <c>funding_output_contribution</c> (null: not contributing, 0).</param>
     public static SpliceRuleViolation? CheckReceiveRbf(SpliceRbfConditions conditions, TxInitRbfPayload payload,
-                                                       long? contributionSatoshis) =>
-        throw new NotImplementedException("Lane SPR-A (SPR-T1, NL-489)");
+                                                       long? contributionSatoshis)
+    {
+        ArgumentNullException.ThrowIfNull(conditions);
+        ArgumentNullException.ThrowIfNull(payload);
+        var channel = conditions.Channel ?? throw new ArgumentException("No channel conditions", nameof(conditions));
+
+        // The MUSTs first (warning and close), then the tx_abort rows
+        if (!channel.IsNegotiated)
+            return WarnAndClose("D14", "tx_init_rbf on a splice without option_quiesce and option_splice negotiated");
+        if (!channel.IsQuiescent)
+            return WarnAndClose("SPR-T1", "tx_init_rbf on a channel that is not quiescent");
+        if (channel.LocalIsQuiescenceInitiator)
+            return WarnAndClose("SPR-T1", "tx_init_rbf from the node that is not the quiescence initiator");
+        if (conditions.RemoteSentSpliceLocked)
+            return WarnAndClose("SP-LK-04", "tx_init_rbf after the sender's splice_locked");
+        if (conditions.ZeroconfNegotiated)
+            return WarnAndClose("SPR-T1", "tx_init_rbf with option_zeroconf negotiated");
+        if (IsSpliceOutAboveBalance(contributionSatoshis ?? 0, channel.RemoteBalanceMsat))
+            return WarnAndClose("SPR-T1",
+                                $"funding_output_contribution of {contributionSatoshis} sat is above the sender's "
+                              + $"balance of {channel.RemoteBalanceMsat / 1_000} sat");
+
+        if (!channel.HasUnlockedSplice || conditions.PendingAttemptCount == 0)
+            return TxAbort("SPR-T1", "no pending splice to replace");
+        if (channel.SpliceNegotiating)
+            return TxAbort("SPR-T1", "a splice negotiation is in progress");
+        var minimum = InteractiveTxRbfRules.GetMinimumNextFeerate(conditions.LastAttemptFeeratePerKw);
+        if (payload.Feerate < minimum)
+            return TxAbort("IT-RBF-01",
+                           $"feerate {payload.Feerate} sat/kw is below {minimum} sat/kw (previous "
+                         + $"{conditions.LastAttemptFeeratePerKw})");
+        if (conditions.LastAttemptIsRecent)
+            return TxAbort("SPR-T1", "another RBF attempt was created recently; waiting for it to confirm");
+        if (HasTooManyAttemptsForFeerate(conditions, payload.Feerate))
+            return TxAbort("SPR-T1",
+                           $"{GetRbfAttemptCount(conditions)} RBF attempts are pending and {payload.Feerate} sat/kw "
+                         + "does not ensure quick confirmation");
+        if (WouldExceedBatch(conditions))
+            return TxAbort("SP-OP-04",
+                           $"another attempt would exceed {ChannelCommitments.MaxActiveFundings} active fundings");
+
+        return null;
+    }
 
     /// <summary>
     /// SPR-T1, the receiver of a splice <c>tx_ack_rbf</c>: a negative <c>funding_output_contribution</c> above the
@@ -198,8 +282,20 @@ public static class SpliceRules
     /// <param name="contributionSatoshis">The peer's <c>funding_output_contribution</c> (null: not contributing).</param>
     /// <param name="rbfSent">Our <c>tx_init_rbf</c> waits for this answer.</param>
     public static SpliceRuleViolation? CheckReceiveAckRbf(SpliceRbfConditions conditions, long? contributionSatoshis,
-                                                          bool rbfSent) =>
-        throw new NotImplementedException("Lane SPR-A (SPR-T1, NL-489)");
+                                                          bool rbfSent)
+    {
+        ArgumentNullException.ThrowIfNull(conditions);
+        var channel = conditions.Channel ?? throw new ArgumentException("No channel conditions", nameof(conditions));
+
+        if (!rbfSent)
+            return WarnAndClose("SPR-T1", "tx_ack_rbf without our tx_init_rbf");
+        if (IsSpliceOutAboveBalance(contributionSatoshis ?? 0, channel.RemoteBalanceMsat))
+            return WarnAndClose("SPR-T1",
+                                $"funding_output_contribution of {contributionSatoshis} sat is above the sender's "
+                              + $"balance of {channel.RemoteBalanceMsat / 1_000} sat");
+
+        return null;
+    }
 
     /// <summary>
     /// SPR-T1, the double-spend duty of an RBF attempt (interactive-tx IT-RBF-01: the new transaction "double-spends
@@ -213,8 +309,34 @@ public static class SpliceRules
     /// <param name="sharedInputVout">The attempt's shared input output index.</param>
     /// <param name="fundings">The channel's fundings with the pending splice the attempt replaces.</param>
     public static SpliceRuleViolation? CheckRbfDoubleSpends(TxId sharedInputTxId, uint sharedInputVout,
-                                                            FundingSet fundings) =>
-        throw new NotImplementedException("Lane SPR-A (SPR-T1, NL-489)");
+                                                            FundingSet fundings)
+    {
+        ArgumentNullException.ThrowIfNull(fundings);
+        if (!fundings.HasPending)
+            return TxAbort("IT-RBF-01", "no pending splice attempt to double-spend");
+        if (sharedInputTxId != fundings.Current.FundingTxId || sharedInputVout != fundings.Current.OutputIndex)
+            return TxAbort("IT-RBF-01",
+                           $"the shared input {sharedInputTxId}:{sharedInputVout} is not the current funding output "
+                         + $"{fundings.Current.FundingTxId}:{fundings.Current.OutputIndex} every pending attempt spends");
+
+        return null;
+    }
+
+    /// <summary>The pending RBF attempts (the pending attempts besides the original splice).</summary>
+    private static int GetRbfAttemptCount(SpliceRbfConditions conditions) =>
+        Math.Max(0, conditions.PendingAttemptCount - 1);
+
+    /// <summary>
+    /// BOLT 2: "more than 10 pending RBF attempts" and a feerate below the quick-confirmation estimate (an unknown
+    /// estimate counts as not quick).
+    /// </summary>
+    private static bool HasTooManyAttemptsForFeerate(SpliceRbfConditions conditions, uint feeratePerKw) =>
+        GetRbfAttemptCount(conditions) > MaxRbfAttemptsAtAnyFeerate
+     && (conditions.QuickConfirmationFeeratePerKw is not { } quick || feeratePerKw < quick);
+
+    /// <summary>SP-OP-04: the new attempt makes the current funding plus every pending one exceed a batch of 20.</summary>
+    private static bool WouldExceedBatch(SpliceRbfConditions conditions) =>
+        conditions.PendingAttemptCount + 2 > ChannelCommitments.MaxActiveFundings;
 
     #endregion
 
