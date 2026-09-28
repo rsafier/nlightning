@@ -165,7 +165,7 @@ public class SpliceCommandTests
             State = SpliceNegotiationState.CommitmentSigned,
             SpliceTxId = "83c00c02dd85fdc21350d141ec1872ca0f49819936b5c7d0c931084835269fc2",
             NewCapacitySat = 1_100_000,
-            FailureReason = reason
+            Note = reason
         };
         using var output = new StringWriter();
 
@@ -181,6 +181,26 @@ public class SpliceCommandTests
         Assert.Contains("completes (tx_signatures,", printed);
         Assert.DoesNotContain("Reason:", printed);
         Assert.True(SpliceCommands.IsSuccess(response));
+    }
+
+    [Fact]
+    public void Given_ACommitmentSignedWithAFailureReasonAndNoNote_When_Checked_Then_AFailure()
+    {
+        // Arrange: only the Note marks a kept splice; a FailureReason is always a failure
+        var response = new SpliceIpcResponse
+        {
+            ChannelId = s_channelId,
+            State = SpliceNegotiationState.CommitmentSigned,
+            SpliceTxId = "83c00c02dd85fdc21350d141ec1872ca0f49819936b5c7d0c931084835269fc2",
+            FailureReason = "stopped"
+        };
+
+        // Act
+        var success = SpliceCommands.IsSuccess(response);
+
+        // Assert
+        Assert.False(success);
+        Assert.False(SpliceCommands.IsStoppedAtCommitmentSigned(response));
     }
 
     [Fact]

@@ -40,8 +40,12 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <c>FirstBroadcastHeight</c>; without a row, the height this bumper first saw it) and since our last bump attempt on
 /// it. So a splice is bumped at most once per interval: a bump the peer refuses (or that finds the peer offline) is
 /// tried again one interval later, and a bump that succeeds starts the interval of the new attempt.</para>
-/// <para>A feerate above <see cref="SpliceOptions.MaxFeeratePerKw"/> is never proposed (logged, the splice is left as
-/// it is). The service's rules (<c>SpliceRules.CheckSendRbf</c>) still decide: a refusal is reported as an
+/// <para>Spending limits (the operator's, not the acceptor bound <see cref="SpliceOptions.MaxFeeratePerKw"/>): the
+/// feerate is clamped to <see cref="SpliceOptions.AutoBumpMaxFeeratePerKw"/>; a splice whose IT-RBF-01 minimum is
+/// already above it is not bumped (logged once per interval, left to <c>bumpsplice</c>); every request carries
+/// <see cref="SpliceOptions.AutoBumpMaxFeeSat"/> as its fee cap. A round waits for each bump at most
+/// <see cref="SpliceOptions.AutoBumpMaxWait"/>; a slower negotiation goes on (reported with its current state) and its
+/// channel is skipped until it ends, so one slow peer never delays the other channels. The service's rules (<c>SpliceRules.CheckSendRbf</c>) still decide: a refusal is reported as an
 /// <see cref="SpliceNegotiationState.Aborted"/> result with its reason, never thrown.</para>
 /// <para>Lifecycle: <see cref="Start"/> after the chain monitor and the peer manager are started,
 /// <see cref="StopAsync"/> before the chain monitor is stopped (waits for a running round). Rounds run one at a time on
@@ -65,6 +69,7 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
     private readonly Dictionary<TxId, uint> _firstSeen = [];
     private readonly Dictionary<ChannelId, (TxId LatestAttempt, uint Height)> _lastBump = [];
     private readonly HashSet<ChannelId> _running = [];
+    private readonly HashSet<Task<SpliceResult>> _inFlight = [];
     private uint _lastRoundHeight;
     private CancellationTokenSource? _stopping;
     private Task _round = Task.CompletedTask;
@@ -125,20 +130,27 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
         // One estimate per round, read only when a splice is due
         var estimate = await GetEstimateAsync(cancellationToken);
         var bumps = new List<Task<SpliceResult>>(due.Count);
+        var ceiling = _options.AutoBumpMaxFeeratePerKw;
         foreach (var (channelId, latest, waited) in due)
         {
             var minimum =
                 InteractiveTxRbfRules.GetMinimumNextFeerate(latest.FeeratePerKw ?? _options.MinFeeratePerKw);
-            var feerate = Math.Max(estimate, minimum);
-            if (feerate > _options.MaxFeeratePerKw)
+            if (minimum > ceiling)
             {
+                // Counted as a try, so the warning comes once per interval, not on every block
+                lock (_gate)
+                    _lastBump[channelId] = (latest.FundingTxId, height);
+
                 _logger.LogWarning("Splice {TxId} of channel {ChannelId} waited {Blocks} blocks, but its next feerate "
-                                 + "{Feerate} sat/kw is above Splice:MaxFeeratePerKw {Max}; not bumping it",
-                                   latest.FundingTxId, channelId, waited, feerate, _options.MaxFeeratePerKw);
+                                 + "(at least {Minimum} sat/kw) is above Splice:AutoBumpMaxFeeratePerKw {Max}; not "
+                                 + "bumping it (bumpsplice can)", latest.FundingTxId, channelId, waited, minimum,
+                                   ceiling);
                 continue;
             }
 
-            bumps.Add(BumpAsync(channelId, latest.FundingTxId, feerate, height, cancellationToken));
+            // The estimate, at least the RBF minimum, clamped to the operator's ceiling
+            var feerate = Math.Min(Math.Max(estimate, minimum), ceiling);
+            bumps.Add(BumpWithinWaitAsync(channelId, latest.FundingTxId, feerate, height, cancellationToken));
         }
 
         return bumps.Count == 0 ? [] : await Task.WhenAll(bumps);
@@ -183,6 +195,19 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
         try
         {
             await round;
+        }
+        catch (OperationCanceledException)
+        {
+            // Stopping
+        }
+
+        // Bumps a round stopped waiting for end with the cancellation
+        Task[] inFlight;
+        lock (_gate)
+            inFlight = [.. _inFlight];
+        try
+        {
+            await Task.WhenAll(inFlight);
         }
         catch (OperationCanceledException)
         {
@@ -289,6 +314,38 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
         latest.LocalBalanceDeltaMsat != 0
      || negotiation is { IsInitiator: true, SpliceTxId: { } txId } && fundings.Pending.Any(p => p.FundingTxId == txId);
 
+    /// <summary>
+    /// Starts the bump and waits for it at most <see cref="SpliceOptions.AutoBumpMaxWait"/>. A bump still negotiating
+    /// then goes on (its channel stays in <c>_running</c> until it ends, <see cref="StopAsync"/> waits for it) and the
+    /// round reports the negotiation's current state, so a slow peer never holds up the other channels' bumps.
+    /// </summary>
+    private async Task<SpliceResult> BumpWithinWaitAsync(ChannelId channelId, TxId latestAttempt, uint feeratePerKw,
+                                                         uint height, CancellationToken cancellationToken)
+    {
+        var bump = BumpAsync(channelId, latestAttempt, feeratePerKw, height, cancellationToken);
+        lock (_gate)
+            _inFlight.Add(bump);
+
+        _ = bump.ContinueWith(t =>
+        {
+            lock (_gate)
+                _inFlight.Remove(t);
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+        try
+        {
+            return await bump.WaitAsync(_options.AutoBumpMaxWait, cancellationToken);
+        }
+        catch (TimeoutException) when (!bump.IsCompleted)
+        {
+            var negotiation = _spliceService.GetNegotiation(channelId);
+            var state = negotiation?.State ?? SpliceNegotiationState.AwaitingQuiescence;
+            _logger.LogInformation("Splice bump of channel {ChannelId} still {State} after {Wait}; it goes on and the "
+                                 + "round moves on", channelId, state, _options.AutoBumpMaxWait);
+            return new SpliceResult(channelId, state, negotiation?.SpliceTxId);
+        }
+    }
+
     private async Task<SpliceResult> BumpAsync(ChannelId channelId, TxId latestAttempt, uint feeratePerKw, uint height,
                                                CancellationToken cancellationToken)
     {
@@ -301,9 +358,11 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
         try
         {
             _logger.LogInformation("Bumping splice {TxId} of channel {ChannelId} at block {Height}: RBF at {Feerate} "
-                                 + "sat/kw", latestAttempt, channelId, height, feeratePerKw);
-            var result = await _spliceService.BumpAsync(new SpliceBumpRequest(channelId, feeratePerKw),
-                                                        cancellationToken);
+                                 + "sat/kw, our fee at most {MaxFee} sat", latestAttempt, channelId, height,
+                                   feeratePerKw, _options.AutoBumpMaxFeeSat);
+            var result = await _spliceService.BumpAsync(
+                             new SpliceBumpRequest(channelId, feeratePerKw, _options.AutoBumpMaxFeeSat),
+                             cancellationToken);
             _logger.LogInformation("Splice bump of channel {ChannelId}: {State}, txid {TxId}{Reason}", channelId,
                                    result.State, result.SpliceTxId,
                                    result.FailureReason is null ? string.Empty : $" ({result.FailureReason})");

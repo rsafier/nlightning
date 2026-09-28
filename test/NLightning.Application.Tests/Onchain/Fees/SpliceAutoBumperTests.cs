@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -116,7 +117,7 @@ public class SpliceAutoBumperTests
         // Assert: at the broadcast + 3, then every 3 blocks after the previous try, never twice at one height
         Assert.Equal(new uint[] { 103, 106, 109 }, bumpedAt);
         Assert.Equal(3, _bumps.Count);
-        Assert.All(_bumps, b => Assert.Equal(new SpliceBumpRequest(s_channelId, 2_604), b));
+        Assert.All(_bumps, b => Assert.Equal(new SpliceBumpRequest(s_channelId, 2_604, 100_000), b));
     }
 
     [Fact]
@@ -185,20 +186,116 @@ public class SpliceAutoBumperTests
     }
 
     [Fact]
-    public async Task Given_TheNextFeerateAboveTheMaximum_When_Due_Then_NotBumped()
+    public async Task Given_AnEstimateSpike_When_Due_Then_ClampedToTheAutoBumpCeilingWithTheFeeCap()
     {
-        // Arrange
+        // Arrange: 300,000 sat/kw is below the acceptor bound Splice:MaxFeeratePerKw, never an auto-bump rate
         _feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
                    .ReturnsAsync(LightningMoney.Satoshis(300_000));
-        var bumper = CreateBumper();
+        var bumper = CreateBumper(maxFeerate: 10_000, maxFeeSat: 20_000);
 
         // Act
         var results = await bumper.BumpStaleSplicesAsync(BroadcastHeight + Interval,
                                                          TestContext.Current.CancellationToken);
 
         // Assert
-        Assert.Empty(results);
+        Assert.Single(results);
+        Assert.Equal(new SpliceBumpRequest(s_channelId, 10_000, 20_000), Assert.Single(_bumps));
+    }
+
+    [Fact]
+    public async Task Given_TheDefaultOptions_When_TheEstimateSpikes_Then_TheBumpStaysAt100SatPerVbyte()
+    {
+        // Arrange
+        _feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(LightningMoney.Satoshis(250_000));
+        var bumper = CreateBumper();
+
+        // Act
+        await bumper.BumpStaleSplicesAsync(BroadcastHeight + Interval, TestContext.Current.CancellationToken);
+
+        // Assert
+        var bump = Assert.Single(_bumps);
+        Assert.Equal(25_000U, bump.FeeratePerKw);
+        Assert.Equal(100_000UL, bump.MaxFeeSatoshis);
+    }
+
+    [Fact]
+    public async Task Given_TheRbfMinimumAboveTheCeiling_When_BlocksPass_Then_NotBumpedAndWarnedOncePerInterval()
+    {
+        // Arrange: the latest attempt pays 10,000 sat/kw, so the next one needs 10,416 > the 10,000 ceiling
+        _fundings = new FundingSet(_fundings.Current, [Splice(s_spliceTxId, null, 100_000_000, 10_000)]);
+        var logger = new CountingLogger();
+        var bumper = CreateBumper(maxFeerate: 10_000, logger: logger);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act: one round per block over two intervals
+        foreach (var height in new uint[] { 103, 104, 105, 106, 107 })
+            await bumper.BumpStaleSplicesAsync(height, ct);
+
+        // Assert: skipped at 103 and 106 only
         Assert.Empty(_bumps);
+        Assert.Equal(2, logger.Warnings);
+    }
+
+    [Fact]
+    public async Task Given_ASlowBump_When_TheWaitExpires_Then_TheRoundMovesOnAndTheChannelIsSkippedUntilItEnds()
+    {
+        // Arrange: the first bump never answers until released
+        var pending = new TaskCompletionSource<SpliceResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        _spliceService.Setup(s => s.BumpAsync(It.IsAny<SpliceBumpRequest>(), It.IsAny<CancellationToken>()))
+                      .Returns((SpliceBumpRequest r, CancellationToken _) =>
+                      {
+                          _bumps.Add(r);
+                          if (++calls == 1)
+                              _negotiation = Negotiation(SpliceNegotiationState.InitSent, null);
+                          return calls == 1
+                                     ? pending.Task
+                                     : Task.FromResult(new SpliceResult(r.ChannelId, SpliceNegotiationState.Aborted,
+                                                                        FailureReason: "tx_abort: not now"));
+                      });
+        var bumper = CreateBumper(maxWait: TimeSpan.FromMilliseconds(50));
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act: the first round returns after the wait, the negotiation still running
+        var first = await bumper.BumpStaleSplicesAsync(BroadcastHeight + Interval, ct)
+                                .WaitAsync(TimeSpan.FromSeconds(10), ct);
+        _negotiation = null;
+        var whileRunning = await bumper.BumpStaleSplicesAsync(BroadcastHeight + 2 * Interval, ct);
+        pending.SetResult(new SpliceResult(s_channelId, SpliceNegotiationState.Aborted,
+                                           FailureReason: "tx_abort: not now"));
+        await WaitUntilAsync(() => bumper.BumpStaleSplicesAsync(BroadcastHeight + 3 * Interval, ct), ct);
+
+        // Assert
+        Assert.Equal(SpliceNegotiationState.InitSent, Assert.Single(first).State);
+        Assert.Empty(whileRunning);
+        Assert.Equal(2, _bumps.Count);
+    }
+
+    [Fact]
+    public async Task Given_ASlowBumpStarted_When_Stopped_Then_StopWaitsForItsCancellation()
+    {
+        // Arrange: a bump that ends only when cancelled
+        _spliceService.Setup(s => s.BumpAsync(It.IsAny<SpliceBumpRequest>(), It.IsAny<CancellationToken>()))
+                      .Returns(async (SpliceBumpRequest r, CancellationToken token) =>
+                      {
+                          _bumps.Add(r);
+                          await Task.Delay(Timeout.Infinite, token);
+                          return new SpliceResult(r.ChannelId, SpliceNegotiationState.Signed);
+                      });
+        var monitor = new Mock<IBlockchainMonitor>();
+        var bumper = CreateBumper(monitor: monitor.Object, maxWait: TimeSpan.FromMilliseconds(20));
+        var ct = TestContext.Current.CancellationToken;
+        bumper.Start();
+        monitor.Raise(m => m.OnNewBlockDetected += null,
+                      new NewBlockEventArgs(BroadcastHeight + Interval, new Hash(new byte[32])));
+        await bumper.WhenIdleAsync().WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        // Act
+        await bumper.StopAsync().WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        // Assert: the round moved on after the wait, and stopping cancelled and awaited the bump
+        Assert.Single(_bumps);
     }
 
     [Fact]
@@ -391,8 +488,22 @@ public class SpliceAutoBumperTests
         Assert.False(provider.GetRequiredService<SpliceAutoBumper>().IsEnabled);
     }
 
+    private static async Task WaitUntilAsync(Func<Task<IReadOnlyList<SpliceResult>>> round, CancellationToken ct)
+    {
+        // The released bump leaves _running on its continuation; the round bumps once it has
+        for (var i = 0; i < 200; i++)
+        {
+            if ((await round()).Count > 0)
+                return;
+
+            await Task.Delay(10, ct);
+        }
+    }
+
     private SpliceAutoBumper CreateBumper(uint? interval = Interval, int maxRbfAttempts = 8,
-                                          IBlockchainMonitor? monitor = null)
+                                          IBlockchainMonitor? monitor = null, uint maxFeerate = 25_000,
+                                          ulong? maxFeeSat = 100_000, TimeSpan? maxWait = null,
+                                          ILogger<SpliceAutoBumper>? logger = null)
     {
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(_broadcasts.Object);
@@ -402,10 +513,13 @@ public class SpliceAutoBumperTests
         var options = Options.Create(new SpliceOptions
         {
             AutoBumpAfterBlocks = interval,
-            MaxRbfAttempts = maxRbfAttempts
+            MaxRbfAttempts = maxRbfAttempts,
+            AutoBumpMaxFeeratePerKw = maxFeerate,
+            AutoBumpMaxFeeSat = maxFeeSat,
+            AutoBumpMaxWait = maxWait ?? TimeSpan.FromSeconds(120)
         });
         return new SpliceAutoBumper(_channels.Object, _spliceService.Object, _statePort.Object, _feeService.Object,
-                                    provider, NullLogger<SpliceAutoBumper>.Instance, options, monitor);
+                                    provider, logger ?? NullLogger<SpliceAutoBumper>.Instance, options, monitor);
     }
 
     private static ChannelFunding Funding(byte tag, ChannelFundingKind kind, ChannelFundingStatus status,
@@ -429,4 +543,22 @@ public class SpliceAutoBumperTests
     private static SpliceNegotiationModel Negotiation(SpliceNegotiationState state, TxId? txId) =>
         new(s_channelId, true, -50_000, 0, SpliceFeerate, 0, s_key, 1, null, false, false, null, state, txId,
             DateTimeOffset.UnixEpoch);
+
+    private sealed class CountingLogger : ILogger<SpliceAutoBumper>
+    {
+        private int _warnings;
+
+        public int Warnings => Volatile.Read(ref _warnings);
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                                Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Warning)
+                Interlocked.Increment(ref _warnings);
+        }
+    }
 }

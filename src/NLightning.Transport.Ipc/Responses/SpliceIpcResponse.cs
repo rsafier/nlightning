@@ -19,6 +19,12 @@ public sealed class SpliceIpcResponse
     [Key(3)] public ulong? NewCapacitySat { get; init; }
     [Key(4)] public string? FailureReason { get; init; }
 
+    /// <summary>
+    /// Information that is not a failure (a splice stopped at CommitmentSigned that completes on the reconnection), or
+    /// null.
+    /// </summary>
+    [Key(5)] public string? Note { get; init; }
+
     public static SpliceIpcResponse FromClientResponse(SpliceClientResponse clientResponse)
     {
         ArgumentNullException.ThrowIfNull(clientResponse);
@@ -30,7 +36,8 @@ public sealed class SpliceIpcResponse
                              ? Convert.ToHexString(((byte[])txId).Reverse().ToArray()).ToLowerInvariant()
                              : null,
             NewCapacitySat = clientResponse.NewCapacitySat,
-            FailureReason = clientResponse.FailureReason
+            FailureReason = clientResponse.FailureReason,
+            Note = clientResponse.Note
         };
     }
 }
