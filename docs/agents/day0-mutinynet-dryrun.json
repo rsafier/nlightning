@@ -573,6 +573,7 @@
    "pass": 1,
    "txid": "deac18b2666be7604967acde3491f8fcbb180f0e99e058de91ac57860ef6b6f4",
    "role": "FAFO2 funding: FAFO withdraw of 400,000 sat to FAFO2's wallet",
+   "confirmations_at_record": 154,
    "confirmed": true,
    "block_height": 3462070,
    "block_time": 1790574114,
@@ -627,6 +628,7 @@
      "label": "channel funding output (pass-1 channel a83a746a..., 350,000 sat)"
     }
    ],
+   "confirmations_at_record": 150,
    "confirmed": true,
    "block_height": 3462074,
    "block_time": 1790574258,
@@ -693,6 +695,7 @@
      "label": "channel funding output (pass-1 splice, 450,000 sat)"
     }
    ],
+   "confirmations_at_record": 141,
    "confirmed": true,
    "block_height": 3462083,
    "block_time": 1790574554,
@@ -748,6 +751,7 @@
      "label": "channel funding output (pass-1 splice, 399,816 sat)"
     }
    ],
+   "confirmations_at_record": 133,
    "confirmed": true,
    "block_height": 3462091,
    "block_time": 1790574818,
@@ -797,6 +801,7 @@
      "label": "channel funding output (pass-1 splice, 419,816 sat)"
     }
    ],
+   "confirmations_at_record": 126,
    "confirmed": true,
    "block_height": 3462098,
    "block_time": 1790575041,
@@ -852,6 +857,7 @@
      "label": "channel funding output of T1 (449,816 sat)"
     }
    ],
+   "confirmations_at_record": 0,
    "confirmed": false,
    "block_height": null,
    "block_time": null,
@@ -907,6 +913,7 @@
      "label": "channel funding output (pass-1 splice, 449,816 sat)"
     }
    ],
+   "confirmations_at_record": 120,
    "confirmed": true,
    "block_height": 3462104,
    "block_time": 1790575245,
@@ -956,6 +963,7 @@
    "pass": 1,
    "txid": "b078b3cb813007a8932f50784ff3a97ac705e3bb13b48240fed54aa97d320be6",
    "role": "cooperative close of the pass-1 channel (during pass 2)",
+   "confirmations_at_record": 80,
    "confirmed": true,
    "block_height": 3462144,
    "block_time": 1790576549,
@@ -1010,6 +1018,7 @@
      "label": "channel funding output (pass-2 channel fede6471..., 350,000 sat)"
     }
    ],
+   "confirmations_at_record": 88,
    "confirmed": true,
    "block_height": 3462136,
    "block_time": 1790576281,
@@ -1076,6 +1085,7 @@
      "label": "channel funding output (450,000 sat)"
     }
    ],
+   "confirmations_at_record": 79,
    "confirmed": true,
    "block_height": 3462145,
    "block_time": 1790576581,
@@ -1131,6 +1141,7 @@
      "label": "channel funding output (399,816 sat)"
     }
    ],
+   "confirmations_at_record": 70,
    "confirmed": true,
    "block_height": 3462154,
    "block_time": 1790576874,
@@ -1180,6 +1191,7 @@
      "label": "channel funding output (419,816 sat)"
     }
    ],
+   "confirmations_at_record": 66,
    "confirmed": true,
    "block_height": 3462158,
    "block_time": 1790576998,
@@ -1235,6 +1247,7 @@
      "label": "channel funding output of T1 (449,816 sat)"
     }
    ],
+   "confirmations_at_record": 0,
    "confirmed": false,
    "block_height": null,
    "block_time": null,
@@ -1290,6 +1303,7 @@
      "label": "channel funding output (pass-2 channel, 449,816 sat, current)"
     }
    ],
+   "confirmations_at_record": 61,
    "confirmed": true,
    "block_height": 3462164,
    "block_time": 1790577199,
@@ -1340,5 +1354,6 @@
   "NL-517": "high, fixed d5be5b73",
   "NL-518": "low, open (splice mempool warning)",
   "NL-519": "low, fixed 8e852a18 (txids in logs)"
- }
+ },
+ "transactions_verified_with": "~/mutinynet/cli.sh getrawtransaction <txid> true (confirmed ones; fee from the prevouts, height from getblockheader); the two replaced RBF attempts via decoderawtransaction of the nodes' BroadcastTransactions rows"
 }
