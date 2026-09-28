@@ -389,6 +389,26 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// RBFs our unconfirmed dual-funded open at a higher feerate (ClientCommand 38) and waits for the new attempt.
+    /// </summary>
+    /// <param name="channelId">The dual-funded channel whose funding is bumped.</param>
+    /// <param name="feeRatePerKw">The new attempt's feerate in sat/kw (at least the RBF minimum of the latest
+    /// attempt).</param>
+    /// <param name="contributionSat">Our new contribution in sats; null keeps it.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<BumpOpenIpcResponse> BumpOpenAsync(ChannelId channelId, uint feeRatePerKw, ulong? contributionSat,
+                                                   CancellationToken ct = default)
+    {
+        var req = new BumpOpenIpcRequest
+        {
+            ChannelId = channelId,
+            FeeRatePerKw = feeRatePerKw,
+            ContributionSat = contributionSat
+        };
+        return SendRequestAsync<BumpOpenIpcRequest, BumpOpenIpcResponse>(ClientCommand.BumpOpen, req, ct);
+    }
+
+    /// <summary>
     /// Lists the latest peer_storage_retrieval of each peer and the blobs we keep for our peers (ClientCommand 32).
     /// </summary>
     /// <param name="peerNodeId">Only this peer; null for every peer.</param>

@@ -62,5 +62,11 @@ public enum ClientCommand
     /// RBF a channel's pending splice at a higher feerate (<c>bumpsplice</c>, splicing plan §3.10, wave SPR lane SPR-B);
     /// answered with the splice response of <see cref="SpliceIn"/>/<see cref="SpliceOut"/>.
     /// </summary>
-    BumpSplice = 37
+    BumpSplice = 37,
+
+    /// <summary>
+    /// RBF our unconfirmed dual-funded open at a higher feerate (<c>bumpopen</c>, BOLT 2 "Fee bumping", lane dfrbf);
+    /// answered with <c>BumpOpenIpcResponse</c>.
+    /// </summary>
+    BumpOpen = 38
 }

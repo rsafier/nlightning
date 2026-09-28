@@ -77,6 +77,12 @@ public sealed class Day0FlowTests : IAsyncLifetime
     private const ulong PolicyHtlcMaximumMsat = 150_000_000;
     private const ulong RbfSpliceInSat = 40_000;
 
+    /// <summary>
+    /// Step 1 (b): the feerate A bumps its unconfirmed open to (the open is at the test node's estimate, 2,500 sat/kw;
+    /// IT-RBF-01 asks for at least 2,604).
+    /// </summary>
+    private const uint OpenBumpFeeRatePerKw = 5_000;
+
     /// <summary>Step 9's first attempt: BOLT 3's floor, the feerate the runbook warns about.</summary>
     private const uint RbfLowFeeRatePerKw = 253;
 
@@ -148,7 +154,20 @@ public sealed class Day0FlowTests : IAsyncLifetime
                          }, ct);
         var channelId = opened.ChannelId;
         Console.WriteLine($"[day0] step 1: dual-funded public channel {channelId}");
+
+        // Step 1 (b), lane dfrbf: A bumps the unconfirmed public open (bumpopen, RBF on by default since NL-528); both
+        // nodes move to the replacement, which is the funding that confirms and is announced
+        var firstFunding = Channel(a, channelId).FundingOutput!.TransactionId!.Value;
+        var bumped = await Day0Harness.HandleAsync<BumpOpenClientRequest, BumpOpenClientResponse>(
+                         a, new BumpOpenClientRequest(channelId, OpenBumpFeeRatePerKw), ct);
+        Assert.NotEqual(firstFunding, bumped.FundingTxId);
+        await Poll.UntilAsync(() => Task.FromResult(Channel(b, channelId).FundingOutput!.TransactionId
+                                                 == bumped.FundingTxId), Day0Harness.StepTimeout,
+                              "B on the bumped funding", ct);
+        Console.WriteLine($"[day0] step 1 (b): bumpopen replaced {firstFunding} with {bumped.FundingTxId}");
         var (openA, openB) = await Day0Harness.MineUntilUsableAsync(_fixture, observers, a, b, channelId, ct);
+        Assert.Equal(bumped.FundingTxId, Channel(a, channelId).FundingOutput!.TransactionId);
+        Assert.Equal(bumped.FundingTxId, Channel(b, channelId).FundingOutput!.TransactionId);
 
         Assert.True(openA.IsInitiator);
         Assert.False(openB.IsInitiator);

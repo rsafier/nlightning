@@ -63,4 +63,16 @@ public interface IDualFundedOpenService
     /// initiator, or the feerate is below the floor.</exception>
     Task<DualFundedOpenResult> BumpAsync(ChannelId channelId, uint feeratePerKw,
                                          CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// <see cref="BumpAsync(ChannelId, uint, CancellationToken)"/> with our <c>funding_output_contribution</c> changed
+    /// to <paramref name="localContribution"/> (BOLT 2: the sender "MAY set <c>funding_output_contribution</c> to a
+    /// different value", NL-521); null keeps it. The default serves implementations without that support.
+    /// </summary>
+    /// <exception cref="NotSupportedException">A new contribution and an implementation that cannot change it.</exception>
+    Task<DualFundedOpenResult> BumpAsync(ChannelId channelId, uint feeratePerKw, LightningMoney? localContribution,
+                                         CancellationToken cancellationToken = default) =>
+        localContribution is null
+            ? BumpAsync(channelId, feeratePerKw, cancellationToken)
+            : throw new NotSupportedException("Changing our contribution in an RBF is not supported");
 }

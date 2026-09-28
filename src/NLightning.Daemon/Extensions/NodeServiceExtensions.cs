@@ -243,6 +243,8 @@ public static class NodeServiceExtensions
         // BOLT 2 dual-funded opens (wave sp1 lane SP1-F, Node:DualFund); option_dual_fund is Optional by default since
         // D13 (a peer's open_channel2 is accepted; openchannel stays v1 unless --dual-fund)
         services.Configure<DualFundingOptions>(configuration.GetSection(DualFundingOptions.SectionName));
+        // bumpopen (ClientCommand 38, lane dfrbf): RBF of our unconfirmed dual-funded open (Node:DualFund:AllowRbf)
+        services.AddDualFundIpcServices();
         // Per-channel routing policies (wave sp1 lane SP1-G): setchannelpolicy/getchannelpolicy (ClientCommand 35/36)
         services.AddChannelPolicyIpcServices();
 

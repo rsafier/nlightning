@@ -296,6 +296,10 @@ internal static class ClientApp
                     if (!await SpliceCommands.RunAsync(cmd, commandArgs, client, cancellationToken))
                         return Failure;
                     break;
+                case "bumpopen":
+                case "bump-open":
+                    await BumpOpenCommands.RunAsync(commandArgs, client, Console.Out, cancellationToken);
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -493,6 +497,9 @@ internal static class ClientApp
             case "bumpsplice":
             case "bump-splice":
                 return SpliceCommands.Validate(cmd, commandArgs);
+            case "bumpopen":
+            case "bump-open":
+                return BumpOpenCommands.Validate(cmd, commandArgs);
             case "listinvoices":
             case "list-invoices":
             case "listpayments":
