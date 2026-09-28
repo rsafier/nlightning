@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+### Security
+
+- `Invoice.Decode` rejects an invoice with more than one `p` (payment hash) field, identical or not (BOLT 11 after
+  bolts#1357, NL-502). It used to keep the first one, so a component using another parser that takes the last `p`
+  could disagree with us about which payment hash a signed invoice asks for;
+
 ### Changed
 
 - `Invoice.Encode` now validates the invoice before signing (NL-120): p, s and d/h are required, the `9` field must

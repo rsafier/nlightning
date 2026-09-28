@@ -90,10 +90,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 10 | 158 | 168 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 58 | 143 | 104 | 319 |
+| fixed | 14 | 59 | 143 | 104 | 320 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **58** | **156** | **268** | **496** |
+| **Total** | **14** | **59** | **156** | **268** | **497** |
 
 ### Epics
 
@@ -3736,6 +3736,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Add hints from our peers' stored `channel_update` policies (W1-E `ChannelUpdateService`) for private channels.
 - **Blocks/Blocked-by:** Related NL-114, NL-099
 - **Plan ref:** ONION M4-T6
+
+### NL-502 An invoice with two `p` fields decoded with the first payment hash (duplicate payment hash, bolts#1357)
+- **Status:** fixed (commit "reject bolt 11 invoices with more than one payment hash (NL-502 / bolts#1357)")
+- **Severity:** high
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Bolt11/Models/TaggedFieldList.cs` (`FromBitReader`)
+- **Evidence:** The decoder kept the first of several `p` (payment hash) fields and dropped the rest silently. The signature covers every field, so a payee can sign an invoice with two different payment hashes; a service that reads the invoice with one parser (last `p` wins) and pays it with another (first `p` wins) sees its own hash never settle and pays again (the exploit behind [lightning/bolts#1357](https://github.com/lightning/bolts/pull/1357), which adds "a reader MUST fail the payment if more than one `p` field is present" and "a payer MUST use the `p` field as the payment hash"). Inside the node there was no disagreement (every BOLT 11 decode goes through `Invoice.Decode`: `PaymentService.DecodeInvoice` -> `PaymentTarget.FromInvoice` for `payinvoice`; `InvoiceService` only encodes our own invoices), but an operator whose backend parses invoices with a last-wins library and pays through `payinvoice` was exposed, and so is any consumer of the `NLightning.Bolt11` package. Severity high rather than critical because it needs a second, last-wins parser outside NLightning.
+- **Fix sketch:** Done: a second `p` field, identical or different, throws `ArgumentException` in `FromBitReader`, so `Invoice.Decode` fails with `InvoiceSerializationException`. Other duplicated non-repeatable fields still keep the first one (BOLT 11 has no rule for them; writers put the most-preferred first). The PR's `bolt11/invoice-test.json` (PR head `03ac8145`) is in `test/NLightning.Bolt11.Tests/Vectors/` and every entry is decoded by `Models/InvoiceSpecVectorTests` (15 valid decode, 13 invalid fail, incl. "Two distinct p fields" and "The same p field twice").
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
 
 ---
 

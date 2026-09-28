@@ -433,21 +433,41 @@ public class TaggedFieldListTests
         Assert.True(list.TryGet<PaymentHashTaggedField>(TaggedFieldTypes.PaymentHash, out _));
     }
 
-    [Fact]
-    public void Given_TwoPaymentHashes_When_FromBitReader_Then_FirstIsKept()
+    [Theory]
+    [InlineData(1, 2)]
+    [InlineData(1, 1)]
+    public void Given_TwoPaymentHashes_When_FromBitReader_Then_ThrowsArgumentException(byte firstFill,
+        byte secondFill)
     {
         // Arrange
-        var bytes = BuildFields(out var totalBits, (TaggedFieldTypes.PaymentHash, 52, 1),
-                                (TaggedFieldTypes.PaymentHash, 52, 2));
+        // BOLT 11 (bolts#1357): MUST fail if more than one `p` field is present, distinct or identical
+        var bytes = BuildFields(out var totalBits, (TaggedFieldTypes.PaymentHash, 52, firstFill),
+                                (TaggedFieldTypes.PaymentSecret, 52, 3),
+                                (TaggedFieldTypes.PaymentHash, 52, secondFill));
+
+        // Act & Assert
+        var exception = Assert.Throws<ArgumentException>(() => TaggedFieldList.FromBitReader(
+                                                              new BitReader(bytes), BitcoinNetwork.Mainnet,
+                                                              totalBits));
+        Assert.Contains("more than one payment hash", exception.Message);
+    }
+
+    [Fact]
+    public void Given_TwoPaymentSecrets_When_FromBitReader_Then_FirstIsKept()
+    {
+        // Arrange
+        // Only `p` is a MUST-fail duplicate; other non-repeatable fields keep the first (most preferred) one
+        var bytes = BuildFields(out var totalBits, (TaggedFieldTypes.PaymentSecret, 52, 1),
+                                (TaggedFieldTypes.PaymentSecret, 52, 2));
 
         // Act
         var list = TaggedFieldList.FromBitReader(new BitReader(bytes), BitcoinNetwork.Mainnet, totalBits);
 
         // Assert
         Assert.Single(list);
-        Assert.True(list.TryGet<PaymentHashTaggedField>(TaggedFieldTypes.PaymentHash, out var paymentHash));
+        Assert.True(list.TryGet<PaymentSecretTaggedField>(TaggedFieldTypes.PaymentSecret, out var paymentSecret));
         // 52 groups of 00001 -> first byte 0b00001000
-        Assert.Equal(0x08, paymentHash.Value.ToBytes(false)[0]);
+        Assert.Equal(0x08, paymentSecret.Value.ToBytes(false)[0]);
     }
 
     [Fact]
