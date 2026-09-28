@@ -11,6 +11,7 @@ using Application.Gossip.Sync.Interfaces;
 using Application.Node.Services;
 using Domain.Channels.ValueObjects;
 using Domain.Gossip.Enums;
+using Domain.Gossip.Graph;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Models;
 using Domain.Gossip.Queries;
@@ -229,6 +230,51 @@ public class GossipRelayBackpressureTests : IDisposable
         Assert.Contains(peer.Sent.OfType<ChannelAnnouncementMessage>(),
                         a => a.Payload.ShortChannelId == new ShortChannelId(950, 1, 0));
         Assert.Equal(0, _recorder.Observe("nlightning.gossip.relay.paused_connections"));
+    }
+
+    [Fact]
+    public async Task Given_AStalledBacklog_When_LaterGossipIsFlushed_Then_NoUpdateOrNodeGoesOutBeforeItsChannel()
+    {
+        // Arrange (NL-548, found by the NL-417 mainnet proof): ten channels, the outbox of 4 takes 600's announcement
+        // and updates and 601's announcement, then the peer stops reading and the backlog stalls
+        for (uint i = 0; i < 9; i++)
+            _graph.AddSignedChannel(new ShortChannelId(600 + i, 1, 0), SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        _graph.AddSignedChannel(new ShortChannelId(609, 1, 0), SyncTestGraph.NodeA, SyncTestGraph.NodeC);
+        var peer = AddPeer(0x41);
+        await TickAsync(TimeSpan.Zero);
+        RaiseFilter(peer);
+        await TickAsync(TimeSpan.FromSeconds(1));
+        await TickAsync(s_stallTimeout);
+        Assert.Equal(1, _recorder.Sum("nlightning.gossip.relay.stalled"));
+        _outbox.Drain(peer, int.MaxValue);
+        await TickAsync(TimeSpan.FromSeconds(1));
+        var sentBeforeLiveGossip = peer.Sent.Count;
+
+        // Act: a newer update of 605 (never announced to the peer), node C (only channel 609, never announced) and
+        // node A (channels the peer got)
+        var unsent = new ShortChannelId(605, 1, 0);
+        var (node1, _) = SyncTestGraph.Ordered(SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        var update = GraphTestKit.SignedChannelUpdate(unsent, node1, 0, 1_700_000_050).Payload;
+        Assert.True(_graph.Store.TryApplyPolicy(unsent, GraphPolicy.FromChannelUpdate(update) with
+        {
+            RawUpdate = update.GetBytes()
+        }));
+        _graph.AddNode(SyncTestGraph.NodeC, 1_700_000_060);
+        _graph.AddNode(SyncTestGraph.NodeA, 1_700_000_060);
+        for (var i = 0; i < 3; i++)
+        {
+            await FlushAllAsync();
+            _outbox.Drain(peer, int.MaxValue);
+        }
+
+        // Assert: 605's announcement before its update, node A announced, node C left out
+        var live = peer.Sent.Skip(sentBeforeLiveGossip).ToList();
+        Assert.Equal(4, sentBeforeLiveGossip);
+        AssertEveryUpdateAfterItsAnnouncement(peer.Sent);
+        Assert.Contains(live.OfType<ChannelAnnouncementMessage>(), a => a.Payload.ShortChannelId == unsent);
+        Assert.Contains(live.OfType<NodeAnnouncementMessage>(), n => n.Payload.NodeId == SyncTestGraph.NodeA.PubKey);
+        Assert.DoesNotContain(live.OfType<NodeAnnouncementMessage>(),
+                              n => n.Payload.NodeId == SyncTestGraph.NodeC.PubKey);
     }
 
     [Fact]

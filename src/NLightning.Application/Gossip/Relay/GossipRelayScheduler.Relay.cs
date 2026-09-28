@@ -73,7 +73,10 @@ using Sync.Interfaces;
 /// of the caps. A paused connection that sends no gossip for <see cref="GossipRelayOptions.RelayStallTimeout"/> is
 /// stalled: its backlog ends and its pending messages are dropped (counted as <c>relay_stalled</c>), so a peer that
 /// never reads holds at most its outbox cap and the bounded pending set, and no old graph snapshot. The connection is
-/// not closed (gossip is never worth a connection).
+/// not closed (gossip is never worth a connection). No flush runs while a backlog does (NL-548): what was collected
+/// meanwhile waits, so no update or node announcement reaches the peer before its channel's announcement. After a
+/// stall the peer never got the channels past the backlog's position: a later update of such a channel goes out after
+/// its announcement, and a node announcement only for a node with a channel the peer got.
 /// </para>
 /// </remarks>
 public sealed partial class GossipRelayScheduler
@@ -196,6 +199,7 @@ public sealed partial class GossipRelayScheduler
                 state.ClearPending();
                 state.Backlog?.Dispose();
                 state.HeldBacklogItem = null;
+                state.ResetBacklogPosition();
                 state.Backlog = EnumerateBacklog(_graphStore!.GetSnapshot(), filter, peer.NodeId).GetEnumerator();
             }
 
@@ -325,7 +329,10 @@ public sealed partial class GossipRelayScheduler
     private async Task<int> FlushPeerAsync(GossipPeer peer, RelayPeerState state, GossipTimestampFilter filter,
                                            DateTimeOffset now)
     {
-        var items = state.TakePending(AnnouncementToResend)
+        var pending = state.TakePending(AnnouncementToResend);
+        if (state.TruncatedAt is { } cut)
+            pending = CompleteAfterTruncatedBacklog(state, pending, cut);
+        var items = pending
                          .OrderBy(i => i.Rank)
                          .ThenBy(i => QueryResponder.ToUInt64(i.ShortChannelId))
                          .ThenBy(i => i.Direction)
@@ -344,6 +351,8 @@ public sealed partial class GossipRelayScheduler
             {
                 case SendResult.Sent:
                     sent++;
+                    if (item.Type == MessageTypes.ChannelAnnouncement)
+                        state.RememberAnnouncedAfterCut(item.ShortChannelId);
                     break;
                 case SendResult.Full:
                     // NL-360: the refused message and the rest go back, ahead of what was collected since
@@ -390,6 +399,7 @@ public sealed partial class GossipRelayScheduler
             {
                 case SendResult.Sent:
                     sent++;
+                    state.AdvanceBacklogPosition(item);
                     break;
                 case SendResult.Full:
                     state.HeldBacklogItem = item;
@@ -605,6 +615,47 @@ public sealed partial class GossipRelayScheduler
     private bool HasRelayablePolicy(GraphChannel channel) =>
         GetRelayablePolicy(channel, 0) is not null || GetRelayablePolicy(channel, 1) is not null;
 
+    /// <summary>
+    /// After a stall ended a backlog before its end (NL-548), the peer never got the channels after the backlog's
+    /// position: a live <c>channel_update</c> of such a channel goes out after its <c>channel_announcement</c> (added
+    /// here once per channel), and a <c>node_announcement</c> only for a node with a channel the peer got (else it is
+    /// left out: BOLT 7 has the peer ignore it).
+    /// </summary>
+    private List<RelayItem> CompleteAfterTruncatedBacklog(RelayPeerState state, List<RelayItem> items, ulong cut)
+    {
+        bool Unsent(Domain.Channels.ValueObjects.ShortChannelId shortChannelId) =>
+            QueryResponder.ToUInt64(shortChannelId) > cut && !state.WasAnnouncedAfterCut(shortChannelId);
+
+        var announced = items.Where(i => i.Type == MessageTypes.ChannelAnnouncement)
+                             .Select(i => i.ShortChannelId)
+                             .ToHashSet();
+        var orphaned = items.Where(i => i.Type == MessageTypes.ChannelUpdate && Unsent(i.ShortChannelId)
+                                     && !announced.Contains(i.ShortChannelId))
+                            .Select(i => i.ShortChannelId)
+                            .Distinct()
+                            .ToList();
+        foreach (var shortChannelId in orphaned)
+        {
+            if (AnnouncementToResend(shortChannelId) is not { } announcement)
+                continue;
+
+            items.Add(announcement);
+            announced.Add(shortChannelId);
+        }
+
+        if (!items.Any(i => i.Type == MessageTypes.NodeAnnouncement))
+            return items;
+
+        var snapshot = _graphStore!.GetSnapshot();
+        items.RemoveAll(i => i.Type == MessageTypes.NodeAnnouncement
+                          && !(snapshot.TryGetNodeIndex(i.NodeId!.Value, out var index)
+                            && snapshot.GetAdjacency(index)
+                                       .Any(e => IsRelayable(e.Channel)
+                                              && (!Unsent(e.Channel.ShortChannelId)
+                                               || announced.Contains(e.Channel.ShortChannelId)))));
+        return items;
+    }
+
     /// <summary>The stored announcement of a channel still relayable (null when it is not).</summary>
     private RelayItem? AnnouncementToResend(Domain.Channels.ValueObjects.ShortChannelId shortChannelId) =>
         _graphStore!.TryGetChannel(shortChannelId, out var channel) && IsRelayable(channel)
@@ -733,6 +784,7 @@ public sealed partial class GossipRelayScheduler
         private readonly Queue<(GossipMessageKey Slot, long Sequence)> _nodeOrder = new();
         private readonly HashSet<Domain.Channels.ValueObjects.ShortChannelId> _unsentAnnouncements = [];
         private readonly Queue<Domain.Channels.ValueObjects.ShortChannelId> _unsentOrder = new();
+        private readonly HashSet<Domain.Channels.ValueObjects.ShortChannelId> _announcedAfterCut = [];
         private long _sequence;
         private long _putBackSequence;
         private int _backlogRequested;
@@ -792,9 +844,54 @@ public sealed partial class GossipRelayScheduler
         {
             IsStalled = true;
             var held = HeldBacklogItem is null ? 0 : 1;
+            if ((Backlog is not null || HeldBacklogItem is not null) && BacklogPosition != ulong.MaxValue)
+            {
+                TruncatedAt = BacklogPosition ?? 0;
+                _announcedAfterCut.Clear();
+            }
+
             EndBacklog();
             return held + ClearPending();
         }
+
+        /// <summary>
+        /// The short channel id (as a number) of the last channel the running backlog sent, <see cref="ulong.MaxValue"/>
+        /// once it reached the node announcements; null before its first message.
+        /// </summary>
+        public ulong? BacklogPosition { get; private set; }
+
+        /// <summary>
+        /// Set when a stall ended the backlog early (NL-548): the peer never got the channels after this position.
+        /// </summary>
+        public ulong? TruncatedAt { get; private set; }
+
+        public void AdvanceBacklogPosition(RelayItem item) =>
+            BacklogPosition = item.Type == MessageTypes.NodeAnnouncement
+                                  ? ulong.MaxValue
+                                  : QueryResponder.ToUInt64(item.ShortChannelId);
+
+        /// <summary>A new backlog: the peer gets the whole graph again.</summary>
+        public void ResetBacklogPosition()
+        {
+            BacklogPosition = null;
+            TruncatedAt = null;
+            _announcedAfterCut.Clear();
+        }
+
+        /// <summary>A channel announcement past <see cref="TruncatedAt"/> went out (bounded; a forgotten one costs a
+        /// repeated announcement, never an update without one).</summary>
+        public void RememberAnnouncedAfterCut(Domain.Channels.ValueObjects.ShortChannelId shortChannelId)
+        {
+            if (TruncatedAt is null)
+                return;
+
+            if (_announcedAfterCut.Count >= 4 * Math.Max(maxPending, 16))
+                _announcedAfterCut.Clear();
+            _announcedAfterCut.Add(shortChannelId);
+        }
+
+        public bool WasAnnouncedAfterCut(Domain.Channels.ValueObjects.ShortChannelId shortChannelId) =>
+            _announcedAfterCut.Contains(shortChannelId);
 
         public void RequestBacklog() => Interlocked.Exchange(ref _backlogRequested, 1);
 
