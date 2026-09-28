@@ -24,14 +24,14 @@ public sealed class DualFundingOptions
     public TimeSpan OpenTimeout { get; set; } = TimeSpan.FromMinutes(2);
 
     /// <summary>
-    /// Whether an unconfirmed dual-funded open may be replaced by RBF (<c>BumpAsync</c> and the peer's
-    /// <c>tx_init_rbf</c>); default false: the peer's <c>tx_init_rbf</c> gets <c>tx_abort</c> (BOLT 2: "MAY send
-    /// tx_abort for any reason"). The channel keeps the commitment signatures of one attempt only, so while an RBF is
-    /// allowed an earlier attempt that confirms instead leaves the channel on the wrong outpoint (no unilateral close;
-    /// per-funding commitments come with splicing's <c>FundingSet</c>). Even when allowed, an RBF is refused for a
-    /// public channel (the signer keeps the first attempt's outpoint) and once an attempt has a confirmation.
+    /// Whether an unconfirmed dual-funded open may be replaced by RBF (BOLT 2 "Fee bumping": our <c>BumpAsync</c> as
+    /// the opener and the peer's <c>tx_init_rbf</c> in either role); default true (lane dfrbf, owner decision
+    /// 2026-09-28). False refuses both: <c>BumpAsync</c> throws and the peer's <c>tx_init_rbf</c> gets <c>tx_abort</c>
+    /// (BOLT 2: "MAY send tx_abort for any reason"). Each fully signed attempt is stored with the peer's signature of
+    /// our first commitment and our share, so whichever attempt confirms, the channel follows it (NL-528). An RBF is
+    /// refused anyway once an attempt has a confirmation or <c>channel_ready</c> was sent or received.
     /// </summary>
-    public bool AllowRbf { get; set; }
+    public bool AllowRbf { get; set; } = true;
 
     /// <summary>The configuration problems, empty when valid.</summary>
     public IReadOnlyList<string> GetValidationErrors()

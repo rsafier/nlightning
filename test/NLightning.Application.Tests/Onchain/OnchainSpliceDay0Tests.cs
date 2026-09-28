@@ -232,6 +232,108 @@ public sealed class OnchainSpliceDay0Tests : IDisposable
 
     #endregion
 
+    #region NL-528
+
+    [Fact]
+    public async Task Given_ADualFundedOpenWhoseRbfAttemptWithOurInputsLost_When_TheFundingIsIrrevocable_Then_Released()
+    {
+        // Arrange: the first attempt (no input of ours) confirmed at 600; the RBF attempt added our wallet input
+        var channel = DualFundedChannel();
+        var loserTxId = new TxId(Enumerable.Repeat((byte)0xC8, 32).ToArray());
+        _fundings.Setup(f => f.GetByChannelIdAsync(channel.ChannelId))
+                 .ReturnsAsync(() => [ChannelFunding.FromFundingOutput(channel.FundingOutput!)!]);
+        _storedSessions.Add(OpenSession(channel.FundingOutput!.TransactionId!.Value, false));
+        _storedSessions.Add(OpenSession(loserTxId, true));
+        IReadOnlyCollection<(TxId, uint)>? kept = null;
+        _contributor.Setup(c => c.ReleaseDiscardedAsync(It.IsAny<ConstructedInteractiveTx>(),
+                                                        It.IsAny<IReadOnlyCollection<(TxId, uint)>>(),
+                                                        It.IsAny<CancellationToken>()))
+                    .Callback((ConstructedInteractiveTx _, IReadOnlyCollection<(TxId, uint)> k, CancellationToken _) =>
+                                  kept = k)
+                    .ReturnsAsync(1);
+        var executor = CreateExecutor(channel: channel);
+
+        // Act: 99 blocks deep, then 100
+        await executor.RunRoundAsync(CloseHeight + 98, TestContext.Current.CancellationToken);
+        var releasedAt99 = CountReleases();
+        await executor.RunRoundAsync(CloseHeight + 99, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(CloseHeight + 100, TestContext.Current.CancellationToken);
+
+        // Assert: only the losing attempt, once, with the confirmed attempt's inputs kept; it is settled
+        Assert.Equal(0, releasedAt99);
+        Assert.Equal(1, CountReleases());
+        _contributor.Verify(c => c.ReleaseDiscardedAsync(It.Is<ConstructedInteractiveTx>(t => t.TxId == loserTxId),
+                                                         It.IsAny<IReadOnlyCollection<(TxId, uint)>>(),
+                                                         It.IsAny<CancellationToken>()));
+        Assert.Contains((s_peerInputTxId, 0u), kept!);
+        Assert.NotNull(_storedSessions.Single(s => s.ConstructedTx!.TxId == loserTxId).ResolvedAt);
+        Assert.Null(_storedSessions.Single(s => s.ConstructedTx!.TxId != loserTxId).ResolvedAt);
+    }
+
+    [Fact]
+    public async Task Given_ADualFundedOpenStillWaitingForItsFunding_When_BlocksPass_Then_NothingIsReleased()
+    {
+        // Arrange: no attempt confirmed yet: every one of them may still be the one
+        var channel = DualFundedChannel(ChannelState.V1FundingSigned);
+        _fundings.Setup(f => f.GetByChannelIdAsync(channel.ChannelId))
+                 .ReturnsAsync(() => [ChannelFunding.FromFundingOutput(channel.FundingOutput!)!]);
+        _storedSessions.Add(OpenSession(channel.FundingOutput!.TransactionId!.Value, false));
+        _storedSessions.Add(OpenSession(new TxId(Enumerable.Repeat((byte)0xC8, 32).ToArray()), true));
+
+        // Act
+        await CreateExecutor(channel: channel).RunRoundAsync(CloseHeight + 500, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, CountReleases());
+    }
+
+    private static readonly TxId s_peerInputTxId = new(Enumerable.Repeat((byte)0xBB, 32).ToArray());
+
+    /// <summary>The test channel as a dual-funded one whose funding confirmed at <see cref="CloseHeight"/>.</summary>
+    private ChannelModel DualFundedChannel(ChannelState state = ChannelState.Open)
+    {
+        var c = _channel;
+        return new ChannelModel(c.ChannelParams, c.ChannelId, c.CommitmentNumber, c.FundingOutput, c.IsInitiator, null,
+                                null, c.LocalBalance, c.LocalKeySet, 0, 0, c.RemoteBalance, c.RemoteKeySet, 0,
+                                c.RemoteNodeId, 0, state, ChannelVersion.V2)
+        {
+            FundingCreatedAtBlockHeight = CloseHeight
+        };
+    }
+
+    /// <summary>A signed attempt of a dual-funded open: the peer's input, and ours too when <paramref name="withOurInput"/>.</summary>
+    private InteractiveTxSessionModel OpenSession(TxId txId, bool withOurInput)
+    {
+        var funding = _channel.FundingOutput!;
+        var script = new BitcoinScript(new byte[22]);
+        var inputs = new List<InteractiveTxInput>
+        {
+            new(1, InteractiveTxParty.Remote, s_peerInputTxId, 0, 0xFFFFFFFD, LightningMoney.Satoshis(2_000_000),
+                script, [0x00], false)
+        };
+        if (withOurInput)
+            inputs.Add(new InteractiveTxInput(2, InteractiveTxParty.Local, s_walletTxId, 1, 0xFFFFFFFD,
+                                              LightningMoney.Satoshis(100_000), script, [0x00], false));
+        IReadOnlyList<InteractiveTxOutput> outputs = [new(3, InteractiveTxParty.Remote, funding.Amount, script, true)];
+        return new InteractiveTxSessionModel
+        {
+            ChannelId = _channel.ChannelId,
+            SessionId = Guid.NewGuid(),
+            Purpose = withOurInput ? InteractiveTxPurpose.DualFundRbf : InteractiveTxPurpose.DualFund,
+            IsInitiator = false,
+            FeeratePerKw = 253,
+            Locktime = 0,
+            Inputs = inputs,
+            Outputs = outputs,
+            LocalContribution = InteractiveTxContribution.Empty,
+            ConstructedTx = new ConstructedInteractiveTx(txId, [0x02], 0, inputs, outputs, 1_000, 0),
+            State = InteractiveTxSessionState.Signed,
+            CreatedAt = DateTimeOffset.UnixEpoch
+        };
+    }
+
+    #endregion
+
     #region NL-493
 
     [Fact]
@@ -466,13 +568,14 @@ public sealed class OnchainSpliceDay0Tests : IDisposable
     private int CountReleases() =>
         _contributor.Invocations.Count(i => i.Method.Name == nameof(IInteractiveTxContributor.ReleaseDiscardedAsync));
 
-    private OnchainResolutionExecutor CreateExecutor(ILogger<OnchainResolutionExecutor>? logger = null)
+    private OnchainResolutionExecutor CreateExecutor(ILogger<OnchainResolutionExecutor>? logger = null,
+                                                     ChannelModel? channel = null)
     {
         var memory = new Mock<IChannelMemoryRepository>();
+        channel ??= _channel;
         memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
-              .Returns((Func<ChannelModel, bool> predicate) => new[] { _channel }.Where(predicate).ToList());
-        var channel = _channel;
-        memory.Setup(m => m.TryGetChannel(_channel.ChannelId, out channel)).Returns(true);
+              .Returns((Func<ChannelModel, bool> predicate) => new[] { channel }.Where(predicate).ToList());
+        memory.Setup(m => m.TryGetChannel(channel.ChannelId, out channel)).Returns(true);
         return new OnchainResolutionExecutor(new Mock<IChainBroadcaster>().Object, new ChannelLockProvider(),
                                              memory.Object, logger ?? NullLogger<OnchainResolutionExecutor>.Instance,
                                              new Mock<IOutpointWatcher>().Object,

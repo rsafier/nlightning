@@ -35,6 +35,8 @@ public static class InteractiveTxSessionEntityConfiguration
             entity.Property(e => e.TheirWitnesses).IsRequired(false);
             entity.Property(e => e.OurSharedInputSignature).IsRequired(false);
             entity.Property(e => e.TheirSharedInputSignature).IsRequired(false);
+            entity.Property(e => e.LocalFundingSatoshis).IsRequired(false);
+            entity.Property(e => e.TheirCommitmentSignature).IsRequired(false);
             entity.Property(e => e.CommitmentSignedSent).IsRequired();
             entity.Property(e => e.CommitmentSignedReceived).IsRequired();
             entity.Property(e => e.TxSignaturesSent).IsRequired();
@@ -67,6 +69,8 @@ public static class InteractiveTxSessionEntityConfiguration
         entity.Property(e => e.OurSharedInputSignature)
               .HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
         entity.Property(e => e.TheirSharedInputSignature)
+              .HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
+        entity.Property(e => e.TheirCommitmentSignature)
               .HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
     }
 }

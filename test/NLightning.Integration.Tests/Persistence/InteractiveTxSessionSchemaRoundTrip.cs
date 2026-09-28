@@ -100,6 +100,8 @@ internal static class InteractiveTxSessionSchemaRoundTrip
             TheirWitnesses = null,
             OurSharedInputSignature = null,
             TheirSharedInputSignature = Signature(0x77),
+            LocalFundingSatoshis = null,
+            TheirCommitmentSignature = Signature(0x78),
             CommitmentSignedSent = false,
             TxSignaturesReceived = false,
             State = InteractiveTxSessionState.AwaitingTxSignatures,
@@ -194,6 +196,8 @@ internal static class InteractiveTxSessionSchemaRoundTrip
             TheirWitnesses = [new Witness(Enumerable.Repeat((byte)0xAB, 107).ToArray())],
             OurSharedInputSignature = Signature(0x11),
             TheirSharedInputSignature = Signature(0x22),
+            LocalFundingSatoshis = 1_234_567,
+            TheirCommitmentSignature = Signature(0x33),
             CommitmentSignedSent = true,
             CommitmentSignedReceived = true,
             TxSignaturesSent = true,
@@ -274,6 +278,8 @@ internal static class InteractiveTxSessionSchemaRoundTrip
         AssertWitnessesEqual(expected.TheirWitnesses, actual.TheirWitnesses);
         Assert.Equal(expected.OurSharedInputSignature, actual.OurSharedInputSignature);
         Assert.Equal(expected.TheirSharedInputSignature, actual.TheirSharedInputSignature);
+        Assert.Equal(expected.LocalFundingSatoshis, actual.LocalFundingSatoshis);
+        Assert.Equal(expected.TheirCommitmentSignature, actual.TheirCommitmentSignature);
         Assert.Equal(expected.CommitmentSignedSent, actual.CommitmentSignedSent);
         Assert.Equal(expected.CommitmentSignedReceived, actual.CommitmentSignedReceived);
         Assert.Equal(expected.TxSignaturesSent, actual.TxSignaturesSent);

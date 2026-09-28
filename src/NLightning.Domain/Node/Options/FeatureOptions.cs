@@ -131,8 +131,8 @@ public class FeatureOptions
     /// Optional by default since splicing plan D13 (wave d13), on every network: a peer's <c>open_channel2</c> is
     /// accepted (<c>IDualFundedOpenService</c>, as accepter we contribute <c>Node:DualFund:AcceptContributionSat</c>,
     /// 0 by default) and <c>openchannel --dual-fund</c> opens a v2 channel; <c>openchannel</c> without the flag still
-    /// opens a v1 channel. RBF of a v2 open stays off unless <c>Node:DualFund:AllowRbf</c>. BOLT 9 lists no
-    /// dependency. Set No to accept and open v1 channels only.
+    /// opens a v1 channel. RBF of a v2 open is allowed too (<c>Node:DualFund:AllowRbf</c>, true by default since lane
+    /// dfrbf). BOLT 9 lists no dependency. Set No to accept and open v1 channels only.
     /// </remarks>
     public FeatureSupport DualFund { get; set; } = FeatureSupport.Optional;
 

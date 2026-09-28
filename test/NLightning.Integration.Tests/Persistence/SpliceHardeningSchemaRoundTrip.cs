@@ -55,11 +55,13 @@ internal static class SpliceHardeningSchemaRoundTrip
         }
 
         string previous;
+        List<string> later;
         await using (var context = contextFactory())
         {
             var migrations = context.Database.GetMigrations().ToList();
             var target = migrations.Single(m => m.EndsWith(MigrationName, StringComparison.Ordinal));
             previous = migrations[migrations.IndexOf(target) - 1];
+            later = migrations.Skip(migrations.IndexOf(target) + 1).ToList();
 
             // Act
             var refusal = await Record.ExceptionAsync(() => context.GetService<IMigrator>()
@@ -71,7 +73,8 @@ internal static class SpliceHardeningSchemaRoundTrip
 
         await using (var context = contextFactory())
         {
-            Assert.Empty(await context.Database.GetPendingMigrationsAsync(cancellationToken));
+            // Migrations roll back one at a time, each in its own transaction: the later ones went, this one refused
+            Assert.Equal(later, await context.Database.GetPendingMigrationsAsync(cancellationToken));
             Assert.All(await context.Commitments.AsNoTracking()
                                     .Where(c => c.ChannelId == channel.ChannelId)
                                     .ToListAsync(cancellationToken),

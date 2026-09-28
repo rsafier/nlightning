@@ -119,10 +119,10 @@ internal sealed class DualFundHarness : IAsyncDisposable
     /// <param name="openTimeout">The nodes' open timeout (default 60 s: the open watchdog runs on the wall clock, and
     /// under a loaded full run a 10 s default fired before the pump reached <c>commitment_signed</c>, failing tests
     /// that never meant to time out after about 30 s; tests of the timeout pass their own).</param>
-    /// <param name="allowRbf">The nodes' <c>Node:DualFund:AllowRbf</c> (default false, as in production).</param>
+    /// <param name="allowRbf">The nodes' <c>Node:DualFund:AllowRbf</c> (default true, as in production).</param>
     /// <param name="withPeerServices">See <see cref="WithPeerServices"/>.</param>
     public static async Task<DualFundHarness> CreateAsync(long bobContributionSat, TimeSpan? openTimeout = null,
-                                                          bool allowRbf = false, bool withPeerServices = false)
+                                                          bool allowRbf = true, bool withPeerServices = false)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"nltg-dual-fund-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);

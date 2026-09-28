@@ -857,6 +857,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .IsRequired()
                         .HasColumnType("varbinary(max)");
 
+                    b.Property<long?>("LocalFundingSatoshis")
+                        .HasColumnType("bigint");
+
                     b.Property<Guid?>("LocalReservationId")
                         .HasColumnType("uniqueidentifier");
 
@@ -881,6 +884,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<byte>("State")
                         .HasColumnType("tinyint");
+
+                    b.Property<byte[]>("TheirCommitmentSignature")
+                        .HasColumnType("varbinary(64)");
 
                     b.Property<byte[]>("TheirSharedInputSignature")
                         .HasColumnType("varbinary(64)");

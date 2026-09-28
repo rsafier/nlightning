@@ -372,7 +372,7 @@ public static class NodeConfigurationExtensions
                      "AcceptContributionSat": 0,
                      "MatchOpenerContribution": true,
                      "OpenTimeout": "00:02:00",
-                     "AllowRbf": false
+                     "AllowRbf": true
                    }
                  },
                  "Splice": {

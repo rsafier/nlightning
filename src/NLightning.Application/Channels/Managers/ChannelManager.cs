@@ -1995,12 +1995,50 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             // Only a watched transaction that already reached its required depth (e.g. while we were offline) is
             // confirmed here; pending ones are confirmed by the blockchain monitor when they reach the depth.
             if (!watchedTransaction.IsCompleted)
-                continue;
+            {
+                // NL-528: a dual-funded open whose current attempt did not confirm may have confirmed an earlier one
+                if (unconfirmedChannel.Version != ChannelVersion.V2
+                 || FindCompletedEarlierAttempt(uow, unconfirmedChannel) is not { } earlierAttempt)
+                    continue;
+
+                watchedTransaction = earlierAttempt;
+            }
 
             // Create a TransactionConfirmedEventArgs and call the event handler
             var args = new TransactionConfirmedEventArgs(watchedTransaction, (uint)currentHeight);
             HandleFundingConfirmationAsync(this, args);
         }
+    }
+
+    /// <summary>
+    /// The watch of another fully signed attempt of the dual-funded open of <paramref name="channel"/> that reached its
+    /// depth (NL-528), or null.
+    /// </summary>
+    private static Domain.Bitcoin.Transactions.Models.WatchedTransactionModel? FindCompletedEarlierAttempt(
+        IUnitOfWork uow, ChannelModel channel)
+    {
+        IReadOnlyList<Domain.Protocol.InteractiveTx.InteractiveTxSessionModel> sessions;
+        try
+        {
+            sessions = uow.InteractiveTxSessionDbRepository.GetByChannelIdAsync(channel.ChannelId).GetAwaiter()
+                          .GetResult();
+        }
+        catch (Exception e) when (e is NotSupportedException or NotImplementedException)
+        {
+            return null;
+        }
+
+        foreach (var txId in DualFunding.DualFundedOpenService.GetFollowableFundingTxIds(sessions))
+        {
+            if (txId == channel.FundingOutput?.TransactionId)
+                continue;
+
+            if (uow.WatchedTransactionDbRepository.GetByTransactionIdAsync(txId).GetAwaiter().GetResult() is
+                { IsCompleted: true } watch)
+                return watch;
+        }
+
+        return null;
     }
 
     private static bool IsAwaitingOurFundingConfirmation(ChannelModel channel)
@@ -2080,6 +2118,14 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 return;
             }
 
+            // NL-528: any fully signed attempt of a dual-funded open's RBF may be the one that confirmed; the channel
+            // follows it (and an RBF attempt still running is abandoned) before the confirmation is applied
+            var dualFund = scope.ServiceProvider.GetService<DualFunding.DualFundedOpenService>();
+            if (channel.Version == ChannelVersion.V2 && confirmedTxId is { } confirmedFundingTxId && dualFund is not null
+             && !await dualFund.OnFundingConfirmedAsync(channel, confirmedFundingTxId,
+                                                         scope.ServiceProvider.GetRequiredService<IUnitOfWork>()))
+                return;
+
             var fundingConfirmedHandler = scope.ServiceProvider.GetRequiredService<FundingConfirmedMessageHandler>();
 
             // If we get a response, raise it right away (synchronously, while we hold the channel's lock)
@@ -2092,6 +2138,14 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                                                         channel.FundingOutput.Index!.Value);
 
             await fundingConfirmedHandler.HandleAsync(channel);
+
+            // NL-528: the peer's channel_ready that arrived before we knew which attempt confirmed
+            if (channel.State == ChannelState.ReadyForUs && dualFund?.TakeDeferredChannelReady(channelId) is
+                { } deferred)
+                RaiseResponseMessages(remoteNodeId,
+                                      await GetChannelMessageHandler<ChannelReadyMessage>(scope)
+                                           .HandleAsync(deferred.Message, channel.State, deferred.Features,
+                                                        remoteNodeId));
 
             // A signer without a source only knows the short channel id it was registered with, and needs the real one
             // to sign the channel's announcement (NL-343); one with a source reads it from the database

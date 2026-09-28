@@ -150,7 +150,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<IChannelMessage>> OnCommitmentSignedReceivedAsync(
-        ChannelId channelId, IUnitOfWork unitOfWork, CancellationToken cancellationToken = default)
+        ChannelId channelId, IUnitOfWork unitOfWork, CancellationToken cancellationToken = default,
+        CompactSignature? theirCommitmentSignature = null)
     {
         ArgumentNullException.ThrowIfNull(unitOfWork);
 
@@ -167,6 +168,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             attempt.Model = attempt.Model with
             {
                 CommitmentSignedReceived = true,
+                TheirCommitmentSignature = theirCommitmentSignature ?? attempt.Model.TheirCommitmentSignature,
                 State = attempt.Negotiation.State
             };
 
@@ -968,6 +970,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             Inputs = negotiation.Inputs.OrderBy(i => i.SerialId).ToList(),
             Outputs = negotiation.Outputs.OrderBy(o => o.SerialId).ToList(),
             LocalContribution = attempt.Contribution,
+            LocalFundingSatoshis = negotiation.Parameters.SharedFunding?.LocalOutputShare.Satoshi,
             ConstructedTx = negotiation.ConstructedTx,
             State = negotiation.State,
             CreatedAt = _timeProvider.GetUtcNow()

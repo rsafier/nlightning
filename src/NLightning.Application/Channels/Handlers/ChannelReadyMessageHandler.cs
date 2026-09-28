@@ -16,12 +16,14 @@ using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using DualFunding;
 using Interfaces;
 using Services;
 
 public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMessage>
 {
     private readonly IChannelMemoryRepository _channelMemoryRepository;
+    private readonly DualFundedOpenService? _dualFundedOpenService;
     private readonly ILogger<ChannelReadyMessageHandler> _logger;
     private readonly ulong? _maxDustHtlcExposureMsat;
     private readonly IUnitOfWork _unitOfWork;
@@ -31,11 +33,15 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
     /// <param name="unitOfWork">The scope's unit of work.</param>
     /// <param name="nodeOptions">Gives the dust exposure policy stored with the first commitment state
     /// (<see cref="NodeOptions.MaxDustHtlcExposureMsat"/>, NL-254); without it the state has none.</param>
+    /// <param name="dualFundedOpenService">Defers an early <c>channel_ready</c> of a dual-funded open with several
+    /// signed RBF attempts until our confirmation tells which one confirmed (NL-528); none without dual funding.</param>
     public ChannelReadyMessageHandler(IChannelMemoryRepository channelMemoryRepository,
                                       ILogger<ChannelReadyMessageHandler> logger, IUnitOfWork unitOfWork,
-                                      IOptions<NodeOptions>? nodeOptions = null)
+                                      IOptions<NodeOptions>? nodeOptions = null,
+                                      DualFundedOpenService? dualFundedOpenService = null)
     {
         _channelMemoryRepository = channelMemoryRepository;
+        _dualFundedOpenService = dualFundedOpenService;
         _logger = logger;
         _unitOfWork = unitOfWork;
         _maxDustHtlcExposureMsat = nodeOptions?.Value.MaxDustHtlcExposureMsat;
@@ -79,6 +85,14 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
             throw new ChannelWarningException("No ShortChannelIdTlv provided",
                                               payload.ChannelId,
                                               "This channel requires a ShortChannelIdTlv to be provided");
+
+        // NL-528: a dual-funded open with several signed RBF attempts builds its first commitment state on the attempt
+        // that confirmed, which only our own confirmation tells; the peer's channel_ready waits for it
+        if (currentState == ChannelState.V1FundingSigned && channel.Version == ChannelVersion.V2
+                                                         && _dualFundedOpenService is not null
+                                                         && await _dualFundedOpenService.TryDeferChannelReadyAsync(
+                                                                message, negotiatedFeatures, _unitOfWork))
+            return [];
 
         // Store their second per-commitment point, only on the first channel_ready (the remote index counts down
         // from 2^48-1, so it is still at the first index until we store it). The first commitment state snapshot is

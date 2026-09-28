@@ -252,7 +252,6 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
             services.Configure<DualFundingOptions>(o =>
             {
                 o.AcceptContributionSat = acceptContributionSat;
-                o.AllowRbf = true;
             });
         };
 

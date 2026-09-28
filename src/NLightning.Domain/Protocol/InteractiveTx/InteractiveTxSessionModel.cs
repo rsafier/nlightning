@@ -60,6 +60,21 @@ public sealed record InteractiveTxSessionModel
     /// <summary>The peer's <c>shared_input_signature</c> (a splice), once received; null otherwise.</summary>
     public CompactSignature? TheirSharedInputSignature { get; init; }
 
+    /// <summary>
+    /// Our share of the (new) funding output in satoshis, from the host's <see cref="SharedFundingSpec"/> when the
+    /// negotiation was constructed; null when the host gave none (or for a row stored before migration
+    /// <c>AddDualFundAttempts</c>). A dual-funded open rebuilds an attempt's balances from it (the peer's share is the
+    /// rest of the output) when that attempt, and not the latest one, confirms.
+    /// </summary>
+    public long? LocalFundingSatoshis { get; init; }
+
+    /// <summary>
+    /// The peer's signature of our first commitment for the new funding, from its <c>commitment_signed</c> (a
+    /// dual-funded open; a splice keeps its commitments in the channel's state instead), once received; null otherwise.
+    /// Every signed attempt of an RBF keeps its own, so whichever attempt confirms can still be force-closed (BOLT 2).
+    /// </summary>
+    public CompactSignature? TheirCommitmentSignature { get; init; }
+
     /// <summary>Whether our <c>commitment_signed</c> for the new funding was sent.</summary>
     public bool CommitmentSignedSent { get; init; }
 

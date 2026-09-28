@@ -39,6 +39,11 @@ using Domain.Protocol.InteractiveTx.Models;
 /// <para>Run by the resolution executor at the start of every block round (before a channel may reach Closed and leave
 /// memory). A channel is read again only when its state or current funding changed, or while it has a discarded splice
 /// waiting for its conflict's depth.</para>
+/// <para>The same holds for the attempts of a dual-funded open's RBF that lost to the one that confirmed (NL-528): an
+/// attempt can add wallet inputs the others do not have (an accepter that funded nothing at the open contributes in
+/// the RBF), and those stay reserved while the losing attempt is unresolved. Its conflict is the channel's confirmed
+/// funding transaction (<see cref="ChannelModel.FundingCreatedAtBlockHeight"/> is its height once the confirmation
+/// was applied); the kept outpoints are the inputs of the confirmed attempt.</para>
 /// </remarks>
 internal sealed class DiscardedSpliceReservations
 {
@@ -108,7 +113,8 @@ internal sealed class DiscardedSpliceReservations
         var discarded = fundings.Where(f => f.Status == ChannelFundingStatus.Discarded)
                                 .Select(f => f.FundingTxId)
                                 .ToHashSet();
-        if (discarded.Count == 0)
+        var confirmedOpen = GetConfirmedDualFundedOpen(channel);
+        if (discarded.Count == 0 && confirmedOpen is null)
             return (due, false);
 
         IReadOnlyList<InteractiveTxSessionModel> sessions;
@@ -122,6 +128,9 @@ internal sealed class DiscardedSpliceReservations
         }
 
         var waiting = false;
+        if (confirmedOpen is { } open)
+            waiting = FindLosingOpenAttempts(sessions, open.FundingTxId, open.Height, height, due);
+
         foreach (var session in sessions)
         {
             if (session is not
@@ -160,6 +169,54 @@ internal sealed class DiscardedSpliceReservations
         }
 
         return (due, waiting);
+    }
+
+    /// <summary>
+    /// The confirmed funding of a dual-funded open whose confirmation was applied (NL-528), or null: a v2 channel past
+    /// <see cref="ChannelState.V1FundingSigned"/> on its initial funding, with the height it confirmed at.
+    /// </summary>
+    private static (TxId FundingTxId, uint Height)? GetConfirmedDualFundedOpen(ChannelModel channel) =>
+        channel is
+        {
+            Version: ChannelVersion.V2, State: > ChannelState.V1FundingSigned, LocalFundingKeyIndex: 0,
+            FundingCreatedAtBlockHeight: > 0, FundingOutput.TransactionId: { } fundingTxId
+        }
+            ? (fundingTxId, channel.FundingCreatedAtBlockHeight)
+            : null;
+
+    /// <summary>
+    /// Adds to <paramref name="due"/> every unresolved, fully negotiated attempt of the dual-funded open that is not
+    /// <paramref name="confirmedTxId"/> and holds wallet inputs of ours, once the confirmed funding is irrevocable
+    /// (NL-528); true when one of them waits for that depth.
+    /// </summary>
+    private bool FindLosingOpenAttempts(IReadOnlyList<InteractiveTxSessionModel> sessions, TxId confirmedTxId,
+                                        uint confirmedHeight, uint height,
+                                        List<(InteractiveTxSessionModel Session, List<(TxId, uint)> Kept)> due)
+    {
+        var kept = sessions.FirstOrDefault(s => s.ConstructedTx?.TxId == confirmedTxId)?.ConstructedTx!.Inputs
+                           .Select(i => (i.PrevTxId, i.PrevTxVout))
+                           .ToList()
+                ?? [];
+        var waiting = false;
+        foreach (var session in sessions)
+        {
+            if (session is not { ResolvedAt: null, ConstructedTx: { } constructed }
+             || session.State == InteractiveTxSessionState.Aborted
+             || session.Purpose is not (InteractiveTxPurpose.DualFund or InteractiveTxPurpose.DualFundRbf)
+             || constructed.TxId == confirmedTxId
+             || !constructed.Inputs.Any(i => i is { AddedBy: InteractiveTxParty.Local, IsShared: false }))
+                continue;
+
+            if (Depth(height, confirmedHeight) < _irrevocableDepth)
+            {
+                waiting = true;
+                continue;
+            }
+
+            due.Add((session, kept));
+        }
+
+        return waiting;
     }
 
     private async Task<int> ReleaseAsync(ChannelId channelId, InteractiveTxSessionModel session,

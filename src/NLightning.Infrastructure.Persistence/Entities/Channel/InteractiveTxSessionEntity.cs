@@ -51,6 +51,15 @@ public class InteractiveTxSessionEntity
     /// <summary>The peer's 64-byte <c>shared_input_signature</c>.</summary>
     public byte[]? TheirSharedInputSignature { get; set; }
 
+    /// <summary>Our share of the funding output in satoshis (migration <c>AddDualFundAttempts</c>).</summary>
+    public long? LocalFundingSatoshis { get; set; }
+
+    /// <summary>
+    /// The peer's 64-byte signature of our first commitment for the new funding (a dual-funded open; migration
+    /// <c>AddDualFundAttempts</c>).
+    /// </summary>
+    public byte[]? TheirCommitmentSignature { get; set; }
+
     public required bool CommitmentSignedSent { get; set; }
     public required bool CommitmentSignedReceived { get; set; }
     public required bool TxSignaturesSent { get; set; }

@@ -67,10 +67,11 @@ using Interfaces;
 /// memory only. Its <see cref="ChannelModel.Version"/> is <see cref="ChannelVersion.V2"/>.</para>
 /// <para>Singleton; every member that changes a negotiation runs under the channel's lock (the handlers under the one
 /// <c>ChannelManager</c> holds, <see cref="OpenAsync"/>/<see cref="BumpAsync"/> take it themselves).</para>
-/// <para>Known limits (ledger follow-ups): RBF is off unless <see cref="DualFundingOptions.AllowRbf"/>; an RBF may change
-/// either contribution (BOLT 2, NL-521: the capacity, balances and reserve follow the attempt), and the channel keeps
-/// the signatures of the latest signed attempt only, so a replaced attempt that confirms instead leaves the channel on the
-/// wrong outpoint (the per-funding commitments come with splicing's <c>FundingSet</c>).</para>
+/// <para>RBF (<see cref="DualFundingOptions.AllowRbf"/>, on by default): an RBF may change either contribution (BOLT 2,
+/// NL-521: the capacity, balances and reserve follow the attempt); every fully signed attempt is stored with the peer's
+/// signature of our first commitment and our share, so the channel follows whichever attempt confirms
+/// (<see cref="OnFundingConfirmedAsync"/>, NL-528). Only the opener starts an RBF here (BOLT 2 lets the accepter too,
+/// "MAY"); a peer's RBF is followed in either role.</para>
 /// </remarks>
 public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 {
@@ -78,6 +79,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
     private readonly ConcurrentDictionary<ChannelId, DualFundNegotiation> _negotiations = new();
     private readonly ConcurrentDictionary<Task, byte> _pending = new();
+    private readonly ConcurrentDictionary<ChannelId, (ChannelReadyMessage Message, FeatureOptions Features)>
+        _deferredChannelReady = new();
     private readonly IChannelLockProvider _channelLockProvider;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IChannelOpenValidator _channelOpenValidator;
@@ -797,6 +800,21 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     {
         var channel = negotiation.Channel!;
         var txId = completion.Transaction.TxId;
+        if (channel.State != ChannelState.V1FundingSigned)
+        {
+            // Another attempt confirmed while this one was being signed (we had sent our tx_signatures, so it could
+            // not be aborted, IT-ABT-01): it double-spends the confirmed one and never confirms (NL-528)
+            _logger.LogWarning("RBF attempt {TxId} of channel {ChannelId} completed after its funding {Funding} "
+                             + "confirmed; not publishing it", txId, channel.ChannelId,
+                               channel.FundingOutput?.TransactionId);
+            negotiation.PendingTxId = null;
+            negotiation.LastSignedFunding = null;
+            negotiation.SharesBeforeRbf = null;
+            negotiation.Complete(new DualFundedOpenResult(channel.ChannelId, null,
+                                                          "another attempt of the open confirmed first"));
+            return [];
+        }
+
         var index = completion.Transaction.SharedOutputIndex!.Value;
         var height = GetMonitor()?.LastProcessedBlockHeight ?? 0;
 
@@ -863,8 +881,13 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             new FundingOutputInfo(signed.Capacity, funding.LocalFundingPubKey, funding.RemoteFundingPubKey,
                                   signed.TransactionId, signed.Index), signed.LocalBalance, signed.RemoteBalance,
             signed.ChannelParams);
-        if (signed.LastSentSignature is not null)
-            channel.UpdateLastSentSignature(signed.LastSentSignature);
+
+        // Without a restart the signer's current funding is still the signed attempt (the unsigned one was only a
+        // pending funding); after one it is the attempt the channel row carried (NL-528)
+        MoveSignerToFunding(channel, null);
+        channel.UpdateLastSentSignature(signed.LastSentSignature
+                                     ?? _lightningSigner.SignChannelTransaction(
+                                            channel.ChannelId, BuildCommitment(channel, CommitmentSide.Remote)));
         if (signed.LastReceivedSignature is not null)
             channel.UpdateLastReceivedSignature(signed.LastReceivedSignature);
 
@@ -888,18 +911,19 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
     /// <summary>
     /// Why an RBF of the open is refused now, or null: RBF not allowed (<see cref="DualFundingOptions.AllowRbf"/>),
-    /// channel_ready exchanged, a public channel (the signer keeps the first attempt's outpoint, so the announcement
-    /// could never be signed), or an attempt already confirmed (BOLT 2: "If the previous transaction confirms in the
-    /// middle of an RBF attempt, the attempt MUST be abandoned").
+    /// channel_ready sent or received (BOLT 2: the sender "MUST NOT have sent or received a channel_ready message", the
+    /// recipient "MUST fail the negotiation" then; a peer's channel_ready we keep until our confirmation counts,
+    /// NL-528), or an attempt already confirmed (BOLT 2: "If the previous transaction confirms in the middle of an RBF
+    /// attempt, the attempt MUST be abandoned"). A public channel may be bumped: its announcement is built once the
+    /// funding confirmed, from the attempt the channel follows (NL-528).
     /// </summary>
     private async Task<string?> GetRbfRefusalAsync(DualFundNegotiation negotiation)
     {
         if (!_options.AllowRbf)
             return "RBF of a dual-funded open is not enabled";
-        if (negotiation.Channel is not { State: ChannelState.V1FundingSigned } channel)
+        if (negotiation.Channel is not { State: ChannelState.V1FundingSigned }
+         || _deferredChannelReady.ContainsKey(negotiation.ChannelId))
             return "channel_ready was already sent or received";
-        if (channel.ChannelParams.AnnounceChannel)
-            return "RBF of a public dual-funded open is not supported";
 
         using var scope = _serviceProvider.CreateScope();
         var watches = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().WatchedTransactionDbRepository;
@@ -1120,7 +1144,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
         try
         {
-            var replies = await driver.OnCommitmentSignedReceivedAsync(channelId, unitOfWork, cancellationToken);
+            // Stored with the attempt (NL-528): whichever signed attempt confirms can still be closed unilaterally
+            var replies = await driver.OnCommitmentSignedReceivedAsync(channelId, unitOfWork, cancellationToken,
+                                                                       message.Payload.Signature);
             negotiation.CommitmentSignedReceived = true;
             return replies;
         }
@@ -1183,6 +1209,19 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         {
             negotiation.PendingTxId = latest.ConstructedTx!.TxId;
             negotiation.CommitmentSignedReceived = latest.CommitmentSignedReceived;
+
+            // A restart during an RBF attempt (NL-528): the channel row carries the unsigned attempt since our
+            // commitment_signed; the last fully signed one is rebuilt from its row, so an attempt that ends unsigned
+            // puts the channel back on it (RestoreLastSignedFundingAsync), as without the restart
+            if (stored.LastOrDefault(x => x.State == InteractiveTxSessionState.Signed) is { } signedSession
+             && TryGetSignedAttempt(signedSession) is { } signed
+             && channel.FundingOutput?.TransactionId != signed.TxId)
+            {
+                negotiation.LastSignedFunding = new DualFundNegotiation.SignedFunding(
+                    signed.TxId, signed.Index, signed.Capacity, signed.LocalShare, signed.RemoteShare,
+                    WithCapacity(channel.ChannelParams, signed.Capacity), null, signed.TheirSignature);
+                negotiation.SharesBeforeRbf = (signed.LocalShare, signed.RemoteShare);
+            }
         }
 
         var driver = GetDriver();
@@ -1199,6 +1238,165 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                latest.ConstructedTx!.TxId);
         return negotiation;
     }
+
+    /// <summary>
+    /// A funding transaction of the channel's dual-funded open reached its depth (called by <c>ChannelManager</c> under
+    /// the channel's lock, before the confirmation is applied; NL-528). BOLT 2: "If the previous transaction confirms
+    /// in the middle of an RBF attempt, the attempt MUST be abandoned", so an attempt in progress is aborted (unless our
+    /// <c>tx_signatures</c> went out, IT-ABT-01: it then double-spends the confirmed one and never confirms). Any fully
+    /// signed attempt may be the one that confirms, not only the latest: the channel then moves to it (its outpoint,
+    /// capacity, balances, reserve and in-flight limit, the peer's signature of our first commitment stored with its
+    /// negotiation, the signer's current funding, its broadcast row pending and the other attempts' rows replaced),
+    /// persisted in its own save. False (logged) when <paramref name="confirmedTxId"/> is no signed attempt we can
+    /// follow; the confirmation must then be ignored.
+    /// </summary>
+    public async Task<bool> OnFundingConfirmedAsync(ChannelModel channel, TxId confirmedTxId, IUnitOfWork unitOfWork,
+                                                    CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(unitOfWork);
+        if (channel is not { Version: ChannelVersion.V2, State: ChannelState.V1FundingSigned })
+            return channel.FundingOutput?.TransactionId == confirmedTxId;
+
+        var negotiation = await GetOrLoadAsync(channel.ChannelId, unitOfWork, cancellationToken);
+        if (negotiation is not null)
+        {
+            // Nothing is started once an attempt has a confirmation (GetRbfRefusalAsync); one that was already running
+            // is abandoned now, which also puts the channel back on the last signed attempt (OnAbortedAsync)
+            await AbortNegotiationLockedAsync(negotiation, $"funding {confirmedTxId} confirmed");
+            negotiation.RestoreShares();
+        }
+
+        if (channel.FundingOutput?.TransactionId == confirmedTxId)
+            return true;
+
+        var sessions = await unitOfWork.InteractiveTxSessionDbRepository.GetByChannelIdAsync(channel.ChannelId);
+        var (confirmedSession, confirmedAttempt) = sessions.Where(x => x.ConstructedTx?.TxId == confirmedTxId)
+                                                           .Select(x => (x, TryGetSignedAttempt(x)))
+                                                           .LastOrDefault(x => x.Item2 is not null);
+        if (confirmedAttempt is not { } attempt)
+        {
+            _logger.LogCritical("Funding {TxId} of the dual-funded channel {ChannelId} confirmed, but it is not a fully "
+                              + "signed attempt with the peer's commitment signature stored; the channel stays on "
+                              + "{Funding}", confirmedTxId, channel.ChannelId, channel.FundingOutput?.TransactionId);
+            return false;
+        }
+
+        var previous = channel.FundingOutput!.TransactionId;
+        var funding = channel.FundingOutput;
+        channel.ReplaceUnconfirmedFunding(
+            new FundingOutputInfo(attempt.Capacity, funding.LocalFundingPubKey, funding.RemoteFundingPubKey, attempt.TxId,
+                                  attempt.Index), attempt.LocalShare, attempt.RemoteShare,
+            WithCapacity(channel.ChannelParams, attempt.Capacity));
+        MoveSignerToFunding(channel, confirmedSession);
+        channel.UpdateLastReceivedSignature(attempt.TheirSignature);
+        channel.UpdateLastSentSignature(_lightningSigner.SignChannelTransaction(
+                                            channel.ChannelId, BuildCommitment(channel, CommitmentSide.Remote)));
+
+        // The confirmed attempt is the channel's funding broadcast again; every other attempt now double-spends it
+        foreach (var other in sessions.Where(x => x.State == InteractiveTxSessionState.Signed
+                                              && x.ConstructedTx is not null
+                                              && x.ConstructedTx.TxId != confirmedTxId))
+            await unitOfWork.BroadcastTransactionDbRepository.MarkReplacedAsync(other.ConstructedTx!.TxId);
+        await unitOfWork.BroadcastTransactionDbRepository.MarkPendingAsync(confirmedTxId);
+        await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+        await unitOfWork.SaveChangesAsync();
+
+        if (negotiation is not null)
+        {
+            negotiation.LocalShare = attempt.LocalShare;
+            negotiation.RemoteShare = attempt.RemoteShare;
+            negotiation.LastSignedFunding = null;
+            negotiation.SharesBeforeRbf = null;
+        }
+
+        _channelMemoryRepository.UpdateChannel(channel);
+        _logger.LogWarning("Dual-funded channel {ChannelId}: its earlier attempt {TxId} confirmed instead of {Previous}; "
+                         + "the channel follows it (capacity {Capacity}, our share {Local})", channel.ChannelId,
+                           confirmedTxId, previous, attempt.Capacity, attempt.LocalShare);
+        return true;
+    }
+
+    /// <summary>
+    /// The peer's <c>channel_ready</c> of a dual-funded channel that is still waiting for its funding and has several
+    /// fully signed attempts (NL-528; called under the channel's lock): it says the peer saw one of them reach its depth
+    /// but not which, and the channel's first commitment state is built on the funding we are on. It is kept until our
+    /// own confirmation tells which attempt confirmed (<see cref="TakeDeferredChannelReady"/>); after a restart the peer
+    /// sends it again with <c>channel_reestablish</c>. False when the channel has one attempt at most (nothing to defer).
+    /// </summary>
+    public async Task<bool> TryDeferChannelReadyAsync(ChannelReadyMessage message, FeatureOptions negotiatedFeatures,
+                                                      IUnitOfWork unitOfWork,
+                                                      CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentNullException.ThrowIfNull(negotiatedFeatures);
+        var channelId = message.Payload.ChannelId;
+        if (await GetOrLoadAsync(channelId, unitOfWork, cancellationToken) is not { } negotiation)
+            return false;
+
+        // BOLT 2: "If an RBF negotiation is in progress when a channel_ready message is exchanged, the negotiation must
+        // be abandoned" (which also puts the channel back on the last signed attempt)
+        await AbortNegotiationLockedAsync(negotiation, "channel_ready received");
+        negotiation.RestoreShares();
+        if (negotiation.CompletedTxIds.Count < 2)
+            return false;
+
+        _deferredChannelReady[channelId] = (message, negotiatedFeatures);
+        _logger.LogInformation("channel_ready of the dual-funded channel {ChannelId} arrived before our confirmation of "
+                             + "one of its RBF attempts; applying it once we see which one confirmed", channelId);
+        return true;
+    }
+
+    /// <summary>
+    /// The <c>channel_ready</c> <see cref="TryDeferChannelReadyAsync"/> kept for the channel, with the features
+    /// negotiated when it arrived, removed; null when none was kept.
+    /// </summary>
+    public (ChannelReadyMessage Message, FeatureOptions Features)? TakeDeferredChannelReady(ChannelId channelId) =>
+        _deferredChannelReady.TryRemove(channelId, out var deferred) ? deferred : null;
+
+    /// <summary>
+    /// The fully signed funding transactions of a dual-funded open that are stored with the peer's signature of our
+    /// first commitment (NL-528), oldest first: each one may be the one that confirms.
+    /// </summary>
+    public static IReadOnlyList<TxId> GetFollowableFundingTxIds(IEnumerable<InteractiveTxSessionModel> sessions) =>
+        sessions.Where(x => x.Purpose is InteractiveTxPurpose.DualFund or InteractiveTxPurpose.DualFundRbf)
+                .Select(TryGetSignedAttempt)
+                .OfType<SignedAttempt>()
+                .Select(a => a.TxId)
+                .Distinct()
+                .ToList();
+
+    /// <summary>
+    /// A fully signed attempt as its stored negotiation describes it: outpoint, capacity, both shares and the peer's
+    /// signature of our first commitment; null when the row lacks any of them (not signed, or stored before
+    /// migration <c>AddDualFundAttempts</c>).
+    /// </summary>
+    private static SignedAttempt? TryGetSignedAttempt(InteractiveTxSessionModel session)
+    {
+        if (session is not
+            {
+                State: InteractiveTxSessionState.Signed, LocalFundingSatoshis: { } localSatoshis,
+                TheirCommitmentSignature: { } signature, ConstructedTx.SharedOutputIndex: { } index
+            })
+            return null;
+
+        var capacity = session.ConstructedTx.Outputs[(int)index].Amount;
+        var local = LightningMoney.Satoshis(localSatoshis);
+        if (localSatoshis < 0 || local > capacity)
+            return null;
+
+        return new SignedAttempt(session.ConstructedTx.TxId, checked((ushort)index), capacity, local,
+                                 LightningMoney.MilliSatoshis(capacity.MilliSatoshi - local.MilliSatoshi), signature);
+    }
+
+    /// <summary>A fully signed attempt of the open (see <see cref="TryGetSignedAttempt"/>).</summary>
+    private sealed record SignedAttempt(
+        TxId TxId,
+        ushort Index,
+        LightningMoney Capacity,
+        LightningMoney LocalShare,
+        LightningMoney RemoteShare,
+        CompactSignature TheirSignature);
 
     /// <summary>
     /// Our <c>commitment_signed</c> for the pending attempt again (BOLT 2 <c>next_funding</c> retransmission; RFC 6979
@@ -1337,6 +1535,34 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     }
 
     /// <summary>
+    /// The signer signs for the channel's funding output from now on (NL-528): a no-op when it is the signer's current
+    /// funding already, a lock when it is a registered attempt (pending, or an earlier one an RBF replaced), else it is
+    /// registered first (after a restart the signer knows only the funding the channel row carried).
+    /// </summary>
+    private void MoveSignerToFunding(ChannelModel channel, InteractiveTxSessionModel? session)
+    {
+        var funding = channel.FundingOutput!;
+        var txId = funding.TransactionId!.Value;
+        try
+        {
+            _lightningSigner.LockFunding(channel.ChannelId, txId);
+            return;
+        }
+        catch (SignerException)
+        {
+            // Not registered with this signer: registered below
+        }
+
+        _lightningSigner.RegisterFunding(channel.ChannelId,
+                                         new ChannelFunding(txId, funding.Index!.Value, (ulong)funding.Amount.Satoshi,
+                                                            funding.LocalFundingPubKey, funding.RemoteFundingPubKey,
+                                                            channel.LocalFundingKeyIndex, 0, 0,
+                                                            ChannelFundingKind.Initial, ChannelFundingStatus.Pending,
+                                                            session?.FeeratePerKw, session?.Locktime));
+        _lightningSigner.LockFunding(channel.ChannelId, txId);
+    }
+
+    /// <summary>
     /// A completed RBF attempt is the channel's funding for the signer too (its capacity may differ from the first
     /// attempt's, NL-521): the earlier attempts are kept as replaced fundings, whose keys stay known. Already current
     /// (a registration from the database after a restart) is a no-op.
@@ -1367,22 +1593,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         var channelParams = channel.ChannelParams;
         if (total != funding.Amount)
         {
-            var reserve = DualFundingRules.GetChannelReserve(total, Max(channelParams.Local.DustLimitAmount,
-                                                                        channelParams.Remote.DustLimitAmount));
-            var local = channelParams.Local;
-            var remote = channelParams.Remote;
-            channelParams = channelParams
-                           .WithLocal(new ChannelParty(local.DustLimitAmount, reserve, local.HtlcMinimumAmount,
-                                                       local.MaxAcceptedHtlcs,
-                                                       LightningMoney.Satoshis(
-                                                           _nodeOptions.AllowUpToPercentageOfChannelFundsInFlight
-                                                         * total.Satoshi / 100M), local.ToSelfDelay,
-                                                       local.UpfrontShutdownScript))
-                           .WithRemote(new ChannelParty(remote.DustLimitAmount, reserve, remote.HtlcMinimumAmount,
-                                                        remote.MaxAcceptedHtlcs, remote.MaxHtlcValueInFlight,
-                                                        remote.ToSelfDelay, remote.UpfrontShutdownScript));
+            channelParams = WithCapacity(channelParams, total);
             _logger.LogInformation("RBF attempt {TxId} of channel {ChannelId}: capacity {Old} -> {New}, reserve {Reserve}",
-                                   txId, channel.ChannelId, funding.Amount, total, reserve);
+                                   txId, channel.ChannelId, funding.Amount, total,
+                                   channelParams.Local.ChannelReserveAmount);
         }
 
         channel.ReplaceUnconfirmedFunding(new FundingOutputInfo(total, funding.LocalFundingPubKey,
@@ -1390,6 +1604,28 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                           LightningMoney.MilliSatoshis(negotiation.LocalShare.MilliSatoshi),
                                           LightningMoney.MilliSatoshis(negotiation.RemoteShare.MilliSatoshi),
                                           channelParams);
+    }
+
+    /// <summary>
+    /// <paramref name="channelParams"/> for a funding of <paramref name="total"/>: the reserve (BOLT 2: 1% of the
+    /// funding both sides contribute, at least the dust limit, on both sides) and our in-flight limit (a share of the
+    /// capacity, as at the open) follow it; the peer's in-flight limit is what it announced.
+    /// </summary>
+    private ChannelParams WithCapacity(ChannelParams channelParams, LightningMoney total)
+    {
+        var reserve = DualFundingRules.GetChannelReserve(total, Max(channelParams.Local.DustLimitAmount,
+                                                                    channelParams.Remote.DustLimitAmount));
+        var local = channelParams.Local;
+        var remote = channelParams.Remote;
+        return channelParams
+              .WithLocal(new ChannelParty(local.DustLimitAmount, reserve, local.HtlcMinimumAmount,
+                                          local.MaxAcceptedHtlcs,
+                                          LightningMoney.Satoshis(_nodeOptions.AllowUpToPercentageOfChannelFundsInFlight
+                                                                * total.Satoshi / 100M), local.ToSelfDelay,
+                                          local.UpfrontShutdownScript))
+              .WithRemote(new ChannelParty(remote.DustLimitAmount, reserve, remote.HtlcMinimumAmount,
+                                           remote.MaxAcceptedHtlcs, remote.MaxHtlcValueInFlight, remote.ToSelfDelay,
+                                           remote.UpfrontShutdownScript));
     }
 
     private SignedTransaction BuildCommitment(ChannelModel channel, CommitmentSide side) =>

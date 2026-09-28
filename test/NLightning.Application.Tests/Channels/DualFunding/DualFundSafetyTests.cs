@@ -114,10 +114,17 @@ public class DualFundSafetyTests
     }
 
     [Fact]
-    public async Task Given_TheDefaultOptions_When_AnRbfIsRequested_Then_RefusedBothWays()
+    public void Given_TheDefaultOptions_When_Read_Then_RbfIsAllowed()
+    {
+        // Arrange, Act, Assert: lane dfrbf (owner decision 2026-09-28; NL-528 made it safe)
+        Assert.True(new Application.Channels.DualFunding.DualFundingOptions().AllowRbf);
+    }
+
+    [Fact]
+    public async Task Given_RbfTurnedOff_When_AnRbfIsRequested_Then_RefusedBothWays()
     {
         // Arrange
-        await using var harness = await DualFundHarness.CreateAsync(BobShareSat);
+        await using var harness = await DualFundHarness.CreateAsync(BobShareSat, allowRbf: false);
         FundDefault(harness);
         var result = await OpenAsync(harness);
         var initRbf = new TxInitRbfMessage(new TxInitRbfPayload(result.ChannelId, 5_000, 500),
@@ -137,7 +144,7 @@ public class DualFundSafetyTests
     }
 
     [Fact]
-    public async Task Given_APublicDualFundedOpen_When_AnRbfIsRequested_Then_Refused()
+    public async Task Given_APublicDualFundedOpen_When_Bumped_Then_TheReplacementOpensTheChannel()
     {
         // Arrange
         await using var harness = await DualFundHarness.CreateAsync(BobShareSat, allowRbf: true);
@@ -147,19 +154,21 @@ public class DualFundSafetyTests
                                                                           IsPublic: true),
                                                 TestContext.Current.CancellationToken));
         Assert.True(result.FailureReason is null, $"{result.FailureReason}\n{harness.Describe()}");
-        var initRbf = new TxInitRbfMessage(new TxInitRbfPayload(result.ChannelId, 5_000, 500),
-                                           new FundingOutputContributionTlv(s_aliceShare));
 
-        // Act
-        var bump = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => harness.Alice.DualFund.BumpAsync(result.ChannelId, 5_000, TestContext.Current.CancellationToken));
-        await harness.DeliverAsync(harness.Alice, initRbf);
-        var reply = harness.TakeNext(harness.Bob);
+        // Act: NL-528 lifted the refusal (the announcement is built from the attempt the channel follows)
+        var bump = await harness.RunAsync(harness.Alice.DualFund.BumpAsync(result.ChannelId, 5_000,
+                                                                           TestContext.Current.CancellationToken));
+        await harness.ConfirmFundingAsync(result.ChannelId, bump.FundingTxId!.Value);
 
         // Assert
-        Assert.Contains("public", bump.Message);
-        var abort = Assert.IsType<TxAbortMessage>(reply);
-        Assert.Contains("public", System.Text.Encoding.ASCII.GetString(abort.Payload.Data));
+        Assert.True(bump.FailureReason is null, $"{bump.FailureReason}\n{harness.Describe()}");
+        foreach (var node in harness.Nodes)
+        {
+            var channel = node.Channel(result.ChannelId);
+            Assert.True(channel.AnnounceChannel);
+            Assert.Equal(ChannelState.Open, channel.State);
+            Assert.Equal(bump.FundingTxId, channel.FundingOutput!.TransactionId);
+        }
     }
 
     [Fact]

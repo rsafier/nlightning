@@ -249,7 +249,8 @@ public partial class LocalLightningSigner
 
             var state = GetSpliceState(channelId);
             if (!state.Fundings.TryGetValue(fundingTxId, out var locked)
-             || locked.Status != ChannelFundingStatus.Pending)
+             || (locked.Status != ChannelFundingStatus.Pending
+              && !IsUnconfirmedOpenAttempt(channelId, signingInfo, locked)))
                 throw new SignerException($"Funding {fundingTxId} is not a registered pending splice", channelId,
                                           "Internal error");
 
@@ -287,6 +288,22 @@ public partial class LocalLightningSigner
             _logger.LogInformation("Splice {FundingTxId} is the current funding of channel {ChannelId}", fundingTxId,
                                    channelId);
     }
+
+    /// <summary>
+    /// Whether <paramref name="funding"/> is an earlier fully signed attempt of an unconfirmed dual-funded open that a
+    /// later RBF attempt replaced (NL-528): an initial funding on our original key, never confirmed, while the current
+    /// funding is one too and the channel never moved past its first commitment. Any attempt of an RBF can confirm
+    /// (BOLT 2), so the channel may have to move back to it; a spliced-away funding is never one (a splice rotates our
+    /// funding key and follows a confirmed funding).
+    /// </summary>
+    private bool IsUnconfirmedOpenAttempt(ChannelId channelId, ChannelSigningInfo current, ChannelFunding funding) =>
+        funding is
+        {
+            Status: ChannelFundingStatus.Replaced, Kind: ChannelFundingKind.Initial, LocalFundingKeyIndex: 0,
+            ShortChannelId: null, ConfirmedHeight: null
+        }
+     && current is { LocalFundingKeyIndex: 0, ShortChannelId: null }
+     && _localCommitmentNumbers.GetValueOrDefault(channelId) == 0;
 
     /// <summary>
     /// Our funding key <paramref name="fundingKeyIndex"/> of the channel (splicing plan D5): index 0 is
