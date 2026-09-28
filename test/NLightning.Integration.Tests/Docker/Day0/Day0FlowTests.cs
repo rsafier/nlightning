@@ -232,6 +232,8 @@ public sealed class Day0FlowTests : IAsyncLifetime
         var address = await _fixture.Bitcoin.GetNewAddressAsync(ct);
         var spliceOut = await Day0Harness.SpliceOutAsync(b, channelId, SpliceOutSat, address.ToString(), ct);
         var spliceOutTxId = Day0Harness.AssertSigned(spliceOut);
+        // The splice service publishes after spliceout returns (NL-533): wait for bitcoind to have it
+        await Day0Harness.WaitInMempoolAsync(_fixture, spliceOutTxId, ct);
         var spliceOutTx = await _fixture.Bitcoin.GetRawTransactionAsync(spliceOutTxId, true, ct);
         Assert.Single(spliceOutTx.Outputs, o => o.ScriptPubKey == address.ScriptPubKey
                                              && o.Value == Money.Satoshis((long)SpliceOutSat));

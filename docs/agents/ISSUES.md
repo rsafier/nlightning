@@ -92,12 +92,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 7 | 166 | 173 |
+| open | 0 | 0 | 7 | 167 | 174 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 147 | 123 | 345 |
+| fixed | 14 | 61 | 147 | 124 | 346 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **157** | **295** | **527** |
+| **Total** | **14** | **61** | **157** | **297** | **529** |
 
 ### Epics
 
@@ -4553,7 +4553,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` "Lane dfrbf record"
 
 ### NL-530 The accepter of a dual-funded open cannot start an RBF of it
-- **Status:** fixed (SHA_530)
+- **Status:** fixed (5329c08d)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`BumpAsync`: "We are not the opener")
@@ -4574,7 +4574,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` "Lane dfrbf record"
 
 ### NL-532 A peer closing the connection is logged at Error level
-- **Status:** fixed (SHA_532)
+- **Status:** fixed (3a813c88)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure/Node/Services/PeerService.cs` ("Exception occurred with peer")
@@ -4583,6 +4583,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix:** Lane accrbf (owner decision 2026-09-28). `Infrastructure/Node/Services/PeerConnectionFailures.GetLogLevel(exception)` walks the exception chain: an end of stream (`EndOfStreamException`, the new `PeerClosedConnectionException` the transport read loop now throws for it and for a socket the peer closed) is Information; a missed `pong` (the new `PingTimeoutException`, a `ConnectionTimeoutException`, raised by `PingPongService` for both timeouts), any timeout, socket or I/O error, and a condition we raised about the peer (a chain ending in `ErrorException`/`WarningException`, e.g. no init, a mismatched `pong`, now a `ConnectionException`) are Warning; anything else (our own failure behind the connection) stays Error. Used by `PeerService.HandleException` ("Peer X closed the connection" / "Connection problem with peer X" / the old error), `PeerCommunicationService.RaiseException` (a peer close is Information) and `PeerOutbox` (a send that fails because the connection went away). Other routine peer events that were errors: the peer's `warning` message is a Warning (it was logged as "Received error message"), a peer without init, with incompatible features or another chain is a Warning, and a malformed message from the peer (`MessageService`) is a Warning. Errors kept: the peer's `error` message, a failed channel, our own handler failures. Tests: `PeerConnectionFailuresTests` (the soak's two cases and the other classes, and `PeerService` logging each at its level with a mocked logger), `PingPongServiceTests` (the timeout type).
 - **Blocks/Blocked-by:** Found by NL-376
 - **Plan ref:** BOLT7 G5-T5
+
+### NL-533 Day0FlowTests step 4 read the splice-out transaction before it reached bitcoind
+- **Status:** fixed (SHA_533)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Day0/Day0FlowTests.cs` (step 4)
+- **Evidence:** Lane accrbf's first Day0 run failed at step 4 with `RPCException` "No such mempool or blockchain transaction": `spliceout` returns once the splice is signed and the splice service publishes afterwards (both nodes' logs show the broadcast accepted a few ms later), while the test called `getrawtransaction` at once. Steps 1-3, including the new step 1 (c), had passed.
+- **Fix:** Step 4 waits for the transaction in bitcoind's mempool (`Day0Harness.WaitInMempoolAsync`) before reading it, as steps 5 and 9 do; the rerun was green (3/3 with `Day0UpgradeInPlaceTests`).
+- **Blocks/Blocked-by:** Related NL-530
+- **Plan ref:** `SPLICING_PLAN.md` "Lane accrbf record"
+
+### NL-534 A refused rebroadcast of a pending transaction is logged at Error by BitcoinChainService
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs` ("Failed to broadcast transaction")
+- **Evidence:** In lane accrbf's Day0 run both nodes logged `[Error] Failed to broadcast transaction ... bad-txns-inputs-missingorspent` every block for a `Funding` row bitcoind refuses (the monitor itself logs the refusal at Warning, then Debug, and abandons the row after 12 permanent refusals, NL-294). A permanent refusal of a transaction the monitor retries is routine: the Error line duplicates the monitor's and makes it look like a fault (the NL-532 kind of log noise, outside the peer connection path).
+- **Fix sketch:** Let the chain service log a refusal (an RPC reject such as `bad-txns-inputs-missingorspent`, `txn-mempool-conflict`, `insufficient fee`) at Warning or Debug and leave the level to the caller; keep Error for an unreachable node or an unexpected RPC failure.
+- **Blocks/Blocked-by:** Related NL-532, NL-294, NL-461
+- **Plan ref:** —
 ### NL-525 Our onion-message paths have no dummy hops
 - **Status:** open
 - **Severity:** low
@@ -5260,6 +5280,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Location:** `test/NLightning.Integration.Tests/Persistence/GossipGraphReloadTests.cs` (`Given_GraphWithKnownFundingTxIds_*`)
 - **Evidence:** Failed once in the first Release run of the wave lh1 integration and passed on 3 reruns and in the final full run; the error message was not captured, so it needs a repro (reported by the integrator). Wave qit: `Given_ASpentChannel_When_TheNodeRestartsAndBlocksPass_Then_ThePrunerRemovesItFromTheDatabase` (the pruner case, line 109) failed in both full Release.Native runs and passed 11/11 alone (reported by the integrator). Wave sp1: failed again in a loaded full run and passed with its class alone (reported by the integrator).
 - **Update (wave spr, integrated at `a0800ac2`):** `GossipGraphReloadTests` failed again in loaded full runs (x2 Release.Native, x1 Release) and passed alone (reported by the integrator).
+- **Update (lane accrbf):** `Given_GraphFromCapturedGossip_*` and `Given_ASpentChannel_*` failed in the full Release run; the class passed alone.
 - **Fix sketch:** Loop the class under load to reproduce and capture the failure.
 - **Blocks/Blocked-by:** Related NL-434, NL-445
 - **Plan ref:** —
