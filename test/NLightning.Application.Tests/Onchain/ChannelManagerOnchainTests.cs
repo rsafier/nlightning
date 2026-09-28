@@ -193,6 +193,68 @@ public sealed class ChannelManagerOnchainTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ASpliceAttemptConfirms_When_Raised_Then_ItsRbfSiblingsAreNoLongerRebroadcast()
+    {
+        // Arrange (NL-534): an open channel with a splice and its RBF sibling pending, both broadcast; the sibling
+        // confirms first, so the original attempt double-spends it and bitcoind refuses it after every block
+        using var openPair = new RealSigningCommitmentPair(hasAnchors: false);
+        var channel = openPair.Alice.Channel;
+        var winner = Spend(0x45);
+        var loserTxId = new TxId(Enumerable.Repeat((byte)0x46, 32).ToArray());
+        var current = Domain.Channels.Splicing.ChannelFunding.FromFundingOutput(channel.FundingOutput!)!;
+        var loser = current with
+        {
+            FundingTxId = loserTxId,
+            Kind = Domain.Channels.Splicing.Enums.ChannelFundingKind.Splice,
+            Status = Domain.Channels.Splicing.Enums.ChannelFundingStatus.Pending
+        };
+        var sibling = loser with
+        {
+            FundingTxId = winner.TxId,
+            Kind = Domain.Channels.Splicing.Enums.ChannelFundingKind.SpliceRbf,
+            RbfOf = loserTxId
+        };
+        var port = new Mock<Application.Channels.Splicing.Interfaces.ISpliceStatePort>();
+        port.Setup(p => p.GetFundings(It.IsAny<ChannelModel>()))
+            .Returns(new Domain.Channels.Splicing.FundingSet(current, [loser, sibling]));
+        _memory.Setup(m => m.TryGetChannel(It.IsAny<ChannelId>(), out It.Ref<ChannelModel?>.IsAny))
+               .Returns(new TryGetChannelCallback((ChannelId id, out ChannelModel? found) =>
+                {
+                    found = channel;
+                    return id == channel.ChannelId;
+                }));
+        foreach (var txId in new[] { loserTxId, winner.TxId })
+            _store.Broadcasts.Add(new BroadcastTransactionModel(new SignedTransaction(txId, new byte[60]),
+                                                                BroadcastPurpose.Funding, channel.ChannelId, 600));
+        var services = new ServiceCollection();
+        services.AddScoped(_ => _store.CreateUnitOfWork().Object);
+        services.AddScoped<ChannelDomainEventQueue>();
+        services.AddSingleton(_watcher.Object);
+        services.AddSingleton(_executor.Object);
+        services.AddSingleton(port.Object);
+        await using var provider = services.BuildServiceProvider();
+        _ = new ChannelManager(_monitor.Object, new ChannelLockProvider(), _memory.Object,
+                               NullLogger<ChannelManager>.Instance, _pair.Alice.Signer, provider);
+        var args = new OutpointSpentEventArgs(channel.ChannelId, winner, 700, 1,
+                                              channel.FundingOutput!.TransactionId!.Value,
+                                              channel.FundingOutput.Index!.Value);
+
+        // Act
+        _monitor.Raise(m => m.OnWatchedOutpointSpent += null, args);
+
+        // Assert: the losing attempt abandoned at the winner's first confirmation, the winner still pending (a reorg
+        // sends it again), nothing handed to the watcher
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (_store.Broadcasts.Single(b => b.TransactionId == loserTxId).State == BroadcastState.Pending
+            && DateTime.UtcNow < deadline)
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        Assert.Equal(BroadcastState.Abandoned, _store.Broadcasts.Single(b => b.TransactionId == loserTxId).State);
+        Assert.Equal(BroadcastState.Pending, _store.Broadcasts.Single(b => b.TransactionId == winner.TxId).State);
+        _watcher.Verify(w => w.HandleFundingSpentAsync(It.IsAny<OutpointSpentEventArgs>(),
+                                                       It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task Given_ResolutionOutputSpent_When_Raised_Then_TheExecutorGetsIt()
     {
         // Arrange

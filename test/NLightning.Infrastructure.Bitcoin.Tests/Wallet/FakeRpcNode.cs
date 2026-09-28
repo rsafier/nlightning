@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json.Linq;
@@ -54,7 +55,7 @@ internal sealed class FakeRpcNode : IDisposable
             return _calls.GetValueOrDefault(method);
     }
 
-    public BitcoinChainService CreateService() =>
+    public BitcoinChainService CreateService(ILogger<BitcoinChainService>? logger = null) =>
         new(new OptionsWrapper<BitcoinOptions>(new BitcoinOptions
         {
             RpcEndpoint = $"http://127.0.0.1:{Port}",
@@ -64,7 +65,7 @@ internal sealed class FakeRpcNode : IDisposable
             ZmqBlockPort = 1,
             ZmqTxPort = 1
         }),
-            NullLogger<BitcoinChainService>.Instance,
+            logger ?? NullLogger<BitcoinChainService>.Instance,
             new OptionsWrapper<NodeOptions>(new NodeOptions { BitcoinNetwork = new BitcoinNetwork("regtest") }));
 
     public void Dispose()

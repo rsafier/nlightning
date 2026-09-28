@@ -19,6 +19,8 @@ using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.Quiescence;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
@@ -881,6 +883,45 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         }
     }
 
+    /// <summary>
+    /// NL-534: a pending splice attempt confirmed, so its RBF siblings, which spend the same funding output, can no
+    /// longer confirm while it stays in the chain. Their broadcast rows are abandoned at once rather than at the lock
+    /// (a few blocks later) or after 12 refusals: until then the chain monitor sent each after every block and bitcoind
+    /// refused it (<c>bad-txns-inputs-missingorspent</c>). The attempt that confirmed keeps its pending row, so a reorg
+    /// sends it again; the lock still discards the siblings' fundings. Under the channel's lock.
+    /// </summary>
+    private async Task AbandonLosingSpliceAttemptsAsync(ChannelId channelId, IReadOnlyList<ChannelFunding> siblings,
+                                                        TxId winner)
+    {
+        if (siblings.Count == 0)
+            return;
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var abandoned = new List<TxId>(siblings.Count);
+            foreach (var sibling in siblings)
+            {
+                if (await unitOfWork.BroadcastTransactionDbRepository.MarkAbandonedAsync(sibling.FundingTxId))
+                    abandoned.Add(sibling.FundingTxId);
+            }
+
+            if (abandoned.Count == 0)
+                return;
+
+            await unitOfWork.SaveChangesAsync();
+            _logger.LogInformation("Splice {Winner} of channel {ChannelId} confirmed; its other attempts {Siblings} are "
+                                 + "no longer rebroadcast", winner, channelId, string.Join(", ", abandoned));
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // The lock abandons them too
+            _logger.LogWarning(e, "Could not abandon the other attempts of splice {Winner} of channel {ChannelId}",
+                               winner, channelId);
+        }
+    }
+
     /// <summary>What <see cref="RecordMutualCloseSpendAsync"/> leaves to others.</summary>
     private enum SpendHandOver : byte
     {
@@ -910,10 +951,12 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             // commitment must go out on the splice funding (splicing plan §3.6, SP2-C-T2)
             if (channel.State is not (ChannelState.Failed or ChannelState.OnchainResolving)
              && _serviceProvider.GetService<Splicing.Interfaces.ISpliceStatePort>() is { } splicePort
-             && splicePort.GetFundings(channel).Find(spend.TxId) is not null)
+             && splicePort.GetFundings(channel) is { } fundings && fundings.Find(spend.TxId) is { } splice)
             {
                 _logger.LogInformation("The funding output of channel {ChannelId} was spent by its splice {TxId}",
                                        channelId, spend.TxId);
+                if (splice.Status == ChannelFundingStatus.Pending)
+                    await AbandonLosingSpliceAttemptsAsync(channelId, fundings.Siblings(spend.TxId), spend.TxId);
                 return SpendHandOver.None;
             }
 

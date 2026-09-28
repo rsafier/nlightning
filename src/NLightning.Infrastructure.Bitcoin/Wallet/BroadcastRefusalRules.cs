@@ -49,6 +49,25 @@ internal static class BroadcastRefusalRules
         return Contains(message, "bad-txns-") && !s_temporaryBadTxns.Any(r => Contains(message, r));
     }
 
+    /// <summary>
+    /// True when bitcoind answered <c>sendrawtransaction</c> with a refusal of the transaction itself (NL-534): a
+    /// verification failure (<c>RPC_VERIFY_ERROR</c>, e.g. <c>bad-txns-inputs-missingorspent</c>), a policy rejection
+    /// (<c>RPC_VERIFY_REJECTED</c>: a mempool conflict, a fee too low, <c>txn-already-known</c>) or a transaction already
+    /// in the chain (<c>RPC_VERIFY_ALREADY_IN_CHAIN</c>). Those are routine for a stored broadcast the chain monitor
+    /// sends again (an RBF sibling that lost, a transaction a block already holds), so the chain service leaves their
+    /// log level to its caller; anything else (an unreachable node, bad bytes, an RPC error of another kind) is not a
+    /// refusal.
+    /// </summary>
+    public static bool IsNodeRefusal(Exception sendError)
+    {
+        ArgumentNullException.ThrowIfNull(sendError);
+        return sendError is RPCException
+        {
+            RPCCode: RPCErrorCode.RPC_VERIFY_ERROR or RPCErrorCode.RPC_VERIFY_REJECTED
+                  or RPCErrorCode.RPC_VERIFY_ALREADY_IN_CHAIN
+        };
+    }
+
     /// <summary>True when bitcoind refused the transaction because an input is missing or already spent.</summary>
     public static bool IsMissingInputs(Exception sendError)
     {

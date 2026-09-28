@@ -92,9 +92,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 7 | 167 | 174 |
+| open | 0 | 0 | 7 | 166 | 173 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 147 | 125 | 347 |
+| fixed | 14 | 61 | 147 | 126 | 348 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **61** | **157** | **298** | **530** |
@@ -4596,12 +4596,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` "Lane accrbf record"
 
 ### NL-534 A refused rebroadcast of a pending transaction is logged at Error by BitcoinChainService
-- **Status:** open
+- **Status:** fixed (this commit)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs` ("Failed to broadcast transaction")
 - **Evidence:** In lane accrbf's Day0 run both nodes logged `[Error] Failed to broadcast transaction ... bad-txns-inputs-missingorspent` every block for a `Funding` row bitcoind refuses (the monitor itself logs the refusal at Warning, then Debug, and abandons the row after 12 permanent refusals, NL-294). A permanent refusal of a transaction the monitor retries is routine: the Error line duplicates the monitor's and makes it look like a fault (the NL-532 kind of log noise, outside the peer connection path).
 - **Fix sketch:** Let the chain service log a refusal (an RPC reject such as `bad-txns-inputs-missingorspent`, `txn-mempool-conflict`, `insufficient fee`) at Warning or Debug and leave the level to the caller; keep Error for an unreachable node or an unexpected RPC failure.
+- **Fix:** Lane cli535. `BroadcastRefusalRules.IsNodeRefusal`: an `RPCException` with `RPC_VERIFY_ERROR` (-25, e.g. `bad-txns-inputs-missingorspent`), `RPC_VERIFY_REJECTED` (-26: mempool conflict, fee too low) or `RPC_VERIFY_ALREADY_IN_CHAIN` (-27) is a refusal of the transaction: `BitcoinChainService.SendTransactionAsync` logs it at Debug and rethrows (the callers log it: the monitor at Warning once then Debug, NL-294); an unreachable node, bad bytes or any other RPC error stays Error. The losing RBF siblings of a splice no longer wait for the lock: when a pending splice attempt's spend of the funding output is seen in a block (`ChannelManager` splice branch), the other pending attempts' broadcast rows are abandoned in their own save (`AbandonLosingSpliceAttemptsAsync`; the winner stays pending, so a reorg sends it again; the lock still discards the fundings). In the Mutinynet logs each splice RBF produced 3 refusals (depth 3) before the lock abandoned the sibling. A dual-funded open already marks earlier attempts `Replaced` when an RBF completes and the others when an earlier attempt reaches its depth (`OnFundingConfirmedAsync`); between that attempt's first confirmation and its depth the latest attempt is still refused (now at Warning once, Debug after). Tests: `BitcoinChainServiceSendTests` (the fake RPC node answering -25/-26/-27, an unexpected RPC error, an unreachable node), `ChannelManagerOnchainTests.Given_ASpliceAttemptConfirms_*`.
 - **Blocks/Blocked-by:** Related NL-532, NL-294, NL-461
 - **Plan ref:** —
 ### NL-535 openchannel blocks until channel_ready and never prints the first attempt of a dual-funded open

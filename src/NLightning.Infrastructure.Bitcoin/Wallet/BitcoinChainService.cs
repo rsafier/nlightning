@@ -59,7 +59,20 @@ public class BitcoinChainService : IBitcoinChainService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to broadcast transaction {TxId}", transaction.GetHash());
+            // NL-534: bitcoind refusing the transaction (missing or spent inputs, a mempool conflict, a fee too low,
+            // already known) is the caller's to report, at the level it knows (the chain monitor's rebroadcast, a
+            // funding publish); only an unreachable node or an unexpected RPC failure is an error here
+            if (BroadcastRefusalRules.IsNodeRefusal(ex))
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug("bitcoind refused transaction {TxId}: {Reason}", transaction.GetHash(),
+                                     ex.Message);
+            }
+            else
+            {
+                _logger.LogError(ex, "Failed to broadcast transaction {TxId}", transaction.GetHash());
+            }
+
             throw;
         }
     }
