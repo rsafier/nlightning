@@ -3,7 +3,9 @@
 Status: **the Mutinynet phase passed** on 2026-09-28 (dry run with two NLightning nodes on the owner's machine, the
 live NLightningFAFO upgraded in place as U and a new NLightningFAFO2 as N): a first pass on `d5d8b184` found NL-517
 (fixed in `d5be5b73`), the clean pass on `91591787` ran every step of §2.2 including the splice RBF drill (results in
-§5). The rehearsal with Nick's own node and mainnet (§3) are still to do. Written on 2026-09-27 in wave sp2 (lane
+§5). A second dry run on the same nodes with the build compiled for .NET 11 (`2a209a5e`, net11.0) passed the same
+day, with an RBF of the dual-funded open by both sides (§5, "Mutinynet dry run 2"). The rehearsal with Nick's own node
+and mainnet (§3) are still to do. Written on 2026-09-27 in wave sp2 (lane
 SP2-F). Items marked **(unverified)** have not been checked on any live network. Never paste secrets (RPC password,
 key password) into this file, a shell history, a log or a chat.
 
@@ -79,7 +81,10 @@ payments with three attempts pending, a bumped splice across a reconnection and 
     the peer's RBF is followed; a CLN peer refuses an accepter's bump). Every
     signed attempt may confirm, and the channel follows the one that does, so a bump is safe; still pick a funding
     feerate that confirms: each bump needs both nodes online, and a peer that sent or received `channel_ready` refuses
-    it. On an older build there is no RBF of a dual-funded open.
+    it. On an older build there is no RBF of a dual-funded open. `openchannel` returns only at `channel_ready`
+    (NL-535): to bump, run it in the background or in a second terminal, read the funding txid from `listchannels`,
+    and run `bumpopen` before the first confirmation (Mutinynet: within one ~30 s block; dry run 2 bumped twice in
+    one second). A node config that sets `Node:DualFund:AllowRbf=false` (the first dry run's did) refuses it.
   - `openchannel` has no `--feerate`: the dual-funded funding transaction uses the node's fee estimate
     (`FeeEstimation`). Check `walletbalance`/logs for the estimate before opening.
   - No standard seed (NL-159): the key file plus its password is the only backup of the on-chain funds.
@@ -278,7 +283,9 @@ $U info; $N info; $U walletbalance; $N walletbalance
 # 1. dual-funded public open (we are the opener, Nick contributes as accepter); a loopback address works since NL-497
 #    (the accepter needs 3 confirmations on the outputs that back its anchors reserve: fund it, wait, then open)
 $U connect $NICK
-$U openchannel $NICK 300000 --public --dual-fund      # prints the channel id: CH
+$U openchannel $NICK 300000 --public --dual-fund      # prints the channel id: CH; returns at channel_ready (NL-535)
+# optional open RBF (lane dfrbf/accrbf): run the openchannel above with `&`, then before the first confirmation
+#   $U bumpopen $CH 1000; $N bumpopen $CH 1500        # opener, then accepter (NL-530); both follow each attempt
 $U listchannels; $N listchannels                     # capacity = 300,000 + Nick's share; wait Open (~3 blocks)
 # after 6 blocks (~3 min): our announcements go out; check mutinynet.com lists the channel with both nodes
 $U exportchanbackup --output ~/day0/mutinynet/01-open.backup && $U verifychanbackup ~/day0/mutinynet/01-open.backup
@@ -595,3 +602,145 @@ skips the backoff wait. The soak's old staged build was moved to `~/.nltg/mutiny
 must never run on the migrated database). Do not run `scripts/mutinynet/soak-gossip.sh` while `nodectl` runs FAFO: its
 `daemon_pid` looks only for its own staged binary, so it would start a second daemon on the same key and database
 (§4); stop FAFO with `nodectl` first.
+
+### Mutinynet dry run 2 (.NET 11), 2026-09-28
+
+The same two nodes, upgraded in place from `dbbcba28` (net10.0) to `2a209a5e` (`wip/fafo` after lanes dfrbf and
+accrbf) compiled for **.NET 11**: `dotnet publish src/NLightning.{Daemon,Client} -c Release -f net11.0 -r osx-arm64
+--self-contained true` with SDK 11.0.100-rc.1.26425.128 (`~/.dotnet11`), staged as `<dir>/bin-2a209a5e-net11` in both
+node directories (`daemon/`, `client/`, `commit`, `runtime`) and linked as each `bin-current`. The publish is
+self-contained, so `nodectl`, `~/day0/u` and `~/day0/n` run it unchanged (no `DOTNET_ROOT`); the old
+framework-dependent `bin-dbbcba28` (net10 runtime) stays on disk. Proof of the runtime: `lsof` of
+both daemon processes shows `libcoreclr.dylib` and `System.Private.CoreLib.dll` loaded from
+`bin-2a209a5e-net11/daemon/`, whose CoreLib is `11.0.0-rc.1.26425.128+3551975b...`; the runtimeconfig says `tfm
+net11.0`, `Microsoft.NETCore.App 11.0.0-rc.1.26425.128`. Config changes on both nodes (previous files
+`appsettings.json.pre-net11`): `Node:Features:AllowExperimentalFeatures` removed (D13, §1) and
+`Node:DualFund:AllowRbf` set to `true`: the first run's configs had it `false`, which refuses `bumpopen` even on a
+build where RBF is on by default. `Splice:MinRbfInterval` 5 s kept. Cold backups before the switch:
+`<dir>/backup-20260928T163311Z/` (`nltg.db`, key file, config, `channel.backup`, `SHA256SUMS`). Machine-readable
+record: `run2_net11` in [`day0-mutinynet-dryrun.json`](day0-mutinynet-dryrun.json).
+
+A new dual-funded public channel was required: the first one (`f20939f0...`, P2-1a) confirmed without a bump
+because `openchannel` returns only at `channel_ready` (NL-535), so the RBF open was repeated with `openchannel` in
+the background (P2-1) and that channel (`b78b95b7...`) carried the rest of the script. `f20939f0...` and the first
+run's `fede6471...` stay open (no close in this run), so FAFO and FAFO2 share three channels: a payment between
+them takes the direct channel with the most outbound, which is why several payments below went over another channel;
+one payment was sized to move FAFO's outbound so that the RBF drill's payment used the splicing channel.
+
+| Stage | What it proves | UTC | Commands | Result |
+|---|---|---|---|---|
+| U0 upgrade in place to the .NET 11 build | both nodes stopped with nodectl, cold backups, bin-current switched to the self-contained net11.0 build, migration AddDualFundAttempts applied at start, every open channel reestablished with unchanged balances and commitment numbers, gossip synced | 16:33:11-16:34:53 | `~/day0/nodectl fafo2 stop; ~/day0/nodectl fafo stop`<br>`sqlite3 <dir>/nltg.db ".backup <dir>/backup-20260928T163311Z/nltg.db" (+ nltg.key.json, appsettings.json, channel.backup, SHA256SUMS)`<br>`jq 'del(.Node.Features.AllowExperimentalFeatures) \| .Node.DualFund.AllowRbf = true' (both configs; previous file appsettings.json.pre-net11)`<br>`ln -sfn <dir>/bin-2a209a5e-net11 <dir>/bin-current (both)`<br>`~/day0/nodectl fafo2 start; ~/day0/nodectl fafo start`<br>`~/day0/u listchannels; ~/day0/n listchannels; ~/day0/u describegraph; ~/day0/u chainstatus`<br>`~/day0/u payinvoice "$(scripts/mutinynet/faucet.sh invoice 1000)"` | last_migration_before: 20260928024953_AddSpliceHardening; migrations_applied: 20260928133020_AddDualFundAttempts; stopped: 16:33:11Z; started: 16:33:35Z (both); reestablished: faucet 3458334x7x0 at 16:33:38Z (19/19, FAFO 196,003,007 msat, as before); FAFO-FAFO2 3462164x1x0 at 16:33:43Z (16/16, 335,001,002 / 114,814,998 msat, as before); runtime_proof: lsof of both daemon pids: libcoreclr.dylib and System.Private.CoreLib.dll loaded from <dir>/bin-2a209a5e-net11/daemon/ (self-contained publish); that CoreLib is 11.0.0-rc.1.26425.128+3551975be08744f0418857c5bed8ab1545c5dd47; NLightning.Daemon.runtimeconfig.json: tfm net11.0, includedFrameworks Microsoft.NETCore.App 11.0.0-rc.1.26425.128; gossip: describegraph: 900 channels, 282 nodes, initial sync complete, both peers sync peers; upgrade_check_payment: `d09556c1…` 1,000 sat FAFO -> faucet LND hub (via 0c8daa69... (3458334x7x0)); cold_backup_sha256: FAFO nltg.db: f9d632219de8ee89436664698c5a2cb16aca6a83554f924bc6e4b36866f0b4e4; FAFO2 nltg.db: 5679107dfacb85159638a9febb16b730bd1a70501433af85b54e8ef36ca5ee01 |
+| P2-1a dual-funded public open (no RBF) | v2 open on the net11 build, both contribute, announced at 6 confirmations; `openchannel` blocks until channel_ready, so bumpopen from the same shell comes too late (NL-535) | 16:35:38-16:39:03 | `~/day0/u openchannel 02c8416ac6ac57fccb5a39dfe7324dcc4677dbb03c99798e1eab1090c1202d2431@127.0.0.1:9736 200000 --public --dual-fund`<br>`~/day0/u bumpopen f20939f0c87038c0aec6c2de0587d20dd93b2acc2d6f40b1393a64cc1958e51c 1000   (after the CLI returned: refused, channel_ready exchanged)` | channel_id: f20939f0c87038c0aec6c2de0587d20dd93b2acc2d6f40b1393a64cc1958e51c; funding_outpoint: 79760d18e1ffc92596f89f567a5d886e1c753fb2540d20c7aee4beb99be33ee1:0; scid: 3463271x11x0; capacity_sat: 350000; broadcast: 16:35:38Z; mined: 3463271 (16:36:26Z); open_confirmed_by: 16:37:30Z (depth 3); announced: 16:39:03Z (both nodes); balance_after: FAFO 200,000 / FAFO2 150,000 sat; note: kept open: closing it was not authorised in this run (the lead allowed only the old day-0 channel to be closed, and only if the runbook closes it); tx [`79760d18…3ee1`](https://mutinynet.com/tx/79760d18e1ffc92596f89f567a5d886e1c753fb2540d20c7aee4beb99be33ee1) |
+| P2-1 dual-funded public open with opener and accepter RBF | bumpopen by the opener (FAFO) and then by the accepter (FAFO2, NL-530) before the first confirmation; each attempt replaces the previous one in the mempool, both nodes follow every attempt, the last (the accepter's) confirms and is announced; the losing attempts are marked Replaced | 16:42:25-16:45:32 | `~/day0/u withdraw tb1qvr9a7rp7540gxawu0dxxjn3lhjdaw9ungf0rcs 250000   (16:39:47Z, FAFO2's contribution; waited for 4 confirmations)`<br>`~/mutinynet/cli.sh waitfornewblock`<br>`~/day0/u openchannel 02c8416ac6ac57fccb5a39dfe7324dcc4677dbb03c99798e1eab1090c1202d2431@127.0.0.1:9736 200000 --public --dual-fund &   (background)`<br>`~/day0/u bumpopen b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 1000`<br>`~/day0/n bumpopen b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 1500`<br>`~/mutinynet/cli.sh getrawmempool` | channel_id: b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4; T0: 22fb4544... 253 sat/kw 16:42:25Z (FAFO initiator); T1: 9be7406b... 1,000 sat/kw 16:42:26Z (FAFO bumpopen, opener); T2: f54cf06a... 1,500 sat/kw 16:42:26Z (FAFO2 bumpopen, accepter as interactive-tx initiator; fee 1,917 sat, 319 vB); mempool_after_bumps: only T2 (T0 and T1 unknown to bitcoind); mined: T2 in 3463283 at 16:42:56Z; T0 and T1 marked Replaced by both chain monitors; open_confirmed_by: 16:43:57Z (depth 3; openchannel returned "Channel is now open!"); scid: 3463283x1x0; capacity_sat: 350000; announced: 16:45:32Z (both nodes); balance_after: FAFO 200,000 / FAFO2 150,000 sat; cli_note: the background openchannel printed the funding of T1 and T2 but never T0 (NL-535); tx [`e8a46402…61e3`](https://mutinynet.com/tx/e8a46402f190ed12bfd7c65ce3ca286edc48f03123539329711748e7477161e3), tx [`22fb4544…93ba`](https://mutinynet.com/tx/22fb4544f2ee1eca4a9bcddb4f70a884721033507d420ac6301786e4663593ba), tx [`9be7406b…527d`](https://mutinynet.com/tx/9be7406b747aa207b439b5e5cda78a3a699f770f030c5f085e5ba032fc55527d), tx [`f54cf06a…bf77`](https://mutinynet.com/tx/f54cf06aa89d94e9327a302efa133564a60d5a4d6de8c9dc60c984cc6831bf77) |
+| P2-2 payments both ways and through the hub | HTLCs both directions between the nodes and forwarding by FAFO to and from the faucet hub; with three FAFO-FAFO2 channels the sender picks the direct channel with the most outbound, so not every payment takes the new one | 16:45:50-16:46:03 | `~/day0/n createinvoice 20000000 "n11 u->n"; ~/day0/u payinvoice <bolt11>`<br>`~/day0/u createinvoice 10000000 "n11 n->u"; ~/day0/n payinvoice <bolt11>`<br>`~/day0/n payinvoice "$(scripts/mutinynet/faucet.sh invoice 2000)"`<br>`~/day0/n createinvoice 2000000 "n11 faucet->n"; scripts/mutinynet/faucet.sh withdraw <bolt11>` | payments: `fe9266b9…` 20,000 sat FAFO -> FAFO2 (via fede6471... (the old day-0 channel)); `3968545d…` 10,000 sat FAFO2 -> FAFO (via b78b95b7... (new channel)); `c9f20fbe…` 2,000 sat FAFO2 -> FAFO -> faucet LND hub (fee 1,002 msat) (via fede6471...); `e8c163c7…` 2,000 sat faucet LND hub -> FAFO -> FAFO2 (LNURL-withdraw) (via forwarded over b78b95b7... (3463283x1x0)); balance_after: FAFO 208,000 / FAFO2 142,000 sat |
+| P2-3 FAFO splices in 100,000 sat | splice-in with a wallet input on a channel whose funding was RBF'd by both sides, lock at depth 3, new SCID announced at depth 6, old SCID retired for 72 blocks | 16:46:15-16:49:24 | `~/day0/u splicein b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 100000 --feerate 253`<br>`~/day0/u listchannels; ~/day0/n listchannels`<br>`~/day0/u createinvoice 1000000 ...; ~/day0/n payinvoice <bolt11>   (while pending)` | scid_before: 3463283x1x0; scid_after: 3463290x10x1; capacity_after_sat: 450000; mined: 3463290; locked: 16:47:52Z; announced: 16:49:24Z; retired: 3463283x1x0 at 3463290, resolves until 3463362; payment_while_pending: `5a50761e…` 1,000 sat FAFO2 -> FAFO (via f20939f0... (not the splicing channel)); balance_after: FAFO 308,000 / FAFO2 142,000 sat; tx [`e525de6b…00ee`](https://mutinynet.com/tx/e525de6b77796f658e844e1688330bd960d76774c3acceef0751ebd8543f00ee) |
+| P2-4 FAFO2 splices out 50,000 sat to a FAFO address | splice-out paying an external address, fee from the splicer's channel balance, amount received on chain, new SCID announced | 16:49:36-16:52:47 | `~/day0/u getaddress p2wpkh   (tb1q4cvd2r4jv6vhzpep5ypzna46kta24hztzhdvlg)`<br>`~/day0/n spliceout b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 50000 --address tb1q4cvd2r4jv6vhzpep5ypzna46kta24hztzhdvlg --feerate 253` | splice_out_output: 35154edcf5ac73cd95394a1a5554fbd4a7b146e7eeaf875de66aa057fd38022f:1, 50,000 sat to tb1q4cvd2r4jv6vhzpep5ypzna46kta24hztzhdvlg (FAFO wallet); scid_before: 3463290x10x1; scid_after: 3463296x6x0; capacity_after_sat: 399816; mined: 3463296; locked: 16:50:57Z; announced: 16:52:47Z; balance_after: FAFO 308,000 / FAFO2 91,816 sat; tx [`35154edc…022f`](https://mutinynet.com/tx/35154edcf5ac73cd95394a1a5554fbd4a7b146e7eeaf875de66aa057fd38022f) |
+| P2-5 restart drill: FAFO2 stopped mid-splice | a node stopped with a signed, unconfirmed splice resumes it after 3 blocks: channel_reestablish (my_current_funding_locked taken as splice_locked), lock completes, every channel back | 16:52:56-16:55:31 | `~/day0/u splicein b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 20000 --feerate 253`<br>`~/day0/nodectl fafo2 stop   (16:52:56Z, SIGTERM, 1 s)`<br>`(3 blocks: 3463301 -> 3463304)`<br>`~/day0/nodectl fafo2 start   (16:54:20Z)` | reconnect: FAFO's backoff redialed at 16:55:31Z (71 s after the start; FAFO2 never dials FAFO); scid_before: 3463296x6x0; scid_after: 3463302x13x0; capacity_after_sat: 419816; mined: 3463302; locked: 16:55:31Z (FAFO2 at its restart saw the depth, FAFO's splice_locked came in channel_reestablish); announced: never: replaced by the P2-5b lock before its 6th confirmation; balance_after: FAFO 328,000 / FAFO2 91,816 sat; tx [`d8ea5114…1f3c`](https://mutinynet.com/tx/d8ea5114dec4163c4a06af4f0d8446f25471cd65e6bf6c16c888f9210eb51f3c) |
+| P2-5b restart drill: FAFO stopped mid-splice (FAFO2 splices in) | the other node restarted across a pending splice started by the accepter side; FAFO dials on start and every channel (faucet included) reestablishes at once | 16:55:51-16:57:30 | `~/day0/n splicein b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 10000 --feerate 253`<br>`~/day0/nodectl fafo stop   (16:55:51Z)`<br>`(3 blocks: 3463307 -> 3463310)`<br>`~/day0/nodectl fafo start   (16:57:28Z)` | reestablished: all four channels at 16:57:30Z (2 s after the start); scid_before: 3463302x13x0; scid_after: 3463308x9x0; capacity_after_sat: 429816; mined: 3463308; locked: 16:57:30Z; announced: 16:59:13Z; balance_after: FAFO 328,000 / FAFO2 101,816 sat; tx [`8e60b478…d259`](https://mutinynet.com/tx/8e60b4787eeb59e82a0c0cb48c1e3cc2f9adde7087c98b1b3cbb497e17aad259) |
+| P2-6 setchannelpolicy | a per-channel policy change is signed, sent as channel_update and seen by the peer's graph | 16:57:51-16:59:13 | `~/day0/u setchannelpolicy b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 --htlc-max-msat 150000000`<br>`~/day0/u getchannelpolicy b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4`<br>`~/day0/n listgraphchannels 3463308x9x0` | htlc_maximum_msat_before: 280000000; htlc_maximum_msat_after: 150000000; seen_by_peer: FAFO2's graph: Policy 2 -> 1 htlc 1000-150000000 msat, updated 16:59:13Z; seen_by_network: mutinynet.com lists the final 3463315x4x1 (459,816 sat) with both policies at 17:12Z, NLightningFAFO max_htlc 150,000,000 msat |
+| P2-6b splice RBF drill | bumpsplice replaces the first attempt in the mempool, both nodes list both attempts, a payment over the channel while both are pending, only the bump confirms and locks, the first is Abandoned | 16:59:43-17:02:48 | `~/day0/u splicein b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 30000 --feerate 253`<br>`sleep 6`<br>`~/day0/u bumpsplice b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 1000`<br>`~/day0/u payinvoice <bolt11>; ~/day0/n payinvoice <bolt11>   (tip unchanged, 3463314)`<br>`~/day0/u listchannels; ~/day0/n listchannels` | T1: f4689a94... 253 sat/kw 16:59:43Z, left the mempool when T2 arrived, refused rebroadcasts logged as ERR (NL-534) until Abandoned at 17:01:46Z; T2: 79fd98ae... 1,003 sat/kw (bumpsplice asked 1,000) 16:59:50Z, mined in 3463315, locked 17:01:15Z; both_listed: Pending (Splice) f4689a94...:0 and Pending (SpliceRbf) 79fd98ae...:1 on both nodes; payments_while_pending: `2ff32573…` 3,000 sat FAFO -> FAFO2 (via fede6471...); `1407c6f9…` 2,000 sat FAFO2 -> FAFO (via f20939f0...); `c39816d5…` 160,000 sat FAFO -> FAFO2 (via fede6471...; moved FAFO's outbound so the next payment takes the splicing channel); `41b21877…` 3,000 sat FAFO -> FAFO2 (via b78b95b7... #1, signed on both pending attempts (17:00:06Z, tip 3463314)); scid_before: 3463308x9x0; scid_after: 3463315x4x1; capacity_after_sat: 459816; announced: 17:02:48Z; balance_after: FAFO 355,000 / FAFO2 104,816 sat; tx [`f4689a94…a058`](https://mutinynet.com/tx/f4689a94e6dd283f07dccf678314fc69eb8ac13e28a88e32cddcb66d309ea058), tx [`79fd98ae…5563`](https://mutinynet.com/tx/79fd98aea79c2c349615741350b79a092c130d2a3d1e795c2a564ad43f495563) |
+| P2-7 hub routes to FAFO2 through FAFO | third-party payments (faucet LND hub) forwarded by FAFO to FAFO2 after the splices; the hub chose the path (f20939f0's 3463271x11x0 both times; mutinynet.com had not indexed 3463315x4x1 yet) | 17:02:54-17:03:25 | `~/day0/n createinvoice 3000000 ...; scripts/mutinynet/faucet.sh withdraw <bolt11>   (NoRoute: the hub's side of the faucet channel, 4,995,991 msat, minus its 2,000 sat reserve was below 3,000 sat)`<br>`~/day0/n createinvoice 2000000 ...; scripts/mutinynet/faucet.sh withdraw <bolt11>`<br>`~/day0/u payinvoice "$(scripts/mutinynet/faucet.sh invoice 5000)"`<br>`~/day0/n createinvoice 3000000 ...; scripts/mutinynet/faucet.sh withdraw <bolt11>` | payments: `d6efe026…` 3,000 sat faucet LND hub -> FAFO -> FAFO2 (via -; FailureReasonNoRoute at the hub: its side of the faucet channel minus its reserve was below 3,000 sat); `75e24bdf…` 2,000 sat faucet LND hub -> FAFO -> FAFO2 (via forwarded over f20939f0... (3463271x11x0)); `a7a7bef6…` 5,000 sat FAFO -> faucet LND hub (via 0c8daa69...); `9a6f3e4f…` 3,000 sat faucet LND hub -> FAFO -> FAFO2 (via forwarded over f20939f0... (3463271x11x0)) |
+
+On-chain transactions of run 2 (fee = inputs - outputs; the per-node columns are wallet inputs minus wallet change):
+
+| Role | Txid | Block | vB | Fee (sat) | sat/vB | sat/kw | FAFO spent | FAFO2 spent | Outputs |
+|---|---|---|---|---|---|---|---|---|---|
+| P2-1a dual-funded public open without RBF (channel f20939f0..., stays open) | [`79760d18…3ee1`](https://mutinynet.com/tx/79760d18e1ffc92596f89f567a5d886e1c753fb2540d20c7aee4beb99be33ee1) | 3463271 | 319 | 325 | 1.019 | 254.7 | 200,155 | 150,170 | 0: 350,000 channel funding output (f20939f0..., 350,000 sat)<br>1: 69,428 FAFO wallet<br>2: 78,441 FAFO2 wallet |
+| FAFO withdraw of 250,000 sat to FAFO2's wallet (its contribution for the RBF open) | [`e8a46402…61e3`](https://mutinynet.com/tx/e8a46402f190ed12bfd7c65ce3ca286edc48f03123539329711748e7477161e3) | 3463278 | 141 | 143 | 1.014 | 254.9 | 250,143 | -250,000 | 0: 250,000 FAFO2 wallet<br>1: 18,049 FAFO wallet |
+| P2-1 dual-funded open attempt T0 at 253 sat/kw (replaced by FAFO's bump, never confirmed) | [`22fb4544…93ba`](https://mutinynet.com/tx/22fb4544f2ee1eca4a9bcddb4f70a884721033507d420ac6301786e4663593ba) | not mined (replaced) | 320 | 325 | 1.016 | 254.3 | 200,224 | 150,101 | 0: 132,902 FAFO wallet<br>1: 99,899 FAFO2 wallet<br>2: 350,000 channel funding output of T0 (b78b95b7..., 350,000 sat) |
+| P2-1 opener RBF (bumpopen by FAFO) T1 at 1,000 sat/kw (replaced by FAFO2's bump, never confirmed) | [`9be7406b…527d`](https://mutinynet.com/tx/9be7406b747aa207b439b5e5cda78a3a699f770f030c5f085e5ba032fc55527d) | not mined (replaced) | 320 | 1,278 | 3.994 | 1000.8 | 200,882 | 150,396 | 0: 350,000 channel funding output of T1 (b78b95b7..., 350,000 sat)<br>1: 132,244 FAFO wallet<br>2: 99,604 FAFO2 wallet |
+| P2-1 accepter RBF (bumpopen by FAFO2, NL-530) T2 at 1,500 sat/kw (confirmed, the channel's funding) | [`f54cf06a…bf77`](https://mutinynet.com/tx/f54cf06aa89d94e9327a302efa133564a60d5a4d6de8c9dc60c984cc6831bf77) | 3463283 | 319 | 1,917 | 6.009 | 1502.4 | 201,002 | 150,915 | 0: 350,000 channel funding output (b78b95b7..., 350,000 sat)<br>1: 99,085 FAFO2 wallet<br>2: 132,124 FAFO wallet |
+| P2-3 splice-in (FAFO +100,000) | [`e525de6b…00ee`](https://mutinynet.com/tx/e525de6b77796f658e844e1688330bd960d76774c3acceef0751ebd8543f00ee) | 3463290 | 248 | 252 | 1.016 | 254.0 | 100,252 | - | 0: 31,872 FAFO wallet<br>1: 450,000 channel funding output (450,000 sat) |
+| P2-4 splice-out (FAFO2 -50,000 to FAFO's tb1q4cvd2r4jv6vhzpep5ypzna46kta24hztzhdvlg) | [`35154edc…022f`](https://mutinynet.com/tx/35154edcf5ac73cd95394a1a5554fbd4a7b146e7eeaf875de66aa057fd38022f) | 3463296 | 181 | 184 | 1.017 | 254.8 | -50,000 | - | 0: 399,816 channel funding output (399,816 sat)<br>1: 50,000 FAFO wallet |
+| P2-5 restart drill splice-in (FAFO +20,000; FAFO2 stopped) | [`d8ea5114…1f3c`](https://mutinynet.com/tx/d8ea5114dec4163c4a06af4f0d8446f25471cd65e6bf6c16c888f9210eb51f3c) | 3463302 | 248 | 252 | 1.016 | 254.0 | 20,252 | - | 0: 419,816 channel funding output (419,816 sat)<br>1: 49,176 FAFO wallet |
+| P2-5b restart drill splice-in (FAFO2 +10,000; FAFO stopped) | [`8e60b478…d259`](https://mutinynet.com/tx/8e60b4787eeb59e82a0c0cb48c1e3cc2f9adde7087c98b1b3cbb497e17aad259) | 3463308 | 248 | 252 | 1.016 | 254.0 | - | 10,252 | 0: 429,816 channel funding output (429,816 sat)<br>1: 88,833 FAFO2 wallet |
+| P2-6b splice-in RBF attempt T1 at 253 sat/kw (replaced, never confirmed) | [`f4689a94…a058`](https://mutinynet.com/tx/f4689a94e6dd283f07dccf678314fc69eb8ac13e28a88e32cddcb66d309ea058) | not mined (replaced) | 248 | 252 | 1.016 | 254.0 | 30,252 | - | 0: 459,816 channel funding output of T1 (459,816 sat)<br>1: 19,748 FAFO wallet |
+| P2-6b splice-in RBF attempt T2 at 1,000 sat/kw (confirmed) | [`79fd98ae…5563`](https://mutinynet.com/tx/79fd98aea79c2c349615741350b79a092c130d2a3d1e795c2a564ad43f495563) | 3463315 | 249 | 996 | 4.0 | 1003.0 | 30,996 | - | 0: 19,004 FAFO wallet<br>1: 459,816 channel funding output (459,816 sat, current) |
+
+SCIDs of the run-2 channel `b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4`:
+
+| SCID | Capacity (sat) | Funding | Status |
+|---|---|---|---|
+| [3463283x1x0](https://mutinynet.com/lightning/channel/3463283x1x0) | 350,000 | `f54cf06a...:0` | retired at 3463290 |
+| [3463290x10x1](https://mutinynet.com/lightning/channel/3463290x10x1) | 450,000 | `e525de6b...:1` | retired at 3463296 |
+| [3463296x6x0](https://mutinynet.com/lightning/channel/3463296x6x0) | 399,816 | `35154edc...:0` | retired at 3463302 |
+| [3463302x13x0](https://mutinynet.com/lightning/channel/3463302x13x0) | 419,816 | `d8ea5114...:0` | retired at 3463308, never announced |
+| [3463308x9x0](https://mutinynet.com/lightning/channel/3463308x9x0) | 429,816 | `8e60b478...:0` | retired at 3463315 |
+| [3463315x4x1](https://mutinynet.com/lightning/channel/3463315x4x1) | 459,816 | `79fd98ae...:1` | current (open, public) |
+
+Backups after each step (`exportchanbackup` then `verifychanbackup`: valid on both), in `~/day0/mutinynet/n11/`, SHA-256:
+
+- `n11-00-upgrade-u.backup` (FAFO): `429fae50142cb5b69d1f362557277150a069fda7416b5e6d30528438eb2be4a9`
+- `n11-00-upgrade-n.backup` (FAFO2): `48004fbd1a5ee4d8c8be48a1fa7f256b7861eecee289daf48323236de07e9cdc`
+- `n11-01-open-u.backup` (FAFO): `82a73f1d1007a48ff429314607d8d0a3a881eb9bbd20bb50a7cf80160e198318`
+- `n11-01-open-n.backup` (FAFO2): `ad2353041db9a217bf7417b45623d413c1477ceac947cfdd8ba03709f553ae77`
+- `n11-01b-rbfopen-u.backup` (FAFO): `7236e356b4bcb0a54c788a2dc0bfcfcb17d86866ccefca123c7659531fda88b4`
+- `n11-01b-rbfopen-n.backup` (FAFO2): `d8abb19842f50f2fe33ee599dde1e83e5051a9c8ee0f2d2063b7a6868486bceb`
+- `n11-02-pay-u.backup` (FAFO): `3754dffbf9dce067e102cd7717c25222ecdb85bce4ada8ca4be7efb92b71873d`
+- `n11-02-pay-n.backup` (FAFO2): `850fd1784baabfcf4e38e524c271466870c4a943387540c7094fd5af274459e7`
+- `n11-03-splicein-u.backup` (FAFO): `3df04a3cb88935c60c31f0c9a092fc4e19346deefa8545875dca36a1d78645a5`
+- `n11-03-splicein-n.backup` (FAFO2): `81d9b27f75c05c0b0707161c3e479103467521dc03aebf0834743d761c689cd1`
+- `n11-04-spliceout-u.backup` (FAFO): `042c32842b7ac76019bd8eb6ff30194169b8e1117781885e5f61f71b8ac7dc15`
+- `n11-04-spliceout-n.backup` (FAFO2): `6d3e0d249096b928495203f924ce81b62b8d2d63d830a038614e3c68632c0809`
+- `n11-05-restart-n-u.backup` (FAFO): `24f2ef9c5e1bf98f75ff2245937b1a743db51a3e77818047c011ab18bd3fc145`
+- `n11-05-restart-n-n.backup` (FAFO2): `460799aac3b02535fef467d70cf3df5d01d310fcd97c9dfcd8b631523c3e25d9`
+- `n11-05b-restart-u-u.backup` (FAFO): `bc227a160160d440516e8a286408404c90ce9f5ed5df8f57ae783ff8168b0c58`
+- `n11-05b-restart-u-n.backup` (FAFO2): `0277d4349c3a1b94b8d20dcb6f66012f8294f186e047031d91a6dbc2c214ba4e`
+- `n11-06-policy-u.backup` (FAFO): `f99c7d99f3654e87c5d3d432c9b87bbedbdc1cd717e33975961c3224d6913569`
+- `n11-06-policy-n.backup` (FAFO2): `95e9f6452224fe26f6fd99d490590e579222cee48a1ffc649d1db98a0006250c`
+- `n11-06b-rbf-u.backup` (FAFO): `c77f12f3ac7ec45f91bc87c2adcb138b12303586d2ba439e253645e976a01e8f`
+- `n11-06b-rbf-n.backup` (FAFO2): `b675751b7aaf2bcda5d0403d3811f65287588fc7c3a6418e3d0a3f7ffb53728c`
+
+Run 2 in the results template's form:
+
+```text
+Commit SHA (U / N): 2a209a5ed9ce517ecf88c66161c5fe4e76542456 / same, net11.0 self-contained osx-arm64
+  (~/.nltg/mutinynet/bin-2a209a5e-net11, ~/.nltg/mutinynet-fafo2/bin-2a209a5e-net11), runtime 11.0.0-rc.1
+Upgrade: from dbbcba28 (net10.0), last migration 20260928024953_AddSpliceHardening, AddDualFundAttempts applied at
+  the start 16:33:35; 3458334x7x0 reestablished 16:33:38 (19/19), fede6471 16:33:43 (16/16), balances unchanged;
+  FAFO paid the faucet 1,000 sat (d09556c1...82e3)
+Contributions (U / N) / funding txid / channel id / SCID: 200,000 / 150,000 /
+  f54cf06aa89d94e9327a302efa133564a60d5a4d6de8c9dc60c984cc6831bf77:0 (T2 of three attempts) /
+  b78b95b78756fd2b1db8f1c4027d935454131ebb5b1ede607fc8852bcda217a4 / 3463283x1x0 (open 16:42:25 -> Open 16:43:57,
+  announced 16:45:32)
+Open RBF: T0 22fb4544f2ee1eca4a9bcddb4f70a884721033507d420ac6301786e4663593ba 253 sat/kw 16:42:25 / U bumpopen
+  1,000 -> T1 9be7406b747aa207b439b5e5cda78a3a699f770f030c5f085e5ba032fc55527d 16:42:26 / N (accepter) bumpopen
+  1,500 -> T2 f54cf06aa89d94e9327a302efa133564a60d5a4d6de8c9dc60c984cc6831bf77 16:42:26 (N paid the shared fields);
+  only T2 in the mempool, T2 mined in 3463283, T0/T1 Replaced on both
+Also opened: f20939f0c87038c0aec6c2de0587d20dd93b2acc2d6f40b1393a64cc1958e51c (200,000 / 150,000, no RBF,
+  79760d18e1ffc92596f89f567a5d886e1c753fb2540d20c7aee4beb99be33ee1, 3463271x11x0, announced 16:39:03)
+Payments: U->N 20,000 fe9266b9...f118; N->U 10,000 3968545d...2aa0; N->U->faucet 2,000 c9f20fbe...f681 (fee 1,002
+  msat); faucet->U->N 2,000 e8c163c7...90af (forwarded over b78b95b7); U->N 3,000 41b21877...ddbb over b78b95b7 while
+  both splice RBF attempts were pending; faucet->U->N 2,000 75e24bdf...c5db and 3,000 9a6f3e4f...01f5 (the hub chose
+  f20939f0's SCID)
+Splice-in: e525de6b77796f658e844e1688330bd960d76774c3acceef0751ebd8543f00ee / 253 sat/kw / block 3463290, locked
+  16:47:52 / 3463290x10x1 (450,000), announced 16:49:24
+Splice-out: 35154edcf5ac73cd95394a1a5554fbd4a7b146e7eeaf875de66aa057fd38022f / 253 sat/kw (181 vB) / 50,000 to U's
+  tb1q4cvd2r4jv6vhzpep5ypzna46kta24hztzhdvlg (output 1, received) / block 3463296, locked 16:50:57 / 3463296x6x0
+  (399,816), announced 16:52:47
+Restart drills: (N) U splicein 20,000 d8ea5114dec4163c4a06af4f0d8446f25471cd65e6bf6c16c888f9210eb51f3c 16:52:56, N
+  stopped 16:52:56, 3 blocks, N started 16:54:20, U's backoff redialed 16:55:31, lock 16:55:31, 3463302x13x0
+  (419,816); (U) N splicein 10,000 8e60b4787eeb59e82a0c0cb48c1e3cc2f9adde7087c98b1b3cbb497e17aad259 16:55:51, U
+  stopped 16:55:51, 3 blocks, U started 16:57:28, all four channels reestablished 16:57:30, lock 16:57:30,
+  3463308x9x0 (429,816), announced 16:59:13
+Policy: U setchannelpolicy --htlc-max-msat 150000000 at 16:57:51, in N's graph at 16:59:13; mutinynet.com listed the
+  final 3463315x4x1 (459,816 sat) with both policies, NLightningFAFO's max_htlc 150,000,000, at 17:12
+Splice RBF: T1 f4689a94e6dd283f07dccf678314fc69eb8ac13e28a88e32cddcb66d309ea058 at 253 sat/kw 16:59:43 / bump T2
+  79fd98aea79c2c349615741350b79a092c130d2a3d1e795c2a564ad43f495563 at 1,000 sat/kw 16:59:50 / both pending on both
+  nodes, T1 out of the mempool at once, T2 mined in 3463315, locked 17:01:15 / 3463315x4x1 (459,816), announced
+  17:02:48; T1 Abandoned 17:01:46
+Close: none (f20939f0 and the run-1 channel fede6471 stay open)
+Deviations / new NL entries: NL-535 (low): `openchannel` blocks until channel_ready and never prints the first
+  attempt of a dual-funded open, so `bumpopen` needs `openchannel ... &` or a second terminal. The first run's
+  `Node:DualFund:AllowRbf=false` had to be changed for `bumpopen`. NL-518 (MempoolReactor warning per splice) and
+  NL-534 (refused rebroadcast of the replaced splice attempt at ERR) seen again. The hub routed its payments to N
+  over f20939f0 (its choice; mutinynet.com had not indexed 3463315x4x1 yet).
+```
+
+**Nodes left running (2026-09-28, build `2a209a5e` net11.0).** Both on their own staged copy
+`<dir>/bin-2a209a5e-net11` (`bin-current`), started with `~/day0/nodectl`. Open channels: FAFO-FAFO2 `b78b95b7...`
+(3463315x4x1, 459,816 sat, FAFO 355,000 / FAFO2 104,816 sat), `f20939f0...` (3463271x11x0, 350,000 sat, 198,000 /
+152,000), `fede6471...` (3462164x1x0, 449,816 sat, 154,002 / 295,814) and FAFO's faucet channel `3458334x7x0`.
+`~/.nltg/mutinynet/bin-dbbcba28` stays on disk, but that build predates `AddDualFundAttempts`: going back to it
+needs the schema rollback of §2.1 step 8 (node stopped, `dotnet ef database update 20260928024953_AddSpliceHardening`),
+never an old `nltg.db`.

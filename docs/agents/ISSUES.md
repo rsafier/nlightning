@@ -92,12 +92,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 7 | 167 | 174 |
+| open | 0 | 0 | 7 | 168 | 175 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 61 | 147 | 124 | 346 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **157** | **297** | **529** |
+| **Total** | **14** | **61** | **157** | **298** | **530** |
 
 ### Epics
 
@@ -4603,6 +4603,15 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Let the chain service log a refusal (an RPC reject such as `bad-txns-inputs-missingorspent`, `txn-mempool-conflict`, `insufficient fee`) at Warning or Debug and leave the level to the caller; keep Error for an unreachable node or an unexpected RPC failure.
 - **Blocks/Blocked-by:** Related NL-532, NL-294, NL-461
 - **Plan ref:** —
+### NL-535 openchannel blocks until channel_ready and never prints the first attempt of a dual-funded open
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Client/Handlers/OpenChannelMessageHandler.cs` (the subscription loop), `src/NLightning.Daemon/Handlers/OpenChannelClientSubscriptionHandler.cs` (`HandleAsync`)
+- **Evidence:** Mutinynet dry run 2 on the .NET 11 build (`DAY0_RUNBOOK.md` §5, 2026-09-28). `openchannel ... --dual-fund` returns only at `channel_ready` (about 2 min on Mutinynet, 3 blocks), so `bumpopen` run after it in the same shell was refused ("channel_ready sent or received") and the first open (`f20939f0...`) could not be bumped. The dual-funded open signs and broadcasts its funding before the client's first subscription call; that call finds the channel already in `V1FundingSigned`, returns at once only for the ready states, and waits for the next channel update. Without an RBF the CLI therefore never prints the funding txid ("Opening Channel", "Peer accepted", "Channel is now open!"); with RBFs it printed T1 and T2 of the second open (`b78b95b7...`) but never its first attempt T0 `22fb4544...`. The run went on with `openchannel` in the background, the txid read from `listchannels`, then both `bumpopen`s (opener and accepter, both followed, the accepter's attempt confirmed).
+- **Fix sketch:** Return the funding txid of a dual-funded open in the open's own response (a new `ClientCommand` or response key, NL-210 rules), or let the subscription request carry the txid the client last printed so the daemon answers at once when the channel's current funding differs; and document `openchannel ... &` (or a second terminal) for `bumpopen` in the runbook meanwhile.
+- **Blocks/Blocked-by:** Related NL-528, NL-530
+- **Plan ref:** `DAY0_RUNBOOK.md` §2.2
 ### NL-525 Our onion-message paths have no dummy hops
 - **Status:** open
 - **Severity:** low
