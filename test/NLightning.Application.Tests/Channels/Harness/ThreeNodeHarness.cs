@@ -403,9 +403,10 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
         var peerBasepoints = peer.Basepoints(peerKeyIndex);
         var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(InitialFeeratePerKw), 3, false,
                                               scidAlias);
-        var funderKey = isInitiator ? selfBasepoints.FundingPubKey : peerBasepoints.FundingPubKey;
-        var fundeeKey = isInitiator ? peerBasepoints.FundingPubKey : selfBasepoints.FundingPubKey;
-        var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(FundingSatoshis), funderKey, fundeeKey,
+        // Our key first, as the channel layer builds it: the model's funding output keys are the signer's local and
+        // remote funding keys (ChannelModel.GetSigningInfo, NL-495); the script sorts them itself
+        var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(FundingSatoshis),
+                                                  selfBasepoints.FundingPubKey, peerBasepoints.FundingPubKey,
                                                   fundingTxId, 0);
         var localKeySet = new ChannelKeySetModel(selfKeyIndex, selfBasepoints.FundingPubKey,
                                                  selfBasepoints.RevocationBasepoint, selfBasepoints.PaymentBasepoint,
