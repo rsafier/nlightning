@@ -10,9 +10,15 @@ using Channels.Harness;
 using Channels.Splicing;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
+using Domain.Onchain.Interfaces;
+using Domain.Onchain.Models;
+using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 
 /// <summary>
@@ -103,6 +109,70 @@ public sealed class OnchainSpliceForceCloseTests
         var row = Assert.Single(harness.Alice.Broadcasts, b => b.Purpose == BroadcastPurpose.LocalCommitment);
         var commitment = Transaction.Load(row.RawTransaction, Network.RegTest);
         Assert.Equal(new uint256((byte[])spliceTxId), commitment.Inputs.Single().PrevOut.Hash);
+    }
+
+    [Fact]
+    public async Task Given_AChannelResolvingOnChainWhoseCloseWasRetired_When_ItsSpliceWatchHasABlock_Then_TheBlockCheckBroadcastsOnTheSplice()
+    {
+        // Arrange (SP2-C-T2, reorg): the on-chain watcher retired the close the splice replaced (no close left) and a
+        // restart came before our commitment on the splice went out
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(500_000);
+        var result = await harness.SpliceAsync(harness.Alice, 100_000);
+        var spliceTxId = result.SpliceTxId!.Value;
+        var channel = harness.Alice.Node.Channel;
+        var closes = UseCloses(harness.Alice, null);
+        var failure = CreateFailureService(harness.Alice);
+        channel.UpdateState(ChannelState.OnchainResolving);
+        harness.Alice.Watches.Single(w => w.TransactionId == spliceTxId)
+               .SetHeightAndIndex(TwoNodeHarness.BlockHeight + 1, 1);
+
+        // Act
+        await failure.CheckConfirmedSplicesAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var row = Assert.Single(harness.Alice.Broadcasts, b => b.Purpose == BroadcastPurpose.LocalCommitment);
+        Assert.Equal(new uint256((byte[])spliceTxId),
+                     Transaction.Load(row.RawTransaction, Network.RegTest).Inputs.Single().PrevOut.Hash);
+        closes.Verify(c => c.GetCloseAsync(channel.ChannelId), Times.AtLeastOnce);
+    }
+
+    [Fact]
+    public async Task Given_AChannelResolvingOnChainWithARecordedClose_When_AskedToBroadcastOnItsSplice_Then_NotApplicable()
+    {
+        // Arrange: a commitment already spends one of the channel's fundings; the splice check never adds ours
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(500_000);
+        var result = await harness.SpliceAsync(harness.Alice, 100_000);
+        var spliceTxId = result.SpliceTxId!.Value;
+        var channel = harness.Alice.Node.Channel;
+        UseCloses(harness.Alice, new ChannelCloseModel(channel.ChannelId, ChannelCloseKind.RemoteCommitment,
+                                                       new TxId(Enumerable.Repeat((byte)0xE1, 32).ToArray()), 1,
+                                                       TwoNodeHarness.BlockHeight + 2, Hash.Empty,
+                                                       DateTimeOffset.UtcNow));
+        var failure = CreateFailureService(harness.Alice);
+        channel.UpdateState(ChannelState.OnchainResolving);
+        harness.Alice.Watches.Single(w => w.TransactionId == spliceTxId)
+               .SetHeightAndIndex(TwoNodeHarness.BlockHeight + 1, 1);
+
+        // Act
+        var outcome = await failure.BroadcastOnSpliceAsync(channel.ChannelId, spliceTxId,
+                                                           TestContext.Current.CancellationToken);
+        await failure.CheckConfirmedSplicesAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(ChannelFailureStatus.NotApplicable, outcome.Status);
+        Assert.DoesNotContain(harness.Alice.Broadcasts, b => b.Purpose == BroadcastPurpose.LocalCommitment);
+    }
+
+    private static Mock<IOnchainResolutionDbRepository> UseCloses(SpliceNode node, ChannelCloseModel? close)
+    {
+        var closes = new Mock<IOnchainResolutionDbRepository>();
+        closes.Setup(c => c.GetCloseAsync(It.IsAny<ChannelId>())).ReturnsAsync(close);
+        using var scope = node.Node.Services.CreateScope();
+        Mock.Get(scope.ServiceProvider.GetRequiredService<IUnitOfWork>())
+            .SetupGet(u => u.OnchainResolutionDbRepository).Returns(closes.Object);
+        return closes;
     }
 
     private static ChannelFailureService CreateFailureService(SpliceNode node)

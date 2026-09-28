@@ -180,6 +180,150 @@ public sealed class OnchainSpliceWatcherTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ARecordedCloseReorgedOut_When_TheDiscardedSpliceConfirms_Then_TheCloseIsRetiredAndOurCommitmentGoesOutOnTheSplice()
+    {
+        // Arrange (SP2-C-T2, reorg): our commitment on the current funding confirmed and discarded the pending splice;
+        // its block was disconnected and the splice was mined in its place
+        var spliceTx = BuildSpliceTransaction();
+        var splice = Splice(spliceTx.TxId, 0) with { Status = ChannelFundingStatus.Discarded };
+        _storedFundings.Add(Current);
+        _storedFundings.Add(splice);
+        _channel.UpdateState(ChannelState.OnchainResolving);
+        var oldClose = TxIdOf(0xD1);
+        _store.Closes[_channel.ChannelId] = new ChannelCloseModel(_channel.ChannelId, ChannelCloseKind.LocalCommitment,
+                                                                  oldClose, _pair.Alice.State.LocalCommit.Number,
+                                                                  SpendHeight - 3, OnchainTestStore.BlockHash(9),
+                                                                  DateTimeOffset.UtcNow);
+        _store.Outputs[(oldClose, 0)] = new OutputResolutionModel
+        {
+            TransactionId = oldClose,
+            OutputIndex = 0,
+            ChannelId = _channel.ChannelId,
+            Descriptor = OutputDescriptorKind.DelayedToLocal
+        };
+        var staleCommitment = new BroadcastTransactionModel(new SignedTransaction(oldClose, [0x02, 0x00]),
+                                                            BroadcastPurpose.LocalCommitment, _channel.ChannelId,
+                                                            SpendHeight - 4,
+                                                            commitmentNumber: _pair.Alice.State.LocalCommit.Number);
+        _store.Broadcasts.Add(staleCommitment);
+
+        // Act
+        var outcome = await Watcher.HandleFundingSpentAsync(SpentBy(spliceTx, Current),
+                                                            TestContext.Current.CancellationToken);
+
+        // Assert: in one save the old close is gone, its outputs ignored, its commitment abandoned and the splice pending
+        // again; then our commitment on the splice funding is asked for
+        Assert.Null(outcome);
+        Assert.Empty(_store.Closes);
+        Assert.Equal(OutputResolutionState.Ignored, _store.Outputs[(oldClose, 0)].State);
+        Assert.Equal(BroadcastState.Abandoned, staleCommitment.State);
+        _fundings.Verify(f => f.UpsertAsync(_channel.ChannelId, It.Is<ChannelFunding>(
+                                                d => d.FundingTxId == splice.FundingTxId
+                                                  && d.Status == ChannelFundingStatus.Pending)), Times.Once);
+        Assert.Single(_store.Saves);
+        _spliceBroadcaster.Verify(b => b.BroadcastOnSpliceAsync(_channel.ChannelId, spliceTx.TxId,
+                                                                It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ACloseRecordedOnThePendingSplice_When_TheSpliceItselfIsSeen_Then_TheCloseStands()
+    {
+        // Arrange: the peer's commitment on the (still pending) splice funding was recorded; a replayed block raises
+        // the splice's spend of the current funding
+        var spliceTx = BuildSpliceTransaction();
+        AddPendingSplice(spliceTx.TxId, 0);
+        _channel.UpdateState(ChannelState.OnchainResolving);
+        var close = new ChannelCloseModel(_channel.ChannelId, ChannelCloseKind.RemoteCommitment, TxIdOf(0xD2),
+                                          _pair.Alice.State.RemoteCommit.Number, SpendHeight + 1,
+                                          OnchainTestStore.BlockHash(2), DateTimeOffset.UtcNow);
+        _store.Closes[_channel.ChannelId] = close;
+
+        // Act
+        var outcome = await Watcher.HandleFundingSpentAsync(SpentBy(spliceTx, Current),
+                                                            TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Null(outcome);
+        Assert.Same(close, _store.Closes[_channel.ChannelId]);
+        Assert.Empty(_store.Saves);
+        _spliceBroadcaster.Verify(b => b.BroadcastOnSpliceAsync(It.IsAny<ChannelId>(), It.IsAny<TxId>(),
+                                                                It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ARevokedCommitmentOnThePendingSplice_When_OnlyTheCurrentFundingLoggedIt_Then_ItsHtlcOutputsAreMapped()
+    {
+        // Arrange (NL-479 after a restart: the engine lost the pending fundings, so the revocation was logged on the
+        // current funding only). The peer broadcasts that revoked commitment on the pending splice funding.
+        var revoked = _pair.Alice.State.RemoteCommit;
+        _pair.Add(_pair.Alice, 5_000_000, RealSigningCommitmentPair.Preimage(3));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        var splice = AddPendingSplice(TxIdOf(0xD3), 1);
+        _revocationLog.Setup(l => l.GetAsync(_channel.ChannelId, revoked.Number))
+                      .ReturnsAsync(RevokedCommitmentModel.From(_channel.ChannelId, revoked) with
+                      {
+                          FundingTxId = Current.FundingTxId
+                      });
+        var secret = _pair.Bob.Signer.RevealPerCommitmentSecret(RealSigningCommitmentPair.ChannelId, revoked.Number);
+        var shachain = new Mock<ISecretStorageService>();
+        shachain.Setup(s => s.DeriveOldSecret(It.IsAny<ulong>())).Returns(secret);
+        _shachainFactory.Setup(f => f.CreatePerCommitmentStorage()).Returns(shachain.Object);
+        var spend = BuildCommitment(CommitmentSide.Remote, ChannelCommitments.SpecFor(revoked.Spec, splice),
+                                    revoked.Number, revoked.PerCommitmentPoint, splice);
+
+        // Act
+        var outcome = await Watcher.HandleFundingSpentAsync(SpentBy(spend, splice),
+                                                            TestContext.Current.CancellationToken);
+
+        // Assert: both HTLC outputs to penalize (the stand-in spec without HTLCs would leave them unmapped)
+        Assert.Equal(ChannelCloseKind.RevokedCommitment, outcome!.Kind);
+        Assert.Equal([
+            OutputDescriptorKind.PaymentToRemote, OutputDescriptorKind.RevokedToLocal,
+            OutputDescriptorKind.RevokedHtlc, OutputDescriptorKind.RevokedHtlc
+        ], _store.Outputs.Values.Select(o => o.Descriptor).Order());
+        _revocationLog.Verify(l => l.GetAsync(_channel.ChannelId, splice.FundingTxId, revoked.Number), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ARevokedCommitmentOfADiscardedSplice_When_ItConfirms_Then_PenalizedWithThatFundingsLog()
+    {
+        // Arrange (SP2-C-T3, SP-I5): a splice was discarded (a reorg left its funding output spendable); the peer
+        // broadcasts a commitment it revoked on that funding. Its own log row carries the HTLCs.
+        var revoked = _pair.Alice.State.RemoteCommit;
+        _pair.Add(_pair.Alice, 5_000_000, RealSigningCommitmentPair.Preimage(3));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        _storedFundings.Add(Current);
+        var discarded = Splice(TxIdOf(0xD4), 1) with { Status = ChannelFundingStatus.Discarded };
+        _storedFundings.Add(discarded);
+        var onDiscarded = ChannelCommitments.SpecFor(revoked.Spec, discarded);
+        _revocationLog.Setup(l => l.GetAsync(_channel.ChannelId, discarded.FundingTxId, revoked.Number))
+                      .ReturnsAsync(new RevokedCommitmentModel(_channel.ChannelId, revoked.Number, onDiscarded)
+                      {
+                          FundingTxId = discarded.FundingTxId
+                      });
+        var secret = _pair.Bob.Signer.RevealPerCommitmentSecret(RealSigningCommitmentPair.ChannelId, revoked.Number);
+        var shachain = new Mock<ISecretStorageService>();
+        shachain.Setup(s => s.DeriveOldSecret(It.IsAny<ulong>())).Returns(secret);
+        _shachainFactory.Setup(f => f.CreatePerCommitmentStorage()).Returns(shachain.Object);
+        var spend = BuildCommitment(CommitmentSide.Remote, onDiscarded, revoked.Number, revoked.PerCommitmentPoint,
+                                    discarded);
+
+        // Act
+        var outcome = await Watcher.HandleFundingSpentAsync(SpentBy(spend, discarded),
+                                                            TestContext.Current.CancellationToken);
+
+        // Assert: every output of the discarded funding's commitment to penalize, found by txid
+        Assert.Equal(ChannelCloseKind.RevokedCommitment, outcome!.Kind);
+        Assert.Equal([
+            OutputDescriptorKind.PaymentToRemote, OutputDescriptorKind.RevokedToLocal,
+            OutputDescriptorKind.RevokedHtlc, OutputDescriptorKind.RevokedHtlc
+        ], _store.Outputs.Values.Select(o => o.Descriptor).Order());
+        _revocationLog.Verify(l => l.GetAsync(_channel.ChannelId, revoked.Number), Times.Never);
+    }
+
+    [Fact]
     public async Task Given_OurCommitmentOnThePendingSplice_When_ItConfirms_Then_LocalCloseMappedOnThatFunding()
     {
         // Arrange (SP2-C-T3): the splice confirmed and our commitment on it (same number, SP-I4) spends its output
