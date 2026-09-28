@@ -561,6 +561,30 @@ Carried to SP2: SG7 reestablish (SP-RE, TLV 5 processing, retransmission of spli
 
 **Estimate:** **~3 h, 4 lanes** (SP2-A..D).
 
+### Wave SP2 record (wave sp2, integrated at `31950b81`, 2026-09-27)
+
+Contracts SP2-0 at `81e337f8` (lane `3560f3a9`). Six lanes (SP2-A..D as planned, plus SP2-E = static channel backups and peer storage across splices (NL-478) and SP2-F = the day-0 Docker proofs and `DAY0_RUNBOOK.md`), each with a review/fix step; SP2-C was the migration owner and shipped no migration (the schema already had what it needed). Lane commits cherry-picked with `-x` in the order contracts → SP2-C → SP2-A → SP2-B → SP2-E → SP2-D → SP2-F. Ledger: NL-478 and NL-479 fixed, NL-021 and NL-037 partial, new NL-484..NL-501 (NL-484, NL-487 fixed; NL-485 a duplicate of NL-472). Full gate record in `ABCD_ROADMAP.md` "Wave sp2". **D13 is not applied**: `OptionSplice`, `OptionQuiesce` and `OptionDualFund` stay No and experimental.
+
+| Task | Status | `wip/fafo` SHAs |
+|---|---|---|
+| SP2-0 contracts | done | 81e337f8 |
+| SP2-A-T1 planner | done: `next_funding` and `my_current_funding_locked` built and answered (SP-RE-01..06, 47 table cases); deviation: `bolt02/splicing-test.md` still draws `next_commitment_number` = the current number where BOLT 2 uses `retransmit_flags` bit 0; we send per BOLT 2 and accept both | 059383f4 |
+| SP2-A-T2 handler + retransmission | done: splice CS and `tx_signatures` retransmitted byte-identical (from the stored rows after a restart), `my_current_funding_locked` processed as `splice_locked`, unknown `next_funding` answered through the driver's `tx_abort` echo guard; the dual-funded open uses the same path | 059383f4, a887c488, ff87bd93 |
+| SP2-A-T3 conformance flows | done for SP-T-03..11 on the real engine (`SpliceConformanceTests`), with restart variants for SP-T-03, SP-T-06 and both CS lost (990d3381); SP-T-04/05/08 restart variants and a crash at every SP-I7 save not added (NL-496) | a887c488, ff87bd93, 990d3381 |
+| SP2-B-T1 `splice_locked` | done: lock only on the same txid both ways, duplicates ignored, unknown txid warning + close, other RBF candidate remembered (D11), `HandlePeerFundingLockedAsync` (SP-RE-04); SP-LK-04's receive side goes with SPR (NL-489) | 64374dd0 |
+| SP2-B-T2 SCID change | done: `RetiredScidMap` (72 blocks, D12; alias-only channels never retire their real SCID), `ChannelUpdateService` follows the new SCID, invoice hints read the current SCID; the hosts load the map before the peers start (a31c6c0d, NL-487) | 64374dd0, 505a3b90, a31c6c0d |
+| SP2-B-T3 announcements | done: current funding keys (NL-478), early splice halves deferred, re-announced at 6 confirmations, halves reset in the lock's own save; bit 0 of TLV 5 handled by SP2-A (the funding row's received flag is never set, NL-488); a late half for the old SCID still gets a warning (NL-490) | 64374dd0, 505a3b90 |
+| SP2-C-T1 watch + classify | done: `ClassifyAny` over every funding, a splice never a close, the new funding watched from our splice CS's save, mempool reaction across fundings | 7bfeb108, 82b98af3, c8d4257d |
+| SP2-C-T2 force close with a pending splice | done: our commitment on whichever funding confirms (SP-I4, `ISpliceCommitmentBroadcaster`), a close reorged out while its discarded splice confirms retired in one save | 82b98af3, d5e13781 |
+| SP2-C-T3 resolvers per funding | done: revocation log per funding and pending slots in step (NL-479), resolvers and penalty data source on the spent funding, fallback rebase of another funding's entry; `SignedOnFundings` not persisted (NL-494) | 768f8642, 82b98af3, 2b6910ac, d5e13781 |
+| SP2-C-T4 reorgs | partial: locked-splice reorg alert, pending splice reorg idempotent, replaced funding without a watch reported; in-memory alert, `SpliceDepthWatcher` reorg handling and wallet reservation rollback open (NL-492, NL-493) | 2b6910ac, ba5bb413, d5e13781 |
+| SP2-D-T1 `listchannels` fundings | done: fundings (IPC key 23) and retired SCIDs (24) with depth and SCID | 71df7272, 1339ed01 |
+| SP2-D-T2 **Proof SP2** | done: `ClnSpliceReestablishTests` 11/11 against CLN v26.06.8 ((a) four cut points x {reconnect, restart}, (a') CLN restarted mid-splice, (b) lock over a disconnect, (c) re-announcement, forwards to the new and the retired SCID, `WIRE_UNKNOWN_NEXT_PEER` after 72 blocks); `OnchainSpliceTests` 5/5 ((d), (e)). Not covered: LND 0.20 learning the spliced channel (NL-496). Integration fixed the restart cases (990d3381, NL-484) and the (c) gossip flush and CLTV margin (7abc96b2) | d786e4f8, 1339ed01, b9bd0183, ba5bb413, 990d3381, 7abc96b2 |
+| SP2-E backups across splices | done: SCB entries with the current funding, key index and pending splices, restore follows splice spends, backup rewritten at the lock, peer storage blob v2; CLN `ClnSpliceBackupRestoreTests` | 252063df, ba8ecfd6, 5f078964 |
+| SP2-F day-0 proofs | done: `Day0FlowTests` (dual-funded public open, splices, restart mid-splice, policy, backups, close between two NLightning nodes) and `Day0UpgradeInPlaceTests` (pre-sp1 database migrated in place), `DAY0_RUNBOOK.md`; found NL-497 and NL-498 | c8d6ad6b, 3d0240ee, af6b1bcd, db276852 |
+
+Carried: wave SPR (NL-481, NL-489), D13 (Proof SP2 is green; the decision to advertise `option_splice`/`option_quiesce` Optional remains, ideally after the LND check in NL-496 and NL-477), follow-ups NL-480, NL-483, NL-488, NL-490, NL-492..NL-497.
+
 ### Wave SPR: splice RBF
 | Task | Lane | Files | Acceptance |
 |---|---|---|---|
