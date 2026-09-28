@@ -352,7 +352,7 @@ Requirement IDs (`B7-…`) are used by the tasks and by the traceability matrix 
   - Every 60 s, with a per-peer phase offset (staggered): for each peer that sent `gossip_timestamp_filter`, send the pending messages whose timestamp is in its filter, except to their origin peer. A 256 goes first, and only if an update for it exists.
   - Our own messages go to all peers at the next flush, regardless of filter (B7-Q-05). Peers whose `init.networks` lacks our chain get nothing (GG11).
   - A new filter triggers a one-shot backlog send from the graph (lazy, paced at `Gossip:BacklogMessagesPerSecond` = 1,000 per peer).
-  - Sends go through `PeerOutbox.TryEnqueueGossip`. It is bounded: a peer over `Gossip:MaxOutboundQueue` (5,000) gets the rest of the backlog dropped (it can re-query).
+  - Sends go through `PeerOutbox.TryEnqueueGossip`. It is bounded: a peer over `Gossip:MaxOutboundQueue` (5,000) gets the rest of the backlog dropped (it can re-query). As built (NL-360, lane nl360): the outbox's gossip share is capped (`Gossip:MaxOutboxGossipPerPeer` 10,000 messages, `Gossip:MaxOutboxGossipBytesPerPeer` 4 MiB) and answers Full; the relay then **pauses** the connection instead of dropping (the refused backlog message is held, the rest of a flush goes back into the pending set), resumes at `Gossip:RelayResumePercent` (50 %) of the caps, and only a connection that sends no gossip for `Gossip:RelayStallTimeout` (10 min) loses its backlog and pending messages (never the connection).
 
 ### 3.8 DoS limits (G2 enforces the basics, G5 tunes)
 | Limit | Default |
@@ -365,6 +365,7 @@ Requirement IDs (`B7-…`) are used by the tasks and by the traceability matrix 
 | graph size | `MaxChannels` 200,000, `MaxNodes` 100,000; beyond that, new channels are rejected (logged, metric) |
 | future timestamps | more than 14 days ahead dropped (reuses `ChannelUpdateService.MaxFutureTimestamp`) |
 | misbehaviour | 5 invalid signatures or chain mismatches in 10 min → warning, disconnect, 1 h ban (`GraphBannedNodes`) |
+| outbound gossip per connection (NL-360) | relay pending set `MaxRelayPendingPerPeer` 5,000 (oldest evicted); outbox gossip `MaxOutboxGossipPerPeer` 10,000 messages and `MaxOutboxGossipBytesPerPeer` 4 MiB (about 9 MB of heap when full, measured); a full outbox pauses the relay to that connection, resumed at 50 %; no gossip sent for `RelayStallTimeout` 10 min → backlog ended, pending dropped, connection kept |
 
 ### 3.9 IPC (append-only `ClientCommand`)
 | Value | Command | Milestone |
@@ -372,7 +373,7 @@ Requirement IDs (`B7-…`) are used by the tasks and by the traceability matrix 
 | (none) | `openchannel --public` (key 4 of `OpenChannelIpcRequest`, optional) | G1-T1 |
 | 16 | `ListGraphNodes` (`listnodes [--node <id>]`): node id, alias, color, addresses, features, channel count | G2-T6 |
 | 17 | `ListGraphChannels` (`listgraphchannels [--scid] [--node]`): scid, nodes, capacity, both policies, verification, spent | G2-T6 |
-| 20 (planned 18) | `DescribeGraph` (`describegraph [--channels] [--nodes] [--limit n] [--offset n]`): counts, memory estimate, pending writes, ingress queues, sync state per connection (relay depths missing, NL-375) | G5-T4 (done G-D) |
+| 20 (planned 18) | `DescribeGraph` (`describegraph [--channels] [--nodes] [--limit n] [--offset n]`): counts, memory estimate, pending writes, ingress queues, sync state per connection; relay and outbox depths since lane nl360 (keys 29-34, NL-375) | G5-T4 (done G-D) |
 | 19 | `GetRoute` (`getroute <node> <amount_msat> [--max-fee] [--cltv]`): the path with per-hop amount/CLTV/fee and the probability estimate | G4-T4 |
 
 `listchannels` gains `Public` and `Announced`. Numbers are assigned at implementation time and never renumbered (root `CLAUDE.md`).
@@ -563,7 +564,7 @@ Four lanes cherry-picked with `-x` onto `wip/fafo` (order Z2, Z1, Z3, Z4), plus 
 2. **Relay of other nodes' gossip: stays OFF on mainnet.** The relay run (20 min toward Blockstream Store, 3 min toward ACINQ) was clean (no warning, disconnect or echo, backlog bounded at 192 and draining) but relayed **nothing**: no mainnet peer asked a channel-less node for gossip (Eclair and LND send no `gossip_timestamp_filter`, CLN sends `first_timestamp = 0xFFFFFFFF`). Relay is unexercised against mainnet peers (NL-417); revisit with a node that has a public channel. Our own gossip and query answers are unaffected.
 3. **`AllowPublicChannelsOnMainnet` stays false** (separate decision).
 
-Still open for the long run: the 24 h Mutinynet and multi-day mainnet soaks (NL-376), NL-416 (verified-sync garbage keeps RSS near 610 MB until a gen-2 GC), NL-360 (outbox cap off), NL-407.
+Still open for the long run: the 24 h Mutinynet and multi-day mainnet soaks (NL-376), NL-416 (verified-sync garbage keeps RSS near 610 MB until a gen-2 GC), NL-360 (outbox cap off; fixed in lane nl360: cap on by default, relay pause), NL-407.
 
 ### G0: Wire completeness (no behaviour change except typing)
 | Task | Files | Acceptance |
@@ -641,7 +642,7 @@ Still open for the long run: the 24 h Mutinynet and multi-day mainnet soaks (NL-
 ### G5: Hardening
 | Task | Files | Acceptance |
 |---|---|---|
-| **G5-T1** Memory limits and accounting (§3.8). **Done** (G-D: caps and the estimate; d12 Z2: `Gossip:MaxMemoryMb` 1,024 MB enforced against the process RSS, NL-373; interning dropped by owner decision) | `GossipOptions` limits; interned node ids; `GraphStore` memory estimate | 200k-channel synthetic load under `Gossip:MaxMemoryMb` (default 512) **(measure; set the budget from the measurement)** |
+| **G5-T1** Memory limits and accounting (§3.8). **Done** (G-D: caps and the estimate; d12 Z2: `Gossip:MaxMemoryMb` 1,024 MB enforced against the process RSS, NL-373; interning dropped by owner decision; lane nl360: the per-connection outbound gossip bounded, NL-360: outbox cap 10,000 messages / 4 MiB on by default, the relay pauses on a full outbox and stalls a peer that reads nothing for 10 min, measured about 9 MB of heap per full outbox) | `GossipOptions` limits; interned node ids; `GraphStore` memory estimate | 200k-channel synthetic load under `Gossip:MaxMemoryMb` (default 512) **(measure; set the budget from the measurement)** |
 | **G5-T2** Spam protection. **Done** (G-D) | rate limiters, misbehaviour score, `GraphBannedNodes`, per-peer queues | Fuzz-style test: a peer flooding invalid signatures is disconnected and banned; valid traffic from others unaffected |
 | **G5-T3** Persistence performance. **Done** (G-D; 200k load 1.55 s, no indexes needed) | write-behind batching, bulk load at startup, optional `AddGossipIndexes` | Startup load of 200k channels < 10 s on SQLite **(measure)** |
 | **G5-T4** `describegraph` + metrics. **Done** (G-D; IPC 20) | next free `ClientCommand` (18 is `listgraphchannels`, 19 goes to `getroute`); `Meter("NLightning.Gossip")` counters (received/accepted/rejected by reason, relayed, queue depth, chain lookups, sync durations) | IPC test; counters asserted in ingress tests |

@@ -187,7 +187,11 @@ reproduce here: the WAL stays at 5.8 MiB and the database file is checkpointed; 
 3. **Memory budget** (NL-373) with the measured mainnet numbers: about 115 MB live heap, 400 MB RSS.
 4. **Relay on mainnet** was not tested (the probe is a leech by design): the relay's pacing and filters against real
    mainnet peers, and our query replies to them (served only for chain-checked channels, so a probe with
-   `AssumeChannelValid` serves nothing), still need a run with a verifying node.
+   `AssumeChannelValid` serves nothing), still need a run with a verifying node. Since lane nl360 (NL-360) a slow
+   peer can no longer grow our memory: the outbox holds at most 10,000 gossip messages / 4 MiB per connection (about
+   9 MB of heap) and the relay pauses that connection, resuming at half, and drops its backlog only after 10 min
+   without progress. A relay run should record `nlightning.gossip.outbox.refused`, `relay.paused`, `relay.stalled`
+   and `describegraph`'s `Relay:` line next to RSS.
 5. The 24 h Mutinynet soak (NL-376) and a long mainnet run (days) for slow growth: this hour showed a flat RSS and
    a bounded WAL.
 
@@ -456,7 +460,14 @@ database of the earlier runs, ended by its own 24 h timer at 2026-09-28 14:28:25
     Fixed in lane accrbf: a remote close is logged at Information, a missed `pong` or a reset at Warning.
 
 NL-376 is closed with this run and the Mutinynet 24 h soak (`MUTINYNET.md`, "Gossip soak (G5-T5)"). What mainnet
-gossip still lacks is the relay proof from a node with a public channel (NL-417) and the outbox pause (NL-360).
+gossip still lacks is the relay proof from a node with a public channel (NL-417); the outbox pause (NL-360) landed in
+lane nl360 (outbox cap on by default, relay paused on a full outbox, resumed at half, stalled after 10 min without
+progress). A relay run through the BOLT 10 bootstrap peers could find small LND nodes that pick the probe as an
+active syncer and subscribe to live gossip (`gossip_timestamp_filter(now, max)`, no backlog); whether any does is
+chance, and the probe cannot do it yet: `--bootstrap` refuses `--relay-to`, and `--relay-to` names one peer (a
+"relay to every connected peer" mode is needed). The backlog and the pause under real TCP need a peer we run that
+asks for everything (`gossip_timestamp_filter(0, 0xFFFFFFFF)`), e.g. a second NLightning node pointed at the probe
+with `--relay-to` naming it.
 
 ## BOLT 10 bootstrap run (2026-09-28)
 
