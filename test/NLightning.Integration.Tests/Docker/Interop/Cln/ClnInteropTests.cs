@@ -30,6 +30,9 @@ using Utils;
 public sealed class ClnInteropTests : IAsyncLifetime
 {
     private const int TestTimeoutMs = 6 * 60 * 1_000;
+
+    /// <summary>CLN's <c>opening</c> estimate on an idle regtest chain: BOLT 3's 253 sat/kw floor (NL-486).</summary>
+    private const string IdleClnOpeningFeerate = "253perkw";
     private static readonly TimeSpan s_settleTimeout = TimeSpan.FromSeconds(60);
 
     private readonly ClnFixture _fixture;
@@ -173,15 +176,18 @@ public sealed class ClnInteropTests : IAsyncLifetime
     /// feerate too small for timely processing, and we now accept anything from the 253 sat/kw floor. Payments work
     /// both ways over the channel. Our node turns <c>option_anchors</c> off (on by default since wave O7b): on an
     /// anchors channel CLN opens at a higher commitment feerate (1,250 sat/kw seen), which would not exercise the old
-    /// floor.
+    /// floor. The feerate is pinned to CLN's idle-chain estimate, 253 sat/kw, instead of asking for <c>opening</c>:
+    /// after the splice classes have mined fee-paying transactions CLN's estimate is about 2,500 sat/kw, which does not
+    /// exercise the floor either (NL-486, the test must not depend on the classes run before it).
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_ClnFundsAtItsOwnEstimate_When_Opening_Then_WeAccept()
     {
-        // Arrange + Act: fundchannel at CLN's own opening estimate, on a static_remotekey channel
+        // Arrange + Act: fundchannel at CLN's idle-chain opening estimate, on a static_remotekey channel
         var ct = TestContext.Current.CancellationToken;
         await using var session = await ClnChannelSession.BuildClnFundedAsync(
-                                      _fixture, "nltg-fee-floor", LightningMoney.Satoshis(500_000), "opening", ct,
+                                      _fixture, "nltg-fee-floor", LightningMoney.Satoshis(500_000),
+                                      IdleClnOpeningFeerate, ct,
                                       options => options.Features.OptionAnchors = FeatureSupport.No);
 
         // Assert: usable at our end, at a feerate our old floor refused
