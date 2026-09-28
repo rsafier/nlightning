@@ -26,6 +26,7 @@ using Domain.Node.Options;
 using Domain.Node.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
@@ -354,27 +355,6 @@ public class PeerBootstrapServiceTests
 
         // Assert
         VerifyNoSeedQuery();
-    }
-
-    [Fact]
-    public async Task Given_AGraphWithNodeAddresses_When_Started_Then_BootstrapIsSkipped()
-    {
-        // Arrange
-        var node = new GraphNode(NewKey(), 1, ReadOnlyMemory<byte>.Empty, new byte[32], new byte[3],
-                                 [AddressDescriptor.FromIpAddress(IPAddress.Parse("1.2.3.4"), 9735)]);
-        var view = new Mock<IGraphView>();
-        view.Setup(v => v.Nodes).Returns(new[] { node });
-        var store = new Mock<IGraphStore>();
-        store.Setup(s => s.GetSnapshot()).Returns(view.Object);
-        _graphStore = store.Object;
-        var service = CreateService();
-
-        // Act
-        await RunToEndAsync(service);
-
-        // Assert
-        VerifyNoSeedQuery();
-        Assert.Contains(_logger.Entries, e => e.Message.Contains("graph"));
     }
 
     [Fact]
@@ -826,6 +806,315 @@ public class PeerBootstrapServiceTests
         Assert.Equal(4, _dnsSeedClient.Invocations.Count);
         Assert.Equal(1, DialCount());
     }
+
+    #region Graph top-up (NL-543)
+
+    private static uint NowUnix => (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+    private static uint DaysAgo(int days) => NowUnix - (uint)TimeSpan.FromDays(days).TotalSeconds;
+
+    private static ulong s_nextScid;
+
+    private readonly List<GraphChannel> _graphChannels = [];
+    private readonly List<GraphNode> _graphNodes = [];
+
+    /// <summary>
+    /// An announced graph node with <paramref name="channels"/> channels to fresh nodes, each with an update of the
+    /// node's own direction.
+    /// </summary>
+    private CompactPubKey AddGraphNode(string? address = null, ushort port = 9735, int channels = 2,
+                                      uint? announcedAt = null, uint? updatedAt = null, bool disabled = false,
+                                      AddressDescriptor? descriptor = null, CompactPubKey? nodeId = null)
+    {
+        var id = nodeId ?? NewKey();
+        var n = Interlocked.Increment(ref s_nextAddress);
+        AddressDescriptor[] addresses =
+            descriptor is not null
+                ? [descriptor]
+                : [AddressDescriptor.FromIpAddress(
+                    IPAddress.Parse(address ?? $"12.{(n >> 16) & 0xff}.{(n >> 8) & 0xff}.{n & 0xff}"), port)];
+        _graphNodes.Add(new GraphNode(id, announcedAt ?? NowUnix, ReadOnlyMemory<byte>.Empty, new byte[32],
+                                      new byte[3], addresses));
+        for (var i = 0; i < channels; i++)
+        {
+            var other = NewKey();
+            var idFirst = GraphChannel.CompareNodeIds(id, other) < 0;
+            var (node1, node2) = idFirst ? (id, other) : (other, id);
+            var channel = new GraphChannel(new ShortChannelId(Interlocked.Increment(ref s_nextScid)), node1, node2,
+                                           node1, node2, 100_000);
+            var flags = (byte)((idFirst ? 0 : 1) | (disabled ? ChannelUpdatePayload.ChannelFlagDisable : 0));
+            _graphChannels.Add(channel.WithPolicy(new GraphPolicy(updatedAt ?? NowUnix, 1, flags, 40, 1_000,
+                                                                  1_000_000_000, 1_000, 1)));
+        }
+
+        return id;
+    }
+
+    private void UseGraph()
+    {
+        var snapshot = new GraphSnapshot(_graphChannels, _graphNodes);
+        var store = new Mock<IGraphStore>();
+        store.Setup(s => s.GetSnapshot()).Returns(snapshot);
+        _graphStore = store.Object;
+    }
+
+    private List<CompactPubKey> DialedNodeIds() =>
+        _peerManager.Invocations.Where(i => i.Method.Name == nameof(IPeerManager.DialPeerAsync))
+                    .Select(i => new CompactPubKey(
+                                Convert.FromHexString(((PeerAddressInfo)i.Arguments[0]).Address[..66])))
+                    .ToList();
+
+    [Fact]
+    public async Task Given_FewerPeersThanMinPeersAndAGraph_When_Bootstrapping_Then_GraphNodesAreDialedFirst()
+    {
+        // Arrange: the restart case of NL-543: a graph, no saved peer reachable
+        var nodes = new[] { AddGraphNode(), AddGraphNode(), AddGraphNode() };
+        UseGraph();
+        DialsSucceed();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert: MinPeers (3) reached from the graph alone, the seeds never asked
+        Assert.Equal(nodes.ToHashSet(), _connected.Keys.ToHashSet());
+        VerifyNoSeedQuery();
+        var status = service.GetStatus();
+        Assert.All(status.Dials, d => Assert.Equal(GraphPeerCandidateSelector.GraphSource, d.Candidate.Seed));
+        var run = Assert.Single(status.Runs);
+        Assert.Equal(3, run.GraphConnected);
+        Assert.False(run.AskedSeeds);
+        Assert.Contains("MinPeers", status.EndReason);
+        Assert.DoesNotContain(_logger.Entries, e => e.Level >= LogLevel.Error);
+    }
+
+    [Fact]
+    public async Task Given_UnusableGraphNodes_When_Bootstrapping_Then_OnlyTheUsableOneIsDialed()
+    {
+        // Arrange
+        _nodeOptions.Bootstrap.AddressFamilies = DnsSeedAddressTypes.IPv4;
+        SetupSeed(SeedA, Ok(SeedA));
+        SetupSeed(SeedB, Ok(SeedB));
+        var connectedPeer = new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4");
+        _connected[connectedPeer.NodeId] = connectedPeer;
+        var good = AddGraphNode();
+        AddGraphNode(nodeId: _ourNodeId); // ourselves
+        AddGraphNode(nodeId: connectedPeer.NodeId); // already connected
+        AddGraphNode(address: "10.1.2.3"); // private
+        AddGraphNode(address: "127.0.0.1"); // loopback
+        AddGraphNode(address: "8.8.4.4", port: 0); // port 0
+        AddGraphNode(address: "2001:4860::1"); // IPv6, not asked for
+        AddGraphNode(descriptor: AddressDescriptor.FromHost(AddressDescriptorType.TorV3,
+                                                            new string('a', 56) + ".onion", 9735)); // Tor
+        AddGraphNode(descriptor: AddressDescriptor.FromDnsHostname("node.example.com", 9735)); // hostname
+        AddGraphNode(channels: 0); // no channel
+        AddGraphNode(updatedAt: DaysAgo(30)); // stale updates only
+        AddGraphNode(disabled: true); // disabled channels only
+        UseGraph();
+        DialsSucceed();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(good, Assert.Single(DialedNodeIds()));
+    }
+
+    [Fact]
+    public async Task Given_AGraphNodeWhoseDialFailed_When_TheNextRunComes_Then_ItIsNotDialedAgain()
+    {
+        // Arrange
+        _nodeOptions.Bootstrap.MaxRuns = 2;
+        AddGraphNode();
+        UseGraph();
+        SetupSeed(SeedA, Ok(SeedA));
+        SetupSeed(SeedB, Ok(SeedB));
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .ThrowsAsync(new ConnectionException("refused"));
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(1, DialCount());
+        Assert.Equal(2, service.GetStatus().Runs.Count);
+    }
+
+    [Fact]
+    public async Task Given_ManyGraphNodes_When_Bootstrapping_Then_OnlyThePeersMissingToMinPeersAreDialed()
+    {
+        // Arrange: one peer connected, MinPeers 3: two are missing
+        var peer = new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4");
+        _connected[peer.NodeId] = peer;
+        for (var i = 0; i < 20; i++)
+            AddGraphNode();
+        UseGraph();
+        DialsSucceed();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(2, DialCount());
+        Assert.Equal(3, _connected.Count);
+        VerifyNoSeedQuery();
+    }
+
+    [Fact]
+    public async Task Given_ManyGraphNodes_When_Bootstrapping_Then_TheDialLimitsHold()
+    {
+        // Arrange: 10 missing, but at most 3 connections per run and 2 dials at a time; every other dial fails
+        _nodeOptions.Bootstrap.MinPeers = 10;
+        _nodeOptions.Bootstrap.MaxPeersFromBootstrap = 3;
+        _nodeOptions.Bootstrap.MaxDialConcurrency = 2;
+        for (var i = 0; i < 30; i++)
+            AddGraphNode();
+        UseGraph();
+        SetupSeed(SeedA, Ok(SeedA, Candidate(SeedA)));
+        SetupSeed(SeedB, Ok(SeedB, Candidate(SeedB)));
+        var inFlight = 0;
+        var maxInFlight = 0;
+        var dials = 0;
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .Returns(async (PeerAddressInfo info, CancellationToken _) =>
+                     {
+                         var now = Interlocked.Increment(ref inFlight);
+                         lock (_connected)
+                             maxInFlight = Math.Max(maxInFlight, now);
+                         try
+                         {
+                             await Task.Delay(5, TestContext.Current.CancellationToken);
+                             if (Interlocked.Increment(ref dials) % 2 == 0)
+                                 throw new ConnectionException("refused");
+                             return Connect(info);
+                         }
+                         finally
+                         {
+                             Interlocked.Decrement(ref inFlight);
+                         }
+                     });
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert: 3 connections from the graph fill the run's cap, so the seeds are not asked; never 3 dials at once
+        Assert.Equal(3, _connected.Count);
+        Assert.True(maxInFlight <= 2, $"{maxInFlight} dials at once");
+        Assert.All(service.GetStatus().Dials,
+                   d => Assert.Equal(GraphPeerCandidateSelector.GraphSource, d.Candidate.Seed));
+        VerifyNoSeedQuery();
+    }
+
+    [Fact]
+    public async Task Given_GraphNodesThatDoNotAnswer_When_Bootstrapping_Then_TheSeedsAreAskedAndDialed()
+    {
+        // Arrange: every graph node refuses, the seeds' candidates connect
+        _nodeOptions.Bootstrap.MinPeers = 2;
+        var graphNodes = new[] { AddGraphNode(), AddGraphNode() };
+        UseGraph();
+        var seedA = Candidate(SeedA);
+        var seedB = Candidate(SeedB);
+        SetupSeed(SeedA, Ok(SeedA, seedA));
+        SetupSeed(SeedB, Ok(SeedB, seedB));
+        _peerManager.Setup(p => p.DialPeerAsync(It.IsAny<PeerAddressInfo>(), It.IsAny<CancellationToken>()))
+                    .Returns((PeerAddressInfo info, CancellationToken _) =>
+                                 graphNodes.Any(n => info.Address.StartsWith(n.ToString()))
+                                     ? Task.FromException<PeerModel>(new ConnectionException("refused"))
+                                     : Task.FromResult(Connect(info)));
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(new[] { seedA.NodeId, seedB.NodeId }.ToHashSet(), _connected.Keys.ToHashSet());
+        Assert.All(graphNodes, n => Assert.Contains(n, DialedNodeIds()));
+        var run = Assert.Single(service.GetStatus().Runs);
+        Assert.True(run.AskedSeeds);
+        Assert.Equal(2, run.GraphAttempted);
+        Assert.Equal(0, run.GraphConnected);
+        Assert.Equal(2, run.Connected);
+        Assert.DoesNotContain(_logger.Entries, e => e.Level >= LogLevel.Error);
+    }
+
+    [Fact]
+    public async Task Given_EnoughConnectedPeersAndAGraph_When_Started_Then_NothingIsDialed()
+    {
+        // Arrange
+        for (var i = 0; i < _nodeOptions.Bootstrap.MinPeers; i++)
+        {
+            var peer = new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4");
+            _connected[peer.NodeId] = peer;
+        }
+
+        AddGraphNode();
+        UseGraph();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(0, DialCount());
+        VerifyNoSeedQuery();
+    }
+
+    [Fact]
+    public async Task Given_ASavedPeerWithAnActiveChannelAndAGraph_When_Started_Then_NothingIsDialed()
+    {
+        // Arrange: the peer manager keeps reconnecting it
+        _saved.Add(new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4") { Channels = [CreateChannel(ChannelState.Open)] });
+        AddGraphNode();
+        UseGraph();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(0, DialCount());
+    }
+
+    [Fact]
+    public async Task Given_ANetworkWithoutSeedsButAGraph_When_Enabled_Then_GraphNodesAreDialed()
+    {
+        // Arrange: signet has no seeds; the graph still tops up
+        _nodeOptions.BitcoinNetwork = BitcoinNetwork.Signet;
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        var node = AddGraphNode();
+        UseGraph();
+        DialsSucceed();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(node, Assert.Single(_connected.Keys));
+        VerifyNoSeedQuery();
+    }
+
+    [Fact]
+    public async Task Given_BootstrapDisabledAndAGraph_When_Started_Then_NothingIsDialed()
+    {
+        // Arrange: the graph top-up follows Node:Bootstrap:Enabled
+        _nodeOptions.Bootstrap.Enabled = false;
+        AddGraphNode();
+        UseGraph();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(0, DialCount());
+    }
+
+    #endregion
 
     private ChannelModel CreateChannel(ChannelState state)
     {

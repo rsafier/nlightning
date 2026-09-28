@@ -36,6 +36,10 @@ public sealed record PeerBootstrapStatus(
 /// <param name="Attempted">The dials made.</param>
 /// <param name="Connected">The dials that connected.</param>
 /// <param name="PeersAfter">The connected peers when the run ended.</param>
+/// <remarks>
+/// <paramref name="Attempted"/> and <paramref name="Connected"/> count the graph top-up's dials too (NL-543);
+/// <paramref name="Collected"/> and <paramref name="Selected"/> are the seeds' only.
+/// </remarks>
 public sealed record BootstrapRunRecord(
     int Run,
     DateTimeOffset StartedAt,
@@ -44,7 +48,20 @@ public sealed record BootstrapRunRecord(
     int Selected,
     int Attempted,
     int Connected,
-    int PeersAfter);
+    int PeersAfter)
+{
+    /// <summary>The graph nodes selected for the top-up (NL-543).</summary>
+    public int GraphSelected { get; init; }
+
+    /// <summary>The graph nodes dialed.</summary>
+    public int GraphAttempted { get; init; }
+
+    /// <summary>The graph nodes that connected.</summary>
+    public int GraphConnected { get; init; }
+
+    /// <summary>True when the run asked the DNS seeds (the graph top-up did not reach <c>MinPeers</c>).</summary>
+    public bool AskedSeeds { get; init; }
+}
 
 /// <summary>One seed query of a run.</summary>
 /// <param name="Run">The run it belongs to.</param>

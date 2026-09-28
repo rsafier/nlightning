@@ -20,25 +20,33 @@ using Gossip.Graph.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
-/// BOLT 10 bootstrap (NL-113): a node that knows no peer asks the DNS seeds for some and connects to them. On by
-/// default on mainnet only (<c>Node:Bootstrap:Enabled</c>, D-B10-1 as reversed on 2026-09-28), and only on networks
-/// with seeds (D-B10-2).
+/// BOLT 10 bootstrap (NL-113) and graph top-up (NL-543): a node with fewer than
+/// <see cref="BootstrapOptions.MinPeers"/> peers dials nodes of its gossip graph and, when those do not bring it there,
+/// asks the DNS seeds for more. On by default on mainnet only (<c>Node:Bootstrap:Enabled</c>, D-B10-1 as reversed on
+/// 2026-09-28; the graph top-up follows the same switch).
 /// </summary>
 /// <remarks>
 /// <para>The host starts it after <c>PeerManager.StartAsync</c>; it runs in the background and never blocks the start.
-/// Before every run it checks the gate. Two reasons end the loop: no seeds for the network, and
+/// Before every run it checks the gate. Two reasons end the loop: no seeds for the network and no graph, and
 /// <see cref="BootstrapOptions.MinPeers"/> connected. The others skip that run only and are checked again after
 /// <see cref="BootstrapOptions.RetryInterval"/> (each skip counts toward <see cref="BootstrapOptions.MaxRuns"/>):
-/// chain processing halted, a saved peer with active channels that is not connected (the peer manager keeps
-/// reconnecting those; a saved peer without channels is dialed once at start and never again, so it does not count),
-/// and a graph node with an address (the node already knows contacts, NL-543).</para>
-/// <para>A run queries the seeds one at a time in random order until it has enough candidates, drops candidates
-/// already connected, saved or ourselves and endpoints that failed earlier in this process, keeps one address per
-/// node and one node per address, caps what one seed may supply and dials them through
+/// chain processing halted, and a saved peer with active channels that is not connected (the peer manager keeps
+/// reconnecting those; a saved peer without channels is dialed once at start and never again, so it does not count).
+/// </para>
+/// <para>A run first tops up from the graph (<see cref="GraphPeerCandidateSelector"/>: announced nodes with a usable
+/// IP address and an active channel, fresh ones first, random within each tier; never ourselves, a connected peer or
+/// an endpoint that failed earlier in this process), dialing at most the peers missing to
+/// <see cref="BootstrapOptions.MinPeers"/>. When the node is still below it, the run queries the seeds one at a time
+/// in random order until it has enough candidates, drops candidates already connected, saved or ourselves and
+/// endpoints that failed earlier in this process, keeps one address per node and one node per address, caps what one
+/// seed may supply and dials them, so a graph whose nodes do not answer never blocks the seeds. Every dial goes through
 /// <see cref="IPeerManager.DialPeerAsync"/> under <see cref="BootstrapOptions.ConnectTimeout"/> (at least
-/// <c>Node:NetworkTimeout</c>), which cancels the dial (so a timed-out dial never outlives its slot); the peer
-/// manager saves the peers it connects. The BOLT 8 handshake is the only proof of a seed's node
-/// id. Every run, seed query and dial is recorded for <see cref="GetStatus"/>.</para>
+/// <c>Node:NetworkTimeout</c>), which cancels the dial (so a timed-out dial never outlives its slot), at most
+/// <see cref="BootstrapOptions.MaxDialConcurrency"/> at a time and at most
+/// <see cref="BootstrapOptions.MaxPeersFromBootstrap"/> connections per run, graph and seeds together; the peer
+/// manager saves the peers it connects. The BOLT 8 handshake is the only proof of a node id. Every run, seed query and
+/// dial is recorded for <see cref="GetStatus"/> (graph dials with the seed <see cref="GraphPeerCandidateSelector.GraphSource"/>).
+/// </para>
 /// </remarks>
 internal sealed class PeerBootstrapService : IPeerBootstrapService
 {
@@ -64,6 +72,8 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     private DateTimeOffset? _startedAt;
     private DateTimeOffset? _finishedAt;
     private string? _endReason;
+
+    private bool _warnedIgnoredSeeds;
 
     private CancellationTokenSource? _cts;
     private Task? _loop;
@@ -235,10 +245,15 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     {
         var network = _nodeOptions.BitcoinNetwork;
         var seeds = Options.GetEffectiveSeeds(network, out var ignoredConfigured);
-        if (ignoredConfigured)
+        if (ignoredConfigured && !_warnedIgnoredSeeds)
+        {
+            _warnedIgnoredSeeds = true;
             _logger.LogWarning("BOLT 10 bootstrap: the configured seeds are ignored on {Network}, which has no public "
                              + "seeds (set Node:Bootstrap:AllowSeedsOnThisNetwork to use them)", network);
-        if (seeds.Count == 0)
+        }
+
+        // Without seeds the graph top-up can still find peers (NL-543); without a graph either, nothing can
+        if (seeds.Count == 0 && _graphStore is null)
             return ($"no seeds for {network}", true);
 
         var connected = _peerManager.ListPeers();
@@ -259,9 +274,6 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         if (reconnecting > 0)
             return ($"{reconnecting} saved peers with channels to reconnect", false);
 
-        if (_graphStore?.GetSnapshot().Nodes.Any(n => n.Addresses.Count > 0) == true)
-            return ("the graph knows nodes with addresses", false);
-
         return null;
     }
 
@@ -271,14 +283,39 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
 
     private async Task RunOnceAsync(int run, DateTimeOffset startedAt, CancellationToken ct)
     {
+        var maxPeers = Options.MaxPeersFromBootstrap;
+
+        // The graph first (NL-543): a node that restarts with a graph but cannot reach its saved peers dials nodes it
+        // already knows, and asks the seeds only when those do not bring it to MinPeers
+        var (graphSelected, graphAttempted, graphConnected) = await TopUpFromGraphAsync(run, maxPeers, ct);
+        var peers = _peerManager.ListPeers().Count;
         var seeds = Options.GetEffectiveSeeds(_nodeOptions.BitcoinNetwork, out _).ToArray();
+        if (peers >= Options.MinPeers || seeds.Length == 0 || graphConnected >= maxPeers)
+        {
+            if (graphAttempted > 0 || seeds.Length == 0)
+                _logger.LogInformation("BOLT 10 bootstrap: connected {Connected}/{Attempted} graph nodes ({Selected} "
+                                     + "candidates), have {Peers} peers{Seeds}", graphConnected, graphAttempted,
+                                       graphSelected, peers, seeds.Length == 0 ? "; no seeds to ask" : string.Empty);
+            Record(_runs, new BootstrapRunRecord(run, startedAt, null, 0, 0, graphAttempted, graphConnected, peers)
+            {
+                GraphSelected = graphSelected,
+                GraphAttempted = graphAttempted,
+                GraphConnected = graphConnected
+            });
+            return;
+        }
+
+        if (graphAttempted > 0)
+            _logger.LogInformation("BOLT 10 bootstrap: {Connected}/{Attempted} graph nodes connected, {Peers} peers "
+                                 + "(MinPeers {MinPeers}); asking the DNS seeds", graphConnected, graphAttempted,
+                                   peers, Options.MinPeers);
+
         Random.Shared.Shuffle(seeds);
-        var connectedBefore = _peerManager.ListPeers().Count;
         _logger.LogInformation("BOLT 10 bootstrap starting (run {Run}, seeds {Seeds}, have {Peers} peers)", run,
-                               string.Join(", ", seeds), connectedBefore);
+                               string.Join(", ", seeds), peers);
 
         // Query the seeds one at a time until there are enough candidates
-        var wanted = Options.MaxPeersFromBootstrap * 3;
+        var wanted = maxPeers * 3;
         var collected = new List<SeedPeerCandidate>();
         int seedsTried = 0, seedsOk = 0;
         foreach (var seed in seeds)
@@ -329,14 +366,59 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         }
 
         var candidates = await SelectCandidatesAsync(collected);
-        var (connected, attempted) = await DialAsync(run, candidates, ct);
+        var (connected, attempted) = await DialAsync(run, candidates, maxPeers - graphConnected, ct);
         _logger.LogInformation("BOLT 10 bootstrap: connected {Connected}/{Attempted} from {SeedsOk}/{SeedsTried} seeds",
                                connected, attempted, seedsOk, seedsTried);
-        if (connected == 0)
+        if (connected + graphConnected == 0)
             _logger.LogWarning("BOLT 10 bootstrap: run {Run} connected no peer", run);
 
-        Record(_runs, new BootstrapRunRecord(run, startedAt, null, collected.Count, candidates.Count, attempted,
-                                             connected, _peerManager.ListPeers().Count));
+        Record(_runs, new BootstrapRunRecord(run, startedAt, null, collected.Count, candidates.Count,
+                                             attempted + graphAttempted, connected + graphConnected,
+                                             _peerManager.ListPeers().Count)
+        {
+            GraphSelected = graphSelected,
+            GraphAttempted = graphAttempted,
+            GraphConnected = graphConnected,
+            AskedSeeds = true
+        });
+    }
+
+    /// <summary>
+    /// Dials nodes of the graph (NL-543, <see cref="GraphPeerCandidateSelector"/>) until <paramref name="maxPeers"/>
+    /// connect, the node reaches <see cref="BootstrapOptions.MinPeers"/> or the candidates run out.
+    /// </summary>
+    private async Task<(int Selected, int Attempted, int Connected)> TopUpFromGraphAsync(
+        int run, int maxPeers, CancellationToken ct)
+    {
+        if (_graphStore is null)
+            return (0, 0, 0);
+
+        var connectedPeers = _peerManager.ListPeers();
+        var missing = Options.MinPeers - connectedPeers.Count;
+        if (missing <= 0)
+            return (0, 0, 0);
+
+        var excluded = new HashSet<CompactPubKey> { _secureKeyManager.GetNodePubKey() };
+        foreach (var peer in connectedPeers)
+            excluded.Add(peer.NodeId);
+
+        var now = (ulong)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var candidates = GraphPeerCandidateSelector.Select(_graphStore.GetSnapshot(), now, excluded, _failedEndpoints,
+                                                           Options.AddressFamilies, Options.AllowNonRoutableAddresses,
+                                                           maxPeers * 3, Random.Shared);
+        if (candidates.Count == 0)
+        {
+            _logger.LogDebug("BOLT 10 bootstrap: no usable graph node to dial (run {Run})", run);
+            return (0, 0, 0);
+        }
+
+        _logger.LogInformation("BOLT 10 bootstrap: {Peers} peers (MinPeers {MinPeers}), dialing graph nodes (run {Run}, "
+                             + "{Candidates} candidates)", connectedPeers.Count, Options.MinPeers, run,
+                               candidates.Count);
+
+        // Only the peers still missing to MinPeers: the graph top-up keeps a minimum, it does not fill the set
+        var (connected, attempted) = await DialAsync(run, candidates, Math.Min(maxPeers, missing), ct);
+        return (candidates.Count, attempted, connected);
     }
 
     /// <summary>
@@ -367,9 +449,8 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     /// connections unless it is the only one that answered.
     /// </summary>
     private async Task<(int Connected, int Attempted)> DialAsync(int run, List<SeedPeerCandidate> candidates,
-                                                                 CancellationToken ct)
+                                                                 int maxPeers, CancellationToken ct)
     {
-        var maxPeers = Options.MaxPeersFromBootstrap;
         var seedCount = candidates.Select(c => c.Seed).Distinct().Count();
         var perSeedCap = seedCount <= 1 ? maxPeers : (maxPeers + seedCount - 1) / seedCount + 1;
         var perSeed = new Dictionary<string, int>();
