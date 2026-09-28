@@ -96,10 +96,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 7 | 169 | 176 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 147 | 129 | 351 |
+| fixed | 14 | 61 | 147 | 130 | 352 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **157** | **304** | **536** |
+| **Total** | **14** | **61** | **157** | **305** | **537** |
 
 ### Epics
 
@@ -3796,6 +3796,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Add seeds when public testnet4/signet seeds exist, and add testnet4 to `IsSeedNetwork` with NL-012.
 - **Blocks/Blocked-by:** Related NL-012
 - **Plan ref:** —
+
+### NL-546 BOLT 10 seed targets are resolved one at a time
+- **Status:** fixed (SHA_PLACEHOLDER)
+- **Severity:** low
+- **Kind:** performance
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Bootstrap/DnsSeedClient.cs`
+- **Evidence:** Lane b10main, mainnet bootstrap run of 2026-09-28 (`docs/agents/MAINNET_GOSSIP_PROBE.md`, "BOLT 10 bootstrap run"): both mainnet seeds answer 25 SRV records without glue, so the client asked A and AAAA for each target, 50 TCP queries one after the other: about 8.5 s per seed through 1.1.1.1 (the seed census: 10.3 s and 18.7 s per seed including the system resolver's failure). With a slower link the per-seed timeout (10 s) would cut the answer short. This was most of the time to the first peer after the 15 s start delay.
+- **Fix sketch:** Resolve the targets concurrently. Done: batches of at most `DnsSeedClient.MaxConcurrentAddressLookups` (8) targets, never more than the candidates still wanted (a cap of 5 still costs 5 queries); a target not resolved when the seed's time runs out is left out and the resolved ones are returned with outcome `Timeout`. The live smoke (`DnsSeedLiveTests`, 1.1.1.1) takes 0.66 s for 25 targets. Tests: `DnsSeedClientTests.Given_ManyTargetsWithoutGlue_*`, `Given_ATargetThatHangs_*`.
+- **Blocks/Blocked-by:** Related NL-113
+- **Plan ref:** BOLT 10
 
 ---
 

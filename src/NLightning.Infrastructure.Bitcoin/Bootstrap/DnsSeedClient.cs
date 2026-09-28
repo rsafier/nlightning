@@ -24,6 +24,9 @@ using Infrastructure.Protocol.Dns;
 /// </remarks>
 internal sealed class DnsSeedClient : IDnsSeedClient
 {
+    /// <summary>The most A/AAAA lookups of one seed's targets at the same time (NL-546).</summary>
+    internal const int MaxConcurrentAddressLookups = 8;
+
     private readonly IDnsRecordLookup _lookup;
     private readonly IFallbackDnsRecordLookup? _fallback;
     private readonly ILogger<DnsSeedClient> _logger;
@@ -85,11 +88,16 @@ internal sealed class DnsSeedClient : IDnsSeedClient
                                      .Where(r => !string.IsNullOrWhiteSpace(r.Target))
                                      .DistinctBy(r => (r.Target.TrimEnd('.').ToLowerInvariant(), r.Port))
                                      .ToArray();
+            Random.Shared.Shuffle(records);
+
+            // The targets' addresses are looked up in concurrent batches (NL-546): a seed without glue answers 25
+            // targets, i.e. 50 A/AAAA queries, which took about 8.5 s one after the other over TCP on mainnet. A
+            // batch is never larger than the candidates still wanted, so a small cap costs no extra queries
             var addressesByTarget =
                 new Dictionary<string, IReadOnlyList<IPAddress>>(StringComparer.OrdinalIgnoreCase);
-            Random.Shared.Shuffle(records);
-            foreach (var record in records)
+            for (var index = 0; index < records.Length; index++)
             {
+                var record = records[index];
                 if (candidates.Count >= maxResults)
                     break;
 
@@ -104,11 +112,23 @@ internal sealed class DnsSeedClient : IDnsSeedClient
                     continue;
                 }
 
-                if (!addressesByTarget.TryGetValue(target, out var addresses))
+                if (!addressesByTarget.ContainsKey(target) && !token.IsCancellationRequested)
                 {
-                    addresses = await GetAddressesAsync(lookup, root, target, srvResponse, families, token);
-                    addressesByTarget[target] = addresses;
+                    var batch = records.Skip(index)
+                                       .Select(r => r.Target.TrimEnd('.'))
+                                       .Where(t => !addressesByTarget.ContainsKey(t)
+                                                && LightningNodeIdBech32.TryDecode(t.Split('.')[0], out _, out _))
+                                       .Distinct(StringComparer.OrdinalIgnoreCase)
+                                       .Take(Math.Min(MaxConcurrentAddressLookups, maxResults - candidates.Count))
+                                       .ToArray();
+                    foreach (var (resolvedTarget, resolvedAddresses) in
+                             await ResolveTargetsAsync(lookup, root, batch, srvResponse, families, token))
+                        addressesByTarget[resolvedTarget] = resolvedAddresses;
                 }
+
+                // Not resolved: the seed's time ran out first
+                if (!addressesByTarget.TryGetValue(target, out var addresses))
+                    continue;
 
                 foreach (var found in addresses)
                 {
@@ -136,6 +156,14 @@ internal sealed class DnsSeedClient : IDnsSeedClient
                     if (seen.Add((nodeId, address, record.Port)))
                         candidates.Add(new SeedPeerCandidate(nodeId, address, record.Port, root));
                 }
+            }
+
+            if (token.IsCancellationRequested)
+            {
+                ct.ThrowIfCancellationRequested();
+                _logger.LogDebug("Seed {Seed} timed out after {Timeout} with {Count} candidates", root,
+                                 _options.PerSeedTimeout, candidates.Count);
+                return new DnsSeedResult(root, DnsSeedOutcome.Timeout, candidates, rejected);
             }
 
             return new DnsSeedResult(root, DnsSeedOutcome.Ok, candidates, rejected);
@@ -179,6 +207,42 @@ internal sealed class DnsSeedClient : IDnsSeedClient
         }
 
         return (outcome, null);
+    }
+
+    /// <summary>
+    /// The addresses of <paramref name="targets"/>, looked up concurrently (at most
+    /// <see cref="MaxConcurrentAddressLookups"/>, the batch's size). A target not resolved when <paramref name="ct"/>
+    /// (the seed's time) runs out is left out; the caller checks its own cancellation.
+    /// </summary>
+    private async Task<Dictionary<string, IReadOnlyList<IPAddress>>> ResolveTargetsAsync(
+        IDnsRecordLookup lookup, string root, IReadOnlyList<string> targets, DnsLookupResponse srvResponse,
+        DnsSeedAddressTypes families, CancellationToken ct)
+    {
+        var resolved = new Dictionary<string, IReadOnlyList<IPAddress>>(StringComparer.OrdinalIgnoreCase);
+        using var gate = new SemaphoreSlim(MaxConcurrentAddressLookups);
+        await Task.WhenAll(targets.Select(async target =>
+        {
+            try
+            {
+                await gate.WaitAsync(ct);
+                try
+                {
+                    var addresses = await GetAddressesAsync(lookup, root, target, srvResponse, families, ct);
+                    lock (resolved)
+                        resolved[target] = addresses;
+                }
+                finally
+                {
+                    gate.Release();
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // The seed's time ran out: this target is left out
+            }
+        }));
+
+        return resolved;
     }
 
     private async Task<IReadOnlyList<IPAddress>> GetAddressesAsync(IDnsRecordLookup lookup, string root, string target,

@@ -555,4 +555,69 @@ public class DnsSeedClientTests
         Assert.Equal(DnsSeedOutcome.ServerFailure, result.SystemResolverOutcome);
         Assert.Empty(result.Candidates);
     }
+
+    [Fact]
+    public async Task Given_ManyTargetsWithoutGlue_When_Queried_Then_TheirAddressesAreLookedUpConcurrently()
+    {
+        // Arrange: NL-546, every A query waits until 8 run at once (the cap), so a sequential client would hang
+        var nodes = Enumerable.Range(0, 20).Select(_ => NewNode()).ToArray();
+        SetupQuery(Root, DnsRecordKind.Srv, Srv(nodes.Select(n => new DnsSrv(10, 10, 9735, n.Target))));
+        var inFlight = 0;
+        var maxInFlight = 0;
+        var allowed = new TaskCompletionSource();
+        for (var i = 0; i < nodes.Length; i++)
+        {
+            var address = $"1.2.3.{i + 1}";
+            _lookup.Setup(l => l.QueryAsync(nodes[i].Target, DnsRecordKind.A, It.IsAny<CancellationToken>()))
+                   .Returns(async (string _, DnsRecordKind _, CancellationToken ct) =>
+                    {
+                        var now = Interlocked.Increment(ref inFlight);
+                        lock (allowed)
+                            maxInFlight = Math.Max(maxInFlight, now);
+                        if (now >= DnsSeedClient.MaxConcurrentAddressLookups)
+                            allowed.TrySetResult();
+                        await allowed.Task.WaitAsync(ct);
+                        Interlocked.Decrement(ref inFlight);
+                        return Addresses(address);
+                    });
+        }
+
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Ok, result.Outcome);
+        Assert.Equal(20, result.Candidates.Count);
+        Assert.Equal(DnsSeedClient.MaxConcurrentAddressLookups, maxInFlight);
+    }
+
+    [Fact]
+    public async Task Given_ATargetThatHangs_When_TheSeedTimesOut_Then_TheResolvedTargetsAreStillReturned()
+    {
+        // Arrange
+        _nodeOptions.Bootstrap.PerSeedTimeout = TimeSpan.FromMilliseconds(300);
+        var fast = NewNode();
+        var slow = NewNode();
+        SetupQuery(Root, DnsRecordKind.Srv,
+                   Srv([new DnsSrv(10, 10, 9735, fast.Target), new DnsSrv(10, 10, 9735, slow.Target)]));
+        SetupQuery(fast.Target, DnsRecordKind.A, Addresses("1.2.3.4"));
+        _lookup.Setup(l => l.QueryAsync(slow.Target, DnsRecordKind.A, It.IsAny<CancellationToken>()))
+               .Returns(async (string _, DnsRecordKind _, CancellationToken ct) =>
+                {
+                    await Task.Delay(Timeout.Infinite, ct);
+                    return Addresses("5.6.7.8");
+                });
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Timeout, result.Outcome);
+        Assert.Equal(fast.Key, Assert.Single(result.Candidates).NodeId);
+    }
 }
