@@ -4531,7 +4531,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` wave DF
 
 ### NL-528 An RBF'd dual-funded open whose earlier attempt confirms is not followed
-- **Status:** fixed (SHA_528)
+- **Status:** fixed (62a43729)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs`, `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`ConfirmFundingAsync`, `ConfirmUnconfirmedChannels`), `src/NLightning.Application/Channels/Handlers/ChannelReadyMessageHandler.cs`, `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.Splicing.cs` (`LockFunding`), `src/NLightning.Application/Onchain/Reorg/DiscardedSpliceReservations.cs`, table `InteractiveTxSessions`
