@@ -174,11 +174,14 @@ public sealed class ClnCloseTests : IAsyncLifetime
         Assert.Equal("mutual", result["type"]!.GetValue<string>());
         // B2-CLS-R06: CLN, as the funder, sends its fee with a range; we take its fee and send it back. On an idle
         // chain the range is [fee, fee]; once earlier classes mined fee-paying transactions CLN's estimate is higher
-        // and it sends [fee / 2, fee] (seen: 1,685 sat in [842, 1,685]), so only the fee inside the range is asserted
-        // (NL-486: independent of the classes run before)
+        // and it sends [fee / 2, fee] (seen: 1,685 sat in [842, 1,685]). Either way its fee is the top of its range and
+        // the bottom is either the fee or strictly below it (NL-486: independent of the classes run before)
         var theirs = Assert.Single(PeerClosingSigned(_session));
         Assert.NotNull(theirs.Range);
-        Assert.InRange(theirs.FeeSat, theirs.Range.Value.Min, theirs.Range.Value.Max);
+        Console.WriteLine($"[cln] CLN's closing_signed: {theirs.FeeSat} sat in [{theirs.Range.Value.Min}, "
+                        + $"{theirs.Range.Value.Max}]");
+        Assert.Equal(theirs.FeeSat, theirs.Range.Value.Max);
+        Assert.InRange(theirs.Range.Value.Min, 1UL, theirs.FeeSat);
         Assert.Equal("B2-CLS-R06", theirs.RequirementId);
         await AssertAgreedAndEchoedAsync(theirs, ct);
         var ours = await WaitClosingTxAsync(_session, ct);
