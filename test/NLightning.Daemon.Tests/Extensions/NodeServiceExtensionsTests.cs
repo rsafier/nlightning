@@ -61,6 +61,7 @@ using Infrastructure.Bitcoin.InteractiveTx;
 using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Protocol.Dns;
 
 public class NodeServiceExtensionsTests
 {
@@ -690,6 +691,9 @@ public class NodeServiceExtensionsTests
         Assert.Equal(customSignetName, options.CustomSignet?.Name ?? string.Empty);
         Assert.Empty(options.GetValidationErrors());
         Assert.Empty(configuration.GetSection("Node:DnsSeedServers").GetChildren());
+        Assert.Empty(configuration.GetSection("Node:Bootstrap:Seeds").GetChildren());
+        Assert.False(configuration.GetValue<bool>("Node:Bootstrap:Enabled"));
+        Assert.Empty(options.Bootstrap.GetEffectiveSeeds(options.BitcoinNetwork, out _));
         Assert.Equal(FeeEstimationOptions.SourceHttp, fees.Source);
         Assert.Equal(feeUrl, fees.Url);
         Assert.Equal("sat/vB", fees.RateUnit);
@@ -1038,6 +1042,152 @@ public class NodeServiceExtensionsTests
 
         // Assert
         Assert.Contains(exception.Failures, f => f.Contains(expected));
+    }
+
+    [Theory]
+    [InlineData("mainnet", new[] { "nodes.lightning.directory", "nodes.lightning.wiki" })]
+    [InlineData("testnet", new[] { "test.nodes.lightning.directory" })]
+    [InlineData("regtest", new string[0])]
+    [InlineData("signet", new string[0])]
+    [InlineData("mutinynet", new string[0])]
+    public void Given_DefaultConfigJson_When_Bound_Then_BootstrapIsOffWithTheNetworksSeeds(string network,
+        string[] seeds)
+    {
+        // Arrange (NL-113, D-B10-1/2)
+        var json = NodeConfigurationExtensions.CreateDefaultConfigJson(network);
+        var configuration = new ConfigurationBuilder()
+                           .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                           .Build();
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+
+        // Assert: every key is written at its code default, Enabled explicitly false
+        Assert.False(configuration.GetValue<bool?>("Node:Bootstrap:Enabled"));
+        Assert.Equal(seeds, configuration.GetSection("Node:Bootstrap:Seeds").Get<string[]>() ?? []);
+        Assert.Null(configuration["Node:DnsSeedServers"]);
+        Assert.False(options.Bootstrap.IsEnabled);
+        Assert.Equal(seeds, options.Bootstrap.GetEffectiveSeeds(options.BitcoinNetwork, out _));
+        Assert.False(options.Bootstrap.SeedsFromObsoleteKey);
+        var defaults = new BootstrapOptions();
+        Assert.Equal(defaults.Transport, options.Bootstrap.Transport);
+        Assert.Equal(defaults.MinPeers, options.Bootstrap.MinPeers);
+        Assert.Equal(defaults.MaxPeersFromBootstrap, options.Bootstrap.MaxPeersFromBootstrap);
+        Assert.Equal(defaults.MaxPerSeed, options.Bootstrap.MaxPerSeed);
+        Assert.Equal(defaults.MaxDialConcurrency, options.Bootstrap.MaxDialConcurrency);
+        Assert.Equal(defaults.PerSeedTimeout, options.Bootstrap.PerSeedTimeout);
+        Assert.Equal(defaults.QueryTimeout, options.Bootstrap.QueryTimeout);
+        Assert.Equal(defaults.ConnectTimeout, options.Bootstrap.ConnectTimeout);
+        Assert.Equal(defaults.RetryInterval, options.Bootstrap.RetryInterval);
+        Assert.Equal(defaults.MaxRuns, options.Bootstrap.MaxRuns);
+        Assert.Equal(defaults.StartupDelay, options.Bootstrap.StartupDelay);
+        Assert.Equal(defaults.AddressFamilies, options.Bootstrap.AddressFamilies);
+        Assert.Empty(options.Bootstrap.NameServers);
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_BootstrapSeedsAndNameServers_When_Bound_Then_TheyReplaceTheDefaults()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
+                                                        ("Node:Bootstrap:Seeds:0", "seed.example.org"),
+                                                        ("Node:Bootstrap:NameServers:0", "1.1.1.1"),
+                                                        ("Node:Bootstrap:NameServers:1", "8.8.8.8:53")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+
+        // Assert: the configured lists win, nothing is appended to a default
+        Assert.Equal(["seed.example.org"], options.Bootstrap.Seeds);
+        Assert.Equal(["seed.example.org"], options.Bootstrap.GetEffectiveSeeds(BitcoinNetwork.Mainnet, out _));
+        Assert.Equal(["1.1.1.1", "8.8.8.8:53"], options.Bootstrap.NameServers);
+    }
+
+    [Fact]
+    public void Given_TheObsoleteDnsSeedServers_When_Bound_Then_TheyBecomeTheBootstrapSeeds()
+    {
+        // Arrange: a config written by an older template
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
+                                                        ("Node:DnsSeedServers:0", "nodes.lightning.directory"),
+                                                        ("Node:DnsSeedServers:1", "lseed.bitcoinstats.com")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+
+        // Assert
+        Assert.Equal(["nodes.lightning.directory", "lseed.bitcoinstats.com"], options.Bootstrap.Seeds);
+        Assert.True(options.Bootstrap.SeedsFromObsoleteKey);
+    }
+
+    [Fact]
+    public void Given_BothSeedKeys_When_Bound_Then_BootstrapSeedsWin()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet"),
+                                                        ("Node:DnsSeedServers:0", "old.example.org"),
+                                                        ("Node:Bootstrap:Seeds:0", "new.example.org")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+
+        // Assert
+        Assert.Equal(["new.example.org"], options.Bootstrap.Seeds);
+        Assert.False(options.Bootstrap.SeedsFromObsoleteKey);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("true")]
+    public async Task Given_NodeServicesOnRegtest_When_TheBootstrapRuns_Then_NoDnsQueryIsMade(string? enabled)
+    {
+        // Arrange: a counting lookup registered first (AddInfrastructureServices only TryAdds its own)
+        var lookup = new CountingDnsRecordLookup();
+        var services = new ServiceCollection();
+        services.AddSingleton<IDnsRecordLookup>(lookup);
+        var extra = new List<(string, string)> { ("Node:Bootstrap:StartupDelay", "00:00:00") };
+        if (enabled is not null)
+            extra.Add(("Node:Bootstrap:Enabled", enabled));
+        services.AddNltgNodeServices(BuildConfiguration([.. extra]), new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var bootstrap = provider.GetRequiredService<IPeerBootstrapService>();
+        Assert.NotNull(provider.GetRequiredService<IDnsSeedClient>());
+        await bootstrap.StartAsync(TestContext.Current.CancellationToken);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        await bootstrap.StopAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Same(lookup, provider.GetRequiredService<IDnsRecordLookup>());
+        Assert.Equal(0, lookup.Queries);
+    }
+
+    private sealed class CountingDnsRecordLookup : IDnsRecordLookup
+    {
+        private int _queries;
+
+        public int Queries => Volatile.Read(ref _queries);
+
+        public Task<DnsLookupResponse> QueryAsync(string name, DnsRecordKind kind, CancellationToken ct)
+        {
+            Interlocked.Increment(ref _queries);
+            return Task.FromResult(DnsLookupResponse.Of(DnsLookupStatus.NxDomain));
+        }
     }
 
     private static IConfiguration BuildConfiguration(params (string Key, string Value)[] extra)

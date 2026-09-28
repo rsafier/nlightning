@@ -4,12 +4,14 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Infrastructure.Bitcoin;
 
+using Bootstrap;
 using Builders;
 using Builders.Interfaces;
 using Crypto.Functions;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Crypto.Interfaces;
+using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Offers.Interfaces;
 using Domain.Onchain.Interfaces;
@@ -98,6 +100,10 @@ public static class DependencyInjection
 
         // The wallet reserve of anchors channels and the channel funding selection that keeps it (NL-379, NL-385)
         services.AddSingleton<IAnchorReserveService, AnchorReserveService>();
+
+        // BOLT 10 DNS seed client (NL-113), over IDnsRecordLookup (AddInfrastructureServices); PeerBootstrapService
+        // is its only user and does nothing unless Node:Bootstrap:Enabled
+        services.AddSingleton<IDnsSeedClient, DnsSeedClient>();
 
         // Register Scoped Services
         services.AddScoped<IBitcoinWalletService, BitcoinWalletService>();

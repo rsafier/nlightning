@@ -8,6 +8,7 @@ using Domain.Crypto.Hashes;
 using Domain.Node.Interfaces;
 using Domain.Protocol.Interfaces;
 using Node.Factories;
+using Protocol.Dns;
 using Protocol.Factories;
 using Protocol.Onion;
 using Protocol.Services;
@@ -35,6 +36,9 @@ public static class DependencyInjection
         // The onion replay set (NL-078): persisted, owned by the incoming HTLC and pruned by its cltv_expiry. Every
         // onion is processed through a scoped IUnitOfWork (AddRepositoriesInfrastructureServices)
         services.AddPersistentOnionReplayStore();
+
+        // BOLT 10 bootstrap's raw DNS queries (NL-113); the resolver is built on the first query, never here
+        services.TryAddSingleton<IDnsRecordLookup, DnsClientRecordLookup>();
 
         // Transient services (new instance each time requested)
         services.AddTransient<IPingPongService, PingPongService>();

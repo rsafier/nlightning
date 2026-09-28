@@ -301,10 +301,9 @@ public static class NodeConfigurationExtensions
             _ => 8332
         };
         var (zmqHost, zmqBlockPort, zmqTxPort) = isSignet ? ("127.0.0.1", 28332, 28333) : ("bitcoinzmq", 8334, 8335);
-        // DNS seeds list mainnet nodes; none are known for signets
-        var dnsSeeds = isSignet
-                           ? string.Empty
-                           : " \"nlseed.nlightn.ing\", \"nodes.lightning.directory\", \"lseed.bitcoinstats.com\" ";
+        // BOLT 10 bootstrap (NL-113): off; the network's own seeds (mainnet 2, testnet 1, none elsewhere, D-B10-2)
+        var bootstrap = new BootstrapOptions();
+        var bootstrapSeeds = string.Join(", ", BootstrapOptions.GetDefaultSeeds(resolved).Select(seed => $"\"{seed}\""));
         var customSignet = isSignet
                                ? $"\n    \"CustomSignet\": {{ \"Name\": \"{customSignetName}\" }},"
                                : string.Empty;
@@ -342,7 +341,26 @@ public static class NodeConfigurationExtensions
                  "Node": {
                    "Network": "{{NETWORK}}",{{CUSTOM_SIGNET}}
                    "Daemon": false,
-                   "DnsSeedServers": [{{DNS_SEEDS}}],
+                   "Bootstrap": {
+                     "Enabled": false,
+                     "Seeds": [{{BOOTSTRAP_SEEDS}}],
+                     "AllowSeedsOnThisNetwork": false,
+                     "NameServers": [],
+                     "Transport": "{{BOOTSTRAP_TRANSPORT}}",
+                     "MinPeers": {{BOOTSTRAP_MIN_PEERS}},
+                     "MaxPeersFromBootstrap": {{BOOTSTRAP_MAX_PEERS}},
+                     "MaxPerSeed": {{BOOTSTRAP_MAX_PER_SEED}},
+                     "MaxDialConcurrency": {{BOOTSTRAP_DIAL_CONCURRENCY}},
+                     "PerSeedTimeout": "{{BOOTSTRAP_PER_SEED_TIMEOUT}}",
+                     "QueryTimeout": "{{BOOTSTRAP_QUERY_TIMEOUT}}",
+                     "ConnectTimeout": "{{BOOTSTRAP_CONNECT_TIMEOUT}}",
+                     "RetryInterval": "{{BOOTSTRAP_RETRY_INTERVAL}}",
+                     "MaxRuns": {{BOOTSTRAP_MAX_RUNS}},
+                     "StartupDelay": "{{BOOTSTRAP_STARTUP_DELAY}}",
+                     "AddressFamilies": "{{BOOTSTRAP_FAMILIES}}",
+                     "AllowNonRoutableAddresses": false,
+                     "UseQueryConditions": false
+                   },
                    "ListenAddresses": [
                      "0.0.0.0:9735"
                    ],
@@ -451,7 +469,19 @@ public static class NodeConfigurationExtensions
                }
                """.Replace("{{NETWORK}}", resolved.Name)
                   .Replace("{{CUSTOM_SIGNET}}", customSignet)
-                  .Replace("{{DNS_SEEDS}}", dnsSeeds)
+                  .Replace("{{BOOTSTRAP_SEEDS}}", bootstrapSeeds)
+                  .Replace("{{BOOTSTRAP_TRANSPORT}}", bootstrap.Transport.ToString())
+                  .Replace("{{BOOTSTRAP_MIN_PEERS}}", Invariant(bootstrap.MinPeers))
+                  .Replace("{{BOOTSTRAP_MAX_PEERS}}", Invariant(bootstrap.MaxPeersFromBootstrap))
+                  .Replace("{{BOOTSTRAP_MAX_PER_SEED}}", Invariant(bootstrap.MaxPerSeed))
+                  .Replace("{{BOOTSTRAP_DIAL_CONCURRENCY}}", Invariant(bootstrap.MaxDialConcurrency))
+                  .Replace("{{BOOTSTRAP_PER_SEED_TIMEOUT}}", Invariant(bootstrap.PerSeedTimeout))
+                  .Replace("{{BOOTSTRAP_QUERY_TIMEOUT}}", Invariant(bootstrap.QueryTimeout))
+                  .Replace("{{BOOTSTRAP_CONNECT_TIMEOUT}}", Invariant(bootstrap.ConnectTimeout))
+                  .Replace("{{BOOTSTRAP_RETRY_INTERVAL}}", Invariant(bootstrap.RetryInterval))
+                  .Replace("{{BOOTSTRAP_MAX_RUNS}}", Invariant(bootstrap.MaxRuns))
+                  .Replace("{{BOOTSTRAP_STARTUP_DELAY}}", Invariant(bootstrap.StartupDelay))
+                  .Replace("{{BOOTSTRAP_FAMILIES}}", bootstrap.AddressFamilies.ToString())
                   .Replace("{{ENABLE_HTLCS}}", enableHtlcs)
                   .Replace("{{GOSSIP_ON}}", gossipOn)
                   .Replace("{{GOSSIP_RELAY_ON}}", gossipRelayOn)

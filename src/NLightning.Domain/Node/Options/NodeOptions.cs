@@ -30,9 +30,18 @@ public class NodeOptions
     public bool Daemon { get; set; }
 
     /// <summary>
-    /// A list of dns seed servers to connect to
+    /// The old DNS seed list, read by nothing before BOLT 10 bootstrap (NL-113). Still bound: when
+    /// <c>Node:Bootstrap:Seeds</c> is absent, the host copies it into <see cref="BootstrapOptions.Seeds"/> and the
+    /// bootstrap service warns. Empty by default.
     /// </summary>
-    public List<string> DnsSeedServers { get; set; } = ["nlseed.nlightn.ing"];
+    [Obsolete("Use Bootstrap.Seeds (Node:Bootstrap:Seeds).")]
+    public List<string> DnsSeedServers { get; set; } = [];
+
+    /// <summary>
+    /// BOLT 10 DNS seed bootstrap (NL-113), from <c>Node:Bootstrap</c>; off by default.
+    /// </summary>
+    /// <see cref="BootstrapOptions"/>
+    public BootstrapOptions Bootstrap { get; set; } = new();
 
     /// <summary>
     /// Addresses/Interfaces to listen on for incoming connections
@@ -183,7 +192,7 @@ public class NodeOptions
 
     /// <summary>
     /// Returns every configuration error of the options this class owns (currently <see cref="Routing"/>,
-    /// <see cref="FeeUpdates"/>, <see cref="Anchors"/>, <see cref="CustomSignet"/>, the reconnect delays, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
+    /// <see cref="FeeUpdates"/>, <see cref="Anchors"/>, <see cref="Bootstrap"/>, <see cref="CustomSignet"/>, the reconnect delays, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
     /// <see cref="FeatureOptions.GetValidationErrors"/>.
     /// </summary>
     public IReadOnlyList<string> GetValidationErrors()
@@ -210,6 +219,7 @@ public class NodeOptions
         errors.AddRange(Anchors.GetValidationErrors());
         errors.AddRange(Keysend.GetValidationErrors());
         errors.AddRange(Quiescence.GetValidationErrors());
+        errors.AddRange(Bootstrap.GetValidationErrors());
         if (CustomSignet is not null)
             errors.AddRange(CustomSignet.GetValidationErrors(BitcoinNetwork));
         return errors;
