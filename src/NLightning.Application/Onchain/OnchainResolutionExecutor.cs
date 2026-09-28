@@ -83,6 +83,9 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     private readonly ConcurrentDictionary<ChannelId, byte> _savedWatchesCaughtUp = new();
     private readonly ConcurrentDictionary<ChannelId, uint> _savedWatchesScannedTo = new();
     private readonly SpliceReorgMonitor _spliceReorgMonitor;
+    private readonly DiscardedSpliceReservations _discardedSpliceReservations;
+    private readonly RecordedFundingSpendReplay _recordedFundingSpendReplay;
+    private readonly ConcurrentDictionary<ChannelId, byte> _noCloseLogged = new();
 
     private readonly Lock _gate = new();
     private Task _loop = Task.CompletedTask;
@@ -103,6 +106,11 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         _serviceScopeFactory = serviceScopeFactory;
         _options = options?.Value ?? new OnchainOptions();
         _spliceReorgMonitor = new SpliceReorgMonitor(channelMemoryRepository, logger, serviceScopeFactory);
+        _discardedSpliceReservations = new DiscardedSpliceReservations(channelLockProvider, channelMemoryRepository,
+                                                                       logger, serviceScopeFactory,
+                                                                       _options.IrrevocableDepth);
+        _recordedFundingSpendReplay =
+            new RecordedFundingSpendReplay(channelMemoryRepository, logger, serviceScopeFactory);
 
         // NL-292: a funding transaction confirmed again after a reorg moves its channel's short channel id
         if (outpointWatcher is IBlockchainMonitor blockchainMonitor)
@@ -148,6 +156,35 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     /// <inheritdoc />
     public async Task RunRoundAsync(uint height, CancellationToken cancellationToken = default)
     {
+        // NL-493: once per process, the funding spends the chain monitor recorded before a crash stopped their handling
+        try
+        {
+            await _recordedFundingSpendReplay.ReplayAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Replaying the recorded funding spends at height {Height} failed", height);
+        }
+
+        // NL-492: before any channel may close and leave memory, discarded splices whose conflict is irrevocable give
+        // their wallet inputs back
+        try
+        {
+            await _discardedSpliceReservations.CheckAsync(height, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Releasing the wallet inputs of discarded splices at height {Height} failed", height);
+        }
+
         var channels = _channelMemoryRepository.FindChannels(c => c.State == ChannelState.OnchainResolving);
         foreach (var channel in channels)
         {
@@ -204,6 +241,9 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
 
     /// <summary>The locked-splice reorg check of every block round (SP2-C-T4; tests, diagnostics).</summary>
     internal SpliceReorgMonitor SpliceReorgs => _spliceReorgMonitor;
+
+    /// <summary>The NL-493 startup replay of recorded funding spends (tests, diagnostics).</summary>
+    internal RecordedFundingSpendReplay FundingSpendReplay => _recordedFundingSpendReplay;
 
     /// <inheritdoc />
     public Task ResolveChannelAsync(ChannelId channelId, uint height, CancellationToken cancellationToken = default) =>
@@ -493,10 +533,16 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             var close = await unitOfWork.OnchainResolutionDbRepository.GetCloseAsync(channelId);
             if (close is null)
             {
-                _logger.LogWarning("Channel {ChannelId} is resolving on chain without a recorded funding spend",
-                                   channelId);
+                // NL-493: after a close was retired for its discarded splice, the channel waits for our commitment on
+                // the splice funding; said once per process, not every block
+                if (_noCloseLogged.TryAdd(channelId, 0))
+                    _logger.LogWarning("Channel {ChannelId} is resolving on chain without a recorded funding spend "
+                                     + "(a close retired for a splice waits for a commitment on the splice funding)",
+                                       channelId);
                 return;
             }
+
+            _noCloseLogged.TryRemove(channelId, out _);
 
             var outputs = (await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(channelId))
                          .ToDictionary(o => (o.TransactionId, o.OutputIndex));
