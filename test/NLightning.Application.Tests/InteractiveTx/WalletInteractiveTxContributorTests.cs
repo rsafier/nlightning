@@ -614,6 +614,79 @@ public class WalletInteractiveTxContributorTests
         Assert.Empty(_stored);
     }
 
+    [Fact]
+    public async Task Given_ASignedAttemptThatCanNoLongerConfirm_When_ReleasingItAsDiscarded_Then_ItsOutputsReturnOnce()
+    {
+        // Arrange (NL-492): signed and stored, so an ordinary release refuses (IT-ABT-01); the process then restarts
+        var contributor = CreateDurableContributor();
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
+        var contribution = await contributor.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
+        var (constructed, peerSpent) = Construct(contribution);
+        _storedSessions.Add(StoredSession(contribution, InteractiveTxSessionState.AwaitingTxSignatures));
+        await contributor.SignAsync(constructed, contribution, [peerSpent], TestContext.Current.CancellationToken);
+        await contributor.ReleaseAsync(contribution, TestContext.Current.CancellationToken);
+        var keptBySignature = _stored.Count;
+        var restarted = CreateDurableContributor();
+
+        // Act: the commitment that conflicts with it is irrevocable
+        var released = await restarted.ReleaseDiscardedAsync(constructed, [], TestContext.Current.CancellationToken);
+        var again = await restarted.ReleaseDiscardedAsync(constructed, [], TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1, keptBySignature);
+        Assert.Equal(1, released);
+        Assert.Equal(0, again);
+        Assert.Empty(_stored);
+        Assert.False(_utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
+        Assert.Contains(_utxos.GetUnreservedUtxos(), u => u.TxId == utxo.Model.TxId);
+    }
+
+    [Fact]
+    public async Task Given_AnInputTheWinnerSpent_When_ReleasingTheDiscardedAttempt_Then_KeptUntilTheWalletDropsIt()
+    {
+        // Arrange: one reservation of two outputs; the locked sibling re-added the first one
+        var first = AddWalletUtxo(AddressType.P2Wpkh, 0, 150_000);
+        var second = AddWalletUtxo(AddressType.P2Wpkh, 1, 150_000);
+        var contribution = await _contributor.ContributeAsync(Request(250_000), TestContext.Current.CancellationToken);
+        Assert.Equal(2, contribution.Inputs.Count);
+        var (constructed, _) = Construct(contribution);
+        (TxId, uint)[] kept = [(first.Model.TxId, first.Model.Index)];
+
+        // Act: while the wallet still holds the kept output, nothing; once the winner's block spent it, the rest
+        var whileHeld = await _contributor.ReleaseDiscardedAsync(constructed, kept,
+                                                                 TestContext.Current.CancellationToken);
+        var reservedWhileHeld = _stored.Count;
+        _utxos.Spend(first.Model);
+        var afterSpend = await _contributor.ReleaseDiscardedAsync(constructed, kept,
+                                                                  TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, whileHeld);
+        Assert.Equal(1, reservedWhileHeld);
+        Assert.Equal(1, afterSpend);
+        Assert.Empty(_stored);
+        Assert.False(_utxos.TryGetFeeReservation(second.Model.TxId, second.Model.Index, out _));
+    }
+
+    [Fact]
+    public async Task Given_AReservationWithOutputsOfAnotherSpend_When_ReleasingADiscardedAttempt_Then_ItIsKept()
+    {
+        // Arrange: the discarded attempt carries only one of the reservation's two outputs
+        AddWalletUtxo(AddressType.P2Wpkh, 0, 150_000);
+        AddWalletUtxo(AddressType.P2Wpkh, 1, 150_000);
+        var contribution = await _contributor.ContributeAsync(Request(250_000), TestContext.Current.CancellationToken);
+        var partial = new InteractiveTxContribution([contribution.Inputs[0]], contribution.Outputs,
+                                                    contribution.ReservationId);
+        var (constructed, _) = Construct(partial);
+
+        // Act
+        var released = await _contributor.ReleaseDiscardedAsync(constructed, [], TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, released);
+        Assert.Single(_stored);
+    }
+
     /// <summary>
     /// The negotiated transaction as the session would build it: we are the initiator (even serial ids), the peer adds
     /// one P2WPKH input and the shared funding output takes our wallet amount and the peer's input.

@@ -399,6 +399,78 @@ public sealed class WalletInteractiveTxContributor : IInteractiveTxContributor
         }
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// A reservation is all or nothing (<see cref="IFeeInputSelector.ReleaseAsync"/>), so every reservation that holds
+    /// one of our inputs of <paramref name="discarded"/> is released whole, and only when each of its other inputs is
+    /// either an input of ours in <paramref name="discarded"/> or a kept outpoint the wallet no longer holds (the
+    /// confirmed transaction spent it, so releasing returns nothing for it). A reservation with any other input, or with
+    /// a kept outpoint still in the wallet, may still serve a live spend: it is kept (logged). The stored-negotiation
+    /// guard of <see cref="ReleaseAsync"/> does not apply: the caller asserts the attempt can never confirm, and marks its
+    /// negotiation settled (<c>ResolvedAt</c>), so the startup sweep (<see cref="ReleaseOrphanedReservationsAsync"/>)
+    /// finishes the release after a crash between that save and this call.
+    /// </remarks>
+    public async Task<int> ReleaseDiscardedAsync(ConstructedInteractiveTx discarded,
+                                                 IReadOnlyCollection<(TxId TxId, uint Vout)> keptOutpoints,
+                                                 CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(discarded);
+        ArgumentNullException.ThrowIfNull(keptOutpoints);
+
+        var kept = keptOutpoints.ToHashSet();
+        var ours = discarded.Inputs.Where(i => i is { AddedBy: InteractiveTxParty.Local, IsShared: false })
+                            .Select(i => (i.PrevTxId, i.PrevTxVout))
+                            .ToHashSet();
+        var toRelease = ours.Where(o => !kept.Contains(o)).ToHashSet();
+        if (toRelease.Count == 0)
+            return 0;
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var released = 0;
+            var reservations = await _feeInputSelector.GetAllAsync(cancellationToken);
+            foreach (var reservation in reservations)
+            {
+                var outpoints = reservation.Inputs.Select(i => (i.TxId, i.Index)).ToList();
+                if (!outpoints.Any(toRelease.Contains))
+                    continue;
+
+                var blocking = outpoints.Where(o => !toRelease.Contains(o)
+                                                 && !(kept.Contains(o)
+                                                   && !_utxoMemoryRepository.TryGetUtxo(o.TxId, o.Index, out _)))
+                                        .ToList();
+                if (blocking.Count > 0)
+                {
+                    if (_logger.IsEnabled(LogLevel.Warning))
+                        _logger.LogWarning(
+                            "Not releasing reservation {ReservationId} of discarded interactive transaction {TxId}: it "
+                          + "also holds {Outpoints}, which the discarded transaction does not free", reservation.Id,
+                            discarded.TxId, string.Join(", ", blocking.Select(o => $"{o.TxId}:{o.Index}")));
+                    continue;
+                }
+
+                var returned = outpoints.Count(o => toRelease.Contains(o)
+                                                 && _utxoMemoryRepository.TryGetUtxo(o.TxId, o.Index, out _));
+                await _feeInputSelector.ReleaseAsync(reservation.Id, cancellationToken);
+                _signedReservations.TryRemove(reservation.Id, out _);
+                _liveReservations.TryRemove(reservation.Id, out _);
+                released += returned;
+                if (_logger.IsEnabled(LogLevel.Information))
+                    _logger.LogInformation(
+                        "Released reservation {ReservationId} ({Purpose}) of discarded interactive transaction {TxId}: "
+                      + "{Count} wallet output(s) are spendable again", reservation.Id, reservation.Purpose,
+                        discarded.TxId, returned);
+            }
+
+            return released;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     /// <summary>
     /// Releases every <c>itx:</c> reservation that no stored, not aborted negotiation holds and that this process did
     /// not hand out: a crash between the reservation and our <c>commitment_signed</c> (before it, BOLT 2 forgets the
