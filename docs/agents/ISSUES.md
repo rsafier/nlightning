@@ -58,6 +58,8 @@ Updated 2026-09-28 by wave d13 (owner decision D13 of the splicing plan; branch 
 
 Updated 2026-09-28 by lane rbf (branch `wip/fafo-rbf` from `wip/fafo` at `2b5dffd2`, code at `7b8dacd6` and `f1068fce`, not merged into `wip/fafo`): NL-521 fixed (either contribution may change in a dual-funded RBF), NL-522 fixed (our splice RBF fee rule was right; the CLN proofs no longer depend on the fee and graph state earlier classes leave), new NL-526 (`ClnOfferReceiveTests` exact-amount asserts vs NL-440's dummy hops) and NL-527 (a peer's `tx_abort` of our pending `tx_init_rbf` never reaches the dual-funding host). Non-Docker on net10.0, Release: Domain 3524, Application 2969, Integration 933, Serialization 613, Infrastructure 455, Infrastructure.Bitcoin 1348, Bolt11 327, Daemon 762, green apart from the known flakes NL-466 and NL-472 (green alone). Docker (CLN, host process): `ClnSpliceRbfTests` 5/5, `ClnDualFundTests` 3/3, `ClnOfferPayTests` 4/4 alone; one full CLN run 67/70 (+4 Explicit not run): the six d13 failures pass, the three misses are `ClnOfferReceiveTests` (NL-526, also 1/4 with the class alone on this base).
 
+Updated 2026-09-28 by lane bolt10 (branch `wip/fafo-bolt10` from `978ad275`, code at `68a3337e`, not merged into `wip/fafo`): BOLT 10 DNS seed bootstrap implemented and off by default. Fixed: NL-113. New: NL-541..NL-545 (NL-536..NL-540 left to the concurrent cli-lognoise lane). Targeted tests only (owner request), net10.0 Release: Domain `Node/Bootstrap` 91, Infrastructure 479, Infrastructure.Bitcoin `Bootstrap` 34, Application `PeerBootstrapServiceTests` 24, Daemon `NodeServiceExtensionsTests` 68; no Docker, no full matrix.
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -92,12 +94,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 7 | 168 | 175 |
+| open | 0 | 0 | 7 | 172 | 179 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 147 | 124 | 346 |
+| fixed | 14 | 61 | 147 | 125 | 347 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **157** | **298** | **530** |
+| **Total** | **14** | **61** | **157** | **303** | **535** |
 
 ### Epics
 
@@ -3735,13 +3737,63 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ## BOLT 10: DNS bootstrap
 
 ### NL-113 DNS seed bootstrap is fully commented out
+- **Status:** fixed (68a3337e, branch `wip/fafo-bolt10`)
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure/Protocol/Services/DnsSeedClient.cs` (deleted); now `src/NLightning.Infrastructure.Bitcoin/Bootstrap/`, `src/NLightning.Infrastructure/Protocol/Dns/`, `src/NLightning.Application/Node/Bootstrap/PeerBootstrapService.cs`, `src/NLightning.Domain/Node/Bootstrap/`
+- **Evidence:** 0 lines of live code in either file. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): `DnsSeedClient.cs` is still entirely commented out; the test file `test/NLightning.Integration.Tests/BOLT10/DNSBootstrapTests.cs` no longer exists, so the Location now names only the client. Update (lane bolt10, `68a3337e` on `wip/fafo-bolt10` from `978ad275`): BOLT 10 client and bootstrap implemented. `DnsSeedClient` (Infrastructure.Bitcoin, `IDnsSeedClient`) asks SRV on the seed root, then `_nodes._tcp.<root>`, decodes the target's first label as a bech32 `ln` node id (`LightningNodeIdBech32` over NBitcoin, 33-byte curve point), takes the addresses from the glue or A/AAAA, the port from the SRV record, and drops non-routable addresses and families not asked for (`SeedAddressFilter`); the DNS goes through the `IDnsRecordLookup` seam (`DnsClientRecordLookup` over DnsClient 1.8.0, built on the first query). `PeerBootstrapService` (Application) runs after `PeerManager.StartAsync` only when enabled, on a network with seeds, the chain not halted, fewer than `MinPeers` connected, no saved dialable peer and no graph node with an address; it dials at most `MaxPeersFromBootstrap` new peers, which the peer manager saves as ordinary `Peers` rows. `PeerAddress` reads `pubkey@[ipv6]:port` and `PeerModel` writes it. Owner decisions: D-B10-1 off by default (`Node:Bootstrap:Enabled` unset = false); D-B10-2 per-network seeds (mainnet `nodes.lightning.directory`, `nodes.lightning.wiki`; testnet `test.nodes.lightning.directory`; none on regtest/signets, configured seeds ignored there unless `AllowSeedsOnThisNetwork`); D-B10-3 DNS over TCP by default (UDP with EDNS0 and TCP retry as an option); D-B10-4 bech32 and secp256k1 from NBitcoin in Infrastructure.Bitcoin; D-B10-5 DnsClient 1.8.0, no new package, lazy client; D-B10-6 IPv4 and IPv6, bracketed IPv6 addresses. `Node:DnsSeedServers` is obsolete (copied into `Bootstrap:Seeds` when that is absent, with a warning). Tests (net10.0, Release): Domain `Node/Bootstrap` 91, Infrastructure 479, Infrastructure.Bitcoin `Bootstrap` 34, Application `PeerBootstrapServiceTests` 24, Daemon `NodeServiceExtensionsTests` 68, all green; the `Explicit` `Category=Live` `DnsSeedLiveTests` found 25 valid candidates (IPv4 and IPv6, ports 9735/9739/9835/8740) from nodes.lightning.directory over 1.1.1.1 on 2026-09-28. Follow-ups NL-541..NL-545.
+- **Fix sketch:** Restore and test, or delete.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-541 BOLT 10 `l` node query and assisted location of known peers are not used
 - **Status:** open
 - **Severity:** low
 - **Kind:** gap
-- **Location:** `src/NLightning.Infrastructure/Protocol/Services/DnsSeedClient.cs`
-- **Evidence:** 0 lines of live code in either file. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): `DnsSeedClient.cs` is still entirely commented out; the test file `test/NLightning.Integration.Tests/BOLT10/DNSBootstrapTests.cs` no longer exists, so the Location now names only the client.
-- **Fix sketch:** Restore and test, or delete.
+- **Location:** `src/NLightning.Domain/Node/Bootstrap/DnsSeedQuery.cs`, `src/NLightning.Infrastructure.Bitcoin/Bootstrap/DnsSeedClient.cs`
+- **Evidence:** Lane bolt10 (NL-113). `DnsSeedQuery` builds `l<bech32>` names and `DnsSeedQuery.VirtualHost`, but nothing queries a seed for a known node's address (BOLT 10's "assisted location"). The live seeds answer nothing to the conditions tried (`a2`, `n5`, `r0.a2.n5`), so `UseQueryConditions` is off by default.
+- **Fix sketch:** When a saved peer with channels stays unreachable, ask the seeds for its virtual host (A/AAAA of `<ln1...>.<root>`) and try the answer; re-check whether live seeds answer the conditions.
 - **Blocks/Blocked-by:** —
+- **Plan ref:** BOLT 10
+
+### NL-542 BOLT 10 bootstrap has no Tor or proxy mode (DNS leak)
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure/Protocol/Dns/DnsClientRecordLookup.cs`
+- **Evidence:** Lane bolt10 (NL-113). Seed queries go straight to the system or configured resolvers over TCP/UDP. The node has no Tor/proxy mode yet; once it has one, bootstrap must go through it (or stay off), or DNS reveals that the host runs a Lightning node.
+- **Fix sketch:** With a proxy mode, send the DNS over the proxy (TCP DNS through SOCKS5) or refuse bootstrap with a clear log.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-543 A node with too few peers does not connect to graph-known nodes
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Node/Bootstrap/PeerBootstrapService.cs` (`CheckGateAsync`)
+- **Evidence:** Lane bolt10 (NL-113). The bootstrap skips its run when the graph holds a node with an address ("the node already knows contacts"), but nothing then connects to such nodes when the node has fewer than `MinPeers` peers (CLN and LND keep a minimum of gossip peers from the graph).
+- **Fix sketch:** A peer-count keeper that picks addressed graph nodes (announced channels, recent updates) when connected peers stay below `MinPeers`, sharing the bootstrap's dial limits.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-544 The live BOLT 10 smoke test is not run in CI
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Infrastructure.Bitcoin.Tests/Bootstrap/DnsSeedLiveTests.cs`
+- **Evidence:** Lane bolt10 (NL-113). The only test against a real seed is `[Fact(Explicit = true)]`, `Category=Live` (the default run is hermetic, NL-168), so a change in the seeds' answers (format, ports, targets under another root) is found only by a manual run.
+- **Fix sketch:** A scheduled CI job (not the PR gate) that runs `-explicit only -trait Category=Live` and reports failures.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-545 No BOLT 10 seeds for testnet4 and signets
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Domain/Node/Options/BootstrapOptions.cs` (`GetDefaultSeeds`, `IsSeedNetwork`)
+- **Evidence:** Lane bolt10 (NL-113). Only mainnet and testnet (testnet3) have seeds; regtest and signets (Mutinynet included) have none, and testnet4 is not a supported network yet (NL-012). Configured seeds there are ignored unless `Node:Bootstrap:AllowSeedsOnThisNetwork`.
+- **Fix sketch:** Add seeds when public testnet4/signet seeds exist, and add testnet4 to `IsSeedNetwork` with NL-012.
+- **Blocks/Blocked-by:** Related NL-012
 - **Plan ref:** —
 
 ---
