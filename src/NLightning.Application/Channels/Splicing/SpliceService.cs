@@ -615,10 +615,12 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
                                                       negotiation.Model.RbfOf);
         unitOfWork.BroadcastTransactionDbRepository.Add(broadcast);
 
-        // SPR-T1: an RBF attempt replaces the one it bumps in the rebroadcast set (both stay watched: whichever
-        // confirms is locked, SP-LK-03)
-        if (negotiation.Model.RbfOf is { } replaced)
-            await unitOfWork.BroadcastTransactionDbRepository.MarkReplacedAsync(replaced);
+        // SPR-T1: the attempt it bumps stays pending too (the row names it in ReplacesTransactionId), so the chain
+        // monitor sends every attempt again each round and the mempool keeps whichever it accepts (a conflict refusal
+        // is temporary, never abandoned). Marking it Replaced here would stop sending it while the replacement may
+        // never be accepted (a bitcoind whose incrementalrelayfee is above the BOLT 2 +25 sat/kw floor, an input of
+        // the peer's double-spent) and could leave no attempt broadcast once the old one left the mempool. The lock of
+        // any attempt abandons the others (SP-LK-03); whichever confirms is locked
         var watch = new WatchedTransactionModel(channel.ChannelId, funding.FundingTxId, GetLockDepth(channel));
         unitOfWork.WatchedTransactionDbRepository.Add(watch);
         negotiation.Completion = new SpliceNegotiation.StagedCompletion(completion.Session.SessionId, fundings,
@@ -900,6 +902,8 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             return [];
 
         _lastSigned.TryRemove(channel.ChannelId, out _);
+        // No pending attempt is left to RBF: the next splice gets a host of its own (wave SPR review)
+        _hosts.TryRemove(channel.ChannelId, out _);
         _logger.LogInformation("Splice {TxId} of channel {ChannelId} locked: {Capacity} sat", updated.FundingTxId,
                                channel.ChannelId, updated.CapacitySatoshis);
         return await AfterLockAsync(channel, previousShortChannelId, next.Current, unitOfWork);
@@ -1158,6 +1162,8 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
                                                                                    negotiation));
         }
 
+        // An ended RBF attempt gives the channel's host back to the negotiation it served before
+        RestoreHost(negotiation);
         negotiation.Result.TrySetResult(negotiation.ToResult(reason));
     }
 

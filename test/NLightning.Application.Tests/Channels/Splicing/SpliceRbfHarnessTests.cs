@@ -1,15 +1,20 @@
+using System.Collections.Concurrent;
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Application.Tests.Channels.Splicing;
 
+using Application.Channels.Splicing;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Quiescence;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.Splicing.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Onchain.Interfaces;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
@@ -458,7 +463,193 @@ public class SpliceRbfHarnessTests
 
     #endregion
 
+    #region Review fixes (wave SPR review)
+
+    /// <summary>
+    /// A peer's <c>tx_init_rbf</c> of our splice-out at 4,000,000 sat/kw (above <c>Splice:MaxFeeratePerKw</c>) gets
+    /// <c>tx_abort</c> before anything is planned: in a peer's RBF we pay our output's fee from our balance at the peer's
+    /// feerate, so without the cap the peer could burn up to our balance above the reserve.
+    /// </summary>
+    [Fact]
+    public async Task Given_OurSpliceOut_When_ThePeerBumpsAtAHugeFeerate_Then_TxAbortAndOurBalanceIsUnchanged()
+    {
+        // Arrange: Bob is the quiescence initiator
+        using var harness = CreateHarness();
+        var first = (await harness.SpliceAsync(harness.Alice, -80_000)).SpliceTxId!.Value;
+        var balance = harness.Alice.Node.State.LocalBalanceMsat;
+        var quiescence = harness.Bob.Quiescence.RequestAsync(TwoNodeHarness.ChannelId, QuiescencePurpose.SpliceRbf,
+                                                             TestContext.Current.CancellationToken);
+        await harness.PumpAsync(quiescence);
+        using var scope = harness.Alice.Node.Services.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var message = new TxInitRbfMessage(new TxInitRbfPayload(TwoNodeHarness.ChannelId, 4_000_000, 0));
+
+        // Act
+        var replies = await harness.Alice.Service.HandleTxInitRbfAsync(message, SpliceHarness.CreateFeatures(),
+                                                                       SpliceHarness.NodeIdOf("Bob"), unitOfWork,
+                                                                       TestContext.Current.CancellationToken);
+
+        // Assert
+        var abort = Assert.IsType<TxAbortMessage>(Assert.Single(replies));
+        Assert.Contains("above our limit", System.Text.Encoding.ASCII.GetString(abort.Payload.Data));
+        Assert.Equal([first], harness.Alice.Node.State.PendingFundings.Select(f => f.FundingTxId));
+        Assert.Equal(balance, harness.Alice.Node.State.LocalBalanceMsat);
+        Assert.Null(harness.Alice.Service.GetNegotiation(TwoNodeHarness.ChannelId)?.RbfOf);
+        Assert.False(harness.Alice.Quiescence.GetState(TwoNodeHarness.ChannelId).BlocksNewLocalUpdates);
+    }
+
+    /// <summary>
+    /// The same cap over the wire: Alice accepts RBFs up to 1,500 sat/kw only, Bob's bump at 2,000 gets her
+    /// <c>tx_abort</c>, which ends the quiescence on both sides; the splice-out stays the only attempt, Alice's
+    /// balance is unchanged and Bob's host serves his earlier negotiation again (not the aborted attempt).
+    /// </summary>
+    [Fact]
+    public async Task Given_APeerFeerateAboveOurMax_When_ThePeerBumps_Then_TxAbortAndNothingChanges()
+    {
+        // Arrange
+        using var harness = new SpliceHarness((name, o) =>
+                                              {
+                                                  o.MinRbfInterval = TimeSpan.Zero;
+                                                  if (name == "Alice")
+                                                      o.MaxFeeratePerKw = 1_500;
+                                              }, realEngine: true);
+        var first = (await harness.SpliceAsync(harness.Alice, -80_000)).SpliceTxId!.Value;
+        var balance = harness.Alice.Node.State.LocalBalanceMsat;
+        var mark = harness.Transcript.Count;
+
+        // Act
+        var result = await BumpAsync(harness, harness.Bob, 2_000);
+
+        // Assert
+        Assert.Equal(SpliceNegotiationState.Aborted, result.State);
+        Assert.Contains("Alice:TxAbort", Sequence(harness, mark));
+        Assert.DoesNotContain("Alice:TxAckRbf", Sequence(harness, mark));
+        Assert.Empty(harness.Failures);
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+        {
+            Assert.Equal([first], node.Node.State.PendingFundings.Select(f => f.FundingTxId));
+            Assert.False(node.Quiescence.GetState(TwoNodeHarness.ChannelId).BlocksNewLocalUpdates);
+        }
+
+        Assert.Equal(balance, harness.Alice.Node.State.LocalBalanceMsat);
+        var host = GetHost(harness.Bob);
+        Assert.NotNull(host);
+        Assert.NotEqual(SpliceNegotiationState.Aborted, host.Negotiation.State);
+    }
+
+    /// <summary>
+    /// Our share of the fee of a peer's RBF is capped (<c>Splice:MaxRbfFeeShareSatoshis</c>): above it we contribute
+    /// nothing to the attempt (BOLT 2: "sets their sats to zero") instead of paying: Alice's <c>tx_ack_rbf</c> carries
+    /// no contribution, the new attempt drops her splice-out output and takes nothing from her balance.
+    /// </summary>
+    [Fact]
+    public async Task Given_OurFeeShareAboveTheCap_When_ThePeerBumps_Then_WeContributeNothing()
+    {
+        // Arrange
+        using var harness = new SpliceHarness((name, o) =>
+                                              {
+                                                  o.MinRbfInterval = TimeSpan.Zero;
+                                                  if (name == "Alice")
+                                                      o.MaxRbfFeeShareSatoshis = 1;
+                                              }, realEngine: true);
+        await harness.SpliceAsync(harness.Alice, -80_000);
+        var mark = harness.Transcript.Count;
+
+        // Act
+        var result = await BumpAsync(harness, harness.Bob, 2_000);
+
+        // Assert
+        Assert.True(result.State == SpliceNegotiationState.Signed, $"{result.State}: {result.FailureReason}");
+        Assert.Empty(harness.Failures);
+        Assert.Null(RbfContribution(harness, mark, "Alice"));
+        Assert.Equal(0, harness.Alice.Node.State.PendingFundings[1].LocalBalanceDeltaMsat);
+        Assert.Equal(0, harness.Bob.Node.State.PendingFundings[1].RemoteBalanceDeltaMsat);
+        var tx = Parse(harness.Alice.Broadcasts.Single(b => b.TransactionId == result.SpliceTxId!.Value)
+                                  .RawTransaction);
+        Assert.DoesNotContain(tx.Outputs,
+                              o => o.ScriptPubKey.ToBytes().SequenceEqual((byte[])harness.Alice.Destination.Script));
+    }
+
+    /// <summary>
+    /// Our fee share of a peer's RBF above half of what our contribution moves is refused too, whatever the cap: a
+    /// 2,000 sat splice-out whose output would pay about 2,500 sat at the peer's 20,000 sat/kw is not rebuilt.
+    /// </summary>
+    [Fact]
+    public async Task Given_AFeeShareAboveHalfOfOurSpliceOut_When_ThePeerBumps_Then_WeContributeNothing()
+    {
+        // Arrange
+        using var harness = new SpliceHarness((_, o) =>
+                                              {
+                                                  o.MinRbfInterval = TimeSpan.Zero;
+                                                  o.MaxRbfFeeShareSatoshis = null;
+                                              }, realEngine: true);
+        await harness.SpliceAsync(harness.Alice, -2_000);
+        var mark = harness.Transcript.Count;
+
+        // Act
+        var result = await BumpAsync(harness, harness.Bob, 20_000);
+
+        // Assert
+        Assert.True(result.State == SpliceNegotiationState.Signed, $"{result.State}: {result.FailureReason}");
+        Assert.Null(RbfContribution(harness, mark, "Alice"));
+        Assert.Equal(0, harness.Alice.Node.State.PendingFundings[1].LocalBalanceDeltaMsat);
+    }
+
+    /// <summary>
+    /// A bumped attempt does not take the one it bumps out of the rebroadcast set (the replacement may never be accepted
+    /// by the mempool): both stay pending, and only the lock abandons the attempt that did not confirm. The lock also
+    /// drops the channel's host (no attempt is left to RBF).
+    /// </summary>
+    [Fact]
+    public async Task Given_ABumpedSplice_When_TheBumpCompletesAndLocks_Then_TheOldAttemptIsRebroadcastUntilTheLock()
+    {
+        // Arrange
+        using var harness = CreateHarness();
+        harness.Alice.Fund(SpliceIn + 200_000);
+        var first = (await harness.SpliceAsync(harness.Alice, SpliceIn)).SpliceTxId!.Value;
+
+        // Act
+        var second = (await BumpAsync(harness, harness.Alice, 2_000)).SpliceTxId!.Value;
+
+        // Assert
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+        {
+            var broadcasts = GetBroadcastRepository(node);
+            broadcasts.Verify(b => b.MarkReplacedAsync(It.IsAny<TxId>()), Times.Never);
+            Assert.Equal(first, node.Broadcasts.Single(b => b.TransactionId == second).ReplacesTransactionId);
+        }
+
+        // Act: the bump locks
+        await harness.ConfirmAsync(second, TwoNodeHarness.BlockHeight + 3, harness.Alice, harness.Bob);
+
+        // Assert
+        Assert.Empty(harness.Failures);
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+        {
+            var broadcasts = GetBroadcastRepository(node);
+            broadcasts.Verify(b => b.MarkAbandonedAsync(first), Times.Once);
+            broadcasts.Verify(b => b.MarkAbandonedAsync(second), Times.Never);
+            Assert.Null(GetHost(node));
+        }
+    }
+
+    #endregion
+
     #region Helpers
+
+    private static Mock<IBroadcastTransactionDbRepository> GetBroadcastRepository(SpliceNode node)
+    {
+        using var scope = node.Node.Services.CreateScope();
+        return Mock.Get(scope.ServiceProvider.GetRequiredService<IUnitOfWork>().BroadcastTransactionDbRepository);
+    }
+
+    /// <summary>The channel's interactive-tx host of the node's splice service, or null.</summary>
+    private static SpliceNegotiationHost? GetHost(SpliceNode node)
+    {
+        var field = typeof(SpliceService).GetField("_hosts", BindingFlags.NonPublic | BindingFlags.Instance)!;
+        var hosts = (ConcurrentDictionary<ChannelId, SpliceNegotiationHost>)field.GetValue(node.Service)!;
+        return hosts.GetValueOrDefault(TwoNodeHarness.ChannelId);
+    }
 
     private static SpliceHarness CreateHarness() =>
         new((_, o) => o.MinRbfInterval = TimeSpan.Zero, realEngine: true);

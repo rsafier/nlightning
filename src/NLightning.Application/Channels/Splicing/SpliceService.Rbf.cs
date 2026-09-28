@@ -254,18 +254,39 @@ public sealed partial class SpliceService
         if (SpliceRules.CheckReceiveRbf(conditions, payload, contribution) is { } violation)
             return Reject(channelId, peerPubKey, violation);
 
+        // Unlike a splice_init, an RBF of a splice we contributed to makes us pay our part of the fee at the peer's
+        // feerate: the same cap as for splice_init (BOLT 2: "MAY send tx_abort for any reason")
+        if (payload.Feerate > _options.MaxFeeratePerKw)
+        {
+            _logger.LogWarning("Refusing the RBF of channel {ChannelId} by {Peer}: feerate {Feerate} sat/kw above our "
+                             + "limit of {Max} sat/kw", channelId, peerPubKey, payload.Feerate,
+                               _options.MaxFeeratePerKw);
+            return EndQuiescenceWithTxAbort(channelId, peerPubKey,
+                                            $"feerate {payload.Feerate} sat/kw is above our limit of "
+                                          + $"{_options.MaxFeeratePerKw} sat/kw");
+        }
+
         var latest = fundings.LatestAttempt!;
 
         // Our side of the new attempt: the latest one's rebuilt at the new feerate as non-initiator, or nothing when
-        // that cannot be paid (BOLT 2: a peer may stop contributing rather than fail the RBF)
+        // that cannot be paid or costs more than we accept (BOLT 2: a peer may stop contributing rather than fail the
+        // RBF: it "sets their sats to zero")
         var plan = PlanRbfContribution(previous?.LocalContribution ?? InteractiveTxContribution.Empty,
                                        latest.LocalBalanceDeltaMsat / 1_000, false, payload.Feerate, null, null);
-        if (plan is null)
+        if (plan is not null && GetRbfFeeShareRefusal(plan) is { } refusal)
+        {
+            _logger.LogWarning("Our share of the fee of the peer's RBF attempt on channel {ChannelId} at {Feerate} "
+                             + "sat/kw, {Fee} sat, is too high ({Refusal}); not contributing to it", channelId,
+                               payload.Feerate, plan.FeeSatoshis, refusal);
+            plan = null;
+        }
+        else if (plan is null)
         {
             _logger.LogWarning("Our contribution to the splice of channel {ChannelId} cannot be rebuilt at {Feerate} "
                              + "sat/kw; not contributing to the peer's RBF attempt", channelId, payload.Feerate);
-            plan = PlanRbfContribution(InteractiveTxContribution.Empty, 0, false, payload.Feerate, null, null)!;
         }
+
+        plan ??= PlanRbfContribution(InteractiveTxContribution.Empty, 0, false, payload.Feerate, null, null)!;
 
         var negotiation = CreateRbfNegotiation(channel, fundings, latest, previous, plan, false, contribution ?? 0,
                                                payload.Feerate, payload.Locktime,
@@ -426,6 +447,7 @@ public sealed partial class SpliceService
 
         if (_hosts.TryGetValue(channel.ChannelId, out var host))
         {
+            negotiation.HostPredecessor = host.Negotiation;
             host.Negotiation = negotiation;
             negotiation.Host = host;
         }
@@ -442,10 +464,23 @@ public sealed partial class SpliceService
         }
         catch (InvalidOperationException e)
         {
+            RestoreHost(negotiation);
             _logger.LogWarning("The interactive-tx driver cannot take an RBF of channel {ChannelId}: {Reason}",
                                channel.ChannelId, e.Message);
             return false;
         }
+    }
+
+    /// <summary>
+    /// An RBF attempt the driver rejected or that ended without completing: the channel's host serves the negotiation
+    /// it served before again, so it never stays pointed at an ended attempt (wave SPR review). Nothing when the host
+    /// has moved on or the attempt did not take over an existing host.
+    /// </summary>
+    private static void RestoreHost(SpliceNegotiation negotiation)
+    {
+        if (negotiation is { Host: { } host, HostPredecessor: { } previous }
+         && ReferenceEquals(host.Negotiation, negotiation))
+            host.Negotiation = previous;
     }
 
     /// <summary>The stored, fully signed interactive-tx rows of the pending splice attempts, oldest first.</summary>
@@ -647,6 +682,27 @@ public sealed partial class SpliceService
         return new RbfContributionPlan(outputs.Count == 0 ? InteractiveTxContribution.Empty
                                                           : new InteractiveTxContribution([], outputs, null),
                                        signed, checked((ulong)ownFee), outputs.FirstOrDefault()?.ScriptPubKey);
+    }
+
+    /// <summary>
+    /// Why our fee share of a peer's RBF attempt (<paramref name="plan"/>, planned at the peer's feerate) is too high
+    /// to contribute: above <see cref="SpliceOptions.MaxRbfFeeShareSatoshis"/>, or above half of what the contribution
+    /// moves (our splice-out outputs plus our splice-in amount); null when it is acceptable (nothing to pay included).
+    /// </summary>
+    internal string? GetRbfFeeShareRefusal(RbfContributionPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (plan.FeeSatoshis == 0)
+            return null;
+
+        if (_options.MaxRbfFeeShareSatoshis is { } max && plan.FeeSatoshis > max)
+            return $"above the limit of {max} sat";
+
+        var moved = plan.Contribution.Outputs.Where(o => !o.IsChange).Sum(o => o.Amount.Satoshi)
+                  + Math.Max(0, plan.SignedContributionSatoshis);
+        return (decimal)plan.FeeSatoshis * 2 > moved
+                   ? $"more than half of the {moved} sat our contribution moves"
+                   : null;
     }
 
     /// <summary>A stored attempt's total fee (inputs minus outputs), or null without one.</summary>

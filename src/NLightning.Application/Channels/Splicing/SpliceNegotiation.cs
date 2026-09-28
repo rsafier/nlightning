@@ -82,6 +82,12 @@ internal sealed class SpliceNegotiation
     /// <summary>The interactive-tx host of this negotiation (set when the driver starts).</summary>
     public SpliceNegotiationHost? Host { get; set; }
 
+    /// <summary>
+    /// An RBF attempt that took over the channel's existing host: the negotiation the host served before, which it is
+    /// pointed back at when the attempt is rejected or aborted (wave SPR review).
+    /// </summary>
+    public SpliceNegotiation? HostPredecessor { get; set; }
+
     /// <summary>The new funding (set when the transaction is constructed, SP-CS-01).</summary>
     public ChannelFunding? NewFunding { get; set; }
 
