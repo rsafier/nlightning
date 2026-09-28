@@ -508,8 +508,11 @@ public sealed partial class GossipRelayScheduler
 
         foreach (var node in snapshot.Nodes)
         {
+            // NL-548: only a node with a channel the backlog announced (a spent channel stays in the graph for 72
+            // blocks but is never relayed, and a node_announcement without a known channel is ignored, BOLT 7)
             if (node.RawAnnouncement.IsEmpty || IsOurs(node.NodeId) || !filter.Includes(node.Timestamp)
-             || !snapshot.TryGetNodeIndex(node.NodeId, out var index) || snapshot.GetAdjacency(index).Count == 0)
+             || !snapshot.TryGetNodeIndex(node.NodeId, out var index)
+             || !snapshot.GetAdjacency(index).Any(e => IsRelayable(e.Channel) && HasUpdateInside(e.Channel, filter)))
                 continue;
 
             var item = new RelayItem(MessageTypes.NodeAnnouncement, s_noChannel, 0, node.NodeId, node.Timestamp,
@@ -535,7 +538,7 @@ public sealed partial class GossipRelayScheduler
                 return filter.Includes(item.Timestamp)
                     && _graphStore!.TryGetChannel(item.ShortChannelId, out var updated) && IsRelayable(updated);
             case MessageTypes.NodeAnnouncement:
-                return filter.Includes(item.Timestamp) && _graphStore!.NodeHasChannels(item.NodeId!.Value);
+                return filter.Includes(item.Timestamp) && HasRelayableChannel(item.NodeId!.Value);
             default:
                 return false;
         }
@@ -574,6 +577,20 @@ public sealed partial class GossipRelayScheduler
             _logger.LogDebug(e, "Could not relay {MessageType} to peer {Peer}", item.Type, peer.NodeId);
             return SendResult.ConnectionGone;
         }
+    }
+
+    /// <summary>
+    /// True when the node has a channel whose gossip may go out (NL-548): a node whose channels are all spent (kept in
+    /// the graph for 72 blocks) or unverified has none the peer could know, so its announcement would be ignored.
+    /// </summary>
+    private bool HasRelayableChannel(CompactPubKey nodeId)
+    {
+        if (!_graphStore!.NodeHasChannels(nodeId))
+            return false;
+
+        var snapshot = _graphStore.GetSnapshot();
+        return snapshot.TryGetNodeIndex(nodeId, out var index)
+            && snapshot.GetAdjacency(index).Any(e => IsRelayable(e.Channel) && HasRelayablePolicy(e.Channel));
     }
 
     private bool IsOrigin(RelayItem item, CompactPubKey peerId) =>

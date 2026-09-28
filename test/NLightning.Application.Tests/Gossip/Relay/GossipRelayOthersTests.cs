@@ -408,6 +408,31 @@ public class GossipRelayOthersTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ANodeWhoseOnlyChannelIsSpent_When_Relayed_Then_ItsAnnouncementStaysBehind()
+    {
+        // Arrange (NL-548, found by the NL-417 mainnet proof): node C's only channel is spent (kept 72 blocks, never
+        // relayed), so the peer can know no channel of C and would ignore C's node_announcement
+        using var paced = new GossipRelayOthersTests(new GossipRelayOptions { BacklogMessagesPerSecond = 100 });
+        paced._graph.AddSignedChannel(s_scid1, SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        paced._graph.AddSignedChannel(s_scid2, SyncTestGraph.NodeA, SyncTestGraph.NodeC, spentAtHeight: 900_000);
+        paced._graph.AddNode(SyncTestGraph.NodeA, 1_700_000_000);
+        paced._graph.AddNode(SyncTestGraph.NodeC, 1_700_000_000);
+        var peer = paced.AddPeer(0x41, new GossipTimestampFilter(0, uint.MaxValue));
+        await paced.BaselineAsync();
+
+        // Act: the backlog, then a newer announcement of C collected and flushed
+        paced.RaiseFilter(peer);
+        await paced.TickAfterAsync(TimeSpan.FromSeconds(1));
+        paced._graph.AddNode(SyncTestGraph.NodeC, 1_700_000_100);
+        await paced.FlushAllAsync();
+
+        // Assert: A's announcement went out, C's never did
+        var nodes = peer.Sent.OfType<NodeAnnouncementMessage>().Select(n => n.Payload.NodeId).ToList();
+        Assert.Contains(SyncTestGraph.NodeA.PubKey, nodes);
+        Assert.DoesNotContain(SyncTestGraph.NodeC.PubKey, nodes);
+    }
+
+    [Fact]
     public async Task Given_OurOwnChannel_When_Relayed_Then_OnlyThePeersDirectionGoesThroughTheRelay()
     {
         // Arrange: we are node A; our 256 and 258 go through the own path (regardless of filters)
