@@ -60,6 +60,8 @@ Updated 2026-09-28 by lane rbf (branch `wip/fafo-rbf` from `wip/fafo` at `2b5dff
 
 Updated 2026-09-28 by lane bolt10 (branch `wip/fafo-bolt10` from `978ad275`, code at `f09ff53d`, not merged into `wip/fafo`): BOLT 10 DNS seed bootstrap implemented and off by default. Fixed: NL-113. New: NL-541..NL-545 (NL-536..NL-540 left to the concurrent cli-lognoise lane). Targeted tests only (owner request), net10.0 Release: Domain `Node/Bootstrap` 91, Infrastructure 479, Infrastructure.Bitcoin `Bootstrap` 34, Application `PeerBootstrapServiceTests` 24, Daemon `NodeServiceExtensionsTests` 68; no Docker, no full matrix. Review fixes at `644bc5a8` (NL-113 entry): address filter ranges, SRV (target, port), the `n` condition, BOLT 10 example vectors, cancellable dials, gate retries, obsolete `Node:DnsSeedServers` ignored; no new IDs. Targeted, net10.0 Release: Domain 3660, Infrastructure.Bitcoin 1394, Application `Node` namespace 208 (3 runs), Daemon 799.
 
+Updated 2026-09-28 by lane nl543 (branch `wip/fafo-nl543` from `wip/fafo` at `ef7ad335`, code at `d4eb9582`, not merged into `wip/fafo`): the bootstrap tops up from the gossip graph before the DNS seeds (owner decision, light testing). Fixed: NL-543. New: NL-547. Targeted tests only, net10.0 Release: Application `NLightning.Application.Tests.Node` 223, Domain `Node/Bootstrap` 158; no Docker, no full matrix, no live run.
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -96,10 +98,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 7 | 169 | 176 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 147 | 130 | 352 |
+| fixed | 14 | 61 | 147 | 131 | 353 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **157** | **305** | **537** |
+| **Total** | **14** | **61** | **157** | **306** | **538** |
 
 ### Epics
 
@@ -3768,12 +3770,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-543 A node with too few peers does not connect to graph-known nodes
-- **Status:** open
+- **Status:** fixed (d4eb9582)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Node/Bootstrap/PeerBootstrapService.cs` (`CheckGateAsync`)
 - **Evidence:** Lane bolt10 (NL-113). The bootstrap skips its run when the graph holds a node with an address ("the node already knows contacts"), but nothing then connects to such nodes when the node has fewer than `MinPeers` peers (CLN and LND keep a minimum of gossip peers from the graph).
-- **Fix sketch:** A peer-count keeper that picks addressed graph nodes (announced channels, recent updates) when connected peers stay below `MinPeers`, sharing the bootstrap's dial limits.
+- **Fix sketch:** A peer-count keeper that picks addressed graph nodes (announced channels, recent updates) when connected peers stay below `MinPeers`, sharing the bootstrap's dial limits. Done (lane nl543, branch `wip/fafo-nl543` from `ef7ad335`, owner decision 2026-09-28, light testing): the graph no longer skips a run; every run of `PeerBootstrapService` first tops up from the graph and asks the DNS seeds only when that leaves the node below `MinPeers`, so "graph has addresses" never blocks the seeds. Selection (Domain `Node/Bootstrap/GraphPeerCandidateSelector`): an announced node (`node_announcement`) without unknown even features, not ourselves or a connected peer, with an IPv4/IPv6 address of the asked `AddressFamilies` that passes `SeedAddressFilter` (non-routable refused unless `AllowNonRoutableAddresses`; Tor and DNS hostnames skipped: no Tor proxy, and resolving gossip-chosen names is left out) and whose endpoint did not fail earlier in the process, and at least one active channel (unspent, its own direction's `channel_update` enabled and at most 14 days old); good candidates (announcement at most 14 days old and 2+ active channels) first, random order within each tier, one node per endpoint, at most `MaxPeersFromBootstrap x 3`. Dials share the bootstrap's `DialAsync` (`MaxDialConcurrency`, `GetEffectiveConnectTimeout` cancelling `IPeerManager.DialPeerAsync`), at most the peers missing to `MinPeers` from the graph, at most `MaxPeersFromBootstrap` per run graph and seeds together; failed graph endpoints join the process-wide failed set; dial records carry the seed `graph` and `BootstrapRunRecord` gains `GraphSelected`/`GraphAttempted`/`GraphConnected`/`AskedSeeds`. Switch: follows `Node:Bootstrap:Enabled` (unset = on on mainnet), no new key. Gate otherwise unchanged (halted chain and saved peers with active channels skip a run; `MinPeers` connected ends the loop); "no seeds" ends the loop only without a graph store, so an operator who enables bootstrap on a seedless network (signet) gets the graph top-up. Tests (net10.0 Release): Application `NLightning.Application.Tests.Node` 223 (`PeerBootstrapServiceTests` graph region: dialed first, filters, failed endpoint, missing-to-MinPeers cap, concurrency and per-run cap, DNS fallback, at MinPeers, saved channel peer, seedless network, disabled), Domain `Node/Bootstrap` 158 (`GraphPeerCandidateSelectorTests`). Follow-up NL-547.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
 
@@ -3805,6 +3807,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Lane b10main, mainnet bootstrap run of 2026-09-28 (`docs/agents/MAINNET_GOSSIP_PROBE.md`, "BOLT 10 bootstrap run"): both mainnet seeds answer 25 SRV records without glue, so the client asked A and AAAA for each target, 50 TCP queries one after the other: about 8.5 s per seed through 1.1.1.1 (the seed census: 10.3 s and 18.7 s per seed including the system resolver's failure). With a slower link the per-seed timeout (10 s) would cut the answer short. This was most of the time to the first peer after the 15 s start delay.
 - **Fix sketch:** Resolve the targets concurrently. Done: batches of at most `DnsSeedClient.MaxConcurrentAddressLookups` (8) targets, never more than the candidates still wanted (a cap of 5 still costs 5 queries); a target not resolved when the seed's time runs out is left out and the resolved ones are returned with outcome `Timeout`. The live smoke (`DnsSeedLiveTests`, 1.1.1.1) takes 0.66 s for 25 targets. Tests: `DnsSeedClientTests.Given_ManyTargetsWithoutGlue_*`, `Given_ATargetThatHangs_*`.
 - **Blocks/Blocked-by:** Related NL-113
+- **Plan ref:** BOLT 10
+
+### NL-547 The peer top-up stops once MinPeers is reached or MaxRuns ran
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Node/Bootstrap/PeerBootstrapService.cs` (`RunLoopAsync`)
+- **Evidence:** Lane nl543 (NL-543). The graph top-up runs inside the bootstrap loop, which ends at `MinPeers` connected or after `MaxRuns` (12 x 5 min); a node whose peers drop below `MinPeers` later in its life is not topped up again (LND and CLN keep a minimum of gossip peers for the node's lifetime). Endpoints that failed stay skipped for the whole process.
+- **Fix sketch:** Keep a lightweight keeper after the loop: re-check every `RetryInterval` and top up from the graph (seeds only when the graph fails) when below `MinPeers`, with the failed endpoints expiring after a while.
+- **Blocks/Blocked-by:** Related NL-543
 - **Plan ref:** BOLT 10
 
 ---

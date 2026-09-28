@@ -571,5 +571,6 @@ rotation also ran a range sync on Johoe).
   whose `node_announcement` has it; the implementation guess uses the announcement.
 - As in the earlier runs, the initial sync drops gossip on full ingress queues (10,585 in run 1, 4,180 in the rerun)
   and asks for those channels again; the dropped-message warnings are the 11 and 5 GossipIngress warnings.
-- Known gap unchanged: a node that restarts with a graph but none of its saved peers reachable does not bootstrap
-  (the graph knows addresses) and connects to no graph node either (NL-543).
+- Known gap at the time of the run: a node that restarts with a graph but none of its saved peers reachable did not
+  bootstrap (the graph knows addresses) and connected to no graph node either (NL-543; fixed since by the graph
+  top-up, `d4eb9582`: the bootstrap now dials graph nodes first and falls back to the seeds).

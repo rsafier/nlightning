@@ -94,7 +94,8 @@ product's `PeerBootstrapService` right after `PeerManager.StartAsync`, as `NltgD
 `Node:Bootstrap` at its mainnet default (on since 2026-09-28; every other run sets `Node:Bootstrap:Enabled=false`),
 so the peers come only from the DNS seeds and the sync runs from them (`Gossip:SyncPeers` at its product default, 3,
 unless `--sync-peers` is given). The probe never dials. Use a fresh `--dir` so the node knows no peer and no graph
-node (the bootstrap skips its run while the graph knows nodes with addresses, NL-543). After the run the probe asks
+node (with a graph, each run first dials graph nodes and asks the seeds only when those leave it below `MinPeers`,
+NL-543; those dials show the seed `graph`). After the run the probe asks
 every mainnet seed once more through the product's seed client (the "seed census", not part of the discovery).
 
 ```bash
