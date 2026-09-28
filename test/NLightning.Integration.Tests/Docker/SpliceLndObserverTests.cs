@@ -84,6 +84,8 @@ public sealed class SpliceLndObserverTests : IAsyncLifetime
                                syncGraph: false);
         Console.WriteLine($"[splice-lnd] A's channel to alice: {new ShortChannelId(aliceChannel.ShortChannelId)}");
         await a.FundWalletAsync(LightningMoney.Satoshis(1_500_000), AddressType.P2Wpkh, ct);
+        // B accepts an anchors channel only with its on-chain reserve (NL-379)
+        await b.FundWalletAsync(LightningMoney.Satoshis(200_000), AddressType.P2Wpkh, ct);
         await Day0Harness.ConnectBothWaysAsync(a, b, ct);
         await b.ConnectToAsync(alice, ct);
 

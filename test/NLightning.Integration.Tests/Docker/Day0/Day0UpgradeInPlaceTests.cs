@@ -137,10 +137,10 @@ public sealed class Day0UpgradeInPlaceTests : IAsyncLifetime
         var rowsBefore = new Dictionary<string, IReadOnlyDictionary<string, int>>();
         foreach (var node in new[] { a, b })
         {
-            rowsBefore[node.Name] = await CountChannelRowsAsync(node, "before the rollback", ct);
+            rowsBefore[node.Name] = await CountChannelRowsAsync(node, "before the rollback", true, ct);
             var target = await RollBackAsync(node, rollbackTarget, ct);
             await AssertOldSchemaAsync(node, target, ct);
-            Assert.Equal(rowsBefore[node.Name], await CountChannelRowsAsync(node, $"at {target}", ct));
+            Assert.Equal(rowsBefore[node.Name], await CountChannelRowsAsync(node, $"at {target}", false, ct));
         }
 
         SqliteConnection.ClearAllPools();
@@ -156,7 +156,7 @@ public sealed class Day0UpgradeInPlaceTests : IAsyncLifetime
         foreach (var (node, before) in new[] { (a, beforeA), (b, beforeB) })
         {
             await AssertMigratedAsync(node, before, ct);
-            Assert.Equal(rowsBefore[node.Name], await CountChannelRowsAsync(node, "after the upgrade", ct));
+            Assert.Equal(rowsBefore[node.Name], await CountChannelRowsAsync(node, "after the upgrade", true, ct));
         }
 
         // ...the channel reestablishes with unchanged balances and commitment numbers and pays both ways
@@ -290,8 +290,15 @@ public sealed class Day0UpgradeInPlaceTests : IAsyncLifetime
     /// The rows of the channel tables every schema since wave qit has (the rollback and the upgrade must keep them
     /// all), printed with <paramref name="label"/>.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="hasInboundOnlyPeers"/>: the schema has <c>Peers.IsInboundOnly</c> (<c>AddSpliceHardening</c>,
+    /// NL-497), and only the dialable peer rows are counted. A peer that connected from a loopback address is saved
+    /// inbound-only since wave spr, and the migration's rollback drops such rows (the old schema cannot hold a peer
+    /// without an address, and the old build never saved one); which connection of <c>ConnectBothWaysAsync</c> survives
+    /// decides whether a node holds one. The startup loads a channel whose peer has no row anyway.
+    /// </remarks>
     private static async Task<IReadOnlyDictionary<string, int>> CountChannelRowsAsync(NLightningTestNode node,
-        string label, CancellationToken ct)
+        string label, bool hasInboundOnlyPeers, CancellationToken ct)
     {
         string[] tables =
         [
@@ -301,7 +308,11 @@ public sealed class Day0UpgradeInPlaceTests : IAsyncLifetime
         await using var context = CreateContext(node);
         var counts = new SortedDictionary<string, int>(StringComparer.Ordinal);
         foreach (var table in tables)
-            counts[table] = await CountAsync(context, $"SELECT COUNT(*) AS \"Value\" FROM \"{table}\"", ct);
+            counts[table] = await CountAsync(context,
+                                             $"SELECT COUNT(*) AS \"Value\" FROM \"{table}\""
+                                           + (table == "Peers" && hasInboundOnlyPeers
+                                                  ? " WHERE \"IsInboundOnly\" = 0"
+                                                  : string.Empty), ct);
         Console.WriteLine($"[upgrade] {node.Name} rows {label}: "
                         + string.Join(", ", counts.Select(c => $"{c.Key} {c.Value}")));
         return counts;
