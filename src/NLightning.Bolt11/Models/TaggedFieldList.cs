@@ -186,11 +186,15 @@ internal class TaggedFieldList : List<ITaggedField>
     /// <returns>A new TaggedFieldList</returns>
     /// <exception cref="ArgumentException">
     /// If a field is truncated, a known field is malformed (BOLT 11: e.g. wrong <c>p</c>/<c>h</c>/<c>s</c>/<c>n</c>
-    /// length), both <c>d</c> and <c>h</c> are present, or there are dangling bits after the last field.
+    /// length), more than one <c>p</c> field is present, both <c>d</c> and <c>h</c> are present, or there are
+    /// dangling bits after the last field.
     /// </exception>
     /// <remarks>
     /// Unknown field types and <c>f</c> fields with an unknown version are skipped, as BOLT 11 requires.
-    /// When a non-repeatable field appears more than once, the first one is kept (BOLT 11: use the first).
+    /// A second <c>p</c> field, identical or not, fails the decode (BOLT 11 after bolts#1357: a reader MUST fail the
+    /// payment if more than one <c>p</c> field is present), so no two components can pick different payment hashes
+    /// from one signed invoice. For the other non-repeatable fields the first one is kept (writers put the
+    /// most-preferred field first).
     /// </remarks>
     internal static TaggedFieldList FromBitReader(BitReader bitReader, BitcoinNetwork bitcoinNetwork,
                                                   int? availableBits = null)
@@ -227,9 +231,16 @@ internal class TaggedFieldList : List<ITaggedField>
             if (taggedField is null)
                 continue;
 
-            // Keep the first (most preferred) field of a type that may not repeat
             if (!IsRepeatable(type) && taggedFields.Any(x => x.Type.Equals(type)))
+            {
+                // BOLT 11 (bolts#1357): MUST fail the payment if more than one `p` field is present, even an
+                // identical one, so the payment hash can never depend on which `p` a reader takes
+                if (type == TaggedFieldTypes.PaymentHash)
+                    throw new ArgumentException("The invoice has more than one payment hash (p) field");
+
+                // Keep the first (most preferred) field of any other type that may not repeat
                 continue;
+            }
 
             // Throws if the field is invalid or if `d` and `h` are both present
             taggedFields.Add(taggedField);

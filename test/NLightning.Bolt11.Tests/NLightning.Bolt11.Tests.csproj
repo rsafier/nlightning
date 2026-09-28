@@ -38,6 +38,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="Vectors/*.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Bolt11\NLightning.Bolt11.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Domain\NLightning.Domain.csproj"/>

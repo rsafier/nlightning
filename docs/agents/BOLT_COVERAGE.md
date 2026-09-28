@@ -164,7 +164,7 @@ stub. `src/NLightning.Infrastructure/Protocol/Services/DnsSeedClient.cs` is full
 | Feature | Status | Files | Tests | Notes |
 |---|---|---|---|---|
 | Bech32 envelope, HRP / network, amount multipliers, timestamp, signature sign/verify/recover | complete | `src/NLightning.Bolt11/Models/Invoice.cs`, `src/NLightning.Infrastructure.Bitcoin/Encoders/Bech32Encoder.cs` | `test/NLightning.Bolt11.Tests/`, `test/NLightning.Integration.Tests/BOLT11/` (+ `Vectors/ValidInvoices.txt`), Blazor smoke tests | High-S signatures are rejected when `n` is present (NL-213). `Bits()` fixed (NL-123). |
-| p, h, s, n, d, x, m fields | complete | `src/NLightning.Bolt11/Models/TaggedFields/*` | per-field tests | `x` is a variable-length 5-bit-group field up to 63 bits (NL-121). Non-minimal `x`/`c`/`9` lengths are accepted (NL-222). |
+| p, h, s, n, d, x, m fields | complete | `src/NLightning.Bolt11/Models/TaggedFields/*` | per-field tests | `x` is a variable-length 5-bit-group field up to 63 bits (NL-121). Non-minimal `x`/`c`/`9` lengths are accepted (NL-222). A second `p` fails the decode (bolts#1357, NL-516; `Bolt11.Tests/Vectors/invoice-test.json`); other duplicated fields keep the first. |
 | c (min_final_cltv_expiry) | complete | `MinFinalCltvExpiryTaggedField.cs` | per-field tests | Defaults to 18; a zero `c` is dropped (NL-115). |
 | r route hints | complete | `RoutingInfoTaggedField.cs`, `src/NLightning.Domain/Models/RoutingInfo.cs` | per-field tests | Every `r` field is kept, empty ones are rejected, fees and cltv_delta are unsigned (NL-116, NL-117). |
 | f fallback | partial | `FallbackAddressTaggedField.cs` | | No taproot (v1). |
