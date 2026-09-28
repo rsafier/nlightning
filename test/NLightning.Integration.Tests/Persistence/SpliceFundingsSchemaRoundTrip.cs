@@ -153,6 +153,11 @@ internal static class SpliceFundingsSchemaRoundTrip
 
         await using (var context = contextFactory())
         {
+            // The later migrations roll back first, each in its own transaction; the refusal keeps this one applied.
+            // Bring them back before reading through the current model
+            Assert.DoesNotContain(await context.Database.GetPendingMigrationsAsync(cancellationToken),
+                                  m => m.EndsWith(MigrationName, StringComparison.Ordinal));
+            await context.GetService<IMigrator>().MigrateAsync(cancellationToken: cancellationToken);
             Assert.Empty(await context.Database.GetPendingMigrationsAsync(cancellationToken));
             Assert.Equal(2, await context.ChannelFundings.CountAsync(f => f.ChannelId == channelId,
                                                                      cancellationToken));

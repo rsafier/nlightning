@@ -265,6 +265,12 @@ internal sealed class CommitmentDanceDriver
         return result;
     }
 
+    /// <summary>
+    /// Our side as a restart reloaded it (NL-494): the dance goes on from <paramref name="reloaded"/>, with the peer's
+    /// state and its pending <c>revoke_and_ack</c> as they were.
+    /// </summary>
+    public void ReplaceUs(ChannelCommitments reloaded) => Us = reloaded;
+
     /// <summary>A disconnection seen from our side only (<see cref="ChannelCommitments.RevertUncommitted"/>).</summary>
     public CommitmentsResult RevertUs()
     {
