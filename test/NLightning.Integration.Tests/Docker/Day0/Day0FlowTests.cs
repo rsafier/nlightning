@@ -8,6 +8,7 @@ using Abcd;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
@@ -217,7 +218,14 @@ public sealed class Day0FlowTests : IAsyncLifetime
         await b.StopAsync();
         await b.StartAsync(ct);
         await Day0Harness.EnsureConnectedAsync(a, b, ct);
-        var restartTxId = Day0Harness.AssertSigned(await restartSplice.WaitAsync(Day0Harness.NetworkTimeout, ct));
+        // A's splicein returns when its negotiation stops at the disconnection (CommitmentSigned, kept for the
+        // reconnection) or, when B is back first, once it is signed; either way it names the splice, which A then
+        // completes on B's retransmitted tx_signatures (checked by the mempool and the retransmission count below)
+        var restartResponse = await restartSplice.WaitAsync(Day0Harness.NetworkTimeout, ct);
+        Assert.True(restartResponse.State is SpliceNegotiationState.Signed or SpliceNegotiationState.CommitmentSigned,
+                    $"the splice is {restartResponse.State}: {restartResponse.FailureReason}");
+        Assert.NotNull(restartResponse.SpliceTxId);
+        var restartTxId = Day0Harness.ToUint256(restartResponse.SpliceTxId.Value);
         await Day0Harness.WaitInMempoolAsync(_fixture, restartTxId, ct);
         Assert.True(Volatile.Read(ref _txSignaturesSentAfterCrash) >= 1,
                     "B never sent its tx_signatures again after the restart, yet the splice completed");
