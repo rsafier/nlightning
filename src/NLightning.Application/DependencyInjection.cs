@@ -36,6 +36,7 @@ using Offers;
 using Offers.Send;
 using Onchain;
 using Onchain.Anchors;
+using Onchain.Fees;
 using Onchain.Resolvers.Local;
 using Onchain.Resolvers.Remote;
 using Onchain.Resolvers.Revoked;
@@ -133,6 +134,8 @@ public static class DependencyInjection
         // BOLT 2 channel splicing (splicing plan wave SP1, lane SP1-D): splice_init/ack/locked over quiescence and the
         // interactive-tx driver; option_splice stays experimental until Proof SP2 (D13)
         services.AddSpliceServices();
+        // Splice RBF auto-bump (wave SPR, SPR-T3): off unless Splice:AutoBumpAfterBlocks is set; the host starts it
+        services.AddSpliceAutoBumper();
         // BOLT 2 dual-funded opens (splicing plan wave DF): open_channel2/accept_channel2 over the interactive-tx driver;
         // option_dual_fund stays experimental
         services.AddDualFundingServices();

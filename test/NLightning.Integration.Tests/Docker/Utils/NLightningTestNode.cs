@@ -18,6 +18,7 @@ using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
 using Application.Channels.Splicing;
 using Application.InteractiveTx;
+using Application.Onchain.Fees;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
 using Daemon.Extensions;
@@ -346,6 +347,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
                 await spliceDepthWatcher.CatchUpAsync(cancellationToken);
             // As the daemon does: prune the onion replay set on every block (NL-327)
             Services.GetRequiredService<OnionReplayBlockPruner>().Start();
+            // As the daemon does: the splice auto-bump (wave SPR); nothing while Splice:AutoBumpAfterBlocks is unset
+            Services.GetService<SpliceAutoBumper>()?.Start();
             _started = true;
         }
         catch
@@ -370,7 +373,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             {
                 await StopSafetyServicesAsync();
                 await Task.WhenAll(Services.GetRequiredService<OnionReplayBlockPruner>().StopAsync(),
-                                   Services.GetRequiredService<IMempoolReactor>().StopAsync());
+                                   Services.GetRequiredService<IMempoolReactor>().StopAsync(),
+                                   Services.GetService<SpliceAutoBumper>()?.StopAsync() ?? Task.CompletedTask);
                 await Task.WhenAll(BlockchainMonitor.StopAsync(), _feeService!.StopAsync(), PeerManager.StopAsync());
                 // Peer storage writes its delayed blobs once the peers stopped, as the daemon does (NL-010)
                 await (Services.GetService<IPeerStorageService>()?.StopAsync() ?? Task.CompletedTask);

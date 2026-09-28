@@ -11,6 +11,7 @@ using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
 using Application.Channels.Splicing;
 using Application.InteractiveTx;
+using Application.Onchain.Fees;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
 using Domain.Bitcoin.Interfaces;
@@ -49,6 +50,7 @@ public class NltgDaemonService : BackgroundService
     private readonly ChannelPolicyStore? _channelPolicyStore;
     private readonly SpliceDepthWatcher? _spliceDepthWatcher;
     private readonly IRetiredScidMap? _retiredScidMap;
+    private readonly SpliceAutoBumper? _spliceAutoBumper;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
                              IConfiguration configuration, IFeeService feeService,
@@ -62,8 +64,10 @@ public class NltgDaemonService : BackgroundService
                              WalletInteractiveTxContributor? interactiveTxContributor = null,
                              ChannelPolicyStore? channelPolicyStore = null,
                              SpliceDepthWatcher? spliceDepthWatcher = null,
-                             IRetiredScidMap? retiredScidMap = null)
+                             IRetiredScidMap? retiredScidMap = null,
+                             SpliceAutoBumper? spliceAutoBumper = null)
     {
+        _spliceAutoBumper = spliceAutoBumper;
         _retiredScidMap = retiredScidMap;
         _channelPolicyStore = channelPolicyStore;
         _spliceDepthWatcher = spliceDepthWatcher;
@@ -160,6 +164,9 @@ public class NltgDaemonService : BackgroundService
             // Prune the onion replay set on every block (NL-327)
             _onionReplayBlockPruner.Start();
 
+            // Bump stale splices of ours (wave SPR, SPR-T3); does nothing while Splice:AutoBumpAfterBlocks is unset
+            _spliceAutoBumper?.Start();
+
             // Start the IPC server
             await _namedPipeIpcService.StartAsync(stoppingToken);
 
@@ -181,7 +188,8 @@ public class NltgDaemonService : BackgroundService
         _channelFailureService.Stop();
 
         // The replay pruner and the mempool reactor stop before the chain monitor that drives them
-        await Task.WhenAll(_onionReplayBlockPruner.StopAsync(), _mempoolReactor.StopAsync());
+        await Task.WhenAll(_onionReplayBlockPruner.StopAsync(), _mempoolReactor.StopAsync(),
+                           _spliceAutoBumper?.StopAsync() ?? Task.CompletedTask);
 
         await Task.WhenAll(_blockchainMonitor.StopAsync(), _feeService.StopAsync(), _peerManager.StopAsync(),
                            _namedPipeIpcService.StopAsync(), base.StopAsync(cancellationToken));
