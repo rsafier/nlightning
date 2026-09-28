@@ -361,12 +361,17 @@ internal sealed class TransportService : ITransportService
                 {
                     throw;
                 }
+                catch (EndOfStreamException e) when (!_cts.IsCancellationRequested)
+                {
+                    // The peer closed the stream (NL-532: routine, not an error of ours)
+                    throw new PeerClosedConnectionException("Peer closed the connection", e);
+                }
                 catch (Exception e)
                 {
                     if (!_cts.IsCancellationRequested)
                     {
                         if (_tcpClient is null || !_tcpClient.Connected)
-                            throw new ConnectionException("Peer closed the connection");
+                            throw new PeerClosedConnectionException("Peer closed the connection");
 
                         throw new ConnectionException("Error reading response", e);
                     }

@@ -446,8 +446,12 @@ public class PeerCommunicationService : IPeerCommunicationService
         // Disconnect if not already disconnecting (Disconnect sends the error/warning before closing the connection)
         if (Volatile.Read(ref _disconnecting) == 0)
         {
-            _logger.LogWarning(exception, "We're disconnecting peer {peer} because of an exception",
-                               PeerCompactPubKey);
+            // NL-532: the peer closing the stream is routine
+            if (PeerConnectionFailures.IsClosedByPeer(exception))
+                _logger.LogInformation("Peer {peer} closed the connection; disconnecting", PeerCompactPubKey);
+            else
+                _logger.LogWarning(exception, "We're disconnecting peer {peer} because of an exception",
+                                   PeerCompactPubKey);
             Disconnect(exception);
         }
     }

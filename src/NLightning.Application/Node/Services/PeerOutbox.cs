@@ -7,6 +7,7 @@ using Domain.Exceptions;
 using Domain.Node.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Infrastructure.Node.Services;
 
 /// <summary>
 /// The single, ordered send path for one peer's channel messages (BOLT2 plan D2, §3.7; NL-193).
@@ -341,8 +342,9 @@ public sealed class PeerOutbox
         }
         catch (Exception e)
         {
-            _logger.LogError(e, "Failed to send {itemKind} to peer {Peer}", Enum.GetName(item.Kind),
-                             _peerService.PeerPubKey);
+            // NL-532: a send that fails because the connection went away is routine; Error only for our own failure
+            _logger.Log(PeerConnectionFailures.GetLogLevel(e), e, "Failed to send {itemKind} to peer {Peer}",
+                        Enum.GetName(item.Kind), _peerService.PeerPubKey);
         }
 
         return true;

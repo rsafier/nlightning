@@ -380,8 +380,9 @@ public sealed class PeerService : IPeerService
                                          : Convert.ToHexString(warningMessage.Payload.Data).ToLowerInvariant();
 #endif
 
-                _logger.LogError(
-                    "Received error message from peer {peer} for channel {channelId}: {errorMessage}",
+                // NL-532: the peer's warning is not an error of ours (and not a channel failure)
+                _logger.LogWarning(
+                    "Received warning message from peer {peer} for channel {channelId}: {warningMessage}",
                     PeerPubKey, channelId is null ? "" : channelId.ToString(), warningMessageString);
             }
 
@@ -566,9 +567,26 @@ public sealed class PeerService : IPeerService
     /// <summary>
     /// Handles exceptions raised by the communication service.
     /// </summary>
+    /// <remarks>
+    /// NL-532: a routine disconnection is not logged as an error: the peer closing the stream is Information, a missed
+    /// <c>pong</c>, a reset or a condition we raised about the peer Warning; Error stays for our own failures
+    /// (<see cref="PeerConnectionFailures.GetLogLevel"/>).
+    /// </remarks>
     private void HandleException(object? sender, Exception e)
     {
-        _logger.LogError(e, "Exception occurred with peer {peer}", PeerPubKey);
+        switch (PeerConnectionFailures.GetLogLevel(e))
+        {
+            case LogLevel.Information:
+                _logger.LogInformation("Peer {peer} closed the connection ({reason})", PeerPubKey, e.Message);
+                break;
+            case LogLevel.Warning:
+                _logger.LogWarning(e, "Connection problem with peer {peer}", PeerPubKey);
+                break;
+            default:
+                _logger.LogError(e, "Exception occurred with peer {peer}", PeerPubKey);
+                break;
+        }
+
         OnExceptionRaised?.Invoke(this, e);
     }
 
@@ -603,7 +621,7 @@ public sealed class PeerService : IPeerService
         // Check if the first message is an init message
         if (message.Type != MessageTypes.Init || message is not InitMessage initMessage)
         {
-            _logger.LogError("Failed to receive init message from peer {peer}", PeerPubKey);
+            _logger.LogWarning("Failed to receive init message from peer {peer}", PeerPubKey);
             // BOLT 1: we must not send anything before receiving init, so just close the connection
             Disconnect(new ConnectionException("Expected init as the first message"));
             return;
@@ -613,7 +631,7 @@ public sealed class PeerService : IPeerService
         if (!Features.GetNodeFeatures().IsCompatible(initMessage.Payload.FeatureSet, out var negotiatedFeatures)
          || negotiatedFeatures is null)
         {
-            _logger.LogError("Peer {peer} is not compatible", PeerPubKey);
+            _logger.LogWarning("Peer {peer} is not compatible", PeerPubKey);
             Disconnect(new WarningException("Incompatible features"));
             return;
         }
@@ -622,7 +640,7 @@ public sealed class PeerService : IPeerService
         var networkChainHashes = initMessage.NetworksTlv?.ChainHashes;
         if (networkChainHashes != null && !networkChainHashes.Any(chainHash => Features.ChainHashes.Contains(chainHash)))
         {
-            _logger.LogError("Peer {peer} chain is not compatible", PeerPubKey);
+            _logger.LogWarning("Peer {peer} chain is not compatible", PeerPubKey);
             Disconnect(new WarningException("No common chain in networks"));
             return;
         }

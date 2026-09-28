@@ -92,9 +92,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 7 | 167 | 174 |
+| open | 0 | 0 | 7 | 166 | 173 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 147 | 122 | 344 |
+| fixed | 14 | 61 | 147 | 123 | 345 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **61** | **157** | **295** | **527** |
@@ -4574,12 +4574,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` "Lane dfrbf record"
 
 ### NL-532 A peer closing the connection is logged at Error level
-- **Status:** open
+- **Status:** fixed (SHA_532)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure/Node/Services/PeerService.cs` ("Exception occurred with peer")
 - **Evidence:** The 24 h mainnet soak logged both of its errors this way: ACINQ closing the stream (`EndOfStreamException` behind `ConnectionException`) and noserver4u's missed `pong`. Both are routine disconnects, and the reconnect followed. Error level makes them look like faults in the operator's log (`MAINNET_GOSSIP_PROBE.md` "24 h mainnet soak").
 - **Fix sketch:** Log a remote close or a ping timeout at Warning (Information for a clean EOF). Keep Error for our own failures.
+- **Fix:** Lane accrbf (owner decision 2026-09-28). `Infrastructure/Node/Services/PeerConnectionFailures.GetLogLevel(exception)` walks the exception chain: an end of stream (`EndOfStreamException`, the new `PeerClosedConnectionException` the transport read loop now throws for it and for a socket the peer closed) is Information; a missed `pong` (the new `PingTimeoutException`, a `ConnectionTimeoutException`, raised by `PingPongService` for both timeouts), any timeout, socket or I/O error, and a condition we raised about the peer (a chain ending in `ErrorException`/`WarningException`, e.g. no init, a mismatched `pong`, now a `ConnectionException`) are Warning; anything else (our own failure behind the connection) stays Error. Used by `PeerService.HandleException` ("Peer X closed the connection" / "Connection problem with peer X" / the old error), `PeerCommunicationService.RaiseException` (a peer close is Information) and `PeerOutbox` (a send that fails because the connection went away). Other routine peer events that were errors: the peer's `warning` message is a Warning (it was logged as "Received error message"), a peer without init, with incompatible features or another chain is a Warning, and a malformed message from the peer (`MessageService`) is a Warning. Errors kept: the peer's `error` message, a failed channel, our own handler failures. Tests: `PeerConnectionFailuresTests` (the soak's two cases and the other classes, and `PeerService` logging each at its level with a mocked logger), `PingPongServiceTests` (the timeout type).
 - **Blocks/Blocked-by:** Found by NL-376
 - **Plan ref:** BOLT7 G5-T5
 ### NL-525 Our onion-message paths have no dummy hops
