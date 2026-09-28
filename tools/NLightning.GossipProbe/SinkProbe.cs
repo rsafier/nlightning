@@ -46,6 +46,9 @@ public sealed class SinkRecorder
     /// <summary>The first few short channel ids of <see cref="UpdatesBeforeAnnouncement"/>, for the log.</summary>
     public List<string> OrphanSamples { get; } = [];
 
+    /// <summary>The first few node ids of <see cref="NodesBeforeChannel"/>, for the log.</summary>
+    public List<string> NodeSamples { get; } = [];
+
     /// <summary>Seconds (since the probe started) of the filter sent, the first and the latest message.</summary>
     public double? FilterSentAt { get; private set; }
 
@@ -97,7 +100,11 @@ public sealed class SinkRecorder
                     if (!_versions.Add("257:" + Convert.ToHexString(n.Payload.Signature.Value)))
                         Duplicates++;
                     if (!_nodesWithChannel.Contains(n.Payload.NodeId))
+                    {
                         NodesBeforeChannel++;
+                        if (NodeSamples.Count < 20)
+                            NodeSamples.Add($"{n.Payload.NodeId} ts {n.Payload.Timestamp} at {now:F1} s");
+                    }
                     break;
                 default:
                     return;
@@ -122,6 +129,7 @@ public sealed class SinkRecorder
                 ["node_announcement_before_a_channel_of_the_node"] = NodesBeforeChannel,
                 ["channel_update_older_than_one_received"] = OlderUpdates,
                 ["orphan_samples"] = OrphanSamples.ToList(),
+                ["node_before_channel_samples"] = NodeSamples.ToList(),
                 ["distinct_channels_announced"] = _announced.Count,
                 ["filter_sent_at_seconds"] = FilterSentAt,
                 ["first_message_at_seconds"] = FirstMessageAt,
