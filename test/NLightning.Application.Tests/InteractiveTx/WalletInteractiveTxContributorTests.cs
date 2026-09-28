@@ -622,7 +622,10 @@ public class WalletInteractiveTxContributorTests
         var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
         var contribution = await contributor.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
         var (constructed, peerSpent) = Construct(contribution);
-        _storedSessions.Add(StoredSession(contribution, InteractiveTxSessionState.AwaitingTxSignatures));
+        _storedSessions.Add(StoredSession(contribution, InteractiveTxSessionState.AwaitingTxSignatures) with
+        {
+            ConstructedTx = constructed
+        });
         await contributor.SignAsync(constructed, contribution, [peerSpent], TestContext.Current.CancellationToken);
         await contributor.ReleaseAsync(contribution, TestContext.Current.CancellationToken);
         var keptBySignature = _stored.Count;
@@ -651,14 +654,15 @@ public class WalletInteractiveTxContributorTests
         Assert.Equal(2, contribution.Inputs.Count);
         var (constructed, _) = Construct(contribution);
         (TxId, uint)[] kept = [(first.Model.TxId, first.Model.Index)];
+        var restarted = CreateContributor();
 
         // Act: while the wallet still holds the kept output, nothing; once the winner's block spent it, the rest
-        var whileHeld = await _contributor.ReleaseDiscardedAsync(constructed, kept,
-                                                                 TestContext.Current.CancellationToken);
+        var whileHeld = await restarted.ReleaseDiscardedAsync(constructed, kept,
+                                                              TestContext.Current.CancellationToken);
         var reservedWhileHeld = _stored.Count;
         _utxos.Spend(first.Model);
-        var afterSpend = await _contributor.ReleaseDiscardedAsync(constructed, kept,
-                                                                  TestContext.Current.CancellationToken);
+        var afterSpend = await restarted.ReleaseDiscardedAsync(constructed, kept,
+                                                               TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Equal(0, whileHeld);
@@ -680,11 +684,64 @@ public class WalletInteractiveTxContributorTests
         var (constructed, _) = Construct(partial);
 
         // Act
-        var released = await _contributor.ReleaseDiscardedAsync(constructed, [], TestContext.Current.CancellationToken);
+        var released = await CreateContributor().ReleaseDiscardedAsync(constructed, [],
+                                                                      TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Equal(0, released);
         Assert.Single(_stored);
+    }
+
+    [Fact]
+    public async Task Given_AnOutputGivenBackThenReservedByAWithdraw_When_ReleasingTheDiscardedAttemptAgain_Then_ItIsKept()
+    {
+        // Arrange (NL-492): the discarded attempt's reservation was released; a withdraw reserved its output since
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
+        var contribution = await _contributor.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
+        var (constructed, _) = Construct(contribution);
+        var restarted = CreateContributor();
+        var first = await restarted.ReleaseDiscardedAsync(constructed, [], TestContext.Current.CancellationToken);
+        var withdraw = await _selector.ReserveAsync(LightningMoney.Satoshis(100_000), LightningMoney.Satoshis(253), 0,
+                                                    "withdraw", TestContext.Current.CancellationToken);
+        Assert.Contains(withdraw.Inputs, i => i.TxId == utxo.Model.TxId && i.Index == utxo.Model.Index);
+
+        // Act
+        var again = await restarted.ReleaseDiscardedAsync(constructed, [], TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1, first);
+        Assert.Equal(0, again);
+        Assert.NotNull(await _selector.GetAsync(withdraw.Id, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Given_AnOutputGivenBackThenReservedByANewNegotiation_When_ReleasingTheDiscardedAttemptAgain_Then_ItIsKept()
+    {
+        // Arrange (NL-492): a new splice took the output; stored (from its commitment_signed) in one case, only handed
+        // out by this process in the other
+        var durable = CreateDurableContributor();
+        AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
+        var old = await durable.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
+        var (constructed, _) = Construct(old);
+        await CreateDurableContributor().ReleaseDiscardedAsync(constructed, [], TestContext.Current.CancellationToken);
+        var live = await durable.ContributeAsync(Request(300_000), TestContext.Current.CancellationToken);
+        var (liveConstructed, _) = Construct(live);
+        Assert.NotEqual(constructed.TxId, liveConstructed.TxId);
+
+        // Act: the same process (live, unsigned), then after a restart with the new negotiation stored
+        var inProcess = await durable.ReleaseDiscardedAsync(constructed, [], TestContext.Current.CancellationToken);
+        _storedSessions.Add(StoredSession(live, InteractiveTxSessionState.AwaitingCommitmentSigned) with
+        {
+            ConstructedTx = liveConstructed
+        });
+        var afterRestart = await CreateDurableContributor().ReleaseDiscardedAsync(
+                               constructed, [], TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, inProcess);
+        Assert.Equal(0, afterRestart);
+        Assert.Single(_stored);
+        Assert.Equal(live.ReservationId, _stored.Single().Id);
     }
 
     /// <summary>
@@ -738,6 +795,11 @@ public class WalletInteractiveTxContributorTests
             State = state,
             CreatedAt = DateTimeOffset.UnixEpoch
         };
+
+    /// <summary>Another contributor without a session store over the same wallet (a restarted process).</summary>
+    private WalletInteractiveTxContributor CreateContributor() =>
+        new(_selector, _signer, _utxos, _prevTxSource, new PrevTxInspector(), new InteractiveTxTransactionParser(),
+            anchorReserveService: _anchorReserve.Object);
 
     /// <summary>A contributor with the session store, as the production registration builds it.</summary>
     private WalletInteractiveTxContributor CreateDurableContributor() =>

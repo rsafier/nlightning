@@ -405,10 +405,12 @@ public sealed class WalletInteractiveTxContributor : IInteractiveTxContributor
     /// one of our inputs of <paramref name="discarded"/> is released whole, and only when each of its other inputs is
     /// either an input of ours in <paramref name="discarded"/> or a kept outpoint the wallet no longer holds (the
     /// confirmed transaction spent it, so releasing returns nothing for it). A reservation with any other input, or with
-    /// a kept outpoint still in the wallet, may still serve a live spend: it is kept (logged). The stored-negotiation
-    /// guard of <see cref="ReleaseAsync"/> does not apply: the caller asserts the attempt can never confirm, and marks its
-    /// negotiation settled (<c>ResolvedAt</c>), so the startup sweep (<see cref="ReleaseOrphanedReservationsAsync"/>)
-    /// finishes the release after a crash between that save and this call.
+    /// a kept outpoint still in the wallet, may still serve a live spend: it is kept (logged). Only a reservation of the
+    /// discarded attempt itself is released: one without our <c>itx:</c> purpose, one a stored unresolved negotiation of
+    /// another transaction holds, or one handed out in this process to a negotiation that has not signed is kept, so
+    /// calling again after a partial release never frees another spend that reserved the outputs given back (NL-492).
+    /// The stored-negotiation guard of <see cref="ReleaseAsync"/> does not apply otherwise: the caller asserts the
+    /// attempt can never confirm, and marks its negotiation settled (<c>ResolvedAt</c>) once nothing holds its inputs.
     /// </remarks>
     public async Task<int> ReleaseDiscardedAsync(ConstructedInteractiveTx discarded,
                                                  IReadOnlyCollection<(TxId TxId, uint Vout)> keptOutpoints,
@@ -430,11 +432,30 @@ public sealed class WalletInteractiveTxContributor : IInteractiveTxContributor
         {
             var released = 0;
             var reservations = await _feeInputSelector.GetAllAsync(cancellationToken);
+            var storedSessions = await LoadUnresolvedSessionsAsync(cancellationToken);
             foreach (var reservation in reservations)
             {
                 var outpoints = reservation.Inputs.Select(i => (i.TxId, i.Index)).ToList();
                 if (!outpoints.Any(toRelease.Contains))
                     continue;
+
+                // An output a partial release already gave back may have been reserved again since: only the
+                // reservation of the discarded attempt itself is released, never another spend's (NL-492)
+                var otherHolder = storedSessions?.FirstOrDefault(
+                    s => s.State != InteractiveTxSessionState.Aborted
+                      && s.LocalContribution.ReservationId == reservation.Id
+                      && s.ConstructedTx?.TxId != discarded.TxId);
+                if (!reservation.Purpose.StartsWith(ReservationPurposePrefix, StringComparison.Ordinal)
+                 || otherHolder is not null
+                 || (_liveReservations.ContainsKey(reservation.Id) && !_signedReservations.ContainsKey(reservation.Id)))
+                {
+                    if (_logger.IsEnabled(LogLevel.Warning))
+                        _logger.LogWarning(
+                            "Not releasing reservation {ReservationId} ({Purpose}) for discarded interactive transaction "
+                          + "{TxId}: another spend or negotiation holds it", reservation.Id, reservation.Purpose,
+                            discarded.TxId);
+                    continue;
+                }
 
                 var blocking = outpoints.Where(o => !toRelease.Contains(o)
                                                  && !(kept.Contains(o)
@@ -566,13 +587,25 @@ public sealed class WalletInteractiveTxContributor : IInteractiveTxContributor
     private async Task<(bool StoreAvailable, InteractiveTxSessionModel? Session)> FindStoredSessionAsync(
         Guid reservationId, CancellationToken cancellationToken)
     {
-        if (_scopeFactory is null)
+        var sessions = await LoadUnresolvedSessionsAsync(cancellationToken);
+        if (sessions is null)
             return (false, null);
+
+        return (true, sessions.FirstOrDefault(s => s.State != InteractiveTxSessionState.Aborted
+                                                && s.LocalContribution.ReservationId == reservationId));
+    }
+
+    /// <summary>The stored negotiations not resolved yet, or null without a session store.</summary>
+    private async Task<IReadOnlyList<InteractiveTxSessionModel>?> LoadUnresolvedSessionsAsync(
+        CancellationToken cancellationToken)
+    {
+        if (_scopeFactory is null)
+            return null;
 
         cancellationToken.ThrowIfCancellationRequested();
         using var scope = _scopeFactory.CreateScope();
         if (scope.ServiceProvider.GetService<IUnitOfWork>() is not { } unitOfWork)
-            return (false, null);
+            return null;
 
         IInteractiveTxSessionDbRepository repository;
         try
@@ -581,12 +614,10 @@ public sealed class WalletInteractiveTxContributor : IInteractiveTxContributor
         }
         catch (NotSupportedException)
         {
-            return (false, null);
+            return null;
         }
 
-        var sessions = await repository.GetUnresolvedAsync();
-        return (true, sessions.FirstOrDefault(s => s.State != InteractiveTxSessionState.Aborted
-                                                && s.LocalContribution.ReservationId == reservationId));
+        return await repository.GetUnresolvedAsync();
     }
 
     private void EnsureConfirmed(FeeInputReservation reservation)

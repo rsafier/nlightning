@@ -6,6 +6,7 @@ using NBitcoin;
 namespace NLightning.Application.Onchain.Reorg;
 
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -15,6 +16,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.InteractiveTx;
 using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.InteractiveTx.Interfaces;
+using Domain.Protocol.InteractiveTx.Models;
 
 /// <summary>
 /// Returns the wallet inputs of a discarded splice to the wallet once the transaction that conflicts with it is
@@ -27,10 +29,13 @@ using Domain.Protocol.InteractiveTx.Interfaces;
 /// that nothing is released: a reorg could still bring the discarded splice back (the watcher sets it
 /// <see cref="ChannelFundingStatus.Pending"/> again when it confirms instead of the close), and the reservation must
 /// still hold its inputs then (IT-ABT-01). So a reorg never has a released reservation to roll back.</para>
-/// <para>Order: the negotiation is marked settled (<see cref="InteractiveTxSessionModel.ResolvedAt"/>) under the channel's
-/// lock in one save, then <see cref="IInteractiveTxContributor.ReleaseDiscardedAsync"/> returns the outputs (kept are the
-/// inputs of the winning splice, when it is one of ours). A crash between the two leaves a reservation that no
-/// unresolved negotiation holds, which the contributor's startup sweep releases.</para>
+/// <para>Order: <see cref="IInteractiveTxContributor.ReleaseDiscardedAsync"/> returns the outputs (kept are the inputs
+/// of the winning splice, when it is one of ours), then, once no reservation holds our other inputs any more, the
+/// negotiation is marked settled (<see cref="InteractiveTxSessionModel.ResolvedAt"/>) under the channel's lock in one
+/// save. While the contributor keeps a reservation (a kept outpoint the wallet has not dropped yet, or another input),
+/// the negotiation stays unresolved and the release is tried again on the next block; the startup sweep does not
+/// release a reservation an unresolved negotiation holds, so this round is what frees it. A crash between the release
+/// and the save repeats the (idempotent) release on the next round.</para>
 /// <para>Run by the resolution executor at the start of every block round (before a channel may reach Closed and leave
 /// memory). A channel is read again only when its state or current funding changed, or while it has a discarded splice
 /// waiting for its conflict's depth.</para>
@@ -164,33 +169,62 @@ internal sealed class DiscardedSpliceReservations
         if (scope.ServiceProvider.GetService<IInteractiveTxContributor>() is not { } contributor)
             return 0;
 
+        var discarded = session.ConstructedTx!;
         try
         {
+            var released = await contributor.ReleaseDiscardedAsync(discarded, kept, cancellationToken);
+
+            // Settled only once no reservation holds our inputs any more: a reservation the contributor kept (a kept
+            // outpoint the wallet still holds, another input) is tried again on the next block (NL-492)
+            if (scope.ServiceProvider.GetService<IFeeInputSelector>() is { } selector
+             && await IsStillReservedAsync(selector, discarded, kept, cancellationToken))
+            {
+                _logger.LogInformation("Channel {ChannelId}: {Count} wallet output(s) of discarded splice {TxId} were "
+                                     + "released, the rest is still reserved; trying again on the next block",
+                                       channelId, released, Display(discarded.TxId));
+                return released;
+            }
+
             using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
             {
                 var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
                 var stored = await unitOfWork.InteractiveTxSessionDbRepository.GetByIdAsync(channelId,
                                                                                             session.SessionId);
                 if (stored is null || stored.ResolvedAt is not null)
-                    return 0;
+                    return released;
 
                 await unitOfWork.InteractiveTxSessionDbRepository.UpdateAsync(
                     stored with { ResolvedAt = _timeProvider.GetUtcNow() });
                 await unitOfWork.SaveChangesAsync();
             }
 
-            var released = await contributor.ReleaseDiscardedAsync(session.ConstructedTx!, kept, cancellationToken);
             _logger.LogInformation("Channel {ChannelId}: the transaction conflicting with discarded splice {TxId} is "
                                  + "irrevocable; {Count} wallet output(s) it reserved are spendable again (NL-492)",
-                                   channelId, Display(session.ConstructedTx!.TxId), released);
+                                   channelId, Display(discarded.TxId), released);
             return released;
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             _logger.LogError(e, "Releasing the wallet inputs of discarded splice {TxId} of channel {ChannelId} failed",
-                             Display(session.ConstructedTx!.TxId), channelId);
+                             Display(discarded.TxId), channelId);
             return 0;
         }
+    }
+
+    /// <summary>Whether a reservation still holds one of our wallet inputs of <paramref name="discarded"/> that the
+    /// winning transaction did not spend.</summary>
+    private static async Task<bool> IsStillReservedAsync(IFeeInputSelector selector, ConstructedInteractiveTx discarded,
+                                                         List<(TxId, uint)> kept, CancellationToken cancellationToken)
+    {
+        var ours = discarded.Inputs.Where(i => i is { AddedBy: InteractiveTxParty.Local, IsShared: false })
+                            .Select(i => (i.PrevTxId, i.PrevTxVout))
+                            .Where(o => !kept.Contains(o))
+                            .ToHashSet();
+        if (ours.Count == 0)
+            return false;
+
+        var reservations = await selector.GetAllAsync(cancellationToken);
+        return reservations.Any(r => r.Inputs.Any(i => ours.Contains((i.TxId, i.Index))));
     }
 
     private static uint Depth(uint tip, uint height) => tip >= height ? tip - height + 1 : 0;
