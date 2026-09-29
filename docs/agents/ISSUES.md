@@ -102,9 +102,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 7 | 170 | 177 |
+| open | 0 | 0 | 4 | 170 | 174 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 149 | 136 | 360 |
+| fixed | 14 | 61 | 152 | 136 | 363 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **61** | **160** | **312** | **547** |
@@ -1638,7 +1638,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` SPR-T4
 
 ### NL-550 Our to_self_delay limit refuses Eclair's default and LND's larger delays
-- **Status:** open
+- **Status:** fixed (d2b68594)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Channels/Validators/ChannelOpenValidator.cs` (`PerformMandatoryChecks`), used by `ChannelFactory` (open_channel), `AcceptChannel1MessageHandler` and `DualFundedOpenService` (v2 both roles)
@@ -1648,7 +1648,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-551 A plain openchannel to Eclair fails: Eclair refuses a v1 open once option_dual_fund is negotiated
-- **Status:** open
+- **Status:** fixed (85e87682)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Daemon/Handlers/OpenChannelClientHandler.cs` (v1 unless `--dual-fund`)
@@ -1658,7 +1658,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-552 Our v1 accepter refuses a peer max_htlc_value_in_flight below 64 % of the channel
-- **Status:** open
+- **Status:** fixed (d2b68594)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Channels/Validators/ChannelOpenValidator.cs` (`PerformOptionalChecks`), via `ChannelFactory` on `open_channel`
