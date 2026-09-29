@@ -102,12 +102,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 4 | 166 | 170 |
+| open | 0 | 0 | 7 | 168 | 175 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 61 | 149 | 136 | 360 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **157** | **308** | **540** |
+| **Total** | **14** | **61** | **160** | **310** | **545** |
 
 ### Epics
 
@@ -1636,6 +1636,36 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** None on our side (the runbook says to bump only your own splice); recheck with the next CLN release.
 - **Blocks/Blocked-by:** Related NL-502
 - **Plan ref:** `SPLICING_PLAN.md` SPR-T4
+
+### NL-550 Our to_self_delay limit refuses Eclair's default and LND's larger delays
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Validators/ChannelOpenValidator.cs` (`PerformMandatoryChecks`), used by `ChannelFactory` (open_channel), `AcceptChannel1MessageHandler` and `DualFundedOpenService` (v2 both roles)
+- **Evidence:** A peer's `to_self_delay` above `NodeOptions.ToSelfDelay * 1.5` (144 x 1.5 = 216 by default) fails the open with "To self delay is too large". Eclair 0.14.3 asks for 720 by default (`eclair.channel.to-remote-delay-blocks`), so every default Eclair open to us is refused (`Docker/Interop/Eclair/EclairInteropTests.Given_EclairWithItsDefaultDelay_When_ItOpensToUs_Then_WeRefuseTheDelay`, `Explicit`: Eclair answers "peer aborted the channel funding flow: 'To self delay is too large: 720'"), and the same rule refuses Eclair's accept of our open. LND scales its delay with the channel size up to 2016, so large LND channels hit it too. The Eclair fixture pins 144 to get past it. BOLT 2 lets the receiver fail a delay it considers unreasonably large; the limit is policy, but 216 is far below what the other implementations send.
+- **Fix sketch:** A separate `Node:MaxAcceptedToSelfDelay` (2016 like LND and LDK's defaults), decoupled from our own `ToSelfDelay`. Owner decision.
+- **Blocks/Blocked-by:** Related NL-180
+- **Plan ref:** —
+
+### NL-551 A plain openchannel to Eclair fails: Eclair refuses a v1 open once option_dual_fund is negotiated
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Handlers/OpenChannelClientHandler.cs` (v1 unless `--dual-fund`)
+- **Evidence:** With our default features (`option_dual_fund` Optional since D13) and Eclair 0.14.3 (which offers it too), our `openchannel` without `--dual-fund` sends `open_channel` and Eclair fails it: "requirement failed: custom remote channel reserve is incompatible with dual-funded channels" (Eclair derives the channel's features, dual funding included, from both `init`s and then refuses the v1 reserve). `openchannel --dual-fund` works (the shared channel of `EclairInteropTests`), and a node with `DualFund = No` opens v1 fine (`Given_ChannelWeFunded_When_WeClose_Then_BothCloseAndOurFundsAreOnChain`). CLN and Eclair open v2 themselves whenever the peer offers `option_dual_fund`.
+- **Fix sketch:** Open v2 by default when `option_dual_fund` is negotiated (keep v1 for peers without it, and for push amounts or zero-conf, which v2 lacks); or at least retry v1 refusals as v2 for Eclair. Owner decision on the default.
+- **Blocks/Blocked-by:** Related NL-180
+- **Plan ref:** —
+
+### NL-552 Our v1 accepter refuses a peer max_htlc_value_in_flight below 64 % of the channel
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Validators/ChannelOpenValidator.cs` (`PerformOptionalChecks`), via `ChannelFactory` on `open_channel`
+- **Evidence:** The rule requires the opener's `max_htlc_value_in_flight_msat` to be at least 0.8 x our `AllowUpToPercentageOfChannelFundsInFlight` (80 %) of the funding, i.e. 64 %. Eclair 0.14.3 offers 45 % by default (`max-htlc-value-in-flight-percent`), so its v1 `open_channel` to a node with `DualFund = No` is refused: "Max htlc value in flight is too small: 0.00225" for a 500,000 sat channel (`EclairInteropTests.Given_OurDefaultInFlightRule_When_EclairOpensV1_Then_WeRefuseItsInFlightLimit`, a regular test that asserts the refusal). The v2 accepter (`DualFundedOpenService`) does not apply the rule, so with default features Eclair's (v2) open passes; any v1 opener with a low limit (e.g. an LDK announced channel, whose default is 10 %; to be confirmed by the LDK lane) is refused. `Given_OurNodeWithoutDualFund_When_EclairOpens_Then_V1ChannelWorks` sets the node's percentage to 50 to get past it. BOLT 2 lets the receiver fail a limit it considers too small; the value is policy.
+- **Fix sketch:** Drop the check or make it a small floor (e.g. a few percent, or an absolute minimum), and apply the same rule to v1 and v2. Owner decision.
+- **Blocks/Blocked-by:** Related NL-180
+- **Plan ref:** —
 
 ## BOLT 3: Transactions and scripts
 
@@ -5071,9 +5101,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** medium
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/`, `.github/workflows/`
-- **Evidence:** The project goal requires LND/CLN/Eclair/LDK interop; only LND v0.20.0 is exercised, manually. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): re-scoped: CLN v26.06.8 interop is covered (`Docker/Interop/Cln/`, 7c7c8c5e and later: connect, channels both ways, payments, reestablish, close, gossip, onion messages, offers, peer storage; 39 tests at wave B12). Remaining: no Eclair or LDK fixture (Eclair is met only as a mainnet gossip peer by `tools/NLightning.GossipProbe`, NL-407), and CI runs no Docker test (`.github/workflows/dotnet.yml:40` and the other workflows filter `FullyQualifiedName!~Docker`), which needs NL-276.
-- **Fix sketch:** Add CLN/Eclair fixtures and a scheduled CI job with Docker.
-- **Blocks/Blocked-by:** —
+- **Evidence:** The project goal requires LND/CLN/Eclair/LDK interop; only LND v0.20.0 is exercised, manually. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): re-scoped: CLN v26.06.8 interop is covered (`Docker/Interop/Cln/`, 7c7c8c5e and later: connect, channels both ways, payments, reestablish, close, gossip, onion messages, offers, peer storage; 39 tests at wave B12). Remaining: no Eclair or LDK fixture (Eclair is met only as a mainnet gossip peer by `tools/NLightning.GossipProbe`, NL-407), and CI runs no Docker test (`.github/workflows/dotnet.yml:40` and the other workflows filter `FullyQualifiedName!~Docker`), which needs NL-276. Update (lane interop-el, branch `wip/fafo-interop-el`): Eclair 0.14.3 basic interop covered: `Fixtures/EclairFixture` (own bitcoind 31.1 and network, image built from `test/Docker/eclair`), `Docker/Interop/Eclair/EclairInteropTests` (`Category=Interop.Eclair`, `scripts/run-interop.sh eclair`): init both ways, our dual-funded open and Eclair's, v1 opens both ways, payments both ways, cooperative close from either side, reestablish after Eclair restarts; 8 regular + 2 `Explicit` tests, 10/10 green from the host in about 3 min. Findings NL-550, NL-551, NL-552, NL-553, NL-554. Still open: LDK (no fixture yet) and Docker tests in CI.
+- **Fix sketch:** Add an LDK fixture (ldk-server) and a scheduled CI job with Docker.
+- **Blocks/Blocked-by:** Related NL-550, NL-551, NL-552
 - **Plan ref:** —
 
 ### NL-181 FakeSha256 returns zeros by default
@@ -5589,6 +5619,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Failed once in lane SPR-D's full loaded Application run; the class passed alone twice and the full project rerun was green (reported by lane SPR-D).
 - **Fix sketch:** Capture the failure on the next occurrence; check for a wall-clock wait in the harness pump.
 - **Blocks/Blocked-by:** Related NL-496
+- **Plan ref:** —
+
+### NL-553 No pinned official multi-arch Eclair image; the interop fixture builds its own
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/Docker/eclair/Dockerfile`, `test/NLightning.Integration.Tests/Fixtures/EclairFixture.cs`
+- **Evidence:** ACINQ's `acinq/eclair` tags stop at `release-0.8.0` and `latest` is an amd64 master snapshot, so the fixture builds `nltg-eclair:0.14.3` from the v0.14.3 release zip (sha256-checked) on a pinned Temurin 21 JRE digest (about 15 s, only when the tag is missing; `scripts/run-interop.sh eclair --build` prebuilds it). A version bump is a deliberate change of the Dockerfile's ARGs and `EclairFixture.EclairTag`.
+- **Fix sketch:** None needed while ACINQ publishes no multi-arch release images; revisit if they do.
+- **Blocks/Blocked-by:** Related NL-180
+- **Plan ref:** —
+
+### NL-554 Eclair interop gaps left by the basic lane
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Eclair/`
+- **Evidence:** Not covered against Eclair 0.14.3: splicing and quiescence (both negotiated), RBF of a dual-funded open, `option_simple_close` (Eclair offers it; ours is off by default), `attribution_data` (Eclair offers it, unlike LND 0.20; ours stays experimental, NL-332), BOLT 12 and onion messages, gossip and public channels, force closes and on-chain resolution. Eclair 0.14 opens only anchor, taproot and zero-fee channel types, so a node pinned to `option_static_remotekey` cannot open with it; its taproot preference is never reached (we do not offer it). A real dual-funded open with our contribution passes (`Explicit` E-X1) once Eclair's `open` is given a `fundingFeeBudgetSatoshis` above its default (500 sat for 500k sat, below the 825 sat the shared transaction costs; test-side only).
+- **Fix sketch:** Add the proofs that matter for the day-0 goal first (splice in/out with Eclair, RBF of a dual-funded open, attribution_data once NL-332 is decided).
+- **Blocks/Blocked-by:** Related NL-180, NL-332
 - **Plan ref:** —
 
 ## Docs
