@@ -18,8 +18,8 @@ using Domain.Money;
 /// <para>Eclair funds channels from the bitcoind wallet <c>eclair</c>, follows blocks over ZMQ <c>hashblock</c> and
 /// answers its JSON API on <c>127.0.0.1</c> (password <see cref="ApiPassword"/>). Its p2p and API ports are published
 /// on fixed ports from <see cref="PortPoolUtil"/> (Docker gives a restarted container new random ones), so its address
-/// survives <see cref="RestartEclairAsync"/>. <c>eclair.channel.to-remote-delay-blocks</c> is 144: Eclair's default 720 is
-/// refused by our <c>to_self_delay</c> rule (NL-550).</para>
+/// survives <see cref="RestartEclairAsync"/>. Eclair runs with its default channel policy, the <c>to_self_delay</c> of
+/// <see cref="EclairDefaultToRemoteDelayBlocks"/> it asks of us included (accepted since NL-550).</para>
 /// </remarks>
 // ReSharper disable once ClassNeverInstantiated.Global
 public sealed class EclairFixture : IAsyncLifetime
@@ -33,11 +33,9 @@ public sealed class EclairFixture : IAsyncLifetime
     public const string ApiPassword = "nltg";
 
     /// <summary>
-    /// The <c>to_self_delay</c> Eclair asks of us: our node refuses anything above 1.5 x its own 144 (NL-550).
+    /// Eclair's default <c>eclair.channel.to-remote-delay-blocks</c>: the <c>to_self_delay</c> it asks of us, within
+    /// our <c>Node:MaxAcceptedToSelfDelay</c> (2016) since NL-550.
     /// </summary>
-    public const int ToRemoteDelayBlocks = 144;
-
-    /// <summary>Eclair's own default <c>to-remote-delay-blocks</c>, which our node refuses (NL-550).</summary>
     public const int EclairDefaultToRemoteDelayBlocks = 720;
 
     private const int P2PPort = 9735;
@@ -48,7 +46,6 @@ public sealed class EclairFixture : IAsyncLifetime
     private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
     private readonly SharedObjectCache _shared = new();
     private readonly InteropChainHost _chain;
-    private readonly List<(string Container, int[] HostPorts, EclairClient Client)> _extras = [];
 
     private EclairClient? _eclair;
     private int _p2pHostPort;
@@ -93,14 +90,6 @@ public sealed class EclairFixture : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         _shared.DisposeAll();
-        foreach (var (container, hostPorts, client) in _extras)
-        {
-            client.Dispose();
-            await DockerContainerUtils.RemoveContainerAsync(_client, container);
-            foreach (var hostPort in hostPorts)
-                PortPoolUtil.ReleasePort(hostPort);
-        }
-
         _eclair?.Dispose();
         await DockerContainerUtils.RemoveContainerAsync(_client, EclairContainerName);
         await _chain.RemoveAsync();
@@ -177,35 +166,6 @@ public sealed class EclairFixture : IAsyncLifetime
         await WaitReadyAsync(EclairContainerName, Eclair);
     }
 
-    /// <summary>
-    /// Starts another Eclair (<paramref name="containerName"/>, removed with the fixture) on the fixture's bitcoind with
-    /// its own wallet and <paramref name="toRemoteDelayBlocks"/>, e.g. Eclair's default 720 for the NL-550 evidence.
-    /// </summary>
-    /// <returns>Its client, node id and p2p host port.</returns>
-    public async Task<(EclairClient Client, string NodeId, int HostPort)> StartExtraEclairAsync(
-        string containerName, int toRemoteDelayBlocks)
-    {
-        await DockerContainerUtils.RemoveContainerAsync(_client, containerName);
-        var wallet = containerName.Replace('-', '_');
-        await _chain.CreateWalletAsync(wallet);
-        var p2p = await PortPoolUtil.GetAvailablePortAsync();
-        var api = await PortPoolUtil.GetAvailablePortAsync();
-        try
-        {
-            var (client, nodeId) = await StartEclairContainerAsync(containerName, wallet, toRemoteDelayBlocks, p2p,
-                                                                   api);
-            _extras.Add((containerName, [p2p, api], client));
-            return (client, nodeId, p2p);
-        }
-        catch
-        {
-            await DockerContainerUtils.RemoveContainerAsync(_client, containerName);
-            PortPoolUtil.ReleasePort(p2p);
-            PortPoolUtil.ReleasePort(api);
-            throw;
-        }
-    }
-
     private async Task StartAsync()
     {
         await EnsureEclairImageAsync();
@@ -215,8 +175,8 @@ public sealed class EclairFixture : IAsyncLifetime
 
         _p2pHostPort = await PortPoolUtil.GetAvailablePortAsync();
         _apiHostPort = await PortPoolUtil.GetAvailablePortAsync();
-        var (client, nodeId) = await StartEclairContainerAsync(EclairContainerName, "eclair", ToRemoteDelayBlocks,
-                                                               _p2pHostPort, _apiHostPort);
+        var (client, nodeId) = await StartEclairContainerAsync(EclairContainerName, "eclair", _p2pHostPort,
+                                                               _apiHostPort);
         _eclair = client;
         EclairNodeId = nodeId;
         Console.WriteLine($"[eclair] {EclairAddress}: {(await client.GetInfoAsync(CancellationToken.None))
@@ -224,7 +184,7 @@ public sealed class EclairFixture : IAsyncLifetime
     }
 
     private async Task<(EclairClient Client, string NodeId)> StartEclairContainerAsync(
-        string containerName, string wallet, int toRemoteDelayBlocks, int p2pHostPort, int apiHostPort)
+        string containerName, string wallet, int p2pHostPort, int apiHostPort)
     {
         // Both host ports fixed: Docker gives a restarted container new random ones
         var ports = await _chain.StartContainerAsync(
@@ -233,7 +193,7 @@ public sealed class EclairFixture : IAsyncLifetime
                         new Dictionary<int, int> { [P2PPort] = p2pHostPort, [ApiPort] = apiHostPort },
                         new Dictionary<string, string>
                         {
-                            ["/data/eclair.conf"] = BuildConfig(containerName, wallet, toRemoteDelayBlocks)
+                            ["/data/eclair.conf"] = BuildConfig(containerName, wallet)
                         });
         var client = new EclairClient(ports[ApiPort], ApiPassword);
         try
@@ -260,7 +220,7 @@ public sealed class EclairFixture : IAsyncLifetime
         }, s_readyTimeout);
     }
 
-    private string BuildConfig(string containerName, string wallet, int toRemoteDelayBlocks) =>
+    private static string BuildConfig(string containerName, string wallet) =>
         $"""
          eclair.chain = "regtest"
          eclair.server.port = {P2PPort}
@@ -277,7 +237,6 @@ public sealed class EclairFixture : IAsyncLifetime
          eclair.bitcoind.zmqtx = "tcp://{BitcoinContainerName}:{InteropChainHost.ZmqTxPort}"
          eclair.node-alias = "{containerName}"
          eclair.channel.min-depth-blocks = 6
-         eclair.channel.to-remote-delay-blocks = {toRemoteDelayBlocks}
          """;
 
     private async Task EnsureEclairImageAsync()

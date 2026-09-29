@@ -23,7 +23,8 @@ using Utils;
 
 /// <summary>
 /// One channel between an in-process node and Eclair (<see cref="EclairFixture"/>), as <see cref="ClnChannelSession"/>
-/// does for CLN: the shared channel we fund (<see cref="GetAsync"/>, 1M sat, dual-funded) and separate ones built
+/// does for CLN: the shared channel we fund (<see cref="GetAsync"/>, 1M sat, a plain <c>openchannel</c> that goes
+/// dual-funded, NL-551) and separate ones built
 /// by <see cref="BuildOurFundedAsync"/> and <see cref="BuildEclairFundedAsync"/>, followed until both ends are usable.
 /// </summary>
 public sealed partial class EclairChannelSession : IAsyncDisposable
@@ -155,9 +156,11 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
     /// fee estimate, followed until both ends are usable. The caller disposes the session.
     /// </summary>
     /// <param name="push">
-    /// Null for a dual-funded open (<c>openchannel --dual-fund</c>, <c>open_channel2</c>; our default features). With a
-    /// push amount the open is v1 (<c>open_channel</c>) from a node with <c>option_dual_fund</c> off: Eclair refuses a v1
-    /// open from a peer with which it negotiated <c>option_dual_fund</c> (NL-551).
+    /// Null for a plain <c>openchannel</c> (no <c>--dual-fund</c>) from a node with our default features, which opens
+    /// v2 (<c>open_channel2</c>) because <c>option_dual_fund</c> is negotiated (NL-551). With a push amount the open is
+    /// v1 (<c>open_channel</c>; v2 has no push) from a node with <c>option_dual_fund</c> off: Eclair refuses a v1 open
+    /// from a peer with which it negotiated <c>option_dual_fund</c> (NL-557,
+    /// <c>EclairInteropTests.Given_DefaultFeatures_When_WeOpenWithAPush_Then_EclairRefusesTheV1Open</c>).
     /// </param>
     public static async Task<EclairChannelSession> BuildOurFundedAsync(EclairFixture fixture, string nodeName,
                                                                        LightningMoney capacity, LightningMoney? push,
@@ -181,12 +184,11 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
                 var handler = scope.ServiceProvider
                                    .GetRequiredService<IClientCommandHandler<OpenChannelClientRequest,
                                         OpenChannelClientResponse>>();
-                var response = await handler.HandleAsync(new OpenChannelClientRequest(fixture.EclairAddress, capacity)
-                {
-                    IsDualFunded = true
-                }, cancellationToken);
+                // The daemon's plain openchannel (NLightningTestNode.OpenChannelAsync would force v1)
+                var response = await handler.HandleAsync(new OpenChannelClientRequest(fixture.EclairAddress, capacity),
+                                                         cancellationToken);
                 session.ChannelId = response.ChannelId;
-                Console.WriteLine($"[eclair] {nodeName} opened {response.ChannelId} dual-funded");
+                Console.WriteLine($"[eclair] {nodeName} opened {response.ChannelId} with a plain openchannel");
             }
             else
             {

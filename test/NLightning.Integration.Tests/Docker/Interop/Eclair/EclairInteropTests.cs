@@ -22,23 +22,27 @@ using Utils;
 
 /// <summary>
 /// Basic interop with Eclair (<see cref="EclairFixture"/>, v0.14.3; NL-180): BOLT 8 + <c>init</c> both ways with the
-/// negotiated features logged, anchors channels we fund (dual-funded, and v1 from a node without
-/// <c>option_dual_fund</c>: NL-551) and Eclair funds (<c>open_channel2</c> by default, we contribute nothing; v1 to a
-/// node without <c>option_dual_fund</c>) reaching <c>NORMAL</c> with payments both ways, cooperative closes started by
-/// either side (legacy <c>closing_signed</c>: our <c>option_simple_close</c> is off), <c>channel_reestablish</c> after
-/// Eclair restarts, and the NL-552 refusal of Eclair's default in-flight limit.
+/// negotiated features logged, anchors channels we fund (a plain <c>openchannel</c> that goes dual-funded, NL-551, and
+/// v1 with a push from a node without <c>option_dual_fund</c>) and Eclair funds (<c>open_channel2</c> by default, we
+/// contribute nothing; v1 to a node without <c>option_dual_fund</c>) reaching <c>NORMAL</c> with payments both ways,
+/// cooperative closes started by either side (legacy <c>closing_signed</c>: our <c>option_simple_close</c> is off),
+/// <c>channel_reestablish</c> after Eclair restarts, and Eclair's refusal of a v1 open once <c>option_dual_fund</c> is
+/// negotiated (NL-557).
 /// </summary>
 /// <remarks>
-/// Eclair asks us for a <c>to_self_delay</c> of 144 (<see cref="EclairFixture.ToRemoteDelayBlocks"/>): its default 720
-/// is refused by our rule (NL-550), proven by the <c>Explicit</c>
-/// <see cref="Given_EclairWithItsDefaultDelay_When_ItOpensToUs_Then_WeRefuseTheDelay"/>. Eclair's log is printed when
-/// a test fails.
+/// Eclair runs with its default channel policy: it asks us for a <c>to_self_delay</c> of 720
+/// (<see cref="EclairFixture.EclairDefaultToRemoteDelayBlocks"/>, accepted since NL-550) and offers a
+/// <c>max_htlc_value_in_flight_msat</c> of 45 % of the channel (accepted since NL-552). Eclair's log is printed when a
+/// test fails.
 /// </remarks>
 [Collection(EclairInteropCollection.Name)]
 [Trait("Category", EclairInteropCollection.Category)]
 public sealed class EclairInteropTests : IAsyncLifetime
 {
     private const int TestTimeoutMs = 8 * 60 * 1_000;
+
+    /// <summary>Eclair's default <c>max-htlc-value-in-flight-percent</c>.</summary>
+    private const int EclairDefaultInFlightPercent = 45;
 
     private static readonly TimeSpan s_closeTimeout = TimeSpan.FromSeconds(90);
 
@@ -129,12 +133,13 @@ public sealed class EclairInteropTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// 3: the channel we fund (1M sat, <c>openchannel --dual-fund</c>: with both offering <c>option_dual_fund</c>
-    /// Eclair refuses a v1 open, NL-551; Eclair contributes nothing) is <c>NORMAL</c> at Eclair and usable at our end
-    /// with the anchors channel type on both ends; we pay Eclair's invoice and Eclair pays ours.
+    /// 3 and NL-551: the channel we fund with a plain <c>openchannel</c> (1M sat, no <c>--dual-fund</c>, our default
+    /// features) opens v2 because <c>option_dual_fund</c> is negotiated (Eclair refuses a v1 open then, NL-557; it
+    /// contributes nothing and accepts with its default 720-block delay, NL-550). It is <c>NORMAL</c> at Eclair and
+    /// usable at our end with the anchors channel type on both ends; we pay Eclair's invoice and Eclair pays ours.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
-    public async Task Given_ChannelWeFunded_When_Normal_Then_PaymentsWorkBothWays()
+    public async Task Given_PlainOpenWithDefaultFeatures_When_Normal_Then_DualFundedAndPaymentsWorkBothWays()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
@@ -152,6 +157,9 @@ public sealed class EclairInteropTests : IAsyncLifetime
         var model = Channel(session);
         Assert.Equal(ChannelVersion.V2, model.Version);
         AssertV2ChannelId(model);
+        Assert.True(session.Node.CountLogLines("option_dual_fund is negotiated") > 0,
+                    "the plain openchannel did not take the NL-551 default");
+        Assert.Equal(EclairFixture.EclairDefaultToRemoteDelayBlocks, model.ChannelParams.Remote.ToSelfDelay);
         Assert.True(model.ChannelParams.OptionAnchorOutputs, "not an anchors channel at our end");
         AssertEclairAnchors(theirs);
         await session.AssertWePayEclairAsync(LightningMoney.Satoshis(40_000), ct);
@@ -182,12 +190,15 @@ public sealed class EclairInteropTests : IAsyncLifetime
         var after = await session.GetOurChannelAsync(ct);
         Assert.Equal(before.LocalBalance, after.LocalBalance);
         Assert.False(after.DataLossDetected);
-        await session.AssertWePayEclairAsync(LightningMoney.Satoshis(12_000), ct);
+        // We pay first and more than Eclair pays back: the test may run before any other payment on the shared channel,
+        // and Eclair keeps its channel reserve (1 % of the v2 channel)
+        await session.AssertWePayEclairAsync(LightningMoney.Satoshis(30_000), ct);
         await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(11_000), ct);
     }
 
     /// <summary>
-    /// 4 (and the v1 opener path): a node with <c>option_dual_fund</c> off opens v1 to Eclair (500k sat, 100k pushed),
+    /// 4 (and the v1 opener path): a node with <c>option_dual_fund</c> off opens v1 to Eclair (500k sat, 100k pushed;
+    /// with <c>option_dual_fund</c> negotiated Eclair would refuse the v1 open, NL-557),
     /// then, after a payment each way, closes it: legacy <c>shutdown</c>/<c>closing_signed</c>, the
     /// closing transaction in the mempool, our channel Closed after 6 blocks, Eclair's <c>CLOSED</c>, and our wallet
     /// grown by our balance less the closing fee.
@@ -234,8 +245,8 @@ public sealed class EclairInteropTests : IAsyncLifetime
     /// <summary>
     /// 2 (and 4 from Eclair's side): Eclair funds a 1M sat anchors channel to us. Both offer <c>option_dual_fund</c>,
     /// so it is <c>open_channel2</c> and we contribute nothing (<c>AcceptContributionSat</c> 0): a v2 channel id from
-    /// both revocation basepoints. Payments both ways, then Eclair closes it (it is the funder: legacy
-    /// <c>closing_signed</c>).
+    /// both revocation basepoints, and Eclair's default 720-block <c>to_self_delay</c> accepted by the v2 accepter
+    /// (NL-550). Payments both ways, then Eclair closes it (it is the funder: legacy <c>closing_signed</c>).
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_EclairFundsDualFunded_When_Normal_Then_PaymentsWorkAndEclairCloses()
@@ -253,6 +264,7 @@ public sealed class EclairInteropTests : IAsyncLifetime
         Assert.True(model.ChannelParams.OptionAnchorOutputs, "not an anchors channel at our end");
         Assert.Equal(LightningMoney.Zero, model.LocalBalance);
         Assert.Equal(EclairChannelSession.Capacity, model.FundingOutput!.Amount);
+        Assert.Equal(EclairFixture.EclairDefaultToRemoteDelayBlocks, model.ChannelParams.Remote.ToSelfDelay);
         AssertEclairAnchors(await session.GetEclairChannelAsync(ct));
         await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(30_000), ct);
         await session.AssertWePayEclairAsync(LightningMoney.Satoshis(10_000), ct);
@@ -274,59 +286,70 @@ public sealed class EclairInteropTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The v1 accept path: our node without <c>option_dual_fund</c>, so Eclair opens with <c>open_channel</c>; the
-    /// channel is usable and payments work both ways. The node accepts a peer <c>max_htlc_value_in_flight_msat</c> from
-    /// 40 % of the capacity: with our default (64 %) Eclair's 45 % is refused (NL-552,
-    /// <see cref="Given_OurDefaultInFlightRule_When_EclairOpensV1_Then_WeRefuseItsInFlightLimit"/>).
+    /// The v1 accept path with our default open policy (NL-550, NL-552): our node without <c>option_dual_fund</c>, so
+    /// Eclair opens with <c>open_channel</c> and its defaults, a <c>to_self_delay</c> of 720 and a
+    /// <c>max_htlc_value_in_flight_msat</c> of 45 % of the channel, both accepted (they were refused before, by the
+    /// 1.5 x 144 delay limit and the 64 % in-flight rule); the channel is usable and payments work both ways.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
-    public async Task Given_OurNodeWithoutDualFund_When_EclairOpens_Then_V1ChannelWorks()
+    public async Task Given_OurDefaultOpenPolicy_When_EclairOpensV1WithItsDefaults_Then_WeAcceptAndPaymentsWork()
     {
         // Arrange + Act
         var ct = TestContext.Current.CancellationToken;
+        var capacity = LightningMoney.Satoshis(500_000);
         var session = await OwnAsync(EclairChannelSession.BuildEclairFundedAsync(
-                                         _fixture, "nltg-fundee-v1", LightningMoney.Satoshis(500_000), ct, o =>
-                                         {
-                                             o.Features.DualFund = FeatureSupport.No;
-                                             o.AllowUpToPercentageOfChannelFundsInFlight = 50;
-                                         }));
+                                         _fixture, "nltg-fundee-v1", capacity, ct,
+                                         o => o.Features.DualFund = FeatureSupport.No));
 
         // Assert
         var model = Channel(session);
         Assert.Equal(ChannelVersion.V1, model.Version);
         Assert.False(model.IsInitiator);
         Assert.True(model.ChannelParams.OptionAnchorOutputs, "not an anchors channel at our end");
+        Console.WriteLine($"[eclair] Eclair's v1 open: to_self_delay {model.ChannelParams.Remote.ToSelfDelay}, "
+                        + $"max_htlc_value_in_flight {model.ChannelParams.Remote.MaxHtlcValueInFlight.MilliSatoshi} msat");
+        Assert.Equal(EclairFixture.EclairDefaultToRemoteDelayBlocks, model.ChannelParams.Remote.ToSelfDelay);
+        Assert.Equal(capacity.MilliSatoshi * EclairDefaultInFlightPercent / 100,
+                     model.ChannelParams.Remote.MaxHtlcValueInFlight.MilliSatoshi);
         await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(20_000), ct);
         await session.AssertWePayEclairAsync(LightningMoney.Satoshis(5_000), ct);
     }
 
     /// <summary>
-    /// NL-552 evidence: with our default rule (a peer's <c>max_htlc_value_in_flight_msat</c> must be at least 0.8 x our
-    /// own 80 % of the capacity) we refuse Eclair's v1 <c>open_channel</c>, which offers its default 45 %. The v2
-    /// accepter does not apply the rule (<see cref="Given_EclairFundsDualFunded_When_Normal_Then_PaymentsWorkAndEclairCloses"/>).
+    /// NL-557 evidence: a v1 open to Eclair from a node with our default features (a push amount keeps
+    /// <c>openchannel</c> on v1, NL-551) is refused by Eclair, which treats the channel as dual-funded once
+    /// <c>option_dual_fund</c> is negotiated. This is why the push opens of this class come from a node with
+    /// <c>DualFund = No</c>.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
-    public async Task Given_OurDefaultInFlightRule_When_EclairOpensV1_Then_WeRefuseItsInFlightLimit()
+    public async Task Given_DefaultFeatures_When_WeOpenWithAPush_Then_EclairRefusesTheV1Open()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        await using var node = await NLightningTestNode.CreateAsync(
-                                   _fixture.Bitcoin, "nltg-inflight",
-                                   configureNodeOptions: o => o.Features.DualFund = FeatureSupport.No);
+        await using var node = await NLightningTestNode.CreateAsync(_fixture.Bitcoin, "nltg-push-v1");
         await node.StartAsync(ct);
-        await node.FundWalletAsync(LightningMoney.Satoshis(300_000), Domain.Bitcoin.Enums.AddressType.P2Wpkh, ct);
-        await _fixture.FundEclairWalletAsync(LightningMoney.Satoshis(1_000_000), [node], ct);
+        await node.FundWalletAsync(LightningMoney.Satoshis(1_000_000), Domain.Bitcoin.Enums.AddressType.P2Wpkh, ct);
+        await _fixture.WaitAllAtTipAsync([node], ct);
         await node.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(_fixture.EclairAddress)).WaitAsync(ct);
         await Poll.UntilAsync(async () => await _fixture.Eclair.IsConnectedAsync(node.NodeIdHex, ct),
                               TimeSpan.FromSeconds(30), "Eclair lists us", ct);
+        using var scope = node.Services.CreateScope();
+        var handler = scope.ServiceProvider
+                           .GetRequiredService<IClientCommandHandler<OpenChannelClientRequest,
+                                OpenChannelClientResponse>>();
 
         // Act
-        var outcome = await OpenOrErrorAsync(_fixture.Eclair, node.NodeIdHex, 500_000, ct);
+        var refusal = await Record.ExceptionAsync(() => handler.HandleAsync(
+                                                      new OpenChannelClientRequest(_fixture.EclairAddress,
+                                                                                   LightningMoney.Satoshis(500_000))
+                                                      {
+                                                          PushAmount = LightningMoney.Satoshis(100_000)
+                                                      }, ct));
 
         // Assert
-        Console.WriteLine($"[eclair] v1 open with our default in-flight rule: {outcome}");
-        Assert.Contains("Max htlc value in flight is too small", outcome);
-        Assert.DoesNotContain("created channel", outcome);
+        Console.WriteLine($"[eclair] v1 open with a push from a node with option_dual_fund: {refusal}");
+        Assert.NotNull(refusal);
+        Assert.Contains("dual-funded", refusal.Message);
         Assert.Empty((await node.ListChannelsAsync(ct)).Channels);
     }
 
@@ -353,54 +376,6 @@ public sealed class EclairInteropTests : IAsyncLifetime
         Assert.Equal(LightningMoney.Satoshis(700_000), model.FundingOutput!.Amount);
         await session.AssertWePayEclairAsync(LightningMoney.Satoshis(10_000), ct);
         await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(20_000), ct);
-    }
-
-    /// <summary>
-    /// E-X2, NL-550 evidence: an Eclair with its default <c>to-remote-delay-blocks</c> (720) opens to us, and we refuse
-    /// it ("To self delay is too large": our limit is 1.5 x our own 144).
-    /// </summary>
-    [Fact(Timeout = TestTimeoutMs, Explicit = true)]
-    public async Task Given_EclairWithItsDefaultDelay_When_ItOpensToUs_Then_WeRefuseTheDelay()
-    {
-        // Arrange
-        var ct = TestContext.Current.CancellationToken;
-        var (eclair, eclairId, hostPort) = await _fixture.StartExtraEclairAsync(
-                                               "nltg-eclair-720", EclairFixture.EclairDefaultToRemoteDelayBlocks);
-        await using var node = await NLightningTestNode.CreateAsync(_fixture.Bitcoin, "nltg-delay-720");
-        await node.StartAsync(ct);
-        await node.FundWalletAsync(LightningMoney.Satoshis(300_000), Domain.Bitcoin.Enums.AddressType.P2Wpkh, ct);
-        await _fixture.FundEclairWalletAsync(LightningMoney.Satoshis(1_000_000), [node], ct, eclair);
-        await node.PeerManager.ConnectToPeerAsync(new PeerAddressInfo($"{eclairId}@127.0.0.1:{hostPort}"))
-                  .WaitAsync(ct);
-        await Poll.UntilAsync(async () => await eclair.IsConnectedAsync(node.NodeIdHex, ct),
-                              TimeSpan.FromSeconds(30), "Eclair 720 lists us", ct);
-
-        // Act
-        var outcome = await OpenOrErrorAsync(eclair, node.NodeIdHex, 500_000, ct);
-
-        // Assert
-        Console.WriteLine($"[eclair-720] open: {outcome}");
-        Assert.Contains($"To self delay is too large: {EclairFixture.EclairDefaultToRemoteDelayBlocks}", outcome);
-        Assert.DoesNotContain("created channel", outcome);
-        await Poll.UntilAsync(() => node.CountLogLines("To self delay is too large") > 0, TimeSpan.FromSeconds(30),
-                              "we logged the to_self_delay refusal", ct);
-        Assert.Empty((await node.ListChannelsAsync(ct)).Channels);
-    }
-
-    /// <summary>
-    /// Eclair's <c>open</c>: Eclair 0.14.3 reports a refusal by the peer in its answer, or as an API error.
-    /// </summary>
-    private static async Task<string> OpenOrErrorAsync(EclairClient eclair, string nodeId, long fundingSat,
-                                                       CancellationToken ct)
-    {
-        try
-        {
-            return await eclair.OpenAsync(nodeId, fundingSat, ct);
-        }
-        catch (EclairRpcException e)
-        {
-            return e.EclairMessage;
-        }
     }
 
     private async Task<EclairChannelSession> GetSessionAsync(CancellationToken ct)
