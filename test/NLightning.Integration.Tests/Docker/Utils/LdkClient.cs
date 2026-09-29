@@ -101,6 +101,28 @@ public sealed class LdkClient(DockerClient client, string containerName, string 
                                             CancellationToken cancellationToken) =>
         RunAsync("close-channel", cancellationToken, userChannelId, peerNodeId);
 
+    /// <summary>
+    /// <c>splice-in &lt;user_channel_id&gt; &lt;peer&gt; &lt;sat&gt;</c> from LDK's wallet (NL-556). LDK Node answers once
+    /// it handed its contribution to the channel manager; the negotiation (<c>stfu</c>, <c>splice_init</c>, ...) runs
+    /// after that, at LDK's <c>ChannelFunding</c> feerate estimate.
+    /// </summary>
+    public Task<JsonNode> SpliceInAsync(string userChannelId, string peerNodeId, long amountSat,
+                                        CancellationToken cancellationToken) =>
+        RunAsync("splice-in", cancellationToken, userChannelId, peerNodeId, $"{amountSat}sat");
+
+    /// <summary>
+    /// <c>splice-out &lt;user_channel_id&gt; &lt;peer&gt; &lt;sat&gt; --address &lt;address&gt;</c> (NL-556), answered as
+    /// <see cref="SpliceInAsync"/>.
+    /// </summary>
+    public Task<JsonNode> SpliceOutAsync(string userChannelId, string peerNodeId, long amountSat, string address,
+                                         CancellationToken cancellationToken) =>
+        RunAsync("splice-out", cancellationToken, userChannelId, peerNodeId, $"{amountSat}sat", "--address", address);
+
+    /// <summary><c>bump-channel-funding-fee &lt;user_channel_id&gt; &lt;peer&gt;</c>: RBF of LDK's pending splice.</summary>
+    public Task<JsonNode> BumpChannelFundingFeeAsync(string userChannelId, string peerNodeId,
+                                                     CancellationToken cancellationToken) =>
+        RunAsync("bump-channel-funding-fee", cancellationToken, userChannelId, peerNodeId);
+
     /// <summary><c>bolt11-receive</c> of <paramref name="amountSat"/>.</summary>
     /// <returns><c>invoice</c>, <c>payment_hash</c>, <c>payment_secret</c>.</returns>
     public Task<JsonNode> Bolt11ReceiveAsync(long amountSat, string description, CancellationToken cancellationToken) =>

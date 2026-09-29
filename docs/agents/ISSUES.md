@@ -102,12 +102,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 4 | 171 | 175 |
+| open | 0 | 0 | 5 | 171 | 176 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 152 | 136 | 363 |
+| fixed | 14 | 62 | 152 | 136 | 364 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **160** | **313** | **548** |
+| **Total** | **14** | **62** | **161** | **313** | **550** |
 
 ### Epics
 
@@ -371,6 +371,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** A node configured with `OptionProvideStorage=No` sends no backups even to peers that store them; BOLT 1 lets a node send `peer_storage` to any peer that offers the feature (reported by lane R2).
 - **Fix sketch:** Check only the peer's bit for the client side.
 - **Blocks/Blocked-by:** Related NL-010
+- **Plan ref:** —
+
+### NL-559 LDK keeps no peer_storage from us: our blob is always 65,531 bytes, LDK takes at most 1,024
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs` (the backup blob, padded to the BOLT 1 maximum)
+- **Evidence:** In the LDK interop runs (lane ldksplice) we send `peer_storage` of 65,531 bytes ("Sent our peer_storage backup (65531 bytes)") and ldk-server `dc02b76c` answers each with a `warning` "Supports only data up to 1024 bytes in peer storage." (rust-lightning 0.3.0-rc1 `channelmanager.rs` `MAX_PEER_STORAGE_SIZE = 1024`; it offers `option_provide_storage`, bit 43). The connection and channels are unaffected, but LDK never stores our backup, so a restore cannot get it back from an LDK peer. BOLT 1 allows up to 65,531 bytes and lets the receiver refuse; LDK's limit is policy, so the loss is ours to avoid.
+- **Fix sketch:** Send a smaller blob to peers that refuse the large one (e.g. drop to an unpadded or 1,024-byte-padded channel list for that peer after its warning, or pad to the smallest of a few size classes), and count the refusal in `listpeerstorage`.
+- **Blocks/Blocked-by:** Related NL-010, NL-556
 - **Plan ref:** —
 
 ## BOLT 2: Wire layer
@@ -1676,6 +1686,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** None needed on the wire. Optionally, when a v1 open fails with that Eclair error, say in the client error that the peer requires a dual-funded open (drop the push or zero-conf); or report it upstream to Eclair.
 - **Blocks/Blocked-by:** Related NL-180, NL-551
 - **Plan ref:** —
+
+### NL-558 A peer's splice was refused over the shared input's maximum witness weight (LDK at non-floor feerates)
+- **Status:** fixed (6d00bbf2)
+- **Severity:** high
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Domain/Protocol/InteractiveTx/CollaborativeFeeCalculator.cs` (`GetMinimumInputWeight`, used by `InteractiveTxRules.CheckRemoteFee`)
+- **Evidence:** Found by the LDK splice proof (NL-556, lane ldksplice): LDK's `splice-in` at its 2,488 sat/kw estimate (bitcoind has fee data once the earlier LDK classes ran) got our `tx_abort` "the initiator's fees (2469 sat) do not cover the common fields (2475 sat needed)" (IT-R-04). The receiver check charged the initiator's shared input `SharedFundingInput.InputWeight`, the largest 2-of-2 witness (164 + 222 wu, two 73-byte signatures); rust-lightning 0.3.0-rc1 budgets 164 + 219 (72-byte signatures, one byte less for its own low-R grind, `FUNDING_TRANSACTION_WITNESS_WEIGHT`). BOLT 2 fails the negotiation only when "the peer's paid feerate does not meet or exceed the agreed feerate (based on the minimum fee)", so charging the maximum was stricter than the spec; at 253 sat/kw (the fixture's first runs, and every CLN proof) the 3 wu stayed below one satoshi. Fix: a peer's shared input is charged 164 + 218 wu (`SharedFundingMinimumWitnessWeight`: two 71-byte signatures with their sighash byte, built like BOLT 3's 107 for P2WPKH), never above its `InputWeight`; our own budget (`GetLocalContributionWeight`) and the 400,000 wu estimate keep the full 222. Test: `CollaborativeFeeCalculatorTests.Given_LdksSpliceIn_When_CheckingTheInitiatorsFee_*` (LDK's transaction: 991 wu, 2,469 sat accepted, 2,464 refused); Docker `LdkSpliceTests.Given_LdkSplicesIn_*` and `Given_LdksPendingSplice_When_LdkBumpsIt_*` at 2,490/2,593 sat/kw in the full LDK suite.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Related NL-556, NL-021
+- **Plan ref:** `docs/agents/SPLICING_PLAN.md` (IT-R-04)
 
 ## BOLT 3: Transactions and scripts
 
@@ -5667,8 +5687,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Ldk/`
 - **Evidence:** LDK Node has no dual funding (rust-lightning's `enable_dual_funded_channels` is off and ldk-server does not expose it; LDK's `init` has no bit 28/29, so we never negotiate `option_dual_fund` with it and every open is v1). Not covered against ldk-server `dc02b76c`: splicing and quiescence (both negotiated: LDK offers them), `option_simple_close` (ours is off by default), route blinding, onion messages and BOLT 12 (all offered by LDK), public channels and gossip (LDK keeps channels unannounced without an alias and announcement address), force closes and on-chain resolution, zero-fee commitments (off in LDK by default), and LDK's 10 % `max_htlc_value_in_flight_msat` on announced channels, which our v1 accepter would refuse (NL-552). Observation to check: when we closed a 500k sat anchors channel we funded (legacy `closing_signed`), the closing transaction paid 5,070 sat with our estimate at 2,500 sat/kw, about three times what its weight needs; LDK's close of its own channel paid 171 sat. Which side's `closing_signed`/`fee_range` choice set the 5,070 sat was not analysed in this lane.
-- **Fix sketch:** Add a splice in/out proof with LDK (the day-0 goal's second step), and read the negotiated closing fee from our coordinator's `closing_signed` log line as `ClnCloseTests` does.
-- **Blocks/Blocked-by:** Related NL-180, NL-554
+Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence are proven against ldk-server `dc02b76c` without a pin bump (it exposes `splice-in`, `splice-out --address` and `bump-channel-funding-fee`; LDK Node sets `reject_inbound_splices = false`, so no configuration on either side; rust-lightning `697a239f` speaks the final BOLT 2 messages 77/80/81/127 and the `channel_reestablish` TLVs 1/5, bits 35/63): `Docker/Interop/Ldk/LdkSpliceTests` (7) (a) we splice in, (b) we splice out to a bitcoind address, (c) LDK splices in on a channel it opened, (d) LDK splices out to an address, (e) LDK restarts while our splice is pending, (f) our `bumpsplice` followed by LDK, (g) LDK's `bump-channel-funding-fee` followed by us; each with the quiescence initiator's `stfu` first, the splice `commitment_signed` both ways before `tx_signatures` with `shared_input_signature`, `start_batch` batches (of three with an RBF sibling) answered by one `revoke_and_ack` while pending, payments both ways while pending and after the lock, and both `splice_locked`, LDK's `funding_txo`/`channel_value_sats`/`short_channel_id` equal to ours at the lock. The full LDK suite (13) passed twice in a row after the fix of NL-558 (our receiver charged the shared input the maximum witness and refused LDK's splice at 2,488 sat/kw); found as well: NL-559 (LDK keeps no peer storage from us). LDK behaviour recorded in the class header: LDK splices at its `ChannelFunding` estimate (253 sat/kw on an idle regtest, about 2,490 once bitcoind has fee data), its splice-in contribution carries its coin selection's surplus (+2..+6 sat), its splice-out contribution is -(amount + fee), its RBF takes the BOLT 2 minimum (2,490 -> 2,593 sat/kw), and it locks at the channel's `minimum_depth` (6 as fundee). Remaining here: `option_simple_close`, route blinding, onion messages and BOLT 12, public channels and gossip, force closes and on-chain resolution (splices included), zero-fee commitments, LDK's 10 % in-flight limit on announced channels, and the closing-fee observation above.
+- **Fix sketch:** Remaining gaps above; read the negotiated closing fee from our coordinator's `closing_signed` log line as `ClnCloseTests` does.
+- **Blocks/Blocked-by:** Related NL-180, NL-554, NL-558, NL-559
 - **Plan ref:** —
 
 ## Docs
