@@ -254,12 +254,13 @@ public class CollaborativeFeeCalculatorTests
     }
 
     [Theory]
-    [InlineData(true, 42 + 384 + 172 + 271 + 124)] // initiator: common fields, shared input and output, its own items
+    [InlineData(true, 42 + 382 + 172 + 271 + 124)] // initiator: common fields, shared input and output, its own items
     [InlineData(false, 271 + 124)] // non-initiator: its own input and output only
     public void Given_Splice_When_ComputingContributionWeights_Then_SharedItemsAreTheInitiators(bool localIsInitiator,
         long expectedLocal)
     {
-        // Arrange: shared input (384 wu from the spec) and funding output, one P2WPKH input and output per side
+        // Arrange: shared input (384 wu in the spec, charged at the 164 + 218 minimum, NL-558) and funding output, one
+        // P2WPKH input and output per side
         var spec = Splice(localIsInitiator);
         var initiator = localIsInitiator ? InteractiveTxParty.Local : InteractiveTxParty.Remote;
         var other = localIsInitiator ? InteractiveTxParty.Remote : InteractiveTxParty.Local;
@@ -284,9 +285,51 @@ public class CollaborativeFeeCalculatorTests
                                                                       !localIsInitiator, spec);
         var total = CollaborativeFeeCalculator.EstimateTransactionWeight(inputs, outputs, spec);
 
-        // Assert
+        // Assert: the transaction estimate keeps the shared input's own (largest) weight
         Assert.Equal(expectedLocal, local);
-        Assert.Equal(total, local + remote);
+        Assert.Equal(total, local + remote + 384 - 382);
+    }
+
+    [Theory]
+    [InlineData(2_469, null)] // what LDK paid (NL-558): its own estimate charges the shared input 219
+    [InlineData(2_465, null)] // floor(991 wu x 2.488): the least we accept
+    [InlineData(2_464, "IT-R-04")]
+    public void Given_LdksSpliceIn_When_CheckingTheInitiatorsFee_Then_TheSharedInputIsChargedTheMinimumWitness(
+        long paidSats, string? expected)
+    {
+        // Arrange: the splice LDK started in the LDK interop proof at 2,488 sat/kw: the shared input (spec weight 164 +
+        // 222), one P2WPKH wallet input and a P2WPKH change output of LDK's, the new funding output; LDK's contribution
+        // is what its input leaves after its change and fee. We are the non-initiator with no contribution.
+        const uint feerate = 2_488;
+        const long contribution = 100_006;
+        const long walletInput = 200_000;
+        var change = walletInput - contribution - paidSats;
+        var sharedInput = new SharedFundingInput(FundingTxId, 1, LightningMoney.Satoshis(1_000_000), FundingScript,
+                                                 164 + 222);
+        var spec = new SharedFundingSpec(sharedInput, FundingScript, LightningMoney.Satoshis(1_000_000 + contribution),
+                                         LightningMoney.Satoshis(400_000), LightningMoney.Satoshis(600_000),
+                                         LightningMoney.Satoshis(400_000),
+                                         LightningMoney.Satoshis(600_000 + contribution));
+        var inputs = new List<InteractiveTxInput>
+        {
+            new(0, InteractiveTxParty.Remote, FundingTxId, 1, Sequence, sharedInput.Amount, FundingScript, null, true),
+            new(2, InteractiveTxParty.Remote, PrevTxId(PrevTx(1)), 0, Sequence, LightningMoney.Satoshis(walletInput),
+                P2Wpkh, PrevTx(1), false)
+        };
+        var outputs = new List<InteractiveTxOutput>
+        {
+            new(4, InteractiveTxParty.Remote, spec.SharedOutputAmount, FundingScript, true),
+            new(6, InteractiveTxParty.Remote, LightningMoney.Satoshis(change), P2Wpkh, false)
+        };
+
+        // Act
+        var weight = CollaborativeFeeCalculator.GetContributionWeight(inputs, outputs, InteractiveTxParty.Remote, true,
+                                                                      spec);
+        var violation = InteractiveTxRules.CheckRemoteFee(inputs, outputs, spec, feerate, true);
+
+        // Assert: 42 common + (164 + 218) shared input + 172 funding output + 271 input + 124 change
+        Assert.Equal(991, weight);
+        Assert.Equal(expected, violation?.RequirementId);
     }
 
     [Fact]
