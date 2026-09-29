@@ -75,7 +75,37 @@ public class NodeOptions
     public LightningMoney HtlcMinimumAmount { get; set; } = LightningMoney.Satoshis(1);
     public uint Locktime { get; set; }
     public ushort ToSelfDelay { get; set; } = 144;
+
+    /// <summary>
+    /// The default of <see cref="MaxAcceptedToSelfDelay"/>: 2016 blocks (two weeks), LND's and LDK's limit.
+    /// </summary>
+    public const ushort DefaultMaxAcceptedToSelfDelay = 2016;
+
+    /// <summary>
+    /// The largest <c>to_self_delay</c> we accept from a peer in <c>open_channel</c>, <c>accept_channel</c>,
+    /// <c>open_channel2</c> and <c>accept_channel2</c> (BOLT 2: the receiver may fail a delay it considers unreasonably
+    /// large). It binds our own funds on the peer's commitment, so it is independent of the <see cref="ToSelfDelay"/>
+    /// we ask of the peer (NL-550: Eclair asks for 720 by default, LND up to 2016 for large channels).
+    /// </summary>
+    /// <remarks>Configuration key <c>Node:MaxAcceptedToSelfDelay</c>; must be positive.</remarks>
+    public ushort MaxAcceptedToSelfDelay { get; set; } = DefaultMaxAcceptedToSelfDelay;
+
     public uint AllowUpToPercentageOfChannelFundsInFlight { get; set; } = 80;
+
+    /// <summary>
+    /// The default of <see cref="MinAcceptedMaxHtlcValueInFlightPercent"/>: 1 %.
+    /// </summary>
+    public const uint DefaultMinAcceptedMaxHtlcValueInFlightPercent = 1;
+
+    /// <summary>
+    /// The smallest <c>max_htlc_value_in_flight_msat</c> we accept from a peer, as a percentage of the channel
+    /// (BOLT 2: the receiver may fail a limit it considers too small), in v1 and v2 opens alike (NL-552). The peer's
+    /// limit only caps what we can offer it at once, so the floor is low: LDK offers 10 % by default, Eclair 45 %.
+    /// 0 accepts any limit.
+    /// </summary>
+    /// <remarks>Configuration key <c>Node:MinAcceptedMaxHtlcValueInFlightPercent</c>; 0 to 100.</remarks>
+    public uint MinAcceptedMaxHtlcValueInFlightPercent { get; set; } = DefaultMinAcceptedMaxHtlcValueInFlightPercent;
+
     public uint MinimumDepth { get; set; } = 3;
     public LightningMoney MinimumChannelSize { get; set; } = LightningMoney.Satoshis(20_000);
 
@@ -193,7 +223,7 @@ public class NodeOptions
 
     /// <summary>
     /// Returns every configuration error of the options this class owns (currently <see cref="Routing"/>,
-    /// <see cref="FeeUpdates"/>, <see cref="Anchors"/>, <see cref="Bootstrap"/>, <see cref="CustomSignet"/>, the reconnect delays, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
+    /// <see cref="FeeUpdates"/>, <see cref="Anchors"/>, <see cref="Bootstrap"/>, <see cref="CustomSignet"/>, the reconnect delays, the accepted open limits, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
     /// <see cref="FeatureOptions.GetValidationErrors"/>.
     /// </summary>
     public IReadOnlyList<string> GetValidationErrors()
@@ -203,6 +233,10 @@ public class NodeOptions
             errors.Add($"{nameof(ReconnectInitialDelay)} must be positive.");
         if (ReconnectMaxDelay < ReconnectInitialDelay)
             errors.Add($"{nameof(ReconnectMaxDelay)} must be at least {nameof(ReconnectInitialDelay)}.");
+        if (MaxAcceptedToSelfDelay == 0)
+            errors.Add($"{nameof(MaxAcceptedToSelfDelay)} must be positive.");
+        if (MinAcceptedMaxHtlcValueInFlightPercent > 100)
+            errors.Add($"{nameof(MinAcceptedMaxHtlcValueInFlightPercent)} must be at most 100.");
 
         if (Encoding.UTF8.GetByteCount(Alias ?? string.Empty) > AliasMaxBytes)
             errors.Add($"{nameof(Alias)} must be at most {AliasMaxBytes} UTF-8 bytes.");

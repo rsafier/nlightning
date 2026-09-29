@@ -146,10 +146,14 @@ public static class GossipTestNodes
     /// <summary>
     /// Opens a channel through the daemon's client handlers and returns once <c>funding_signed</c> arrived, without
     /// mining (unlike <see cref="NLightningTestNode.OpenChannelAsync"/>), so a test can stop between confirmations.
+    /// Like that helper it opens v1 unless the request is dual-funded (NL-551).
     /// </summary>
     public static async Task<OpenChannelClientSubscriptionResponse> OpenUntilFundingSignedAsync(
         NLightningTestNode node, OpenChannelClientRequest request, CancellationToken cancellationToken)
     {
+        if (!request.IsDualFunded)
+            request.ForceV1 = true;
+
         OpenChannelClientResponse openResponse;
         using (var scope = node.Services.CreateScope())
         {

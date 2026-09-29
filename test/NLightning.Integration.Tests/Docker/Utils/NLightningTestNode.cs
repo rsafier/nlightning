@@ -551,9 +551,17 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// Opens a channel through the daemon's client handlers and follows it: mines 6 blocks once funding_signed
     /// arrives and returns when <c>channel_ready</c> was sent or received.
     /// </summary>
+    /// <remarks>
+    /// The open is v1 unless the request sets <see cref="OpenChannelClientRequest.IsDualFunded"/>: a plain open to a
+    /// peer with <c>option_dual_fund</c> (NLightning, CLN) is v2 by default since NL-551, and the suites that open
+    /// through this helper were proven on v1 channels, so it sets <see cref="OpenChannelClientRequest.ForceV1"/>.
+    /// </remarks>
     public async Task<OpenChannelClientSubscriptionResponse> OpenChannelAsync(OpenChannelClientRequest request,
                                                                               CancellationToken cancellationToken)
     {
+        if (!request.IsDualFunded)
+            request.ForceV1 = true;
+
         OpenChannelClientResponse openResponse;
         using (var scope = Services.CreateScope())
         {

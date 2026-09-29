@@ -58,7 +58,7 @@ payments with three attempts pending, a bumped splice across a reconnection and 
       }
       ```
 
-      `openchannel` without `--dual-fund` still opens a v1 channel; a peer's `open_channel2` is accepted with
+      Since NL-551 `openchannel` without `--dual-fund` opens a dual-funded (v2) channel too when the peer supports `option_dual_fund` and no push amount is given (`--v1` forces v1; `--dual-fund` makes a missing `option_dual_fund` an error); a peer's `open_channel2` is accepted with
       `Node:DualFund:AcceptContributionSat` (0 by default). **Splice RBF recency (NL-520):** a node refuses (`tx_abort`)
       a peer's splice RBF while the latest attempt is "created recently", which since NL-520 means until one new block
       (`Splice:MinRbfBlocks`, default 1; about 10 min on mainnet, about 30 s on Mutinynet) has been processed since

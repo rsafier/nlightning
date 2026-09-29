@@ -48,16 +48,9 @@ public class ChannelOpenValidator : IChannelOpenValidator
          && parameters.HtlcMinimumAmount > _nodeOptions.HtlcMinimumAmount * 1.2M)
             throw new ChannelErrorException($"Htlc minimum amount is too large: {parameters.HtlcMinimumAmount}");
 
-        // Check if we consider max_htlc_value_in_flight_msat too small. IE. 20% smaller than our maximum htlc value
+        // Check if we consider max_htlc_value_in_flight_msat too small (Node:MinAcceptedMaxHtlcValueInFlightPercent)
         if (parameters.FundingAmount is not null && parameters.MaxHtlcValueInFlight is not null)
-        {
-            var ourMaxHtlcValueInFlight =
-                LightningMoney.Satoshis(_nodeOptions.AllowUpToPercentageOfChannelFundsInFlight *
-                                        parameters.FundingAmount.Satoshi / 100M);
-            if (parameters.MaxHtlcValueInFlight < ourMaxHtlcValueInFlight * 0.8M)
-                throw new ChannelErrorException(
-                    $"Max htlc value in flight is too small: {parameters.MaxHtlcValueInFlight}");
-        }
+            CheckMaxHtlcValueInFlight(parameters.FundingAmount, parameters.MaxHtlcValueInFlight);
 
         // If the channel amount is too small, we can have the channelReserve smaller than our dust
         var ourChannelReserveAmount = parameters.OurChannelReserveAmount;
@@ -77,6 +70,19 @@ public class ChannelOpenValidator : IChannelOpenValidator
             throw new ChannelErrorException($"Dust limit amount is too large: {parameters.DustLimitAmount}");
     }
 
+    /// <inheritdoc/>
+    public void CheckMaxHtlcValueInFlight(LightningMoney channelAmount, LightningMoney maxHtlcValueInFlight)
+    {
+        // A floor, not a match of our own limit (NL-552): LDK offers 10 % by default, Eclair 45 %
+        var floor = LightningMoney.MilliSatoshis((ulong)(channelAmount.MilliSatoshi
+                                                       * (decimal)_nodeOptions.MinAcceptedMaxHtlcValueInFlightPercent
+                                                       / 100M));
+        if (maxHtlcValueInFlight < floor)
+            throw new ChannelErrorException(
+                $"Max htlc value in flight is too small: {maxHtlcValueInFlight} < {floor} "
+              + $"({_nodeOptions.MinAcceptedMaxHtlcValueInFlightPercent} % of {channelAmount})");
+    }
+
     /// <inheritdoc/> 
     public void PerformMandatoryChecks(ChannelOpenMandatoryValidationParameters parameters,
                                        out uint minimumDepth)
@@ -85,9 +91,10 @@ public class ChannelOpenValidator : IChannelOpenValidator
         if (parameters.ChainHash is not null && parameters.ChainHash != _nodeOptions.BitcoinNetwork.ChainHash)
             throw new ChannelErrorException("ChainHash is not compatible");
 
-        // Check if we consider to_self_delay unreasonably large. IE. 50% bigger than our to_self_delay
-        if (parameters.ToSelfDelay > _nodeOptions.ToSelfDelay * 1.5M)
-            throw new ChannelErrorException($"To self delay is too large: {parameters.ToSelfDelay}");
+        // BOLT 2: fail the channel if to_self_delay is unreasonably large (Node:MaxAcceptedToSelfDelay, NL-550)
+        if (parameters.ToSelfDelay > _nodeOptions.MaxAcceptedToSelfDelay)
+            throw new ChannelErrorException(
+                $"To self delay is too large: {parameters.ToSelfDelay} > {_nodeOptions.MaxAcceptedToSelfDelay}");
 
         // Check max_accepted_htlcs is too large
         if (parameters.MaxAcceptedHtlcs > ChannelConstants.MaxAcceptedHtlcs)

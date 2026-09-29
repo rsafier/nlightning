@@ -25,6 +25,44 @@ public class NodeOptionsTests
     }
 
     [Fact]
+    public void Given_DefaultOptions_When_Read_Then_TheAcceptedOpenLimitsAreLndLikeAndValid()
+    {
+        // Arrange (NL-550, NL-552)
+        var options = new NodeOptions();
+
+        // Assert
+        Assert.Equal((ushort)2016, options.MaxAcceptedToSelfDelay);
+        Assert.Equal(1U, options.MinAcceptedMaxHtlcValueInFlightPercent);
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_AZeroMaxAcceptedToSelfDelay_When_Validated_Then_ItIsAnError()
+    {
+        // Arrange
+        var options = new NodeOptions { MaxAcceptedToSelfDelay = 0 };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains(nameof(NodeOptions.MaxAcceptedToSelfDelay)));
+    }
+
+    [Fact]
+    public void Given_AnInFlightFloorAbove100Percent_When_Validated_Then_ItIsAnError()
+    {
+        // Arrange
+        var options = new NodeOptions { MinAcceptedMaxHtlcValueInFlightPercent = 101 };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains(nameof(NodeOptions.MinAcceptedMaxHtlcValueInFlightPercent)));
+    }
+
+    [Fact]
     public void Given_DefaultOptions_When_Read_Then_MainnetWithHtlcsEnabled()
     {
         // Arrange

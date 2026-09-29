@@ -37,8 +37,8 @@ public class FeeUpdateFlowTests : IAsyncLifetime
 {
     private const uint OpeningFeeratePerKw = 10_000;
 
-    /// <summary>LND 0.20 asks for a <c>to_self_delay</c> that grows with the capacity; accept it (see AbcdNetwork).
-    /// </summary>
+    /// <summary>LND 0.20 asks for a <c>to_self_delay</c> that grows with the capacity; accept it (see AbcdNetwork; not
+    /// needed since NL-550, kept as proven).</summary>
     private const ushort ToSelfDelay = 240;
 
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(90);

@@ -26,9 +26,16 @@ public sealed class OpenChannelClientRequest
     /// <summary>
     /// Open a dual-funded (v2) channel with <c>open_channel2</c> (BOLT 2 "Channel Establishment v2",
     /// <c>IDualFundedOpenService</c>, wave DF): <see cref="FundingAmount"/> is our contribution and the peer may add
-    /// its own; no push. <c>option_dual_fund</c> stays experimental until Proof DF.
+    /// its own; no push. Refused when <c>option_dual_fund</c> is not negotiated with the peer. Without it (and without
+    /// <see cref="ForceV1"/>) the open is still v2 when the peer supports dual funding and nothing needs v1 (NL-551).
     /// </summary>
     public bool IsDualFunded { get; set; }
+
+    /// <summary>
+    /// Open a v1 channel (<c>open_channel</c>) even when <c>option_dual_fund</c> is negotiated with the peer
+    /// (<c>openchannel --v1</c>, NL-551). Refused together with <see cref="IsDualFunded"/>.
+    /// </summary>
+    public bool ForceV1 { get; set; }
 
     public OpenChannelClientRequest(string nodeInfo, LightningMoney fundingAmount)
     {

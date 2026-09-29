@@ -94,28 +94,44 @@ public class ClientAppTests
     }
 
     [Theory]
-    [InlineData(new[] { "peer@host", "50000" }, false, false, false)]
-    [InlineData(new[] { "peer@host", "50000", "--public" }, true, false, false)]
-    [InlineData(new[] { "--public", "peer@host", "50000", "20000" }, true, false, false)]
-    [InlineData(new[] { "peer@host", "50000", "--dual-fund" }, false, true, false)]
-    [InlineData(new[] { "--dual-fund", "peer@host", "50000", "--public" }, true, true, false)]
-    [InlineData(new[] { "peer@host", "--no-wait", "50000", "--dual-fund" }, false, true, true)]
+    [InlineData(new[] { "peer@host", "50000" }, false, false, false, false)]
+    [InlineData(new[] { "peer@host", "50000", "--public" }, true, false, false, false)]
+    [InlineData(new[] { "--public", "peer@host", "50000", "20000" }, true, false, false, false)]
+    [InlineData(new[] { "peer@host", "50000", "--dual-fund" }, false, true, false, false)]
+    [InlineData(new[] { "--dual-fund", "peer@host", "50000", "--public" }, true, true, false, false)]
+    [InlineData(new[] { "peer@host", "--no-wait", "50000", "--dual-fund" }, false, true, false, true)]
+    [InlineData(new[] { "peer@host", "50000", "--v1" }, false, false, true, false)]
+    [InlineData(new[] { "--V1", "peer@host", "50000", "--public", "--no-wait" }, true, false, true, true)]
     public void Given_OpenChannelArguments_When_Parsed_Then_FlagsAndPositionalArgumentsAreSplit(string[] args,
-        bool expectedPublic, bool expectedDualFund, bool expectedNoWait)
+        bool expectedPublic, bool expectedDualFund, bool expectedV1, bool expectedNoWait)
     {
         // Act
         var positional = OpenChannelMessageHandler.ParseArguments(args, out var isPublic, out var isDualFunded,
-                                                                  out var noWait, out var error);
+                                                                  out var forceV1, out var noWait, out var error);
 
         // Assert
         Assert.Null(error);
         Assert.Equal(expectedPublic, isPublic);
         Assert.Equal(expectedDualFund, isDualFunded);
+        Assert.Equal(expectedV1, forceV1);
         Assert.Equal(expectedNoWait, noWait);
-        Assert.Equal(args.Where(a => a != OpenChannelMessageHandler.PublicOption
-                                  && a != OpenChannelMessageHandler.DualFundOption
-                                  && a != OpenChannelMessageHandler.NoWaitOption), positional);
+        Assert.Equal(args.Where(a => !a.StartsWith("--", StringComparison.Ordinal)), positional);
         Assert.Null(ClientApp.ValidateArguments("openchannel", args));
+    }
+
+    [Fact]
+    public void Given_DualFundAndV1_When_OpenChannelArgumentsAreParsed_Then_ItIsAUsageError()
+    {
+        // Arrange (NL-551)
+        string[] args = ["peer@host", "50000", "--dual-fund", "--v1"];
+
+        // Act
+        OpenChannelMessageHandler.ParseArguments(args, out _, out _, out _, out _, out var error);
+
+        // Assert
+        Assert.NotNull(error);
+        Assert.Contains("--v1", error);
+        Assert.Equal(error, ClientApp.ValidateArguments("openchannel", args));
     }
 
     [Fact]

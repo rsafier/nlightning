@@ -45,6 +45,84 @@ public class DualFundRefusalTests
     }
 
     [Fact]
+    public async Task Given_AnOpenerDelayOf720_When_OpenChannel2Arrives_Then_TheChannelOpens()
+    {
+        // Arrange (NL-550: Eclair's default to_self_delay; the old limit was 1.5 x our own 144)
+        await using var harness = await DualFundHarness.CreateAsync(0);
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Alice.Options.ToSelfDelay = 720;
+
+        // Act
+        var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
+                                                new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare),
+                                                TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.True(result.FailureReason is null, $"{result.FailureReason}\n{harness.Describe()}");
+        Assert.Equal((ushort)720, harness.Bob.Channel(result.ChannelId).ChannelParams.Remote.ToSelfDelay);
+    }
+
+    [Fact]
+    public async Task Given_AnOpenerDelayAboveMaxAcceptedToSelfDelay_When_OpenChannel2Arrives_Then_Refused()
+    {
+        // Arrange
+        await using var harness = await DualFundHarness.CreateAsync(0, TimeSpan.FromSeconds(1));
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Alice.Options.ToSelfDelay = 720;
+        harness.Bob.Options.MaxAcceptedToSelfDelay = 500;
+
+        // Act
+        var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
+                                                new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare),
+                                                TestContext.Current.CancellationToken));
+
+        // Assert
+        var error = Assert.IsType<ChannelErrorException>(Assert.Single(harness.Bob.Errors));
+        Assert.Contains("To self delay is too large", error.Message);
+        Assert.NotNull(result.FailureReason);
+        Assert.Empty(harness.Bob.Memory.FindChannels(_ => true));
+    }
+
+    [Fact]
+    public async Task Given_AnOpenerInFlightLimitBelowTheAcceptersFloor_When_OpenChannel2Arrives_Then_Refused()
+    {
+        // Arrange (NL-552: the v1 rule applies to v2 too); Alice offers 80 % of the channel
+        await using var harness = await DualFundHarness.CreateAsync(0, TimeSpan.FromSeconds(1));
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Bob.Options.MinAcceptedMaxHtlcValueInFlightPercent = 90;
+
+        // Act
+        var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
+                                                new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare),
+                                                TestContext.Current.CancellationToken));
+
+        // Assert
+        var error = Assert.IsType<ChannelErrorException>(Assert.Single(harness.Bob.Errors));
+        Assert.Contains("Max htlc value in flight is too small", error.Message);
+        Assert.NotNull(result.FailureReason);
+        Assert.Empty(harness.Bob.Memory.FindChannels(_ => true));
+    }
+
+    [Fact]
+    public async Task Given_AnAccepterInFlightLimitBelowTheOpenersFloor_When_AcceptChannel2Arrives_Then_TheOpenFails()
+    {
+        // Arrange (NL-552); Bob offers 80 % of the channel
+        await using var harness = await DualFundHarness.CreateAsync(0, TimeSpan.FromSeconds(1));
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Alice.Options.MinAcceptedMaxHtlcValueInFlightPercent = 90;
+
+        // Act
+        var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
+                                                new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare),
+                                                TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.NotNull(result.FailureReason);
+        Assert.Contains("Max htlc value in flight is too small", result.FailureReason);
+        Assert.False(harness.Alice.DualFund.IsOpening(result.ChannelId));
+    }
+
+    [Fact]
     public async Task Given_TheAccepterCannotFundItsShare_When_Opened_Then_TheChannelOpensWithTheOpenersFundsOnly()
     {
         // Arrange: Bob would contribute 400,000 sat but his wallet is empty

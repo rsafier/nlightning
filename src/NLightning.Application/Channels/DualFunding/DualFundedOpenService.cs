@@ -292,6 +292,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                 DustLimitAmount = payload.DustLimitAmount,
                 ChannelReserveAmount = reserve
             }, out _);
+            _channelOpenValidator.CheckMaxHtlcValueInFlight(total, payload.MaxHtlcValueInFlightAmount);
 
             var localParams = CreateLocalParams(reserve, total);
             var channelParams = new ChannelParams(localParams, remoteParams,
@@ -566,6 +567,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             ChannelReserveAmount = reserve,
             ChannelFlags = payload.ChannelFlags
         }, out var minimumDepth);
+        _channelOpenValidator.CheckMaxHtlcValueInFlight(total, payload.MaxHtlcValueInFlightAmount);
 
         if (total >= Domain.Channels.Constants.ChannelConstants.LargeChannelAmount
          && negotiatedFeatures.LargeChannels == FeatureSupport.No)

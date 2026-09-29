@@ -360,7 +360,8 @@ internal static class ClientApp
                            : null;
             case "openchannel":
             case "open-channel":
-                var openArgs = OpenChannelMessageHandler.ParseArguments(commandArgs, out _, out _, out _, out var openError);
+                var openArgs = OpenChannelMessageHandler.ParseArguments(commandArgs, out _, out _, out _, out _,
+                                                                        out var openError);
                 if (openError is not null)
                     return openError;
                 if (openArgs.Length < 2)

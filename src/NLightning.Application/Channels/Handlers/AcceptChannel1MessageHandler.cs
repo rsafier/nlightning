@@ -128,6 +128,9 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
         _channelOpenValidator.PerformOptionalChecks(
             ChannelOpenOptionalValidationParameters.FromAcceptChannel1Payload(
                 payload, localParams.ChannelReserveAmount));
+        // NL-552: the same in-flight floor as for a peer's open (the payload's optional parameters leave it out)
+        _channelOpenValidator.CheckMaxHtlcValueInFlight(tempChannel.LocalBalance + tempChannel.RemoteBalance,
+                                                        payload.MaxHtlcValueInFlightAmount);
 
         // Perform mandatory checks for the channel
         _channelOpenValidator.PerformMandatoryChecks(ChannelOpenMandatoryValidationParameters.FromAcceptChannel1Payload(

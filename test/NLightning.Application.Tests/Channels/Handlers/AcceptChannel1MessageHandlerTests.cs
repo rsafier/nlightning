@@ -37,6 +37,7 @@ public class AcceptChannel1MessageHandlerTests
     private static readonly ChannelId s_tempChannelId = CreateChannelId(0x01);
     private static readonly ChannelId s_newChannelId = CreateChannelId(0x02);
 
+    private readonly Mock<IChannelOpenValidator> _mockValidator = new();
     private readonly Mock<IChannelIdFactory> _mockChannelIdFactory = new();
     private readonly Mock<IChannelMemoryRepository> _mockChannelMemoryRepository = new();
     private readonly Mock<IChannelDbRepository> _mockChannelDbRepository = new();
@@ -111,13 +112,12 @@ public class AcceptChannel1MessageHandlerTests
            .Returns((ChannelId id, TxId txId, ushort index, CompactSignature sig) =>
                         new FundingCreatedMessage(new FundingCreatedPayload(id, txId, index, sig)));
 
-        var mockValidator = new Mock<IChannelOpenValidator>();
         uint minimumDepth = 3;
-        mockValidator.Setup(v => v.PerformMandatoryChecks(It.IsAny<ChannelOpenMandatoryValidationParameters>(),
+        _mockValidator.Setup(v => v.PerformMandatoryChecks(It.IsAny<ChannelOpenMandatoryValidationParameters>(),
                                                           out minimumDepth));
 
         _handler = new AcceptChannel1MessageHandler(_mockWalletService.Object, _mockChannelIdFactory.Object,
-                                                    _mockChannelMemoryRepository.Object, mockValidator.Object,
+                                                    _mockChannelMemoryRepository.Object, _mockValidator.Object,
                                                     _mockCommitmentTransactionBuilder.Object,
                                                     mockCommitmentTransactionModelFactory.Object,
                                                     _mockFundingTransactionBuilder.Object,
@@ -342,6 +342,22 @@ public class AcceptChannel1MessageHandlerTests
         Assert.Equal((ushort)40, remote.MaxAcceptedHtlcs);
         Assert.Equal(LightningMoney.Satoshis(90_000), remote.MaxHtlcValueInFlight);
         Assert.Equal((ushort)720, remote.ToSelfDelay);
+    }
+
+    [Fact]
+    public async Task Given_AcceptChannel_When_HandleAsync_Then_ThePeersInFlightLimitIsCheckedAgainstTheChannel()
+    {
+        // Arrange (NL-552: the in-flight floor applies to the accepter of our open too)
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+        var channelAmount = _tempChannel.LocalBalance + _tempChannel.RemoteBalance;
+
+        // Act
+        await _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey);
+
+        // Assert
+        _mockValidator.Verify(v => v.CheckMaxHtlcValueInFlight(channelAmount,
+                                                                message.Payload.MaxHtlcValueInFlightAmount),
+                              Times.Once);
     }
 
     [Fact]

@@ -376,6 +376,8 @@ public static class NodeConfigurationExtensions
                      "AllowExperimentalFeatures": false
                    },
                    "EnableHtlcs": {{ENABLE_HTLCS}},
+                   "MaxAcceptedToSelfDelay": 2016,
+                   "MinAcceptedMaxHtlcValueInFlightPercent": 1,
                    "Routing": {
                      "FeeBaseMsat": {{FEE_BASE_MSAT}},
                      "FeeProportionalMillionths": {{FEE_PPM}},
