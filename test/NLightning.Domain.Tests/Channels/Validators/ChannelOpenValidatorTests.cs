@@ -423,6 +423,136 @@ public class ChannelOpenValidatorTests
         Assert.Null(exception);
     }
 
+    [Theory]
+    [InlineData((ushort)720)] // Eclair's default
+    [InlineData(NodeOptions.DefaultMaxAcceptedToSelfDelay)] // LND's largest
+    public void Given_APeerDelayUpToMaxAcceptedToSelfDelay_When_PerformingMandatoryChecks_Then_DoesNotThrow(
+        ushort toSelfDelay)
+    {
+        // Arrange (NL-550: the limit no longer follows our own ToSelfDelay of 144)
+        var parameters = CreateParameters(LightningMoney.Satoshis(100_000), null, FeatureSupport.No,
+                                          toSelfDelay: toSelfDelay);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_APeerDelayAboveMaxAcceptedToSelfDelay_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange
+        var parameters = CreateParameters(LightningMoney.Satoshis(100_000), null, FeatureSupport.No,
+                                          toSelfDelay: NodeOptions.DefaultMaxAcceptedToSelfDelay + 1);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("To self delay is too large: 2017", exception.Message);
+    }
+
+    [Fact]
+    public void Given_AConfiguredMaxAcceptedToSelfDelay_When_ThePeerAsksForMore_Then_ItIsRefusedWhateverOurOwnDelay()
+    {
+        // Arrange (our own delay above the limit changes nothing: the two are independent)
+        var validator = new ChannelOpenValidator(new NodeOptions { ToSelfDelay = 1000, MaxAcceptedToSelfDelay = 500 });
+        var accepted = CreateParameters(LightningMoney.Satoshis(100_000), null, FeatureSupport.No, toSelfDelay: 500);
+        var refused = CreateParameters(LightningMoney.Satoshis(100_000), null, FeatureSupport.No, toSelfDelay: 501);
+
+        // Act
+        var acceptedException = Record.Exception(() => validator.PerformMandatoryChecks(accepted, out _));
+        var refusedException = Record.Exception(() => validator.PerformMandatoryChecks(refused, out _));
+
+        // Assert
+        Assert.Null(acceptedException);
+        Assert.IsType<ChannelErrorException>(refusedException);
+    }
+
+    [Theory]
+    [InlineData(45)] // Eclair's default
+    [InlineData(10)] // LDK's default
+    [InlineData(1)] // the floor itself
+    public void Given_APeerInFlightLimitAtOrAboveTheFloor_When_PerformingOptionalChecks_Then_DoesNotThrow(
+        int percent)
+    {
+        // Arrange (NL-552: the old rule wanted 64 % of the channel)
+        var fundingAmount = LightningMoney.Satoshis(500_000);
+        var parameters = CreateOptionalParameters(fundingAmount,
+                                                  LightningMoney.Satoshis(500_000L * percent / 100));
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_APeerInFlightLimitBelowTheFloor_When_PerformingOptionalChecks_Then_Throws()
+    {
+        // Arrange: 4,999 sat is below 1 % of 500,000 sat
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(500_000), LightningMoney.Satoshis(4_999));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Contains("Max htlc value in flight is too small", exception.Message);
+    }
+
+    [Fact]
+    public void Given_AFloorOfZero_When_CheckingAnyInFlightLimit_Then_DoesNotThrow()
+    {
+        // Arrange
+        var validator = new ChannelOpenValidator(new NodeOptions { MinAcceptedMaxHtlcValueInFlightPercent = 0 });
+
+        // Act
+        var exception = Record.Exception(() => validator.CheckMaxHtlcValueInFlight(LightningMoney.Satoshis(500_000),
+                                                                                   LightningMoney.Zero));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_AConfiguredFloor_When_CheckingAnInFlightLimitJustBelowIt_Then_Throws()
+    {
+        // Arrange: 20 % of 1,000,000 sat is 200,000,000 msat
+        var validator = new ChannelOpenValidator(new NodeOptions { MinAcceptedMaxHtlcValueInFlightPercent = 20 });
+
+        // Act
+        var exception = Record.Exception(() => validator.CheckMaxHtlcValueInFlight(
+                                             LightningMoney.Satoshis(1_000_000),
+                                             LightningMoney.MilliSatoshis(199_999_999UL)));
+        var atTheFloor = Record.Exception(() => validator.CheckMaxHtlcValueInFlight(
+                                              LightningMoney.Satoshis(1_000_000),
+                                              LightningMoney.MilliSatoshis(200_000_000UL)));
+
+        // Assert
+        Assert.IsType<ChannelErrorException>(exception);
+        Assert.Null(atTheFloor);
+    }
+
+    private static ChannelOpenOptionalValidationParameters CreateOptionalParameters(
+        LightningMoney fundingAmount, LightningMoney maxHtlcValueInFlight)
+    {
+        return new ChannelOpenOptionalValidationParameters
+        {
+            FundingAmount = fundingAmount,
+            MaxHtlcValueInFlight = maxHtlcValueInFlight,
+            HtlcMinimumAmount = LightningMoney.Satoshis(1),
+            ChannelReserveAmount = LightningMoney.Satoshis(5_000),
+            OurChannelReserveAmount = LightningMoney.Satoshis(5_000),
+            MaxAcceptedHtlcs = 30,
+            DustLimitAmount = LightningMoney.Satoshis(354),
+            ToSelfDelay = 144
+        };
+    }
+
     private static ChannelOpenMandatoryValidationParameters WithFeeRate(
         ChannelOpenMandatoryValidationParameters parameters, LightningMoney feeRatePerKw)
     {
@@ -443,7 +573,7 @@ public class ChannelOpenValidatorTests
 
     private static ChannelOpenMandatoryValidationParameters CreateParameters(
         LightningMoney fundingAmount, LightningMoney? pushAmount, FeatureSupport optionAnchors,
-        FeatureSupport largeChannels = FeatureSupport.Optional)
+        FeatureSupport largeChannels = FeatureSupport.Optional, ushort toSelfDelay = 144)
     {
         return new ChannelOpenMandatoryValidationParameters
         {
@@ -453,7 +583,7 @@ public class ChannelOpenValidatorTests
             NegotiatedFeatures = new FeatureOptions { OptionAnchors = optionAnchors, LargeChannels = largeChannels },
             FundingAmount = fundingAmount,
             PushAmount = pushAmount,
-            ToSelfDelay = 144,
+            ToSelfDelay = toSelfDelay,
             MaxAcceptedHtlcs = 30,
             DustLimitAmount = LightningMoney.Satoshis(354),
             ChannelReserveAmount = s_channelReserve

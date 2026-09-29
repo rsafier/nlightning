@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Channels.Interfaces;
 
+using Money;
 using Validators.Parameters;
 
 public interface IChannelOpenValidator
@@ -12,7 +13,8 @@ public interface IChannelOpenValidator
     /// This method verifies that optional configuration parameters meet recommended safety and usability thresholds:
     /// - Validates that the funding amount meets the minimum channel size threshold.
     /// - Checks that the HTLC minimum amount is not excessively large relative to the node's configured minimum value.
-    /// - Validates that the maximum HTLC value in flight is enough relative to the channel funds.
+    /// - Validates that the maximum HTLC value in flight is enough relative to the channel funds
+    ///   (<see cref="CheckMaxHtlcValueInFlight"/>).
     /// - Ensures the channel reserve amount is not excessively high relative to the node's channel reserve configuration.
     /// - Verifies that the maximum number of accepted HTLCs meets a minimum threshold.
     /// - Confirms that the dust limit is not excessively large relative to the node's configured dust limit.
@@ -25,13 +27,23 @@ public interface IChannelOpenValidator
     void PerformOptionalChecks(ChannelOpenOptionalValidationParameters parameters);
 
     /// <summary>
+    /// Fails the open when the peer's <c>max_htlc_value_in_flight_msat</c> is below
+    /// <c>Node:MinAcceptedMaxHtlcValueInFlightPercent</c> of the channel (NL-552); the same rule for v1 and v2 opens,
+    /// in both roles.
+    /// </summary>
+    /// <param name="channelAmount">The whole channel (both contributions of a dual-funded open).</param>
+    /// <param name="maxHtlcValueInFlight">The peer's <c>max_htlc_value_in_flight_msat</c>.</param>
+    /// <exception cref="Exceptions.ChannelErrorException">The peer's limit is below the floor.</exception>
+    void CheckMaxHtlcValueInFlight(LightningMoney channelAmount, LightningMoney maxHtlcValueInFlight);
+
+    /// <summary>
     /// Enforce mandatory checks when establishing a new Lightning Network channel.
     /// </summary>
     /// <remarks>
     /// The method validates channel parameters to ensure they comply with predefined safety and compatibility checks:
     /// - ChainHash must be compatible with the node's network.
     /// - Push amount must not exceed 1000 times the funding amount.
-    /// - To_self_delay must not be unreasonably large compared to the node's configured value.
+    /// - To_self_delay must not exceed the node's <c>MaxAcceptedToSelfDelay</c>.
     /// - Max_accepted_htlcs must not exceed the allowed maximum.
     /// - Fee rate per kw must fall within acceptable limits.
     /// - Dust limit must be lower than or equal to the channel reserve amount and adhere to minimum thresholds.
