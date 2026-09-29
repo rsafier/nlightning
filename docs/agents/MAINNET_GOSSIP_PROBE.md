@@ -185,7 +185,7 @@ reproduce here: the WAL stays at 5.8 MiB and the database file is checkpointed; 
 2. **NL-406** (announcements without updates) before relay is enabled on mainnet, so we never store or later serve
    what BOLT 7 says must not be sent.
 3. **Memory budget** (NL-373) with the measured mainnet numbers: about 115 MB live heap, 400 MB RSS.
-4. **Relay on mainnet** was not tested (the probe is a leech by design): the relay's pacing and filters against real
+4. **Relay on mainnet** (done 2026-09-28, see "Relay proof (NL-417, 2026-09-28)" below; relay on by default on mainnet since) was not tested at first (the probe is a leech by design): the relay's pacing and filters against real
    mainnet peers, and our query replies to them (served only for chain-checked channels, so a probe with
    `AssumeChannelValid` serves nothing), still need a run with a verifying node. Since lane nl360 (NL-360) a slow
    peer can no longer grow our memory: the outbox holds at most 10,000 gossip messages / 4 MiB per connection (about
@@ -585,3 +585,93 @@ rotation also ran a range sync on Johoe).
 - Known gap at the time of the run: a node that restarts with a graph but none of its saved peers reachable did not
   bootstrap (the graph knows addresses) and connected to no graph node either (NL-543; fixed since by the graph
   top-up, `d4eb9582`: the bootstrap now dials graph nodes first and falls back to the seeds).
+
+## Relay proof (NL-417, 2026-09-28)
+
+Owner request: prove the relay of other nodes' gossip on mainnet with two local probes and, if clean, turn it on by
+default on mainnet. Branch `wip/fafo-nl417` (from `wip/fafo` at `61b74291`). Mainnet, gossip only: no channel, no
+funds, read-only RPCs.
+
+### Method
+
+- **Harness** (README, "Two-probe relay proof"): `--relay-to-all` turns the relay on toward every connected peer
+  (the product's peer directory) and writes `relay.csv` (the relay's `GetStatus()`, i.e. `describegraph`'s `Relay:`
+  line, plus the relayed, `outbox.refused`, `relay.paused`, `relay.stalled` counters and the drops) and
+  `relay-peers.csv` (per peer: its filter, 256/258/257 sent, refused, echoes, the outbox depth and progress); `--sink`
+  connects to one peer, syncs nothing itself and sends `gossip_timestamp_filter(0, 0xFFFFFFFF)` at `init`, checking
+  every received message in arrival order (`sink.csv`); `--read-phases` puts a throttled TCP proxy between the sink
+  and the relayer (`proxy.csv`); `--set` overrides configuration keys.
+- **Relayer A:** `run --bootstrap --relay-to-all --chain rpc` in `~/.nltg-gossip-probe/r417-a` on a copy
+  (`sqlite3 .backup`) of the b10 run's verified database (30,570 chain-checked channels, its 8 bootstrap peers saved),
+  with a new key (`037d1c0c...2c839`), listening on `127.0.0.1:19736`; every funding output checked against the
+  owner's bitcoind; the bootstrap reconnected its 8 mainnet peers (LND, CLN and others) and kept them.
+  `Gossip:RelayStallTimeout` = 90 s and `Node:NetworkTimeout` = 5 min for the run (below).
+- **Sink B:** `run --sink --peer <A>@127.0.0.1:19736 --chain stub` (`AssumeChannelValid`: it only measures
+  reception), a fresh directory and key per run. Run 1: full speed. Run 2: `--read-phases 240:50000,150:0,0:max`
+  (50 kB/s, about 175 messages/s, for 4 min; no reading for 150 s, longer than the 90 s stall timeout; then
+  unthrottled), with `Node:NetworkTimeout` 5 min on both probes: a sink that stops reading never answers a `ping`
+  (the ping is stuck behind the paused stream too), so with the default 15 s timeout the connection closes at the
+  next ping instead of stalling. That is the normal end of a peer that stops reading (the stall is for a peer that
+  keeps answering pings but reads no gossip, and for the snapshot it holds).
+- Binaries staged under `~/.nltg-gossip-probe/bin-417*` (`bin-417f` = the final build, `4ba8b967`). Raw data in
+  `~/.nltg-gossip-probe/r417-a/runs/`, `r417-b*/runs/` (console output in `console-*.txt` there).
+
+| Run (A) | Build | Sinks | Purpose |
+|---|---|---|---|
+| `20260928T230114Z-r417-relayer` | before the fixes | `r417-b` full speed | first proof: found NL-548 (1) |
+| `20260928T230658Z-r417-relayer-fixed` | NL-548 (1) | `r417-b2` full speed, `r417-b-slow` slow | found NL-548 (2) and (3) |
+| `20260928T233414Z-r417-relayer-final` | NL-548 (1), (2) | `r417-b3` full speed | confirmed (2), found (3) again |
+| `20260928T234702Z-r417-relayer-v3` | all fixes (`4ba8b967`) | `r417-b4` full speed and `r417-b-slow2` slow, at the same time | the final proof |
+
+### Results (final build)
+
+| Sink | Full speed (`r417-b4`) | Slow reader (`r417-b-slow2`) |
+|---|---|---|
+| Messages received (256 / 258 / 257) | 96,085 (30,589 / 55,401 / 10,095) | 53,689 (19,858 / 33,465 / 366) |
+| Channels at the end vs A's graph (30,598) | **30,589 (99.97 %)**, 54,375 policies, 9,624 announced nodes | 18,629 (the backlog was ended by the stall, as designed) |
+| Time to the backlog | 50 % in 0.8 min, 99 % in 1.5 min (1,000 messages/s, the backlog pace) | 175 messages/s while throttled |
+| `channel_update` before its `channel_announcement` | **0** | **0** |
+| `node_announcement` before a channel of its node | **0** | **0** |
+| Duplicates | 10 (NL-549) | 0 |
+| Older update after a newer one | 0 | 0 |
+| Sink RSS | 372 MB | 319 MB |
+
+| Relayer A (15.7 min, both sinks) | |
+|---|---|
+| Relayed (256 / 258 / 257) | 50,447 / 88,866 / 10,461 |
+| Outbox refusals, pauses | 7, 7 (all to the slow sink) |
+| Outbox at most | 10,000 messages (the cap), 2.2 MB (the byte cap never bound) |
+| Resume | at or below 5,000 messages (half the cap), the refused backlog message first |
+| Stall | 1, 90 s after the sink stopped reading: backlog ended, 1,017 pending messages dropped (`relay_stalled`), connection kept, live relay resumed once the proxy read again (`relay.paused_connections` back to 0) |
+| RSS min / median / max | 318 / 523 / 568 MB (the NL-417 fix run, 26.6 min: 320 / 570 / 636 MB); managed heap at most 570 MB; `Gossip:MaxMemoryMb` never crossed |
+| CPU | at most 70 % of one core (the backlogs), then 2-3 % |
+| Warnings / errors | 1 EF Core query notice / 0 |
+| Mainnet peers | 8 connected the whole run, 0 disconnections, 0 bans, 0 warnings in either direction |
+
+**Mainnet subscribers.** Most of A's mainnet peers send no filter (LND only filters its few active sync peers) or
+CLN's `0xFFFFFFFF` "nothing". In the 26.6 min fix run one LND peer, Jamaussie (`03b95562...`, found by the BOLT 10
+bootstrap), sent `gossip_timestamp_filter(now, 0xFFFFFFFF)` after 9 minutes and received 1,883 live messages (2
+announcements, 1,513 updates, 368 node announcements) over 17 minutes without a warning or a disconnection. Two of
+them were its own `node_announcement` sent back (`echo_to_origin`): it sent them while ours were already queued, a
+race origin suppression cannot close. In the final run no mainnet peer subscribed. So the relay toward real mainnet
+peers is exercised live, but only lightly; the load is proven by the sinks.
+
+### Issues found
+
+- **NL-548 (fixed):** (1) during a backlog, the connection's flush sent newer versions of channels the backlog had
+  not reached: 188 updates before their announcement at full speed (`4a3f6145`, the flush now waits for the
+  backlog); (2) after the stall, live updates and node announcements of channels the peer never got: 288 and 76
+  (`db6eb3e4`, the relay remembers where the backlog stopped and sends the announcement first); (3) 3 node
+  announcements of nodes whose only channels were spent (still in the graph for 72 blocks, never relayed)
+  (`4ba8b967`). Each fix has a test that fails without it.
+- **NL-549 (open, low):** a change between the relay's last collect and the backlog's snapshot is sent twice (10
+  duplicates in 96,085).
+- Probe only: stub mode built the bitcoind client through the NL-415 pending-channel view and failed at start (fixed
+  in the probe); the stub sink logs one error at stop (the peer manager's revert on disconnect asks the stub bitcoind).
+
+### Decision
+
+Clean against every criterion (full graph, no ordering violation, memory bounded by the outbox cap, pause, resume
+and stall correct, no error, no mainnet peer disconnection or ban): **relay of other nodes' gossip is on by default
+on mainnet** (`Gossip:RelayEnabled` unset = on everywhere, template `true`; owner decision 2026-09-28, `7ceb31ce`).
+`AllowPublicChannelsOnMainnet` stays false.

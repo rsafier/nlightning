@@ -66,6 +66,8 @@ Updated 2026-09-28 by lane nl547 (branch `wip/fafo-nl547` from `wip/fafo` at `ac
 
 Updated 2026-09-28 by lane nl360 (branch `wip/fafo-nl360` from `wip/fafo` at `5a026e1e`, code at `da709399` and `d74628fb`, not merged into `wip/fafo`): the peer outbox caps its gossip by default (10,000 messages, 4 MiB) and the relay pauses a connection on a full outbox, resumes at half and stalls a peer that sends nothing for 10 min. Fixed: NL-360, NL-375 (describegraph relay and outbox depths), NL-466 (the reload tests hit the gossip memory budget in loaded runs). No new IDs. Mainnet relay default unchanged (off, NL-417). Non-Docker on net10.0, Release: Application 3074, Infrastructure 482, Daemon 825, Integration 933 (non-Docker), green; Release.Native builds; Docker gossip suite (`scripts/run-gossip.sh 1 Release`, net10.0) 30/30.
 
+Updated 2026-09-28 by lane nl417 (branch `wip/fafo-nl417` from `wip/fafo` at `61b74291`, not merged into `wip/fafo`): the mainnet relay proof with two local probes (`tools/NLightning.GossipProbe` `--relay-to-all` relayer on mainnet with `--chain rpc` and `--bootstrap`, `--sink` receiver asking for everything, a throttled proxy for the slow reader; `MAINNET_GOSSIP_PROBE.md` "Relay proof (NL-417, 2026-09-28)"), three relay ordering fixes it found, and the mainnet relay default turned on (owner decision). Fixed: NL-417 (7ceb31ce), NL-548 (new; 4a3f6145, db6eb3e4, 4ba8b967). New: NL-548, NL-549. Targeted tests only, net10.0 Release: Application `Gossip` 466, Daemon 825; Release build 0 errors, no new warnings; Docker gossip suite (`scripts/run-gossip.sh 1 Release`, net10.0) 30/30.
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -102,10 +104,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 4 | 166 | 170 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 61 | 149 | 134 | 358 |
+| fixed | 14 | 61 | 149 | 136 | 360 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **157** | **306** | **538** |
+| **Total** | **14** | **61** | **157** | **308** | **540** |
 
 ### Epics
 
@@ -120,7 +122,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - NL-079: Route blinding payload handling (ONION M5) (fixed, medium; wave rf1: send, receive and forward, advertised Optional, proven against LND 0.20; limits NL-440 fixed (MPP over blinded paths and own-introduction paths in wave B12, BOLT 11 blinded paths (bLIP 39) and dummy hops in wave nl440; message-path dummy hops NL-525); onion messages (M6) are NL-080, fixed in wave M6)
 - NL-447: BOLT 12 offers (fixed, medium; wave B12 at `a3445f3f`: codecs, signer, schema, `createoffer`/`listoffers`/`disableoffer`/`payoffer`/`fetchinvoice` (IPC 26-30), both directions proven against CLN v26.06.8; closed in wave lh1 with the CLN-captured vectors NL-450, the invoice prune NL-448 and NL-442, NL-444, NL-453..NL-455; carried: NL-451, NL-452)
 - NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (fixed, critical; fail-the-channel broadcast in wave 3; O0/O1 plumbing and the O2-O6 building blocks in wave 4; O2-O5 wired and proven against LND in wave 5; wave 6: O6-T1 `SweepScheduler` (NL-317, NL-296) and O6-T3 reorg re-resolution (NL-292, NL-293, NL-096) with Docker Proof O6; wave 7: final-hop HTLCs claimed on chain (NL-316, NL-322, Docker `OnchainFinalHopTests`); gossip wave G-A: O8 mempool (NL-098) and the halt gate (NL-216); gossip wave G-B: the O6-T4 blockers NL-311, NL-320, NL-337 fixed and Proofs O3-O6 green; gossip wave G-D: O6-T4 done, HTLCs on for every network by default (6de56ad, kept by the integrator in 48a8951), NL-315 fixed; wave O7: O7-T1..T3 done (NL-067, NL-314 fixed), anchors Docker proofs 12/12; wave O7b: NL-379, NL-380, NL-381, NL-385 fixed and O7-T4 done (`option_anchors` Optional by default, d4cc3f8), anchors Docker proofs 18/18; carried: follow-ups NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336, NL-384 (partial), NL-386, NL-387, NL-389..NL-393)
-- NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (fixed, high; closed in ledger hygiene lh1: G0-G4 done, G5-T1..T4 done, D12 decided at wave d12 (graph and sync on by default everywhere, relay of others' gossip off on mainnet), Docker gossip 28/28 and CLN gossip green; carried as their own entries: the unmet 24 h soak proof of G5-T5 NL-376 (medium; D12 opened mainnet sync without it), the outbox cap NL-360 (medium, fixed in lane nl360), mainnet relay NL-417, and the low follow-ups NL-345..NL-347, NL-357, NL-361..NL-372 (NL-369 is the value-object conversion trap the gossip code hit), NL-374, NL-375, NL-377, NL-378, NL-382, NL-394, NL-407, NL-416, NL-418..NL-425)
+- NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (fixed, high; closed in ledger hygiene lh1: G0-G4 done, G5-T1..T4 done, D12 decided at wave d12 (graph and sync on by default everywhere, relay of others' gossip off on mainnet), Docker gossip 28/28 and CLN gossip green; carried as their own entries: the unmet 24 h soak proof of G5-T5 NL-376 (medium; D12 opened mainnet sync without it), the outbox cap NL-360 (medium, fixed in lane nl360), mainnet relay NL-417 (fixed 2026-09-28: two-probe mainnet proof, relay on by default on mainnet), and the low follow-ups NL-345..NL-347, NL-357, NL-361..NL-372 (NL-369 is the value-object conversion trap the gossip code hit), NL-374, NL-375, NL-377, NL-378, NL-382, NL-394, NL-407, NL-416, NL-418..NL-425)
 - NL-459: Keysend and custom onion records (fixed, medium; wave lh1 lane l3: send and receive, IPC `keysend` (31), proven against LND 0.20 both ways; follow-up NL-460)
 - NL-114: Invoices not wired into the node: invoice store, create/pay commands, final-hop checks (fixed, high; receive, route hints and pay done in wave 2)
 - NL-137: Payment/forwarding persistence: shared secrets, circuits, invoices, attempts, replay set, SCID map (fixed, high; closed in ledger hygiene lh1: shared secrets, circuits with replay, invoices, payments, HTLC origins, the persistent replay set (NL-078), the SCID/alias map (`Channels.ShortChannelId`, `ChannelLocalAliases`, `Channels.RemoteAlias`) and the graph tables exist; carried: per-part MPP send rows NL-321 and forward failure reasons NL-457)
@@ -3477,13 +3479,14 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G5-T1, D3
 
 ### NL-417 Relay of other nodes' gossip is unexercised against mainnet peers
-- **Status:** open
+- **Status:** fixed (7ceb31ce; relay fixes NL-548)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `src/NLightning.Application/Gossip/Relay/GossipRelayScheduler*.cs`, `tools/NLightning.GossipProbe` (`--relay-to`)
 - **Evidence:** The d12 relay run (20 min toward Blockstream Store, 3 min toward ACINQ) was clean (0 warnings, disconnects or echoes, backlog at most 192 and draining) but relayed nothing: no mainnet peer subscribes to a node without channels (Eclair and LND send no `gossip_timestamp_filter`, CLN sends `first_timestamp = 0xFFFFFFFF`, which the relay honours) (reported by the d12 integrator, `docs/agents/MAINNET_GOSSIP_PROBE.md` "D12 runs"). Relay therefore stays off on mainnet (D12).
 - **Update (lane nl360):** the memory blocker of a mainnet relay is gone (NL-360 fixed: outbox capped by default, relay pauses and stalls), so this entry is now the only blocker of the default. Still needed before `Gossip:RelayEnabled` can default on for mainnet: a relay run whose peers actually subscribe, with the new `nlightning.gossip.outbox.refused`/`relay.paused`/`relay.stalled` counters and `describegraph`'s `Relay:` line recorded next to RSS. A relay run through the BOLT 10 bootstrap peers could give a partly meaningful result: small LND nodes pick an active syncer among few peers and send it `gossip_timestamp_filter(now, max)`, so some bootstrap peers may subscribe to live gossip (no backlog, so little pressure); whether any does is chance, a peer that never subscribes proves nothing, and the probe cannot run it as is (`--bootstrap` refuses `--relay-to`, and `--relay-to` names one peer: it needs a relay-to-every-peer mode). The backlog and the pause under real TCP need a peer that asks for everything: a second NLightning node (or CLN) we run that sends `gossip_timestamp_filter(0, 0xFFFFFFFF)` to the probe over the internet or loopback (about 110,000 mainnet messages at 1,000/s, the 10,000 cap refilled at the peer's read rate).
-- **Fix sketch:** Repeat the relay run from a node with a public channel to the peer, or toward a peer we control that asks for everything (and through the BOLT 10 bootstrap peers for live subscribers); then decide the mainnet relay default.
+- **Update (lane nl417, branch `wip/fafo-nl417`, 2026-09-28):** fixed; relay on by default on mainnet (owner decision 2026-09-28, 7ceb31ce). Two probes on one machine (`tools/NLightning.GossipProbe`, f479f725, 818b8022): relayer A (`--bootstrap --relay-to-all --chain rpc`, a copy of the b10 verified graph, 30,598 chain-checked channels, 8 bootstrap peers) and sink B (`--sink`, stub chain, sync off, one `gossip_timestamp_filter(0, 0xFFFFFFFF)` to A over loopback; `--read-phases` for a throttled proxy). The first runs found relay ordering bugs, fixed with tests (NL-548: 188 updates and 3 node announcements before their channel's announcement at normal speed; 288 and 76 after a stall). Final runs (build 4ba8b967): B at full speed got 96,085 messages, all 30,589 channels (99.97 % of A's graph) in 1.5 min, 0 updates before their announcement, 0 node announcements before a channel, 10 duplicates (NL-549); B throttled to 50 kB/s for 4 min, then not reading for 150 s, then unthrottled: A paused 7 times at the 10,000-message cap (outbox at most 2.2 MB), resumed at half, stalled once after `RelayStallTimeout` (90 s for the run) with 1,017 pending dropped and the connection kept, then relayed live gossip with 0 ordering errors. A's RSS 318-568 MB (fix run: 320-636 MB), 0 errors, 0 disconnections, bans or warnings from its 8 mainnet peers. A mainnet LND peer (Jamaussie) subscribed with `gossip_timestamp_filter(now, max)` and took 1,883 live messages from A over 17 min without a warning or disconnect (2 of its own node_announcements echoed back, a race with its send). A and B ran with `Node:NetworkTimeout` 5 min so the 150 s read pause stalls instead of failing the ping (a peer that stops reading is normally cut by the ping 15 s after the next ping, before the 10 min stall). Details: `docs/agents/MAINNET_GOSSIP_PROBE.md` "Relay proof (NL-417, 2026-09-28)".
+- **Fix sketch:** Done. Was: repeat the relay run from a node with a public channel to the peer, or toward a peer we control that asks for everything (and through the BOLT 10 bootstrap peers for live subscribers); then decide the mainnet relay default.
 - **Blocks/Blocked-by:** Part of NL-099; blocks the mainnet relay default (D12)
 - **Plan ref:** BOLT7 D12, G5-T5
 
@@ -3587,6 +3590,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Send the counterparty's `channel_update` of our own announced channels with our own gossip (as LND does), independent of the relay switch.
 - **Blocks/Blocked-by:** Related NL-417
 - **Plan ref:** —
+
+### NL-548 The relay sent updates and node announcements before their channel's announcement
+- **Status:** fixed (4a3f6145, db6eb3e4, 4ba8b967)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Relay/GossipRelayScheduler.Relay.cs`
+- **Evidence:** Found by the NL-417 mainnet relay proof (sink asking for everything): (1) while a paced backlog ran, the connection's periodic flush sent the newer versions collected after the snapshot, so 188 `channel_update`s and some `node_announcement`s reached the sink before the backlog sent their channel's `channel_announcement`; (2) after a stall ended the backlog early, live flushes sent 288 `channel_update`s and 76 `node_announcement`s of channels the peer never got; (3) 3 `node_announcement`s of nodes whose only channels were spent (kept 72 blocks, never relayed) went out with no channel of theirs. BOLT 7 receivers ignore them, so it cost bandwidth and made the relay look broken to a strict peer.
+- **Fix sketch:** Done: no flush while a backlog (or its held message) runs, the pending set waits (4a3f6145); a stall remembers the backlog's position and a later update of a channel past it goes out after its announcement, a node announcement only for a node with a channel the peer got (db6eb3e4); node announcements (backlog and flush) only for nodes with a relayable channel (4ba8b967). Tests: `GossipRelayOthersTests.Given_ARunningBacklog_*`, `Given_ANodeWhoseOnlyChannelIsSpent_*`, `GossipRelayBackpressureTests.Given_AStalledBacklog_*` (each fails without its fix). The final mainnet runs showed 0 of each.
+- **Blocks/Blocked-by:** Found by NL-417; related NL-360
+- **Plan ref:** BOLT7 G3-T3, §3.8
+
+### NL-549 A new filter's backlog and the first flush after it can send the same version twice
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Gossip/Relay/GossipRelayScheduler.Relay.cs` (`Collect`, backlog)
+- **Evidence:** NL-417 final run: the sink received 10 duplicates out of 96,085 (4 and 7 in earlier runs), right after the backlog ended. A change applied between the relay's last collect and the backlog's snapshot is in the snapshot and in the next collect's diff, so the first flush after the backlog sends it again. Harmless (receivers drop duplicates) and bounded by one collect interval (10 s) of changes.
+- **Fix sketch:** Collect right before taking a backlog snapshot, or skip pending items whose version equals the one the backlog sent.
+- **Blocks/Blocked-by:** Related NL-548
+- **Plan ref:** BOLT7 G3-T3
 
 ## BOLT 8: Transport
 
