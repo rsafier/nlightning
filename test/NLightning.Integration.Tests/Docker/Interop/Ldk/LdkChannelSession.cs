@@ -146,13 +146,16 @@ public sealed class LdkChannelSession : IAsyncDisposable
     /// <summary>
     /// A node <paramref name="nodeName"/> that opens a private v1 channel of <paramref name="capacity"/> to LDK
     /// (<paramref name="push"/> pushed), followed until both ends are usable. LDK's wallet is funded first: it refuses
-    /// an inbound anchors channel it cannot back with its on-chain reserve.
+    /// an inbound anchors channel it cannot back with its on-chain reserve. <paramref name="configureNode"/> runs before
+    /// the node starts (e.g. to set <see cref="NLightningTestNode.ConfigureServices"/>).
     /// </summary>
     public static async Task<LdkChannelSession> BuildOurFundedAsync(LdkFixture fixture, string nodeName,
                                                                     LightningMoney capacity, LightningMoney? push,
-                                                                    CancellationToken cancellationToken)
+                                                                    CancellationToken cancellationToken,
+                                                                    Action<NLightningTestNode>? configureNode = null)
     {
         var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName);
+        configureNode?.Invoke(node);
         var session = new LdkChannelSession(fixture, node);
         try
         {
@@ -189,12 +192,13 @@ public sealed class LdkChannelSession : IAsyncDisposable
     /// <summary>
     /// A node <paramref name="nodeName"/> (listening on every interface) to which LDK opens a private channel of
     /// <paramref name="capacity"/> from its own wallet (v1: LDK has no dual funding), followed until both ends are
-    /// usable.
+    /// usable. <paramref name="configureNode"/> runs before the node starts.
     /// </summary>
     public static async Task<LdkChannelSession> BuildLdkFundedAsync(LdkFixture fixture, string nodeName,
                                                                     LightningMoney capacity,
                                                                     CancellationToken cancellationToken,
-                                                                    Action<NodeOptions>? configureNodeOptions = null)
+                                                                    Action<NodeOptions>? configureNodeOptions = null,
+                                                                    Action<NLightningTestNode>? configureNode = null)
     {
         var node = await NLightningTestNode.CreateAsync(
                        fixture.Bitcoin, nodeName, configureNodeOptions: o =>
@@ -203,6 +207,7 @@ public sealed class LdkChannelSession : IAsyncDisposable
                                                 .ToList();
                            configureNodeOptions?.Invoke(o);
                        });
+        configureNode?.Invoke(node);
         var session = new LdkChannelSession(fixture, node);
         try
         {

@@ -66,6 +66,16 @@ public static class CollaborativeFeeCalculator
     /// </summary>
     public const int P2WpkhMaximumWitnessWeight = 1 + 1 + 73 + 1 + 33;
 
+    /// <summary>
+    /// The smallest 2-of-2 funding witness a receiver charges a splice's shared input (IT-R-04 "based on the minimum
+    /// fee"), built like BOLT 3's 107 for P2WPKH (a 71-byte signature with its sighash byte): item count (1), the empty
+    /// item (1), two signatures (1 + 71 each) and the 71-byte witness script (1 + 71). The initiator budgets the
+    /// largest witness (<see cref="SharedFundingInput.InputWeight"/>, 222 for two 73-byte signatures); LDK budgets
+    /// 219 (72-byte signatures, one byte less for its own low-R signature, NL-558), so charging it 222 refused its
+    /// splices once the feerate made the 3 wu worth a satoshi.
+    /// </summary>
+    public const int SharedFundingMinimumWitnessWeight = 1 + 1 + (1 + 71) * 2 + 1 + 71;
+
     #region Weights
 
     /// <summary>The weight of an output: value (8), script length prefix and script, x 4.</summary>
@@ -115,16 +125,17 @@ public static class CollaborativeFeeCalculator
                                                                   nameof(spentScript)));
 
     /// <summary>
-    /// The weight a receiver charges one input at <c>tx_complete</c>: the shared input's
-    /// <see cref="SharedFundingInput.InputWeight"/> (the whole signed input), otherwise
-    /// <see cref="InputBaseWeight"/> plus <see cref="GetMinimumWitnessWeight"/>.
+    /// The weight a receiver charges one input at <c>tx_complete</c>: the shared input at
+    /// <see cref="InputBaseWeight"/> plus <see cref="SharedFundingMinimumWitnessWeight"/> (never above its
+    /// <see cref="SharedFundingInput.InputWeight"/>), otherwise <see cref="InputBaseWeight"/> plus
+    /// <see cref="GetMinimumWitnessWeight"/>.
     /// </summary>
     public static long GetMinimumInputWeight(InteractiveTxInput input, SharedFundingSpec? sharedFunding)
     {
         ArgumentNullException.ThrowIfNull(input);
 
         if (input.IsShared && sharedFunding?.SharedInput is { } sharedInput)
-            return sharedInput.InputWeight;
+            return Math.Min(sharedInput.InputWeight, InputBaseWeight + SharedFundingMinimumWitnessWeight);
 
         return InputBaseWeight + GetMinimumWitnessWeight(input.ScriptPubKey);
     }
@@ -167,7 +178,8 @@ public static class CollaborativeFeeCalculator
 
     /// <summary>
     /// The estimated weight of the signed transaction (the IT-R-04 check against 400,000): common fields, every input
-    /// with the minimum witness estimate (the shared input with its own weight) and every output.
+    /// with the minimum witness estimate (the shared input with its own <see cref="SharedFundingInput.InputWeight"/>)
+    /// and every output.
     /// </summary>
     public static long EstimateTransactionWeight(IReadOnlyList<InteractiveTxInput> inputs,
                                                  IReadOnlyList<InteractiveTxOutput> outputs,
@@ -178,7 +190,9 @@ public static class CollaborativeFeeCalculator
 
         var weight = (long)CommonFieldsWeight;
         foreach (var input in inputs)
-            weight += GetMinimumInputWeight(input, sharedFunding);
+            weight += input.IsShared && sharedFunding?.SharedInput is { } sharedInput
+                          ? sharedInput.InputWeight
+                          : GetMinimumInputWeight(input, sharedFunding);
 
         foreach (var output in outputs)
             weight += OutputWeight(output.ScriptPubKey);
