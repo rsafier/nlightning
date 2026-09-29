@@ -516,12 +516,12 @@ public class GossipRelayOthersTests : IDisposable
     }
 
     [Fact]
-    public void Given_Mainnet_When_RelayEnabledIsUnset_Then_TheRelayIsOff()
+    public void Given_Mainnet_When_RelayEnabledIsUnset_Then_TheRelayIsOn()
     {
-        // Act / Assert (plan D12)
-        Assert.False(new GossipRelayOptions().IsRelayEnabledFor(BitcoinNetwork.Mainnet));
+        // Act / Assert (NL-417: on by default on mainnet too since the mainnet relay proof; false still turns it off)
+        Assert.True(new GossipRelayOptions().IsRelayEnabledFor(BitcoinNetwork.Mainnet));
         Assert.True(new GossipRelayOptions().IsRelayEnabledFor(BitcoinNetwork.Regtest));
-        Assert.True(new GossipRelayOptions { RelayEnabled = true }.IsRelayEnabledFor(BitcoinNetwork.Mainnet));
+        Assert.False(new GossipRelayOptions { RelayEnabled = false }.IsRelayEnabledFor(BitcoinNetwork.Mainnet));
     }
 
     public void Dispose() => _relay.Dispose();

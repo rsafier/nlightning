@@ -591,7 +591,7 @@ public class NodeServiceExtensionsTests
     public void Given_DefaultConfigJson_When_Bound_Then_GossipMainnetGateIsExplicit(string network, bool expectedOn)
     {
         // Arrange: BOLT 7 plan D12 / G5-T5 (wave d12: the graph and the sync are on everywhere, mainnet included; the
-        // relay of others' gossip and public channels stay off on mainnet)
+        // relay of others' gossip too since NL-417; public channels stay off on mainnet)
         var json = NodeConfigurationExtensions.CreateDefaultConfigJson(network);
         var configuration = new ConfigurationBuilder()
                            .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
@@ -613,8 +613,8 @@ public class NodeServiceExtensionsTests
         Assert.True(sync.SyncEnabled);
         Assert.True(graph.IsEnabledFor(chain));
         Assert.True(sync.IsSyncEnabledFor(chain));
-        Assert.Equal(expectedOn, relay.RelayEnabled);
-        Assert.Equal(expectedOn, relay.IsRelayEnabledFor(chain));
+        Assert.True(relay.RelayEnabled);
+        Assert.True(relay.IsRelayEnabledFor(chain));
         // AcceptPublicChannels keeps its code default everywhere: on mainnet AllowPublicChannelsOnMainnet alone gates
         // public channels, ours and a peer's
         Assert.Equal(new GossipOptions().AcceptPublicChannels, gossip.AcceptPublicChannels);

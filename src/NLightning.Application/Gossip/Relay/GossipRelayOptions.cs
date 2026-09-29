@@ -1,6 +1,5 @@
 namespace NLightning.Application.Gossip.Relay;
 
-using Domain.Protocol.Constants;
 using Domain.Protocol.ValueObjects;
 
 /// <summary>
@@ -13,8 +12,9 @@ public sealed class GossipRelayOptions
     public const string SectionName = "Gossip";
 
     /// <summary>
-    /// Whether we relay the gossip of other nodes to our peers. Unset (the default) means on everywhere but mainnet
-    /// (plan D12). Our own gossip is always sent.
+    /// Whether we relay the gossip of other nodes to our peers. Unset (the default) means on everywhere, mainnet
+    /// included since the NL-417 relay proof (owner decision 2026-09-28; plan D12 kept it off on mainnet before). Our own
+    /// gossip is always sent.
     /// </summary>
     /// <remarks>Configuration key <c>Gossip:RelayEnabled</c>.</remarks>
     public bool? RelayEnabled { get; set; }
@@ -74,10 +74,15 @@ public sealed class GossipRelayOptions
     /// <summary>How many received message versions keep their origin peers (origin suppression).</summary>
     public int MaxTrackedOrigins { get; set; } = GossipOriginTracker.DefaultCapacity;
 
-    /// <summary>The effective switch: <see cref="RelayEnabled"/> when set, otherwise true on every chain but mainnet.
+    /// <summary>
+    /// The effective switch: <see cref="RelayEnabled"/> when set, otherwise true on every chain, mainnet included (NL-417).
     /// </summary>
-    public bool IsRelayEnabledFor(BitcoinNetwork network) =>
-        RelayEnabled ?? !string.Equals(network.Name, NetworkConstants.Mainnet, StringComparison.OrdinalIgnoreCase);
+    public bool IsRelayEnabledFor(BitcoinNetwork network)
+    {
+        // Kept per network so a chain-specific default can come back without changing the callers
+        _ = network;
+        return RelayEnabled ?? true;
+    }
 
     /// <summary>The invalid settings, empty when valid.</summary>
     public IReadOnlyList<string> GetValidationErrors()

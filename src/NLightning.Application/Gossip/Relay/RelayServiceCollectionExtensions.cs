@@ -52,7 +52,7 @@ public static class RelayServiceCollectionExtensions
 
     private static IGossipIngress CreateTrackingIngress(IServiceProvider sp)
     {
-        // The origins only serve the relay of others' gossip (off on mainnet by default, D12, NL-405)
+        // The origins only serve the relay of others' gossip (on by default everywhere since NL-417; NL-405)
         var network = sp.GetService<IOptions<NodeOptions>>()?.Value.BitcoinNetwork;
         var relayOptions = sp.GetService<IOptions<GossipRelayOptions>>()?.Value ?? new GossipRelayOptions();
         return new OriginTrackingGossipIngress(sp.GetRequiredService<GossipIngress>(),

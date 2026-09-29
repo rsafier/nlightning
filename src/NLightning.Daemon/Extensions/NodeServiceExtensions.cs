@@ -421,7 +421,7 @@ public static class NodeServiceExtensions
 
         // BOLT 7 relay of other nodes' gossip (G3-T3): per-peer filters, staggered flushes, origin suppression (the
         // peer services' ingress records who sent what), backlog on a new filter. Gossip:RelayEnabled unset means on
-        // everywhere but mainnet (plan D12). Own and relayed gossip use the peer's outbox when the peer manager
+        // everywhere, mainnet included since the NL-417 proof. Own and relayed gossip use the peer's outbox when the peer manager
         // offers one (IPeerGossipOutbox, NL-351)
         services.AddGossipRelayOriginTracking();
         services.AddOptions<GossipRelayOptions>()

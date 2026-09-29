@@ -247,7 +247,7 @@ public static class NodeConfigurationExtensions
     /// On mainnet and testnet it is <c>null</c>, which binds as unset: the code default of
     /// <see cref="NodeOptions.HtlcsEnabled"/> applies (the BOLT 5 O6-T4 gate decides it; write true or false to
     /// override). <c>Gossip</c> carries the BOLT 7 mainnet gate (plan D12, G5-T5): <c>Enabled</c> (the graph),
-    /// <c>SyncEnabled</c> and <c>RelayEnabled</c> are false on mainnet and true elsewhere, and
+    /// <c>SyncEnabled</c> and <c>RelayEnabled</c> are true on every network (the relay on mainnet since the NL-417 proof), and
     /// <c>AllowPublicChannelsOnMainnet</c> is false; <c>AcceptPublicChannels</c> is true everywhere, so on mainnet the
     /// one switch for public channels (ours and a peer's) is <c>AllowPublicChannelsOnMainnet</c>. Every value equals
     /// the code default; the file makes them visible.
@@ -272,15 +272,14 @@ public static class NodeConfigurationExtensions
         var fees = new FeeEstimationOptions();
         var onionMessages = new OnionMessageOptions();
         var offers = new OfferOptions();
-        var isMainnet = resolved == BitcoinNetwork.Mainnet;
         // Regtest and signets switch HTLCs on explicitly; mainnet and testnet leave the switch to NodeOptions' code
         // default (null binds as unset), so the BOLT 5 O6-T4 gate decides both
         var enableHtlcs = resolved == BitcoinNetwork.Regtest || isSignet ? "true" : "null";
         // BOLT 7 plan D12 (decided in wave d12): the graph and gossip sync are on everywhere, mainnet included; the
-        // relay of others' gossip stays off on mainnet; public channels there are gated by
-        // AllowPublicChannelsOnMainnet alone (AcceptPublicChannels keeps its code default, true)
+        // relay of others' gossip too since the NL-417 mainnet relay proof (owner decision 2026-09-28); public channels
+        // on mainnet are gated by AllowPublicChannelsOnMainnet alone (AcceptPublicChannels keeps its code default, true)
         const string gossipOn = "true";
-        var gossipRelayOn = isMainnet ? "false" : "true";
+        const string gossipRelayOn = "true";
 
         var (feeSource, feeUrl) = name switch
         {
