@@ -42,8 +42,7 @@ done
 
 case "$peer" in
     eclair) category="Interop.Eclair"; image_tag="nltg-eclair:0.14.3"; docker_dir="eclair"; build_args=() ;;
-    ldk) category="Interop.Ldk"; image_tag="nltg-ldk-server:dc02b76c"; docker_dir="ldk_server"
-         build_args=(--build-arg GIT_HASH=dc02b76c) ;;
+    ldk) category="Interop.Ldk"; image_tag="nltg-ldk-server:dc02b76c"; docker_dir="ldk_server"; build_args=() ;;
     cln) category="Interop.Cln"; image_tag=""; docker_dir=""; build_args=() ;;
     *) echo "Unknown peer '$peer' (eclair, ldk or cln)" >&2; exit 2 ;;
 esac
@@ -65,10 +64,10 @@ if [[ "$build_image" == true ]]; then
     elif docker image inspect "$image_tag" > /dev/null 2>&1; then
         echo "--build: $image_tag is already built"
     else
-        docker build -t "$image_tag" "${build_args[@]}" "$repo_root/test/Docker/$docker_dir"
+        docker build -t "$image_tag" ${build_args[@]+"${build_args[@]}"} "$repo_root/test/Docker/$docker_dir"
     fi
 fi
 
 dotnet build "$repo_root/NLightning.sln" -c "$configuration" -p:MSBuildWarningsAsMessages=MSB4121
 dotnet run --project "$project" -c "$configuration" -f "$framework" --no-build -- \
-    -trait "Category=$category" "${extra[@]}"
+    -trait "Category=$category" ${extra[@]+"${extra[@]}"}

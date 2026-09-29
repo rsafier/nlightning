@@ -102,12 +102,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 7 | 168 | 175 |
+| open | 0 | 0 | 7 | 170 | 177 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 61 | 149 | 136 | 360 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **61** | **160** | **310** | **545** |
+| **Total** | **14** | **61** | **160** | **312** | **547** |
 
 ### Epics
 
@@ -5101,7 +5101,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** medium
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/`, `.github/workflows/`
-- **Evidence:** The project goal requires LND/CLN/Eclair/LDK interop; only LND v0.20.0 is exercised, manually. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): re-scoped: CLN v26.06.8 interop is covered (`Docker/Interop/Cln/`, 7c7c8c5e and later: connect, channels both ways, payments, reestablish, close, gossip, onion messages, offers, peer storage; 39 tests at wave B12). Remaining: no Eclair or LDK fixture (Eclair is met only as a mainnet gossip peer by `tools/NLightning.GossipProbe`, NL-407), and CI runs no Docker test (`.github/workflows/dotnet.yml:40` and the other workflows filter `FullyQualifiedName!~Docker`), which needs NL-276. Update (lane interop-el, branch `wip/fafo-interop-el`): Eclair 0.14.3 basic interop covered: `Fixtures/EclairFixture` (own bitcoind 31.1 and network, image built from `test/Docker/eclair`), `Docker/Interop/Eclair/EclairInteropTests` (`Category=Interop.Eclair`, `scripts/run-interop.sh eclair`): init both ways, our dual-funded open and Eclair's, v1 opens both ways, payments both ways, cooperative close from either side, reestablish after Eclair restarts; 8 regular + 2 `Explicit` tests, 10/10 green from the host in about 3 min. Findings NL-550, NL-551, NL-552, NL-553, NL-554. Still open: LDK (no fixture yet) and Docker tests in CI.
+- **Evidence:** The project goal requires LND/CLN/Eclair/LDK interop; only LND v0.20.0 is exercised, manually. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): re-scoped: CLN v26.06.8 interop is covered (`Docker/Interop/Cln/`, 7c7c8c5e and later: connect, channels both ways, payments, reestablish, close, gossip, onion messages, offers, peer storage; 39 tests at wave B12). Remaining: no Eclair or LDK fixture (Eclair is met only as a mainnet gossip peer by `tools/NLightning.GossipProbe`, NL-407), and CI runs no Docker test (`.github/workflows/dotnet.yml:40` and the other workflows filter `FullyQualifiedName!~Docker`), which needs NL-276. Update (lane interop-el, branch `wip/fafo-interop-el`): Eclair 0.14.3 basic interop covered: `Fixtures/EclairFixture` (own bitcoind 31.1 and network, image built from `test/Docker/eclair`), `Docker/Interop/Eclair/EclairInteropTests` (`Category=Interop.Eclair`, `scripts/run-interop.sh eclair`): init both ways, our dual-funded open and Eclair's, v1 opens both ways, payments both ways, cooperative close from either side, reestablish after Eclair restarts; 8 regular + 2 `Explicit` tests, 10/10 green from the host in about 3 min. Findings NL-550, NL-551, NL-552, NL-553, NL-554. Update (lane interop-el, LDK): ldk-server `dc02b76c` (LDK Node over rust-lightning 0.3.0-rc1) basic interop covered: `Fixtures/LdkFixture` (own bitcoind 31.1 and network, image built from `test/Docker/ldk_server`), `Docker/Interop/Ldk/LdkInteropTests` (`Category=Interop.Ldk`, `scripts/run-interop.sh ldk`): init both ways (anchors, splice, quiesce, route blinding, onion messages negotiated; no dual funding), our v1 open (1M sat, 300k pushed) and LDK's (1M sat), both anchors and private, payments both ways, cooperative close started by either side (legacy `closing_signed`), reestablish after LDK restarts; 6 tests, 6/6 green three runs in a row from the host (53-98 s; the image was already built). No new incompatibility: LDK asks for a `to_self_delay` of 144 and offers a 100 % in-flight limit on unannounced channels, so neither NL-550 nor NL-552 applies. Findings NL-555, NL-556. Still open: Docker tests in CI.
 - **Fix sketch:** Add an LDK fixture (ldk-server) and a scheduled CI job with Docker.
 - **Blocks/Blocked-by:** Related NL-550, NL-551, NL-552
 - **Plan ref:** —
@@ -5639,6 +5639,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Not covered against Eclair 0.14.3: splicing and quiescence (both negotiated), RBF of a dual-funded open, `option_simple_close` (Eclair offers it; ours is off by default), `attribution_data` (Eclair offers it, unlike LND 0.20; ours stays experimental, NL-332), BOLT 12 and onion messages, gossip and public channels, force closes and on-chain resolution. Eclair 0.14 opens only anchor, taproot and zero-fee channel types, so a node pinned to `option_static_remotekey` cannot open with it; its taproot preference is never reached (we do not offer it). A real dual-funded open with our contribution passes (`Explicit` E-X1) once Eclair's `open` is given a `fundingFeeBudgetSatoshis` above its default (500 sat for 500k sat, below the 825 sat the shared transaction costs; test-side only).
 - **Fix sketch:** Add the proofs that matter for the day-0 goal first (splice in/out with Eclair, RBF of a dual-funded open, attribution_data once NL-332 is decided).
 - **Blocks/Blocked-by:** Related NL-180, NL-332
+- **Plan ref:** —
+
+### NL-555 ldk-server has no tags, releases or official image; the interop fixture builds a pinned commit
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/Docker/ldk_server/Dockerfile`, `test/NLightning.Integration.Tests/Fixtures/LdkFixture.cs`
+- **Evidence:** github.com/lightningdevkit/ldk-server publishes no tag, release or image, and its CLI changes without them. The fixture builds `nltg-ldk-server:dc02b76c` (commit `dc02b76c7d338161aeafbcd95a0be32e7dce2caa`, LDK Node `f375e4d5`, rust-lightning 0.3.0-rc1) on `rust:1.85-bookworm` and `debian:bookworm-slim`, both pinned by digest, when the tag is missing: a cold build (release profile with LTO) took 7 min on this machine (the fixture allows 40 min; `scripts/run-interop.sh ldk --build` prebuilds it). A bump is a deliberate change of `LDK_SERVER_COMMIT` and `LdkFixture.LdkTag`, and the `LdkClient` subcommands and JSON fields must be checked against `ldk-server-cli --help` again (`list-payments` answers `{"list": [...]}`, not `payments`).
+- **Fix sketch:** Switch to a release tag or an official image once ldk-server publishes one.
+- **Blocks/Blocked-by:** Related NL-180, NL-553
+- **Plan ref:** —
+
+### NL-556 LDK interop gaps left by the basic lane
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Ldk/`
+- **Evidence:** LDK Node has no dual funding (rust-lightning's `enable_dual_funded_channels` is off and ldk-server does not expose it; LDK's `init` has no bit 28/29, so we never negotiate `option_dual_fund` with it and every open is v1). Not covered against ldk-server `dc02b76c`: splicing and quiescence (both negotiated: LDK offers them), `option_simple_close` (ours is off by default), route blinding, onion messages and BOLT 12 (all offered by LDK), public channels and gossip (LDK keeps channels unannounced without an alias and announcement address), force closes and on-chain resolution, zero-fee commitments (off in LDK by default). Observation to check: when we closed a 500k sat anchors channel we funded (legacy `closing_signed`), the closing transaction paid 5,070 sat with our estimate at 2,500 sat/kw, about three times what its weight needs; LDK's close of its own channel paid 171 sat. Which side's `closing_signed`/`fee_range` choice set the 5,070 sat was not analysed in this lane.
+- **Fix sketch:** Add a splice in/out proof with LDK (the day-0 goal's second step), and read the negotiated closing fee from our coordinator's `closing_signed` log line as `ClnCloseTests` does.
+- **Blocks/Blocked-by:** Related NL-180, NL-554
 - **Plan ref:** —
 
 ## Docs
