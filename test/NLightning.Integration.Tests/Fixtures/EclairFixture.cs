@@ -12,7 +12,7 @@ using Domain.Money;
 /// fixtures.
 /// </summary>
 /// <remarks>
-/// <para>ACINQ publishes no pinned multi-arch image of a recent release (NL-551), so the fixture builds
+/// <para>ACINQ publishes no pinned multi-arch image of a recent release (NL-553), so the fixture builds
 /// <see cref="EclairImage"/> from <c>test/Docker/eclair</c> (the v0.14.3 release zip, sha256-checked, on a pinned
 /// Temurin 21 JRE) when the tag is missing (about 15 s).</para>
 /// <para>Eclair funds channels from the bitcoind wallet <c>eclair</c>, follows blocks over ZMQ <c>hashblock</c> and

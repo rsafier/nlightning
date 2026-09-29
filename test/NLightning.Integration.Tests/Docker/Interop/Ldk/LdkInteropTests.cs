@@ -61,7 +61,7 @@ public sealed class LdkInteropTests : IAsyncLifetime
 
     /// <summary>
     /// 1a: BOLT 8 handshake and <c>init</c> with us as initiator; both ends list each other, the connection stays up,
-    /// and <c>option_anchors</c> is negotiated.
+    /// and the features both ends offer are negotiated (<see cref="AssertNegotiatedFeatures"/>).
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_LdkNode_When_WeConnect_Then_InitExchangedAndAnchorsNegotiated()
@@ -80,9 +80,7 @@ public sealed class LdkInteropTests : IAsyncLifetime
                                        && await _fixture.Ldk.IsConnectedAsync(node.NodeIdHex, ct),
                               TimeSpan.FromSeconds(30), "both ends list each other", ct);
         await LogFeaturesAsync(node, ldkId, ct);
-        var peer = node.PeerManager.GetPeer(ldkId);
-        Assert.NotNull(peer);
-        Assert.NotEqual(FeatureSupport.No, peer.NegotiatedFeatures.OptionAnchors);
+        AssertNegotiatedFeatures(node, ldkId);
         Assert.True(await Poll.HoldsAsync(() => node.IsConnectedTo(ldkId), TimeSpan.FromSeconds(5), ct),
                     "the connection to LDK dropped");
         Assert.True(await _fixture.Ldk.IsConnectedAsync(node.NodeIdHex, ct), "LDK dropped the connection");
@@ -90,8 +88,8 @@ public sealed class LdkInteropTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// 1b: LDK dials us at <c>host.docker.internal</c> (our listener on every interface): we are the BOLT 8 responder
-    /// and the connection stays up.
+    /// 1b: LDK dials us at <c>host.docker.internal</c> (our listener on every interface): we are the BOLT 8 responder,
+    /// the connection stays up and the same features are negotiated.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_OurListeningNode_When_LdkConnectsToUs_Then_InitExchangedAndConnectionStable()
@@ -115,6 +113,7 @@ public sealed class LdkInteropTests : IAsyncLifetime
                                        && await _fixture.Ldk.IsConnectedAsync(node.NodeIdHex, ct),
                               TimeSpan.FromSeconds(30), "both ends list each other", ct);
         await LogFeaturesAsync(node, ldkId, ct);
+        AssertNegotiatedFeatures(node, ldkId);
         Assert.True(await Poll.HoldsAsync(() => node.IsConnectedTo(ldkId), TimeSpan.FromSeconds(5), ct),
                     "the connection from LDK dropped");
         Assert.True(await _fixture.Ldk.IsConnectedAsync(node.NodeIdHex, ct), "LDK dropped the connection");
@@ -340,5 +339,23 @@ public sealed class LdkInteropTests : IAsyncLifetime
                             + $"provide_storage={negotiated.OptionProvideStorage}; peer's init features "
                             + $"{Convert.ToHexString(peer.Features.GetWireBytes() ?? []).ToLowerInvariant()}");
         }
+    }
+
+    /// <summary>
+    /// The features both ends offer are negotiated: anchors, splice, quiesce, route blinding and onion messages; dual
+    /// funding is not (LDK does not offer it).
+    /// </summary>
+    private static void AssertNegotiatedFeatures(NLightningTestNode node, CompactPubKey peerId)
+    {
+        var peer = node.PeerManager.GetPeer(peerId);
+        Assert.NotNull(peer);
+        var negotiated = peer.NegotiatedFeatures;
+        Assert.NotEqual(FeatureSupport.No, negotiated.OptionAnchors);
+        // LDK has no dual funding (no bit 28/29 in its init, NL-556)
+        Assert.Equal(FeatureSupport.No, negotiated.DualFund);
+        Assert.NotEqual(FeatureSupport.No, negotiated.OptionSplice);
+        Assert.NotEqual(FeatureSupport.No, negotiated.OptionQuiesce);
+        Assert.NotEqual(FeatureSupport.No, negotiated.OptionRouteBlinding);
+        Assert.NotEqual(FeatureSupport.No, negotiated.OptionOnionMessages);
     }
 }
