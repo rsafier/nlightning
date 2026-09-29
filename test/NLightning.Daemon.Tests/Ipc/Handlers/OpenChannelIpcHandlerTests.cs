@@ -117,7 +117,7 @@ public class OpenChannelIpcHandlerTests
     [Fact]
     public void Given_ARequestWithoutKey4_When_Deserialized_Then_ItIsPrivate()
     {
-        // Arrange (an older client: keys 0, 2 and 3 only): the same request without its last two array elements
+        // Arrange (an older client: keys 0, 2 and 3 only): the same request without its last three array elements
         var current = MessagePackSerializer.Serialize(
             new OpenChannelIpcRequest
             {
@@ -125,10 +125,11 @@ public class OpenChannelIpcHandlerTests
                 Amount = LightningMoney.Satoshis(1_000),
                 PushAmount = LightningMoney.Satoshis(10)
             }, s_options, TestContext.Current.CancellationToken);
-        Assert.Equal(0x96, current[0]); // fixarray of 6 (keys 0-5)
-        Assert.Equal(0xC2, current[^2]); // key 4: false
-        Assert.Equal(0xC2, current[^1]); // key 5: false
-        byte[] older = [0x94, .. current[1..^2]];
+        Assert.Equal(0x97, current[0]); // fixarray of 7 (keys 0-6)
+        Assert.Equal(0xC2, current[^3]); // key 4: false
+        Assert.Equal(0xC2, current[^2]); // key 5: false
+        Assert.Equal(0xC2, current[^1]); // key 6: false
+        byte[] older = [0x94, .. current[1..^3]];
 
         // Act
         var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(
@@ -144,7 +145,7 @@ public class OpenChannelIpcHandlerTests
     [Fact]
     public void Given_ARequestWithoutKey5_When_Deserialized_Then_ItIsNotDualFunded()
     {
-        // Arrange (a client before wave sp1: keys 0, 2, 3 and 4): the same request without its last array element
+        // Arrange (a client before wave sp1: keys 0, 2, 3 and 4): the same request without its last two array elements
         var current = MessagePackSerializer.Serialize(
             new OpenChannelIpcRequest
             {
@@ -153,8 +154,9 @@ public class OpenChannelIpcHandlerTests
                 IsPublic = true,
                 IsDualFunded = true
             }, s_options, TestContext.Current.CancellationToken);
-        Assert.Equal(0xC3, current[^1]); // key 5: true
-        byte[] older = [0x95, .. current[1..^1]];
+        Assert.Equal(0xC3, current[^2]); // key 5: true
+        Assert.Equal(0xC2, current[^1]); // key 6: false
+        byte[] older = [0x95, .. current[1..^2]];
 
         // Act
         var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(
@@ -163,6 +165,48 @@ public class OpenChannelIpcHandlerTests
         // Assert
         Assert.True(request.IsPublic);
         Assert.False(request.IsDualFunded);
+    }
+
+    [Fact]
+    public void Given_ARequestWithoutKey6_When_Deserialized_Then_ItDoesNotForceV1()
+    {
+        // Arrange (a client before NL-551: keys 0, 2, 3, 4 and 5): the same request without its last array element
+        var current = MessagePackSerializer.Serialize(
+            new OpenChannelIpcRequest
+            {
+                NodeInfo = "02abc@127.0.0.1:9735",
+                Amount = LightningMoney.Satoshis(1_000),
+                ForceV1 = true
+            }, s_options, TestContext.Current.CancellationToken);
+        Assert.Equal(0xC3, current[^1]); // key 6: true
+        byte[] older = [0x96, .. current[1..^1]];
+
+        // Act
+        var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(
+            older, s_options, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(request.ForceV1);
+        Assert.False(request.ToClientRequest().ForceV1);
+    }
+
+    [Fact]
+    public void Given_AForceV1Request_When_MappedToTheClientRequest_Then_TheFlagIsKept()
+    {
+        // Arrange (NL-551)
+        var request = new OpenChannelIpcRequest
+        {
+            NodeInfo = "02abc@127.0.0.1:9735",
+            Amount = LightningMoney.Satoshis(1_000),
+            ForceV1 = true
+        };
+
+        // Act
+        var clientRequest = request.ToClientRequest();
+
+        // Assert
+        Assert.True(clientRequest.ForceV1);
+        Assert.False(clientRequest.IsDualFunded);
     }
 
     [Fact]

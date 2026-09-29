@@ -16,9 +16,16 @@ internal class OpenChannelMessageHandler
 
     /// <summary>
     /// The option that opens a dual-funded (v2) channel (<c>open_channel2</c>, BOLT 2 "Channel Establishment v2"): the
-    /// amount is our contribution, the peer may add its own; no push.
+    /// amount is our contribution, the peer may add its own; no push. Refused when the peer lacks
+    /// <c>option_dual_fund</c>. Without it the daemon opens v2 anyway when the peer supports dual funding and no push is
+    /// given (NL-551).
     /// </summary>
     internal const string DualFundOption = "--dual-fund";
+
+    /// <summary>
+    /// The option that opens a v1 channel (<c>open_channel</c>) even when the peer supports dual funding (NL-551).
+    /// </summary>
+    internal const string V1Option = "--v1";
 
     /// <summary>
     /// The option that returns as soon as the funding transaction is printed instead of waiting for
@@ -26,13 +33,13 @@ internal class OpenChannelMessageHandler
     /// </summary>
     internal const string NoWaitOption = "--no-wait";
 
-    internal const string Usage = "<node> <amount_sats> [push_sats] [--public] [--dual-fund] [--no-wait]";
+    internal const string Usage = "<node> <amount_sats> [push_sats] [--public] [--dual-fund|--v1] [--no-wait]";
 
     internal static async Task HandleAsync(string[] commandArgs, NamedPipeIpcClient client,
                                            CancellationToken cancellationToken)
     {
-        var positional = ParseArguments(commandArgs, out var isPublic, out var isDualFunded, out var noWait,
-                                        out var error);
+        var positional = ParseArguments(commandArgs, out var isPublic, out var isDualFunded, out var forceV1,
+                                        out var noWait, out var error);
         if (error is not null)
             throw new ArgumentException(error, nameof(commandArgs));
 
@@ -41,7 +48,7 @@ internal class OpenChannelMessageHandler
 
         await RunAsync(ct => client.OpenChannelAsync(positional[0], positional[1],
                                                      positional.Length > 2 ? positional[2] : null, ct, isPublic,
-                                                     isDualFunded),
+                                                     isDualFunded, forceV1),
                        client.OpenChannelSubscriptionAsync, noWait, Console.Out, cancellationToken);
     }
 
@@ -115,20 +122,23 @@ internal class OpenChannelMessageHandler
 
     /// <summary>
     /// Splits the arguments of <c>openchannel</c> into the positional ones (node, amount, push) and the
-    /// <see cref="PublicOption"/>, <see cref="DualFundOption"/> and <see cref="NoWaitOption"/> flags, which may appear
-    /// anywhere after the command.
+    /// <see cref="PublicOption"/>, <see cref="DualFundOption"/>, <see cref="V1Option"/> and <see cref="NoWaitOption"/>
+    /// flags, which may appear anywhere after the command.
     /// </summary>
     /// <param name="commandArgs">The arguments after the command name.</param>
     /// <param name="isPublic">True when <see cref="PublicOption"/> was given.</param>
     /// <param name="isDualFunded">True when <see cref="DualFundOption"/> was given.</param>
+    /// <param name="forceV1">True when <see cref="V1Option"/> was given.</param>
     /// <param name="noWait">True when <see cref="NoWaitOption"/> was given.</param>
-    /// <param name="error">The usage error for an unknown option or too many arguments, else null.</param>
+    /// <param name="error">The usage error for an unknown option, <see cref="DualFundOption"/> together with
+    /// <see cref="V1Option"/> or too many arguments, else null.</param>
     /// <returns>The positional arguments, in order.</returns>
     internal static string[] ParseArguments(string[] commandArgs, out bool isPublic, out bool isDualFunded,
-                                            out bool noWait, out string? error)
+                                            out bool forceV1, out bool noWait, out string? error)
     {
         isPublic = false;
         isDualFunded = false;
+        forceV1 = false;
         noWait = false;
         error = null;
         var positional = new List<string>(commandArgs.Length);
@@ -146,6 +156,12 @@ internal class OpenChannelMessageHandler
                 continue;
             }
 
+            if (string.Equals(arg, V1Option, StringComparison.OrdinalIgnoreCase))
+            {
+                forceV1 = true;
+                continue;
+            }
+
             if (string.Equals(arg, NoWaitOption, StringComparison.OrdinalIgnoreCase))
             {
                 noWait = true;
@@ -156,14 +172,17 @@ internal class OpenChannelMessageHandler
             // "--" is an option we don't know
             if (arg.StartsWith("--", StringComparison.Ordinal))
             {
-                error = $"Unknown option '{arg}': expected {PublicOption}, {DualFundOption} or {NoWaitOption}.";
+                error = $"Unknown option '{arg}': expected {PublicOption}, {DualFundOption}, {V1Option} or "
+                      + $"{NoWaitOption}.";
                 return [];
             }
 
             positional.Add(arg);
         }
 
-        if (positional.Count > 3)
+        if (isDualFunded && forceV1)
+            error = $"{DualFundOption} and {V1Option} can't be used together.";
+        else if (positional.Count > 3)
             error = $"Too many arguments. Usage: openchannel {Usage}";
 
         return positional.ToArray();

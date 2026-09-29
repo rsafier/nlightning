@@ -17,6 +17,7 @@ using Domain.Client.Constants;
 using Domain.Client.Exceptions;
 using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
@@ -28,7 +29,8 @@ using Transport.Ipc.Responses;
 
 /// <summary>
 /// <c>openchannel --dual-fund</c> (wave sp1 lane SP1-F, NL-037): the client handler hands the open to
-/// <see cref="IDualFundedOpenService"/> and never builds a v1 channel.
+/// <see cref="IDualFundedOpenService"/> and never builds a v1 channel. A plain <c>openchannel</c> does the same when
+/// <c>option_dual_fund</c> is negotiated, unless it needs v1 (NL-551).
 /// </summary>
 public class OpenChannelDualFundClientHandlerTests
 {
@@ -176,6 +178,97 @@ public class OpenChannelDualFundClientHandlerTests
         var exception = await Assert.ThrowsAsync<ClientException>(
                             () => handler.HandleAsync(request, TestContext.Current.CancellationToken));
         Assert.Equal(ErrorCodes.InvalidOperation, exception.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Given_APeerWithDualFund_When_APlainOpenIsHandled_Then_ItOpensDualFundedAndReturnsTheFunding()
+    {
+        // Arrange (NL-551): no --dual-fund, but option_dual_fund is negotiated with the peer
+        SetPeerFeatures(new FeatureOptions { DualFund = FeatureSupport.Optional });
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x7C, 32).ToArray());
+        var txId = new TxId(Enumerable.Repeat((byte)0x7D, 32).ToArray());
+        _dualFund.Setup(s => s.OpenAsync(It.Is<DualFundedOpenRequest>(r => r.PeerNodeId == s_peer
+                                                                         && r.LocalFundingAmount
+                                                                         == LightningMoney.Satoshis(400_000)
+                                                                         && r.IsPublic),
+                                         It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(new DualFundedOpenResult(channelId, txId));
+        var request = new OpenChannelClientRequest(s_peer.ToString(), LightningMoney.Satoshis(400_000))
+        {
+            IsPublic = true
+        };
+
+        // Act
+        var response = await CreateHandler().HandleAsync(request, TestContext.Current.CancellationToken);
+
+        // Assert: the v2 channel and its published funding (NL-535: the client prints it at once), no v1 channel
+        Assert.Equal(channelId, response.ChannelId);
+        Assert.Equal(txId, response.FundingTxId);
+        _channelFactory.VerifyNoOtherCalls();
+        _channelManager.VerifyNoOtherCalls();
+    }
+
+    public static TheoryData<string, FeatureSupport, long, bool> V1Cases => new()
+    {
+        { "the peer lacks option_dual_fund", FeatureSupport.No, 0, false },
+        { "a push amount (v2 has none)", FeatureSupport.Optional, 1_000, false },
+        { "--v1", FeatureSupport.Optional, 0, true }
+    };
+
+    [Theory]
+    [MemberData(nameof(V1Cases))]
+    public async Task Given_ARequestThatNeedsV1_When_APlainOpenIsHandled_Then_ItOpensV1(string reason,
+        FeatureSupport peerDualFund, long pushSat, bool forceV1)
+    {
+        // Arrange (NL-551): the v1 factory is reached, then stopped by a sentinel
+        SetPeerFeatures(new FeatureOptions { DualFund = peerDualFund });
+        _channelFactory.Setup(f => f.CreateChannelV1AsInitiatorAsync(It.IsAny<OpenChannelClientRequest>(),
+                                                                     It.IsAny<FeatureOptions>(), s_peer))
+                       .ThrowsAsync(new InvalidOperationException("v1 sentinel"));
+        var request = new OpenChannelClientRequest(s_peer.ToString(), LightningMoney.Satoshis(400_000))
+        {
+            PushAmount = pushSat == 0 ? null : LightningMoney.Satoshis(pushSat),
+            ForceV1 = forceV1
+        };
+
+        // Act
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                            () => CreateHandler().HandleAsync(request, TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.True(exception.Message == "v1 sentinel", reason);
+        _channelFactory.Verify(f => f.CreateChannelV1AsInitiatorAsync(request, It.IsAny<FeatureOptions>(), s_peer),
+                               Times.Once);
+        _dualFund.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_DualFundAndForceV1_When_Handled_Then_Refused()
+    {
+        // Arrange
+        var request = new OpenChannelClientRequest(s_peer.ToString(), LightningMoney.Satoshis(400_000))
+        {
+            IsDualFunded = true,
+            ForceV1 = true
+        };
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ClientException>(
+                            () => CreateHandler().HandleAsync(request, TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal(ErrorCodes.InvalidOperation, exception.ErrorCode);
+        _dualFund.VerifyNoOtherCalls();
+        _channelFactory.VerifyNoOtherCalls();
+    }
+
+    private void SetPeerFeatures(FeatureOptions features)
+    {
+        var peer = new PeerModel(s_peer, "127.0.0.1", 9735, "ipv4");
+        var peerService = new Mock<IPeerService>();
+        peerService.Setup(p => p.Features).Returns(features);
+        peer.SetPeerService(peerService.Object);
+        _peerManager.Setup(m => m.GetPeer(s_peer)).Returns(peer);
     }
 
     private OpenChannelClientHandler CreateHandler() =>

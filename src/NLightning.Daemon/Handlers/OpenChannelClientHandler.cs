@@ -22,6 +22,7 @@ using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
+using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Node.ValueObjects;
 using Domain.Protocol.Interfaces;
@@ -112,6 +113,10 @@ public sealed class OpenChannelClientHandler
         if (request.IsPublic && request.IsZeroConfChannel)
             throw new ClientException(ErrorCodes.InvalidOperation, "A public channel can't be zero-conf");
 
+        if (request.IsDualFunded && request.ForceV1)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "A channel can't be opened both dual-funded (--dual-fund) and v1 (--v1)");
+
         // Check if either a PeerAddressInfo or a CompactPubKey was provided
         var isPeerAddressInfo = request.NodeInfo.Contains('@') && request.NodeInfo.Contains(':');
         CompactPubKey peerId;
@@ -124,9 +129,18 @@ public sealed class OpenChannelClientHandler
         var peer = _peerManager.GetPeer(peerId)
                 ?? await _peerManager.ConnectToPeerAsync(new PeerAddressInfo(request.NodeInfo));
 
-        // Wave DF: a dual-funded (v2) open negotiates the funding transaction interactively, our share from the wallet
+        // Wave DF: a dual-funded (v2) open negotiates the funding transaction interactively, our share from the wallet.
+        // NL-551: it is the default when the peer supports it (Eclair refuses a v1 open once option_dual_fund is
+        // negotiated; CLN and Eclair open v2 themselves then)
         if (request.IsDualFunded)
             return await OpenDualFundedAsync(request, peerId, ct);
+        if (OpensDualFundedByDefault(request, peer))
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation("Opening a dual-funded channel with {PeerId}: option_dual_fund is negotiated "
+                                     + "(openchannel --v1 opens v1)", peerId);
+            return await OpenDualFundedAsync(request, peerId, ct);
+        }
 
         // Let's check if we have enough funds to open this channel
         var currentHeight = _blockchainMonitor.LastProcessedBlockHeight;
@@ -314,7 +328,8 @@ public sealed class OpenChannelClientHandler
     }
 
     /// <summary>
-    /// <c>openchannel --dual-fund</c>: <c>open_channel2</c> with <see cref="OpenChannelClientRequest.FundingAmount"/>
+    /// <c>openchannel --dual-fund</c> (or a plain <c>openchannel</c> to a peer with <c>option_dual_fund</c>, NL-551):
+    /// <c>open_channel2</c> with <see cref="OpenChannelClientRequest.FundingAmount"/>
     /// as our contribution (BOLT 2 "Channel Establishment v2"); completes once both <c>tx_signatures</c> were exchanged.
     /// </summary>
     private async Task<OpenChannelClientResponse> OpenDualFundedAsync(OpenChannelClientRequest request,
@@ -364,6 +379,17 @@ public sealed class OpenChannelClientHandler
             FundingOutputIndex = outputIndex
         };
     }
+
+    /// <summary>
+    /// NL-551: a plain <c>openchannel</c> opens v2 when <c>option_dual_fund</c> is negotiated with the peer and nothing
+    /// needs v1: no <see cref="OpenChannelClientRequest.ForceV1"/>, no push amount and no zero-conf (v2 has neither).
+    /// </summary>
+    private bool OpensDualFundedByDefault(OpenChannelClientRequest request, PeerModel peer) =>
+        _dualFundedOpenService is not null
+     && !request.ForceV1
+     && request.PushAmount is not { IsZero: false }
+     && !request.IsZeroConfChannel
+     && peer.NegotiatedFeatures.DualFund != FeatureSupport.No;
 
     /// <summary>
     /// The funding selection's own failure (NL-393): the UTXO lock throws a plain <see cref="InvalidOperationException"/>
