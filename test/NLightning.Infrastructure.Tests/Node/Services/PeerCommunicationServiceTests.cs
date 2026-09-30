@@ -123,6 +123,42 @@ public class PeerCommunicationServiceTests
     }
 
     [Fact]
+    public void Given_PingsUpToTheAnswerLimit_When_Received_Then_EachGetsAPong()
+    {
+        // Arrange
+        _ = CreateInitializedService();
+
+        // Act
+        for (var i = 0; i < PingRateLimiter.DefaultMaxAnsweredPings; i++)
+            RaiseMessage(CreatePing(32));
+
+        // Assert
+        _messageFactoryMock.Verify(x => x.CreatePongMessage(It.IsAny<IMessage>()),
+                                   Times.Exactly(PingRateLimiter.DefaultMaxAnsweredPings));
+        _messageServiceMock.Verify(
+            x => x.SendMessageAsync(It.IsAny<PongMessage>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(PingRateLimiter.DefaultMaxAnsweredPings));
+    }
+
+    [Fact]
+    public void Given_APingFlood_When_Received_Then_ThePingsBeyondTheAnswerLimitGetNoPong()
+    {
+        // Arrange (NL-005, BOLT 1: limited precautions against ping flooding)
+        _ = CreateInitializedService();
+
+        // Act
+        for (var i = 0; i < PingRateLimiter.DefaultMaxAnsweredPings + 3; i++)
+            RaiseMessage(CreatePing(32));
+
+        // Assert - the first pings keep their pong, the flood beyond the limit is ignored without one
+        _messageFactoryMock.Verify(x => x.CreatePongMessage(It.IsAny<IMessage>()),
+                                   Times.Exactly(PingRateLimiter.DefaultMaxAnsweredPings));
+        _messageServiceMock.Verify(
+            x => x.SendMessageAsync(It.IsAny<PongMessage>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(PingRateLimiter.DefaultMaxAnsweredPings));
+    }
+
+    [Fact]
     public async Task Given_RealPingPongService_When_PeerInitArrivesAfterInitialize_Then_PeerIsNotDisconnected()
     {
         // Arrange
