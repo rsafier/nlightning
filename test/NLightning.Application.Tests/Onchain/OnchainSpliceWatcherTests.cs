@@ -90,6 +90,8 @@ public sealed class OnchainSpliceWatcherTests : IDisposable
         unitOfWork.SetupGet(u => u.RemoteShachainDbRepository).Returns(new Mock<IRemoteShachainDbRepository>().Object);
         unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(_fundings.Object);
         unitOfWork.SetupGet(u => u.RevokedCommitmentDbRepository).Returns(_revocationLog.Object);
+        // The database's copy of the channel: another instance than the shared in-memory model (NL-307)
+        _store.LoadChannel = id => id == _channel.ChannelId ? _pair.Bob.Channel : null;
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
         services.AddSingleton(Options.Create(new Domain.Node.Options.NodeOptions()));
