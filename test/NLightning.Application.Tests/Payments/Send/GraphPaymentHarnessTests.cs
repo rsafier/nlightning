@@ -5,6 +5,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Gossip.Graph;
 using Domain.Money;
 using Domain.Payments.Enums;
+using Domain.Payments.Keysend;
 using Domain.Payments.Models;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.ValueObjects;
@@ -200,5 +201,27 @@ public class GraphPaymentHarnessTests
 
         Assert.Equal(0.36, quote.Probability, 9);
         Assert.Equal(PaymentHarness.BlockHeight, quote.BlockHeight);
+    }
+
+    [Fact]
+    public async Task Given_AnUnreachableKeysendPayee_When_BobPays_Then_TheNoRouteErrorKeepsTheGraphReason()
+    {
+        // Arrange: a node id that is neither Bob's peer nor in his graph at all (NL-566)
+        using var harness = Harness();
+        var stranger = new TestNodeKeyManager(0xF0).NodeId;
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var result = await harness.RunAsync(harness.Bob.PaymentService.PayKeysendAsync(
+            new PayKeysendRequest(stranger, LightningMoney.MilliSatoshis(1_000)),
+            new PayInvoiceOptions { Timeout = s_timeout }, ct));
+
+        // Assert: the stored failure carries the direct step's and the graph step's reason, as getroute reports it
+        var payment = result.Payment;
+        Assert.Equal(PaymentStatus.Failed, payment.Status);
+        Assert.NotNull(payment.FailureReason);
+        Assert.StartsWith("No route to the payee: ", payment.FailureReason);
+        Assert.Contains($"no usable channel to {stranger}", payment.FailureReason);
+        Assert.Contains("the graph has no path for the whole amount within the limits", payment.FailureReason);
     }
 }
