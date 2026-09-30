@@ -17,6 +17,12 @@ public static class NetworkConstants
     public const string Signet = "signet";
 
     /// <summary>
+    /// Testnet4. Not a built-in network yet (NL-012: no chain hash, so <c>BitcoinNetwork.Resolve</c> still rejects the
+    /// name); the constant exists for the BOLT 10 seed plumbing (NL-545) and for a custom registration of the network.
+    /// </summary>
+    public const string Testnet4 = "testnet4";
+
+    /// <summary>
     /// Mutinynet, a custom signet (30 s blocks) with the signet genesis block. It is registered as a custom signet by
     /// default, so it resolves to <see cref="Signet"/> (see <c>BitcoinNetwork.Resolve</c>).
     /// </summary>

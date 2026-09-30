@@ -107,12 +107,12 @@ public class BootstrapOptionsTests
     [InlineData("mainnet", 2)]
     [InlineData("testnet", 1)]
     [InlineData("regtest", 0)]
-    [InlineData("signet", 0)]
-    [InlineData("mutinynet", 0)]
-    public void Given_ANetwork_When_ReadingTheDefaultSeeds_Then_OnlyMainnetAndTestnetHaveSeeds(string network,
+    [InlineData("signet", 1)]
+    [InlineData("mutinynet", 1)]
+    public void Given_ANetwork_When_ReadingTheDefaultSeeds_Then_SeedNetworksHaveTheirSeeds(string network,
         int expected)
     {
-        // Arrange
+        // Arrange (NL-545: signet's root is LND's and held no records on 2026-09-30; mutinynet resolves to signet)
         var options = new BootstrapOptions();
         var resolved = BitcoinNetwork.Resolve(network);
 
@@ -137,14 +137,27 @@ public class BootstrapOptionsTests
         Assert.Equal(["test.nodes.lightning.directory"], BootstrapOptions.GetDefaultSeeds(BitcoinNetwork.Testnet));
     }
 
+    [Fact]
+    public void Given_TheTestnet4AndSignetSeeds_When_Read_Then_TheyAreTheLndRoots()
+    {
+        // Assert (NL-545: LND's ChainDNSSeeds; testnet4 live on 2026-09-30, signet empty on 2026-09-30. Bitcoin
+        // Core's testnet4/signet DNS seeds are P2P seeds, not BOLT 10)
+        Assert.Equal(["test4.nodes.lightning.wiki"], BootstrapOptions.Testnet4Seeds);
+        Assert.Equal(["test4.nodes.lightning.wiki"],
+                     BootstrapOptions.GetDefaultSeeds(new BitcoinNetwork("testnet4")));
+        Assert.Equal(["signet.nodes.lightning.wiki"], BootstrapOptions.SignetSeeds);
+        Assert.Equal(["signet.nodes.lightning.wiki"], BootstrapOptions.GetDefaultSeeds(BitcoinNetwork.Signet));
+        Assert.True(BootstrapOptions.IsSeedNetwork(new BitcoinNetwork("testnet4")));
+        Assert.True(BootstrapOptions.IsSeedNetwork(BitcoinNetwork.Signet));
+        Assert.False(BootstrapOptions.IsSeedNetwork(BitcoinNetwork.Regtest));
+    }
+
     [Theory]
     [InlineData("regtest")]
-    [InlineData("signet")]
-    [InlineData("mutinynet")]
     public void Given_ConfiguredSeedsOnANetworkWithoutSeeds_When_Resolved_Then_TheyAreIgnoredUnlessAllowed(
         string network)
     {
-        // Arrange
+        // Arrange (regtest is the only network without public seeds since NL-545)
         var resolved = BitcoinNetwork.Resolve(network);
         var options = new BootstrapOptions { Seeds = ["seed.example.org"] };
         var allowed = new BootstrapOptions { Seeds = ["seed.example.org"], AllowSeedsOnThisNetwork = true };
