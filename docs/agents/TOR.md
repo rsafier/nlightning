@@ -13,7 +13,7 @@ whole reply, authenticates with COOKIE or a password only, detaches its services
 |---|---|---|---|---|---|
 | `Off` (default) | refused: "set Node:Tor:Mode" | direct | off | as configured | direct |
 | `Hybrid` | through Tor | direct | off (set `OnionServiceEnabled` true to publish one) | as configured | direct |
-| `TorOnly` | through Tor | through Tor (exit), host names resolved by Tor | on | skipped (logged once) | through Tor |
+| `TorOnly` | through Tor | through Tor (exit), host names resolved by Tor; loopback and private-network IPs direct | on | skipped (logged once) | through Tor |
 
 `Hybrid` is the "clearnet node that can peer with Tor-only nodes" setting. `TorOnly` is the private node.
 
@@ -30,12 +30,17 @@ whole reply, authenticates with COOKIE or a password only, detaches its services
     "Control": "127.0.0.1:9051",
     "ControlPassword": null,
     "ControlCookieFile": null,
+    "AllowUnauthenticatedControlPort": false,
     "OnionServiceEnabled": null,
     "OnionServicePort": 9735,
     "OnionServiceTarget": null,
     "OnionServiceKeyFile": "tor_onion_v3.key",
-    "AnnounceOnionService": true
+    "AnnounceOnionService": true,
+    "AllowClearnetListen": false
   }
+},
+"FeeEstimation": {
+  "Source": "Bitcoind"
 }
 ```
 
@@ -44,12 +49,27 @@ whole reply, authenticates with COOKIE or a password only, detaches its services
 - `StreamIsolation`: every peer connection sends fresh random SOCKS5 credentials, so Tor's `IsolateSOCKSAuth` (on by
   default on every `SocksPort`) puts each peer on its own circuit and no exit sees two of our peers on one circuit.
 - `ConnectTimeout` replaces `Node:NetworkTimeout` for connections through Tor (a rendezvous takes seconds); bootstrap
-  dials through Tor wait at least this long.
+  dials through Tor wait at least this long. Once connected, a connection through Tor (dialed through the SOCKS port, or
+  received from loopback while our onion service is on) waits max(`NetworkTimeout`, `ConnectTimeout` / 2), 30 s by
+  default, for the BOLT 8 handshake, the init exchange and each pong, instead of `NetworkTimeout` (NL-590).
 - Control authentication: `ControlPassword` (torrc `HashedControlPassword`) when set; otherwise the cookie Tor names in
   `PROTOCOLINFO` (or `ControlCookieFile`) by SAFECOOKIE, which also checks that the control port belongs to the Tor that
-  wrote the cookie, falling back to COOKIE; otherwise NULL when Tor allows it. The node's user must be able to read the
-  cookie (Debian: add it to the `debian-tor` group; or `CookieAuthFileGroupReadable 1`).
-- `OnionServiceTarget` defaults to the first `ListenAddresses` entry with `0.0.0.0`/`[::]` replaced by loopback.
+  wrote the cookie. Plain COOKIE is never used (it hands the file's bytes to whatever listens on the port; a port offering
+  only COOKIE is refused), and a port that asks for nothing (NULL) is refused unless `AllowUnauthenticatedControlPort` is
+  true, because our onion service key goes to it in `ADD_ONION` (NL-575). A password proves nothing about the other end
+  either, so prefer the cookie. The node's user must be able to read the cookie (Debian: add it to the `debian-tor`
+  group; or `CookieAuthFileGroupReadable 1`).
+- **Prefer a Unix control socket** (`Control: "unix:/run/tor/control"`, torrc `ControlSocket /run/tor/control` with
+  `CookieAuthentication 1`): only local users with the socket's permissions can reach it, so no other process can pose as
+  Tor on a TCP port that Tor failed to bind.
+- `OnionServiceTarget` defaults to the first `ListenAddresses` entry with `0.0.0.0`/`[::]` replaced by loopback; it must
+  be `host:port` (a `unix:` target is refused: the node listens on TCP only, NL-585).
+- `AllowClearnetListen`: in `TorOnly` a `ListenAddresses` entry that is not loopback (the template's `0.0.0.0:9735`
+  included) is a configuration error, since such a listener is reachable without Tor; set `ListenAddresses` to
+  `127.0.0.1:9735`, or this to true for a node that is meant to be reachable both ways (NL-577).
+- `FeeEstimation:Source`: in `TorOnly` the `Http` source goes through a Tor exit, which fee APIs often block or
+  rate-limit, and a failed request leaves the node on `FeeEstimation:FallbackFeeRatePerKw` without a word; the start logs
+  a warning. Use `Bitcoind` (`estimatesmartfee` on our own bitcoind) (NL-578).
 - `OnionServiceKeyFile` (relative paths resolve against the configuration directory, next to the node key): created with
   mode 0600 on the first start from Tor's `ADD_ONION NEW:ED25519-V3` reply, before the address is used; every later
   start hands it back, so the onion address never changes. **The key is the address: back it up with the node key.** A
@@ -63,11 +83,27 @@ ControlPort 127.0.0.1:9051
 CookieAuthentication 1
 ```
 
+or, better, a control socket (`Node:Tor:Control` `unix:/run/tor/control`):
+
+```
+SocksPort 127.0.0.1:9050
+ControlSocket /run/tor/control
+ControlSocketsGroupWritable 1
+CookieAuthentication 1
+CookieAuthFileGroupReadable 1
+```
+
 ## Behaviour
 
 - **Outbound** (`Infrastructure/Transport/Services/TcpService` → `Transport/Tor/TorSocksDialer` → `Socks5Client`): RFC 1928
   `CONNECT` with the host as a domain name (ATYP 3) for onions and host names, never resolved locally; RFC 1929
-  credentials for isolation. Tor's replies, including the proposal 304 extended onion errors (`0xF0` descriptor not
+  credentials for isolation.
+- **Loopback and LAN peers in `TorOnly`** are dialed directly (NL-588): an IP literal in 127.0.0.0/8, ::1, 10/8,
+  172.16/12, 192.168/16, 169.254/16, fe80::/10 or fc00::/7. Tor refuses such targets anyway
+  (`ClientRejectInternalAddresses`), and the connection never leaves the host or the LAN, so it tells no one outside
+  about the node. Carrier-grade NAT space (100.64/10) is the provider's network and goes through Tor, and so does every
+  host name (write `127.0.0.1`, not `localhost`, for a local peer). This is LND's
+  `tor.skip-proxy-for-clearnet-targets` limited to addresses that cannot leave the LAN. Tor's replies, including the proposal 304 extended onion errors (`0xF0` descriptor not
   found … `0xF7` introduction timed out, sent when the `SocksPort` has `ExtendedErrors`), come back as `Socks5Exception`
   (a `ConnectionException`) with the reason in the message: `connect` prints it.
 - **Addresses**: `PeerAddress` holds IPv4, IPv6, Tor v3 `.onion` (version and SHA3-256 checksum checked, Tor v2 refused
@@ -76,9 +112,16 @@ CookieAuthentication 1
 - **Onion service** (`Transport/Tor/TorOnionService`): started by the daemon after the peer manager's listener, in the
   background (a Tor that is not up yet only delays it, 5 s to 5 min backoff); added without `Detach`, so it lives as long
   as our control connection: a node that dies takes its service down, and when Tor restarts the service is added again
-  with the same key. Stopping the daemon closes the connection first.
-- **Inbound** onion connections arrive from Tor on loopback; such peers are saved inbound-only (NL-497) and reconnect to
-  us.
+  with the same key, after the backoff delay (never straight away: a port that closes right after every registration is
+  not redialed in a tight loop; a connection that held a minute resets the backoff, NL-583). Stopping the daemon closes
+  the connection first. The key file is checked at every start: group or other permission bits are logged as a warning
+  (chmod 600 it; NL-584). Control replies are logged with every `PrivateKey=`/`ED25519-V3:` value redacted (NL-581).
+- **Inbound** onion connections arrive from Tor on loopback. With Tor on, such a peer is saved at the dialable address of
+  its `node_announcement` (its onion service first in `TorOnly`) and dialed back by the reconnect loop (NL-579); a peer
+  without an announcement in our graph is saved inbound-only (NL-497) and reconnects to us.
+- **Startup**: stored peers are dialed in parallel, and the peer manager waits for them at most `Node:NetworkTimeout`
+  before the node goes on (chain monitor, HTLC deadline monitor); an onion dial that takes longer continues in the
+  background and a failure goes to the reconnect loop (NL-576).
 - **node_announcement**: our onion address (`AnnounceOnionService`) is added to `Gossip:AnnounceAddresses` through the
   Domain port `IAnnouncedAddressSource`; `NodeAnnouncementService` re-signs as soon as the service comes up (it only
   announces once we have an announced channel). A mistyped `.onion` in `Gossip:AnnounceAddresses` is a configuration
@@ -87,8 +130,10 @@ CookieAuthentication 1
   in `Hybrid` and first in `TorOnly`; the peer manager's "dialable address from the graph" (NL-514) and static channel
   backups (`ConnectableAddresses`) keep Tor v3 addresses too.
 - **`info`** shows the Tor mode and `pubkey@<onion>:<port>` once Tor accepted the service.
-- **Start-up warnings** (`TorStartupChecks`) in `TorOnly`: a non-loopback listen address, clearnet entries in
-  `Gossip:AnnounceAddresses`, or no onion service at all.
+- **Start-up warnings** (`TorStartupChecks`) in `TorOnly`: a non-loopback listen address allowed by
+  `AllowClearnetListen`, clearnet entries in `Gossip:AnnounceAddresses`, fee estimates over HTTP, or no onion service at
+  all. Tor-only mode without the SOCKS dialer registered refuses to build the HTTP handler (never a clearnet fallback,
+  NL-580).
 
 ## What Tor-only mode does not cover
 
@@ -108,11 +153,14 @@ set `OnionServiceEnabled` false, host the onion service in Arti's own configurat
 ## Tests
 
 - Unit and in-process: `test/NLightning.Domain.Tests/{Crypto/Hashes/Sha3Tests,Gossip/OnionV3AddressTests,Node/Options/TorOptionsTests}`,
-  `test/NLightning.Infrastructure.Tests/Transport/Tor/` (SOCKS5 client, control client incl. SAFECOOKIE, onion service
-  lifecycle incl. Tor restart and a corrupt key, `TcpService` routes per mode, the Tor-only HTTP handler) over the fakes
-  `test/NLightning.Tests.Utils/Mocks/{FakeSocks5Proxy,FakeTorControlPort}`, and
+  `test/NLightning.Infrastructure.Tests/Transport/Tor/` (SOCKS5 client, control client incl. SAFECOOKIE and the refused
+  COOKIE-only/NULL ports, redaction, a faulted client and bounded lines, onion service lifecycle incl. Tor restart, the
+  closing port's backoff and a corrupt or shared key, `TcpService` routes per mode incl. direct loopback in `TorOnly`, the
+  Tor network timeout, the Tor-only HTTP handler, the start-up checks) over the fakes
+  `test/NLightning.Tests.Utils/Mocks/{FakeSocks5Proxy,FakeTorControlPort}`,
   `PeerManagerConnectTests.Given_ATorOnlyNode_When_ItDialsAnOnionPeer_*`: two real peer managers, the BOLT 8 handshake
-  and init through the SOCKS5 tunnel.
+  and init through the SOCKS5 tunnel, and `PeerManagerTests.Tor.cs` (startup dials of unreachable peers, an inbound
+  onion-service peer saved at its announced onion).
 - Live (`Explicit`): `Transport/Tor/TorLiveTests` against a real Tor, `NLTG_TEST_TOR_CONTROL`, `NLTG_TEST_TOR_SOCKS`
   (and `NLTG_TEST_TOR_NETWORK=1` for a Tor with network access, which then must connect to our own onion end to end):
   `dotnet run --project test/NLightning.Infrastructure.Tests -f net10.0 -- -class NLightning.Infrastructure.Tests.Transport.Tor.TorLiveTests -explicit only`.
