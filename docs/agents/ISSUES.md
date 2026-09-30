@@ -60,7 +60,7 @@ Updated 2026-09-28 by lane rbf (branch `wip/fafo-rbf` from `wip/fafo` at `2b5dff
 
 Updated 2026-09-28 by lane bolt10 (branch `wip/fafo-bolt10` from `978ad275`, code at `f09ff53d`, not merged into `wip/fafo`): BOLT 10 DNS seed bootstrap implemented and off by default. Fixed: NL-113. New: NL-541..NL-545 (NL-536..NL-540 left to the concurrent cli-lognoise lane). Targeted tests only (owner request), net10.0 Release: Domain `Node/Bootstrap` 91, Infrastructure 479, Infrastructure.Bitcoin `Bootstrap` 34, Application `PeerBootstrapServiceTests` 24, Daemon `NodeServiceExtensionsTests` 68; no Docker, no full matrix. Review fixes at `644bc5a8` (NL-113 entry): address filter ranges, SRV (target, port), the `n` condition, BOLT 10 example vectors, cancellable dials, gate retries, obsolete `Node:DnsSeedServers` ignored; no new IDs. Targeted, net10.0 Release: Domain 3660, Infrastructure.Bitcoin 1394, Application `Node` namespace 208 (3 runs), Daemon 799.
 
-Updated 2026-09-29 by lane nl559 (branch `nl559` from `wip/fafo`, not merged into `wip/fafo`): NL-559 fixed (a peer that refuses our `peer_storage` blob for its size — LDK's 1,024-byte limit — is answered at once with one padded to exactly the limit its warning names, the limit relearned per process, the refusals counted and listed by `listpeerstorage`; Docker Proof `LdkPeerStorageTests`). No new IDs. Docker from the host on net10.0, Release: the full LDK trait 14/14 (the new proof included) and the CLN trait re-run green; non-Docker targeted: Application PeerStorage 61, Infrastructure PeerServicePeerStorage 10, Daemon PeerStorageCommand 9, Integration `ListPeerStorageIpcRoundTripTests` 1.
+Updated 2026-09-29 by lane nl559 (branch `nl559` from `wip/fafo`, not merged into `wip/fafo`): NL-559 fixed at `002b6acd` (a peer that refuses our `peer_storage` blob for its size — LDK's 1,024-byte limit — is answered at once with one padded to exactly the limit its warning names, the limit relearned per process, the refusals counted and listed by `listpeerstorage`; Docker Proof `LdkPeerStorageTests`). No new IDs. Docker from the host on net10.0, Release: the full LDK trait 14/14 (the new proof included, 205 s) and the CLN trait 77 green (+4 Explicit not run, 847 s; `ClnPeerStorageTests` included). Non-Docker on net10.0, Release: Domain 3701, Application 3092, Integration 933, Serialization 613, Infrastructure 484, Infrastructure.Bitcoin 1414, Bolt11 327, Daemon 840, all green.
 
 Updated 2026-09-28 by lane nl543 (branch `wip/fafo-nl543` from `wip/fafo` at `ef7ad335`, code at `d4eb9582`, not merged into `wip/fafo`): the bootstrap tops up from the gossip graph before the DNS seeds (owner decision, light testing). Fixed: NL-543. New: NL-547. Targeted tests only, net10.0 Release: Application `NLightning.Application.Tests.Node` 223, Domain `Node/Bootstrap` 158; no Docker, no full matrix, no live run.
 
@@ -376,7 +376,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-559 LDK keeps no peer_storage from us: our blob is always 65,531 bytes, LDK takes at most 1,024
-- **Status:** fixed (<SHA>)
+- **Status:** fixed (002b6acd)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs` (the backup blob, padded to the BOLT 1 maximum)
