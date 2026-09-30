@@ -29,10 +29,12 @@ using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
-/// The splice auto-bump (wave SPR, SPR-T3, lane SPR-B): a pending splice of ours unconfirmed for
+/// The splice auto-bump (wave SPR, SPR-T3, lane SPR-B): a pending splice unconfirmed for
 /// <c>Splice:AutoBumpAfterBlocks</c> blocks is bumped through <see cref="ISpliceService.BumpAsync(SpliceBumpRequest,
-/// CancellationToken)"/> exactly once per interval, at the fee estimate but at least the IT-RBF-01 minimum, never past
-/// <c>Splice:MaxRbfAttempts</c>, and not at all while off. The splice service is a mock (its RBF is lane SPR-A's).
+/// CancellationToken)"/> exactly once per interval, at the estimate for the bump's confirmation target (NL-507) but at
+/// least the IT-RBF-01 minimum, never past <c>Splice:MaxRbfAttempts</c>, and not at all while off. Any pending splice
+/// is a candidate (BOLT 2 lets either quiescence initiator bump, NL-507), and the interval counts from the attempt's
+/// persisted broadcast row. The splice service is a mock (its RBF is lane SPR-A's).
 /// </summary>
 public class SpliceAutoBumperTests
 {
@@ -76,6 +78,8 @@ public class SpliceAutoBumperTests
                           _bumps.Add(r);
                           return _bumpOutcome(r);
                       });
+        _feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<uint>(), It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(LightningMoney.Satoshis(1_000));
         _feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
                    .ReturnsAsync(LightningMoney.Satoshis(1_000));
         _broadcasts.Setup(b => b.GetByTransactionIdAsync(It.IsAny<TxId>()))
@@ -174,7 +178,7 @@ public class SpliceAutoBumperTests
     public async Task Given_TheEstimateAboveTheRbfMinimum_When_Bumped_Then_TheEstimateIsUsed()
     {
         // Arrange
-        _feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
+        _feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<uint>(), It.IsAny<CancellationToken>()))
                    .ReturnsAsync(LightningMoney.Satoshis(5_000));
         var bumper = CreateBumper();
 
@@ -189,7 +193,7 @@ public class SpliceAutoBumperTests
     public async Task Given_AnEstimateSpike_When_Due_Then_ClampedToTheAutoBumpCeilingWithTheFeeCap()
     {
         // Arrange: 300,000 sat/kw is below the acceptor bound Splice:MaxFeeratePerKw, never an auto-bump rate
-        _feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
+        _feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<uint>(), It.IsAny<CancellationToken>()))
                    .ReturnsAsync(LightningMoney.Satoshis(300_000));
         var bumper = CreateBumper(maxFeerate: 10_000, maxFeeSat: 20_000);
 
@@ -206,7 +210,7 @@ public class SpliceAutoBumperTests
     public async Task Given_TheDefaultOptions_When_TheEstimateSpikes_Then_TheBumpStaysAt100SatPerVbyte()
     {
         // Arrange
-        _feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
+        _feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<uint>(), It.IsAny<CancellationToken>()))
                    .ReturnsAsync(LightningMoney.Satoshis(250_000));
         var bumper = CreateBumper();
 
@@ -299,29 +303,15 @@ public class SpliceAutoBumperTests
     }
 
     [Fact]
-    public async Task Given_ThePeersSplice_When_Due_Then_NotOursToBump()
+    public async Task Given_ThePeersSpliceWithoutADelta_When_Due_Then_BumpedToo()
     {
-        // Arrange: we contributed nothing and did not initiate it
+        // Arrange - NL-507: BOLT 2 lets either quiescence initiator send the tx_init_rbf, and the bumper starts its
+        // own, so a splice we contributed nothing to and never negotiated is a candidate as well
         _fundings = new FundingSet(_fundings.Current, [Splice(s_spliceTxId, null, 0)]);
         var bumper = CreateBumper();
 
         // Act
         await bumper.BumpStaleSplicesAsync(BroadcastHeight + 10, TestContext.Current.CancellationToken);
-
-        // Assert
-        Assert.Empty(_bumps);
-    }
-
-    [Fact]
-    public async Task Given_OurSpliceOutWithoutADelta_When_OurNegotiationNamedIt_Then_Bumped()
-    {
-        // Arrange: no delta on our side, but the service's last (signed) negotiation was ours and named the splice
-        _fundings = new FundingSet(_fundings.Current, [Splice(s_spliceTxId, null, 0)]);
-        _negotiation = Negotiation(SpliceNegotiationState.Signed, s_spliceTxId);
-        var bumper = CreateBumper();
-
-        // Act
-        await bumper.BumpStaleSplicesAsync(BroadcastHeight + Interval, TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Single(_bumps);
@@ -374,22 +364,28 @@ public class SpliceAutoBumperTests
     }
 
     [Fact]
-    public async Task Given_NoBroadcastRow_When_BlocksPass_Then_TheIntervalCountsFromWhenTheBumperSawIt()
+    public async Task Given_NoBroadcastRowYet_When_Due_Then_ItWaitsForItsRowAndCountsFromIt()
     {
-        // Arrange
+        // Arrange - NL-507: the row is written in the same save that made the attempt pending, so a pending attempt
+        // without one has not committed yet; the interval counts from the row once it is read, restarts included
         _rows.Clear();
         var bumper = CreateBumper();
         var ct = TestContext.Current.CancellationToken;
 
-        // Act
+        // Act: no row, no bump whatever the wait
         await bumper.BumpStaleSplicesAsync(200, ct);
-        await bumper.BumpStaleSplicesAsync(202, ct);
-        var early = _bumps.Count;
         await bumper.BumpStaleSplicesAsync(203, ct);
+        await bumper.BumpStaleSplicesAsync(210, ct);
+        var withoutRow = _bumps.Count;
+
+        // The row lands (first broadcast 200, read at 211): its own interval starts there
+        _rows[s_spliceTxId] = Row(s_spliceTxId, 200);
+        var afterRow = await bumper.BumpStaleSplicesAsync(211, ct);
 
         // Assert
-        Assert.Equal(0, early);
+        Assert.Equal(0, withoutRow);
         Assert.Single(_bumps);
+        Assert.Single(afterRow);
     }
 
     [Fact]
