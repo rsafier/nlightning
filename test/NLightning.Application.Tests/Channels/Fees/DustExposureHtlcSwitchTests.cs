@@ -156,6 +156,25 @@ public class DustExposureHtlcSwitchTests
         _inner.VerifyNoOtherCalls();
     }
 
+    [Theory]
+    [InlineData(ChannelState.Failed)]
+    [InlineData(ChannelState.OnchainResolving)]
+    public async Task Given_ChannelClosingOnChain_When_OverExposedHtlcLocksIn_Then_PassedToTheSwitchForItsOnChainDecision(
+        ChannelState state)
+    {
+        // Arrange - NL-336: the off-chain fail can no longer be sent on the channel, so the decorated switch must get
+        // the event: its on-chain rules make the final-hop decision the fail would swallow
+        _context.Channel.UpdateState(state);
+        var lockedIn = LockedIn(5);
+
+        // Act
+        await CreateSwitch().HandleAsync(lockedIn, TestContext.Current.CancellationToken);
+
+        // Assert - nothing failed off chain, the event went to the switch
+        _inner.Verify(s => s.HandleAsync(lockedIn, It.IsAny<CancellationToken>()), Times.Once);
+        _operations.VerifyNoOtherCalls();
+    }
+
     [Fact]
     public async Task Given_MalformedOnion_When_OverExposedHtlcLocksIn_Then_TheSwitchFailsItAsMalformed()
     {
