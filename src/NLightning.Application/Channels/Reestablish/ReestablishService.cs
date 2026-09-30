@@ -349,21 +349,12 @@ public sealed class ReestablishService
     }
 
     /// <summary>
-    /// SP-G-01 through the announcement service; until lane SP2-B implements
-    /// <see cref="IChannelAnnouncementService.IsReadyForAnnouncementSignatures"/>, the channel's current funding when
-    /// <see cref="IChannelAnnouncementService.CanSendAnnouncementSignatures"/> says so.
+    /// SP-G-01 through the announcement service: the channel's current funding once it is locked both ways and at the
+    /// announcement depth (<see cref="IChannelAnnouncementService.IsReadyForAnnouncementSignatures"/>).
     /// </summary>
     internal static bool IsReadyForAnnouncementSignatures(IChannelAnnouncementService announcements,
                                                           ChannelModel channel, TxId fundingTxId)
     {
-        try
-        {
-            return announcements.IsReadyForAnnouncementSignatures(channel, fundingTxId);
-        }
-        catch (NotImplementedException)
-        {
-            return channel.FundingOutput?.TransactionId == fundingTxId
-                && announcements.CanSendAnnouncementSignatures(channel);
-        }
+        return announcements.IsReadyForAnnouncementSignatures(channel, fundingTxId);
     }
 }

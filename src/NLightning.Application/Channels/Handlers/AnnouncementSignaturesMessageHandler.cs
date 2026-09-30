@@ -116,7 +116,10 @@ public class AnnouncementSignaturesMessageHandler : IChannelMessageHandler<Annou
 
         var isNew = channel.RemoteAnnouncementSignatures != signatures;
         if (isNew)
+        {
             channel.SetRemoteAnnouncementSignatures(signatures);
+            await StageFundingHalfStoredAsync(channel);
+        }
 
         // BOLT 7: defer until we sent channel_ready (ReadyForUs or Open); the stored half is checked again then
         AnnouncementSignaturesMessage? reply = null;
@@ -161,6 +164,30 @@ public class AnnouncementSignaturesMessageHandler : IChannelMessageHandler<Annou
             throw new ChannelWarningException(
                 $"announcement_signatures for channel {channel.ChannelId} names {shortChannelId}, not its funding "
               + "output", channel.ChannelId, "announcement_signatures: short_channel_id does not match the funding output");
+    }
+
+    /// <summary>
+    /// Stages the current funding row's <c>AnnouncementSignaturesReceived</c> (splicing plan SP-RE-02): the half names
+    /// that funding's own announcement, so bit 0 of <c>my_current_funding_locked</c> stays clear for a locked splice
+    /// across a restart too (NL-488). The row is written with the channel in the same save; a unit of work without
+    /// funding rows (tests) skips it.
+    /// </summary>
+    private async Task StageFundingHalfStoredAsync(ChannelModel channel)
+    {
+        try
+        {
+            if (_unitOfWork.ChannelFundingDbRepository is not { } fundings)
+                return;
+            if (await fundings.GetFundingSetAsync(channel.ChannelId) is not { } set)
+                return;
+
+            await fundings.UpsertAsync(channel.ChannelId,
+                                       set.Current with { AnnouncementSignaturesReceived = true });
+        }
+        catch (NotSupportedException)
+        {
+            // A unit of work that does not store channel fundings: nothing to mark
+        }
     }
 
     private async Task PersistAsync(ChannelModel channel)
