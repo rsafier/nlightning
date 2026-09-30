@@ -262,6 +262,68 @@ public class GraphStoreTests
         Assert.False(olderNode);
     }
 
+    [Fact]
+    public async Task Given_OurOwnAnnouncedChannel_When_ItsFundingMoves_Then_ForgetOwnChannelRemovesItAndItsRow()
+    {
+        // Arrange (NL-362): our channel entered the graph through the sink (as ours, without a chain lookup); another
+        // channel was announced there by a peer
+        var kit = new GraphTestKit(ourNodeId: s_alice.PubKey);
+        kit.FundingFound();
+        var ct = TestContext.Current.CancellationToken;
+        var ours = new ShortChannelId(120, 1, 0);
+        var theirs = new ShortChannelId(115, 1, 0);
+        await kit.Ingress.ApplyOwnAsync(
+            GraphTestKit.SignedChannelAnnouncement(ours, s_alice, s_bob, new TestGossipKey(11),
+                                                   new TestGossipKey(12)), null, ct);
+        await kit.Ingress.ApplyOwnAsync(
+            GraphTestKit.SignedChannelUpdate(ours, s_alice, GraphTestKit.DirectionOf(s_alice, s_bob), s_now), null,
+            ct);
+        var peer = GraphTestKit.CreatePeer().Object;
+        Assert.Equal(GossipIngressOutcome.Pending,
+                     (await kit.Ingress.ProcessAsync(peer,
+                                                     GraphTestKit.SignedChannelAnnouncement(theirs, s_bob, s_carol,
+                                                                                            new TestGossipKey(12),
+                                                                                            new TestGossipKey(13)),
+                                                     0, ct)).Outcome);
+        Assert.Equal(GossipIngressOutcome.Accepted,
+                     (await kit.Ingress.ProcessAsync(peer,
+                                                     GraphTestKit.SignedChannelUpdate(
+                                                         theirs, s_carol, GraphTestKit.DirectionOf(s_carol, s_bob),
+                                                         s_now), 0, ct)).Outcome);
+        Assert.Equal(2, kit.Store.ChannelCount);
+        await kit.Store.FlushAsync(ct);
+        Assert.Equal(2, kit.Repository.Channels.Count);
+
+        // Act: the reorg moved our funding; the handler forgets the old scid through the sink
+        kit.Ingress.ForgetOwnChannel(ours);
+        await kit.Ingress.WhenOwnGossipAppliedAsync(ct);
+        await kit.Ingress.StopAsync();
+
+        // Assert: our announcement and its policies are gone (memory and row); the peer's channel stays
+        Assert.False(kit.Store.TryGetChannel(ours, out _));
+        Assert.False(kit.Repository.Channels.ContainsKey(ours));
+        Assert.True(kit.Store.TryGetChannel(theirs, out _));
+        Assert.Equal(1, kit.Store.ChannelCount);
+    }
+
+    [Fact]
+    public async Task Given_APeerAnnouncedChannel_When_ForgetOwnChannelIsCalled_Then_ItStays()
+    {
+        // Arrange: the same short channel id announced by others (Verified: its funding was checked)
+        var kit = await CreateGraphAsync();
+        var ct = TestContext.Current.CancellationToken;
+        var scid = new ShortChannelId(110, 1, 0);
+
+        // Act
+        kit.Ingress.ForgetOwnChannel(scid);
+        await kit.Ingress.WhenOwnGossipAppliedAsync(ct);
+        await kit.Ingress.StopAsync();
+
+        // Assert: only our own channels are forgotten (NL-362)
+        Assert.True(kit.Store.TryGetChannel(scid, out _));
+        Assert.Equal(2, kit.Store.ChannelCount);
+    }
+
     private static GraphPolicy Policy(uint timestamp, uint feeBase = 1_000)
     {
         var direction = GraphTestKit.DirectionOf(s_alice, s_bob);

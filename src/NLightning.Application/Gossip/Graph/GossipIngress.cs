@@ -33,7 +33,8 @@ using Metrics;
 /// (<see cref="RecentMessageCache"/>), the signatures (<see cref="IGossipSignatureVerifier"/>), for a
 /// <c>channel_announcement</c> the funding output (<see cref="IFundingOutputLookup"/>, 6 confirmations), and apply the
 /// result to the <see cref="IGraphStore"/>. Also the sink of our own gossip (<see cref="IOwnGossipSink"/>: queued and
-/// applied in order by one loop, so the callers, which may hold a channel lock, never wait).
+/// applied in order by one loop, so the callers, which may hold a channel lock, never wait; a reorg moving a funding
+/// output forgets our announcement under the old short channel id the same way, NL-362).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -335,22 +336,26 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     {
         ArgumentNullException.ThrowIfNull(announcement);
         ArgumentNullException.ThrowIfNull(capacity);
-        EnqueueOwn(new OwnGossipItem(new ChannelAnnouncementMessage(announcement), capacity));
+        EnqueueOwn(new OwnGossipMessage(new ChannelAnnouncementMessage(announcement), capacity));
     }
 
     /// <inheritdoc />
     public void AddOwnChannelUpdate(ChannelUpdatePayload update)
     {
         ArgumentNullException.ThrowIfNull(update);
-        EnqueueOwn(new OwnGossipItem(new ChannelUpdateMessage(update), null));
+        EnqueueOwn(new OwnGossipMessage(new ChannelUpdateMessage(update), null));
     }
 
     /// <inheritdoc />
     public void AddOwnNodeAnnouncement(NodeAnnouncementPayload announcement)
     {
         ArgumentNullException.ThrowIfNull(announcement);
-        EnqueueOwn(new OwnGossipItem(new NodeAnnouncementMessage(announcement), null));
+        EnqueueOwn(new OwnGossipMessage(new NodeAnnouncementMessage(announcement), null));
     }
+
+    /// <inheritdoc />
+    public void ForgetOwnChannel(ShortChannelId shortChannelId) =>
+        EnqueueOwn(new OwnGossipForget(shortChannelId));
 
     /// <summary>Completes once every queued own message is applied (tests).</summary>
     internal async Task WhenOwnGossipAppliedAsync(CancellationToken cancellationToken = default)
@@ -473,7 +478,15 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             {
                 try
                 {
-                    await ApplyOwnAsync(item.Message, item.Capacity, cancellationToken);
+                    switch (item)
+                    {
+                        case OwnGossipMessage message:
+                            await ApplyOwnAsync(message.Message, message.Capacity, cancellationToken);
+                            break;
+                        case OwnGossipForget forget:
+                            ForgetOwnChannelCore(forget.ShortChannelId);
+                            break;
+                    }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -481,8 +494,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                 }
                 catch (Exception e)
                 {
-                    _logger.LogWarning(e, "Failed to add our own {MessageType} to the graph",
-                                       Enum.GetName(item.Message.Type));
+                    _logger.LogWarning(e, "Failed to apply our own gossip to the graph");
                 }
                 finally
                 {
@@ -494,6 +506,28 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         {
             // Stopping
         }
+    }
+
+    /// <summary>
+    /// NL-362: drops our own channel announcement and its policies (never one another node announced at the same
+    /// short channel id), and what still waits for the channel. Ordered behind anything queued before it, so an
+    /// announcement of the move that is still in flight cannot put the old channel back.
+    /// </summary>
+    private void ForgetOwnChannelCore(ShortChannelId shortChannelId)
+    {
+        bool forgotten;
+        lock (_orphanGate)
+        {
+            forgotten = _store.TryGetChannel(shortChannelId, out var channel)
+                     && channel.Verification == GraphChannelVerification.Own
+                     && _store.RemoveChannel(shortChannelId);
+            _pending.Remove(shortChannelId);
+        }
+
+        _missed.TryRemove(shortChannelId, out _);
+        if (forgotten)
+            _logger.LogInformation("Our channel_announcement and its policies under {ShortChannelId} left the graph "
+                                 + "(the funding moved)", shortChannelId);
     }
 
     private void RecordMissed(IMessage message, string reason)
@@ -1601,7 +1635,11 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
 
     private sealed record IngressItem(IPeerService? Origin, IMessage Message, int Attempt);
 
-    private sealed record OwnGossipItem(IMessage Message, LightningMoney? Capacity);
+    private abstract record OwnGossipItem;
+
+    private sealed record OwnGossipMessage(IMessage Message, LightningMoney? Capacity) : OwnGossipItem;
+
+    private sealed record OwnGossipForget(ShortChannelId ShortChannelId) : OwnGossipItem;
 
     /// <summary>The chain check of a pending announcement: the channel to store, or why not (maybe later).</summary>
     private sealed record FundingCheck(GraphChannel? Channel, TxId? FundingTxId, GossipIngressResult? Failure)

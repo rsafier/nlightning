@@ -236,6 +236,7 @@ internal sealed class RecordingOwnGossipSink : IOwnGossipSink
     public List<(ChannelAnnouncementPayload Announcement, LightningMoney Capacity)> ChannelAnnouncements { get; } = [];
     public List<ChannelUpdatePayload> ChannelUpdates { get; } = [];
     public List<NodeAnnouncementPayload> NodeAnnouncements { get; } = [];
+    public List<ShortChannelId> ForgottenChannels { get; } = [];
 
     public void AddOwnChannelAnnouncement(ChannelAnnouncementPayload announcement, LightningMoney capacity)
     {
@@ -253,5 +254,11 @@ internal sealed class RecordingOwnGossipSink : IOwnGossipSink
     {
         lock (NodeAnnouncements)
             NodeAnnouncements.Add(announcement);
+    }
+
+    public void ForgetOwnChannel(ShortChannelId shortChannelId)
+    {
+        lock (ForgottenChannels)
+            ForgottenChannels.Add(shortChannelId);
     }
 }

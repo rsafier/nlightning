@@ -9,6 +9,7 @@ using Domain.Bitcoin.Transactions.Models;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Gossip.Interfaces;
 using Domain.Persistence.Interfaces;
 using Gossip.Announcements.Interfaces;
 using Gossip.Interfaces;
@@ -28,6 +29,11 @@ using Gossip.Interfaces;
 /// <see cref="IChannelSigningInfoSource"/>. The channel is private again (<c>dont_forward</c>, so the new update is not
 /// relayed) until both halves for the new short channel id are exchanged: ours goes out in the block round once the new
 /// funding block has the announcement depth.
+/// </remarks>
+/// <remarks>
+/// NL-362: our announcement and policies under the old short channel id are also dropped from our own graph (through
+/// the <see cref="IOwnGossipSink"/>, when the graph is on): until then we would route and serve a channel whose
+/// funding no longer sits at that position, and relay it to peers.
 /// </remarks>
 /// <remarks>
 /// The first confirmation (no short channel id yet) is the channel manager's; a confirmation at the recorded position
@@ -160,6 +166,9 @@ public sealed class FundingReconfirmationHandler
 
             // Ours is due again at the new depth, also on the current connection
             scope.ServiceProvider.GetService<IChannelAnnouncementService>()?.OnShortChannelIdChanged(channel.ChannelId);
+
+            // NL-362: our announcement under the old short channel id is void — forget it in the graph
+            scope.ServiceProvider.GetService<IOwnGossipSink>()?.ForgetOwnChannel(previous);
             RefreshSourcelessSigner(scope.ServiceProvider, channel);
             return true;
         }
