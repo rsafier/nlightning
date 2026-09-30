@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 
@@ -9,6 +10,7 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Onchain.Enums;
+using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 
@@ -17,12 +19,17 @@ using Domain.Persistence.Interfaces;
 /// (BOLT 3 <c>to_remote_anchor</c> from our side, the same script as ours), and its anchors swept after 16 blocks.
 /// </summary>
 /// <remarks>
-/// <para>Found in bitcoind's mempool: handed over by the O8 <c>MempoolReactor</c> (<see cref="OnPeerCommitmentInMempool"/>,
-/// memory only), or, every round of a failed channel (also after a restart, and when our own commitment is refused
-/// because the peer's holds the funding output while an HTLC deadline approaches), looked up with
-/// <see cref="Infrastructure.Bitcoin.Wallet.Interfaces.IBitcoinChainService.GetTransactionAsync"/> by the txids of the
+/// <para>Found in bitcoind's mempool: handed over by the O8 <c>MempoolReactor</c> (<see cref="OnPeerCommitmentInMempool"/>;
+/// the hand-over is stored as a pending <see cref="BroadcastPurpose.PeerCommitment"/> row with the bytes, so it
+/// survives a restart, NL-390), or, every round of a failed channel (also after a restart, and when our own
+/// commitment is refused because the peer's holds the funding output while an HTLC deadline approaches), looked up
+/// with <see cref="Infrastructure.Bitcoin.Wallet.Interfaces.IBitcoinChainService.GetTransactionAsync"/> by the txids of the
 /// peer's current and next commitments (rebuilt by <see cref="Infrastructure.Bitcoin.Onchain.Interfaces.ICommitmentOutputMapper"/>) and by the
-/// parents of our pending children of it; it must spend the channel's funding output.</para>
+/// parents of our pending children of it; it must spend the channel's funding output. When bitcoind has none of the
+/// candidates, the handed-over bytes are still trusted, but only for
+/// <see cref="AnchorCpfpOptions.PeerCommitmentMissingBlocks"/> blocks in a row (NL-390: without bitcoind, or below
+/// its mempool minimum, the trust in a hand-over is bounded — a reservation whose parent no mempool holds must not
+/// live forever).</para>
 /// <para>Child: only while it carries untrimmed HTLCs (with the peer's dust limit): the deadline is their earliest
 /// <c>cltv_expiry</c>, our stake our <c>to_remote</c> plus those HTLCs; without one the peer's commitment is the
 /// peer's to pay for. Then exactly as for ours (<see cref="AnchorCpfpPolicy.DecideChild"/>, RBF every
@@ -49,12 +56,57 @@ public sealed partial class AnchorCpfpService
 
         _peerCommitments[channelId] = new PeerCommitmentSeen(commitment.TxId,
                                                              (byte[])commitment.RawTxBytes.Clone(), isNextCommitment);
+        PersistPeerCommitmentAsync(channelId, commitment.TxId, commitment.RawTxBytes);
         ScheduleCommitmentRound(channelId);
     }
 
-    /// <summary>The peer's commitment's part of the round (see the remarks).</summary>
+    /// <summary>
+    /// Stores the hand-over (NL-390): the peer's commitment bytes as a pending <see cref="BroadcastPurpose.PeerCommitment"/>
+    /// row, so a restart keeps the bump even when bitcoind does not have the commitment (below its mempool minimum).
+    /// The monitor sends the row again after every block until it confirms, which helps the peer's close propagate.
+    /// In the background; a failed store is logged once (the restart then looks for the commitment in the mempool
+    /// only). Whether the commitment is the peer's next one is not stored: it is derived again at the next round from
+    /// the rebuilt txids.
+    /// </summary>
+    private async Task PersistPeerCommitmentAsync(ChannelId channelId, TxId txId, byte[] rawTransaction)
+    {
+        Interlocked.Increment(ref _persistingPeerCommitments);
+        try
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var repository = unitOfWork.BroadcastTransactionDbRepository;
+            var existing = await repository.GetByTransactionIdAsync(txId);
+            if (existing is not null)
+            {
+                // A reorg put the commitment back into the mempool after its row was abandoned
+                if (existing.Purpose == BroadcastPurpose.PeerCommitment && await repository.MarkPendingAsync(txId))
+                    await unitOfWork.SaveChangesAsync();
+                return;
+            }
+
+            repository.Add(new BroadcastTransactionModel(new SignedTransaction(txId, (byte[])rawTransaction.Clone()),
+                                                         BroadcastPurpose.PeerCommitment, channelId,
+                                                         _blockchainMonitor.LastProcessedBlockHeight));
+            await unitOfWork.SaveChangesAsync();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            LogOnce($"{channelId}:{txId}:handover", e,
+                    "Cannot store the peer's commitment {TxId} of channel {ChannelId}; a restart then finds it in the "
+                  + "mempool only (NL-390)", Display(txId), channelId);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _persistingPeerCommitments);
+        }
+    }
+
+    /// <summary>The peer's commitment's part of the round (see the remarks); <paramref name="handOvers"/> are the
+    /// channel's <see cref="BroadcastPurpose.PeerCommitment"/> rows.</summary>
     private async Task<PathState> RunPeerLockedAsync(ChannelModel channel, IUnitOfWork unitOfWork,
                                                      IReadOnlyList<BroadcastTransactionModel> children,
+                                                     IReadOnlyList<BroadcastTransactionModel> handOvers,
                                                      bool otherPending, uint height, RoundResult result,
                                                      CancellationToken cancellationToken)
     {
@@ -92,6 +144,10 @@ public sealed partial class AnchorCpfpService
 
             foreach (var settled in onClose)
                 staged |= await repository.MarkAbandonedAsync(settled.TransactionId);
+            // The null arm is typed: a bare null here compiles to (TxId)null — the user conversion from byte[] —
+            // which throws when the arm is taken
+            TxId? keepTxId = isPeers ? close.CommitmentTransactionId : (TxId?)null;
+            staged |= await AbandonStaleHandOversAsync(handOvers, repository, keepTxId);
             if (staged)
                 await unitOfWork.SaveChangesAsync();
 
@@ -116,13 +172,31 @@ public sealed partial class AnchorCpfpService
             result.PeerCommitmentInMempool = true;
 
             // bitcoind does not have it (below its mempool minimum): the child is sent with the handed-over bytes as a
-            // package, like our own commitment's (NL-389)
+            // package, like our own commitment's (NL-389) — but only while the hand-over is still trusted (NL-390)
+            if (!peer.InMempool && await PeerHandOverGoneAsync(peer.TxId, height))
+            {
+                _peerCommitments.TryRemove(channelId, out _);
+                var goneStaged = false;
+                foreach (var stale in pendingChildren)
+                    goneStaged |= await repository.MarkAbandonedAsync(stale.TransactionId);
+                goneStaged |= await AbandonStaleHandOversAsync(handOvers, repository, null);
+                if (goneStaged)
+                    await unitOfWork.SaveChangesAsync();
+                _logger.LogWarning("The peer's commitment {TxId} of channel {ChannelId} has not entered bitcoind's "
+                                 + "mempool for {Blocks} blocks; its anchor children {TxIds} are abandoned and the "
+                                 + "wallet inputs released", Display(peer.TxId), channelId,
+                                   _options.PeerCommitmentMissingBlocks,
+                                   string.Join(", ", pendingChildren.Select(c => Display(c.TransactionId))));
+                return PathState.Done;
+            }
+
             if (!peer.InMempool)
                 result.PeerPackageParent = (peer.TxId, peer.RawTransaction);
 
             var staged = false;
             foreach (var stale in pendingChildren.Where(c => ParentOf(c) != peer.TxId))
                 staged |= await repository.MarkAbandonedAsync(stale.TransactionId);
+            staged |= await AbandonStaleHandOversAsync(handOvers, repository, peer.TxId);
 
             var own = pendingChildren.Where(c => ParentOf(c) == peer.TxId).ToList();
             PlannedChild? planned = null;
@@ -165,12 +239,67 @@ public sealed partial class AnchorCpfpService
 
         foreach (var child in pendingChildren)
             await repository.MarkAbandonedAsync(child.TransactionId);
+        await AbandonStaleHandOversAsync(handOvers, repository, null);
         await unitOfWork.SaveChangesAsync();
         _peerCommitments.TryRemove(channelId, out _);
         _logger.LogWarning("The peer's commitment of channel {ChannelId} left bitcoind's mempool without confirming; "
                          + "its anchor children {TxIds} are abandoned", channelId,
                            string.Join(", ", pendingChildren.Select(c => Display(c.TransactionId))));
         return PathState.Done;
+    }
+
+    /// <summary>
+    /// True once the handed-over commitment has been missing from bitcoind (or unverifiable: no chain service) for
+    /// <see cref="AnchorCpfpOptions.PeerCommitmentMissingBlocks"/> blocks in a row, one count per height, while the
+    /// monitor is at bitcoind's tip and not halted: our packages have not got it in, and a reservation whose parent
+    /// no mempool holds must not live forever (NL-390). With a chain service every count is a real miss; without one
+    /// the trust in the hand-over is simply bounded.
+    /// </summary>
+    private async Task<bool> PeerHandOverGoneAsync(TxId txId, uint height)
+    {
+        if (_chainService is not null)
+        {
+            if (_blockchainMonitor.IsChainProcessingHalted)
+                return false;
+
+            try
+            {
+                if (_blockchainMonitor.LastProcessedBlockHeight < await _chainService.GetCurrentBlockHeightAsync())
+                    return false;
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                return false;
+            }
+        }
+
+        lock (_peerCommitmentMissing)
+        {
+            var (lastHeight, count) = _peerCommitmentMissing.GetValueOrDefault(txId);
+            if (lastHeight != height || count == 0)
+                _peerCommitmentMissing[txId] = (height, count + 1);
+            return _peerCommitmentMissing[txId].Count >= Math.Max(1, _options.PeerCommitmentMissingBlocks);
+        }
+    }
+
+    /// <summary>
+    /// Stages abandoning the channel's pending hand-over rows but the one for <paramref name="keepTxId"/> (a
+    /// commitment the close or the mempool still holds: its own row confirms, so the monitor retires it). Null
+    /// <paramref name="keepTxId"/> abandons every pending one.
+    /// </summary>
+    private async Task<bool> AbandonStaleHandOversAsync(IReadOnlyList<BroadcastTransactionModel> handOvers,
+                                                        IBroadcastTransactionDbRepository repository, TxId? keepTxId)
+    {
+        var staged = false;
+        foreach (var handOver in handOvers)
+        {
+            if (handOver.TransactionId == keepTxId || handOver.State != BroadcastState.Pending)
+                continue;
+
+            staged |= await repository.MarkAbandonedAsync(handOver.TransactionId);
+        }
+
+        return staged;
     }
 
     /// <summary>
@@ -204,7 +333,11 @@ public sealed partial class AnchorCpfpService
         var candidates = new List<(TxId TxId, bool? IsNext)>();
         _peerCommitments.TryGetValue(channel.ChannelId, out var seen);
         if (seen is not null)
+        {
+            // A hand-over loaded from its row does not say whether the commitment is the peer's next one (NL-390)
+            seen = seen.IsNext is { } known ? seen : seen with { IsNext = DerivePeerIsNext(channel, seen.TxId) };
             candidates.Add((seen.TxId, seen.IsNext));
+        }
 
         var current = RebuildPeerCommitmentTxId(channel, false);
         var next = RebuildPeerCommitmentTxId(channel, true);
@@ -222,7 +355,7 @@ public sealed partial class AnchorCpfpService
             if (_chainService is null)
             {
                 if (memory is not null)
-                    return new FoundPeerCommitment(txId, memory.RawTransaction, memory.IsNext, InMempool: true);
+                    return new FoundPeerCommitment(txId, memory.RawTransaction, memory.IsNext ?? false, InMempool: true);
                 continue;
             }
 
@@ -236,7 +369,7 @@ public sealed partial class AnchorCpfpService
                 LogOnce($"{channel.ChannelId}:peer-lookup", e,
                         "Cannot ask bitcoind for the peer's commitment of channel {ChannelId}", channel.ChannelId);
                 if (memory is not null)
-                    return new FoundPeerCommitment(txId, memory.RawTransaction, memory.IsNext, InMempool: true);
+                    return new FoundPeerCommitment(txId, memory.RawTransaction, memory.IsNext ?? false, InMempool: true);
                 continue;
             }
 
@@ -250,7 +383,7 @@ public sealed partial class AnchorCpfpService
         }
 
         if (seen is not null)
-            return new FoundPeerCommitment(seen.TxId, seen.RawTransaction, seen.IsNext, InMempool: false);
+            return new FoundPeerCommitment(seen.TxId, seen.RawTransaction, seen.IsNext ?? false, InMempool: false);
 
         return null;
     }
@@ -386,10 +519,16 @@ public sealed partial class AnchorCpfpService
                 (spec.LocalMsat + htlcMsat) / 1000);
     }
 
-    /// <summary>The peer's commitment the mempool reactor saw (memory only).</summary>
-    private sealed record PeerCommitmentSeen(TxId TxId, byte[] RawTransaction, bool IsNext);
+    /// <summary>The peer's commitment the mempool reactor saw (memory only). <see cref="IsNext"/> is null for one
+    /// loaded from its persisted hand-over row: derived from the rebuilt txids when it is found (NL-390).</summary>
+    private sealed record PeerCommitmentSeen(TxId TxId, byte[] RawTransaction, bool? IsNext);
 
     /// <summary>The peer's commitment found for this round: <see cref="InMempool"/> is false when bitcoind does not have
     /// it (below its mempool minimum; NL-389) and the bytes are the handed-over ones.</summary>
     private readonly record struct FoundPeerCommitment(TxId TxId, byte[] RawTransaction, bool IsNext, bool InMempool);
+
+    /// <summary>Whether <paramref name="txId"/> is the peer's next commitment, guessed from the rebuilt txids (the
+    /// current one is the safe guess when neither matches or we hold no state).</summary>
+    private bool DerivePeerIsNext(ChannelModel channel, TxId txId) =>
+        RebuildPeerCommitmentTxId(channel, true) == txId;
 }

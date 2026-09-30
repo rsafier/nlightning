@@ -175,6 +175,105 @@ public sealed class AnchorPeerCpfpTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_TheHandOver_When_Round_Then_ThePeerCommitmentIsStoredWithItsBytes()
+    {
+        // Arrange: the mempool reactor handed Bob's commitment over (NL-390)
+        var peer = PeerCommitmentInMempool();
+
+        // Act
+        Service.OnPeerCommitmentInMempool(_channel.ChannelId, ToSigned(peer), false);
+        await Service.WhenIdleAsync();
+
+        // Assert: a pending PeerCommitment row holds the bytes for a restart
+        var row = Assert.Single(_store.Rows.Where(r => r.Purpose == BroadcastPurpose.PeerCommitment));
+        Assert.Equal(_channel.ChannelId, row.ChannelId);
+        Assert.Equal(new TxId(peer.GetHash().ToBytes()), row.TransactionId);
+        Assert.Equal(peer.ToBytes(), row.RawTransaction);
+        Assert.Equal(BroadcastState.Pending, row.State);
+    }
+
+    [Fact]
+    public async Task Given_ARestartAfterTheHandOver_When_BitcoindDoesNotHaveTheCommitment_Then_TheStoredBytesKeepTheBump()
+    {
+        // Arrange: the hand-over row exists (and the first child); after the restart bitcoind does not have Bob's
+        // commitment, so only the row's bytes are left
+        var peer = PeerCommitmentInMempool();
+        Service.OnPeerCommitmentInMempool(_channel.ChannelId, ToSigned(peer), false);
+        await Service.WhenIdleAsync();
+        var child = Assert.Single(_store.Children);
+        _chain.Transactions.Remove(peer.GetHash());
+        var restarted = BuildProvider().GetRequiredService<AnchorCpfpService>();
+        _monitor.Setup(m => m.PublishAsync(It.Is<BroadcastTransactionModel>(b => b.Purpose
+                                                                                == BroadcastPurpose.AnchorCpfp)))
+                .Callback<BroadcastTransactionModel>(_published.Add)
+                .ReturnsAsync(false);
+        _chain.PackageAnswer = _chain.AcceptPackage;
+
+        // Act: the restarted service loads the hand-over row with the channel's first round (the channel is Open)
+        await restarted.RunOnceAsync(501, TestContext.Current.CancellationToken);
+
+        // Assert: the stored bytes and the persisted child, byte for byte, went in as one package
+        var (parent, packaged) = Assert.Single(_chain.Packages);
+        Assert.Equal(peer.GetHash(), parent.GetHash());
+        Assert.Equal(peer.ToBytes(), parent.ToBytes());
+        Assert.Equal(Load(child).GetHash(), packaged.GetHash());
+        Assert.Equal(child.RawTransaction, packaged.ToBytes());
+        Assert.Equal(BroadcastState.Pending, child.State);
+    }
+
+    [Fact]
+    public async Task Given_TheHandOverNeverEntersTheMempool_When_MissingForTheGraceBlocks_Then_ItIsDroppedAndReleased()
+    {
+        // Arrange: the handed-over commitment never entered bitcoind (below its minimum) and our packages are refused
+        // for a missing package relay: the trust in the hand-over is bounded (NL-390)
+        var peer = PeerCommitmentInMempool();
+        Service.OnPeerCommitmentInMempool(_channel.ChannelId, ToSigned(peer), false);
+        await Service.WhenIdleAsync();
+        var child = Assert.Single(_store.Children);
+        var handOver = Assert.Single(_store.Rows.Where(r => r.Purpose == BroadcastPurpose.PeerCommitment));
+        _chain.Transactions.Remove(peer.GetHash());
+
+        // Act: five blocks without it (the monitor is at bitcoind's tip; the deadline keeps the RBF replacing it),
+        // then the sixth
+        for (uint height = 501; height <= 505; height++)
+        {
+            await Service.RunOnceAsync(height, TestContext.Current.CancellationToken);
+            child = _store.Children.Single(c => c.State == BroadcastState.Pending);
+        }
+
+        await Service.RunOnceAsync(506, TestContext.Current.CancellationToken);
+
+        // Assert: the child and the hand-over row are abandoned, the wallet inputs released
+        Assert.Equal(BroadcastState.Abandoned, child.State);
+        Assert.Equal(BroadcastState.Abandoned, handOver.State);
+        Assert.Equal(1, _wallet.ReleaseCount);
+    }
+
+    [Fact]
+    public async Task Given_OurCommitmentCloseRecorded_When_Round_Then_TheHandOverRowIsAbandoned()
+    {
+        // Arrange: Bob's commitment was handed over (its row is pending), but ours confirmed instead
+        var peer = PeerCommitmentInMempool();
+        var ours = StoreOurCommitment();
+        Service.OnPeerCommitmentInMempool(_channel.ChannelId, ToSigned(peer), false);
+        await Service.WhenIdleAsync();
+        var child = Assert.Single(_store.Children);
+        var handOver = Assert.Single(_store.Rows.Where(r => r.Purpose == BroadcastPurpose.PeerCommitment));
+        ours.MarkConfirmed(505, new Hash(new byte[32]));
+        _close = new ChannelCloseModel(_channel.ChannelId, ChannelCloseKind.LocalCommitment, ours.TransactionId,
+                                       ours.CommitmentNumber, 505, new Hash(new byte[32]), DateTimeOffset.UtcNow);
+        _channel.UpdateState(ChannelState.OnchainResolving);
+
+        // Act
+        await Service.RunOnceAsync(506, TestContext.Current.CancellationToken);
+
+        // Assert: the peer children and the hand-over row are abandoned (the funding output is spent)
+        Assert.Equal(BroadcastState.Abandoned, child.State);
+        Assert.Equal(BroadcastState.Abandoned, handOver.State);
+        Assert.Equal(1, _wallet.ReleaseCount);
+    }
+
+    [Fact]
     public async Task Given_FailedChannelAfterARestart_When_PeerCommitmentIsInTheMempool_Then_FoundByItsTxidAndBumped()
     {
         // Arrange: no hand-over (the node restarted after the mempool saw it); our HTLC's deadline made us fail the
