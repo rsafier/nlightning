@@ -96,7 +96,9 @@ using Onion;
 ///   replay any more: for a forward, the upstream HTLC has its removal and the circuit is resolved (an upstream
 ///   channel that is not loaded yet keeps the row); for our own payment, every
 ///   <see cref="ILocalPaymentHtlcHandler"/> handled its resolution.</item>
-///   <item><c>HtlcOrigin.Local</c> resolutions go to the registered <see cref="ILocalPaymentHtlcHandler"/>s.</item>
+///   <item><c>HtlcOrigin.Local</c> resolutions go to the registered <see cref="ILocalPaymentHtlcHandler"/>s; so do the
+///   resolutions of an HTLC with no stored origin (NL-265: offered before origins were persisted — the handlers match
+///   the event by channel and HTLC id and ignore unknown payments).</item>
 ///   <item><see cref="IncomingHtlcSettled"/>: our removal of an incoming HTLC is final and nothing reads its archived
 ///   row any more (the circuit or invoice was resolved before the removal was sent), so it is pruned (NL-243).</item>
 /// </list>
@@ -1290,6 +1292,14 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                        h => h.HandleFulfilledAsync(fulfilled, paymentHash, cancellationToken));
                 return;
 
+            case null:
+                // NL-265: an HTLC offered before NL-250 carries no origin: it is our own payment (W2-C "Local or no
+                // circuit"). The handlers match the event by channel and HTLC id and ignore unknown payments
+                await NotifyLocalAsync(fulfilled.ChannelId, fulfilled.HtlcId,
+                                       h => h.HandleFulfilledAsync(fulfilled, fulfilled.PaymentHash,
+                                                                   cancellationToken));
+                return;
+
             default:
                 _logger.LogWarning("HTLC {HtlcId} we offered on channel {ChannelId} was fulfilled but has no origin",
                                    fulfilled.HtlcId, fulfilled.ChannelId);
@@ -1317,6 +1327,13 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             case { Kind: HtlcOriginKind.Local, PaymentHash: { } paymentHash }:
                 await NotifyLocalAsync(failed.ChannelId, failed.HtlcId,
                                        h => h.HandleFailedAsync(failed, paymentHash, cancellationToken));
+                return;
+
+            case null:
+                // NL-265: an HTLC offered before NL-250 carries no origin: it is our own payment (W2-C "Local or no
+                // circuit"). The handlers match the event by channel and HTLC id and ignore unknown payments
+                await NotifyLocalAsync(failed.ChannelId, failed.HtlcId,
+                                       h => h.HandleFailedAsync(failed, failed.PaymentHash, cancellationToken));
                 return;
 
             default:
@@ -1445,6 +1462,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
                 case { Kind: HtlcOriginKind.Local }
                     when _unhandledLocalResolutions.ContainsKey((settled.ChannelId, settled.HtlcId)):
+                    return;
+
+                case null when _unhandledLocalResolutions.ContainsKey((settled.ChannelId, settled.HtlcId)):
+                    // NL-265: an origin-less HTLC's resolution (treated as our own payment) was not handled yet
                     return;
             }
 
