@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -13,6 +14,7 @@ namespace NLightning.Application.Tests.Node.Managers;
 using Application.Channels.Services;
 using Application.Gossip;
 using Application.Gossip.Events;
+using Application.Gossip.Graph.Interfaces;
 using Application.Gossip.Interfaces;
 using Application.Gossip.Metrics;
 using Application.Gossip.Services;
@@ -27,7 +29,9 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Gossip.Addresses;
 using Domain.Gossip.Enums;
+using Domain.Gossip.Graph;
 using Domain.Gossip.Interfaces;
 using Domain.Money;
 using Domain.Node.Constants;
@@ -79,6 +83,9 @@ public class PeerManagerTests
     private const string ExpectedHost = "127.0.0.1";
     private const int ExpectedPort = 9735;
     private const string ExpectedType = "IPv4";
+
+    /// <summary>Another host a peer can connect from (never its listening address, NL-514).</summary>
+    private const string OtherHost = "10.0.0.2";
 
     public PeerManagerTests()
     {
@@ -1986,6 +1993,92 @@ public class PeerManagerTests
         Assert.Equal(9736U, updated.Port);
         Assert.NotEqual(default, updated.LastSeenAt);
         _mockPeerDbRepository.Verify(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ASavedDialablePeer_When_ItConnectsInboundFromAnotherHost_Then_ItsAddressIsKept()
+    {
+        // Arrange - NL-514: where the peer connected from is not where it listens; the saved row only ages
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var known = new PeerModel(_compactPubKey, RemoteHost, 9736, ExpectedType);
+        _mockPeerDbRepository.Setup(r => r.GetByNodeIdAsync(_compactPubKey)).ReturnsAsync(known);
+        PeerModel? updated = null;
+        _mockPeerDbRepository.Setup(r => r.Update(It.IsAny<PeerModel>())).Callback((PeerModel peer) => updated = peer);
+
+        // Act: it connects to us from another host (its ephemeral port, not its listening one)
+        RaiseInboundConnection(OtherHost);
+        await WaitUntilAsync(() => updated is not null);
+        await peerManager.StopAsync();
+
+        // Assert: the dialable row survived the inbound connection
+        Assert.Same(known, updated);
+        Assert.False(updated!.IsInboundOnly);
+        Assert.Equal(RemoteHost, updated.Host);
+        Assert.Equal(9736U, updated.Port);
+        _mockPeerDbRepository.Verify(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AnInboundPeerWithAnAnnouncedAddress_When_Connected_Then_SavedAtTheAnnouncedAddress()
+    {
+        // Arrange - NL-514: its node_announcement names the listening address and port (here not the default one),
+        // which is not where the connection came from
+        var announced = AnnouncedNode(_compactPubKey, "203.0.113.7", 9736);
+        var graphStore = new Mock<IGraphStore>();
+        graphStore.Setup(g => g.TryGetNode(_compactPubKey, out announced)).Returns(true);
+        _fakeServiceProvider.AddService(typeof(IGraphStore), graphStore.Object);
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        PeerModel? saved = null;
+        _mockPeerDbRepository.Setup(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()))
+                             .Callback((PeerModel peer) => saved = peer)
+                             .Returns(Task.CompletedTask);
+
+        // Act
+        RaiseInboundConnection(RemoteHost);
+        await WaitUntilAsync(() => saved is not null);
+        await peerManager.StopAsync();
+
+        // Assert
+        Assert.False(saved!.IsInboundOnly);
+        Assert.Equal("203.0.113.7", saved.Host);
+        Assert.Equal(9736U, saved.Port);
+    }
+
+    [Fact]
+    public async Task Given_AnInboundPeerAnnouncedOnlyAtALoopbackAddress_When_Connected_Then_SavedAtTheConnectionHost()
+    {
+        // Arrange - NL-514: a loopback announcement is no more dialable than a loopback connection (a regtest node
+        // announcing 127.0.0.1): the connection host with the default port is the better row
+        var announced = AnnouncedNode(_compactPubKey, "127.0.0.1", 9736);
+        var graphStore = new Mock<IGraphStore>();
+        graphStore.Setup(g => g.TryGetNode(_compactPubKey, out announced)).Returns(true);
+        _fakeServiceProvider.AddService(typeof(IGraphStore), graphStore.Object);
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        PeerModel? saved = null;
+        _mockPeerDbRepository.Setup(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()))
+                             .Callback((PeerModel peer) => saved = peer)
+                             .Returns(Task.CompletedTask);
+
+        // Act
+        RaiseInboundConnection(RemoteHost);
+        await WaitUntilAsync(() => saved is not null);
+        await peerManager.StopAsync();
+
+        // Assert
+        Assert.Equal(RemoteHost, saved!.Host);
+        Assert.Equal((uint)NodeConstants.DefaultPort, saved.Port);
+    }
+
+    /// <summary>An announced graph node (NL-514): a minimal announcement naming one IPv4 address.</summary>
+    private static GraphNode AnnouncedNode(CompactPubKey nodeId, string host, ushort port)
+    {
+        return new GraphNode(nodeId, 1, ReadOnlyMemory<byte>.Empty, new byte[GraphNode.AliasLength],
+                             new byte[GraphNode.ColorLength],
+                             [new AddressDescriptor(AddressDescriptorType.IPv4,
+                                  IPAddress.Parse(host).GetAddressBytes(), port)]);
     }
 
     [Fact]

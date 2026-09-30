@@ -119,6 +119,41 @@ public sealed class PeerManagerInboundRestartTests : IDisposable
         await peerManager.StopAsync();
     }
 
+    [Fact]
+    public async Task Given_ASavedDialablePeer_When_ItConnectsInboundFromAnotherHost_Then_ItsSavedAddressIsKept()
+    {
+        // Arrange: a running process that knows the peer at another host and port than it connects from now (we
+        // dialed it before); NL-514
+        await using var provider = await StartProcessAsync();
+        var savedAt = DateTime.UtcNow - TimeSpan.FromHours(1);
+        using (var scope = provider.CreateScope())
+        {
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            await unitOfWork.PeerDbRepository.AddOrUpdateAsync(
+                new Domain.Node.Models.PeerModel(_peerId, "10.1.2.3", 9736, "IPv4") { LastSeenAt = savedAt });
+            await unitOfWork.SaveChangesAsync();
+        }
+
+        var peerManager = CreatePeerManager(provider);
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+
+        // Act: the peer connects to us from a different host
+        _tcpService.Raise(t => t.OnNewPeerConnected += null, _tcpService.Object,
+                          new NewPeerConnectedEventArgs("192.168.1.50", 55555, new Mock<TcpClient>().Object));
+        using (var cts = new CancellationTokenSource(s_timeout))
+            while ((await ReadPeerAsync(provider))?.LastSeenAt is { } lastSeen && lastSeen <= savedAt)
+                await Task.Delay(10, cts.Token);
+
+        // Assert: the dialable row survived the inbound connection, only its last-seen time moved
+        var saved = await ReadPeerAsync(provider);
+        Assert.NotNull(saved);
+        Assert.False(saved!.IsInboundOnly);
+        Assert.Equal("10.1.2.3", saved.Host);
+        Assert.Equal(9736U, saved.Port);
+        Assert.True(saved.LastSeenAt > savedAt);
+        await peerManager.StopAsync();
+    }
+
     public void Dispose()
     {
         SqliteConnection.ClearAllPools();
