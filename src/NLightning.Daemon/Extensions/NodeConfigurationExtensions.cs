@@ -1,4 +1,5 @@
 using System.Globalization;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.EnvironmentVariables;
 using Microsoft.Extensions.Hosting;
@@ -22,6 +23,7 @@ public static class NodeConfigurationExtensions
 
     private const string NodeNetworkKey = "Node:Network";
     private const string CustomSignetNameKey = "Node:CustomSignet:Name";
+    private const string FeeCacheFileKey = "FeeEstimation:CacheFile";
 
     /// <summary>
     /// Configures the host builder with NLTG configuration and Serilog
@@ -96,6 +98,7 @@ public static class NodeConfigurationExtensions
         var configPath = initialConfig["config"];
         var configFile = configPath;
         var usingCustomConfig = !string.IsNullOrEmpty(configPath);
+        IConfiguration? fileConfiguration = null;
 
         if (usingCustomConfig)
         {
@@ -114,6 +117,7 @@ public static class NodeConfigurationExtensions
             initialConfig = new ConfigurationBuilder()
                            .AddJsonFile(configFile!, optional: false, reloadOnChange: false)
                            .Build();
+            fileConfiguration = initialConfig;
 
             RegisterCustomSignet(initialConfig);
             network = (initialConfig[NodeNetworkKey] ?? DefaultNetwork).Trim().ToLowerInvariant();
@@ -132,6 +136,7 @@ public static class NodeConfigurationExtensions
                 var existing = new ConfigurationBuilder().AddJsonFile(configFile, optional: false,
                                                                       reloadOnChange: false)
                                                          .Build();
+                fileConfiguration = existing;
                 RegisterCustomSignet(existing);
                 fileNetwork = existing[NodeNetworkKey];
             }
@@ -176,6 +181,12 @@ public static class NodeConfigurationExtensions
         var overrides = new Dictionary<string, string?> { [NodeNetworkKey] = resolvedNetwork.Name };
         if (BitcoinNetwork.IsCustomSignet(network))
             overrides[CustomSignetNameKey] = network;
+
+        // Relative paths in the file (the template's nltg.db, logs/ and the fee cache) resolve against the
+        // configuration directory, not against wherever the daemon was started from (NL-306)
+        foreach (var (key, anchoredValue) in AnchorRelativePathsToConfigDirectory(fileConfiguration, configPath!))
+            overrides[key] = anchoredValue;
+
         config.AddInMemoryCollection(overrides);
 
         var configuration = config
@@ -197,6 +208,50 @@ public static class NodeConfigurationExtensions
 
         new CustomSignetOptions { Name = customSignetName }.Register();
     }
+
+    /// <summary>
+    /// The file's relative database, log and fee-cache paths (the template's <c>nltg.db</c>, <c>logs/log-.txt</c> and
+    /// <c>fee_estimation_cache.bin</c>), resolved against the configuration directory (NL-306). Absolute paths and
+    /// SQLite's special <c>Data Source</c> values (<c>:memory:</c>, a <c>file:</c> URI) are left out, i.e. kept as the
+    /// file wrote them.
+    /// </summary>
+    private static IEnumerable<KeyValuePair<string, string?>> AnchorRelativePathsToConfigDirectory(
+        IConfiguration? fileConfiguration, string configPath)
+    {
+        if (fileConfiguration is null)
+            yield break;
+
+        // The SQLite database lands next to the key file, the cookie and the backups, not in the working directory
+        if (string.Equals(fileConfiguration["Database:Provider"], "Sqlite", StringComparison.OrdinalIgnoreCase)
+            && fileConfiguration["Database:ConnectionString"] is { } connectionString
+            && connectionString.Length > 0)
+        {
+            var builder = new SqliteConnectionStringBuilder(connectionString);
+            if (builder.DataSource.Length > 0 && !IsAnchoredSqliteDataSource(builder.DataSource))
+            {
+                builder.DataSource = Path.GetFullPath(Path.Combine(configPath, builder.DataSource));
+                yield return new KeyValuePair<string, string?>("Database:ConnectionString", builder.ToString());
+            }
+        }
+
+        if (fileConfiguration[FeeCacheFileKey] is { } cacheFile && cacheFile.Length > 0
+            && !Path.IsPathRooted(cacheFile))
+            yield return new KeyValuePair<string, string?>(FeeCacheFileKey,
+                                                           Path.GetFullPath(Path.Combine(configPath, cacheFile)));
+
+        // The file sinks of Serilog's WriteTo array ("WriteTo": [ { "Name": "File", ... } ]) or named object
+        // ("WriteTo": { "File": ... }); both flatten to a section per sink with Args:path
+        foreach (var sink in fileConfiguration.GetSection("Serilog:WriteTo").GetChildren())
+        {
+            if (sink["Args:path"] is { } sinkPath && sinkPath.Length > 0 && !Path.IsPathRooted(sinkPath))
+                yield return new KeyValuePair<string, string?>($"{sink.Path}:Args:path",
+                                                               Path.GetFullPath(Path.Combine(configPath, sinkPath)));
+        }
+    }
+
+    private static bool IsAnchoredSqliteDataSource(string dataSource) =>
+        dataSource is ":memory:" || dataSource.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
+                                || Path.IsPathRooted(dataSource);
 
     /// <summary>
     /// True when the file's <c>Node:Network</c> is the directory's network: the same name, or the same resolved
