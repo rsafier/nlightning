@@ -46,7 +46,9 @@ using Reorg;
 /// confirmation (the commitment's height, the spend's height, our broadcast's confirmation, else the monitor's last
 /// processed height read before the round) up to bitcoind's tip are scanned through <see cref="IBitcoinChainService"/>
 /// (when registered) for a spend already mined, which is handled like a monitor event and recorded on the watch
-/// (<see cref="CatchUpSpendsAsync(ChannelId, IReadOnlyList{WatchedOutpointModel}, uint, CancellationToken)"/>).</para>
+/// (<see cref="CatchUpSpendsAsync(ChannelId, IReadOnlyList{WatchedOutpointModel}, uint, CancellationToken)"/>). A scan
+/// never starts further back than <see cref="OnchainOptions.CatchUpScanMaxBlocks"/> below the tip (NL-313; a warning
+/// says when the bound clips a lower bound, a mainnet fallback to the commitment's height included).</para>
 /// <para>After a restart (NL-311) the monitor tracks every saved watch again, but a crash between a save and the
 /// tracking (or between the monitor's block save and the executor's handling of the spend) leaves blocks it already
 /// processed unscanned for those watches. So after the first round in this process (the time-critical resolution of
@@ -461,7 +463,22 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             return lowest;
         }
 
-        for (var height = lowest; height <= tip && remaining.Count > 0; height++)
+        // NL-313: a lower bound far back (a mainnet fallback to the commitment's height) must not mean thousands of
+        // block fetches: the scan starts at most CatchUpScanMaxBlocks below the tip (0: unbounded), and says so when
+        // it clips one. A spend mined deeper than the bound is still found when the watch sees it from a block on.
+        var start = lowest;
+        if (_options.CatchUpScanMaxBlocks > 0 && tip > lowest
+         && tip - lowest > _options.CatchUpScanMaxBlocks)
+        {
+            start = tip - _options.CatchUpScanMaxBlocks;
+            _logger.LogWarning(
+                "The catch-up scan of {Count} resolution watches starts at height {Start} instead of {Lowest}: more "
+              + "than {Bound} blocks behind the tip {Tip} (Node:Onchain:CatchUpScanMaxBlocks); a spend mined deeper "
+              + "than the bound is found only when the chain monitor sees it from a block on",
+                remaining.Count, start, lowest, _options.CatchUpScanMaxBlocks, tip);
+        }
+
+        for (var height = start; height <= tip && remaining.Count > 0; height++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Block? block;

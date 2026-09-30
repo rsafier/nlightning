@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NBitcoin;
@@ -97,11 +98,16 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
                                                                   DateTimeOffset.UtcNow);
     }
 
-    private OnchainResolutionExecutor CreateExecutor(uint irrevocableDepth = 100) =>
+    private OnchainResolutionExecutor CreateExecutor(uint irrevocableDepth = 100, uint? catchUpScanMaxBlocks = null,
+                                                     ILogger<OnchainResolutionExecutor>? logger = null) =>
         new(_broadcaster.Object, new ChannelLockProvider(), _memory.Object,
-            NullLogger<OnchainResolutionExecutor>.Instance, _outpointWatcher.Object,
+            logger ?? NullLogger<OnchainResolutionExecutor>.Instance, _outpointWatcher.Object,
             _provider.GetRequiredService<IServiceScopeFactory>(),
-            Options.Create(new OnchainOptions { IrrevocableDepth = irrevocableDepth }));
+            Options.Create(new OnchainOptions
+            {
+                IrrevocableDepth = irrevocableDepth,
+                CatchUpScanMaxBlocks = catchUpScanMaxBlocks ?? new OnchainOptions().CatchUpScanMaxBlocks
+            }));
 
     [Fact]
     public async Task Given_ResolverActions_When_Round_Then_OneSaveThenPublishTrackRaiseInThatOrder()
@@ -553,6 +559,78 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
         // Assert
         Assert.Equal(0, spendsAtFirstResolve);
         Assert.Single(_resolver.Spends);
+    }
+
+    [Fact]
+    public async Task Given_AWatchBoundFarBelowTheTip_When_TheScanRuns_Then_ItStartsAtTheBoundNotTheParentHeight()
+    {
+        // Arrange (NL-313): the fallback lower bound is the commitment's height, 100 blocks below bitcoind's tip; a
+        // mainnet fallback must not fetch them all
+        while (_chain.TipHeight < SpentAt + 100)
+            _chain.Mine(false);
+        var watch = new WatchedOutpointModel(s_commitmentTxId, 9, _channel.ChannelId,
+                                             WatchedOutpointPurpose.ResolutionOutput);
+
+        // Act: the bound allows 10 blocks below the tip (1100)
+        await CreateExecutor(catchUpScanMaxBlocks: 10).CatchUpSpendsAsync(_channel.ChannelId, [watch], SpentAt,
+                                                                         TestContext.Current.CancellationToken);
+
+        // Assert: the scan read exactly tip - 10..tip, nothing from the parent height up to the bound
+        Assert.Equal(Enumerable.Range((int)SpentAt + 90, 11).Select(i => (uint)i), _readingChain.Reads);
+    }
+
+    [Fact]
+    public async Task Given_TheBoundClipsTheScan_When_ItStarts_Then_AWarningNamesTheClippedStart()
+    {
+        // Arrange (NL-313): the same clipped scan, with a logger
+        while (_chain.TipHeight < SpentAt + 100)
+            _chain.Mine(false);
+        var logger = new Mock<ILogger<OnchainResolutionExecutor>>();
+        var watch = new WatchedOutpointModel(s_commitmentTxId, 9, _channel.ChannelId,
+                                             WatchedOutpointPurpose.ResolutionOutput);
+
+        // Act
+        await CreateExecutor(catchUpScanMaxBlocks: 10, logger: logger.Object).CatchUpSpendsAsync(
+            _channel.ChannelId, [watch], SpentAt, TestContext.Current.CancellationToken);
+
+        // Assert: one warning saying where the scan started instead, and why
+        logger.Verify(l => l.Log(LogLevel.Warning, It.IsAny<EventId>(),
+                                 It.Is<It.IsAnyType>((state, _) => state.ToString()!.Contains("catch-up scan")),
+                                 It.IsAny<Exception?>(), It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+                      Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_TheBoundReachesTheParentHeightOrIsOff_When_TheScanRuns_Then_ItStartsThereAndWarnsNothing()
+    {
+        // Arrange: the same 100-block gap, a bound wide enough, then 0 (unbounded)
+        while (_chain.TipHeight < SpentAt + 100)
+            _chain.Mine(false);
+        var logger = new Mock<ILogger<OnchainResolutionExecutor>>();
+        var watch = new WatchedOutpointModel(s_commitmentTxId, 9, _channel.ChannelId,
+                                             WatchedOutpointPurpose.ResolutionOutput);
+
+        // Act: a bound above the gap
+        await CreateExecutor(catchUpScanMaxBlocks: 1_000, logger: logger.Object).CatchUpSpendsAsync(
+            _channel.ChannelId, [watch], SpentAt, TestContext.Current.CancellationToken);
+
+        // Assert: the scan starts at the parent height (101 blocks to the tip), no warning
+        Assert.Equal(SpentAt, _readingChain.Reads.Min());
+        Assert.Equal(101, _readingChain.Reads.Count);
+        logger.Verify(l => l.Log(LogLevel.Warning, It.IsAny<EventId>(), It.IsAny<It.IsAnyType>(),
+                                 It.IsAny<Exception?>(), It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+                      Times.Never);
+
+        // Act: 0 removes the bound
+        _readingChain.Reads.Clear();
+        await CreateExecutor(catchUpScanMaxBlocks: 0, logger: logger.Object).CatchUpSpendsAsync(
+            _channel.ChannelId, [watch], SpentAt, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(SpentAt, _readingChain.Reads.Min());
+        logger.Verify(l => l.Log(LogLevel.Warning, It.IsAny<EventId>(), It.IsAny<It.IsAnyType>(),
+                                 It.IsAny<Exception?>(), It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
+                      Times.Never);
     }
 
     [Fact]
