@@ -124,6 +124,57 @@ public sealed class AnchorPeerCpfpTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_HandedOverPeerCommitmentBelowTheMempoolMinimum_When_Round_Then_ItIsPackagedWithOurChild()
+    {
+        // Arrange: the mempool reactor handed Bob's commitment over, but our bitcoind does not have it (its mempool
+        // minimum is above what it pays): the child alone is refused as an orphan, only the handed-over bytes exist
+        var peer = PeerCommitmentInMempool();
+        _chain.Transactions.Remove(peer.GetHash());
+        _monitor.Setup(m => m.PublishAsync(It.Is<BroadcastTransactionModel>(b => b.Purpose
+                                                                                == BroadcastPurpose.AnchorCpfp)))
+                .Callback<BroadcastTransactionModel>(_published.Add)
+                .ReturnsAsync(false);
+        _chain.PackageAnswer = _chain.AcceptPackage;
+
+        // Act
+        Service.OnPeerCommitmentInMempool(_channel.ChannelId, ToSigned(peer), false);
+        await Service.WhenIdleAsync();
+
+        // Assert: the handed-over bytes and our child went in as one package
+        var row = Assert.Single(_store.Children);
+        var (parent, packaged) = Assert.Single(_chain.Packages);
+        Assert.Equal(peer.GetHash(), parent.GetHash());
+        Assert.Equal(peer.ToBytes(), parent.ToBytes());
+        Assert.Equal(Load(row).GetHash(), packaged.GetHash());
+        AnchorTx.AssertScriptsValid(Load(row), peer, _wallet);
+        Assert.Equal(row, Assert.Single(_published));
+    }
+
+    [Fact]
+    public async Task Given_PendingChildOfTheHandedOverCommitment_When_NoNewChildIsDue_Then_ThePairIsSentAsAPackage()
+    {
+        // Arrange: the first child went out when bitcoind still had the commitment; then it dropped out of the mempool
+        var peer = PeerCommitmentInMempool();
+        Service.OnPeerCommitmentInMempool(_channel.ChannelId, ToSigned(peer), false);
+        await Service.WhenIdleAsync();
+        var child = Assert.Single(_store.Children);
+        _chain.Packages.Clear();
+        _chain.Transactions.Remove(peer.GetHash());
+        _chain.PackageAnswer = _chain.AcceptPackage;
+
+        // Act: no replacement is due at 501 (the RBF interval has not passed); the round checks the child
+        await Service.RunOnceAsync(501, TestContext.Current.CancellationToken);
+
+        // Assert: the persisted child, byte for byte, with the handed-over commitment as one package
+        var (parent, packaged) = Assert.Single(_chain.Packages);
+        Assert.Equal(peer.GetHash(), parent.GetHash());
+        Assert.Equal(peer.ToBytes(), parent.ToBytes());
+        Assert.Equal(Load(child).GetHash(), packaged.GetHash());
+        Assert.Equal(child.RawTransaction, packaged.ToBytes());
+        Assert.Equal(BroadcastState.Pending, child.State);
+    }
+
+    [Fact]
     public async Task Given_FailedChannelAfterARestart_When_PeerCommitmentIsInTheMempool_Then_FoundByItsTxidAndBumped()
     {
         // Arrange: no hand-over (the node restarted after the mempool saw it); our HTLC's deadline made us fail the

@@ -26,8 +26,10 @@ using Domain.Persistence.Interfaces;
 /// <para>Child: only while it carries untrimmed HTLCs (with the peer's dust limit): the deadline is their earliest
 /// <c>cltv_expiry</c>, our stake our <c>to_remote</c> plus those HTLCs; without one the peer's commitment is the
 /// peer's to pay for. Then exactly as for ours (<see cref="AnchorCpfpPolicy.DecideChild"/>, RBF every
-/// <c>RbfIntervalBlocks</c>, the channel's shared reservation) and published one by one (the parent is already in the
-/// mempool). While it is there our own commitment gets no child (it cannot enter the mempool).</para>
+/// <c>RbfIntervalBlocks</c>, the channel's shared reservation). When bitcoind has the commitment it is published one
+/// by one (the parent is already in the mempool); when bitcoind has none of the candidates but the mempool reactor
+/// handed its bytes over, the child goes out with those bytes as a package (NL-389). While the peer's commitment
+/// holds the funding output, our own commitment gets no child (it cannot enter the mempool).</para>
 /// <para>End: once a close is recorded (the chain monitor processed the spend of the funding output), children of any
 /// other transaction are abandoned; a pending child of the peer's confirmed commitment is kept with its inputs as ours
 /// is (until our anchor is seen spent, or the wait passed). A peer commitment bitcoind no longer has for
@@ -112,6 +114,12 @@ public sealed partial class AnchorCpfpService
         if (found is { } peer)
         {
             result.PeerCommitmentInMempool = true;
+
+            // bitcoind does not have it (below its mempool minimum): the child is sent with the handed-over bytes as a
+            // package, like our own commitment's (NL-389)
+            if (!peer.InMempool)
+                result.PeerPackageParent = (peer.TxId, peer.RawTransaction);
+
             var staged = false;
             foreach (var stale in pendingChildren.Where(c => ParentOf(c) != peer.TxId))
                 staged |= await repository.MarkAbandonedAsync(stale.TransactionId);
@@ -133,9 +141,15 @@ public sealed partial class AnchorCpfpService
                 await StoreChildAsync(channelId, unitOfWork, planned);
                 result.PeerChild = planned.Row;
             }
-            else if (staged)
+            else
             {
-                await unitOfWork.SaveChangesAsync();
+                if (staged)
+                    await unitOfWork.SaveChangesAsync();
+
+                // No new child this round: the newest pending one is checked, and packaged with the handed-over bytes
+                // when bitcoind does not have it (NL-389)
+                if (!peer.InMempool)
+                    result.PeerCheckChild = LatestChild(own);
             }
 
             return PathState.Active;
@@ -177,7 +191,9 @@ public sealed partial class AnchorCpfpService
 
     /// <summary>
     /// The peer's commitment that spends the funding output in bitcoind's mempool (see the remarks), or null. Without a
-    /// chain service only the one the mempool reactor handed over.
+    /// chain service only the one the mempool reactor handed over. When bitcoind has none of the candidates, the
+    /// handed-over one is still returned (<see cref="FoundPeerCommitment.InMempool"/> false): a commitment below our
+    /// mempool minimum never entered it, and its bytes are what the child is packaged with (NL-389).
     /// </summary>
     private async Task<FoundPeerCommitment?> FindPeerCommitmentInMempoolAsync(
         ChannelModel channel, IReadOnlyList<BroadcastTransactionModel> pendingChildren)
@@ -206,7 +222,7 @@ public sealed partial class AnchorCpfpService
             if (_chainService is null)
             {
                 if (memory is not null)
-                    return new FoundPeerCommitment(txId, memory.RawTransaction, memory.IsNext);
+                    return new FoundPeerCommitment(txId, memory.RawTransaction, memory.IsNext, InMempool: true);
                 continue;
             }
 
@@ -220,17 +236,21 @@ public sealed partial class AnchorCpfpService
                 LogOnce($"{channel.ChannelId}:peer-lookup", e,
                         "Cannot ask bitcoind for the peer's commitment of channel {ChannelId}", channel.ChannelId);
                 if (memory is not null)
-                    return new FoundPeerCommitment(txId, memory.RawTransaction, memory.IsNext);
+                    return new FoundPeerCommitment(txId, memory.RawTransaction, memory.IsNext, InMempool: true);
                 continue;
             }
 
-            if (tx is null || tx.GetHash() != new uint256(txId) || tx.Inputs.All(i => i.PrevOut != fundingOutPoint))
-                continue;
-
-            lock (_peerCommitmentMissing)
-                _peerCommitmentMissing.Remove(txId);
-            return new FoundPeerCommitment(txId, tx.ToBytes(), memory?.IsNext ?? isNext ?? false);
+            if (tx is not null && tx.GetHash() == new uint256(txId)
+             && tx.Inputs.Any(i => i.PrevOut == fundingOutPoint))
+            {
+                lock (_peerCommitmentMissing)
+                    _peerCommitmentMissing.Remove(txId);
+                return new FoundPeerCommitment(txId, tx.ToBytes(), memory?.IsNext ?? isNext ?? false, InMempool: true);
+            }
         }
+
+        if (seen is not null)
+            return new FoundPeerCommitment(seen.TxId, seen.RawTransaction, seen.IsNext, InMempool: false);
 
         return null;
     }
@@ -369,6 +389,7 @@ public sealed partial class AnchorCpfpService
     /// <summary>The peer's commitment the mempool reactor saw (memory only).</summary>
     private sealed record PeerCommitmentSeen(TxId TxId, byte[] RawTransaction, bool IsNext);
 
-    /// <summary>The peer's commitment found in bitcoind's mempool this round.</summary>
-    private readonly record struct FoundPeerCommitment(TxId TxId, byte[] RawTransaction, bool IsNext);
+    /// <summary>The peer's commitment found for this round: <see cref="InMempool"/> is false when bitcoind does not have
+    /// it (below its mempool minimum; NL-389) and the bytes are the handed-over ones.</summary>
+    private readonly record struct FoundPeerCommitment(TxId TxId, byte[] RawTransaction, bool IsNext, bool InMempool);
 }
