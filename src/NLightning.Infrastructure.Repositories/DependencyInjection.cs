@@ -1,13 +1,18 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Infrastructure.Repositories;
 
 using Database.Channel;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
+using Domain.Crypto.Hashes;
+using Domain.Node.Options;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Memory;
+using Persistence.Contexts;
 
 /// <summary>
 /// Extension methods for setting up Persistence infrastructure services in an IServiceCollection.
@@ -21,8 +26,15 @@ public static class DependencyInjection
     /// <returns>The same service collection so that multiple calls can be chained.</returns>
     public static IServiceCollection AddRepositoriesInfrastructureServices(this IServiceCollection services)
     {
-        // Register UnitOfWork
-        services.AddScoped<IUnitOfWork, UnitOfWork>();
+        // Register UnitOfWork. Its optional NodeOptions read is the dust-limit backfill of NL-290: a commitment
+        // snapshot stored without a MaxDustHtlcExposureMsat (the option is newer) runs under the configured one
+        services.AddScoped<IUnitOfWork>(sp => new UnitOfWork(sp.GetRequiredService<NLightningDbContext>(),
+                                                             sp.GetRequiredService<ILogger<UnitOfWork>>(),
+                                                             sp.GetRequiredService<ISha256>(),
+                                                             sp.GetRequiredService<IUtxoMemoryRepository>(),
+                                                             sp.GetService<TimeProvider>(),
+                                                             sp.GetService<IOptions<NodeOptions>>()
+                                                                 ?.Value.MaxDustHtlcExposureMsat));
 
         // Payment repositories: the scope's unit of work instances, so they share its database context and one
         // IUnitOfWork.SaveChangesAsync commits what they staged

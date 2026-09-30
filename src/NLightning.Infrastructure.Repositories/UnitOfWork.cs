@@ -36,6 +36,7 @@ public class UnitOfWork : IUnitOfWork
     private readonly ISha256 _sha256;
     private readonly TimeProvider _timeProvider;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
+    private readonly ulong? _maxDustHtlcExposureMsat;
     private readonly List<(PendingUtxoChange Change, UtxoModel Utxo)> _pendingUtxoChanges = [];
 
     // Bitcoin repositories
@@ -115,7 +116,7 @@ public class UnitOfWork : IUnitOfWork
         _channelConfigDbRepository ??= new ChannelConfigDbRepository(_context);
 
     public IChannelDbRepository ChannelDbRepository =>
-        _channelDbRepository ??= new ChannelDbRepository(_context, _sha256, _logger);
+        _channelDbRepository ??= new ChannelDbRepository(_context, _sha256, _logger, _maxDustHtlcExposureMsat);
 
     public IChannelKeySetDbRepository ChannelKeySetDbRepository =>
         _channelKeySetDbRepository ??= new ChannelKeySetDbRepository(_context);
@@ -167,14 +168,18 @@ public class UnitOfWork : IUnitOfWork
     /// <param name="utxoMemoryRepository">The in-memory UTXO set, updated after a successful save.</param>
     /// <param name="timeProvider">The clock that stamps new HTLC rows (<c>HtlcEntity.AddedAt</c>, the start of the
     /// BOLT 4 hold time); <see cref="TimeProvider.System"/> when null.</param>
+    /// <param name="maxDustHtlcExposureMsat">The node's <c>Node:MaxDustHtlcExposureMsat</c>, the limit a commitment
+    /// snapshot stored without one runs under while it is loaded (NL-290); null keeps the check off.</param>
     public UnitOfWork(NLightningDbContext context, ILogger<UnitOfWork> logger, ISha256 sha256,
-                      IUtxoMemoryRepository utxoMemoryRepository, TimeProvider? timeProvider = null)
+                      IUtxoMemoryRepository utxoMemoryRepository, TimeProvider? timeProvider = null,
+                      ulong? maxDustHtlcExposureMsat = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _logger = logger;
         _sha256 = sha256;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _utxoMemoryRepository = utxoMemoryRepository;
+        _maxDustHtlcExposureMsat = maxDustHtlcExposureMsat;
     }
 
     /// <inheritdoc />

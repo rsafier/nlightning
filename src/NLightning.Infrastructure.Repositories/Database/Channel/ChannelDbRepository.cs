@@ -91,12 +91,20 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     private readonly ChannelStateDbRepository _channelStateDbRepository;
     private readonly ILogger _logger;
 
-    public ChannelDbRepository(NLightningDbContext context, ISha256 sha256, ILogger? logger = null)
+    /// <summary>
+    /// The node's <c>Node:MaxDustHtlcExposureMsat</c>: the limit a commitment snapshot stored without one runs under
+    /// while it is loaded (NL-290), until its next save stores the value. Null keeps the check off.
+    /// </summary>
+    private readonly ulong? _maxDustHtlcExposureMsat;
+
+    public ChannelDbRepository(NLightningDbContext context, ISha256 sha256, ILogger? logger = null,
+                               ulong? maxDustHtlcExposureMsat = null)
         : base(context)
     {
         _context = context;
         _sha256 = sha256 ?? throw new ArgumentNullException(nameof(sha256));
         _logger = logger ?? NullLogger.Instance;
+        _maxDustHtlcExposureMsat = maxDustHtlcExposureMsat;
         _channelStateDbRepository = new ChannelStateDbRepository(context, logger: _logger);
     }
 
@@ -272,8 +280,12 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         var channelModel = MapEntityToDomain(channelEntity, _sha256, currentFunding);
 
         // The snapshot runs under the dust policy it was saved with (NL-242) and keeps the inferred-limits flag of a
-        // channel migrated by SplitChannelParams, so its guessed limits are still never enforced after a restart
-        var @params = CommitmentParams.FromChannel(channelModel, channelEntity.MaxDustHtlcExposureMsat);
+        // channel migrated by SplitChannelParams, so its guessed limits are still never enforced after a restart.
+        // A snapshot stored without a dust limit (the option is newer than it) runs under the node's configured one,
+        // so the engine's send-side rules (B2-DUST-03/04) apply to it too; its next state save stores the value
+        // (NL-290)
+        var @params = CommitmentParams.FromChannel(channelModel,
+                                                   channelEntity.MaxDustHtlcExposureMsat ?? _maxDustHtlcExposureMsat);
 
         // A locked splice is the engine's current funding as stored (its kind and rotated key index), not the initial
         // funding FromChannel builds from the funding output: the next lock retires this funding with the engine's
