@@ -36,7 +36,9 @@ using Metrics;
 /// At init (plan §3.7; replaces the bootstrap <c>gossip_timestamp_filter(0, 0xFFFFFFFF)</c> of wave G-B):
 /// <list type="bullet">
 /// <item>a peer that offers <c>gossip_queries</c>, while fewer than <see cref="GossipSyncOptions.SyncPeers"/> sync
-/// peers are connected, becomes a sync peer: <c>query_channel_range(0, tip + 1)</c> (with <c>query_option</c>
+/// peers are connected, becomes a sync peer (at capacity, one that ranks above the weakest sync peer takes its slot:
+/// channel peers first, then peers whose queries have not failed; NL-363):
+/// <c>query_channel_range(0, tip + 1)</c> (with <c>query_option</c>
 /// timestamps when both sides offer <c>gossip_queries_ex</c>); the replies are checked (<see cref="RangeReplyCollector"/>,
 /// a violation gets a <c>warning</c> and ends the sync); the channels we lack (or, with timestamps, whose updates are
 /// newer) are asked for with <c>query_short_channel_ids</c> in batches that fit one message, each batch checked against
@@ -95,6 +97,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     private readonly Func<uint>? _getTipHeight;
     private readonly Func<int>? _getIngressQueueDepth;
     private readonly Func<CompactPubKey, int>? _getPeerQueueDepth;
+    private readonly Func<CompactPubKey, bool>? _hasChannelWith;
     private readonly int _ingressQueueCapacity;
     private readonly GossipMetrics? _metrics;
     private readonly IReadOnlyList<IGossipPendingChannels> _pendingChannels;
@@ -134,6 +137,9 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     /// Where announcements already on their way into the graph are known (NL-415, NL-414: the ingress queue, the
     /// funding output lookup): such channels are not asked for by a range sync's re-diff or the missed-channel retry.
     /// </param>
+    /// <param name="hasChannelWith">
+    /// Whether we have a channel with the peer (null: unknown). Sync peers are chosen channel peers first (NL-363).
+    /// </param>
     public GossipSyncManager(IGraphStore graphStore, IOptions<GossipSyncOptions> options,
                              IOptions<NodeOptions> nodeOptions, ILogger<GossipSyncManager> logger,
                              TimeProvider? timeProvider = null, IGossipIngress? ingress = null,
@@ -141,7 +147,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                              Func<uint>? getTipHeight = null, Func<int>? getIngressQueueDepth = null,
                              int ingressQueueCapacity = 0, GossipMetrics? metrics = null,
                              Func<CompactPubKey, int>? getPeerQueueDepth = null,
-                             IEnumerable<IGossipPendingChannels>? pendingChannels = null)
+                             IEnumerable<IGossipPendingChannels>? pendingChannels = null,
+                             Func<CompactPubKey, bool>? hasChannelWith = null)
     {
         _pendingChannels = pendingChannels?.Distinct(ReferenceEqualityComparer.Instance)
                                            .Cast<IGossipPendingChannels>()
@@ -158,6 +165,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         _ingress = ingress;
         _takeMissedShortChannelIds = takeMissedShortChannelIds;
         _getTipHeight = getTipHeight;
+        _hasChannelWith = hasChannelWith;
         _responder = new QueryResponder(graphStore, options);
         _queriedChannels = new QueriedChannelTracker(_timeProvider, _options.QueriedChannelTtl);
     }
@@ -444,15 +452,58 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             session.Close();
     }
 
+    /// <summary>
+    /// Makes the peer a sync peer while fewer than <see cref="GossipSyncOptions.SyncPeers"/> of the connected
+    /// <c>gossip_queries</c> peers are (plan §3.7). At capacity, a candidate that ranks above the weakest current sync
+    /// peer takes its slot (NL-363): peers we have channels with first, then peers whose queries have not failed; even
+    /// ranks keep the first comer, so equal peers are still first come, first served.
+    /// </summary>
     private bool TryBecomeSyncPeer(PeerSession session)
     {
         lock (_timerLock)
         {
-            if (_sessions.Values.Count(s => s.IsSyncPeer && s != session) >= _options.SyncPeers)
+            if (_sessions.Values.Count(s => s.IsSyncPeer && s != session) < _options.SyncPeers)
+            {
+                session.IsSyncPeer = true;
+                return true;
+            }
+
+            var worst = _sessions.Values
+                                 .Where(s => s.IsSyncPeer && s != session)
+                                 .OrderBy(SyncPeerRank)
+                                 .FirstOrDefault();
+            if (worst is null || SyncPeerRank(session).CompareTo(SyncPeerRank(worst)) >= 0)
                 return false;
 
+            worst.IsSyncPeer = false;
             session.IsSyncPeer = true;
+            _logger.LogInformation("Peer {Peer} takes the gossip sync slot of {Worst}: we have channels with it "
+                                 + "({Channels} against {WorstChannels}) and it has {Failures} failed queries "
+                                 + "against {WorstFailures}", session.Peer.PeerPubKey, worst.Peer.PeerPubKey,
+                                   HasChannelWith(session), HasChannelWith(worst), session.FailedQueries,
+                                   worst.FailedQueries);
             return true;
+        }
+    }
+
+    /// <summary>How desirable a sync peer is; the smaller, the better (NL-363).</summary>
+    private (int ChannelRank, int Failures) SyncPeerRank(PeerSession session) =>
+        (HasChannelWith(session) ? 0 : 1, session.FailedQueries);
+
+    /// <summary>Whether we have a channel with the peer (a failing check counts as no, NL-363).</summary>
+    private bool HasChannelWith(PeerSession session)
+    {
+        if (_hasChannelWith is null)
+            return false;
+
+        try
+        {
+            return _hasChannelWith(session.Peer.PeerPubKey);
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "The channel-peer check failed for {Peer}", session.Peer.PeerPubKey);
+            return false;
         }
     }
 
@@ -465,6 +516,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                         .Where(s => s is { IsReady: true, SupportsQueries: true, IsQuerySlotPoisoned: false })
                         .OrderBy(s => s.PendingWork)
                         .ThenByDescending(s => s.IsSyncPeer)
+                        .ThenBy(s => s.FailedQueries) // NL-363: peers whose queries answer come first
                         .FirstOrDefault();
     }
 
@@ -564,6 +616,9 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                             break;
                         case ScidQueryWork scidQuery:
                             var outcome = await RunScidQueryAsync(session, scidQuery.Entries, cancellationToken);
+                            if (outcome == ScidQueryOutcome.Failed)
+                                session.RecordFailedQuery(); // NL-363
+
                             scidQuery.Completion?.TrySetResult(outcome != ScidQueryOutcome.Failed);
                             break;
                     }
@@ -572,6 +627,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                 {
                     // The peer may go on answering the query it broke the rules in: never ask it anything again
                     session.PoisonQuerySlot();
+                    session.RecordFailedQuery(); // NL-363
                     (work as ScidQueryWork)?.Completion?.TrySetResult(false);
                     _logger.LogWarning("Ending the gossip sync with peer {Peer}: {Message}", session.Peer.PeerPubKey,
                                        violation.InnerException?.Message);
@@ -756,7 +812,11 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         {
             session.IsRangeSyncRunning = false;
             if (!completed)
+            {
                 session.NeedsLiveFilter = true;
+                session.RecordFailedQuery(); // NL-363: a sync peer that answers ranks above one that does not
+            }
+
             _metrics?.RecordSyncDuration(_timeProvider.GetElapsedTime(startedTimestamp), completed);
         }
     }
@@ -1128,6 +1188,13 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         public bool SyncFilterSent { get; set; }
         public bool LiveFilterSent { get; set; }
         public bool NeedsLiveFilter { get; set; }
+
+        private int _failedQueries;
+
+        /// <summary>How many of our queries to this peer timed out, failed or broke the rules (NL-363).</summary>
+        public int FailedQueries => Volatile.Read(ref _failedQueries);
+
+        public void RecordFailedQuery() => Interlocked.Increment(ref _failedQueries);
 
         /// <summary>The last <c>gossip_timestamp_filter</c> we sent on this connection (describegraph).</summary>
         public GossipTimestampFilter? SentFilter { get; set; }
