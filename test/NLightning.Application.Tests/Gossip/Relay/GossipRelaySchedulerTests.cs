@@ -188,6 +188,44 @@ public class GossipRelaySchedulerTests : IDisposable
         Assert.Single(sent);
     }
 
+    [Fact]
+    public async Task Given_ThePeersUpdateOfOurChannel_When_Flushed_Then_OurAnnouncementPrecedesItOnEveryConnection()
+    {
+        // Arrange (NL-498): the peer's half of our announced channel rides the own path — to every connected peer on
+        // our chain, with no relay of others' gossip and no gossip_timestamp_filter anywhere in this harness
+        var first = AddPeer(s_node2);
+        _relay.EnqueueOwnChannelAnnouncement(ChannelAnnouncement());
+        _relay.EnqueueOwnChannelUpdate(PeerUpdate(100));
+        await _relay.FlushAsync(TestContext.Current.CancellationToken);
+
+        // Act: the same connection, then the peer reconnects (a new connection gets our gossip for the channel again)
+        await _relay.FlushAsync(TestContext.Current.CancellationToken);
+        _peers.Clear();
+        var second = AddPeer(s_node2);
+        await _relay.FlushAsync(TestContext.Current.CancellationToken);
+
+        // Assert: 256 before 258 on both connections; the update is repeated only for the new one
+        Assert.Equal([MessageTypes.ChannelAnnouncement, MessageTypes.ChannelUpdate], first.Select(m => m.Type));
+        Assert.Equal([MessageTypes.ChannelAnnouncement, MessageTypes.ChannelUpdate], second.Select(m => m.Type));
+        Assert.Equal(2, first.Count);
+    }
+
+    [Fact]
+    public async Task Given_OurAndThePeersUpdatesOfTheChannel_When_Flushed_Then_BothDirectionsGoOut()
+    {
+        // Arrange (NL-498): the peer's half is keyed per direction, so it never replaces our own update
+        var sent = AddPeer(s_node2);
+        _relay.EnqueueOwnChannelUpdate(ChannelUpdate(100));
+        _relay.EnqueueOwnChannelUpdate(PeerUpdate(90));
+
+        // Act
+        await _relay.FlushAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(2, sent.Count);
+        Assert.All(sent, m => Assert.Equal(MessageTypes.ChannelUpdate, m.Type));
+    }
+
     public void Dispose() => _relay.Dispose();
 
     private List<IMessage> AddPeer(CompactPubKey nodeId, params ChainHash[] chains)
@@ -212,6 +250,12 @@ public class GossipRelaySchedulerTests : IDisposable
     private static ChannelUpdatePayload ChannelUpdate(uint timestamp) =>
         new(ChannelUpdatePayload.EmptySignature, ChainConstants.Regtest, s_scid, timestamp,
             ChannelUpdatePayload.MessageFlagMustBeOne, 0, 40, 1_000, 1_000, 100, 990_000_000);
+
+    /// <summary>The counterparty's half of our announced channel (direction 1, dont_forward clear, NL-498).</summary>
+    private static ChannelUpdatePayload PeerUpdate(uint timestamp) =>
+        new(ChannelUpdatePayload.EmptySignature, ChainConstants.Regtest, s_scid, timestamp,
+            ChannelUpdatePayload.MessageFlagMustBeOne, ChannelUpdatePayload.ChannelFlagDirection, 40, 1_000, 1_000,
+            100, 990_000_000);
 
     private static NodeAnnouncementPayload NodeAnnouncement(uint timestamp) =>
         new(NodeAnnouncementPayload.EmptySignature, ReadOnlyMemory<byte>.Empty, timestamp, s_node1, new byte[3],

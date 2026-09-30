@@ -652,6 +652,80 @@ public class ChannelUpdateServiceTests
     }
 
     [Fact]
+    public void Given_ThePeersUpdateOfAnAnnouncedChannel_When_Handled_Then_ItIsPublishedLikeOurOwnGossip()
+    {
+        // Arrange (NL-498): our other peers learn the peer's policy of our shared channel with our own gossip, not
+        // only as relayed gossip (LND sends a gossip_timestamp_filter to its sync peers only)
+        var sink = new RecordingOwnGossipSink();
+        var relay = new RecordingRelayScheduler();
+        var service = CreateService(out _, new OwnGossipPublisher(sink, relay));
+        AddAnnouncedChannel();
+        var update = CreatePeerUpdate(timestamp: 100, dontForward: false);
+
+        // Act
+        var stored = service.HandleRemoteChannelUpdate(PeerNodeId, update);
+
+        // Assert: to the relay (our other peers, at the next flush) and the graph, like our own update
+        Assert.True(stored);
+        Assert.Same(update.Payload, Assert.Single(relay.Queued));
+        Assert.Same(update.Payload, Assert.Single(sink.ChannelUpdates));
+    }
+
+    [Fact]
+    public void Given_ThePeersUpdateOfAPrivateChannel_When_Handled_Then_ItIsStoredButNotPublished()
+    {
+        // Arrange: only an announced channel's gossip is ours to spread
+        var sink = new RecordingOwnGossipSink();
+        var relay = new RecordingRelayScheduler();
+        var service = CreateService(out _, new OwnGossipPublisher(sink, relay));
+        var channel = AddChannel(ChannelState.Open);
+
+        // Act
+        var stored = service.HandleRemoteChannelUpdate(PeerNodeId, CreatePeerUpdate(timestamp: 100));
+
+        // Assert
+        Assert.True(stored);
+        Assert.True(service.TryGetRemoteChannelUpdate(channel.ChannelId, out _));
+        Assert.Empty(relay.Queued);
+        Assert.Empty(sink.ChannelUpdates);
+    }
+
+    [Fact]
+    public void Given_AForwardedUpdateMarkedDontForward_When_Handled_Then_ItIsStoredButNotPublished()
+    {
+        // Arrange (BOLT 7: dont_forward names this connection only, announced channel or not)
+        var sink = new RecordingOwnGossipSink();
+        var relay = new RecordingRelayScheduler();
+        var service = CreateService(out _, new OwnGossipPublisher(sink, relay));
+        AddAnnouncedChannel();
+
+        // Act / Assert
+        Assert.True(service.HandleRemoteChannelUpdate(PeerNodeId, CreatePeerUpdate(timestamp: 100)));
+        Assert.Empty(relay.Queued);
+        Assert.Empty(sink.ChannelUpdates);
+    }
+
+    [Fact]
+    public void Given_AnInvalidUpdateForAnAnnouncedChannel_When_Handled_Then_NothingIsPublished()
+    {
+        // Arrange: a tampered update is neither stored nor spread
+        var sink = new RecordingOwnGossipSink();
+        var relay = new RecordingRelayScheduler();
+        var service = CreateService(out _, new OwnGossipPublisher(sink, relay));
+        AddAnnouncedChannel();
+        var valid = CreatePeerUpdate(timestamp: 100, dontForward: false).Payload;
+        var tampered = new ChannelUpdatePayload(valid.Signature, valid.ChainHash, valid.ShortChannelId,
+                                                valid.Timestamp, valid.MessageFlags, valid.ChannelFlags,
+                                                valid.CltvExpiryDelta, valid.HtlcMinimumMsat, valid.FeeBaseMsat + 1,
+                                                valid.FeeProportionalMillionths, valid.HtlcMaximumMsat);
+
+        // Act / Assert
+        Assert.False(service.HandleRemoteChannelUpdate(PeerNodeId, new ChannelUpdateMessage(tampered)));
+        Assert.Empty(relay.Queued);
+        Assert.Empty(sink.ChannelUpdates);
+    }
+
+    [Fact]
     public void Given_AnAnnouncedChannel_When_CreatingUpdate_Then_DontForwardIsClearAndTheUpdateIsPublished()
     {
         // Arrange (BOLT 7: dont_forward only for an update not preceded by the channel's announcement)
@@ -1361,14 +1435,16 @@ public class ChannelUpdateServiceTests
 
     private ChannelUpdateMessage CreatePeerUpdate(uint timestamp, ShortChannelId? scid = null, uint feeBase = 1_000,
                                                   ChainHash? chain = null, bool flipDirection = false,
-                                                  Key? signer = null, ulong htlcMaximumMsat = 990_000_000)
+                                                  Key? signer = null, ulong htlcMaximumMsat = 990_000_000,
+                                                  bool dontForward = true)
     {
         var peerIsNode2 = ((ReadOnlySpan<byte>)PeerNodeId).SequenceCompareTo(OurNodeId) > 0;
         var direction = peerIsNode2 != flipDirection;
         var unsigned = new ChannelUpdatePayload(ChannelUpdatePayload.EmptySignature, chain ?? ChainConstants.Regtest,
                                                 scid ?? s_shortChannelId, timestamp,
-                                                ChannelUpdatePayload.MessageFlagMustBeOne
-                                              | ChannelUpdatePayload.MessageFlagDontForward,
+                                                (byte)(ChannelUpdatePayload.MessageFlagMustBeOne
+                                                     | (dontForward ? ChannelUpdatePayload.MessageFlagDontForward
+                                                                    : (byte)0)),
                                                 direction ? ChannelUpdatePayload.ChannelFlagDirection : (byte)0, 80,
                                                 1_000, feeBase, 1, htlcMaximumMsat);
         var signature = CreateSigner(signer ?? _peerKey).SignNodeMessage(unsigned.GetSignatureHash());
