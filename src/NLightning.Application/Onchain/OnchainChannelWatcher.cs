@@ -853,6 +853,7 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 
         // B5-GEN-04: the peer gets an error unless the channel already failed with one (re-sent on reconnection)
         ErrorMessage? errorToSend = null;
+        byte[]? errorBytes = null;
         if (channel.ErrorSent is null)
         {
             var messageFactory = scope.ServiceProvider.GetRequiredService<IMessageFactory>();
@@ -860,14 +861,27 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
             errorToSend = messageFactory.CreateErrorMessage(OnchainErrorMessage, channelId);
             using var errorStream = new MemoryStream();
             await messageSerializer.SerializeAsync(errorToSend, errorStream);
-            channel.MarkErrorSent(errorStream.ToArray());
+            errorBytes = errorStream.ToArray();
         }
 
+        // The stored error and OnchainResolving are staged on the row's copy read from the database: the shared
+        // model changes only after the save (as the executor stages Closed), so a failed save leaves the memory
+        // where it was and the replayed block records the close (NL-307)
         var previousState = channel.State;
+        var stored = await unitOfWork.ChannelDbRepository.GetByIdAsync(channelId)
+                  ?? throw new InvalidOperationException(
+                         $"Channel {channelId} closed on chain but is not in the database");
+        if (errorBytes is not null)
+            stored.MarkErrorSent(errorBytes);
+        if (stored.State < ChannelState.OnchainResolving)
+            stored.UpdateState(ChannelState.OnchainResolving);
+        await unitOfWork.ChannelDbRepository.UpdateAsync(stored);
+        await unitOfWork.SaveChangesAsync();
+
+        if (errorBytes is not null)
+            channel.MarkErrorSent(errorBytes);
         if (channel.State < ChannelState.OnchainResolving)
             channel.UpdateState(ChannelState.OnchainResolving);
-        await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
-        await unitOfWork.SaveChangesAsync();
         _channelMemoryRepository.UpdateChannel(channel);
 
         _logger.LogCritical("Channel {ChannelId} ({State}) closed on chain by {Kind} {TxId} (commitment {Number}) at "

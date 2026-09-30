@@ -82,6 +82,8 @@ public sealed class OnchainChannelWatcherTests : IDisposable
 
         var unitOfWork = _store.CreateUnitOfWork();
         unitOfWork.SetupGet(u => u.RemoteShachainDbRepository).Returns(new Mock<IRemoteShachainDbRepository>().Object);
+        // The database's copy of the channel: another instance than the shared in-memory model (NL-307)
+        _store.LoadChannel = id => id == _channel.ChannelId ? _pair.Bob.Channel : null;
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
         services.AddSingleton<ILogger<OnchainChannelWatcher>>(_logger);
@@ -544,6 +546,10 @@ public sealed class OnchainChannelWatcherTests : IDisposable
         _memory.Verify(m => m.UpdateChannel(It.IsAny<ChannelModel>()), Times.Never);
         Assert.Empty(_store.Saves);
 
+        // Assert (NL-307): the failed save left the shared model where it was, not ahead of the database
+        Assert.Equal(ChannelState.Open, _channel.State);
+        Assert.Null(_channel.ErrorSent);
+
         // Act: the block is processed again (the monitor raises the spend again)
         var outcome = await Watcher.HandleFundingSpentAsync(SpentBy(spend), TestContext.Current.CancellationToken);
 
@@ -552,6 +558,28 @@ public sealed class OnchainChannelWatcherTests : IDisposable
         AssertRecordedInOneSave(expectedOutputs: 3);
         _executor.Verify(e => e.ResolveChannelAsync(_channel.ChannelId, SpendHeight, It.IsAny<CancellationToken>()),
                          Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_TheCloseIsRecorded_When_TheSaveCommits_Then_TheSharedModelFollowsOnlyAfterIt()
+    {
+        // Arrange (NL-307): the stored error and OnchainResolving are staged on the row's copy, so the shared model
+        // can only follow the committed save
+        var atSave = new List<(ChannelState State, ReadOnlyMemory<byte>? Error)>();
+        _store.OnSave = () => atSave.Add((_channel.State, _channel.ErrorSent));
+        var local = _pair.Alice.State.LocalCommit;
+        var spend = BuildCommitment(CommitmentSide.Local, local.Spec, local.Number, null);
+
+        // Act
+        var outcome = await Watcher.HandleFundingSpentAsync(SpentBy(spend), TestContext.Current.CancellationToken);
+
+        // Assert: at the save the shared model was still Open with no error stored; afterwards it followed
+        Assert.NotNull(outcome);
+        var (stateAtSave, errorAtSave) = Assert.Single(atSave);
+        Assert.Equal(ChannelState.Open, stateAtSave);
+        Assert.Null(errorAtSave);
+        Assert.Equal(ChannelState.OnchainResolving, _channel.State);
+        Assert.NotNull(_channel.ErrorSent);
     }
 
     public void Dispose()
