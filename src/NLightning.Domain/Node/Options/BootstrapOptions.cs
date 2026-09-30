@@ -23,6 +23,24 @@ public class BootstrapOptions
     /// <summary>The testnet (testnet3) seed LND ships with (checked on 2026-09-28).</summary>
     public static IReadOnlyList<string> TestnetSeeds { get; } = ["test.nodes.lightning.directory"];
 
+    /// <summary>
+    /// The testnet4 seed LND ships with (`test4.nodes.lightning.wiki`; checked on 2026-09-30: it answers BOLT 10 SRV
+    /// with bech32 node ids, NL-545). Testnet4 itself is not a supported network yet (NL-012); the list is the
+    /// plumbing for when it is (a custom registration of the name already picks it up). Bitcoin Core's testnet4 DNS
+    /// seeds (`seed.testnet4.bitcoin.sprovoost.nl`, `seed.testnet4.wiz.biz`) are P2P seeds, not BOLT 10, and are not
+    /// usable here.
+    /// </summary>
+    public static IReadOnlyList<string> Testnet4Seeds { get; } = ["test4.nodes.lightning.wiki"];
+
+    /// <summary>
+    /// The signet seed LND ships with (`signet.nodes.lightning.wiki`). The root answers BOLT 10 queries but held no
+    /// records on 2026-09-30 (NL-545); the seed is kept so a signet node's bootstrap finds the candidates as soon as
+    /// they appear. Custom signets (Mutinynet) are signet for Lightning (<c>BitcoinNetwork</c> resolves them to
+    /// <see cref="Protocol.ValueObjects.BitcoinNetwork.Signet"/>), so they share this list and would find
+    /// default-signet candidates. Bitcoin Core's signet seeds are P2P seeds, not BOLT 10.
+    /// </summary>
+    public static IReadOnlyList<string> SignetSeeds { get; } = ["signet.nodes.lightning.wiki"];
+
     /// <summary>The largest <see cref="MaxPerSeed"/>.</summary>
     public const int MaxPerSeedLimit = 100;
 
@@ -43,19 +61,21 @@ public class BootstrapOptions
 
     /// <summary>
     /// The effective switch on <paramref name="network"/>: <see cref="Enabled"/> when set, otherwise true on mainnet
-    /// only (testnet has a seed but stays off: testnet3 is being replaced by testnet4, which has no seed, NL-545).
+    /// only (testnet has a seed but stays off: testnet3 is being replaced by testnet4, whose network support is still
+    /// open, NL-012/NL-545).
     /// </summary>
     public bool IsEnabledOn(BitcoinNetwork network) => Enabled ?? network.Name == NetworkConstants.Mainnet;
 
     /// <summary>
     /// The seed roots to query; unset means the network's own list (<see cref="GetDefaultSeeds"/>). Seeds are used on
-    /// mainnet and testnet only, unless <see cref="AllowSeedsOnThisNetwork"/> (D-B10-2).
+    /// a seed network (<see cref="IsSeedNetwork"/>: mainnet, testnet, testnet4, signet) only, unless
+    /// <see cref="AllowSeedsOnThisNetwork"/> (D-B10-2).
     /// </summary>
     public List<string>? Seeds { get; set; }
 
     /// <summary>
-    /// Use the configured <see cref="Seeds"/> on a network that has no public seeds (regtest, signets, e.g. a local
-    /// test seed). Without it they are ignored there, with a warning.
+    /// Use the configured <see cref="Seeds"/> on a network that has no public seeds (regtest, e.g. a local test
+    /// seed). Without it they are ignored there, with a warning.
     /// </summary>
     public bool AllowSeedsOnThisNetwork { get; set; }
 
@@ -189,15 +209,23 @@ public class BootstrapOptions
     /// </summary>
     public bool UseQueryConditions { get; set; }
 
-    /// <summary>True when <paramref name="network"/> has public DNS seeds (mainnet and testnet).</summary>
+    /// <summary>
+    /// True when <paramref name="network"/> has public DNS seeds (mainnet, testnet, testnet4 and signet, NL-545).
+    /// </summary>
     public static bool IsSeedNetwork(BitcoinNetwork network) =>
-        network.Name is NetworkConstants.Mainnet or NetworkConstants.Testnet;
+        network.Name is NetworkConstants.Mainnet or NetworkConstants.Testnet or NetworkConstants.Testnet4
+            or NetworkConstants.Signet;
 
-    /// <summary>The network's own seeds: two on mainnet, one on testnet, none elsewhere.</summary>
+    /// <summary>
+    /// The network's own seeds: two on mainnet, one on testnet, one on testnet4 (LND's, live on 2026-09-30) and one on
+    /// signet (LND's; the root held no records on 2026-09-30), none on regtest (NL-545).
+    /// </summary>
     public static IReadOnlyList<string> GetDefaultSeeds(BitcoinNetwork network) => network.Name switch
     {
         NetworkConstants.Mainnet => MainnetSeeds,
         NetworkConstants.Testnet => TestnetSeeds,
+        NetworkConstants.Testnet4 => Testnet4Seeds,
+        NetworkConstants.Signet => SignetSeeds,
         _ => []
     };
 

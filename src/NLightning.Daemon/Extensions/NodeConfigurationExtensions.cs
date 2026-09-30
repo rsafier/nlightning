@@ -358,7 +358,8 @@ public static class NodeConfigurationExtensions
         };
         var (zmqHost, zmqBlockPort, zmqTxPort) = isSignet ? ("127.0.0.1", 28332, 28333) : ("bitcoinzmq", 8334, 8335);
         // BOLT 10 bootstrap (NL-113): on on mainnet only (D-B10-1 as reversed on 2026-09-28); the network's own seeds
-        // (mainnet 2, testnet 1, none elsewhere, D-B10-2); the public fallback resolvers (D-B10-7)
+        // (mainnet 2, testnet 1, testnet4 1, signet 1 — empty on 2026-09-30 — none on regtest, D-B10-2 and NL-545);
+        // the public fallback resolvers (D-B10-7)
         var bootstrap = new BootstrapOptions();
         var bootstrapSeeds = string.Join(", ", BootstrapOptions.GetDefaultSeeds(resolved).Select(seed => $"\"{seed}\""));
         var bootstrapFallbackServers = string.Join(", ", bootstrap.FallbackNameServers.Select(server => $"\"{server}\""));
