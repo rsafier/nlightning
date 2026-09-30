@@ -35,6 +35,10 @@ whole reply, authenticates with COOKIE or a password only, detaches its services
     "OnionServicePort": 9735,
     "OnionServiceTarget": null,
     "OnionServiceKeyFile": "tor_onion_v3.key",
+    "OnionServiceClientAuthKeys": [],
+    "OnionServicePoWEnabled": null,
+    "OnionServicePoWQueueRate": null,
+    "OnionServicePoWQueueBurst": null,
     "AnnounceOnionService": true,
     "AllowClearnetListen": false
   }
@@ -74,6 +78,16 @@ whole reply, authenticates with COOKIE or a password only, detaches its services
   mode 0600 on the first start from Tor's `ADD_ONION NEW:ED25519-V3` reply, before the address is used; every later
   start hands it back, so the onion address never changes. **The key is the address: back it up with the node key.** A
   key file that cannot be read stops the onion service (logged) instead of creating a new address.
+- `OnionServiceClientAuthKeys` (NL-573): the base32 x25519 public keys (rend-spec-v3 §G.1.2, 52 characters) of the
+  clients allowed to reach the service. Empty (the default) leaves the service public; with keys, `ADD_ONION` carries
+  `Flags=V3Auth` and one `ClientAuthV3=` per key, so a client without the matching private key cannot even fetch the
+  descriptor — a private node, its peers only. Each peer puts its private key in its own Tor by `ONION_CLIENT_AUTH_ADD`
+  (control port) or a `ClientOnionAuthDir` in `torrc`. Bad keys are refused at start-up.
+- `OnionServicePoWEnabled` and the optional `OnionServicePoWQueueRate`/`OnionServicePoWQueueBurst` tuning (NL-573):
+  turn on the service's proof-of-work defenses (rend-spec-v3 §7.3, a first anti-DoS line on the introduction points),
+  sent as `PoWDefensesEnabled=`/`PoWQueueRate=`/`PoWQueueBurst=` on `ADD_ONION`, which Tor takes from 0.4.9 (on older
+  Tor the service is not added, with an error naming the torrc route). Unset leaves Tor's default (off). The torrc
+  equivalent works on every version: `HiddenServicePoWDefensesEnabled <HiddenServiceDir> 1`.
 
 Minimal `torrc` for C Tor 0.4.8 (the maintained series):
 
@@ -140,9 +154,9 @@ CookieAuthFileGroupReadable 1
 - bitcoind RPC/ZMQ connections are made as configured (normally local); a remote bitcoind is reached directly.
 - BOLT 10 DNS seeds are skipped (SRV lookups cannot go through Tor's SOCKS port): a new Tor-only node needs its first
   peer by `connect`, or a graph from a previous run (NL-571).
-- Onion service client authorization (`ClientAuthV3`) and Tor's PoW defenses (`HiddenServicePoWDefensesEnabled`) are not
-  configurable through us (NL-573); for those, host the service in `torrc` with `HiddenServiceDir`/`HiddenServicePort`,
-  set `OnionServiceEnabled` false and put the address in `Gossip:AnnounceAddresses`.
+- Dialing someone else's *authorized* onion service is configured in Tor itself: `ONION_CLIENT_AUTH_ADD` on the control
+  port, or a `ClientOnionAuthDir` in `torrc`. Only the service side of client authorization is ours
+  (`OnionServiceClientAuthKeys`, NL-573).
 
 ## Arti
 
@@ -155,7 +169,8 @@ set `OnionServiceEnabled` false, host the onion service in Arti's own configurat
 - Unit and in-process: `test/NLightning.Domain.Tests/{Crypto/Hashes/Sha3Tests,Gossip/OnionV3AddressTests,Node/Options/TorOptionsTests}`,
   `test/NLightning.Infrastructure.Tests/Transport/Tor/` (SOCKS5 client, control client incl. SAFECOOKIE and the refused
   COOKIE-only/NULL ports, redaction, a faulted client and bounded lines, onion service lifecycle incl. Tor restart, the
-  closing port's backoff and a corrupt or shared key, `TcpService` routes per mode incl. direct loopback in `TorOnly`, the
+  closing port's backoff and a corrupt or shared key, the configured client authorization and PoW defenses on the exact
+  `ADD_ONION` line (NL-573), `TcpService` routes per mode incl. direct loopback in `TorOnly`, the
   Tor network timeout, the Tor-only HTTP handler, the start-up checks) over the fakes
   `test/NLightning.Tests.Utils/Mocks/{FakeSocks5Proxy,FakeTorControlPort}`,
   `PeerManagerConnectTests.Given_ATorOnlyNode_When_ItDialsAnOnionPeer_*`: two real peer managers, the BOLT 8 handshake

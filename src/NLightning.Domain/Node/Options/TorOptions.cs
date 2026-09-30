@@ -35,6 +35,9 @@ public class TorOptions
     /// <summary>The default <see cref="OnionServiceKeyFile"/>, relative to the configuration directory.</summary>
     public const string DefaultOnionServiceKeyFile = "tor_onion_v3.key";
 
+    /// <summary>The length of a base32-encoded x25519 client authorization key: 32 bytes.</summary>
+    internal const int ClientAuthKeyLength = 32;
+
     private const string UnixPrefix = "unix:";
 
     /// <summary>What goes through Tor. Default <see cref="TorMode.Off"/>.</summary>
@@ -107,6 +110,35 @@ public class TorOptions
     /// address: keep it with the node key. Default <see cref="DefaultOnionServiceKeyFile"/>.
     /// </summary>
     public string OnionServiceKeyFile { get; set; } = DefaultOnionServiceKeyFile;
+
+    /// <summary>
+    /// The x25519 public keys (base32, the key part of rend-spec-v3 §G.1.2: 52 characters) of the clients allowed to
+    /// reach the onion service (v3 client authorization): each key is sent to Tor in <c>ADD_ONION</c> as
+    /// <c>ClientAuthV3=</c> with <c>Flags=V3Auth</c>, so a client without the matching private key cannot even fetch
+    /// the service's descriptor. Empty (the default) leaves the service public. Keys of peers that should dial us go
+    /// to Tor by <c>ONION_CLIENT_AUTH_ADD</c> or a <c>ClientOnionAuthDir</c> in <c>torrc</c> (NL-573).
+    /// </summary>
+    public List<string> OnionServiceClientAuthKeys { get; set; } = [];
+
+    /// <summary>
+    /// Turn on the onion service's proof-of-work defenses (rend-spec-v3 §7.3, a first anti-DoS line on the
+    /// introduction points), sent to Tor in <c>ADD_ONION</c> as <c>PoWDefensesEnabled=</c>. Null (the default) sends
+    /// nothing, which leaves Tor's default (off). Needs Tor 0.4.9 or newer, whose <c>ADD_ONION</c> takes the option;
+    /// on older Tor host the service in <c>torrc</c> (<c>HiddenServicePoWDefensesEnabled</c>) instead (NL-573).
+    /// </summary>
+    public bool? OnionServicePoWEnabled { get; set; }
+
+    /// <summary>
+    /// The PoW defenses' suggested queue rate (the fraction of a second the solver must take, as a fixed-point
+    /// fraction over 256; Tor's <c>PoWQueueRate</c>). Sent only with <see cref="OnionServicePoWEnabled"/> true.
+    /// </summary>
+    public uint? OnionServicePoWQueueRate { get; set; }
+
+    /// <summary>
+    /// The PoW defenses' queue burst (the number of requests accepted at full rate before the queue kicks in; Tor's
+    /// <c>PoWQueueBurst</c>). Sent only with <see cref="OnionServicePoWEnabled"/> true.
+    /// </summary>
+    public uint? OnionServicePoWQueueBurst { get; set; }
 
     /// <summary>
     /// Add the onion service to our <c>node_announcement</c> (it goes out once we have an announced channel). Default
@@ -210,6 +242,14 @@ public class TorOptions
     }
 
     /// <summary>
+    /// True when <paramref name="key"/> is a v3 client authorization public key: 52 base32 characters, the canonical
+    /// encoding of a 32-byte x25519 key (rend-spec-v3 §G.1.2 without its <c>:</c> type prefix), which is the only
+    /// form Tor's <c>ClientAuthV3=</c> takes.
+    /// </summary>
+    public static bool IsValidClientAuthKey(string? key) =>
+        key is not null && OnionBase32.TryDecode(key.Trim(), ClientAuthKeyLength) is not null;
+
+    /// <summary>
     /// Every configuration error of these options (empty when valid); <paramref name="listenAddresses"/> give the
     /// default onion service target.
     /// </summary>
@@ -244,6 +284,19 @@ public class TorOptions
             errors.Add($"{prefix}{nameof(OnionServicePort)} must be from 1 to 65535.");
         if (string.IsNullOrWhiteSpace(OnionServiceKeyFile))
             errors.Add($"{prefix}{nameof(OnionServiceKeyFile)} must be set.");
+        for (var i = 0; i < OnionServiceClientAuthKeys.Count; i++)
+            if (!IsValidClientAuthKey(OnionServiceClientAuthKeys[i]))
+                errors.Add($"{prefix}{nameof(OnionServiceClientAuthKeys)}[{i}] "
+                         + $"'{OnionServiceClientAuthKeys[i]}' is not a base32 x25519 public key (rend-spec-v3 "
+                         + "§G.1.2: 52 characters from a-z, 2-7).");
+        if (OnionServicePoWEnabled is not true && OnionServicePoWQueueRate is not null)
+            errors.Add($"{prefix}{nameof(OnionServicePoWQueueRate)} is set but {prefix}"
+                     + $"{nameof(OnionServicePoWEnabled)} is not true: the PoW defenses and their tuning go to Tor "
+                     + "together.");
+        if (OnionServicePoWEnabled is not true && OnionServicePoWQueueBurst is not null)
+            errors.Add($"{prefix}{nameof(OnionServicePoWQueueBurst)} is set but {prefix}"
+                     + $"{nameof(OnionServicePoWEnabled)} is not true: the PoW defenses and their tuning go to Tor "
+                     + "together.");
 
         var target = GetOnionServiceTarget(listenAddresses);
         if (target is null)
