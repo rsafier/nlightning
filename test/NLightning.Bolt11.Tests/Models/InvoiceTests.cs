@@ -492,6 +492,52 @@ public class InvoiceTests
     }
 
     [Fact]
+    public void Given_EncodedInvoice_When_ReencodedAfterAChange_Then_SignatureMatchesTheLatestString()
+    {
+        // Given: a fresh invoice carries a placeholder signature until it is signed (NL-222)
+        var key = new Key();
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "signature", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+
+        // When
+        var encoded = invoice.Encode(key);
+        var decoded = Invoice.Decode(encoded, BitcoinNetwork.Mainnet);
+
+        // Then: the signature from Encode matches the one carried by the encoded string
+        Assert.Equal(decoded.Signature.RecoveryId, invoice.Signature.RecoveryId);
+        Assert.Equal(decoded.Signature.Signature, invoice.Signature.Signature);
+
+        // When: the invoice changes and is re-signed
+        invoice.MinFinalCltvExpiry = 40;
+        var reencoded = invoice.Encode(key);
+        var redecoded = Invoice.Decode(reencoded, BitcoinNetwork.Mainnet);
+
+        // Then: the stale signature is refreshed to match the new string
+        Assert.NotEqual(encoded, reencoded);
+        Assert.Equal(redecoded.Signature.RecoveryId, invoice.Signature.RecoveryId);
+        Assert.Equal(redecoded.Signature.Signature, invoice.Signature.Signature);
+    }
+
+    [Fact]
+    public void Given_DecodedInvoice_When_Reencoded_Then_SignatureIsRefreshed()
+    {
+        // Given
+        var key = new Key();
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "decoded signature", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+        var decoded = Invoice.Decode(invoice.Encode(key), BitcoinNetwork.Mainnet);
+        var originalSignature = decoded.Signature;
+
+        // When: the decoded invoice is signed again under a different key
+        var otherKey = new Key();
+        decoded.Encode(otherKey);
+
+        // Then: Signature no longer holds the decoded value
+        Assert.NotEqual(originalSignature.Signature, decoded.Signature.Signature);
+        Assert.Equal(otherKey.PubKey, decoded.PayeePubKey);
+    }
+
+    [Fact]
     public void Given_InvoiceWithOnlyBasicMpp_When_Encoded_Then_RequiredFeaturesAreAdded()
     {
         // Arrange

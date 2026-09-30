@@ -121,6 +121,20 @@ public class ExpiryTimeTaggedFieldTests
     }
 
     [Fact]
+    public void Given_LeadingZeroGroup_When_FromBitReader_Then_ThrowsArgumentException()
+    {
+        // Arrange: 60 needs two groups, so a leading 0 group makes the data_length non-minimal (BOLT 11)
+        using var bitWriter = new BitWriter(15);
+        bitWriter.WriteByteAsBits(0, 5);
+        bitWriter.WriteByteAsBits(0, 5);
+        bitWriter.WriteByteAsBits(60, 5);
+        var bitReader = new BitReader(bitWriter.ToArray());
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => ExpiryTimeTaggedField.FromBitReader(bitReader, 3));
+    }
+
+    [Fact]
     public void IsValid_ReturnsTrueForPositiveValue()
     {
         // Arrange

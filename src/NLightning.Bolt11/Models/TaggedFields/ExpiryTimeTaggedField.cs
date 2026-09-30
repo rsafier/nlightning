@@ -51,7 +51,10 @@ public sealed class ExpiryTimeTaggedField : ITaggedField
     /// <param name="bitReader">The BitReader to read from</param>
     /// <param name="length">The length of the field</param>
     /// <returns>The ExpiryTimeTaggedField</returns>
-    /// <exception cref="ArgumentException">Thrown when the length is negative or the value does not fit in 63 bits</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when the length is negative, the value does not fit in 63 bits, or the data_length is not minimal
+    /// (BOLT 11: no leading 0 groups)
+    /// </exception>
     internal static ExpiryTimeTaggedField FromBitReader(BitReader bitReader, short length)
     {
         if (length < 0)
@@ -66,7 +69,16 @@ public sealed class ExpiryTimeTaggedField : ITaggedField
                 throw new ArgumentException(
                     $"Invalid value for {nameof(ExpiryTimeTaggedField)}. Value must fit in 63 bits", nameof(length));
 
-            value = (value << 5) | bitReader.ReadByteFromBits(5);
+            var group = bitReader.ReadByteFromBits(5);
+
+            // BOLT 11: a reader SHOULD treat an invoice as invalid when `x` has a non-minimal data_length, i.e.
+            // it begins with a 0 field-element; the minimal encoding of 0 is the empty field handled above
+            if (i == 0 && group == 0)
+                throw new ArgumentException(
+                    $"Invalid value for {nameof(ExpiryTimeTaggedField)}. " +
+                    "The data_length is not minimal (leading zero groups)", nameof(length));
+
+            value = (value << 5) | group;
         }
 
         return new ExpiryTimeTaggedField(value);

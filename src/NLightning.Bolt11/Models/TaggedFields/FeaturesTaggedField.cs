@@ -61,7 +61,8 @@ internal sealed class FeaturesTaggedField : ITaggedField
     /// <param name="length">The length of the field</param>
     /// <returns>The FeaturesTaggedField</returns>
     /// <exception cref="ArgumentException">
-    /// Thrown when the length is invalid or when an unknown even (required) feature bit is set (BOLT 11)
+    /// Thrown when the length is invalid, the data_length is not minimal (BOLT 11: no leading 0 groups; a writer
+    /// must omit the field when no bit is set), or an unknown even (required) feature bit is set (BOLT 11)
     /// </exception>
     internal static FeaturesTaggedField FromBitReader(BitReader bitReader, short length)
     {
@@ -71,6 +72,14 @@ internal sealed class FeaturesTaggedField : ITaggedField
                 nameof(length));
 
         var features = FeatureSet.DeserializeFromBitReader(bitReader, length * 5, false);
+
+        // BOLT 11: a reader SHOULD treat an invoice as invalid when `9` has a non-minimal data_length, i.e. it
+        // begins with a 0 field-element; with no bit set the writer must omit the field altogether
+        var minimalLength = (short)((features.SizeInBits + 1 + 4) / 5);
+        if (length != minimalLength)
+            throw new ArgumentException(
+                $"Invalid value for {nameof(FeaturesTaggedField)}. " +
+                "The data_length is not minimal (leading zero groups or no feature bits set)", nameof(length));
 
         // BOLT 11: unknown odd bits are ignored, unknown even bits MUST fail the payment
         var unknownRequiredBits = GetUnknownRequiredBits(features);
