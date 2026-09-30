@@ -14,11 +14,12 @@
 # 2. With --build, builds the peer image (test/Docker/eclair, test/Docker/ldk_server) when its tag is missing, and
 #    nothing else; the fixtures build a missing image themselves too.
 # 3. Builds the solution and runs the test assembly with -trait Category=Interop.<Peer> plus the extra arguments.
-# INTEROP_FRAMEWORK picks the framework (default net10.0).
+# INTEROP_FRAMEWORK picks the framework (default net10.0). The run is logged to TestResults/interop/ and a red run's
+# failing tests are named in the summary (NL-378).
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 fi
 
@@ -69,5 +70,20 @@ if [[ "$build_image" == true ]]; then
 fi
 
 dotnet build "$repo_root/NLightning.sln" -c "$configuration" -p:MSBuildWarningsAsMessages=MSB4121
-dotnet run --project "$project" -c "$configuration" -f "$framework" --no-build -- \
-    -trait "Category=$category" ${extra[@]+"${extra[@]}"}
+
+results_dir="$repo_root/TestResults/interop"
+mkdir -p "$results_dir"
+log="$results_dir/interop-$peer-$framework.log"
+echo "===== Interop $peer on $framework ($(date -u +%H:%M:%S)), log $log ====="
+if ! dotnet run --project "$project" -c "$configuration" -f "$framework" --no-build -- \
+    -trait "Category=$category" ${extra[@]+"${extra[@]}"} 2>&1 | tee "$log"; then
+    echo "===== Interop $peer FAILED (log $log) =====" >&2
+    failing_tests="$(grep -a '\[FAIL\]' "$log" | sed -e $'s/\x1b\\[[0-9;]*m//g' -e 's/^[[:space:]]*//' \
+                         -e 's/ \[FAIL\].*$//' | sort -u || true)"
+    if [ -n "$failing_tests" ]; then
+        echo "Failing tests:" >&2
+        printf '%s\n' "$failing_tests" >&2
+    fi
+    exit 1
+fi
+echo "===== Interop $peer green ====="
