@@ -57,7 +57,9 @@ using Metrics;
 /// malformed <c>addrlen</c> gets a <c>warning</c> only (the connection stays: the message may be relayed). A
 /// <c>channel_update</c> whose channel is unknown, and a <c>node_announcement</c> whose node has no channel yet, wait
 /// in the <see cref="OrphanUpdateCache"/> and are replayed when the channel is added (the check and the add run under
-/// one gate, so none is lost to the race). A chain answer that can still change (bitcoind behind or down, a reorg,
+/// one gate, so none is lost to the race). A <c>node_announcement</c> whose node's only channels are pending (NL-406)
+/// is kept past the orphan cache's TTL while a pending candidate names the node (NL-425), so it is not lost before
+/// the promoting update arrives. A chain answer that can still change (bitcoind behind or down, a reorg,
 /// a spend in the mempool, fewer than 6 confirmations) defers the announcement: a worker retries it after
 /// <see cref="GossipGraphOptions.RetryDelay"/>, up to <see cref="GossipGraphOptions.MaxRetries"/> times; a transient
 /// result never counts against the peer.
@@ -1347,6 +1349,21 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
         return expired;
     }
 
+    /// <summary>
+    /// NL-425: re-dates the orphaned <c>node_announcement</c> of every node whose only channels are still pending
+    /// (NL-406), so it waits for the promotion or the candidates' end instead of expiring with the orphan cache's
+    /// TTL. The write-behind loop runs it after <see cref="PrunePendingAnnouncements"/> (a candidate that just
+    /// expired no longer holds its node's announcement); tests call it directly.
+    /// </summary>
+    internal void KeepOrphansOfPendingNodes()
+    {
+        foreach (var nodeId in _orphans.NodeIds)
+        {
+            if (_pending.HasChannelOf(nodeId))
+                _orphans.RefreshNodeAnnouncement(nodeId);
+        }
+    }
+
     /// <summary>Forgets the ended misbehaviour bans; returns how many.</summary>
     internal int PruneBans()
     {
@@ -1641,8 +1658,9 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
             {
                 await Task.Delay(_options.FlushInterval, _timeProvider, cancellationToken);
                 await _store.FlushAsync(cancellationToken);
-                _orphans.PruneExpired();
                 PrunePendingAnnouncements();
+                KeepOrphansOfPendingNodes();
+                _orphans.PruneExpired();
                 ReplayRateLimited();
                 ReleaseBudgetRefused();
                 _rateLimiter.Prune();
