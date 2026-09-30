@@ -915,22 +915,21 @@ public sealed class AnchorCpfpServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_PackageRefusedForFee_When_NextBlock_Then_ChildReplacedWithoutWaitingForTheInterval()
+    public async Task Given_PackageRefusedForFee_When_Round_Then_TheChildIsReplacedInTheSameRound()
     {
         // Arrange: the estimate is below bitcoind's mempool minimum; the first package is refused for its fee
         var commitment = BroadcastCommitment();
         RefuseChildrenAlone();
         _chain.PackageAnswer = FakeAnchorChain.RefuseForFee;
+
+        // Act: the refusal is acted on in the same round — no next block is needed (NL-391)
         await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
-        var first = Assert.Single(_store.Children);
-        _chain.PackageAnswer = _chain.AcceptPackage;
 
-        // Act: one block later (the RBF interval is 2 blocks), same estimate
-        await Service.RunOnceAsync(501, TestContext.Current.CancellationToken);
-
-        // Assert: replaced at the BIP 125 minimum at least, and the replacement went in with the commitment
+        // Assert: replaced at the BIP 125 minimum at least; both pairs went out, the replacement's still refused
+        Assert.Equal(2, _chain.Packages.Count);
+        var first = _store.Children[0];
+        var replacement = Assert.Single(_store.Children, c => c.State == BroadcastState.Pending);
         Assert.Equal(BroadcastState.Replaced, first.State);
-        var replacement = _store.Children.Single(c => c.TransactionId != first.TransactionId);
         Assert.Equal(first.TransactionId, replacement.ReplacesTransactionId);
         var oldFee = AnchorTx.ChildFee(Load(first), _wallet);
         var newChild = Load(replacement);
@@ -938,26 +937,64 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         Assert.True(newFee >= oldFee * 5 / 4, $"{newFee} < 1.25 x {oldFee}");
         Assert.True(newFee >= oldFee + (ulong)newChild.GetVirtualSize(), $"{newFee} below the relay increment");
         AnchorTx.AssertScriptsValid(newChild, Load(commitment), _wallet);
-        Assert.Equal(2, _chain.Packages.Count);
+        Assert.Equal(Load(first).GetHash(), _chain.Packages[0].Child.GetHash());
         Assert.Equal(newChild.GetHash(), _chain.Packages[1].Child.GetHash());
+
+        // One block later the higher package is taken
+        _chain.PackageAnswer = _chain.AcceptPackage;
+        await Service.RunOnceAsync(501, TestContext.Current.CancellationToken);
+        Assert.Equal(3, _chain.Packages.Count);
+        Assert.Contains(_chain.Packages[2].Child.GetHash(), _chain.Mempool);
+        Assert.Single(_store.Children, c => c.State == BroadcastState.Pending);
     }
 
     [Fact]
-    public async Task Given_PackageWithoutDeadlineRefusedForFee_When_NextBlock_Then_ReplacedAlthoughItPaysTheEstimate()
+    public async Task Given_PairStoredBeforeARestart_When_ItsFirstPackageIsRefusedForFee_Then_ReplacedInTheSameRound()
+    {
+        // Arrange: before the restart bitcoind refused the pair for its fee (the mark was in memory); after it, the
+        // first round sees the refusal itself and acts in the same round — no block lost (NL-391)
+        BroadcastCommitment();
+        RefuseChildrenAlone();
+        _chain.PackageAnswer = FakeAnchorChain.RefuseForFee;
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        _chain.Packages.Clear();
+        var restarted = BuildProvider();
+        _restarted.Add(restarted);
+        var service = restarted.GetRequiredService<AnchorCpfpService>();
+        var stored = Assert.Single(_store.Children, c => c.State == BroadcastState.Pending);
+        var refusals = 0;
+        _chain.PackageAnswer = (parent, child) => refusals++ == 0
+            ? FakeAnchorChain.RefuseForFee(parent, child)
+            : _chain.AcceptPackage(parent, child);
+
+        // Act: the first round after the restart: the stored pair goes out, is refused for its fee, replaced at once
+        await service.RunOnceAsync(501, TestContext.Current.CancellationToken);
+
+        // Assert: the stored child was replaced in the same round; the replacement entered with the commitment
+        Assert.Equal(BroadcastState.Replaced, stored.State);
+        var second = Assert.Single(_store.Children, c => c.State == BroadcastState.Pending);
+        Assert.Equal(stored.TransactionId, second.ReplacesTransactionId);
+        Assert.Equal(2, _chain.Packages.Count);
+        Assert.Equal(Load(stored).GetHash(), _chain.Packages[0].Child.GetHash());
+        Assert.Equal(Load(second).GetHash(), _chain.Packages[1].Child.GetHash());
+        Assert.Contains(Load(second).GetHash(), _chain.Mempool);
+    }
+
+    [Fact]
+    public async Task Given_PackageWithoutDeadlineRefusedForFee_When_Round_Then_ReplacedAlthoughItPaysTheEstimate()
     {
         // Arrange: only a trimmed HTLC (no deadline); a package that pays the estimate is normally kept
         BroadcastCommitment(htlcMsat: 500_000);
         RefuseChildrenAlone();
         _chain.PackageAnswer = FakeAnchorChain.RefuseForFee;
-        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
-        var first = Assert.Single(_store.Children);
 
-        // Act
-        await Service.RunOnceAsync(501, TestContext.Current.CancellationToken);
+        // Act: the fee refusal acts in the same round although no deadline forces a bump (NL-391)
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
 
         // Assert
-        Assert.Equal(BroadcastState.Replaced, first.State);
         Assert.Equal(2, _store.Children.Count);
+        Assert.Equal(BroadcastState.Replaced, _store.Children[0].State);
+        Assert.Equal(BroadcastState.Pending, _store.Children[1].State);
     }
 
     [Fact]

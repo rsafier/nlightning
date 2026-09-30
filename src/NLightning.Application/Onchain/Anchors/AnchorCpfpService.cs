@@ -88,10 +88,11 @@ using Resolvers.Local;
 /// <see cref="IBitcoinChainService.SubmitPackageAsync"/> (Bitcoin Core 28+ 1p1c), judged at their package feerate. The
 /// rows are the persisted <c>BroadcastTransactions</c>, so after a restart the first round sends the pair as a package
 /// again (the monitor's own rebroadcast keeps sending them one by one). A package refused for its fee marks the child
-/// (memory only), and the next round replaces it at once, even without a deadline and while the package pays the
-/// estimate: the estimate is then below what the mempool takes, and each replacement adds at least the BIP 125
-/// increment, up to the cap. Without <c>submitpackage</c> (older node, or no chain service) this is logged once and the
-/// pair is only sent one by one.</para>
+/// and the round takes a second pass that replaces it at once — even without a deadline and while the package pays
+/// the estimate, and also at the first round after a restart, which sees the refusal itself (NL-391: no block is lost
+/// to a mark that was only in memory): the estimate is then below what the mempool takes, and each replacement adds
+/// at least the BIP 125 increment, up to the cap. Without <c>submitpackage</c> (older node, or no chain service) this
+/// is logged once and the pair is only sent one by one.</para>
 /// <para>The peer's commitment (NL-381): see <c>AnchorCpfpService.Peer.cs</c>.</para>
 /// <para>Mempool minimum: the estimate a child targets is raised to bitcoind's current mempool minimum
 /// (<see cref="IBitcoinChainService.GetMempoolMinFeeRatePerKwAsync"/>), so a commitment that pays the estimate but not
@@ -449,13 +450,23 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         }
     }
 
-    /// <summary>One channel's round; never throws but for cancellation.</summary>
+    /// <summary>One channel's round; never throws but for cancellation. A package bitcoind refused for its fee gets a
+    /// second pass in the same round (NL-391): the mark it recorded makes <see cref="PlanChildAsync"/> replace the
+    /// child at once, so also the first round after a restart — which sees the refusal itself — costs no extra block.</summary>
     private async Task RunChannelAsync(ChannelModel channel, uint height, CancellationToken cancellationToken)
     {
         var channelId = channel.ChannelId;
         try
         {
             RoundResult result;
+            using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
+                result = await RunChannelLockedAsync(channel, height, cancellationToken);
+
+            await CompleteAsync(channelId, result, cancellationToken);
+
+            if (!result.RetryAfterFeeRefusal)
+                return;
+
             using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
                 result = await RunChannelLockedAsync(channel, height, cancellationToken);
 
@@ -635,13 +646,13 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             var accepted = await _blockchainMonitor.PublishAsync(row);
             if (!accepted && !(result.PackageParent is { } parent
                             && await TrySubmitPackageAsync(channelId, parent.TransactionId, parent.RawTransaction, row,
-                                                           cancellationToken)))
+                                                           result, cancellationToken)))
                 _logger.LogWarning("Anchor child {TxId} of channel {ChannelId} was refused; it is sent again after "
                                  + "every block", Display(row.TransactionId), channelId);
         }
         else if (result is { PackageParent: { } parent, CheckChild: { } child })
         {
-            await EnsureChildInMempoolAsync(channelId, parent.TransactionId, parent.RawTransaction, child,
+            await EnsureChildInMempoolAsync(channelId, parent.TransactionId, parent.RawTransaction, child, result,
                                             cancellationToken);
         }
 
@@ -650,14 +661,14 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             // bitcoind does not have the peer's commitment either (below its mempool minimum): the pair as a package
             var packaged = result.PeerPackageParent is { } peerParent
                         && await TrySubmitPackageAsync(channelId, peerParent.TxId, peerParent.RawTransaction, peerChild,
-                                                       cancellationToken);
+                                                       result, cancellationToken);
             if (!packaged)
                 _logger.LogWarning("Anchor child {TxId} of the peer's commitment (channel {ChannelId}) was refused; it "
                                  + "is sent again after every block", Display(peerChild.TransactionId), channelId);
         }
         else if (result is { PeerPackageParent: { } peerPackage, PeerCheckChild: { } peerCheck })
         {
-            await EnsureChildInMempoolAsync(channelId, peerPackage.TxId, peerPackage.RawTransaction, peerCheck,
+            await EnsureChildInMempoolAsync(channelId, peerPackage.TxId, peerPackage.RawTransaction, peerCheck, result,
                                             cancellationToken);
         }
 
@@ -706,7 +717,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     /// the mempool minimum never passes).
     /// </summary>
     private async Task EnsureChildInMempoolAsync(ChannelId channelId, TxId parentTxId, byte[] parentRawTransaction,
-                                                 BroadcastTransactionModel child,
+                                                 BroadcastTransactionModel child, RoundResult result,
                                                  CancellationToken cancellationToken)
     {
         if (_chainService is null)
@@ -728,18 +739,18 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
                   + "package", Display(child.TransactionId), channelId);
         }
 
-        await TrySubmitPackageAsync(channelId, parentTxId, parentRawTransaction, child, cancellationToken);
+        await TrySubmitPackageAsync(channelId, parentTxId, parentRawTransaction, child, result, cancellationToken);
     }
 
     /// <summary>
     /// Sends the commitment and its child with <see cref="IBitcoinChainService.SubmitPackageAsync"/> (Bitcoin Core 28+
     /// 1p1c package relay, NL-380). True when both are in bitcoind's mempool. A package refused for its fee marks the
-    /// child so the next round replaces it without waiting for the RBF interval; a node without package relay is
-    /// logged once (the monitor keeps sending both one by one).
+    /// child and the round a second pass that replaces it without waiting for the RBF interval (NL-391); a node
+    /// without package relay is logged once (the monitor keeps sending both one by one).
     /// </summary>
     private async Task<bool> TrySubmitPackageAsync(ChannelId channelId, TxId commitmentTxId,
                                                    byte[] commitmentRawTransaction, BroadcastTransactionModel child,
-                                                   CancellationToken cancellationToken)
+                                                   RoundResult result, CancellationToken cancellationToken)
     {
         if (_chainService is null)
         {
@@ -780,8 +791,13 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
                 return false;
             case PackageSubmitStatus.Rejected:
                 if (outcome.IsFeeRefusal)
+                {
                     lock (_feeRefusedChildren)
                         _feeRefusedChildren.Add(child.TransactionId);
+
+                    // The child is replaced without waiting for the RBF interval — also in this round (NL-391)
+                    result.RetryAfterFeeRefusal = true;
+                }
                 LogOnce($"{channelId}:{child.TransactionId}:package",
                         "bitcoind refused commitment {CommitmentTxId} of channel {ChannelId} with its anchor child "
                       + "{TxId} as a package ({Reason}){Next}", Display(commitmentTxId), channelId,
@@ -1551,6 +1567,10 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
         /// <summary>The wallet-input reclaim of a settled child's reservation (NL-386), stored in the round's save.</summary>
         public BroadcastTransactionModel? Rescue { get; set; }
+
+        /// <summary>A package was refused for its fee this round (NL-391): the round takes a second pass, which
+        /// replaces the marked child without waiting for the RBF interval.</summary>
+        public bool RetryAfterFeeRefusal { get; set; }
 
         /// <summary>The peer's commitment spends the funding output in bitcoind's mempool this round.</summary>
         public bool PeerCommitmentInMempool { get; set; }
