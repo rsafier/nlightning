@@ -43,9 +43,6 @@ public interface IMessageFactory
 
     ShutdownMessage CreateShutdownMessage(ChannelId channelId, BitcoinScript scriptPubkey);
 
-    ClosingSignedMessage CreateClosingSignedMessage(ChannelId channelId, ulong feeSatoshis, CompactSignature signature,
-                                                    ulong minFeeSatoshis, ulong maxFeeSatoshis);
-
     /// <summary>
     /// Creates an open_channel whose dust limit, reserve, htlc minimum, max accepted HTLCs, max in flight and
     /// to_self_delay are taken from <paramref name="localParams"/> (the values we announce).

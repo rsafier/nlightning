@@ -390,28 +390,6 @@ public class MessageFactory : IMessageFactory
     }
 
     /// <summary>
-    /// Create a ClosingSigned message.
-    /// </summary>
-    /// <param name="channelId">The channel id.</param>
-    /// <param name="feeSatoshis">The fee we want them to pay for closing the channel.</param>
-    /// <param name="signature">The signature for closing the channel.</param>
-    /// <param name="minFeeSatoshis">The min fee we will accept them to pay to close the channel.</param>
-    /// <param name="maxFeeSatoshis">The max fee we will accept them to pay to close the channel.</param>
-    /// <returns>The ClosingSigned message.</returns>
-    /// <seealso cref="ClosingSignedMessage"/>
-    /// <seealso cref="ChannelId"/>
-    /// <seealso cref="CompactSignature"/>
-    /// <seealso cref="ClosingSignedPayload"/>
-    public ClosingSignedMessage CreateClosingSignedMessage(ChannelId channelId, ulong feeSatoshis,
-                                                           CompactSignature signature,
-                                                           ulong minFeeSatoshis, ulong maxFeeSatoshis)
-    {
-        var payload = new ClosingSignedPayload(channelId, feeSatoshis, signature);
-
-        return new ClosingSignedMessage(payload, new FeeRangeTlv(minFeeSatoshis, maxFeeSatoshis));
-    }
-
-    /// <summary>
     /// Create an OpenChannel1 message.
     /// </summary>
     /// <param name="temporaryChannelId">The temporary channel id.</param>
