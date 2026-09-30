@@ -24,7 +24,8 @@ using Domain.Protocol.Constants;
 /// taken out of a relay backlog.</item>
 /// <item><c>nlightning.gossip.messages.relayed</c> [type, path]: sent (or queued on a peer's outbox); path
 /// <c>own</c> or <c>others</c>.</item>
-/// <item><c>nlightning.gossip.chain.lookups</c> [status]: funding output lookups of received announcements.</item>
+/// <item><c>nlightning.gossip.chain.lookups</c> [status, cached]: funding output lookups of received announcements;
+/// <c>cached=true</c> marks a kept mempool answer given again, which made no RPC (NL-421).</item>
 /// <item><c>nlightning.gossip.peers.banned</c>: peers banned for misbehaviour.</item>
 /// <item><c>nlightning.gossip.sync.duration</c> [outcome] (seconds): range syncs with a peer.</item>
 /// <item><c>nlightning.gossip.queue.depth</c> [queue]: the registered queue depths (observable).</item>
@@ -60,6 +61,9 @@ public sealed class GossipMetrics : IDisposable
 
     /// <summary>The <c>status</c> tag of the chain lookups.</summary>
     public const string StatusTag = "status";
+
+    /// <summary>The <c>cached</c> tag of the chain lookups (a kept mempool answer, no RPC).</summary>
+    public const string CachedTag = "cached";
 
     /// <summary>The <c>outcome</c> tag of the sync durations.</summary>
     public const string OutcomeTag = "outcome";
@@ -151,9 +155,18 @@ public sealed class GossipMetrics : IDisposable
     public void RecordRelayed(MessageTypes type, string path) =>
         _relayed.Add(1, TypeTagOf(type), new KeyValuePair<string, object?>(PathTag, path));
 
-    /// <summary>A funding output lookup answered <paramref name="status"/>.</summary>
-    public void RecordChainLookup(string status) =>
-        _chainLookups.Add(1, new KeyValuePair<string, object?>(StatusTag, status));
+    /// <summary>
+    /// A funding output lookup answered <paramref name="status"/>; <paramref name="cached"/> marks a kept mempool
+    /// answer given again, which made no RPC (NL-414, NL-421).
+    /// </summary>
+    public void RecordChainLookup(string status, bool cached = false)
+    {
+        if (cached)
+            _chainLookups.Add(1, new KeyValuePair<string, object?>(StatusTag, status),
+                              new KeyValuePair<string, object?>(CachedTag, "true"));
+        else
+            _chainLookups.Add(1, new KeyValuePair<string, object?>(StatusTag, status));
+    }
 
     /// <summary>A peer was banned for misbehaviour.</summary>
     public void RecordPeerBanned() => _banned.Add(1);

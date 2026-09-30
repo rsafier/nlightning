@@ -883,7 +883,8 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
         var lookup = await _fundingOutputLookup.VerifyAsync(announcement.ShortChannelId, announcement.BitcoinKey1,
                                                             announcement.BitcoinKey2,
                                                             cancellationToken: cancellationToken);
-        _metrics?.RecordChainLookup(GossipMetrics.TagValue(lookup.Status));
+        // A kept mempool answer made no RPC: it is tagged cached=true, not counted as a lookup (NL-421)
+        _metrics?.RecordChainLookup(GossipMetrics.TagValue(lookup.Status), lookup.FromKeptAnswer);
         ulong? capacitySat;
         var verification = GraphChannelVerification.Verified;
         switch (lookup.Status)

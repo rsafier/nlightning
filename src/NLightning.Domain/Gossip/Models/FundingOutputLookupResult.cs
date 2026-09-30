@@ -29,6 +29,11 @@ public sealed class FundingOutputLookupResult
     public bool IsFound => Status == FundingOutputStatus.Found;
 
     /// <summary>
+    /// True when the answer is the kept "only spent in the mempool" one given again (NL-414), so no chain lookup ran.
+    /// </summary>
+    public bool FromKeptAnswer { get; }
+
+    /// <summary>
     /// True for outcomes that may change without the announcement changing (bitcoind unavailable or behind the SCID's
     /// height, the chain moving, a spend still in the mempool): retry later, never score the announcement as invalid.
     /// </summary>
@@ -37,13 +42,14 @@ public sealed class FundingOutputLookupResult
                                       or FundingOutputStatus.OutputSpentInMempool;
 
     private FundingOutputLookupResult(FundingOutputStatus status, TxId? transactionId, LightningMoney? amount,
-                                      byte[]? scriptPubKey, uint confirmations)
+                                      byte[]? scriptPubKey, uint confirmations, bool fromKeptAnswer = false)
     {
         Status = status;
         TransactionId = transactionId;
         Amount = amount;
         ScriptPubKey = scriptPubKey;
         Confirmations = confirmations;
+        FromKeptAnswer = fromKeptAnswer;
     }
 
     /// <summary>A result without an output.</summary>
@@ -54,6 +60,10 @@ public sealed class FundingOutputLookupResult
 
         return new FundingOutputLookupResult(status, null, null, null, 0);
     }
+
+    /// <summary>The kept mempool-spent answer given again without asking the chain (NL-414, NL-421).</summary>
+    public static FundingOutputLookupResult KeptMempoolSpent() =>
+        new(FundingOutputStatus.OutputSpentInMempool, null, null, null, 0, fromKeptAnswer: true);
 
     /// <summary>A result with the output's details.</summary>
     public static FundingOutputLookupResult WithOutput(FundingOutputStatus status, TxId transactionId,

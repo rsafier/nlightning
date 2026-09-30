@@ -36,6 +36,7 @@ public class GossipMetricsTests
         metrics.RecordDropped(GossipMetricReasons.QueueFull, 0);
         metrics.RecordRelayed(MessageTypes.ChannelUpdate, "own");
         metrics.RecordChainLookup("Found");
+        metrics.RecordChainLookup("output_spent_in_mempool", cached: true);
         metrics.RecordPeerBanned();
         metrics.RecordSyncDuration(TimeSpan.FromSeconds(2.5), completed: false);
 
@@ -53,6 +54,10 @@ public class GossipMetricsTests
         Assert.Equal(1, recorder.Count("nlightning.gossip.messages.dropped"));
         Assert.Equal(1, recorder.Sum("nlightning.gossip.messages.relayed", (GossipMetrics.PathTag, "own")));
         Assert.Equal(1, recorder.Sum("nlightning.gossip.chain.lookups", (GossipMetrics.StatusTag, "Found")));
+        // a kept mempool answer given again made no RPC: same counter, tagged cached (NL-421)
+        Assert.Equal(1, recorder.Sum("nlightning.gossip.chain.lookups", (GossipMetrics.StatusTag, "output_spent_in_mempool"),
+                                     (GossipMetrics.CachedTag, "true")));
+        Assert.Equal(1, recorder.Count("nlightning.gossip.chain.lookups", (GossipMetrics.StatusTag, "Found")));
         Assert.Equal(1, recorder.Sum("nlightning.gossip.peers.banned"));
         Assert.Equal(2.5, recorder.Sum("nlightning.gossip.sync.duration", (GossipMetrics.OutcomeTag, "failed")));
     }
