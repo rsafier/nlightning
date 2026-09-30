@@ -26,10 +26,10 @@ public class TlvStreamSerializerTests
     [Fact]
     public async Task Given_TlvStream_When_SerializedAndDeserialized_Then_DataIsPreserved()
     {
-        // Given
+        // Given (BOLT 1: the records are added in ascending type order, as on the wire)
         var tlvStream = new TlvStream();
-        var tlv1 = new RequireConfirmedInputsTlv();
-        var tlv2 = new FundingOutputContributionTlv(LightningMoney.Satoshis(100_000));
+        var tlv1 = new FundingOutputContributionTlv(LightningMoney.Satoshis(100_000));
+        var tlv2 = new RequireConfirmedInputsTlv();
         tlvStream.Add(tlv1, tlv2);
 
         using var memoryStream = new MemoryStream();
@@ -147,6 +147,38 @@ public class TlvStreamSerializerTests
 
         // When & Then
         await Assert.ThrowsAsync<SerializationException>(() => _tlvStreamSerializer.DeserializeAsync(memoryStream));
+    }
+
+    [Fact]
+    public async Task Given_TypesNotStrictlyIncreasing_When_Serialized_Then_ThrowsSerializationException()
+    {
+        // Given: a hand-built stream whose records descend (type 1 after type 2); BOLT 1 requires ascending types on
+        // the wire, so writing must fail instead of silently re-sorting (NL-013)
+        var tlvStream = new TlvStream();
+        tlvStream.Add(new BaseTlv(new BigSize(2), [0x02]));
+        tlvStream.Add(new BaseTlv(new BigSize(1), [0x01]));
+        using var memoryStream = new MemoryStream();
+
+        // When & Then
+        await Assert.ThrowsAsync<SerializationException>(() =>
+                                                             _tlvStreamSerializer.SerializeAsync(tlvStream,
+                                                                 memoryStream));
+    }
+
+    [Fact]
+    public async Task Given_TlvsInInsertionOrder_When_Serialized_Then_WireOrderMatchesInsertionOrder()
+    {
+        // Given: ascending records keep their insertion order on the wire (no silent re-sort) (NL-013)
+        var tlvStream = new TlvStream();
+        tlvStream.Add(new BaseTlv(new BigSize(1), [0x01]));
+        tlvStream.Add(new BaseTlv(new BigSize(2), [0x02]));
+        using var memoryStream = new MemoryStream();
+
+        // When
+        await _tlvStreamSerializer.SerializeAsync(tlvStream, memoryStream);
+
+        // Then
+        Assert.Equal([0x01, 0x01, 0x01, 0x02, 0x01, 0x02], memoryStream.ToArray());
     }
 
     [Fact]

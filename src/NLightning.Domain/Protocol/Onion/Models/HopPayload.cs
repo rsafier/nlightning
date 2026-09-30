@@ -129,7 +129,9 @@ public sealed class HopPayload
     {
         ArgumentNullException.ThrowIfNull(tlvs);
 
-        foreach (var tlv in tlvs)
+        // The records are kept in ascending type order (BOLT 4 wire order, and what the stream serializer writes);
+        // parsed payloads already come in that order, and a hand-built one is normalized so it encodes identically.
+        foreach (var tlv in tlvs.OrderBy(t => t.Type.Value))
         {
             ArgumentNullException.ThrowIfNull(tlv, nameof(tlvs));
             EnsureExpectedRuntimeType(tlv);
