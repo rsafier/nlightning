@@ -22,6 +22,17 @@ public class BitcoinWalletService : IBitcoinWalletService
     /// </summary>
     private static readonly SemaphoreSlim s_addressGenerationLock = new(1, 1);
 
+    /// <summary>
+    /// How many addresses past each batch are derived, stored (unreserved) and watched, BIP 32/44 discovery style
+    /// (NL-463): a wallet restored from seed onto a fresh database finds deposits on this window past the highest
+    /// address it knows, and every deposit on a window address extends the window with the next batch, so restored
+    /// funds stay discoverable up to the gap. BIP 44's default gap.
+    /// </summary>
+    public const int GapLimit = 20;
+
+    /// <summary>How many hand-out addresses one batch carries (the gap window comes on top).</summary>
+    private const int BatchSize = 10;
+
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly ILogger<BitcoinWalletService> _logger;
     private readonly Network _network;
@@ -83,12 +94,14 @@ public class BitcoinWalletService : IBitcoinWalletService
         // If there's none, continue after the highest index we generated (NL-283)
         var firstIndex = await GetNextAddressIndexAsync(addressType, isChange);
 
-        _logger.LogInformation("Generating 10 new {addressType} {change}addresses and saving to the database.",
-                               Enum.GetName(addressType), isChange ? "change " : string.Empty);
+        _logger.LogInformation("Generating {AddressCount} new {addressType} {change}addresses plus a {GapLimit} "
+                               + "address discovery window and saving them to the database.",
+                               BatchSize, Enum.GetName(addressType), isChange ? "change " : string.Empty, GapLimit);
 
-        // Generate 10 new addresses
-        var addressList = new List<WalletAddressModel>(10);
-        for (var i = firstIndex; i < firstIndex + 10; i++)
+        // Generate the hand-out batch and the discovery window past it (NL-463): the window addresses are stored
+        // unreserved, so they are handed out before any new batch, and watched, so deposits on them are found
+        var addressList = new List<WalletAddressModel>(BatchSize + GapLimit);
+        for (var i = firstIndex; i < firstIndex + BatchSize + GapLimit; i++)
         {
             ExtPrivKey extPrivKey;
             if (addressType == AddressType.P2Tr)
