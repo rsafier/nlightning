@@ -71,10 +71,10 @@ using Metrics;
 /// <see cref="GossipGraphOptions.MaxChannels"/>/<see cref="GossipGraphOptions.MaxNodes"/>, nor while the process is over
 /// <see cref="GossipGraphOptions.MaxMemoryMb"/> (<see cref="GossipMemoryBudget"/>); and a per-peer misbehaviour
 /// score (<see cref="GossipMisbehaviourTracker"/>: invalid signatures, bad encodings, funding outputs that contradict
-/// the announcement) that bans the peer with one <c>warning</c> and a disconnection. The ban is kept in memory
-/// (bounded by <see cref="GossipGraphOptions.MaxMisbehaviourBans"/>, pruned when it ends) and, for a peer that is a
-/// graph node, also persisted (<see cref="IGraphStore.Ban"/>, <c>GraphBannedNodes</c>). For the rest of the ban (a
-/// restart keeps only the persisted node ban) everything the peer hands over is dropped at the door without being
+/// the announcement) that bans the peer with one <c>warning</c> and a disconnection. The ban is persisted with its end
+/// (<see cref="IGraphStore.Ban"/>, <c>GraphBannedNodes</c>; pruned when it ends, NL-372) and restored from there at
+/// start, so it survives a restart (NL-370); in memory at most <see cref="GossipGraphOptions.MaxMisbehaviourBans"/> of
+/// them are kept at once. For the rest of the ban everything the peer hands over is dropped at the door without being
 /// validated, and its connection is left
 /// alone (it may carry our channels); a node blacklisted for a conflicting announcement (B7-CA-04) keeps relaying other
 /// nodes' gossip, only its own is ignored.
@@ -1172,11 +1172,10 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     /// disconnected (plan §3.8). True when this banned the peer.
     /// </summary>
     /// <remarks>
-    /// The ban lives in memory, at most <see cref="GossipGraphOptions.MaxMisbehaviourBans"/> of them (the one ending
-    /// first makes room), the ended ones pruned by the write-behind loop. It is also persisted
-    /// (<see cref="IGraphStore.Ban"/>, which ignores the node's own gossip and survives a restart) only when the peer
-    /// is a node of the graph: a throwaway node id costs a flooder one handshake, and must cost us neither a
-    /// database row nor memory that is never given back.
+    /// The ban is persisted with its end (<see cref="IGraphStore.Ban"/>, <c>GraphBannedNodes</c>: the node's own gossip
+    /// is ignored too, and the ban survives a restart, NL-370), and it lives in memory as the door-drop of the peer's
+    /// whole connection, at most <see cref="GossipGraphOptions.MaxMisbehaviourBans"/> of them (the one ending first
+    /// makes room), the ended ones pruned by the write-behind loop.
     /// </remarks>
     private bool ScoreMisbehaviour(IPeerService? origin, string why, bool disconnect) =>
         ScoreMisbehaviour(origin?.PeerPubKey, origin, why, disconnect);
@@ -1192,16 +1191,13 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             return false;
 
         var until = _timeProvider.GetUtcNow() + _options.MisbehaviourBanDuration;
-        var persisted = _store.TryGetNode(peer, out _) || _store.NodeHasChannels(peer);
-        if (persisted)
-            _store.Ban(peer, $"gossip misbehaviour ({_options.MisbehaviourThreshold} in "
-                           + $"{_options.MisbehaviourWindow}), the last: {why}", until);
+        _store.Ban(peer, $"{MisbehaviourBanReason} ({_options.MisbehaviourThreshold} in "
+                       + $"{_options.MisbehaviourWindow}), the last: {why}", until);
         AddBan(peer, until);
         _metrics?.RecordPeerBanned();
         _logger.LogWarning("Peer {Peer} sent {Threshold} invalid gossip messages within {Window}; ignoring its gossip "
-                         + "until {Until}{Persisted} and disconnecting it (last: {Why})", peer,
-                           _options.MisbehaviourThreshold, _options.MisbehaviourWindow, until,
-                           persisted ? " (a graph node: its own gossip too)" : "", why);
+                         + "until {Until} and disconnecting it (last: {Why})", peer,
+                           _options.MisbehaviourThreshold, _options.MisbehaviourWindow, until, why);
         if (!disconnect || connection is null)
             return true;
 
@@ -1386,6 +1382,23 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             // The graph is rebuilt from gossip; a database problem must not stop the node
             _logger.LogError(e, "Failed to load the graph; starting from what gossip brings");
         }
+
+        // NL-370: a misbehaviour ban of the last run still lasts; drop its peer's gossip at the door again. A node
+        // ban (a conflicting announcement, B7-CA-04) is not restored: only its own gossip is ignored, a relaying
+        // connection goes on
+        var restoredBans = 0;
+        foreach (var ban in _store.GetActiveBans())
+        {
+            if (!ban.Reason.StartsWith(MisbehaviourBanReason, StringComparison.Ordinal))
+                continue;
+
+            AddBan(ban.NodeId, ban.Until);
+            restoredBans++;
+        }
+
+        if (restoredBans > 0)
+            _logger.LogInformation("Still ignoring the gossip of {Count} banned peer(s) from the last run",
+                                   restoredBans);
 
         var workers = _partitions.Length;
         lock (_startLock)
@@ -1579,6 +1592,12 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     }
 
     private const string BanWarning = "Too much invalid gossip: your gossip is ignored for a while";
+
+    /// <summary>
+    /// The reason a misbehaviour ban is stored under (<c>GraphBannedNodes.Reason</c>): the only kind restored as a
+    /// peer ban when the ingress starts (NL-370).
+    /// </summary>
+    private const string MisbehaviourBanReason = "gossip misbehaviour";
 
     private sealed record IngressItem(IPeerService? Origin, IMessage Message, int Attempt);
 

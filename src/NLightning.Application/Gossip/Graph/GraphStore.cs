@@ -386,6 +386,14 @@ public sealed class GraphStore : IGraphStore
     }
 
     /// <inheritdoc />
+    public IReadOnlyList<GraphBannedNodeRecord> GetActiveBans()
+    {
+        var now = _timeProvider.GetUtcNow();
+        lock (_lock)
+            return _bans.Values.Where(b => b.Until > now).ToList();
+    }
+
+    /// <inheritdoc />
     public bool TryAddChannel(GraphChannel channel, TxId? fundingTxId = null)
     {
         ArgumentNullException.ThrowIfNull(channel);

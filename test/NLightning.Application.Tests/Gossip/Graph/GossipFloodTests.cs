@@ -14,7 +14,7 @@ using Metrics;
 /// BOLT 7 plan G5-T2 proof (fuzz-style): a peer flooding gossip with invalid signatures and bad encodings through the
 /// real queues and workers is warned, disconnected and banned, its later gossip dropped at the door, while another
 /// peer's valid gossip, sent at the same time, is all applied and that peer is never warned or disconnected. The
-/// flooder's node id is not in the graph, so its ban stays in memory (no <c>GraphBannedNodes</c> row).
+/// flooder's node id is not in the graph; its ban is persisted all the same (NL-370).
 /// </summary>
 public class GossipFloodTests
 {
@@ -65,16 +65,16 @@ public class GossipFloodTests
         var afterBan = kit.Ingress.TryEnqueue(reconnected.Object, FuzzMessage(random, FloodSize));
         await kit.Ingress.StopAsync();
 
-        // Assert: the flooder is banned (in memory only: it is no graph node) and was told so, its flood mostly never
-        // validated
+        // Assert: the flooder is banned and was told so, its flood mostly never validated
         Assert.True(kit.Ingress.IsBannedForMisbehaviour(flooder.Object.PeerPubKey));
         flooder.Verify(p => p.Disconnect(It.Is<WarningException>(e => e.Message.Contains("Too much invalid gossip"))),
                        Times.Once);
         Assert.InRange(flooderDisconnects, 1, FloodSize);
         flooder.Verify(p => p.SendWarningAsync(It.IsAny<WarningException>()), Times.AtLeastOnce);
         Assert.False(afterBan);
-        Assert.DoesNotContain(kit.Repository.Bans.Keys, k => k == flooder.Object.PeerPubKey);
-        Assert.False(kit.Store.IsBanned(flooder.Object.PeerPubKey));
+        // NL-370: the ban is persisted with its end (the flooder's node id need not be a graph node for that)
+        Assert.Contains(kit.Repository.Bans.Keys, k => k == flooder.Object.PeerPubKey);
+        Assert.True(kit.Store.IsBanned(flooder.Object.PeerPubKey));
         Assert.Equal(1, recorder.Sum("nlightning.gossip.peers.banned"));
         var bannedDrops = recorder.Sum("nlightning.gossip.messages.rejected",
                                        (GossipMetrics.ReasonTag, GossipMetricReasons.BannedPeer));
