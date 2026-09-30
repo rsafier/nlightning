@@ -7,6 +7,11 @@ namespace NLightning.Infrastructure.Transport.Tor;
 /// The onion service's private key file: one line, <c>ED25519-V3:&lt;base64&gt;</c> as Tor's <c>ADD_ONION</c> returns
 /// it, owner-only (0600) outside Windows, written atomically (a temporary file renamed over).
 /// </summary>
+/// <remarks>
+/// A key readable by group or others is reported by <see cref="HasGroupOrOtherPermissions"/>, which the service logs as
+/// a warning at every start (as for <c>--password-file</c>, SECURITY_REVIEW SR-06; NL-584). The temporary file is
+/// always created new (a stale one from a crash is deleted first), so it never keeps another file's mode.
+/// </remarks>
 internal static class TorOnionKeyFile
 {
     private const string KeyPrefix = "ED25519-V3:";
@@ -40,6 +45,21 @@ internal static class TorOnionKeyFile
     }
 
     /// <summary>
+    /// True when the file at <paramref name="path"/> grants any permission to its group or to others (never on
+    /// Windows).
+    /// </summary>
+    public static bool HasGroupOrOtherPermissions(string path)
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists(path))
+            return false;
+
+        const UnixFileMode groupOrOther = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute
+                                        | UnixFileMode.OtherRead | UnixFileMode.OtherWrite
+                                        | UnixFileMode.OtherExecute;
+        return (File.GetUnixFileMode(path) & groupOrOther) != 0;
+    }
+
+    /// <summary>
     /// Saves <paramref name="keyBlob"/>, never over an existing file.
     /// </summary>
     public static void Write(string path, string keyBlob)
@@ -51,10 +71,13 @@ internal static class TorOnionKeyFile
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
 
+        // A stale temporary file (a crash between create and rename) would keep its own mode with FileMode.Create:
+        // delete it, and create the new one exclusively so UnixCreateMode applies (NL-584)
         var temporary = path + ".tmp";
+        File.Delete(temporary);
         var options = new FileStreamOptions
         {
-            Mode = FileMode.Create,
+            Mode = FileMode.CreateNew,
             Access = FileAccess.Write,
             Share = FileShare.None
         };

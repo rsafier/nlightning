@@ -64,6 +64,10 @@ public sealed class FakeTorControlPort : IAsyncDisposable
     /// <summary>Reply to <c>ADD_ONION</c> with this error line instead of adding the service.</summary>
     public string? AddOnionError { get; set; }
 
+    /// <summary>Close the connection right after a successful <c>ADD_ONION</c> reply (a port that kicks
+    /// controllers).</summary>
+    public bool CloseAfterAddOnion { get; set; }
+
     /// <summary>Every command line received, in order.</summary>
     public ConcurrentQueue<string> Commands { get; } = new();
 
@@ -145,6 +149,9 @@ public sealed class FakeTorControlPort : IAsyncDisposable
                     reply = "650 CIRC 1 LAUNCHED\r\n" + reply;
 
                 await stream.WriteAsync(Encoding.Latin1.GetBytes(reply), _cts.Token);
+                if (CloseAfterAddOnion && line.StartsWith("ADD_ONION", StringComparison.Ordinal)
+                                       && reply.Contains("250 OK", StringComparison.Ordinal))
+                    break;
             }
         }
         catch (Exception)

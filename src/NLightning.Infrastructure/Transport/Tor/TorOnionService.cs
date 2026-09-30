@@ -20,9 +20,6 @@ public sealed class TorOnionService : ITorOnionService
     /// <summary>The oldest Tor series still maintained (0.4.8, the stable series since 2023).</summary>
     internal static readonly Version MinimumRecommendedVersion = new(0, 4, 8);
 
-    private static readonly TimeSpan s_initialRetryDelay = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan s_maxRetryDelay = TimeSpan.FromMinutes(5);
-
     private readonly ILogger<TorOnionService> _logger;
     private readonly TorOptions _torOptions;
     private readonly IReadOnlyList<string> _listenAddresses;
@@ -58,6 +55,16 @@ public sealed class TorOnionService : ITorOnionService
 
     /// <summary>The background registration loop (tests).</summary>
     internal Task Loop => _loop;
+
+    /// <summary>The wait before the first retry, and before re-adding the service after Tor closed the connection.
+    /// Doubles after every failed or short-lived attempt, up to <see cref="RetryMaxDelay"/>.</summary>
+    internal TimeSpan RetryInitialDelay { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>The longest wait between two attempts.</summary>
+    internal TimeSpan RetryMaxDelay { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>A control connection that lived at least this long resets the backoff when it closes (NL-583).</summary>
+    internal TimeSpan MinStableConnection { get; set; } = TimeSpan.FromMinutes(1);
 
     /// <inheritdoc />
     public IReadOnlyList<AddressDescriptor> GetAnnouncedAddresses()
@@ -99,19 +106,32 @@ public sealed class TorOnionService : ITorOnionService
 
     private async Task RunAsync(CancellationToken cancellationToken)
     {
-        var delay = s_initialRetryDelay;
+        var delay = RetryInitialDelay;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                await using var client = await ConnectAndRegisterAsync(cancellationToken);
-                delay = s_initialRetryDelay;
+                TimeSpan lived;
+                await using (var client = await ConnectAndRegisterAsync(cancellationToken))
+                {
+                    // Nothing else is sent: wait for Tor to go away (its restart drops our service)
+                    var registeredAt = DateTime.UtcNow;
+                    await client.WaitForCloseAsync(cancellationToken);
+                    lived = DateTime.UtcNow - registeredAt;
+                }
 
-                // Nothing else is sent: wait for Tor to go away (its restart drops our service)
-                await client.WaitForCloseAsync(cancellationToken);
-                if (!cancellationToken.IsCancellationRequested)
-                    _logger.LogWarning("Tor closed the control connection; our onion service is down until it is "
-                                     + "added again");
+                if (cancellationToken.IsCancellationRequested)
+                    return;
+
+                // Never straight back: a control port that closes right after every registration would otherwise be
+                // redialed in a tight loop (NL-583); a connection that held resets the backoff
+                if (lived >= MinStableConnection)
+                    delay = RetryInitialDelay;
+
+                _logger.LogWarning("Tor closed the control connection; our onion service is down until it is added "
+                                 + "again in {Delay}", delay);
+                await Task.Delay(delay, cancellationToken);
+                delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, RetryMaxDelay.Ticks));
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -138,7 +158,7 @@ public sealed class TorOnionService : ITorOnionService
                     return;
                 }
 
-                delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, s_maxRetryDelay.Ticks));
+                delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, RetryMaxDelay.Ticks));
             }
         }
     }
@@ -174,6 +194,9 @@ public sealed class TorOnionService : ITorOnionService
 
             var keyFile = _torOptions.OnionServiceKeyFile;
             var savedKey = TorOnionKeyFile.Read(keyFile);
+            if (savedKey is not null && TorOnionKeyFile.HasGroupOrOtherPermissions(keyFile))
+                _logger.LogWarning("The onion service key {KeyFile} is readable by other users; whoever reads it can "
+                                 + "take over our onion address: chmod 600 it (NL-584)", keyFile);
             var (serviceId, newKey) = await client.AddOnionAsync(savedKey, _torOptions.OnionServicePort, target,
                                                                   cancellationToken);
             if (savedKey is null)
