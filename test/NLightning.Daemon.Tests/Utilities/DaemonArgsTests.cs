@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 
 namespace NLightning.Daemon.Tests.Utilities;
@@ -217,6 +218,61 @@ public class DaemonArgsTests : IDisposable
         // Assert: no fallback to mainnet and nothing written for the typo
         Assert.Contains("testnet4", exception.Message);
         Assert.False(Directory.Exists(Path.Combine(_tempHome, ".nltg", "testnet4")));
+    }
+
+    [Fact]
+    public void Given_TheTemplatesRelativePaths_When_ReadInitialConfiguration_Then_TheyResolveAgainstTheConfigDirectory()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Uses HOME to redirect the default config dir");
+
+        // Arrange: a custom configuration directory whose file carries the template's relative paths. NL-306: the
+        // database, the logs and the fee cache used to land in whatever directory the daemon was started from.
+        Environment.SetEnvironmentVariable("HOME", _tempHome);
+        var configDir = Path.Combine(_tempHome, "configs", "regtest");
+        Directory.CreateDirectory(configDir);
+        File.WriteAllText(Path.Combine(configDir, "appsettings.json"),
+                          NodeConfigurationExtensions.CreateDefaultConfigJson("regtest"));
+
+        // Act
+        var (config, _, _) = NodeConfigurationExtensions.ReadInitialConfiguration(["--config", configDir]);
+
+        // Assert: the relative paths are anchored to the configuration directory (the template's File sink is the
+        // second entry of Serilog's WriteTo array, flattened as index 1)
+        var dataSource = new SqliteConnectionStringBuilder(config["Database:ConnectionString"]).DataSource;
+        Assert.Equal(Path.Combine(configDir, "nltg.db"), dataSource);
+        Assert.Equal(Path.Combine(configDir, "logs", "log-.txt"), config["Serilog:WriteTo:1:Args:path"]);
+        Assert.Equal(Path.Combine(configDir, "fee_estimation_cache.bin"), config["FeeEstimation:CacheFile"]);
+    }
+
+    [Fact]
+    public void Given_AbsoluteAndSpecialSqlitePaths_When_ReadInitialConfiguration_Then_TheyAreLeftAlone()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Uses HOME to redirect the default config dir");
+
+        // Arrange
+        Environment.SetEnvironmentVariable("HOME", _tempHome);
+        var configDir = Path.Combine(_tempHome, "configs", "regtest-anchored");
+        Directory.CreateDirectory(configDir);
+        File.WriteAllText(Path.Combine(configDir, "appsettings.json"), """
+            {
+              "Database": {
+                "Provider": "Sqlite",
+                "ConnectionString": "Data Source=:memory:;Cache=Shared"
+              },
+              "Serilog": {
+                "WriteTo": [
+                  { "Name": "File", "Args": { "path": "/var/log/nltg/log-.txt" } }
+                ]
+              }
+            }
+            """);
+
+        // Act
+        var (config, _, _) = NodeConfigurationExtensions.ReadInitialConfiguration(["--config", configDir]);
+
+        // Assert: an absolute path and SQLite's :memory: are not rewritten
+        Assert.Equal("Data Source=:memory:;Cache=Shared", config["Database:ConnectionString"]);
+        Assert.Equal("/var/log/nltg/log-.txt", config["Serilog:WriteTo:0:Args:path"]);
     }
 
     [Fact]
