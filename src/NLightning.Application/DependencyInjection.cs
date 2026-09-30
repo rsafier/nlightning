@@ -1,4 +1,3 @@
-using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -6,6 +5,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application;
 
 using Channels.Close;
+using Channels.Close.Handlers;
 using Channels.DualFunding;
 using Channels.Fees;
 using Channels.Handlers;
@@ -17,6 +17,7 @@ using Channels.Reestablish;
 using Channels.Safety;
 using Channels.Services;
 using Channels.Splicing;
+using Channels.Splicing.Handlers;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Interfaces;
@@ -28,6 +29,7 @@ using Domain.Gossip.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
 using Gossip;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using InteractiveTx;
@@ -158,7 +160,8 @@ public static class DependencyInjection
                                                            (IPeerOnionMessageOutbox)sp
                                                               .GetRequiredService<IPeerManager>());
 
-        // Automatically register all channel message handlers
+        // Register every channel message handler explicitly (NL-055): trim/AOT-safe, see
+        // AddChannelMessageHandlers and ChannelMessageHandlerRegistrationTests (the guard test)
         services.AddChannelMessageHandlers();
 
         // Add scoped services
@@ -171,31 +174,56 @@ public static class DependencyInjection
     }
 
     /// <summary>
-    /// Registers all classes that implement IChannelMessageHandler&lt;T&gt; from the current assembly
+    /// Registers every channel message handler of this assembly, each as a scoped
+    /// <c>IChannelMessageHandler&lt;TMessage&gt;</c> (one closed interface per handled message type).
     /// </summary>
+    /// <remarks>
+    /// The list is explicit (NL-055): the previous <c>Assembly.GetTypes()</c> scan could lose handler types to the IL
+    /// trimmer under trimming/AOT, while <see cref="ServiceCollectionServiceExtensions.AddScoped{TService, TImplementation}"/>
+    /// registrations keep every handler alive. <c>ChannelMessageHandlerRegistrationTests</c> fails when a handler
+    /// implementation exists in this assembly without being on this list (or the other way around), so the list cannot
+    /// rot. New handlers are added here, with the message's <c>case</c> in <c>ChannelManager.HandleChannelMessageAsync</c>.
+    /// </remarks>
     private static void AddChannelMessageHandlers(this IServiceCollection services)
     {
-        var assembly = Assembly.GetExecutingAssembly();
-
-        // Find all types that implement IChannelMessageHandler<>
-        var handlerTypes = assembly
-                          .GetTypes()
-                          .Where(type => type is { IsClass: true, IsAbstract: false })
-                          .Where(type => type.GetInterfaces()
-                                             .Any(i => i.IsGenericType
-                                                    && i.GetGenericTypeDefinition() ==
-                                                       typeof(IChannelMessageHandler<>)))
-                          .ToArray();
-
-        foreach (var handlerType in handlerTypes)
-        {
-            // Get the interface this handler implements
-            var handlerInterface = handlerType
-                                  .GetInterfaces()
-                                  .First(i => i.IsGenericType
-                                           && i.GetGenericTypeDefinition() == typeof(IChannelMessageHandler<>));
-
-            services.AddScoped(handlerInterface, handlerType);
-        }
+        // BOLT 2 v1 channel opening (open_channel -> accept_channel -> funding_created/signed -> channel_ready)
+        services.AddScoped<IChannelMessageHandler<OpenChannel1Message>, OpenChannel1MessageHandler>();
+        services.AddScoped<IChannelMessageHandler<AcceptChannel1Message>, AcceptChannel1MessageHandler>();
+        services.AddScoped<IChannelMessageHandler<FundingCreatedMessage>, FundingCreatedMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<FundingSignedMessage>, FundingSignedMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<ChannelReadyMessage>, ChannelReadyMessageHandler>();
+        // BOLT 2 normal operation (N6) and quiescence (stfu)
+        services.AddScoped<IChannelMessageHandler<CommitmentSignedMessage>, CommitmentSignedMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<RevokeAndAckMessage>, RevokeAndAckMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<UpdateAddHtlcMessage>, UpdateAddHtlcMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<UpdateFulfillHtlcMessage>, UpdateFulfillHtlcMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<UpdateFailHtlcMessage>, UpdateFailHtlcMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<UpdateFailMalformedHtlcMessage>, UpdateFailMalformedHtlcMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<UpdateFeeMessage>, UpdateFeeMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<StfuMessage>, StfuMessageHandler>();
+        // BOLT 2 channel_reestablish (N7) and announcement_signatures (the channel's gossip flow, NL-342)
+        services.AddScoped<IChannelMessageHandler<ChannelReestablishMessage>, ChannelReestablishMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<AnnouncementSignaturesMessage>, AnnouncementSignaturesMessageHandler>();
+        // BOLT 2 cooperative close (N10: shutdown/closing_signed) and option_simple_close (N11: closing_complete/sig)
+        services.AddScoped<IChannelMessageHandler<ShutdownMessage>, ShutdownMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<ClosingSignedMessage>, ClosingSignedMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<ClosingCompleteMessage>, ClosingCompleteMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<ClosingSigMessage>, ClosingSigMessageHandler>();
+        // BOLT 2 interactive transaction construction (types 66-74; the handlers share InteractiveTxMessageHandler<T>)
+        services.AddScoped<IChannelMessageHandler<TxAddInputMessage>, TxAddInputMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<TxRemoveInputMessage>, TxRemoveInputMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<TxAddOutputMessage>, TxAddOutputMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<TxRemoveOutputMessage>, TxRemoveOutputMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<TxCompleteMessage>, TxCompleteMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<TxSignaturesMessage>, TxSignaturesMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<TxAbortMessage>, TxAbortMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<TxInitRbfMessage>, TxInitRbfMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<TxAckRbfMessage>, TxAckRbfMessageHandler>();
+        // BOLT 2 splicing (splice_init/ack/locked) and v2 dual-funded opening (open_channel2/accept_channel2)
+        services.AddScoped<IChannelMessageHandler<SpliceInitMessage>, SpliceInitMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<SpliceAckMessage>, SpliceAckMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<SpliceLockedMessage>, SpliceLockedMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<OpenChannel2Message>, OpenChannel2MessageHandler>();
+        services.AddScoped<IChannelMessageHandler<AcceptChannel2Message>, AcceptChannel2MessageHandler>();
     }
 }
