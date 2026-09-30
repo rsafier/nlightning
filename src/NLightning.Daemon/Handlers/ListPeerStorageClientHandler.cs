@@ -40,13 +40,16 @@ public sealed class ListPeerStorageClientHandler
 
         IEnumerable<PeerStorageRetrievalReport> retrievals = await _peerStorageService.ListRetrievalsAsync(ct);
         IEnumerable<StoredPeerBlob> stored = await _peerStorageService.ListStoredBlobsAsync(ct);
+        IEnumerable<PeerStorageRefusalReport> refusals = _peerStorageService.GetRefusals();
         if (request.PeerNodeId is { } peer)
         {
             retrievals = retrievals.Where(r => r.PeerNodeId.Equals(peer));
             stored = stored.Where(b => b.PeerNodeId.Equals(peer));
+            refusals = refusals.Where(r => r.PeerNodeId.Equals(peer));
         }
 
         return new ListPeerStorageClientResponse(retrievals.ToList(), stored.ToList(),
-                                                 _peerStorageService.BackupsHeldForDataLoss, request.IncludeBlob);
+                                                 _peerStorageService.BackupsHeldForDataLoss, request.IncludeBlob,
+                                                 refusals.ToList());
     }
 }

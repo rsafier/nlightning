@@ -60,6 +60,8 @@ Updated 2026-09-28 by lane rbf (branch `wip/fafo-rbf` from `wip/fafo` at `2b5dff
 
 Updated 2026-09-28 by lane bolt10 (branch `wip/fafo-bolt10` from `978ad275`, code at `f09ff53d`, not merged into `wip/fafo`): BOLT 10 DNS seed bootstrap implemented and off by default. Fixed: NL-113. New: NL-541..NL-545 (NL-536..NL-540 left to the concurrent cli-lognoise lane). Targeted tests only (owner request), net10.0 Release: Domain `Node/Bootstrap` 91, Infrastructure 479, Infrastructure.Bitcoin `Bootstrap` 34, Application `PeerBootstrapServiceTests` 24, Daemon `NodeServiceExtensionsTests` 68; no Docker, no full matrix. Review fixes at `644bc5a8` (NL-113 entry): address filter ranges, SRV (target, port), the `n` condition, BOLT 10 example vectors, cancellable dials, gate retries, obsolete `Node:DnsSeedServers` ignored; no new IDs. Targeted, net10.0 Release: Domain 3660, Infrastructure.Bitcoin 1394, Application `Node` namespace 208 (3 runs), Daemon 799.
 
+Updated 2026-09-29 by lane nl559 (branch `nl559` from `wip/fafo`, not merged into `wip/fafo`): NL-559 fixed (a peer that refuses our `peer_storage` blob for its size — LDK's 1,024-byte limit — is answered at once with one padded to exactly the limit its warning names, the limit relearned per process, the refusals counted and listed by `listpeerstorage`; Docker Proof `LdkPeerStorageTests`). No new IDs. Docker from the host on net10.0, Release: the full LDK trait 14/14 (the new proof included) and the CLN trait re-run green; non-Docker targeted: Application PeerStorage 61, Infrastructure PeerServicePeerStorage 10, Daemon PeerStorageCommand 9, Integration `ListPeerStorageIpcRoundTripTests` 1.
+
 Updated 2026-09-28 by lane nl543 (branch `wip/fafo-nl543` from `wip/fafo` at `ef7ad335`, code at `d4eb9582`, not merged into `wip/fafo`): the bootstrap tops up from the gossip graph before the DNS seeds (owner decision, light testing). Fixed: NL-543. New: NL-547. Targeted tests only, net10.0 Release: Application `NLightning.Application.Tests.Node` 223, Domain `Node/Bootstrap` 158; no Docker, no full matrix, no live run.
 
 Updated 2026-09-28 by lane nl547 (branch `wip/fafo-nl547` from `wip/fafo` at `ac4d5d60`, code at `491cffb9`, not merged into `wip/fafo`): the bootstrap keeps `MinPeers` connected for the process lifetime (peer-count keeper with backoff, failed endpoints expire; owner decision, light testing). Fixed: NL-547. No new IDs. Targeted tests only, net10.0 Release: Application `NLightning.Application.Tests.Node` 235, Domain `Node.Bootstrap` 161, Daemon 822; no Docker, no full matrix, no live run.
@@ -102,9 +104,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 5 | 171 | 176 |
+| open | 0 | 0 | 4 | 171 | 175 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 152 | 136 | 364 |
+| fixed | 14 | 62 | 153 | 136 | 365 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **62** | **161** | **313** | **550** |
@@ -374,12 +376,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-559 LDK keeps no peer_storage from us: our blob is always 65,531 bytes, LDK takes at most 1,024
-- **Status:** open
+- **Status:** fixed (<SHA>)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs` (the backup blob, padded to the BOLT 1 maximum)
 - **Evidence:** In the LDK interop runs (lane ldksplice) we send `peer_storage` of 65,531 bytes ("Sent our peer_storage backup (65531 bytes)") and ldk-server `dc02b76c` answers each with a `warning` "Supports only data up to 1024 bytes in peer storage." (rust-lightning 0.3.0-rc1 `channelmanager.rs` `MAX_PEER_STORAGE_SIZE = 1024`; it offers `option_provide_storage`, bit 43). The connection and channels are unaffected, but LDK never stores our backup, so a restore cannot get it back from an LDK peer. BOLT 1 allows up to 65,531 bytes and lets the receiver refuse; LDK's limit is policy, so the loss is ours to avoid.
 - **Fix sketch:** Send a smaller blob to peers that refuse the large one (e.g. drop to an unpadded or 1,024-byte-padded channel list for that peer after its warning, or pad to the smallest of a few size classes), and count the refusal in `listpeerstorage`.
+- **Fixed:** `PeerService` hands a peer's `warning` text to the peer storage service (never an `error`); a warning about peer storage is parsed for the limit it names ("(\d+) bytes"; default 1,024, `PeerStorageService.DefaultRefusalLimit`) and recorded per peer (only ever lowered by later refusals), and the backup is resent at once padded to exactly that length when what it holds fits (otherwise nothing is sent and the operator is warned: the peer keeps nothing either way). The round and every later send build one blob per peer through the new sized `IPeerBackupBlobProvider.CreateBlobAsync(int maxBlobLength, ...)` (the plaintext padded to `maxBlobLength` minus the cipher overhead, naming the first channels that fit, so the length still says nothing about the backup; the fingerprint stays content-only, so an unchanged backup is not resent). The limit lives in memory only (a restart offers the full-size blob again and relearns it from the next refusal). Refusals are counted per peer and listed by `GetRefusals()`/`listpeerstorage` (count, the accepted limit, the last refused length; NL-559 wording in `ListPeerStoragePrinter`). Tests: `PeerStorageServiceTests` (refusals region), `ChannelListPeerBackupBlobProviderTests` (sized blobs), `PeerServicePeerStorageTests` (the warning routed, no disconnect), the `ListPeerStorageIpcRoundTripTests` extension; Docker Proof `Docker/Interop/Ldk/LdkPeerStorageTests`: over a channel we fund, LDK's refusal is counted with the limit its warning names, our 1,024-byte backup goes out, and after `RestartLdkAsync` LDK hands it back (`peer_storage_retrieval`: ours, names the channel, matches the last sent, at most 1,024 bytes). The full LDK trait (14) and the CLN trait re-ran green.
 - **Blocks/Blocked-by:** Related NL-010, NL-556
 - **Plan ref:** —
 

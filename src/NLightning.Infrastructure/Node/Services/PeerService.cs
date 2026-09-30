@@ -384,6 +384,9 @@ public sealed class PeerService : IPeerService
                 _logger.LogWarning(
                     "Received warning message from peer {peer} for channel {channelId}: {warningMessage}",
                     PeerPubKey, channelId is null ? "" : channelId.ToString(), warningMessageString);
+
+                // NL-559: a refusal of our peer_storage backup's size is answered with one that fits the limit
+                _peerStorage?.HandleWarning(this, warningMessageString);
             }
 
             OnAttentionMessageReceived?.Invoke(

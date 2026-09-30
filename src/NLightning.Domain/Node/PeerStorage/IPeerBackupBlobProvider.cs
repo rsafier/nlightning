@@ -12,9 +12,17 @@ namespace NLightning.Domain.Node.PeerStorage;
 public interface IPeerBackupBlobProvider
 {
     /// <summary>
-    /// Builds our current backup blob, or null when there is nothing to back up.
+    /// Builds our current backup blob at the BOLT 1 maximum (<see cref="PeerStorageConstants.MaxBlobLength"/>), or
+    /// null when there is nothing to back up.
     /// </summary>
     Task<PeerBackupBlob?> CreateBlobAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Builds our current backup blob at most <paramref name="maxBlobLength"/> bytes, for a peer that refuses a
+    /// bigger one (NL-559): the blob is padded to exactly that length when what it holds fits it, so the length still
+    /// says nothing about the backup. Returns null when nothing to back up fits the length.
+    /// </summary>
+    Task<PeerBackupBlob?> CreateBlobAsync(int maxBlobLength, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Decrypts and parses a blob a peer handed back, or returns null when it is not ours (another node's, corrupted,

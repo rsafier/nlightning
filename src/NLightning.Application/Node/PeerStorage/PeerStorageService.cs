@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Globalization;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -39,7 +41,11 @@ using Domain.Protocol.Payloads;
 /// the last blob we sent it. A connection with nothing new gets nothing, so the peer's retrieval can be checked against
 /// the last blob sent (<see cref="PeerBackupRetrieval.MatchesLastSent"/>). A blob handed back that is not ours is only
 /// logged; one of ours naming channels we have no record of is a sign of data loss, logged and kept for the restore
-/// flow (<see cref="GetRetrievals"/>).
+/// flow (<see cref="GetRetrievals"/>). A peer that answers our blob with a <c>warning</c> refusing its size (e.g. LDK,
+/// which takes at most 1,024 bytes) is answered at once with one that fits the limit its warning names — or
+/// <see cref="DefaultRefusalLimit"/> when it names none — and the refusal is counted
+/// (<see cref="GetRefusals"/>, NL-559); the limit lives in memory only, so a restart first offers the full-size blob
+/// again and relearns it from the next refusal.
 /// </para>
 /// <para>
 /// The peer's copy is the evidence of a data loss, so it is never overwritten before we read it: at the first
@@ -52,7 +58,7 @@ using Domain.Protocol.Payloads;
 /// restart (<see cref="ListRetrievalsAsync"/>, <c>listpeerstorage</c>); a failed write is retried at every round.
 /// </para>
 /// </remarks>
-public sealed class PeerStorageService : IPeerStorageService, IDisposable
+public sealed partial class PeerStorageService : IPeerStorageService, IDisposable
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IPeerBackupBlobProvider _blobProvider;
@@ -69,6 +75,7 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
     private readonly ConcurrentDictionary<CompactPubKey, TaskCompletionSource> _awaitingRetrieval = new();
     private readonly ConcurrentDictionary<CompactPubKey, PendingBlob> _pendingWithoutChannel = new();
     private readonly ConcurrentDictionary<CompactPubKey, StoredPeerRetrieval> _unwrittenRetrievals = new();
+    private readonly ConcurrentDictionary<CompactPubKey, PeerRefusal> _refusals = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly Lock _loadLock = new();
     private readonly Lock _timerLock = new();
@@ -82,6 +89,20 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
 
     /// <summary>At most this many peers' blobs are held while no channel with the peer exists (64 KiB each).</summary>
     internal const int MaxPendingWithoutChannel = 64;
+
+    /// <summary>
+    /// The blob length sent to a peer whose refusal names no limit of its own (NL-559): LDK's
+    /// <c>MAX_PEER_STORAGE_SIZE</c>, the smallest limit any major implementation enforces today.
+    /// </summary>
+    internal const int DefaultRefusalLimit = 1024;
+
+    /// <summary>A warning is about peer storage only when it says so (LDK: "… bytes in peer storage.").</summary>
+    [GeneratedRegex(@"peer\s*storage", RegexOptions.IgnoreCase)]
+    private static partial Regex PeerStorageTopicRegex();
+
+    /// <summary>The limit a refusal names ("<c>up to 1024 bytes</c>"); thousand separators are stripped first.</summary>
+    [GeneratedRegex(@"(\d+)\s*bytes", RegexOptions.IgnoreCase)]
+    private static partial Regex ByteLimitRegex();
 
     /// <summary>A held blob is forgotten when no channel with its peer appeared within this time.</summary>
     internal static readonly TimeSpan PendingWithoutChannelLifetime = TimeSpan.FromMinutes(30);
@@ -149,7 +170,7 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
             // Nothing sent to it yet by this process: what it keeps may be the only proof of a data loss, so its
             // retrieval is read first
             LastWork = _lastSent.ContainsKey(peerId) || _options.RetrievalWait <= TimeSpan.Zero
-                           ? SendBackupAsync(peer, null, force: false)
+                           ? SendBackupAsync(peer, force: false)
                            : SendBackupAfterRetrievalAsync(peer);
         }
         catch (Exception e)
@@ -184,6 +205,63 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
     /// <inheritdoc />
     public IReadOnlyList<PeerBackupRetrieval> GetRetrievals() =>
         _retrievals.Values.OrderBy(r => r.ReceivedAt).ToList();
+
+    /// <inheritdoc />
+    public void HandleWarning(IPeerService peer, string message)
+    {
+        ArgumentNullException.ThrowIfNull(peer);
+        try
+        {
+            if (string.IsNullOrEmpty(message) || !PeerStorageTopicRegex().IsMatch(message))
+                return;
+
+            var limit = DefaultRefusalLimit;
+            var match = ByteLimitRegex().Match(message.Replace(",", string.Empty));
+            if (match.Success
+             && int.TryParse(match.Groups[1].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var named))
+                limit = named;
+
+            limit = Math.Clamp(limit, 1, PeerStorageConstants.MaxBlobLength - 1);
+
+            var peerId = peer.PeerPubKey;
+            var refusedLength = _lastSent.TryGetValue(peerId, out var last) ? last.Blob.Length : 0;
+            var now = _timeProvider.GetUtcNow();
+            var refusal = _refusals.AddOrUpdate(
+                peerId,
+                _ => new PeerRefusal(limit, refusedLength, now, 1),
+                (_, existing) => existing with
+                {
+                    // A later refusal can only lower the limit: a peer that grew it would keep refusing nothing
+                    AcceptedLimitBytes = Math.Min(existing.AcceptedLimitBytes, limit),
+                    LastRefusedBlobLength = refusedLength,
+                    LastRefusalAt = now,
+                    Count = existing.Count + 1
+                });
+
+            _logger.LogInformation(
+                "Peer {Peer} refused our peer_storage backup ({Refused} bytes): it takes at most {Limit}; the next backup to it fits that",
+                peerId, refusal.LastRefusedBlobLength, refusal.AcceptedLimitBytes);
+
+            // What we last sent it does not fit: answer on this connection with one that does (a blob that fits is
+            // not resent — nothing is sent when even one channel does not fit the limit)
+            if (refusal.LastRefusedBlobLength > refusal.AcceptedLimitBytes
+             && _storagePeers.TryGetValue(peerId, out var current) && ReferenceEquals(current, peer))
+                LastWork = SendBackupAsync(peer, force: true);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Peer storage failed to handle a warning of peer {Peer}", peer.PeerPubKey);
+        }
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<PeerStorageRefusalReport> GetRefusals() =>
+        _refusals.Select(pair => new PeerStorageRefusalReport(pair.Key, pair.Value.Count,
+                                                              pair.Value.AcceptedLimitBytes,
+                                                              pair.Value.LastRefusedBlobLength,
+                                                              pair.Value.LastRefusalAt))
+                 .OrderBy(r => r.LastRefusalAt)
+                 .ToList();
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<PeerStorageRetrievalReport>> ListRetrievalsAsync(
@@ -404,7 +482,7 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
             if (matchesLastSent == false && contents?.Fingerprint != lastSent?.Fingerprint)
             {
                 if (_storagePeers.TryGetValue(peerId, out var storagePeer))
-                    await SendBackupAsync(storagePeer, null, force: true);
+                    await SendBackupAsync(storagePeer, force: true);
                 else
                     _lastSent.TryRemove(new KeyValuePair<CompactPubKey, PeerBackupBlob>(peerId, lastSent!));
             }
@@ -461,7 +539,7 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
             if (!_storagePeers.TryGetValue(peerId, out var current) || !ReferenceEquals(current, peer))
                 return;
 
-            await SendBackupAsync(peer, null, force: false);
+            await SendBackupAsync(peer, force: false);
         }
         finally
         {
@@ -469,7 +547,7 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
         }
     }
 
-    private async Task SendBackupAsync(IPeerService peer, PeerBackupBlob? blob, bool force)
+    private async Task SendBackupAsync(IPeerService peer, bool force)
     {
         try
         {
@@ -480,11 +558,20 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
                 return;
             }
 
-            blob ??= await _blobProvider.CreateBlobAsync(_stopping.Token);
-            if (blob is null)
-                return;
-
             var peerId = peer.PeerPubKey;
+            var maxBlobLength = _refusals.TryGetValue(peerId, out var refusal)
+                                    ? refusal.AcceptedLimitBytes
+                                    : PeerStorageConstants.MaxBlobLength;
+            var blob = await _blobProvider.CreateBlobAsync(maxBlobLength, _stopping.Token);
+            if (blob is null)
+            {
+                if (maxBlobLength < PeerStorageConstants.MaxBlobLength)
+                    _logger.LogWarning(
+                        "Our peer_storage backup names more channels than fit the {Limit} bytes peer {Peer} accepts: it keeps nothing of ours",
+                        maxBlobLength, peerId);
+                return;
+            }
+
             if (!force && _lastSent.TryGetValue(peerId, out var last) && last.Fingerprint == blob.Fingerprint)
                 return;
 
@@ -525,12 +612,9 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
             if (_storagePeers.IsEmpty || !_options.SendBackups || _backupsHeld)
                 return;
 
-            var blob = await _blobProvider.CreateBlobAsync(_stopping.Token);
-            if (blob is null)
-                return;
-
+            // One blob per peer: a peer that refused the full size gets the same backup within its limit (NL-559)
             foreach (var peer in _storagePeers.Values)
-                await SendBackupAsync(peer, blob, force: false);
+                await SendBackupAsync(peer, force: false);
         }
         catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
         {
@@ -719,6 +803,13 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
     }
 
     private sealed record PendingBlob(byte[] Blob, DateTimeOffset ReceivedAt);
+
+    /// <summary>
+    /// What a peer's refusals taught us (<see cref="PeerStorageRefusalReport"/> is what the operator sees); the limit
+    /// lives in memory only, so a restart relearns it from the next refusal.
+    /// </summary>
+    private sealed record PeerRefusal(int AcceptedLimitBytes, int LastRefusedBlobLength, DateTimeOffset LastRefusalAt,
+                                      int Count);
 
     private sealed class StoredEntry
     {

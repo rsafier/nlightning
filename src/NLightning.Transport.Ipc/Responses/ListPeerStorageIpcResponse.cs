@@ -22,6 +22,9 @@ public sealed class ListPeerStorageIpcResponse
     /// <summary>True when our backups go to no peer until the restart (possible data loss).</summary>
     [Key(2)] public bool BackupsHeldForDataLoss { get; init; }
 
+    /// <summary>The peers that refused our backup blob for its size (NL-559).</summary>
+    [Key(3)] public required List<PeerRefusalIpcInfo> Refusals { get; init; }
+
     public static ListPeerStorageIpcResponse FromClientResponse(ListPeerStorageClientResponse clientResponse)
     {
         ArgumentNullException.ThrowIfNull(clientResponse);
@@ -51,7 +54,15 @@ public sealed class ListPeerStorageIpcResponse
                 BlobLength = b.Blob.Length,
                 UpdatedAt = b.UpdatedAt
             }).ToList(),
-            BackupsHeldForDataLoss = clientResponse.BackupsHeldForDataLoss
+            BackupsHeldForDataLoss = clientResponse.BackupsHeldForDataLoss,
+            Refusals = clientResponse.Refusals.Select(r => new PeerRefusalIpcInfo
+            {
+                PeerNodeId = r.PeerNodeId,
+                Count = r.Count,
+                AcceptedLimitBytes = r.AcceptedLimitBytes,
+                LastRefusedBlobLength = r.LastRefusedBlobLength,
+                LastRefusalAt = r.LastRefusalAt
+            }).ToList()
         };
     }
 }
@@ -104,4 +115,22 @@ public sealed class StoredPeerBlobIpcInfo
     [Key(0)] public required CompactPubKey PeerNodeId { get; init; }
     [Key(1)] public int BlobLength { get; init; }
     [Key(2)] public required DateTimeOffset UpdatedAt { get; init; }
+}
+
+/// <summary>A peer's refusals of our backup blob for its size (NL-559).</summary>
+[MessagePackObject]
+public sealed class PeerRefusalIpcInfo
+{
+    [Key(0)] public required CompactPubKey PeerNodeId { get; init; }
+
+    /// <summary>How many of its refusals arrived since the start.</summary>
+    [Key(1)] public int Count { get; init; }
+
+    /// <summary>The blob length the peer accepts (what its warning named, or the default).</summary>
+    [Key(2)] public int AcceptedLimitBytes { get; init; }
+
+    /// <summary>The length of the blob the peer refused last.</summary>
+    [Key(3)] public int LastRefusedBlobLength { get; init; }
+
+    [Key(4)] public required DateTimeOffset LastRefusalAt { get; init; }
 }

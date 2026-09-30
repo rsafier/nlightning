@@ -23,6 +23,10 @@ using Domain.Persistence.Interfaces;
 /// funding (the static channel backup lane replaces it with a full backup).
 /// </summary>
 /// <remarks>
+/// <para>A peer that refuses that length (a <c>warning</c>, NL-559; e.g. LDK takes at most 1,024 bytes) gets the sized
+/// variant instead (<see cref="CreateBlobAsync(int, CancellationToken)"/>): the same backup padded to exactly the
+/// length it accepts, naming the first channels that fit it. A BOLT 1 SHOULD is traded there for a peer that keeps
+/// something rather than nothing.</para>
 /// <para>Plaintext version 2 (splicing plan SP2-0, lane SP2-E; written since): magic <c>"NLPB"</c>, version (1 byte),
 /// creation time (u64 UNIX seconds), channel count (u16), then per channel its id (32 bytes), the peer's node id (33
 /// bytes), a flags byte (bit 0: the funding outpoint follows; bit 1: our funding key index is known), the current
@@ -65,13 +69,28 @@ public sealed class ChannelListPeerBackupBlobProvider : IPeerBackupBlobProvider
     public int MaxChannels => (_cipher.MaxPlaintextLength - HeaderLength) / EntryLength;
 
     /// <inheritdoc />
-    public async Task<PeerBackupBlob?> CreateBlobAsync(CancellationToken cancellationToken = default)
+    public Task<PeerBackupBlob?> CreateBlobAsync(CancellationToken cancellationToken = default) =>
+        CreateBlobAsync(PeerStorageConstants.MaxBlobLength, cancellationToken);
+
+    /// <summary>
+    /// The blob length <see cref="Encrypt"/> adds over the plaintext: version, nonce and tag
+    /// (<see cref="PeerStorageConstants.MaxBlobLength"/> minus <see cref="IPeerStorageCipher.MaxPlaintextLength"/>).
+    /// </summary>
+    private int CipherOverhead => PeerStorageConstants.MaxBlobLength - _cipher.MaxPlaintextLength;
+
+    /// <inheritdoc />
+    public async Task<PeerBackupBlob?> CreateBlobAsync(int maxBlobLength, CancellationToken cancellationToken = default)
     {
+        var plaintextLength = Math.Min(maxBlobLength, PeerStorageConstants.MaxBlobLength) - CipherOverhead;
+        var maxChannels = Math.Min(MaxChannels, (plaintextLength - HeaderLength) / EntryLength);
+        if (maxChannels <= 0)
+            return null;
+
         var models = _channelMemoryRepository
                     .FindChannels(c => c.State is >= ChannelState.V1FundingSigned
                                               and not (ChannelState.Closed or ChannelState.Stale))
                     .OrderBy(c => Convert.ToHexString(c.ChannelId))
-                    .Take(MaxChannels)
+                    .Take(maxChannels)
                     .ToList();
         if (models.Count == 0)
             return null;
@@ -80,7 +99,7 @@ public sealed class ChannelListPeerBackupBlobProvider : IPeerBackupBlobProvider
         foreach (var model in models)
             channels.Add(await DescribeAsync(model, cancellationToken));
 
-        var plaintext = new byte[_cipher.MaxPlaintextLength];
+        var plaintext = new byte[plaintextLength];
         s_magic.CopyTo(plaintext, 0);
         plaintext[4] = Version;
         BinaryPrimitives.WriteUInt64BigEndian(plaintext.AsSpan(5),

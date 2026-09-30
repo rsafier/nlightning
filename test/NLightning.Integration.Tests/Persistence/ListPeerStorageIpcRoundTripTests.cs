@@ -86,8 +86,11 @@ public class ListPeerStorageIpcRoundTripTests
             await WaitUntilPersistedAsync(dbOptions, peerId, cancellationToken);
         }
 
-        // A second process over the same database lists it over IPC
+        // A second process over the same database lists it over IPC; the peer also refused our backup for its size
+        // there (NL-559: the refusal is counted in memory of the process that received it)
         await using var second = BuildNode(dbOptions, channels);
+        second.GetRequiredService<IPeerStorageService>()
+              .HandleWarning(peer.Object, "Supports only data up to 1024 bytes in peer storage.");
         var handler = second.GetServices<IIpcCommandHandler>().Single(h => h.Command == ClientCommand.ListPeerStorage);
         var response = await handler.HandleAsync(CreateEnvelope(new ListPeerStorageIpcRequest { IncludeBlob = true }),
                                                  cancellationToken);
@@ -114,9 +117,15 @@ public class ListPeerStorageIpcRoundTripTests
         Assert.Equal(lostPeerId, lost.PeerNodeId);
         Assert.Empty(payload.StoredBlobs);
 
+        var refusal = Assert.Single(payload.Refusals);
+        Assert.Equal(peerId, refusal.PeerNodeId);
+        Assert.Equal(1, refusal.Count);
+        Assert.Equal(1024, refusal.AcceptedLimitBytes);
+
         var filteredPayload = MessagePackSerializer.Deserialize<ListPeerStorageIpcResponse>(filtered.Payload,
             s_options, cancellationToken);
         Assert.Empty(filteredPayload.Retrievals);
+        Assert.Empty(filteredPayload.Refusals);
 
         using var output = new StringWriter();
         new ListPeerStoragePrinter(output).Print(payload);
@@ -125,6 +134,9 @@ public class ListPeerStorageIpcRoundTripTests
         Assert.Contains($"Channel {lostChannel.ChannelId} with {lostPeerId}: UNKNOWN (restore it)", printed);
         Assert.Contains("restorechanbackup", printed);
         Assert.Contains(Convert.ToHexStringLower(keptByPeer), printed);
+        Assert.Contains("Peers that refused our backup for its size (1)", printed);
+        Assert.Contains($"{peerId}: 1 refusal(s)", printed);
+        Assert.Contains("takes at most 1024 bytes", printed);
     }
 
     private static async Task WaitUntilPersistedAsync(DbContextOptions<NLightningDbContext> dbOptions,

@@ -125,6 +125,37 @@ public class PeerServicePeerStorageTests
     }
 
     [Fact]
+    public void Given_APeerStorageService_When_AWarningArrives_Then_ItsTextIsHandedOver()
+    {
+        // Arrange
+        var peerService = CreatePeerService(_storage.Object);
+        RaiseMessage(CreateInitMessage());
+
+        // Act: LDK's refusal of our peer_storage blob for its size (NL-559)
+        RaiseMessage(new WarningMessage(new ErrorPayload(
+                         System.Text.Encoding.UTF8.GetBytes("Supports only data up to 1024 bytes in peer storage."))));
+
+        // Assert: the refusal is adapted to, and the connection stays (NL-532)
+        _storage.Verify(s => s.HandleWarning(peerService, "Supports only data up to 1024 bytes in peer storage."),
+                        Times.Once);
+        _communication.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_NoPeerStorageService_When_AWarningArrives_Then_ThePeerStays()
+    {
+        // Arrange
+        CreatePeerService(null);
+        RaiseMessage(CreateInitMessage());
+
+        // Act
+        RaiseMessage(new WarningMessage(new ErrorPayload("peer storage blob too large")));
+
+        // Assert
+        _communication.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
     public async Task Given_AnotherMessage_When_SentAsPeerStorage_Then_Throws()
     {
         // Arrange

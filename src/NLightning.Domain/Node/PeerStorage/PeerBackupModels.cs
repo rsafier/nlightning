@@ -111,3 +111,18 @@ public sealed record PeerStorageRetrievalReport(CompactPubKey PeerNodeId, DateTi
     /// <summary>The channels the blob names that the node has no record of now: what is left to restore.</summary>
     public IEnumerable<PeerBackupChannelStatus> StillUnknown => Channels.Where(c => !c.KnownNow);
 }
+
+/// <summary>
+/// A peer's refusals of our backup blob for its size (<c>warning</c>, NL-559): the peer keeps nothing of ours until a
+/// blob within its limit reaches it, so every refusal is counted for the operator (<c>listpeerstorage</c>).
+/// </summary>
+/// <param name="PeerNodeId">The peer that refused.</param>
+/// <param name="Count">How many of its refusals arrived since the start.</param>
+/// <param name="AcceptedLimitBytes">
+/// The blob length the peer accepts: what its warning named, or the default when it named nothing. Only ever lowered
+/// by later refusals.
+/// </param>
+/// <param name="LastRefusedBlobLength">The length of the blob the peer refused last.</param>
+/// <param name="LastRefusalAt">When the last refusal arrived.</param>
+public sealed record PeerStorageRefusalReport(CompactPubKey PeerNodeId, int Count, int AcceptedLimitBytes,
+                                              int LastRefusedBlobLength, DateTimeOffset LastRefusalAt);

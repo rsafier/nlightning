@@ -99,6 +99,14 @@ public class PeerStorageCommandTests
                     UpdatedAt = new DateTimeOffset(2026, 9, 27, 11, 0, 0, TimeSpan.Zero)
                 }
             ],
+            Refusals =
+            [
+                new PeerRefusalIpcInfo
+                {
+                    PeerNodeId = peer, Count = 2, AcceptedLimitBytes = 1024, LastRefusedBlobLength = 65531,
+                    LastRefusalAt = new DateTimeOffset(2026, 9, 27, 12, 0, 0, TimeSpan.Zero)
+                }
+            ],
             BackupsHeldForDataLoss = true
         };
         using var output = new StringWriter();
@@ -118,5 +126,9 @@ public class PeerStorageCommandTests
         Assert.Contains("Blob hex:        dead", printed);
         Assert.Contains("1 channel(s) named by a peer's copy are unknown", printed);
         Assert.Contains($"{peer}: 12 bytes, updated 2026-09-27 11:00:00Z", printed);
+        Assert.Contains("Peers that refused our backup for its size (1)", printed);
+        Assert.Contains($"{peer}: 2 refusal(s), last 2026-09-27 12:00:00Z, takes at most 1024 bytes (refused 65531)",
+                        printed);
+        Assert.Contains("it keeps nothing of ours until a blob within 1024 bytes reaches it", printed);
     }
 }

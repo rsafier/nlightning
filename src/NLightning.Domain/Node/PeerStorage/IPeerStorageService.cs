@@ -30,6 +30,20 @@ public interface IPeerStorageService
     void HandleMessage(IPeerService peer, IMessage message);
 
     /// <summary>
+    /// Handles a <c>warning</c> (never an <c>error</c>) from <paramref name="peer"/>. A peer that refused our backup
+    /// blob for its size is learned from it: the next backup to it is built within the limit its warning names (a
+    /// default small length when it names none) and the refusal is listed by <see cref="GetRefusals"/>. Only queues
+    /// work; never throws.
+    /// </summary>
+    void HandleWarning(IPeerService peer, string message);
+
+    /// <summary>
+    /// The peers that refused our backup blob for its size, with the limit each accepts (since the start; in memory:
+    /// after a restart the first blob is refused again and the limit relearned, NL-559).
+    /// </summary>
+    IReadOnlyList<PeerStorageRefusalReport> GetRefusals();
+
+    /// <summary>
     /// What our peers handed back to us since the start (the latest per peer), for the restore flow.
     /// </summary>
     IReadOnlyList<PeerBackupRetrieval> GetRetrievals();

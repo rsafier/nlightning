@@ -47,6 +47,9 @@ public class ListPeerStorageIpcHandlerTests
                 ]);
         _service.Setup(s => s.ListStoredBlobsAsync(It.IsAny<CancellationToken>()))
                 .ReturnsAsync([new StoredPeerBlob(s_peerB, [7, 7], s_receivedAt.AddMinutes(2))]);
+        _service.Setup(s => s.GetRefusals())
+                .Returns([new PeerStorageRefusalReport(s_peerA, 2, 1024, PeerStorageConstants.MaxBlobLength,
+                                                        s_receivedAt.AddMinutes(3))]);
         _service.SetupGet(s => s.BackupsHeldForDataLoss).Returns(true);
     }
 
@@ -90,6 +93,14 @@ public class ListPeerStorageIpcHandlerTests
         Assert.Equal(s_peerB, stored.PeerNodeId);
         Assert.Equal(2, stored.BlobLength);
         Assert.Equal(s_receivedAt.AddMinutes(2), stored.UpdatedAt);
+
+        // ...and so does the size refusal the peer sent (NL-559)
+        var refusal = Assert.Single(payload.Refusals);
+        Assert.Equal(s_peerA, refusal.PeerNodeId);
+        Assert.Equal(2, refusal.Count);
+        Assert.Equal(1024, refusal.AcceptedLimitBytes);
+        Assert.Equal(PeerStorageConstants.MaxBlobLength, refusal.LastRefusedBlobLength);
+        Assert.Equal(s_receivedAt.AddMinutes(3), refusal.LastRefusalAt);
     }
 
     [Fact]
@@ -111,6 +122,7 @@ public class ListPeerStorageIpcHandlerTests
         Assert.Equal(s_peerB, retrieval.PeerNodeId);
         Assert.Equal(new byte[] { 9 }, retrieval.Blob);
         Assert.Equal(s_peerB, Assert.Single(payload.StoredBlobs).PeerNodeId);
+        Assert.Empty(payload.Refusals);
     }
 
     [Fact]

@@ -69,5 +69,14 @@ public sealed class ListPeerStoragePrinter : IPrinter<ListPeerStorageIpcResponse
         foreach (var stored in item.StoredBlobs)
             _output.WriteLine(string.Format(inv, "  {0}: {1} bytes, updated {2:u}", stored.PeerNodeId,
                                             stored.BlobLength, stored.UpdatedAt));
+
+        _output.WriteLine(string.Format(inv, "Peers that refused our backup for its size ({0})", item.Refusals.Count));
+        foreach (var refusal in item.Refusals)
+            _output.WriteLine(string.Format(inv,
+                                            "  {0}: {1} refusal(s), last {2:u}, takes at most {3} bytes "
+                                          + "(refused {4}); it keeps nothing of ours until a blob within {3} bytes "
+                                          + "reaches it",
+                                            refusal.PeerNodeId, refusal.Count, refusal.LastRefusalAt,
+                                            refusal.AcceptedLimitBytes, refusal.LastRefusedBlobLength));
     }
 }

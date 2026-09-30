@@ -632,4 +632,152 @@ public class PeerStorageServiceTests
     }
 
     #endregion
+
+    #region Refusals (NL-559)
+
+    [Fact]
+    public async Task Given_LdkRefusesOurMaxBlob_When_ItsWarningArrives_Then_AFittingBackupIsSentAndCounted()
+    {
+        // Arrange: LDK's warning, verbatim (rust-lightning MAX_PEER_STORAGE_SIZE = 1024)
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(50);
+        var channel = context.AddChannel(peer.PeerPubKey);
+        context.Service.OnPeerInitialized(peer);
+        var maxBlob = await peer.NextAsync<PeerStorageMessage>();
+        Assert.Equal(PeerStorageConstants.MaxBlobLength, maxBlob.Payload.Blob.Length);
+
+        // Act
+        context.Service.HandleWarning(peer, "Supports only data up to 1024 bytes in peer storage.");
+        await context.Service.LastWork;
+
+        // Assert: a second peer_storage, padded to exactly the limit, still ours and naming the channel
+        var fitted = await peer.NextAsync<PeerStorageMessage>();
+        Assert.Equal(1024, fitted.Payload.Blob.Length);
+        var contents = await context.BlobProvider.TryReadBlobAsync(fitted.Payload.Blob,
+                                                                   TestContext.Current.CancellationToken);
+        Assert.Equal(channel.ChannelId, Assert.Single(contents!.Channels).ChannelId);
+
+        var refusal = Assert.Single(context.Service.GetRefusals());
+        Assert.Equal(peer.PeerPubKey, refusal.PeerNodeId);
+        Assert.Equal(1, refusal.Count);
+        Assert.Equal(1024, refusal.AcceptedLimitBytes);
+        Assert.Equal(PeerStorageConstants.MaxBlobLength, refusal.LastRefusedBlobLength);
+
+        // ...and the round sends nothing more: the fitted blob is the last sent one and nothing changed
+        await context.Service.RunRoundAsync();
+        Assert.True(await peer.NothingSentWithinAsync(s_quiet));
+    }
+
+    [Fact]
+    public async Task Given_ARefusalNamingNoLimit_When_ItsWarningArrives_Then_TheDefaultLimitIsUsed()
+    {
+        // Arrange
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(51);
+        context.AddChannel(peer.PeerPubKey);
+        context.Service.OnPeerInitialized(peer);
+        await peer.NextAsync<PeerStorageMessage>();
+
+        // Act
+        context.Service.HandleWarning(peer, "your peer storage blob is too large for me");
+        await context.Service.LastWork;
+
+        // Assert
+        var fitted = await peer.NextAsync<PeerStorageMessage>();
+        Assert.Equal(PeerStorageService.DefaultRefusalLimit, fitted.Payload.Blob.Length);
+        Assert.Equal(PeerStorageService.DefaultRefusalLimit,
+                     Assert.Single(context.Service.GetRefusals()).AcceptedLimitBytes);
+    }
+
+    [Fact]
+    public async Task Given_AWarningAboutSomethingElse_When_ItArrives_Then_NothingIsAdaptedOrCounted()
+    {
+        // Arrange
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(52);
+        context.AddChannel(peer.PeerPubKey);
+        context.Service.OnPeerInitialized(peer);
+        await peer.NextAsync<PeerStorageMessage>();
+
+        // Act
+        context.Service.HandleWarning(peer, "peer sent a gossip query with an unknown chain_hash, 25 bytes ignored");
+
+        // Assert
+        Assert.True(await peer.NothingSentWithinAsync(s_quiet));
+        Assert.Empty(context.Service.GetRefusals());
+    }
+
+    [Fact]
+    public async Task Given_ALimitNothingFits_When_Refused_Then_NothingIsResentButTheRefusalIsCounted()
+    {
+        // Arrange: even one channel's entry needs more than 100 bytes
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(53);
+        context.AddChannel(peer.PeerPubKey);
+        context.Service.OnPeerInitialized(peer);
+        await peer.NextAsync<PeerStorageMessage>();
+
+        // Act
+        context.Service.HandleWarning(peer, "Supports only data up to 100 bytes in peer storage.");
+        await context.Service.LastWork;
+
+        // Assert
+        Assert.True(await peer.NothingSentWithinAsync(s_quiet));
+        var refusal = Assert.Single(context.Service.GetRefusals());
+        Assert.Equal(100, refusal.AcceptedLimitBytes);
+        Assert.Equal(1, refusal.Count);
+    }
+
+    [Fact]
+    public async Task Given_ASecondRefusal_When_ItNamesABiggerLimit_Then_TheLimitIsOnlyEverLowered()
+    {
+        // Arrange: the first refusal fitted our backup to 1,024 bytes
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(54);
+        context.AddChannel(peer.PeerPubKey);
+        context.Service.OnPeerInitialized(peer);
+        await peer.NextAsync<PeerStorageMessage>();
+        context.Service.HandleWarning(peer, "Supports only data up to 1024 bytes in peer storage.");
+        await peer.NextAsync<PeerStorageMessage>();
+
+        // Act: the peer restarts grown, but the blob it has fits and was never refused again
+        context.Service.HandleWarning(peer, "peer storage: refusing your blob");
+        await context.Service.LastWork;
+
+        // Assert: the limit stays 1,024 and nothing is resent for it (what we last sent fits)
+        var refusal = Assert.Single(context.Service.GetRefusals());
+        Assert.Equal(2, refusal.Count);
+        Assert.Equal(1024, refusal.AcceptedLimitBytes);
+        Assert.True(await peer.NothingSentWithinAsync(s_quiet));
+    }
+
+    [Fact]
+    public async Task Given_ARefusal_When_ThePeerReconnectsAndOurBackupChanges_Then_TheNewOneFitsTheLimit()
+    {
+        // Arrange: the peer refused our full-size blob and got the fitted one
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(55);
+        context.AddChannel(peer.PeerPubKey);
+        context.Service.OnPeerInitialized(peer);
+        await peer.NextAsync<PeerStorageMessage>();
+        context.Service.HandleWarning(peer, "Supports only data up to 1024 bytes in peer storage.");
+        await peer.NextAsync<PeerStorageMessage>();
+        peer.Disconnect();
+        var reconnected = new FakeGossipPeer(55);
+        context.AddChannel(new FakeGossipPeer(56).PeerPubKey);
+
+        // Act: the reconnection already finds the new channel, so its backup goes out (the round then has nothing
+        // new: what is asserted below is the reconnection's send)
+        context.Service.OnPeerInitialized(reconnected);
+        await context.Service.RunRoundAsync();
+
+        // Assert: what changed is sent again, within the learned limit and naming the new channel
+        var sent = await reconnected.NextAsync<PeerStorageMessage>();
+        Assert.Equal(1024, sent.Payload.Blob.Length);
+        var contents = await context.BlobProvider.TryReadBlobAsync(sent.Payload.Blob,
+                                                                   TestContext.Current.CancellationToken);
+        Assert.Equal(2, contents!.Channels.Count);
+    }
+
+    #endregion
 }

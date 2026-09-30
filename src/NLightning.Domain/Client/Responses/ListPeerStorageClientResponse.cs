@@ -9,12 +9,13 @@ public sealed class ListPeerStorageClientResponse
 {
     public ListPeerStorageClientResponse(IReadOnlyList<PeerStorageRetrievalReport> retrievals,
                                          IReadOnlyList<StoredPeerBlob> storedBlobs, bool backupsHeldForDataLoss,
-                                         bool includesBlobs)
+                                         bool includesBlobs, IReadOnlyList<PeerStorageRefusalReport>? refusals = null)
     {
         Retrievals = retrievals;
         StoredBlobs = storedBlobs;
         BackupsHeldForDataLoss = backupsHeldForDataLoss;
         IncludesBlobs = includesBlobs;
+        Refusals = refusals ?? [];
     }
 
     /// <summary>The latest retrieval of each peer, ordered by arrival.</summary>
@@ -28,4 +29,10 @@ public sealed class ListPeerStorageClientResponse
 
     /// <summary>True when the caller asked for the retrieved blobs' bytes.</summary>
     public bool IncludesBlobs { get; }
+
+    /// <summary>
+    /// The peers that refused our backup blob for its size, so the operator sees who keeps nothing of ours until a
+    /// fitting blob reaches them (NL-559).
+    /// </summary>
+    public IReadOnlyList<PeerStorageRefusalReport> Refusals { get; }
 }
