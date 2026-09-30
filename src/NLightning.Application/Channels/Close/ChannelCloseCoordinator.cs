@@ -6,6 +6,8 @@ using NBitcoinTransaction = NBitcoin.Transaction;
 namespace NLightning.Application.Channels.Close;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
@@ -447,15 +449,23 @@ public sealed class ChannelCloseCoordinator
         var state = entry.Negotiation ?? context.InitialState;
         // NL-285 (B2-CLS-R09): when the peer's rangeless answer overshoots our funder limit, holding the limit means
         // repeating a fee (about 19 rounds against LND's 10 % decay, and a strict peer fails the repeated fee). The
-        // peer's first offer becomes our limit once instead - the fee it asked first is the most it can expect, and
-        // the balance check above already bounded it - so the negotiation ends on the peer's own fee (B2-CLS-R08)
+        // peer's first offer becomes our limit once instead, so the negotiation ends on the peer's own fee
+        // (B2-CLS-R08). The raise stops at the base fee of our commitment, what a force close would cost us: bounded
+        // by the funder's balance alone, a peer could make us burn that balance in fees
         if (channel.IsInitiator && theirRange is null && state.LastReceivedFeeSat is null
          && feeSat > state.Acceptable.MaxFeeSat)
         {
-            state = state with { Acceptable = new ClosingFeeRange(state.Acceptable.MinFeeSat, feeSat) };
-            _logger.LogInformation(
-                "closing_signed for channel {ChannelId}: our funder fee limit rises to the peer's first offer of "
-              + "{Fee} sat", channelId, feeSat);
+            var commitmentFeeSat = CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(
+                channel.Commitments?.FeeratePerKw(CommitmentSide.Local)
+             ?? (ulong)channel.ChannelParams.FeeRateAmountPerKw.Satoshi, channel.ChannelParams.OptionAnchorOutputs, 0);
+            var raisedMaxSat = Math.Min(feeSat, commitmentFeeSat);
+            if (raisedMaxSat > state.Acceptable.MaxFeeSat)
+            {
+                state = state with { Acceptable = new ClosingFeeRange(state.Acceptable.MinFeeSat, raisedMaxSat) };
+                _logger.LogInformation(
+                    "closing_signed for channel {ChannelId}: our funder fee limit rises to {Limit} sat for the peer's "
+                  + "first offer of {Fee} sat", channelId, raisedMaxSat, feeSat);
+            }
         }
 
         var (decision, next) = LegacyClosingNegotiator.Receive(state, feeSat, theirRange, context.IdealFeeSat);

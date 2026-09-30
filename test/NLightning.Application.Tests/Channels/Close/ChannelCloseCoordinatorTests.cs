@@ -11,6 +11,7 @@ using Application.Channels.Services;
 using Application.Protocol.Factories;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
@@ -453,8 +454,9 @@ public class ChannelCloseCoordinatorTests
     {
         // Arrange (NL-285, B2-CLS-R09): as the funder we proposed our estimate (the fixture's 1,000 sat/kw); the
         // peer's first rangeless answer asks for more than 3x that, our funder limit - holding it used to repeat the
-        // fee (about 19 rounds against LND's decay, and a strict peer fails a repeated fee)
-        var channel = CreateFunderReadyToPropose();
+        // fee (about 19 rounds against LND's decay, and a strict peer fails a repeated fee). The offer stays below
+        // our commitment's base fee (724 weight at 10,000 sat/kw: 7,240 sat)
+        var channel = CreateFunderReadyToPropose(commitmentFeeRatePerKw: 10_000);
         var coordinator = CreateCoordinator();
         var proposal = Assert.IsType<ClosingSignedMessage>(Assert.Single(await coordinator.AdvanceAsync(channel)));
         var weight = ClosingFeeCalculator.EstimateWeight(s_localScript.Length, s_remoteScript.Length);
@@ -471,6 +473,26 @@ public class ChannelCloseCoordinatorTests
         Assert.Null(echo.FeeRangeTlv);
         Assert.Equal(ChannelState.Closing, channel.State);
         Assert.Equal(["watch:6", "update:Closing", "save", "track", "publish"], _calls);
+    }
+
+    [Fact]
+    public async Task Given_RangelessFirstOfferAboveTheCommitmentFee_When_ClosingSigned_Then_LimitRisesOnlyToThatFee()
+    {
+        // Arrange (NL-285): the raise to the peer's first offer stops at our commitment's base fee (7,240 sat at
+        // 10,000 sat/kw), so a peer cannot make the funder pay anything up to its whole balance
+        var channel = CreateFunderReadyToPropose(commitmentFeeRatePerKw: 10_000);
+        var coordinator = CreateCoordinator();
+        await coordinator.AdvanceAsync(channel);
+        var commitmentFeeSat = CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(10_000, false, 0);
+        Assert.Equal(7_240UL, commitmentFeeSat);
+
+        // Act
+        var replies = await coordinator.ReceiveClosingSignedAsync(channel, ClosingSigned(20_000));
+
+        // Assert: we answer with the capped limit and the channel keeps negotiating
+        var counter = Assert.IsType<ClosingSignedMessage>(Assert.Single(replies));
+        Assert.Equal(LightningMoney.Satoshis(commitmentFeeSat), counter.Payload.FeeAmount);
+        Assert.Equal(ChannelState.Negotiating, channel.State);
     }
 
     [Fact]
@@ -888,9 +910,10 @@ public class ChannelCloseCoordinatorTests
     }
 
     /// <summary>A funder channel in Negotiating whose shutdowns both went over the current connection.</summary>
-    private ChannelModel CreateFunderReadyToPropose()
+    private ChannelModel CreateFunderReadyToPropose(long commitmentFeeRatePerKw = 2_500)
     {
-        var channel = CreateNegotiatingChannel(localSat: 60_000, remoteSat: 40_000, dustLimitSat: 546);
+        var channel = CreateNegotiatingChannel(localSat: 60_000, remoteSat: 40_000, dustLimitSat: 546,
+                                               commitmentFeeRatePerKw: commitmentFeeRatePerKw);
         var entry = _registry.Get(channel.ChannelId);
         entry.ShutdownSentOnConnection = true;
         entry.ShutdownReceivedOnConnection = true;
@@ -910,10 +933,11 @@ public class ChannelCloseCoordinatorTests
 
     /// <summary>A channel in Negotiating with both shutdown scripts, no snapshot.</summary>
     private static ChannelModel CreateNegotiatingChannel(long localSat, long remoteSat, long dustLimitSat,
-                                                         bool isInitiator = true)
+                                                         bool isInitiator = true, long commitmentFeeRatePerKw = 2_500)
     {
         var channel = CreateChannel(ChannelState.Negotiating, localSat: localSat, remoteSat: remoteSat,
-                                    dustLimitSat: dustLimitSat, isInitiator: isInitiator);
+                                    dustLimitSat: dustLimitSat, isInitiator: isInitiator,
+                                    commitmentFeeRatePerKw: commitmentFeeRatePerKw);
         channel.SetLocalShutdownScript(s_localScript);
         channel.SetRemoteShutdownScript(s_remoteScript);
         return channel;
@@ -922,7 +946,7 @@ public class ChannelCloseCoordinatorTests
     private static ChannelModel CreateChannel(ChannelState state, long localSat = 60_000, long remoteSat = 40_000,
                                               long dustLimitSat = 546, bool isInitiator = true,
                                               BitcoinScript? localUpfront = null, BitcoinScript? remoteUpfront = null,
-                                              byte channelIdTag = 0x0e)
+                                              byte channelIdTag = 0x0e, long commitmentFeeRatePerKw = 2_500)
     {
         var local = new ChannelParty(LightningMoney.Satoshis(dustLimitSat), LightningMoney.Satoshis(1_000),
                                      LightningMoney.MilliSatoshis(1_000), 30,
@@ -930,7 +954,7 @@ public class ChannelCloseCoordinatorTests
         var remote = new ChannelParty(LightningMoney.Satoshis(dustLimitSat), LightningMoney.Satoshis(1_000),
                                       LightningMoney.MilliSatoshis(1_000), 30,
                                       LightningMoney.Satoshis(localSat + remoteSat), 144, remoteUpfront);
-        var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(2_500), 3, false,
+        var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(commitmentFeeRatePerKw), 3, false,
                                               FeatureSupport.No);
         var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(localSat + remoteSat),
                                                   NormalOperationTestContext.Point(0x01),
