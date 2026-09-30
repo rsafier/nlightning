@@ -1,5 +1,7 @@
+using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Runtime.Versioning;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -418,6 +420,97 @@ public sealed class SecureKeyManagerTests : IDisposable
 
         // Assert
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(_filePath));
+    }
+
+    [Fact]
+    public void Given_KeyFileOfAnotherGroupOfOurs_When_Rewritten_Then_KeepsItsGroup()
+    {
+        // NL-224 / SR-14: the atomic replace must not move the key file to the temp file's group
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix ownership only");
+
+        // Arrange
+        using var keyManager = NewKeyManager();
+        keyManager.SaveToFile(Password);
+        var freshFileGid = GetFreshFileGid();
+        var targetGid = GetGroups().Cast<uint?>().FirstOrDefault(g => g != freshFileGid);
+        Assert.SkipWhen(targetGid is null, "the test user has no group other than the one of fresh files");
+        Assert.SkipUnless(ChownGroupOfFile(_filePath, targetGid!.Value), "the test user may not chown to that group");
+
+        // Act
+        keyManager.SaveToFile(Password);
+
+        // Assert
+        var owner = SecureKeyManager.GetUnixFileOwner(_filePath);
+        Assert.NotNull(owner);
+        Assert.Equal(targetGid.Value, owner!.Value.Gid);
+        Assert.Equal(GetEffectiveUserId(), owner.Value.Uid);
+    }
+
+    [Fact]
+    public void Given_KeyFileOfAnotherOwner_When_RewrittenByRoot_Then_KeepsItsOwner()
+    {
+        // NL-224 / SR-14: when root rewrites a user's key file, the file must go back to its owner
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix ownership only");
+        Assert.SkipUnless(GetEffectiveUserId() == 0, "only root may chown the file to another owner");
+
+        // Arrange: uid 65534 (nobody) and group 0 (wheel/root) exist everywhere
+        using var keyManager = NewKeyManager();
+        keyManager.SaveToFile(Password);
+        Assert.True(ChownFile(_filePath, 65534, 0));
+
+        // Act
+        keyManager.SaveToFile(Password);
+
+        // Assert
+        var owner = SecureKeyManager.GetUnixFileOwner(_filePath);
+        Assert.NotNull(owner);
+        Assert.Equal(65534u, owner!.Value.Uid);
+        Assert.Equal(0u, owner.Value.Gid);
+    }
+
+    [Fact]
+    [SupportedOSPlatform("windows")]
+    public void Given_KeyFileWithAnExplicitAce_When_Rewritten_Then_TheAceIsKept()
+    {
+        // NL-224 / SR-14: the Windows ACL of the key file survives the atomic replace (the new file would
+        // otherwise inherit only the directory's ACL)
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Windows ACLs only");
+
+        // Arrange
+        using var keyManager = NewKeyManager();
+        keyManager.SaveToFile(Password);
+        var security = new FileInfo(_filePath).GetAccessControl();
+        security.AddAccessRule(new FileSystemAccessRule(
+            $@"{Environment.UserDomainName}\{Environment.UserName}", FileSystemRights.ReadData,
+            AccessControlType.Allow));
+        new FileInfo(_filePath).SetAccessControl(security);
+
+        // Act
+        keyManager.SaveToFile(Password);
+
+        // Assert
+        var rules = new FileInfo(_filePath).GetAccessControl()
+                               .GetAccessRules(true, false, typeof(System.Security.Principal.NTAccount))
+                               .Cast<FileSystemAccessRule>();
+        Assert.Contains(rules, r => r.AccessControlType == AccessControlType.Allow
+                                 && (r.FileSystemRights & FileSystemRights.ReadData) != 0);
+    }
+
+    [Fact]
+    public void Given_NoKeyFileYet_When_SaveToFile_Then_StatOwnershipIsNotAttempted()
+    {
+        // Arrange: a fresh key file (no rewrite) must keep working when stat(2) reports failure; the owner of a
+        // created file is simply the running user
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix ownership only");
+        using var keyManager = NewKeyManager();
+
+        // Act
+        keyManager.SaveToFile(Password);
+
+        // Assert
+        var owner = SecureKeyManager.GetUnixFileOwner(_filePath);
+        Assert.NotNull(owner);
+        Assert.Equal(GetEffectiveUserId(), owner!.Value.Uid);
     }
 
     [Fact]
@@ -909,4 +1002,67 @@ public sealed class SecureKeyManagerTests : IDisposable
                  {"network":"{{Network.RegTest}}","descriptor":"legacy","lastUsedIndex":7,"encryptedExtKey":"{{Convert.ToBase64String(cipherText)}}","heightOfBirth":123}
                  """;
     }
+
+    private static uint GetEffectiveUserId()
+    {
+        if (OperatingSystem.IsWindows())
+            return 0;
+
+        return GetUserId();
+    }
+
+    private static uint[] GetGroups()
+    {
+        if (OperatingSystem.IsWindows())
+            return [];
+
+        var count = GetGroupList(0, null);
+        if (count <= 0)
+            return [];
+
+        var groups = new uint[count];
+        _ = GetGroupList(count, groups);
+        return groups;
+    }
+
+    private uint GetFreshFileGid()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix ownership only");
+        var probe = Path.Combine(_directory, "ownership-probe.tmp");
+        using (File.Create(probe))
+        {
+        }
+
+        try
+        {
+            var owner = SecureKeyManager.GetUnixFileOwner(probe);
+            Assert.NotNull(owner);
+            return owner!.Value.Gid;
+        }
+        finally
+        {
+            File.Delete(probe);
+        }
+    }
+
+    private static bool ChownGroupOfFile(string path, uint group)
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix ownership only");
+        return ChownFile(path, unchecked((uint)-1), group);
+    }
+
+    private static bool ChownFile(string path, uint owner, uint group)
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix ownership only");
+        return Chown(path, owner, group) == 0;
+    }
+
+    [DllImport("libc", EntryPoint = "geteuid")]
+    private static extern uint GetUserId();
+
+    [DllImport("libc", EntryPoint = "getgroups")]
+    private static extern int GetGroupList(int size, uint[]? groups);
+
+    [DllImport("libc", EntryPoint = "chown", SetLastError = true, CharSet = CharSet.Ansi)]
+    private static extern int Chown([MarshalAs(UnmanagedType.LPUTF8Str)] string path, uint owner, uint group);
 }
