@@ -7,6 +7,7 @@ namespace NLightning.Infrastructure.Bitcoin.Bootstrap;
 
 using Domain.Crypto.ValueObjects;
 using Domain.Node.Bootstrap;
+using Domain.Node.Constants;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Infrastructure.Protocol.Dns;
@@ -60,6 +61,31 @@ internal sealed class DnsSeedClient : IDnsSeedClient
                                root, result.Outcome, string.Join(", ", fallback.NameServers));
         var fallbackResult = await QuerySeedWithAsync(fallback, root, families, maxResults, ct);
         return fallbackResult with { UsedFallbackResolver = true, SystemResolverOutcome = result.Outcome };
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// BOLT 10's assisted location (NL-541): the query name is the node's virtual host under the seed
+    /// (<c>l&lt;bech32 node id&gt;.&lt;root&gt;</c>, <see cref="DnsSeedQuery.VirtualHost"/>). Its SRV answer carries
+    /// the (virtual host, port) tuples of a node on non-default ports, its A/AAAA answers the addresses (BOLT 10
+    /// answers those only for nodes on the default port). The fallback resolvers (D-B10-7) are asked when the system
+    /// resolvers give no candidate at all. Live seeds checked 2026-09-30 (nodes.lightning.directory) answer the
+    /// addresses but not the per-node SRV, so a node whose port moved is found at the default port; the caller may
+    /// also try the port it already knows on the located address.
+    /// </remarks>
+    public async Task<DnsSeedNodeLocation> LocateNodeAsync(string seedRoot, CompactPubKey nodeId,
+                                                           DnsSeedAddressTypes families, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(seedRoot);
+        var root = seedRoot.Trim().TrimEnd('.').ToLowerInvariant();
+        var location = await LocateNodeWithAsync(_lookup, root, nodeId, families, ct);
+        if (location.Candidates.Count > 0 || _fallback is not { IsAvailable: true } fallback)
+            return location;
+
+        _logger.LogInformation("Seed {Seed}: the system resolver located node {Node} as {Outcome}; asking {Servers}",
+                               root, nodeId, location.Outcome, string.Join(", ", fallback.NameServers));
+        var fallbackLocation = await LocateNodeWithAsync(fallback, root, nodeId, families, ct);
+        return fallbackLocation with { UsedFallbackResolver = true, SystemResolverOutcome = location.Outcome };
     }
 
     private async Task<DnsSeedResult> QuerySeedWithAsync(IDnsRecordLookup lookup, string root,
@@ -173,6 +199,151 @@ internal sealed class DnsSeedClient : IDnsSeedClient
             _logger.LogDebug("Seed {Seed} timed out after {Timeout}", root, _options.PerSeedTimeout);
             return new DnsSeedResult(root, DnsSeedOutcome.Timeout, candidates, rejected);
         }
+    }
+
+    /// <summary>
+    /// One node query under <see cref="BootstrapOptions.PerSeedTimeout"/>: the virtual host's SRV answer (the ports
+    /// of the node, only its own records count), then its A/AAAA answers per family. The outcome is
+    /// <see cref="DnsSeedOutcome.Ok"/> when the seed answered records for the node,
+    /// <see cref="DnsSeedOutcome.Empty"/> for its empty reply (it does not know the node), and the resolvers' failure
+    /// otherwise. A per-seed timeout is a <see cref="DnsSeedOutcome.Timeout"/> with whatever was answered; only the
+    /// caller's cancellation throws.
+    /// </summary>
+    private async Task<DnsSeedNodeLocation> LocateNodeWithAsync(IDnsRecordLookup lookup, string root,
+                                                                CompactPubKey nodeId, DnsSeedAddressTypes families,
+                                                                CancellationToken callerCt)
+    {
+        var candidates = new List<SeedPeerCandidate>();
+        var rejected = 0;
+        using var seedCts = CancellationTokenSource.CreateLinkedTokenSource(callerCt);
+        seedCts.CancelAfter(_options.PerSeedTimeout);
+        var ct = seedCts.Token;
+        try
+        {
+            var label = LightningNodeIdBech32.Encode(nodeId);
+            var host = DnsSeedQuery.VirtualHost(label, root);
+            if (!DnsSeedQuery.IsValidDnsName(host, out var reason))
+                throw new ArgumentException($"Invalid node query name '{host}': {reason}", "seedRoot");
+
+            // The node's own SRV records give the ports; a foreign target (another node's virtual host) is rejected
+            var status = DnsLookupStatus.NoError;
+            var ownSrvRecords = 0;
+            var ports = new List<ushort>();
+            var srvResponse = await lookup.QueryAsync(host, DnsRecordKind.Srv, ct);
+            if (srvResponse.Status == DnsLookupStatus.NoError)
+            {
+                foreach (var record in srvResponse.Srv)
+                {
+                    if (string.IsNullOrWhiteSpace(record.Target)
+                     || !LightningNodeIdBech32.TryDecode(record.Target.TrimEnd('.').Split('.')[0], out var recordId,
+                                                         out _)
+                     || recordId != nodeId)
+                    {
+                        rejected++;
+                        _logger.LogDebug("Seed {Seed}: node query: dropped SRV target {Target}: not node {Node}", root,
+                                         record.Target, label);
+                        continue;
+                    }
+
+                    ownSrvRecords++;
+                    if (record.Port == 0)
+                    {
+                        rejected++;
+                        _logger.LogDebug("Seed {Seed}: node query: dropped SRV port 0 of {Node}", root, label);
+                        continue;
+                    }
+
+                    if (!ports.Contains(record.Port))
+                        ports.Add(record.Port);
+                }
+            }
+            else
+            {
+                status = srvResponse.Status;
+            }
+
+            var addresses = new List<IPAddress>();
+            if (families.HasFlag(DnsSeedAddressTypes.IPv4))
+            {
+                var (ipv4Status, ipv4Addresses) =
+                    await QueryNodeAddressesAsync(lookup, root, label, host, DnsRecordKind.A, status, ct);
+                status = ipv4Status;
+                addresses.AddRange(ipv4Addresses);
+            }
+
+            if (families.HasFlag(DnsSeedAddressTypes.IPv6))
+            {
+                var (ipv6Status, ipv6Addresses) =
+                    await QueryNodeAddressesAsync(lookup, root, label, host, DnsRecordKind.Aaaa, status, ct);
+                status = ipv6Status;
+                addresses.AddRange(ipv6Addresses);
+            }
+
+            if (ct.IsCancellationRequested)
+            {
+                callerCt.ThrowIfCancellationRequested();
+                _logger.LogDebug("Seed {Seed}: node query for {Node} timed out after {Timeout}", root, label,
+                                 _options.PerSeedTimeout);
+                return new DnsSeedNodeLocation(root, DnsSeedOutcome.Timeout, candidates, rejected);
+            }
+
+            // The SRV ports when the seed answered them, else the default port: the A/AAAA answer is for nodes on it
+            var wantedPorts = ports;
+            if (wantedPorts.Count == 0)
+                wantedPorts = [(ushort)NodeConstants.DefaultPort];
+            foreach (var address in addresses)
+            {
+                var ip = address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+                if (!IsWantedFamily(ip, families))
+                {
+                    rejected++;
+                    _logger.LogDebug("Seed {Seed}: node query: dropped {Address} of {Node}: family not asked for",
+                                     root, ip, label);
+                    continue;
+                }
+
+                foreach (var port in wantedPorts)
+                {
+                    if (!SeedAddressFilter.IsUsable(ip, port, _options.AllowNonRoutableAddresses, out reason))
+                    {
+                        rejected++;
+                        _logger.LogDebug("Seed {Seed}: node query: dropped {Address}:{Port} of {Node}: {Reason}", root,
+                                         ip, port, label, reason);
+                        continue;
+                    }
+
+                    if (candidates.All(c => c.Address != ip || c.Port != port))
+                        candidates.Add(new SeedPeerCandidate(nodeId, ip, port, root));
+                }
+            }
+
+            var answered = ownSrvRecords > 0 || addresses.Count > 0;
+            return new DnsSeedNodeLocation(root, answered ? DnsSeedOutcome.Ok : MapStatus(status), candidates,
+                                           rejected);
+        }
+        catch (OperationCanceledException) when (!callerCt.IsCancellationRequested)
+        {
+            _logger.LogDebug("Seed {Seed}: node query for {Node} timed out after {Timeout}", root, nodeId,
+                             _options.PerSeedTimeout);
+            return new DnsSeedNodeLocation(root, DnsSeedOutcome.Timeout, candidates, rejected);
+        }
+    }
+
+    /// <summary>
+    /// The addresses of a node query's A or AAAA answer; the status stays at the resolvers' first failure when
+    /// <paramref name="status"/> already carries one.
+    /// </summary>
+    private async Task<(DnsLookupStatus Status, IReadOnlyList<IPAddress> Addresses)> QueryNodeAddressesAsync(
+        IDnsRecordLookup lookup, string root, string node, string host, DnsRecordKind kind, DnsLookupStatus status,
+        CancellationToken ct)
+    {
+        var response = await lookup.QueryAsync(host, kind, ct);
+        if (response.Status == DnsLookupStatus.NoError)
+            return (status, response.Addresses);
+
+        _logger.LogDebug("Seed {Seed}: node query for {Node}: {Kind} answered {Status}", root, node, kind,
+                         response.Status);
+        return (status == DnsLookupStatus.NoError ? response.Status : status, []);
     }
 
     /// <summary>

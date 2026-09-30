@@ -65,6 +65,12 @@ public class PeerBootstrapServiceTests
         _peerManager.Setup(p => p.ListPeers()).Returns(() => _connected.Values.ToList());
         _unitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync(() => _saved.ToList());
         _secureKeyManager.Setup(k => k.GetNodePubKey()).Returns(() => _ourNodeId);
+
+        // Assisted location (NL-541): every seed answers the empty reply unless a test sets candidates up
+        _dnsSeedClient.Setup(c => c.LocateNodeAsync(It.IsAny<string>(), It.IsAny<CompactPubKey>(),
+                                                   It.IsAny<DnsSeedAddressTypes>(), It.IsAny<CancellationToken>()))
+                      .ReturnsAsync((string seed, CompactPubKey _, DnsSeedAddressTypes _, CancellationToken _) =>
+                                        new DnsSeedNodeLocation(seed, DnsSeedOutcome.Empty, [], 0));
     }
 
     private static CompactPubKey NewKey() => new(new Key().PubKey.ToBytes());
@@ -1487,6 +1493,232 @@ public class PeerBootstrapServiceTests
         public override DateTimeOffset GetUtcNow() => _now;
 
         public void Advance(TimeSpan by) => _now += by;
+    }
+
+    #endregion
+
+    #region BOLT 10 assisted location (NL-541)
+
+    /// <summary>What the fake seed answers when a node is located; no candidates means its empty reply.</summary>
+    private void SetupLocate(string seed, CompactPubKey nodeId, params SeedPeerCandidate[] candidates) =>
+        _dnsSeedClient.Setup(c => c.LocateNodeAsync(seed, nodeId, It.IsAny<DnsSeedAddressTypes>(),
+                                                   It.IsAny<CancellationToken>()))
+                      .ReturnsAsync(new DnsSeedNodeLocation(seed,
+                                                            candidates.Length > 0
+                                                                ? DnsSeedOutcome.Ok
+                                                                : DnsSeedOutcome.Empty,
+                                                            candidates, 0));
+
+    [Fact]
+    public async Task Given_LocatePeer_When_ASeedKnowsTheNode_Then_TheEndpointsAreReturnedAndRecorded()
+    {
+        // Arrange: both seeds know the node at the same endpoint; the answer is deduped
+        var node = NewKey();
+        SetupLocate(SeedA, node, new SeedPeerCandidate(node, IPAddress.Parse("1.2.3.4"), 9735, SeedA));
+        SetupLocate(SeedB, node, new SeedPeerCandidate(node, IPAddress.Parse("1.2.3.4"), 9735, SeedB));
+        var service = CreateService();
+
+        // Act
+        var located = await service.LocatePeerAsync(node, TestContext.Current.CancellationToken);
+
+        // Assert
+        var candidate = Assert.Single(located);
+        Assert.Equal(IPAddress.Parse("1.2.3.4"), candidate.Address);
+        Assert.Equal(node, candidate.NodeId);
+        var status = service.GetStatus();
+        Assert.Equal(2, status.SeedQueries.Count);
+        Assert.All(status.SeedQueries, q => Assert.Equal(0, q.Run));
+        Assert.All(status.SeedQueries, q => Assert.Equal(DnsSeedOutcome.Ok, q.Outcome));
+    }
+
+    [Fact]
+    public async Task Given_LocatePeer_When_NoSeedKnowsTheNode_Then_AnEmptyListIsReturnedWithoutThrowing()
+    {
+        // Arrange
+        var node = NewKey();
+        SetupLocate(SeedA, node);
+        SetupLocate(SeedB, node);
+        var service = CreateService();
+
+        // Act
+        var located = await service.LocatePeerAsync(node, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(located);
+    }
+
+    [Fact]
+    public async Task Given_LocatePeer_When_ASeedFails_Then_TheErrorIsRecordedAndTheOtherSeedIsStillAsked()
+    {
+        // Arrange
+        var node = NewKey();
+        _dnsSeedClient.Setup(c => c.LocateNodeAsync(SeedA, node, It.IsAny<DnsSeedAddressTypes>(),
+                                                   It.IsAny<CancellationToken>()))
+                      .ThrowsAsync(new InvalidOperationException("boom"));
+        SetupLocate(SeedB, node, new SeedPeerCandidate(node, IPAddress.Parse("1.2.3.4"), 9735, SeedB));
+        var service = CreateService();
+
+        // Act
+        var located = await service.LocatePeerAsync(node, TestContext.Current.CancellationToken);
+
+        // Assert
+        var candidate = Assert.Single(located);
+        Assert.Equal(IPAddress.Parse("1.2.3.4"), candidate.Address);
+        var status = service.GetStatus();
+        Assert.Contains(status.SeedQueries, q => q.Error == "boom" && q.Outcome == DnsSeedOutcome.Error);
+        Assert.Contains(status.SeedQueries, q => q.Error is null && q.Outcome == DnsSeedOutcome.Ok);
+    }
+
+    [Fact]
+    public async Task Given_LocatePeer_When_TheNetworkHasNoSeeds_Then_NoSeedIsAskedAndTheAnswerIsEmpty()
+    {
+        // Arrange
+        _nodeOptions.BitcoinNetwork = BitcoinNetwork.Regtest;
+        var service = CreateService();
+
+        // Act
+        var located = await service.LocatePeerAsync(NewKey(), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(located);
+        _dnsSeedClient.Verify(c => c.LocateNodeAsync(It.IsAny<string>(), It.IsAny<CompactPubKey>(),
+                                                    It.IsAny<DnsSeedAddressTypes>(), It.IsAny<CancellationToken>()),
+                              Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_LocatePeer_InTorOnlyMode_Then_NoSeedIsAskedAndTheAnswerIsEmpty()
+    {
+        // Arrange: clearnet DNS would reveal the lookup (NL-542)
+        _nodeOptions.Tor.Mode = TorMode.TorOnly;
+        var service = CreateService();
+
+        // Act
+        var located = await service.LocatePeerAsync(NewKey(), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(located);
+        _dnsSeedClient.Verify(c => c.LocateNodeAsync(It.IsAny<string>(), It.IsAny<CompactPubKey>(),
+                                                    It.IsAny<DnsSeedAddressTypes>(), It.IsAny<CancellationToken>()),
+                              Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AReconnectingChannelPeerTheSeedLocated_When_TheRunIsSkipped_Then_TheAnswerIsDialed()
+    {
+        // Arrange: the peer manager keeps dialing the saved address; the seed answers where the node is now
+        var savedPeer = new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4")
+        {
+            Channels = [CreateChannel(ChannelState.Open)]
+        };
+        _saved.Add(savedPeer);
+        SetupLocate(SeedA, savedPeer.NodeId,
+                    new SeedPeerCandidate(savedPeer.NodeId, IPAddress.Parse("9.9.9.9"), 9735, SeedA));
+        SetupLocate(SeedB, savedPeer.NodeId);
+        DialsSucceed();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert: the located endpoint was dialed (never the seeds' bootstrap query) and the peer is connected
+        var dial = Assert.Single(_peerManager.Invocations,
+                                 i => i.Method.Name == nameof(IPeerManager.DialPeerAsync));
+        Assert.Equal($"{savedPeer.NodeId}@9.9.9.9:9735", ((PeerAddressInfo)dial.Arguments[0]).Address);
+        Assert.Contains(savedPeer.NodeId, _connected.Keys);
+        VerifyNoSeedQuery();
+    }
+
+    [Fact]
+    public async Task Given_AReconnectingPeerNoSeedKnows_When_TheRunIsSkipped_Then_NothingIsDialed()
+    {
+        // Arrange: the seeds answer the empty reply, so the skip stays harmless
+        var savedPeer = new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4")
+        {
+            Channels = [CreateChannel(ChannelState.Open)]
+        };
+        _saved.Add(savedPeer);
+        SetupLocate(SeedA, savedPeer.NodeId);
+        SetupLocate(SeedB, savedPeer.NodeId);
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(0, DialCount());
+        VerifyNoSeedQuery();
+    }
+
+    [Fact]
+    public async Task Given_TheSeedAnswersTheSavedEndpoint_When_TheRunIsSkipped_Then_ItIsNotRedialed()
+    {
+        // Arrange: the peer manager is already dialing exactly that endpoint
+        var savedPeer = new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4")
+        {
+            Channels = [CreateChannel(ChannelState.Open)]
+        };
+        _saved.Add(savedPeer);
+        SetupLocate(SeedA, savedPeer.NodeId,
+                    new SeedPeerCandidate(savedPeer.NodeId, IPAddress.Parse("5.6.7.8"), 9735, SeedA));
+        SetupLocate(SeedB, savedPeer.NodeId);
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(0, DialCount());
+    }
+
+    [Fact]
+    public async Task Given_TheSeedAnswersTheDefaultPort_When_TheSavedPortDiffers_Then_BothEndpointsAreDialed()
+    {
+        // Arrange: the live seeds answer the addresses but not the per-node SRV port, so the saved port is a guess
+        // worth dialing on the located address too
+        var savedPeer = new PeerModel(NewKey(), "5.6.7.8", 9835, "IPv4")
+        {
+            Channels = [CreateChannel(ChannelState.Open)]
+        };
+        _saved.Add(savedPeer);
+        SetupLocate(SeedA, savedPeer.NodeId,
+                    new SeedPeerCandidate(savedPeer.NodeId, IPAddress.Parse("9.9.9.9"), 9735, SeedA));
+        SetupLocate(SeedB, savedPeer.NodeId);
+        DialsSucceed();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(2, DialCount());
+        var dialed = _peerManager.Invocations.Where(i => i.Method.Name == nameof(IPeerManager.DialPeerAsync))
+                                 .Select(i => ((PeerAddressInfo)i.Arguments[0]).Address);
+        Assert.Contains($"{savedPeer.NodeId}@9.9.9.9:9735", dialed);
+        Assert.Contains($"{savedPeer.NodeId}@9.9.9.9:9835", dialed);
+    }
+
+    [Fact]
+    public async Task Given_AReconnectingPeer_When_ChainProcessingIsHalted_Then_NothingIsLocatedOrDialed()
+    {
+        // Arrange
+        var savedPeer = new PeerModel(NewKey(), "5.6.7.8", 9735, "IPv4")
+        {
+            Channels = [CreateChannel(ChannelState.Open)]
+        };
+        _saved.Add(savedPeer);
+        _blockchainMonitor.Setup(b => b.IsChainProcessingHalted).Returns(true);
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(0, DialCount());
+        VerifyNoSeedQuery();
+        _dnsSeedClient.Verify(c => c.LocateNodeAsync(It.IsAny<string>(), It.IsAny<CompactPubKey>(),
+                                                    It.IsAny<DnsSeedAddressTypes>(), It.IsAny<CancellationToken>()),
+                              Times.Never);
     }
 
     #endregion
