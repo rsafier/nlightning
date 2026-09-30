@@ -267,13 +267,22 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                     return [];
 
                 var secondPoint = _lightningSigner.GetPerCommitmentPoint(channelId, local.LocalCommitmentNumber + 1);
-                // The alias we gave the peer, else the real scid (as at funding confirmation); none while unknown
-                ShortChannelId? alias = null;
-                if (channel.LocalAliases is { Count: > 0 } aliases)
-                    alias = aliases.First();
-                else if (IsSet(channel.ShortChannelId))
-                    alias = channel.ShortChannelId;
-                return [_messageFactory.CreateChannelReadyMessage(channelId, secondPoint, alias)];
+                // One channel_ready per local alias, as the funding confirmation sent them (the peer must recognize
+                // every alias for incoming HTLCs; NL-260), else the real scid (as at funding confirmation), or none
+                // in the TLV while both are unknown
+                if (channel.LocalAliases is { Count: > 0 } localAliases)
+                    return localAliases
+                          .Select(alias => (IChannelMessage)_messageFactory.CreateChannelReadyMessage(
+                                      channelId, secondPoint, alias))
+                          .ToList();
+
+                // No ternary here: `IsSet(...) ? channel.ShortChannelId : null` would type the conditional as
+                // ShortChannelId and convert the null via the implicit byte[] operator (the NL-369 trap)
+                ShortChannelId? aliasOrScid = null;
+                if (IsSet(channel.ShortChannelId))
+                    aliasOrScid = channel.ShortChannelId;
+
+                return [_messageFactory.CreateChannelReadyMessage(channelId, secondPoint, aliasOrScid)];
 
             case ReestablishStep.RevokeAndAck:
                 // Deterministic from the seed (D4): the secret of L - 1 and the point of L + 1
