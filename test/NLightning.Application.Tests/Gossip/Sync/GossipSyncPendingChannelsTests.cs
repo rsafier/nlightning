@@ -2,7 +2,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Application.Tests.Gossip.Sync;
 
+using Application.Gossip.Graph;
 using Application.Gossip.Sync;
+using Application.Tests.Gossip.Graph;
 using Domain.Channels.ValueObjects;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Queries;
@@ -151,6 +153,34 @@ public class GossipSyncPendingChannelsTests : IDisposable
 
         // Assert
         Assert.Equal([ids[0], ids[2], ids[4]], query);
+    }
+
+    [Fact]
+    public async Task Given_ARealIngressHoldingAPendingAnnouncement_When_TheBatchIsBuilt_Then_TheChannelIsNotAskedFor()
+    {
+        // Arrange (NL-420: the ingress itself answers the sync's IGossipPendingChannels question — its queued,
+        // deferred and pending-announcement channels — without a registration line, GetPendingChannels)
+        var kit = new GraphTestKit();
+        kit.FundingFound();
+        var ids = Scids(2);
+        var kept = await kit.Ingress.ProcessAsync(null, GraphTestKit.SignedChannelAnnouncement(
+                                                      ids[0], new TestGossipKey(0x21), new TestGossipKey(0x22),
+                                                      new TestGossipKey(0x23), new TestGossipKey(0x24)), 0,
+                                                  TestContext.Current.CancellationToken);
+        Assert.Equal(GossipIngressOutcome.Pending, kept.Outcome);
+        Assert.True(kit.Ingress.IsPending(ids[0]));
+        var manager = CreateManager(o => o.MaxScidsPerQuery = 8, pendingChannels: [kit.Ingress]);
+        var peer = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+
+        // Act
+        manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, ids));
+        var query = Ids(await peer.NextAsync<QueryShortChannelIdsMessage>());
+
+        // Assert: ids[0] is on its way into the graph, ids[1] is asked for
+        Assert.Equal([ids[1]], query);
+        await kit.Ingress.StopAsync();
     }
 
     [Fact]
