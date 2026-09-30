@@ -482,6 +482,29 @@ public class GossipRelayOthersTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_AChangeDuringABacklog_When_TheFirstFlushAfterItComes_Then_TheVersionIsNotSentTwice()
+    {
+        // Arrange (NL-549, seen by the NL-417 mainnet proof): the channel reaches the graph after the relay's last
+        // collect, so it is in the backlog's snapshot and in the next collect's diff against the older seen state
+        using var paced = new GossipRelayOthersTests(new GossipRelayOptions { BacklogMessagesPerSecond = 1 });
+        var peer = paced.AddPeer(0x41, new GossipTimestampFilter(0, uint.MaxValue));
+        await paced.BaselineAsync();
+        paced._graph.AddSignedChannel(s_scid1, SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+
+        // Act: the backlog (1 message per tick) runs to its end, then the collected diff is flushed
+        paced.RaiseFilter(peer);
+        while (peer.Sent.Count < 3)
+            await paced.TickAfterAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal([MessageTypes.ChannelAnnouncement, MessageTypes.ChannelUpdate, MessageTypes.ChannelUpdate],
+                     peer.Sent.Select(m => m.Type));
+        await paced.TickAfterAsync(TimeSpan.FromSeconds(1)); // the backlog pass ends
+        await paced.FlushAllAsync();
+
+        // Assert: the first flush after the backlog sends nothing the backlog already sent
+        Assert.Equal(3, peer.Sent.Count);
+    }
+
+    [Fact]
     public async Task Given_OurOwnChannel_When_Relayed_Then_OnlyThePeersDirectionGoesThroughTheRelay()
     {
         // Arrange: we are node A; our 256 and 258 go through the own path (regardless of filters)
