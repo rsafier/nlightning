@@ -1,5 +1,6 @@
 namespace NLightning.Application.Gossip.Announcements;
 
+using Domain.Channels.ValueObjects;
 using Domain.Gossip.Interfaces;
 using Domain.Money;
 using Domain.Protocol.Payloads;
@@ -22,6 +23,11 @@ public sealed class NullOwnGossipSink : IOwnGossipSink
 
     /// <inheritdoc />
     public void AddOwnNodeAnnouncement(NodeAnnouncementPayload announcement)
+    {
+    }
+
+    /// <inheritdoc />
+    public void ForgetOwnChannel(ShortChannelId shortChannelId)
     {
     }
 }

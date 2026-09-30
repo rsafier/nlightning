@@ -25,6 +25,7 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Interfaces;
 using Domain.Node.Options;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
@@ -348,6 +349,7 @@ public sealed class OnchainReorgTests : IDisposable
                 .Returns(Task.CompletedTask);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channels.Object);
         var announcements = new Mock<IChannelAnnouncementService>();
+        var ownGossip = new Mock<IOwnGossipSink>();
         var signer = new Mock<ILightningSigner>();
         var registered = new List<ShortChannelId?>();
         signer.Setup(s => s.RegisterChannel(open.ChannelId, It.IsAny<ChannelSigningInfo>()))
@@ -361,6 +363,7 @@ public sealed class OnchainReorgTests : IDisposable
         services.AddScoped(_ => unitOfWork.Object);
         services.AddSingleton(channelUpdates.Object);
         services.AddSingleton(announcements.Object);
+        services.AddSingleton(ownGossip.Object);
         services.AddSingleton(signer.Object);
         if (signerHasSource)
             services.AddSingleton(new Mock<IChannelSigningInfoSource>().Object);
@@ -375,14 +378,17 @@ public sealed class OnchainReorgTests : IDisposable
         var moved = await handler.HandleAsync(watch, TestContext.Current.CancellationToken);
 
         // Assert: the reset is in the save that moves the scid, then on the shared model; the announcement service
-        // forgets the old announcement; a source-less signer learns the new scid; the channel_update sent after the
-        // move is private (dont_forward), not a public update naming a scid nobody announced
+        // forgets the old announcement; the graph sink forgets our announcement under the old scid (NL-362); a
+        // source-less signer learns the new scid; the channel_update sent after the move is private (dont_forward),
+        // not a public update naming a scid nobody announced
+        var previous = new ShortChannelId(500, 3, open.FundingOutput.Index.Value);
         var expected = new ShortChannelId(501, 7, open.FundingOutput.Index.Value);
         Assert.True(moved);
         Assert.Equal([(expected, false, false)], storedCopies);
         Assert.Null(open.RemoteAnnouncementSignatures);
         Assert.Null(open.LocalAnnouncementSignaturesSentAt);
         announcements.Verify(a => a.OnShortChannelIdChanged(open.ChannelId), Times.Once);
+        ownGossip.Verify(s => s.ForgetOwnChannel(previous), Times.Once);
         Assert.Equal(signerHasSource ? [] : [expected], registered);
         Assert.Equal([false], publicWhenUpdateSent);
     }

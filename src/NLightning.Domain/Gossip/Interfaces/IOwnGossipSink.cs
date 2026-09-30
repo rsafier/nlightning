@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Gossip.Interfaces;
 
+using Channels.ValueObjects;
 using Money;
 using Protocol.Payloads;
 
@@ -26,4 +27,12 @@ public interface IOwnGossipSink
 
     /// <summary>Our signed <c>node_announcement</c> (only sent once we have an announced channel).</summary>
     void AddOwnNodeAnnouncement(NodeAnnouncementPayload announcement);
+
+    /// <summary>
+    /// A reorg moved one of our announced channels' funding output (NL-350, NL-362): its old short channel id no
+    /// longer names our funding, so the announcement and the policies stored under it are forgotten (our own only;
+    /// what another node announced at that position stays). The channel is announced again under its new short
+    /// channel id once both <c>announcement_signatures</c> halves are exchanged for it.
+    /// </summary>
+    void ForgetOwnChannel(ShortChannelId shortChannelId);
 }
