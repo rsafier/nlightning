@@ -168,6 +168,34 @@ public class ChannelManagerReconnectTests
     }
 
     [Fact]
+    public async Task Given_AChannelPendingAtConnect_When_ItOpensBeforeThePeersReestablish_Then_OursWasAlreadyFirst()
+    {
+        // Arrange (NL-269): the funding confirms while the peer's own channel_reestablish is still in flight; an
+        // update may flow only because ours was raised at connect, ahead of everything else on the connection
+        var channel = CreateChannel(0x01, ChannelState.V1FundingSigned, s_peer);
+        _channels.Add(channel);
+        var manager = CreateManager();
+
+        // Act: the connection starts - our channel_reestablish for the pending channel goes out first
+        await manager.OnPeerConnectedAsync(s_peer);
+        Assert.Equal(ReestablishStatus.Sent, _tracker.GetStatus(channel.ChannelId));
+        Assert.IsType<ChannelReestablishMessage>(Assert.Single(_raised).Message);
+
+        // The funding confirms on this connection, so updates may flow - after our reestablish in the outbox
+        _tracker.MarkOpened(channel.ChannelId, s_peer);
+        Assert.True(_tracker.IsReestablished(channel.ChannelId));
+        manager.Publish(s_peer, [UpdateAdd(channel.ChannelId)]);
+        Assert.Equal(2, _raised.Count);
+        Assert.IsType<UpdateAddHtlcMessage>(_raised[1].Message);
+
+        // The peer's reestablish arrives late and still completes the exchange (it is answered, not repeated)
+        await manager.HandleChannelMessageAsync(PeerReestablish(channel.ChannelId, 1, 0), new FeatureOptions(),
+                                                s_peer);
+        Assert.Equal(ReestablishStatus.Reestablished, _tracker.GetStatus(channel.ChannelId));
+        Assert.Equal(2, _raised.Count);
+    }
+
+    [Fact]
     public void Given_ChannelNotReestablishedOnTheCurrentConnection_When_AnUpdateIsPublished_Then_ItIsDropped()
     {
         // Arrange - regression: the link was checked before the save, and the connection was replaced during it
