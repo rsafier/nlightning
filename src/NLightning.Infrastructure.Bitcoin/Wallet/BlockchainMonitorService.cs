@@ -432,6 +432,15 @@ public class BlockchainMonitorService : IBlockchainMonitor
         _watchedOutpoints.TryRemove(new OutPoint(new uint256(txId), outputIndex), out _);
     }
 
+    /// <inheritdoc />
+    public void StopWatchingTransaction(TxId txId)
+    {
+        if (_watchedTransactions.TryRemove(new uint256(txId), out _)
+         && _logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Stopped watching transaction {TxId} (its rival of the shared input is "
+                                 + "irrevocable)", txId);
+    }
+
     public void WatchBitcoinAddress(WalletAddressModel walletAddress)
     {
         if (_logger.IsEnabled(LogLevel.Information))

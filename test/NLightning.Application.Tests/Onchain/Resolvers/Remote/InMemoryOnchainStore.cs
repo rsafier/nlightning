@@ -158,6 +158,14 @@ internal sealed class InMemoryOnchainStore
         public Task MarkSpentAsync(TxId transactionId, uint outputIndex, TxId spendingTransactionId, uint height,
                                    Hash blockHash) => throw new NotSupportedException();
 
+        public Task<bool> DeleteByTransactionIdAsync(TxId transactionId, uint outputIndex)
+        {
+            var removed = _watches.Remove((transactionId, outputIndex));
+            if (removed)
+                store.Watches.Remove((transactionId, outputIndex));
+            return Task.FromResult(removed || store.Watches.Remove((transactionId, outputIndex)));
+        }
+
         public Task<int> ClearSpendsAboveAsync(uint height) => throw new NotSupportedException();
 
         public Task<WatchedOutpointModel?> AddFundingOutpointIfMissingAsync(ChannelId channelId,

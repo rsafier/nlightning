@@ -79,6 +79,13 @@ public interface IBlockchainMonitor : IChainBroadcaster, IOutpointWatcher
     /// <summary>Stops watching an outpoint in memory (a stored watch comes back at the next start).</summary>
     void StopWatchingOutpointSpend(TxId txId, uint outputIndex);
 
+    /// <summary>
+    /// Stops watching a transaction in memory (a stored watch comes back at the next start). For a watch that can
+    /// never complete any more: the funding transaction of a losing RBF attempt of a dual-funded open, whose rival
+    /// spent the shared input irrecoverably (NL-529).
+    /// </summary>
+    void StopWatchingTransaction(TxId txId);
+
     void WatchBitcoinAddress(WalletAddressModel walletAddress);
 
     /// <summary>

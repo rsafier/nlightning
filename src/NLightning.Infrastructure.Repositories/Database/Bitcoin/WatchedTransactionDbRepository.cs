@@ -77,6 +77,17 @@ public class WatchedTransactionDbRepository(NLightningDbContext context)
         return entity == null ? null : MapEntityToDomain(entity);
     }
 
+    /// <inheritdoc />
+    public async Task<bool> DeleteByTransactionIdAsync(TxId transactionId)
+    {
+        var entity = await GetByIdAsync(transactionId);
+        if (entity == null)
+            return false;
+
+        DbSet.Remove(entity);
+        return true;
+    }
+
     private static WatchedTransactionEntity MapDomainToEntity(WatchedTransactionModel watchedTransactionModel)
     {
         return new WatchedTransactionEntity
