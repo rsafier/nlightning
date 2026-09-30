@@ -1,6 +1,7 @@
 namespace NLightning.Application.Onchain.Wallet;
 
 using Anchors;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.ValueObjects;
@@ -55,6 +56,16 @@ public sealed class WalletAnchorFeeInputSource : IAnchorFeeInputSource
                   .SelectMany(r => r.Inputs)
                   .Select(ToAnchorWalletInput)
                   .ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<AnchorWalletInput>> ReserveInputsAsync(ChannelId channelId,
+                                                                           IReadOnlyList<(TxId TxId, uint OutputIndex)> outpoints,
+                                                                           CancellationToken cancellationToken)
+    {
+        var inputs = await _feeInputSelector.ReserveInputsAsync(
+            outpoints.Select(o => (o.TxId, o.OutputIndex)).ToList(), GetPurpose(channelId), cancellationToken);
+        return inputs.Select(ToAnchorWalletInput).ToList();
     }
 
     /// <inheritdoc />

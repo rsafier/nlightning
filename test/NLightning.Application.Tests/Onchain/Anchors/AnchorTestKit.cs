@@ -123,6 +123,30 @@ internal sealed class FakeAnchorWallet : IAnchorFeeInputSource
                                                                   CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<AnchorWalletInput>>(Reserved(channelId).ToList());
 
+    /// <summary>Re-reserves the outpoints the wallet knows that no channel holds (NL-384).</summary>
+    public Task<IReadOnlyList<AnchorWalletInput>> ReserveInputsAsync(ChannelId channelId,
+                                                                     IReadOnlyList<(TxId TxId, uint OutputIndex)> outpoints,
+                                                                     CancellationToken cancellationToken)
+    {
+        var picked = new List<AnchorWalletInput>();
+        foreach (var (txId, index) in outpoints)
+        {
+            var match = _utxos.FirstOrDefault(u => u.Input.TxId == txId && u.Input.OutputIndex == index);
+            if (match.Input is null || _reserved.Values.SelectMany(r => r).Contains(match.Input))
+                continue;
+
+            if (!_reserved.TryGetValue(channelId, out var held))
+                _reserved[channelId] = held = [];
+            if (held.Contains(match.Input))
+                continue;
+
+            held.Add(match.Input);
+            picked.Add(match.Input);
+        }
+
+        return Task.FromResult<IReadOnlyList<AnchorWalletInput>>(picked);
+    }
+
     public Task ReleaseAsync(ChannelId channelId, CancellationToken cancellationToken)
     {
         ReleaseCount++;

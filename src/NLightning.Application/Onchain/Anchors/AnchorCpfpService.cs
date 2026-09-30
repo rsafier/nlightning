@@ -18,6 +18,7 @@ using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
 using Domain.Onchain.Enums;
+using Domain.Onchain.Events;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Fees;
@@ -131,6 +132,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     private int _roundRunning;
     private int _peerChildChannelsLoaded;
     private int _scheduledRounds;
+    private int _reReserveRunning;
+    private int _reReservePending;
 
     public AnchorCpfpService(IBlockchainMonitor blockchainMonitor, IAnchorChildTransactionBuilder builder,
                              IChannelLockProvider channelLockProvider,
@@ -166,6 +169,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
         _stopping = new CancellationTokenSource();
         _blockchainMonitor.OnNewBlockDetected += HandleNewBlockDetected;
+        _blockchainMonitor.OnBlockDisconnected += HandleBlockDisconnected;
         if (_feeInputSource is null)
             _logger.LogWarning("No anchor fee-input source is registered: commitments of anchor channels are not "
                              + "fee-bumped (BOLT 5 plan O7-T1)");
@@ -178,14 +182,16 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             return;
 
         _blockchainMonitor.OnNewBlockDetected -= HandleNewBlockDetected;
+        _blockchainMonitor.OnBlockDisconnected -= HandleBlockDisconnected;
         _stopping.Cancel();
     }
 
-    /// <summary>Waits until no round runs (tests).</summary>
+    /// <summary>Waits until no round or input re-reservation runs (tests).</summary>
     public async Task WhenIdleAsync()
     {
         while (Volatile.Read(ref _roundRunning) != 0 || Volatile.Read(ref _pendingHeight) >= 0
-            || Volatile.Read(ref _scheduledRounds) != 0)
+            || Volatile.Read(ref _scheduledRounds) != 0 || Volatile.Read(ref _reReserveRunning) != 0
+            || Volatile.Read(ref _reReservePending) != 0)
             await Task.Delay(10);
     }
 
@@ -273,6 +279,105 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         Stop();
         _stopping.Dispose();
         _roundLock.Dispose();
+    }
+
+    /// <summary>
+    /// A reorg unconfirmed what the disconnected blocks held (NL-384): a pending anchor child whose inputs the chain
+    /// monitor had removed (its <see cref="IFeeInputSelector"/> reservation ended when it first confirmed) has them
+    /// back in the wallet now, and nothing re-creates the reservation on its own. Coalesced to one background pass per
+    /// rewind; the events run on the monitor's loop, so this only enqueues.
+    /// </summary>
+    private void HandleBlockDisconnected(object? sender, BlockDisconnectedEventArgs args)
+    {
+        if (!_options.Enabled || _feeInputSource is null)
+            return;
+
+        CancellationToken token;
+        try
+        {
+            token = _stopping.Token;
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _reReservePending, 1);
+        if (Interlocked.Exchange(ref _reReserveRunning, 1) == 1)
+            return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (!token.IsCancellationRequested && Interlocked.Exchange(ref _reReservePending, 0) == 1)
+                    await ReReserveChildInputsAsync(token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Stopping; the next rewind re-reserves what is still missing
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Re-reserving the wallet inputs of the pending anchor children after a reorg "
+                                  + "failed; retried at the next rewind");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _reReserveRunning, 0);
+            }
+        }, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Re-reserves the wallet inputs of every pending anchor child whose channel holds them no more (NL-384): the
+    /// inputs a child spends are its input 1 onward (input 0 is the anchor). A child that still has its reservation,
+    /// and inputs the wallet no longer holds or that another spend claims, are skipped by the source.
+    /// </summary>
+    private async Task ReReserveChildInputsAsync(CancellationToken cancellationToken)
+    {
+        using var scope = _serviceScopeFactory.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().BroadcastTransactionDbRepository;
+        var children = (await repository.GetPendingAsync()).Where(b => b.Purpose == BroadcastPurpose.AnchorCpfp)
+                          .GroupBy(b => b.ChannelId);
+        foreach (var group in children)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (group.Key is not { } channelId)
+                continue;
+
+            var held = (await _feeInputSource!.GetReservedAsync(channelId, cancellationToken))
+                       .Select(i => (i.TxId, i.OutputIndex))
+                       .ToHashSet();
+            List<(TxId TxId, uint OutputIndex)>? missing = null;
+            foreach (var child in group)
+                foreach (var outpoint in WalletInputsOf(child))
+                    if (held.Add(outpoint))
+                        (missing ??= []).Add(outpoint);
+
+            if (missing is null)
+                continue;
+
+            var reReserved = await _feeInputSource.ReserveInputsAsync(channelId, missing, cancellationToken);
+            if (reReserved.Count > 0)
+                _logger.LogWarning("Re-reserved {Count} of the {Total} wallet input(s) of the pending anchor "
+                                 + "child(ren) of channel {ChannelId}: a reorg unconfirmed them after their "
+                                 + "reservation had ended (NL-384)", reReserved.Count, missing.Count, channelId);
+        }
+    }
+
+    /// <summary>The wallet outpoints a child spends: every input but its input 0, the anchor.</summary>
+    private static IEnumerable<(TxId TxId, uint OutputIndex)> WalletInputsOf(BroadcastTransactionModel child)
+    {
+        try
+        {
+            var tx = Transaction.Load(child.RawTransaction, Network.Main);
+            return tx.Inputs.Skip(1).Select(i => (new TxId(i.PrevOut.Hash.ToBytes()), i.PrevOut.N));
+        }
+        catch (FormatException)
+        {
+            return [];
+        }
     }
 
     /// <summary>

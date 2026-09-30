@@ -22,6 +22,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Onchain.Enums;
+using Domain.Onchain.Events;
 using Domain.Onchain.Fees;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
@@ -410,6 +411,61 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         Assert.Equal(0, releasedBefore);
         Assert.Equal(BroadcastState.Abandoned, child.State);
         Assert.Equal(1, _wallet.ReleaseCount);
+    }
+
+    [Fact]
+    public async Task Given_ReorgUnconfirmsAChildWhoseReservationEnded_When_Disconnect_Then_ItsInputsAreReReserved()
+    {
+        // Arrange: a pending child whose inputs the chain monitor removed (its reservation ended when the child first
+        // confirmed); the reorg puts them back into the wallet, still spent by the pending child row
+        BroadcastCommitment();
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var child = Assert.Single(_store.Children);
+        var spentByChild = Load(child).Inputs.Skip(1)
+                                        .Select(i => new OutPoint(new uint256(i.PrevOut.Hash.ToBytes()), i.PrevOut.N))
+                                        .ToList();
+        await _wallet.ReleaseAsync(_channel.ChannelId, TestContext.Current.CancellationToken);
+        Assert.Empty(_wallet.Reserved(_channel.ChannelId));
+        Service.Start();
+        try
+        {
+            // Act: the block that held the child is disconnected
+            _monitor.Raise(m => m.OnBlockDisconnected += null,
+                           new BlockDisconnectedEventArgs(501, OnchainTestStore.BlockHash(1), 500));
+            await Service.WhenIdleAsync();
+
+            // Assert: the child's wallet inputs are reserved for the channel again
+            var reserved = _wallet.Reserved(_channel.ChannelId).Select(i => new OutPoint(new uint256(i.TxId), i.OutputIndex)).ToList();
+            Assert.Equal(spentByChild, reserved);
+        }
+        finally
+        {
+            Service.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task Given_AChildStillHoldingItsReservation_When_Disconnect_Then_NothingExtraIsReserved()
+    {
+        // Arrange
+        BroadcastCommitment();
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var held = _wallet.Reserved(_channel.ChannelId).ToList();
+        Service.Start();
+        try
+        {
+            // Act
+            _monitor.Raise(m => m.OnBlockDisconnected += null,
+                           new BlockDisconnectedEventArgs(501, OnchainTestStore.BlockHash(1), 500));
+            await Service.WhenIdleAsync();
+
+            // Assert: the held reservation is left alone
+            Assert.Equal(held, _wallet.Reserved(_channel.ChannelId));
+        }
+        finally
+        {
+            Service.Stop();
+        }
     }
 
     [Fact]
