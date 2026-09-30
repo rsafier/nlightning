@@ -1012,7 +1012,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         byte[] changeScript;
         try
         {
-            changeScript = await _sweepDestinationProvider.GetDestinationScriptAsync(cancellationToken);
+            changeScript = await _sweepDestinationProvider.GetDestinationScriptAsync(channelId,
+                                                                                     cancellationToken);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -1220,7 +1221,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         byte[] destination;
         try
         {
-            destination = await _sweepDestinationProvider.GetDestinationScriptAsync(cancellationToken);
+            destination = await _sweepDestinationProvider.GetDestinationScriptAsync(channel.ChannelId,
+                                                                                    cancellationToken);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -1347,7 +1349,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             byte[] destination;
             try
             {
-                destination = await _sweepDestinationProvider.GetDestinationScriptAsync(cancellationToken);
+                destination = await _sweepDestinationProvider.GetDestinationScriptAsync(channelId,
+                                                                                        cancellationToken);
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {

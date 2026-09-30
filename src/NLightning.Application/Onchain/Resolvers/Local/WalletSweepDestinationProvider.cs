@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using NBitcoin;
@@ -5,6 +6,7 @@ using NBitcoin;
 namespace NLightning.Application.Onchain.Resolvers.Local;
 
 using Domain.Bitcoin.Enums;
+using Domain.Channels.ValueObjects;
 using Domain.Node.Options;
 using Infrastructure.Bitcoin.Networks;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -15,12 +17,16 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <c>ShutdownScriptProvider</c> does for a closing output).
 /// </summary>
 /// <remarks>
-/// The wallet reserves every address it hands out (NL-280), so every sweep pays to an address of its own.
+/// The wallet reserves every address it hands out (NL-280). Without a channel, each call reserves one. For a channel
+/// (NL-463, like the penalties) the destination is reserved once and cached for the process, so the channel's sweeps,
+/// anchor sweep and CPFP change reuse it across resolution rounds and RBF rebuilds instead of growing the wallet.
 /// </remarks>
 public sealed class WalletSweepDestinationProvider : ISweepDestinationProvider
 {
     private readonly IBlockchainMonitor? _blockchainMonitor;
     private readonly Network _network;
+    private readonly SemaphoreSlim _destinationLock = new(1, 1);
+    private readonly ConcurrentDictionary<ChannelId, byte[]> _destinations = [];
     private readonly IServiceScopeFactory _serviceScopeFactory;
 
     public WalletSweepDestinationProvider(IOptions<NodeOptions> nodeOptions, IServiceScopeFactory serviceScopeFactory,
@@ -41,5 +47,27 @@ public sealed class WalletSweepDestinationProvider : ISweepDestinationProvider
 
         _blockchainMonitor?.WatchBitcoinAddress(address);
         return BitcoinAddress.Create(address.Address, _network).ScriptPubKey.ToBytes();
+    }
+
+    /// <inheritdoc />
+    public async Task<byte[]> GetDestinationScriptAsync(ChannelId channelId, CancellationToken cancellationToken)
+    {
+        if (_destinations.TryGetValue(channelId, out var cached))
+            return cached;
+
+        await _destinationLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_destinations.TryGetValue(channelId, out cached))
+                return cached;
+
+            var script = await GetDestinationScriptAsync(cancellationToken);
+            _destinations[channelId] = script;
+            return script;
+        }
+        finally
+        {
+            _destinationLock.Release();
+        }
     }
 }

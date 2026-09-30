@@ -73,7 +73,7 @@ public class UpfrontShutdownScriptSourceTests
         Assert.Equal(firstScript, secondScript);
         Assert.Equal(secondScript, second.LocalUpfrontShutdownScript);
         Assert.Equal(1, context.Source.Reservations);
-        Assert.Equal(1, context.Source.FundeeReservationCount);
+        Assert.Equal(1, context.Source.ReservationCount);
     }
 
     [Fact]
@@ -114,25 +114,73 @@ public class UpfrontShutdownScriptSourceTests
         // Assert
         Assert.NotEqual(firstScript, secondScript);
         Assert.Equal(2, context.Source.Reservations);
-        Assert.Equal(1, context.Source.FundeeReservationCount);
+        Assert.Equal(1, context.Source.ReservationCount);
     }
 
     [Fact]
-    public async Task Given_OurOwnOpen_When_Assigned_Then_AFreshAddressIsReservedAndNotRemembered()
+    public async Task Given_OurOwnAbandonedOpen_When_WeOpenAgain_Then_ItsScriptIsReused()
     {
-        // Arrange: the funder path passes no peer
+        // Arrange (NL-463): the funder path passes the peer too, so a refused open costs one address, not one per try
         var context = new FundeeContext();
         var abandoned = FundeeChannel(0x01);
         context.AddTemporary(s_peerA, abandoned);
-        await context.Source.AssignIfNegotiatedAsync(abandoned, s_negotiated, s_peerA);
+        var firstScript = await context.Source.AssignIfNegotiatedAsync(abandoned, s_negotiated, s_peerA);
         context.RemoveTemporary(s_peerA, abandoned);
+        var second = FundeeChannel(0x02);
+        context.AddTemporary(s_peerA, second);
+
+        // Act
+        var secondScript = await context.Source.AssignIfNegotiatedAsync(second, s_negotiated, s_peerA);
+
+        // Assert
+        Assert.Equal(firstScript, secondScript);
+        Assert.Equal(1, context.Source.Reservations);
+        Assert.Equal(1, context.Source.ReservationCount);
+    }
+
+    [Fact]
+    public async Task Given_OurOwnOpenWithoutAPeer_When_Assigned_Then_AFreshAddressIsReservedAndNotRemembered()
+    {
+        // Arrange: a caller without the peer (no memory repository) can never reuse
+        var context = new FundeeContext();
 
         // Act
         await context.Source.AssignIfNegotiatedAsync(FundeeChannel(0x02), s_negotiated);
 
         // Assert
+        Assert.Equal(1, context.Source.Reservations);
+        Assert.Equal(0, context.Source.ReservationCount);
+    }
+
+    [Fact]
+    public async Task Given_AbandonedOpensOfBothRoles_When_OtherOpensFollow_Then_TheOldestScriptIsReusedFirst()
+    {
+        // Arrange: a fundee open (peer A) and one of ours (peer B) are both running, so each reserves fresh; then
+        // both are abandoned and later opens take the remembered scripts in order, either role's first
+        var context = new FundeeContext();
+        var fundee = FundeeChannel(0x01);
+        context.AddTemporary(s_peerA, fundee);
+        var fundeeScript = await context.Source.AssignIfNegotiatedAsync(fundee, s_negotiated, s_peerA);
+        var own = FundeeChannel(0x02);
+        context.AddTemporary(s_peerB, own);
+        var ownScript = await context.Source.AssignIfNegotiatedAsync(own, s_negotiated, s_peerB);
+        context.RemoveTemporary(s_peerA, fundee);
+        var next = FundeeChannel(0x03);
+        context.AddTemporary(s_peerA, next);
+        var nextScript = await context.Source.AssignIfNegotiatedAsync(next, s_negotiated, s_peerA);
+        context.RemoveTemporary(s_peerB, own);
+        var last = FundeeChannel(0x04);
+        context.AddTemporary(s_peerB, last);
+
+        // Act
+        var lastScript = await context.Source.AssignIfNegotiatedAsync(last, s_negotiated, s_peerB);
+
+        // Assert: the running opens reserved fresh; the abandoned fundee's script went to the third open (and stays
+        // remembered with it) and our abandoned open's script to the last one
+        Assert.NotEqual(fundeeScript, ownScript);
+        Assert.Equal(fundeeScript, nextScript);
+        Assert.Equal(ownScript, lastScript);
         Assert.Equal(2, context.Source.Reservations);
-        Assert.Equal(1, context.Source.FundeeReservationCount);
     }
 
     [Theory]
