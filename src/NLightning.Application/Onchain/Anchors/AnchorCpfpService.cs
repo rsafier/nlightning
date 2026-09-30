@@ -135,6 +135,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     private int _scheduledRounds;
     private int _reReserveRunning;
     private int _reReservePending;
+    private int _persistingPeerCommitments;
 
     public AnchorCpfpService(IBlockchainMonitor blockchainMonitor, IAnchorChildTransactionBuilder builder,
                              IChannelLockProvider channelLockProvider,
@@ -187,12 +188,12 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         _stopping.Cancel();
     }
 
-    /// <summary>Waits until no round or input re-reservation runs (tests).</summary>
+    /// <summary>Waits until no round, hand-over store or input re-reservation runs (tests).</summary>
     public async Task WhenIdleAsync()
     {
         while (Volatile.Read(ref _roundRunning) != 0 || Volatile.Read(ref _pendingHeight) >= 0
             || Volatile.Read(ref _scheduledRounds) != 0 || Volatile.Read(ref _reReserveRunning) != 0
-            || Volatile.Read(ref _reReservePending) != 0)
+            || Volatile.Read(ref _reReservePending) != 0 || Volatile.Read(ref _persistingPeerCommitments) != 0)
             await Task.Delay(10);
     }
 
@@ -407,12 +408,27 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         {
             using var scope = _serviceScopeFactory.CreateScope();
             var repository = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().BroadcastTransactionDbRepository;
-            var channelIds = (await repository.GetPendingAsync())
-                            .Where(b => b.Purpose == BroadcastPurpose.AnchorCpfp)
-                            .Select(b => b.ChannelId)
-                            .OfType<ChannelId>()
-                            .Distinct()
-                            .ToList();
+            var pending = await repository.GetPendingAsync();
+
+            // The hand-overs the mempool reactor stored before a restart (NL-390): their bytes are what a below-minimum
+            // peer commitment is packaged with. Whether one is the peer's next commitment is derived when it is found
+            foreach (var handOver in pending)
+            {
+                if (handOver.Purpose != BroadcastPurpose.PeerCommitment
+                 || handOver.ChannelId is not { } handOverChannelId)
+                    continue;
+
+                _peerCommitments.TryAdd(handOverChannelId, new PeerCommitmentSeen(handOver.TransactionId,
+                                                                                  handOver.RawTransaction, null));
+            }
+
+            // The channels with a pending child of the peer's commitment (its anchor input spends no LocalCommitment
+            // row of the channel)
+            var channelIds = pending.Where(b => b.Purpose == BroadcastPurpose.AnchorCpfp)
+                                    .Select(b => b.ChannelId)
+                                    .OfType<ChannelId>()
+                                    .Distinct()
+                                    .ToList();
             foreach (var channelId in channelIds)
             {
                 var rows = await repository.GetByChannelIdAsync(channelId);
@@ -472,8 +488,9 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         var localChildren = children.Where(c => ParentOf(c) is not { } parent || localTxIds.Contains(parent))
                                     .ToList();
         var peerChildren = children.Except(localChildren).ToList();
+        var handOvers = broadcasts.Where(b => b.Purpose == BroadcastPurpose.PeerCommitment).ToList();
 
-        var peer = await RunPeerLockedAsync(channel, unitOfWork, peerChildren,
+        var peer = await RunPeerLockedAsync(channel, unitOfWork, peerChildren, handOvers,
                                             localChildren.Any(c => c.State == BroadcastState.Pending), height, result,
                                             cancellationToken);
         var local = await RunLocalLockedAsync(channel, unitOfWork, broadcasts, localChildren,

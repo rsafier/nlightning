@@ -39,5 +39,13 @@ public enum BroadcastPurpose : byte
     /// A payment from the on-chain wallet to an external address (<c>withdraw</c>, ClientCommand 25): no channel, and
     /// never bumped; rebroadcast until it confirms.
     /// </summary>
-    WalletSend = 9
+    WalletSend = 9,
+
+    /// <summary>
+    /// A peer's commitment transaction the mempool reactor saw in our bitcoind (the NL-381 hand-over): kept with its
+    /// bytes so a restart does not lose the bump of our anchor child (NL-390). Not our broadcast (we did not sign
+    /// it), but the monitor sends it again after every block until it confirms, which helps it propagate. Only the
+    /// anchor CPFP service abandons one (evicted everywhere, or replaced by ours): the refusal rules never do.
+    /// </summary>
+    PeerCommitment = 10
 }
