@@ -34,7 +34,9 @@ using Gossip.Graph.Interfaces;
 /// (<see cref="IPeerOnionMessageOutbox"/>, never awaited: a peer that stops reading only loses its own onion messages,
 /// counted as <c>outbox_full</c>); or it delivers a final hop with at most one payload field to
 /// the waiting <see cref="SendAndWaitForReplyAsync"/> caller (a <c>path_id</c> of one of our reply paths) or to the
-/// <see cref="IOnionMessageHandler"/> of its payload type, on a second bounded queue. Anything else is ignored and
+/// <see cref="IOnionMessageHandler"/> of its payload type, on a second bounded queue. A forward whose next hop is our
+/// own node is a dummy hop of a path we made (NL-525): it is peeled and processed here instead of dropping as a loop.
+/// Anything else is ignored and
 /// counted in <see cref="OnionMessageMetrics"/>: onion messages have no error replies.</para>
 /// <para>Send: a node id is reached through a blinded path we create (<see cref="IBlindedMessagePathBuilder"/>) over
 /// the unblinded hops to it (a direct peer, or
@@ -50,6 +52,11 @@ using Gossip.Graph.Interfaces;
 public sealed class OnionMessageService : IOnionMessageService, IDisposable
 {
     private static readonly TimeSpan s_stopTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// The most hops relaying to ourselves peeled for one message (a 1300-byte payload holds about 20 blinded hops).
+    /// </summary>
+    internal const int MaxSelfForwardHops = 20;
 
     private readonly IOnionMessageUnwrapper _unwrapper;
     private readonly IBlindedMessagePathBuilder _pathBuilder;
@@ -105,7 +112,8 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
         _dispatcher = new OnionMessageDispatcher(handlers);
         _pathFinder = new OnionMessagePathFinder(peerManager, channelMemoryRepository, _ourNodeId,
                                                  settings.MaxPathHops, graphStore, outbox);
-        _replyPathFactory = new ReplyPathFactory(pathBuilder, _pathFinder, _ourNodeId);
+        _replyPathFactory = new ReplyPathFactory(pathBuilder, _pathFinder, _ourNodeId,
+                                                 settings.BlindedPathDummyHops);
         _pendingReplies = new PendingReplyRegistry(settings.MaxPendingReplies);
         _incoming = Channel.CreateBounded<IncomingOnionMessage>(
             new BoundedChannelOptions(settings.MaxQueuedMessages)
@@ -249,7 +257,10 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
     /// </summary>
     /// <remarks>
     /// The packet is read by <see cref="IOnionMessageUnwrapper"/> (peel, strict <c>onionmsg_tlv</c>, unblind and the
-    /// BOLT 4 reader rules, NL-442); the service only decides where a forward goes and who gets a delivery.
+    /// BOLT 4 reader rules, NL-442); the service only decides where a forward goes and who gets a delivery. A forward
+    /// that names our own node as the next hop is a dummy hop of a path we made (NL-525, BOLT 4: the recipient "will
+    /// ignore" its dummy hops): it is peeled here, before the loop rule, until the final hop or a hop for another
+    /// node, at most <see cref="MaxSelfForwardHops"/> times.
     /// </remarks>
     internal void ProcessIncoming(CompactPubKey fromPeer, OnionMessageMessage message)
     {
@@ -257,6 +268,18 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
         try
         {
             result = _unwrapper.UnwrapAsLocalNode(message);
+            for (var depth = 1; result.Status == OnionMessageUnwrapStatus.Forward
+                 && result.NextNodeId == _ourNodeId; depth++)
+            {
+                if (depth > MaxSelfForwardHops)
+                {
+                    Drop(OnionMessageDropReasons.Loop, fromPeer,
+                         reason: $"more than {MaxSelfForwardHops} hops relay to ourselves.");
+                    return;
+                }
+
+                result = _unwrapper.UnwrapAsLocalNode(result.NextMessage!);
+            }
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {

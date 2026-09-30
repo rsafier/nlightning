@@ -76,7 +76,7 @@ public sealed class OfferServiceTests : IDisposable
     private OfferService CreateService() =>
         new(_store.ScopeFactory, _keyManager, Options.Create(_nodeOptions), new OfferPathIds(_keyManager),
             _services.GetRequiredService<IBlindedMessagePathBuilder>(), _peerManager.Object, _channels.Object, _services,
-            NullLogger<OfferService>.Instance, Options.Create(new OfferOptions()), _clock);
+            NullLogger<OfferService>.Instance, Options.Create(new OfferOptions()), null, _clock);
 
     [Fact]
     public async Task Given_APrivateNodeWithAPeer_When_CreatingAnOffer_Then_ItHasPathsTheIssuerIdAndIsStored()
@@ -118,7 +118,8 @@ public sealed class OfferServiceTests : IDisposable
         Assert.True(BlindedPathCodec.TryReadList(view.Get(Bolt12TlvTypes.OfferPaths), out var paths, out _));
         var path = Assert.Single(paths);
         Assert.Equal(_peer, path.FirstNode.NodeId);
-        Assert.Equal(2, path.Hops.Count);
+        // The introduction peer, our hop, and our default dummy hop ending the path (NL-525)
+        Assert.Equal(3, path.Hops.Count);
     }
 
     [Fact]
@@ -137,9 +138,11 @@ public sealed class OfferServiceTests : IDisposable
         var pathKeyAtUs = routeBlinding.Unblind(TestPeerKey.Private, path.FirstPathKey,
                                                 path.Hops[0].EncryptedRecipientData).NextPathKey;
 
-        // Act
-        var ours = routeBlinding.Unblind(new PrivKey(Enumerable.Repeat((byte)0x07, 32).ToArray()), pathKeyAtUs,
-                                         path.Hops[1].EncryptedRecipientData);
+        // Act: we unblind our real hop (it relays to our dummy) and then the dummy, which carries the offer's
+        // path_id
+        var ourKey = new PrivKey(Enumerable.Repeat((byte)0x07, 32).ToArray());
+        var atDummy = routeBlinding.Unblind(ourKey, pathKeyAtUs, path.Hops[1].EncryptedRecipientData).NextPathKey;
+        var ours = routeBlinding.Unblind(ourKey, atDummy, path.Hops[2].EncryptedRecipientData);
 
         // Assert
         Assert.Equal(new OfferPathIds(_keyManager).Compute(offer.Metadata.Span), ours.RecipientData.PathId!.Value

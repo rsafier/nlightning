@@ -90,10 +90,11 @@ public sealed class OnionMessageHarnessTests
         Assert.Equal("pong"u8.ToArray(), record.Value.ToArray());
         Assert.Equal(bob.NodeId, reply.FromPeer);
         Assert.Equal(PendingReplyRegistry.PathIdLength, reply.PathId!.Value.Length);
-        // Carol got a reply path whose introduction node is Bob, Alice's only peer (plan D7)
+        // Carol got a reply path whose introduction node is Bob, Alice's only peer (plan D7), ended by Alice's
+        // default dummy hop (NL-525, OnionMessages:BlindedPathDummyHops 1), which she peels herself
         var replyPath = Assert.Single(handler.Received).ReplyPath!;
         Assert.Equal(bob.NodeId, replyPath.FirstNode.NodeId);
-        Assert.Equal(2, replyPath.Hops.Count);
+        Assert.Equal(3, replyPath.Hops.Count);
         Assert.Equal(2, bob.Metrics.Forwarded);
         Assert.Equal(1, alice.Metrics.GetDelivered("reply"));
         Assert.Equal(0, alice.Service.PendingReplies);
