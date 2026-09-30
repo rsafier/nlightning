@@ -453,6 +453,54 @@ public class ChannelStateDbRepositoryTests
         Assert.Contains("NL-025", refused.Message);
     }
 
+    [Fact]
+    public async Task Given_SnapshotStoredWithoutDustLimit_When_LoadedWithTheNodeLimit_Then_EngineParamsCarryIt()
+    {
+        // Arrange (NL-290): the harness snapshot is stored with a null MaxDustHtlcExposureMsat (the option is newer
+        // than it); the engine's send-side rules (B2-DUST-03/04) read only the params, so without the backfill our
+        // dust offers would be unlimited on such a channel
+        await using var harness = await StateHarness.CreateAsync();
+        Assert.Null(harness.Driver.Us.Params.MaxDustHtlcExposureMsat);
+
+        // Act: loaded with the node's configured limit, and without one
+        const ulong nodeLimitMsat = 12_345_678;
+        await using var withLimitContext = harness.Db.CreateDbContext();
+        var withLimit = await new ChannelDbRepository(withLimitContext, harness.Db.Sha256,
+                                                      maxDustHtlcExposureMsat: nodeLimitMsat)
+                             .GetByIdAsync(harness.ChannelId);
+        await using var withoutLimitContext = harness.Db.CreateDbContext();
+        var withoutLimit = await new ChannelDbRepository(withoutLimitContext, harness.Db.Sha256)
+                                .GetByIdAsync(harness.ChannelId);
+
+        // Assert: the limit applies from the load on; without a configured one the check stays off
+        Assert.Equal(nodeLimitMsat, withLimit!.Commitments!.Params.MaxDustHtlcExposureMsat);
+        Assert.Null(withoutLimit!.Commitments!.Params.MaxDustHtlcExposureMsat);
+    }
+
+    [Fact]
+    public async Task Given_StoredDustLimit_When_LoadedWithTheNodeLimit_Then_TheStoredLimitWins()
+    {
+        // Arrange (NL-242): the limit a channel was closed under is kept
+        await using var harness = await StateHarness.CreateAsync();
+        await using (var context = harness.Db.CreateDbContext())
+        {
+            var row = await context.Channels.AsNoTracking()
+                          .SingleAsync(TestContext.Current.CancellationToken);
+            row.MaxDustHtlcExposureMsat = 55_000_000;
+            context.Channels.Update(row);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Act
+        await using var context2 = harness.Db.CreateDbContext();
+        var channel = await new ChannelDbRepository(context2, harness.Db.Sha256,
+                                                    maxDustHtlcExposureMsat: 12_345_678)
+                           .GetByIdAsync(harness.ChannelId);
+
+        // Assert
+        Assert.Equal(55_000_000UL, channel!.Commitments!.Params.MaxDustHtlcExposureMsat);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
