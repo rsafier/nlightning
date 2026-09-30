@@ -176,8 +176,12 @@ public class AnnouncementHarnessTests
         await harness.PumpAsync();
         await NodeAnnouncements(harness.Alice).LastRequest;
 
-        // Assert: our public channel_update (dont_forward clear, real scid, our node's signature)
-        var update = Assert.Single(Sink(harness.Alice).ChannelUpdates);
+        // Assert: our public channel_update (dont_forward clear, real scid, our node's signature). The update the
+        // channel's open made precedes it (NL-491: the harness's repository raises OnChannelUpdated like the real
+        // one now, so the at-open update goes out too); the announcement's own is the newer one
+        var updates = Sink(harness.Alice).ChannelUpdates;
+        Assert.Equal(2, updates.Count);
+        var update = updates.OrderBy(u => u.Timestamp).Last();
         Assert.False(update.DontForward);
         Assert.False(update.IsDisabled);
         Assert.Equal(TwoNodeHarness.ShortChannelId, update.ShortChannelId);
@@ -190,11 +194,15 @@ public class AnnouncementHarnessTests
         Assert.Equal(Convert.FromHexString("3399ff"), node.RgbColor.ToArray());
         Assert.True(verifier.Verify(node.GetSignatureHash(), node.Signature, harness.Alice.NodeId));
 
-        // The relay got the three in the order 256, 258, 257
+        // The relay got the at-open update and the announcement's three (256, 258, 257 in that order among
+        // themselves); where the at-open one landed between them depends on which send task ran first
         var queued = Relay(harness.Alice).Queued;
-        Assert.Collection(queued, p => Assert.IsType<ChannelAnnouncementPayload>(p),
-                          p => Assert.IsType<ChannelUpdatePayload>(p),
-                          p => Assert.IsType<NodeAnnouncementPayload>(p));
+        Assert.Equal(4, queued.Count);
+        Assert.Single(queued, p => p is ChannelAnnouncementPayload);
+        Assert.Equal(2, queued.Count(p => p is ChannelUpdatePayload));
+        Assert.Single(queued, p => p is NodeAnnouncementPayload);
+        Assert.True(queued.FindIndex(p => p is ChannelAnnouncementPayload)
+                  < queued.FindLastIndex(p => p is NodeAnnouncementPayload));
     }
 
     [Fact]
