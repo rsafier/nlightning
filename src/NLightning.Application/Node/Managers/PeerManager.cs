@@ -16,9 +16,11 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Gossip.Addresses;
 using Domain.Gossip.Enums;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Models;
+using Domain.Node.Bootstrap;
 using Domain.Node.Constants;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
@@ -33,6 +35,7 @@ using Domain.Protocol.Models;
 using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.Payloads;
 using Gossip.Events;
+using Gossip.Graph.Interfaces;
 using Gossip.Interfaces;
 using Gossip.Metrics;
 using Gossip.Sync;
@@ -88,6 +91,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     private readonly IChannelUpdateService? _channelUpdateService;
     private readonly Lazy<GossipOutboxSettings> _gossipOutboxSettings;
     private readonly Lazy<IOnionMessageRateLimiter?> _onionMessageRateLimiter;
+    private readonly Lazy<IGraphStore?> _graphStore;
     private readonly ConcurrentDictionary<CompactPubKey, PeerSession> _peers = new();
     private readonly ConcurrentDictionary<CompactPubKey, Task> _reconnectLoops = new();
     private long _droppedOutboxOnionMessages;
@@ -171,6 +175,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         _channelUpdateService = channelUpdateService;
         _channelUpdateService?.OnChannelUpdateReady += HandleChannelUpdateReady;
         _gossipOutboxSettings = new Lazy<GossipOutboxSettings>(ResolveGossipOutboxSettings);
+        _graphStore = new Lazy<IGraphStore?>(ResolveGraphStore);
     }
 
     /// <summary>The gossip messages waiting in every current connection's outbox (NL-360; the metric's gauge).</summary>
@@ -663,9 +668,10 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             // Only a connection whose init exchange is done may become (or replace) the peer's session
             await WaitForInitAsync(peerService);
 
-            // An inbound peer's listening address is unknown (init remote_addr is our address, NL-344): keep its
-            // host with the default port. From a loopback address (a local tunnel, Tor on the same host) that host is
-            // not the peer's: it is saved as inbound-only, never dialed (NL-497)
+            // An inbound peer's listening address is unknown (init remote_addr is our address, NL-344): the row
+            // keeps a saved one (NL-514) or is saved from its node_announcement, else at this host with the default
+            // port. From a loopback address (a local tunnel, Tor on the same host) that host is not the peer's: it
+            // is saved as inbound-only, never dialed (NL-497)
             var isInboundOnly = IsLoopback(args.Host);
             var peer = new PeerModel(peerService.PeerPubKey, args.Host, NodeConstants.DefaultPort,
                                      args.TcpClient.Client.ProtocolType == ProtocolType.IPv6 ? "IPv6" : "IPv4")
@@ -707,10 +713,12 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     }
 
     /// <summary>
-    /// Saves a peer that connected to us. An inbound-only peer (loopback) never replaces the address we dial a saved
-    /// peer at: only its last-seen time is updated then. Otherwise it is saved without an address (empty host, port
-    /// 0), so nothing that reads the peer rows (the static channel backup, a restore) takes the loopback host for the
-    /// peer's.
+    /// Saves a peer that connected to us. A saved dialable row survives every inbound connection (NL-514): where the
+    /// peer connected from is not where it listens, so only the row's last-seen time moves. Without a dialable row, a
+    /// loopback peer is saved inbound-only, without an address (empty host, port 0), so nothing that reads the peer
+    /// rows (the static channel backup, a restore) takes the loopback host for the peer's (NL-497); any other peer is
+    /// saved at the address of its <c>node_announcement</c> when the graph has one (NL-514), else at the host it
+    /// connected from with the default port (its listening port is unknown until it announces itself).
     /// </summary>
     /// <returns>The saved dialable row of an inbound-only peer, the one the reconnect loop dials; else null.</returns>
     private async Task<PeerModel?> SaveInboundPeerAsync(PeerModel peer)
@@ -718,26 +726,58 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         using var scope = _serviceProvider.CreateScope();
         using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        var saved = peer.IsInboundOnly ? await uow.PeerDbRepository.GetByNodeIdAsync(peer.NodeId) : null;
+        var saved = await uow.PeerDbRepository.GetByNodeIdAsync(peer.NodeId);
         if (saved is { IsInboundOnly: false })
         {
             saved.LastSeenAt = peer.LastSeenAt;
             uow.PeerDbRepository.Update(saved);
         }
+        else if (peer.IsInboundOnly)
+        {
+            await uow.PeerDbRepository.AddOrUpdateAsync(new PeerModel(peer.NodeId, string.Empty, 0, peer.Type)
+            {
+                LastSeenAt = peer.LastSeenAt,
+                IsInboundOnly = true
+            });
+            saved = null;
+        }
         else
         {
-            await uow.PeerDbRepository.AddOrUpdateAsync(peer.IsInboundOnly
-                                                            ? new PeerModel(peer.NodeId, string.Empty, 0, peer.Type)
-                                                            {
-                                                                LastSeenAt = peer.LastSeenAt,
-                                                                IsInboundOnly = true
-                                                            }
-                                                            : peer);
+            await uow.PeerDbRepository.AddOrUpdateAsync(TryGetAnnouncedPeer(peer.NodeId) ?? peer);
             saved = null;
         }
 
         await uow.SaveChangesAsync();
         return saved;
+    }
+
+    /// <summary>
+    /// The peer's listening address from its <c>node_announcement</c> in the graph (NL-514): its first announced IPv4
+    /// or IPv6 address that we could dial (port 0, unspecified and multicast ones refused; a loopback one never, it is
+    /// not the peer's listening address any more than a loopback connection is). Null without a graph, for an
+    /// unannounced node, or when it announced only Tor or DNS addresses (we cannot dial those).
+    /// </summary>
+    private PeerModel? TryGetAnnouncedPeer(CompactPubKey nodeId)
+    {
+        var graphStore = _graphStore.Value;
+        if (graphStore is null || !graphStore.TryGetNode(nodeId, out var node))
+            return null;
+
+        foreach (var descriptor in node.Addresses)
+        {
+            if (descriptor.Type is not (AddressDescriptorType.IPv4 or AddressDescriptorType.IPv6))
+                continue;
+
+            var address = new IPAddress(descriptor.Address);
+            if (!SeedAddressFilter.IsUsable(address, descriptor.Port, allowNonRoutable: true, out _)
+             || IsLoopback(address.ToString()))
+                continue;
+
+            return new PeerModel(nodeId, address.ToString(), descriptor.Port,
+                                 descriptor.Type == AddressDescriptorType.IPv6 ? "IPv6" : "IPv4");
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -1427,6 +1467,23 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         catch (Exception e)
         {
             _logger.LogDebug(e, "Could not resolve the onion message rate limiter");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The graph (which holds the peers' <c>node_announcement</c>s), or null when it is off: an optional singleton
+    /// (<c>Gossip:Enabled</c>), read for the listening address of an inbound peer without a dialable row (NL-514).
+    /// </summary>
+    private IGraphStore? ResolveGraphStore()
+    {
+        try
+        {
+            return _serviceProvider.GetService<IGraphStore>();
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Could not resolve the graph store");
             return null;
         }
     }
