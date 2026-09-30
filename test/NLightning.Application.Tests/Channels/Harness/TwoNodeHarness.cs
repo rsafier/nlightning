@@ -1034,7 +1034,7 @@ internal sealed class InMemoryChannelRepository : IChannelMemoryRepository
     public void UpdateChannel(ChannelModel channel)
     {
         _channels[channel.ChannelId] = channel;
-        OnChannelUpdated?.Invoke(this, null!);
+        OnChannelUpdated?.Invoke(this, new ChannelUpdatedEventArgs(channel));
     }
 
     public bool TryRemoveChannel(ChannelId channelId) => _channels.Remove(channelId);
@@ -1065,7 +1065,7 @@ internal sealed class InMemoryChannelRepository : IChannelMemoryRepository
 
     public void UpgradeChannel(ChannelId oldChannelId, ChannelModel tempChannel)
     {
-        OnChannelUpgraded?.Invoke(this, null!);
+        OnChannelUpgraded?.Invoke(this, new ChannelUpgradedEventArgs(oldChannelId, tempChannel.ChannelId));
         throw new NotSupportedException();
     }
 }
