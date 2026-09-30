@@ -89,7 +89,12 @@ public partial class Invoice
     /// <summary>
     /// The signature of the invoice
     /// </summary>
-    public CompactSignature Signature { get; }
+    /// <remarks>
+    /// The signature that was decoded, or the one produced by the latest successful
+    /// <see cref="Encode(NBitcoin.Key)"/>/Encode() call: it is refreshed whenever the invoice is re-signed, so it
+    /// always matches <see cref="ToString()"/> after an encode.
+    /// </remarks>
+    public CompactSignature Signature { get; private set; }
 
     /// <summary>
     /// The human-readable part of the invoice
@@ -651,6 +656,7 @@ public partial class Invoice
     /// <remarks>
     /// Adds var_onion_optin and payment_secret as compulsory when the <c>9</c> field lacks them (basic_mpp is never
     /// added), then runs <see cref="InvoiceValidationService.ValidateForEncoding"/>; nothing is signed when it fails.
+    /// On success the new signature is stored in <see cref="Signature"/> (NL-222).
     /// </remarks>
     /// <exception cref="InvoiceSerializationException">
     /// Thrown when an error occurs during the encoding process, including a failed validation (the inner
@@ -693,6 +699,10 @@ public partial class Invoice
 
             var bech32Encoder = new Bech32Encoder(HumanReadablePart);
             _invoiceString = bech32Encoder.EncodeLightningInvoice(bitWriter, signature);
+
+            // The signature and payee must match the string just written, also when the invoice is re-signed
+            // after a change (NL-222)
+            Signature = compactSignature;
 
             // Without an `n` field the payee is whoever signed, so drop any key recovered from an earlier signature
             _recoveredPayeePubKey = nodeKey.PubKey;

@@ -158,4 +158,33 @@ public class FeaturesTaggedFieldTests
         // Assert
         Assert.Equal(10, taggedField.Length);
     }
+
+    [Fact]
+    public void Given_LeadingZeroGroup_When_FromBitReader_Then_ThrowsArgumentException()
+    {
+        // Arrange: bits 14 and 8 need 3 groups (the BOLT 11 example `9qrsgq`), so a leading 0 group makes the
+        // data_length non-minimal (BOLT 11)
+        var features = FeatureSet.DeserializeFromBytes([0x00]);
+        features.SetFeature(8, true);
+        features.SetFeature(14, true);
+        using var bitWriter = new BitWriter(20);
+        bitWriter.WriteByteAsBits(0, 5);
+        features.WriteToBitWriter(bitWriter, 15, false);
+        var bitReader = new BitReader(bitWriter.ToArray());
+
+        // Act & Assert
+        var exception = Assert.Throws<ArgumentException>(() => FeaturesTaggedField.FromBitReader(bitReader, 4));
+        Assert.Contains("not minimal", exception.Message);
+    }
+
+    [Fact]
+    public void Given_AllZeroField_When_FromBitReader_Then_ThrowsArgumentException()
+    {
+        // Arrange: BOLT 11 says a writer MUST omit the `9` field altogether when no bit is set, so a present
+        // all-zero field never has a minimal data_length
+        var bitReader = new BitReader(new byte[3]);
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => FeaturesTaggedField.FromBitReader(bitReader, 3));
+    }
 }

@@ -105,19 +105,39 @@ public class MinFinalCltvExpiryTaggedFieldTests
         Assert.Throws<ArgumentException>(() => MinFinalCltvExpiryTaggedField.FromBitReader(bitReader, 4));
     }
 
-    [Theory]
-    [InlineData(new byte[] { 0x00 }, 0)]
-    [InlineData(new byte[] { 0x00 }, 1)]
-    [InlineData(new byte[] { 0x00, 0x00 }, 2)]
-    public void Given_ZeroValue_When_FromBitReader_Then_FieldIsDropped(byte[] bytes, short length)
+    [Fact]
+    public void Given_EmptyField_When_FromBitReader_Then_FieldIsDroppedSoTheDefaultApplies()
     {
         // Arrange
-        var bitReader = new BitReader(bytes);
+        var bitReader = new BitReader([0x00]);
 
         // Act
-        var taggedField = MinFinalCltvExpiryTaggedField.FromBitReader(bitReader, length);
+        var taggedField = MinFinalCltvExpiryTaggedField.FromBitReader(bitReader, 0);
 
-        // Assert
+        // Assert: the empty field is the minimal encoding of 0 and is dropped, so the spec default of 18 applies
         Assert.Null(taggedField);
+    }
+
+    [Fact]
+    public void Given_ZeroValueInANonEmptyField_When_FromBitReader_Then_ThrowsArgumentException()
+    {
+        // Arrange: the minimal encoding of 0 is the empty field, so a present all-zero `c` is not minimal (BOLT 11)
+        var bitReader = new BitReader([0x00]);
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => MinFinalCltvExpiryTaggedField.FromBitReader(bitReader, 1));
+    }
+
+    [Fact]
+    public void Given_LeadingZeroGroup_When_FromBitReader_Then_ThrowsArgumentException()
+    {
+        // Arrange: 18 needs one group, so a leading 0 group makes the data_length non-minimal (BOLT 11)
+        using var bitWriter = new BitWriter(10);
+        bitWriter.WriteByteAsBits(0, 5);
+        bitWriter.WriteByteAsBits(18, 5);
+        var bitReader = new BitReader(bitWriter.ToArray());
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => MinFinalCltvExpiryTaggedField.FromBitReader(bitReader, 2));
     }
 }

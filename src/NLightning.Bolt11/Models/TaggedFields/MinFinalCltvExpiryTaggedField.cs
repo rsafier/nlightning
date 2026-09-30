@@ -52,10 +52,13 @@ internal sealed class MinFinalCltvExpiryTaggedField : ITaggedField
     /// <param name="bitReader">The BitReader to read from</param>
     /// <param name="length">The length of the field</param>
     /// <returns>
-    /// The MinFinalCltvExpiryTaggedField, or <c>null</c> for a zero value (empty field included), which is dropped so
-    /// the spec default of 18 applies
+    /// The MinFinalCltvExpiryTaggedField, or <c>null</c> for the empty field (the minimal encoding of 0), which is
+    /// dropped so the spec default of 18 applies
     /// </returns>
-    /// <exception cref="ArgumentException">Thrown when the length is negative or the value does not fit in 16 bits</exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when the length is negative, the value does not fit in 16 bits, or the data_length is not minimal
+    /// (BOLT 11: no leading 0 groups)
+    /// </exception>
     internal static MinFinalCltvExpiryTaggedField? FromBitReader(BitReader bitReader, short length)
     {
         if (length < 0)
@@ -67,7 +70,16 @@ internal sealed class MinFinalCltvExpiryTaggedField : ITaggedField
         ulong value = 0;
         for (var i = 0; i < length; i++)
         {
-            value = (value << 5) | bitReader.ReadByteFromBits(5);
+            var group = bitReader.ReadByteFromBits(5);
+
+            // BOLT 11: a reader SHOULD treat an invoice as invalid when `c` has a non-minimal data_length, i.e.
+            // it begins with a 0 field-element; the minimal encoding of 0 is the empty field, dropped below
+            if (i == 0 && group == 0)
+                throw new ArgumentException(
+                    $"Invalid value for {nameof(MinFinalCltvExpiryTaggedField)}. " +
+                    "The data_length is not minimal (leading zero groups)", nameof(length));
+
+            value = (value << 5) | group;
             if (value > ushort.MaxValue)
                 throw new ArgumentException(
                     $"Invalid value for {nameof(MinFinalCltvExpiryTaggedField)}. Value must fit in 16 bits",
