@@ -80,6 +80,68 @@ public class OnchainFinalHopSwitchTests
         Assert.Empty(CarolSwitch(harness).HeldPaymentHashes);
     }
 
+    [Theory]
+    [InlineData(ChannelState.OnchainResolving)]
+    [InlineData(ChannelState.Failed)]
+    public async Task Given_InvoiceExpiredAfterLockIn_When_TheSwitchDecidesOnChain_Then_StillClaimed(
+        ChannelState closedState)
+    {
+        // Arrange (NL-335): the HTLC locked in while the invoice was open; the invoice expires before the on-chain
+        // decision, which must judge the expiry at the lock-in instead of now (the peer would otherwise time it out)
+        await using var harness = await CreateHarnessAsync();
+        var invoice = await CreateInvoiceAsync(harness);
+        harness.Carol.SwitchSuspended = true;
+        await PayPartAsync(harness, invoice, s_amount, s_amount);
+        await harness.PumpAsync();
+        harness.Carol.SwitchSuspended = false;
+        var htlc = CarolIncoming(harness).Single();
+        harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).UpdateState(closedState);
+        _clock.Advance(TimeSpan.FromHours(2));
+        var sentBefore = harness.Sent.Count;
+
+        // Act
+        await harness.Carol.Switch.HandleAsync(new IncomingHtlcLockedIn(ThreeNodeHarness.BobCarolChannelId, htlc),
+                                               CancellationToken.None);
+        await harness.PumpAsync();
+
+        // Assert: the preimage on the record, the invoice settled, nothing sent
+        var committed = CarolIncoming(harness).Single();
+        Assert.Equal(invoice.Preimage, committed.KnownPreimage);
+        Assert.Null(committed.Removal);
+        Assert.Equal(invoice.Preimage, (await StoredIncomingAsync(harness, committed.Id))!.KnownPreimage);
+        var stored = await GetInvoiceAsync(harness, invoice);
+        Assert.Equal(InvoiceStatus.Settled, stored.Status);
+        Assert.Equal(s_amount, stored.AmountReceived);
+        Assert.Equal(sentBefore, harness.Sent.Count);
+    }
+
+    [Fact]
+    public async Task Given_InvoiceAlreadyExpiredAtLockIn_When_TheSwitchDecidesOnChain_Then_NotClaimed()
+    {
+        // Arrange (NL-335): the invoice expired before the HTLC was added, so even judged at the lock-in it is expired
+        await using var harness = await CreateHarnessAsync();
+        var invoice = await CreateInvoiceAsync(harness);
+        _clock.Advance(TimeSpan.FromHours(2));
+        harness.Carol.SwitchSuspended = true;
+        await PayPartAsync(harness, invoice, s_amount, s_amount);
+        await harness.PumpAsync();
+        harness.Carol.SwitchSuspended = false;
+        var htlc = CarolIncoming(harness).Single();
+        harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).UpdateState(ChannelState.OnchainResolving);
+        var sentBefore = harness.Sent.Count;
+
+        // Act
+        await harness.Carol.Switch.HandleAsync(new IncomingHtlcLockedIn(ThreeNodeHarness.BobCarolChannelId, htlc),
+                                               CancellationToken.None);
+        await harness.PumpAsync();
+
+        // Assert: no preimage (so no claim), no failure (the channel cannot carry one), the invoice Open
+        Assert.Null(CarolIncoming(harness).Single().KnownPreimage);
+        Assert.Null((await StoredIncomingAsync(harness, htlc.Id))!.KnownPreimage);
+        Assert.Equal(sentBefore, harness.Sent.Count);
+        Assert.Equal(InvoiceStatus.Open, (await GetInvoiceAsync(harness, invoice)).Status);
+    }
+
     [Fact]
     public async Task Given_TwoPartsOfASetOnAChannelGoneOnChain_When_TheSwitchDecides_Then_BothCommittedWithOneSettle()
     {

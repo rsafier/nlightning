@@ -83,11 +83,16 @@ public sealed class FinalHopProcessor
     /// <param name="blindedRecipientData">At the end of a blinded route (ONION M5), our own decrypted
     /// <c>encrypted_recipient_data</c>: its <c>path_id</c> must be the invoice's (<see cref="BlindedPathId"/>) and
     /// replaces the <c>payment_secret</c> check, and <c>total_amount_msat</c> replaces <c>payment_data</c>.</param>
+    /// <param name="evaluatedAt">The time the invoice's expiry is judged at instead of now: the on-chain final-hop
+    /// decision passes the HTLC's lock-in (its persisted <c>AddedAt</c>), so an HTLC locked in while its invoice was
+    /// still open is claimed on chain even after the invoice has expired since (NL-335). Null judges at the current
+    /// time (the off-chain path).</param>
     public async Task<FinalHopResult> ProcessAsync(IInvoiceDbRepository invoices, Hash paymentHash,
                                                    LightningMoney htlcAmount, uint htlcCltvExpiry,
                                                    HopPayload payload, uint currentBlockHeight,
                                                    bool acceptMultiPart = false, bool committedSetMember = false,
-                                                   BlindedRecipientData? blindedRecipientData = null)
+                                                   BlindedRecipientData? blindedRecipientData = null,
+                                                   DateTimeOffset? evaluatedAt = null)
     {
         ArgumentNullException.ThrowIfNull(invoices);
 
@@ -97,7 +102,7 @@ public sealed class FinalHopProcessor
 
         var invoice = await invoices.GetByPaymentHashAsync(paymentHash);
         return Evaluate(invoice, paymentHash, htlcAmount, htlcCltvExpiry, payload, currentBlockHeight,
-                        acceptMultiPart, committedSetMember, blindedRecipientData);
+                        acceptMultiPart, committedSetMember, blindedRecipientData, evaluatedAt);
     }
 
     /// <summary>
@@ -107,14 +112,15 @@ public sealed class FinalHopProcessor
     public FinalHopResult Evaluate(InvoiceModel? invoice, Hash paymentHash, LightningMoney htlcAmount,
                                    uint htlcCltvExpiry, HopPayload payload, uint currentBlockHeight,
                                    bool acceptMultiPart = false, bool committedSetMember = false,
-                                   BlindedRecipientData? blindedRecipientData = null)
+                                   BlindedRecipientData? blindedRecipientData = null,
+                                   DateTimeOffset? evaluatedAt = null)
     {
         ArgumentNullException.ThrowIfNull(htlcAmount);
         ArgumentNullException.ThrowIfNull(payload);
 
         var result = CheckHtlcAgainstOnion(htlcAmount, htlcCltvExpiry, payload)
                   ?? CheckInvoice(invoice, paymentHash, htlcAmount, htlcCltvExpiry, payload, currentBlockHeight,
-                                 acceptMultiPart, committedSetMember, blindedRecipientData);
+                                 acceptMultiPart, committedSetMember, blindedRecipientData, evaluatedAt);
 
         return Log(paymentHash, result);
     }
@@ -138,7 +144,7 @@ public sealed class FinalHopProcessor
     private FinalHopResult CheckInvoice(InvoiceModel? invoice, Hash paymentHash, LightningMoney htlcAmount,
                                         uint htlcCltvExpiry, HopPayload payload, uint currentBlockHeight,
                                         bool acceptMultiPart, bool committedSetMember,
-                                        BlindedRecipientData? blindedRecipientData)
+                                        BlindedRecipientData? blindedRecipientData, DateTimeOffset? evaluatedAt)
     {
         FinalHopResult Unknown(string reason) =>
             FinalHopResult.Fail(FailureMessage.IncorrectOrUnknownPaymentDetails(htlcAmount, currentBlockHeight),
@@ -212,8 +218,9 @@ public sealed class FinalHopProcessor
                 return Unknown($"The invoice is already {invoice.Status}.");
         }
 
-        // A committed part is fulfilled whatever the time of its replay
-        if (!committedSetMember && invoice.IsExpired(_timeProvider.GetUtcNow()))
+        // A committed part is fulfilled whatever the time of its replay; the on-chain decision judges the expiry at the
+        // HTLC's lock-in instead (NL-335), the off-chain one at the current time
+        if (!committedSetMember && invoice.IsExpired(evaluatedAt ?? _timeProvider.GetUtcNow()))
             return Unknown("The invoice is expired.");
 
         if (payload.IsBlinded)
