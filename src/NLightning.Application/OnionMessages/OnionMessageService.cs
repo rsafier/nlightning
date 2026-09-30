@@ -70,6 +70,8 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
     private readonly CancellationTokenSource _stopping = new();
     private readonly Task _incomingWorker = Task.CompletedTask;
     private readonly Task _handlerWorker = Task.CompletedTask;
+    private int _queuedIncoming;
+    private int _queuedHandlerWork;
     private int _disposed;
 
     public OnionMessageService(IOptions<NodeOptions> nodeOptions, ISecureKeyManager secureKeyManager,
@@ -117,6 +119,9 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
                 SingleReader = true,
                 FullMode = BoundedChannelFullMode.Wait
             });
+        // The queues' depths join the meter (plan §3.4, NL-446); the peer manager registers the outbox
+        _metrics.RegisterQueue("incoming", () => Volatile.Read(ref _queuedIncoming));
+        _metrics.RegisterQueue("handler", () => Volatile.Read(ref _queuedHandlerWork));
 
         var advertised = nodeOptions.Value.Features.GetNodeFeatures().IsFeatureSet(Feature.OptionOnionMessages);
         if (errors.Count > 0)
@@ -168,7 +173,12 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
 
         _metrics.RecordReceived();
         if (!_incoming.Writer.TryWrite(new IncomingOnionMessage(peer.PeerPubKey, message)))
+        {
             Drop(OnionMessageDropReasons.QueueFull, peer.PeerPubKey);
+            return;
+        }
+
+        Interlocked.Increment(ref _queuedIncoming);
     }
 
     /// <inheritdoc />
@@ -393,6 +403,7 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
             return;
         }
 
+        Interlocked.Increment(ref _queuedHandlerWork);
         _metrics.RecordDelivered("handler");
     }
 
@@ -516,6 +527,10 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
                 {
                     _logger.LogWarning(e, "Failed to process an onion message from {Peer}", item.FromPeer);
                 }
+                finally
+                {
+                    Interlocked.Decrement(ref _queuedIncoming);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -542,6 +557,10 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
                 catch (Exception e)
                 {
                     _logger.LogWarning(e, "The onion message handler {Handler} failed", work.Handler.GetType().Name);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _queuedHandlerWork);
                 }
             }
         }

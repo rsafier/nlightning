@@ -56,11 +56,12 @@ public sealed class OnionMessageOptions
     /// <summary>Per peer: the message burst (default 20).</summary>
     public int PeerBurstMessages { get; set; } = 20;
 
-    /// <summary>All peers together: bytes per second admitted (default 640 KiB/s).</summary>
+    /// <summary>All peers together: bytes per second admitted (default 640 KiB/s). Over the limit, a message is
+    /// dropped (BOLT 4 MAY).</summary>
     public int GlobalBytesPerSecond { get; set; } = 640 * 1024;
 
-    /// <summary>All peers together: the byte burst (default 2,560 KiB).</summary>
-    public int GlobalBurstBytes { get; set; } = 2560 * 1024;
+    /// <summary>All peers together: the byte burst (default 1,600 KiB, LND's global burst).</summary>
+    public int GlobalBurstBytes { get; set; } = 1600 * 1024;
 
     /// <summary>All peers together: messages per second admitted (default 200).</summary>
     public int GlobalMessagesPerSecond { get; set; } = 200;

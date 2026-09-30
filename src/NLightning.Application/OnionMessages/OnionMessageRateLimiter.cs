@@ -8,10 +8,13 @@ using Domain.Protocol.OnionMessages.Interfaces;
 /// dropping). A rate or a burst of 0 or less turns that bucket off (unlimited).
 /// </summary>
 /// <remarks>
-/// <para>Defaults (BOLT12 plan §3.4, to be tuned): per peer 64 KiB/s with a 256 KiB burst and 20 messages/s with a
-/// burst of 20 (the 21st message in one second from a peer is dropped); in total 640 KiB/s with a 2,560 KiB burst and
-/// 200 messages/s with a burst of 200. For comparison, LND 0.21 allows 512 kbit/s with a 256 KiB burst per peer and
-/// 5,120 kbit/s with a 1,600 KiB burst in total (unverified, from its release notes).</para>
+/// <para>Defaults (plan §3.4, tuned to LND 0.21's onion message rate limiting, NL-446): per peer 64 KiB/s with a
+/// 256 KiB burst and 20 messages/s with a burst of 20 (the 21st message in one second from a peer is dropped); in
+/// total 640 KiB/s with a 1,600 KiB burst and 200 messages/s with a burst of 200. The byte buckets match LND's
+/// (<c>onion_message_rate_limiting.md</c>: 512 decimal kbit/s with a 256 KiB burst per peer, 5,120 decimal kbit/s with
+/// a 1.6 MiB burst globally — 512 decimal kbit/s is 64 kB/s, and our binary KiB/s rates round it up), and its global
+/// burst (ten peers at the per-peer burst cannot all fit the global one); LND counts no messages-per-second buckets,
+/// so ours are our own guard against floods of minimal messages.</para>
 /// <para>A message longer than a byte burst is never admitted, so keep the byte bursts above the largest onion message
 /// (the 32,834-byte packet a writer uses for large payloads; the default 256 KiB holds seven).</para>
 /// </remarks>
@@ -48,8 +51,8 @@ public sealed record OnionMessageRateLimits(
     /// <summary>640 KiB/s.</summary>
     public const double DefaultGlobalBytesPerSecond = 640 * 1024;
 
-    /// <summary>2,560 KiB.</summary>
-    public const double DefaultGlobalBurstBytes = 2560 * 1024;
+    /// <summary>1,600 KiB (LND's global burst).</summary>
+    public const double DefaultGlobalBurstBytes = 1600 * 1024;
 
     /// <summary>200 messages/s.</summary>
     public const double DefaultGlobalMessagesPerSecond = 200;

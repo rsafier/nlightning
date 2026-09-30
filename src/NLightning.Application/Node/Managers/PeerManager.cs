@@ -43,6 +43,7 @@ using Infrastructure.Node.ValueObjects;
 using Infrastructure.Protocol.Models;
 using Infrastructure.Transport.Events;
 using Infrastructure.Transport.Interfaces;
+using OnionMessages;
 using Services;
 
 /// <summary>
@@ -1462,6 +1463,9 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     {
         try
         {
+            // The outbox's queue depth joins the onion message meter (NL-446), like the gossip one (NL-360)
+            _serviceProvider.GetService<OnionMessageMetrics>()?
+                .RegisterQueue("outbox", () => QueuedOutboxOnionMessageCount);
             return _serviceProvider.GetService<IOnionMessageRateLimiter>();
         }
         catch (Exception e)
