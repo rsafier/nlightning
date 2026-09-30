@@ -418,43 +418,65 @@ public class GossipSyncManagerTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_ATimedOutScidQuery_When_ItsLateEndArrivesDuringAnotherQuery_Then_NothingMoreIsAskedOfThatPeer()
+    public async Task Given_ATimedOutScidQuery_When_ItsLateEndArrives_Then_TheNextQueryWaitsForItAndRuns()
     {
-        // Arrange (review of G3-T2; BOLT 7: MUST NOT send query_short_channel_ids before the previous one's
+        // Arrange (NL-365; BOLT 7: MUST NOT send query_short_channel_ids before the previous one's
         // reply_short_channel_ids_end): the peer answers the scid query after our timeout
         var manager = CreateManager(o =>
         {
             o.SyncReplyTimeout = TimeSpan.FromMilliseconds(150);
-            o.SyncPeers = 2;
+            o.SyncPeers = 0;
+        });
+        var slow = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(slow);
+        await slow.NextAsync<GossipTimestampFilterMessage>();
+        var first = manager.QueryScidAsync(new ShortChannelId(200, 1, 0), TestContext.Current.CancellationToken);
+        Assert.Equal([new ShortChannelId(200, 1, 0)], Ids(await slow.NextAsync<QueryShortChannelIdsMessage>()));
+        Assert.False(await first); // not answered in time
+
+        // Act: the next query waits for the outstanding end; nothing goes out until it arrives
+        var waiting = manager.QueryScidAsync(new ShortChannelId(300, 1, 0), TestContext.Current.CancellationToken);
+        Assert.True(await slow.NothingSentWithinAsync(s_quiet));
+        manager.HandleMessage(slow, End()); // the late reply_short_channel_ids_end
+
+        // Assert: the query goes out now and completes when its own end arrives
+        await slow.NextAsync<QueryShortChannelIdsMessage>();
+        Assert.False(waiting.IsCompleted);
+        manager.HandleMessage(slow, End());
+        Assert.True(await waiting);
+        Assert.Empty(slow.Warnings);
+    }
+
+    [Fact]
+    public async Task Given_ATimedOutRangeQuery_When_ItsLateRepliesComplete_Then_TheConnectionQueriesAgain()
+    {
+        // Arrange (NL-365): the peer answers the range query after our timeout
+        var manager = CreateManager(o =>
+        {
+            o.SyncReplyTimeout = TimeSpan.FromMilliseconds(150);
+            o.SyncPeers = 1;
         });
         var slow = new FakeGossipPeer(1);
         manager.OnPeerInitialized(slow);
         await slow.NextAsync<QueryChannelRangeMessage>();
-        manager.HandleMessage(slow, RangeReplyCollectorTests.Reply(0, Tip + 1, true, new ShortChannelId(200, 1, 0)));
-        await slow.NextAsync<QueryShortChannelIdsMessage>();
         await slow.NextAsync<GossipTimestampFilterMessage>(); // the timeout passed: the live filter
         await manager.WhenIdleAsync(slow, TestContext.Current.CancellationToken);
-        var other = new FakeGossipPeer(2);
-        manager.OnPeerInitialized(other);
-        await other.NextAsync<QueryChannelRangeMessage>();
-        manager.HandleMessage(other, RangeReplyCollectorTests.Reply(0, Tip + 1, true));
-        await other.NextAsync<GossipTimestampFilterMessage>();
-        await manager.WhenIdleAsync(other, TestContext.Current.CancellationToken);
 
-        // Act: a new query goes to the other peer, never to the slow one, and the slow one's late end completes
-        // nothing
-        var waiting = manager.QueryScidAsync(new ShortChannelId(300, 1, 0), TestContext.Current.CancellationToken);
-        var query = await other.NextAsync<QueryShortChannelIdsMessage>();
+        // Act: the rotation asks the same connection again; its querier first consumes the late replies, which
+        // complete the abandoned collector, then runs the new range query
+        Assert.Same(slow, manager.RotateSyncPeer());
+        manager.HandleMessage(slow, RangeReplyCollectorTests.Reply(0, 300, false, new ShortChannelId(200, 1, 0)));
+        manager.HandleMessage(slow, RangeReplyCollectorTests.Reply(300, Tip + 1 - 300, true));
+        await slow.NextAsync<QueryChannelRangeMessage>();
+
+        // Assert: the new sync runs normally on the recovered connection
+        manager.HandleMessage(slow, RangeReplyCollectorTests.Reply(0, Tip + 1, true, new ShortChannelId(200, 1, 0)));
+        Assert.Equal([new ShortChannelId(200, 1, 0)], Ids(await slow.NextAsync<QueryShortChannelIdsMessage>()));
         manager.HandleMessage(slow, End());
-        await Task.Delay(50, TestContext.Current.CancellationToken);
-
-        // Assert
-        Assert.False(waiting.IsCompleted);
-        Assert.Equal([new ShortChannelId(300, 1, 0)], Ids(query));
-        manager.HandleMessage(other, End());
-        Assert.True(await waiting);
-        Assert.True(await slow.NothingSentWithinAsync(s_quiet));
-        Assert.NotSame(slow, manager.RotateSyncPeer());
+        await slow.NextAsync<GossipTimestampFilterMessage>();
+        await manager.WhenIdleAsync(slow, TestContext.Current.CancellationToken);
+        Assert.True(manager.HasCompletedInitialSync);
+        Assert.Empty(slow.Warnings);
     }
 
     [Fact]
