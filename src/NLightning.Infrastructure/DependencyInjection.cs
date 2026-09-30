@@ -45,6 +45,8 @@ public static class DependencyInjection
         services.TryAddSingleton<IDnsRecordLookup, DnsClientRecordLookup>();
         // The public resolvers asked when the system resolvers give a seed no candidate (D-B10-7)
         services.TryAddSingleton<IFallbackDnsRecordLookup, FallbackDnsRecordLookup>();
+        // The resolver a Tor-only node asks the seeds through (NL-571), over the SOCKS5 port
+        services.TryAddSingleton<ITorDnsRecordLookup, TorSocksDnsRecordLookup>();
 
         // Transient services (new instance each time requested)
         services.AddTransient<IPingPongService, PingPongService>();

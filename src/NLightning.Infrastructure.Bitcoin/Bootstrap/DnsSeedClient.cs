@@ -29,16 +29,20 @@ internal sealed class DnsSeedClient : IDnsSeedClient
 
     private readonly IDnsRecordLookup _lookup;
     private readonly IFallbackDnsRecordLookup? _fallback;
+    private readonly ITorDnsRecordLookup? _torLookup;
     private readonly ILogger<DnsSeedClient> _logger;
     private readonly BootstrapOptions _options;
+    private readonly bool _torOnly;
 
     public DnsSeedClient(IDnsRecordLookup lookup, IOptions<NodeOptions> nodeOptions, ILogger<DnsSeedClient> logger,
-                         IFallbackDnsRecordLookup? fallback = null)
+                         IFallbackDnsRecordLookup? fallback = null, ITorDnsRecordLookup? torLookup = null)
     {
         _lookup = lookup;
         _fallback = fallback;
+        _torLookup = torLookup;
         _logger = logger;
         _options = nodeOptions.Value.Bootstrap;
+        _torOnly = nodeOptions.Value.Tor.IsTorOnly;
     }
 
     /// <inheritdoc />
@@ -46,12 +50,23 @@ internal sealed class DnsSeedClient : IDnsSeedClient
     /// The system (or configured) resolvers first; when they give no candidate and the fallback is available
     /// (<see cref="BootstrapOptions.UsesFallbackResolvers"/>, D-B10-7) the seed is asked again, with its own
     /// <see cref="BootstrapOptions.PerSeedTimeout"/>, through <see cref="BootstrapOptions.FallbackNameServers"/>.
+    /// In Tor-only mode none of that clearnet DNS happens: the seed is asked through
+    /// <see cref="BootstrapOptions.TorNameServer"/> over Tor's SOCKS port (NL-571), or not at all when that resolver
+    /// is switched off.
     /// </remarks>
     public async Task<DnsSeedResult> QuerySeedAsync(string seedRoot, DnsSeedAddressTypes families, int maxResults,
                                                     CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(seedRoot);
         var root = seedRoot.Trim().TrimEnd('.').ToLowerInvariant();
+        if (_torOnly)
+        {
+            // Tor-only: no query ever leaves through the clearnet resolvers, with or without a Tor resolver
+            return _torLookup is { IsAvailable: true } tor
+                ? await QuerySeedWithAsync(tor, root, families, maxResults, ct)
+                : NotAsked(root);
+        }
+
         var result = await QuerySeedWithAsync(_lookup, root, families, maxResults, ct);
         if (result.Candidates.Count > 0 || maxResults <= 0 || _fallback is not { IsAvailable: true } fallback)
             return result;
@@ -60,6 +75,16 @@ internal sealed class DnsSeedClient : IDnsSeedClient
                                root, result.Outcome, string.Join(", ", fallback.NameServers));
         var fallbackResult = await QuerySeedWithAsync(fallback, root, families, maxResults, ct);
         return fallbackResult with { UsedFallbackResolver = true, SystemResolverOutcome = result.Outcome };
+    }
+
+    /// <summary>
+    /// The result for a seed that is not asked: Tor-only mode without a usable Tor resolver
+    /// (<c>Node:Bootstrap:TorNameServer</c> empty).
+    /// </summary>
+    private DnsSeedResult NotAsked(string root)
+    {
+        _logger.LogDebug("Seed {Seed}: not asked (Tor-only mode without a Tor resolver)", root);
+        return new DnsSeedResult(root, DnsSeedOutcome.Error, [], 0);
     }
 
     private async Task<DnsSeedResult> QuerySeedWithAsync(IDnsRecordLookup lookup, string root,

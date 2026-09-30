@@ -620,4 +620,50 @@ public class DnsSeedClientTests
         Assert.Equal(DnsSeedOutcome.Timeout, result.Outcome);
         Assert.Equal(fast.Key, Assert.Single(result.Candidates).NodeId);
     }
+
+    [Fact]
+    public async Task Given_TorOnlyWithATorResolver_When_Queried_Then_TheTorResolverAnswersAndNoClearnetDnsHappens()
+    {
+        // Arrange - NL-571: the SRV queries ride Tor's SOCKS port through Node:Bootstrap:TorNameServer
+        _nodeOptions.Tor.Mode = TorMode.TorOnly;
+        var node = NewNode();
+        var torLookup = new Mock<ITorDnsRecordLookup>(MockBehavior.Strict);
+        torLookup.SetupGet(l => l.IsAvailable).Returns(true);
+        torLookup.Setup(l => l.QueryAsync(It.IsAny<string>(), DnsRecordKind.Srv, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(Srv([new DnsSrv(10, 10, 9735, node.Target)]));
+        torLookup.Setup(l => l.QueryAsync(node.Target, DnsRecordKind.A, It.IsAny<CancellationToken>()))
+                 .ReturnsAsync(Addresses("7.7.7.7"));
+        var fallback = NewFallback(available: true);
+        var client = new DnsSeedClient(_lookup.Object, Microsoft.Extensions.Options.Options.Create(_nodeOptions),
+                                       NullLogger<DnsSeedClient>.Instance, fallback.Object, torLookup.Object);
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert: no query reached the clearnet resolvers, fallback included
+        Assert.Equal(DnsSeedOutcome.Ok, result.Outcome);
+        Assert.Equal(IPAddress.Parse("7.7.7.7"), Assert.Single(result.Candidates).Address);
+        _lookup.Verify(l => l.QueryAsync(It.IsAny<string>(), It.IsAny<DnsRecordKind>(), It.IsAny<CancellationToken>()),
+                       Times.Never);
+        fallback.Verify(f => f.QueryAsync(It.IsAny<string>(), It.IsAny<DnsRecordKind>(),
+                                          It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_TorOnlyWithoutATorResolver_When_Queried_Then_TheSeedIsNotAskedAnywhere()
+    {
+        // Arrange - NL-571: Node:Bootstrap:TorNameServer empty; a query to the strict clearnet lookup would fail
+        _nodeOptions.Tor.Mode = TorMode.TorOnly;
+        var client = CreateClient();
+
+        // Act
+        var result = await client.QuerySeedAsync(Root, DnsSeedAddressTypes.IPv4, 25,
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(DnsSeedOutcome.Error, result.Outcome);
+        Assert.Empty(result.Candidates);
+        _lookup.VerifyNoOtherCalls();
+    }
 }
