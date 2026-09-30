@@ -35,13 +35,15 @@ using Domain.Protocol.Payloads;
 /// the init exchange done, so it precedes our <c>channel_reestablish</c> (BOLT 1 rationale).
 /// </para>
 /// <para>
-/// Client: a peer that negotiated <c>option_provide_storage</c> gets our blob (<see cref="IPeerBackupBlobProvider"/>)
-/// at its first connection of the process, whenever the round (every <see cref="PeerStorageOptions.BackupInterval"/>)
-/// finds that what the blob holds changed, and again when the <c>peer_storage_retrieval</c> it sends after init is not
-/// the last blob we sent it. A connection with nothing new gets nothing, so the peer's retrieval can be checked against
-/// the last blob sent (<see cref="PeerBackupRetrieval.MatchesLastSent"/>). A blob handed back that is not ours is only
-/// logged; one of ours naming channels we have no record of is a sign of data loss, logged and kept for the restore
-/// flow (<see cref="GetRetrievals"/>). A peer that answers our blob with a <c>warning</c> refusing its size (e.g. LDK,
+/// Client: a peer that offers <c>option_provide_storage</c> gets our blob (<see cref="IPeerBackupBlobProvider"/>) —
+/// BOLT 1 lets a node send <c>peer_storage</c> to any peer that offers the feature, so the peer's own advertisement
+/// decides and our advertisement only gates the provider side (NL-433) — at its first connection of the process,
+/// whenever the round (every <see cref="PeerStorageOptions.BackupInterval"/>) finds that what the blob holds changed,
+/// and again when the <c>peer_storage_retrieval</c> it sends after init is not the last blob we sent it. A connection
+/// with nothing new gets nothing, so the peer's retrieval can be checked against the last blob sent
+/// (<see cref="PeerBackupRetrieval.MatchesLastSent"/>). A blob handed back that is not ours is only logged; one of
+/// ours naming channels we have no record of is a sign of data loss, logged and kept for the restore flow
+/// (<see cref="GetRetrievals"/>). A peer that answers our blob with a <c>warning</c> refusing its size (e.g. LDK,
 /// which takes at most 1,024 bytes) is answered at once with one that fits the byte limit the warning names, and the
 /// refusal is counted (<see cref="GetRefusals"/>, NL-559). Only an unambiguous size refusal moves the learned limit or
 /// the count (NL-563): the warning must name a byte limit ("<c>up to 1024 bytes</c>"). A peer-storage warning without
@@ -158,8 +160,10 @@ public sealed partial class PeerStorageService : IPeerStorageService, IDisposabl
                 LastWork = SendAsync(peer, new PeerStorageRetrievalMessage(new PeerStorageRetrievalPayload(blob)));
             }
 
-            // Client: our own blob to a peer that stores it
-            if (!_options.SendBackups || peer.Features.OptionProvideStorage == FeatureSupport.No)
+            // Client: our own blob to a peer that stores it. BOLT 1 lets a node send peer_storage to any peer that
+            // offers option_provide_storage, whether or not we store blobs ourselves (NL-433), so the peer's own
+            // advertisement decides here — the negotiated set would also fold our advertisement in
+            if (!_options.SendBackups || peer.PeerFeatures.OptionProvideStorage == FeatureSupport.No)
                 return;
 
             _storagePeers[peerId] = peer;

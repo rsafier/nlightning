@@ -41,6 +41,13 @@ internal sealed class FakeGossipPeer : IPeerService
 
     public CompactPubKey PeerPubKey { get; }
     public FeatureOptions Features { get; }
+
+    /// <summary>
+    /// What the service sees as the peer's own advertisement: the same options as <see cref="Features"/>, since the
+    /// fake does not model the negotiation with our own init separately.
+    /// </summary>
+    public FeatureOptions PeerFeatures => Features;
+
     public DateTimeOffset? LastMessageReceivedAt => null;
     public AddressDescriptor? ObservedAddress => null;
     public List<WarningException> Warnings { get; } = [];

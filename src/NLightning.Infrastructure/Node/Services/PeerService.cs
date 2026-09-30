@@ -163,7 +163,16 @@ public sealed class PeerService : IPeerService
     /// <inheritdoc />
     public AddressDescriptor? ObservedAddress { get; private set; }
 
+    /// <summary>
+    /// The feature options negotiated between us and the peer; our own configuration until the peer's init arrives.
+    /// </summary>
     public FeatureOptions Features { get; private set; }
+
+    /// <summary>
+    /// The feature options the peer advertised in its init, before they were negotiated with ours (NL-433); the
+    /// default until then.
+    /// </summary>
+    public FeatureOptions PeerFeatures { get; private set; } = new();
 
     /// <inheritdoc />
     public DateTimeOffset? LastMessageReceivedAt => _peerCommunicationService.LastMessageReceivedAt;
@@ -661,6 +670,9 @@ public sealed class PeerService : IPeerService
                                Convert.ToHexStringLower(initMessage.UndecodableRemoteAddress));
         }
 
+        // What the peer itself advertised (NL-433), kept next to the negotiated set, which folds our own
+        // advertisement in: a feature is set there only when both sides support it
+        PeerFeatures = FeatureOptions.GetNodeOptions(initMessage.Payload.FeatureSet, initMessage.Extension);
         Features = FeatureOptions.GetNodeOptions(negotiatedFeatures, initMessage.Extension);
         _logger.LogTrace("Initialization from peer {peer} completed successfully", PeerPubKey);
         _isInitialized = true;
