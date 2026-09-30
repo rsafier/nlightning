@@ -110,12 +110,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 5 | 141 | 146 |
+| open | 0 | 0 | 3 | 142 | 145 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 155 | 168 | 399 |
+| fixed | 14 | 62 | 157 | 168 | 401 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **62** | **164** | **315** | **555** |
+| **Total** | **14** | **62** | **164** | **316** | **556** |
 
 ### Epics
 
@@ -1697,22 +1697,24 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-562 Our open checks refuse an LDK peer's 1,000 sat channel reserve on channels under ~84k sat
-- **Status:** open
+- **Status:** fixed (1e0d3b31)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Channels/Validators/ChannelOpenValidator.cs` (`PerformOptionalChecks`)
 - **Evidence:** Live on Mutinynet, 2026-09-30: FAFO's 50k sat public `openchannel` to cumulo-mutinynet (`03fd9a37…`, LDK-like features: no `option_dual_fund`, `option_provide_storage`) failed with `[PeerManager] Error handling channel message (AcceptChannel) … Channel reserve amount is too large: 0.00001` and a disconnect. The rule refuses a peer's `channel_reserve_satoshis` above 1.2 x our own 1 % reserve (floored at the dust limit): 600 sat on 50k, while LDK always asks for at least 1,000 sat (`MIN_THEIR_CHAN_RESERVE_SATOSHIS`), so every LDK channel below about 84k sat is refused (an 85k open to the same peer then worked). The message also prints the amount in BTC (`LightningMoney` default formatting). The sibling rules in the same method compare the peer to our own settings the same way (htlc_minimum_msat > 1.2 x ours, max_accepted_htlcs < 0.8 x ours, dust_limit > 1.75 x ours) and may refuse other implementations' defaults too. BOLT 2 lets the receiver fail values it considers unreasonable; these limits are policy (same family as NL-550, NL-552).
 - **Fix sketch:** Accept a reserve up to max(a percentage of the channel (e.g. 2-5 %, `Node:MaxAcceptedChannelReservePercent`), a small absolute floor such as 1,000 sat); review the sibling rules against LND/CLN/Eclair/LDK defaults; print amounts in sat. Owner decision on the defaults.
+- **Fixed (1e0d3b31, lane nl562):** `ChannelOpenValidator.PerformOptionalChecks` accepts a peer's `channel_reserve_satoshis` (open_channel and accept_channel; v2 opens have no reserve field) up to max(`Node:MaxAcceptedChannelReservePercent` of the channel, default 10 % (LND refuses above 20 %), 1,000 sat), independent of our own reserve; the BOLT 2 reserve/dust MUSTs are unchanged. Siblings made independent of our own settings: `htlc_minimum_msat` is refused only at or above the channel amount (LDK's rule; 1.2 x ours refused LND's 1,000 msat once ours was below 834 msat), `max_accepted_htlcs` only below a constant 4 (0.8 x ours refused Eclair's 30 and LDK's 50 once ours was raised to 483); the dust rule (1.75 x ours = 619 sat) passes 354 and 546 and stays. Messages print sat/msat. Tests: `ChannelOpenValidatorTests` (reserve cap cases incl. LDK's 1,000 sat on 50k, each sibling with the implementations' defaults), `AcceptChannel1MessageHandlerTests`, `NodeOptionsTests`, `OpenPolicyConfigTemplateTests`; Docker proof `Interop/Ldk/LdkInteropTests.Given_ASmallChannelWeFund_When_LdkAsksForItsMinimumReserve_Then_WeAcceptAndPay` (50k sat, LDK's reserve 1,000 sat). Docker on net10.0 Release after the fix: LDK 15/15, CLN 77/77 (+4 `Explicit` not run), Eclair 9/9 (+1 `Explicit` not run).
 - **Blocks/Blocked-by:** Related NL-550, NL-552, NL-556
 - **Plan ref:** —
 
 ### NL-564 An LDK peer refuses our open at the 253 sat/kw floor ("expected lower limit: 254")
-- **Status:** open
+- **Status:** fixed (1e0d3b31)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/` (`FeeRateConverter`, the 253 sat/kw floor) and the open/`update_fee` feerate choice
 - **Evidence:** Live on Mutinynet, 2026-09-30: FAFO2's 100k public `openchannel` to cdk-ldk-node (`0265d4cc…`, LDK-like features) got the peer's `error` "Peer's feerate much too low. Actual: 253. Our expected lower limit: 254". Mutinynet's fee API says 1 sat/vB, which converts to 250 sat/kw and is floored at BOLT 3's 253, so every open (and `update_fee`) we make while estimates sit at the floor is refused by such a peer. cumulo-mutinynet (also LDK-like) accepted the same 253 an hour earlier, so the limit depends on the peer's own estimator. LND (Olympus, Megalith, yellowcard) accepted 253.
 - **Fix sketch:** Keep a small margin above the floor when we fund (e.g. never offer less than 253 + a few sat/kw, or round 1 sat/vB up to 256), optionally `FeeEstimation:MinFeeRatePerKw`; on a "feerate … too low" refusal consider one retry at the peer's named limit. Check rust-lightning's `check_remote_fee` for the exact rule.
+- **Fixed (1e0d3b31, lane nl562):** `Node:MinCommitmentFeeRatePerKw` (default 275 sat/kw = 1.1 sat/vB, validated >= 253) floors the commitment feerate we offer from our estimate on channels we fund: `open_channel` (`ChannelFactory`), `open_channel2`'s commitment feerate (`DualFundedOpenService`) and `update_fee` (a second lower bound in `FeeUpdatePolicy`, so a channel at 253 is raised to it at the next round), through `NodeOptions.GetCommitmentFeeRatePerKw`. rust-lightning's `check_remote_fee` refuses a feerate below the `MinAllowedAnchorChannelRemoteFee` (anchors) or `MinAllowedNonAnchorChannelRemoteFee` estimate unless it rises; ldk-node maps them to its 1,008-block estimate and to the 144-block estimate minus 250 sat/kw, so the 254 seen live was an estimate just above 1 sat/vB, and 275 leaves a margin. A feerate the request names is used as given (v1 requests are at least 1,000 sat/kw anyway); what we accept from peers stays 253 (NL-289); the funding tx feerate of our v1 open is our own wallet's and v2's `funding_feerate_perkw` keep the 253 floor. No retry on the peer's error. Tests: `NodeOptionsTests`, `ChannelFactoryTests`, `FeeUpdatePolicyTests`, `FeeUpdateSchedulerTests`, `DualFundHarnessTests.Given_AnEstimateAtTheRelayFloor_*`.
 - **Blocks/Blocked-by:** Related NL-288, NL-289, NL-562
 - **Plan ref:** —
 
@@ -5709,6 +5711,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Failed once in lane nl560's full loaded Application run on net10.0 Release (with the known NL-382 `GossipFloodTests` flake); the class passed alone on reruns (reported by lane nl560, 2026-09-30).
 - **Fix sketch:** Capture the failure on the next occurrence; check for a wall-clock wait in the harness.
 - **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-565 PeerManagerTests FIFO interleave case failed once in a loaded run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Node/Managers/PeerManagerTests.cs` (`Given_EventAndReplyInterleave_When_Processed_Then_FifoPreserved`)
+- **Evidence:** Failed once in lane nl562's full Application run on net10.0 Debug (2026-09-30); the class passed alone (83/83) on the rerun. The lane's change (open policy and commitment feerate floor) does not touch the peer manager.
+- **Fix sketch:** Capture the failure on the next occurrence; check for a wall-clock wait in the test.
+- **Blocks/Blocked-by:** Related NL-482
 - **Plan ref:** —
 
 ### NL-553 No pinned official multi-arch Eclair image; the interop fixture builds its own
