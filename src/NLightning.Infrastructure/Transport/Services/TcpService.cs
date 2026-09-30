@@ -11,11 +11,13 @@ using Events;
 using Interfaces;
 using Node.ValueObjects;
 using Protocol.Models;
+using Tor;
 
 public class TcpService : ITcpService
 {
     private readonly ILogger<TcpService> _logger;
     private readonly NodeOptions _nodeOptions;
+    private readonly ITorSocksDialer? _torSocksDialer;
     private readonly List<TcpListener> _listeners = [];
 
     private CancellationTokenSource? _cts;
@@ -26,10 +28,12 @@ public class TcpService : ITcpService
     /// <inheritdoc />
     public event EventHandler<NewPeerConnectedEventArgs>? OnNewPeerConnected;
 
-    public TcpService(ILogger<TcpService> logger, IOptions<NodeOptions> nodeOptions)
+    public TcpService(ILogger<TcpService> logger, IOptions<NodeOptions> nodeOptions,
+                      ITorSocksDialer? torSocksDialer = null)
     {
         _logger = logger;
         _nodeOptions = nodeOptions.Value;
+        _torSocksDialer = torSocksDialer;
     }
 
     /// <inheritdoc />
@@ -96,25 +100,71 @@ public class TcpService : ITcpService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <c>Node:Tor</c> decides the route: an onion service goes through Tor's SOCKS5 port (and cannot be dialed with Tor
+    /// off), and in Tor-only mode every address does, host names resolved by Tor; otherwise the connection is direct, a
+    /// host name resolved locally.
+    /// </remarks>
     /// <exception cref="ConnectionException">Thrown when the connection to the peer fails.</exception>
     public async Task<ConnectedPeer> ConnectToPeerAsync(PeerAddress peerAddress)
     {
+        var tor = _nodeOptions.Tor;
+        if (!tor.CanDial(peerAddress.Type))
+            throw new ConnectionException(peerAddress.IsOnion
+                                              ? $"Cannot connect to onion service {peerAddress.Host}: Tor is off (set "
+                                              + "Node:Tor:Mode to Hybrid or TorOnly and run Tor)"
+                                              : $"Cannot connect to {peerAddress.Host}: unsupported address type");
+
+        if (tor.UsesProxy(peerAddress.Type))
+            return await ConnectThroughTorAsync(peerAddress, tor.ConnectTimeout);
+
         var tcpClient = new TcpClient();
         try
         {
-            await tcpClient.ConnectAsync(peerAddress.Host, peerAddress.Port,
-                                         new CancellationTokenSource(_nodeOptions.NetworkTimeout).Token);
+            using var timeout = new CancellationTokenSource(_nodeOptions.NetworkTimeout);
+            if (peerAddress.IpAddress is { } ip)
+                await tcpClient.ConnectAsync(ip, peerAddress.Port, timeout.Token);
+            else
+                await tcpClient.ConnectAsync(peerAddress.Host, peerAddress.Port, timeout.Token);
 
-            return new ConnectedPeer(peerAddress.PubKey, peerAddress.Host.ToString(), (uint)peerAddress.Port,
-                                     tcpClient);
+            return new ConnectedPeer(peerAddress.PubKey, peerAddress.Host, (uint)peerAddress.Port, tcpClient);
         }
         catch (OperationCanceledException)
         {
+            tcpClient.Dispose();
             throw new ConnectionException($"Timeout connecting to peer {peerAddress.Host}:{peerAddress.Port}");
         }
         catch (Exception e)
         {
+            tcpClient.Dispose();
             throw new ConnectionException($"Failed to connect to peer {peerAddress.Host}:{peerAddress.Port}", e);
+        }
+    }
+
+    private async Task<ConnectedPeer> ConnectThroughTorAsync(PeerAddress peerAddress, TimeSpan connectTimeout)
+    {
+        if (_torSocksDialer is null)
+            throw new ConnectionException($"Cannot connect to {peerAddress.Host} through Tor: no Tor dialer registered");
+
+        try
+        {
+            using var timeout = new CancellationTokenSource(connectTimeout);
+            var tcpClient = await _torSocksDialer.ConnectAsync(peerAddress.Host, peerAddress.Port, timeout.Token);
+            return new ConnectedPeer(peerAddress.PubKey, peerAddress.Host, (uint)peerAddress.Port, tcpClient);
+        }
+        catch (OperationCanceledException)
+        {
+            throw new ConnectionException($"Timeout connecting to peer {peerAddress.Host}:{peerAddress.Port} through "
+                                        + $"Tor ({connectTimeout})");
+        }
+        catch (ConnectionException)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            throw new ConnectionException($"Failed to connect to peer {peerAddress.Host}:{peerAddress.Port} through Tor",
+                                          e);
         }
     }
 

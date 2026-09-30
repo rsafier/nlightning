@@ -45,6 +45,12 @@ public class NodeOptions
     public BootstrapOptions Bootstrap { get; set; } = new();
 
     /// <summary>
+    /// Tor: onion peers through Tor's SOCKS5 port and our own onion service, from <c>Node:Tor</c>; off by default.
+    /// </summary>
+    /// <see cref="TorOptions"/>
+    public TorOptions Tor { get; set; } = new();
+
+    /// <summary>
     /// Addresses/Interfaces to listen on for incoming connections
     /// </summary>
     /// <remarks>
@@ -299,6 +305,7 @@ public class NodeOptions
         errors.AddRange(Keysend.GetValidationErrors());
         errors.AddRange(Quiescence.GetValidationErrors());
         errors.AddRange(Bootstrap.GetValidationErrors());
+        errors.AddRange(Tor.GetValidationErrors(ListenAddresses));
         // Only an explicit Enabled = true: the mainnet default must never stop a node whose operator raised
         // NetworkTimeout (the bootstrap then waits NetworkTimeout, BootstrapOptions.GetEffectiveConnectTimeout)
         if (Bootstrap.Enabled == true && Bootstrap.ConnectTimeout < NetworkTimeout)

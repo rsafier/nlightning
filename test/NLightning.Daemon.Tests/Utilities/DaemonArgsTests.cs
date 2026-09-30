@@ -242,6 +242,31 @@ public class DaemonArgsTests : IDisposable
         Assert.Equal(Path.Combine(configDir, "nltg.db"), dataSource);
         Assert.Equal(Path.Combine(configDir, "logs", "log-.txt"), config["Serilog:WriteTo:1:Args:path"]);
         Assert.Equal(Path.Combine(configDir, "fee_estimation_cache.bin"), config["FeeEstimation:CacheFile"]);
+        Assert.Equal(Path.Combine(configDir, "tor_onion_v3.key"), config["Node:Tor:OnionServiceKeyFile"]);
+    }
+
+    [Fact]
+    public void Given_AFileWithoutTheOnionKeyPath_When_ReadInitialConfiguration_Then_TheDefaultKeySitsInTheConfigDirectory()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Uses HOME to redirect the default config dir");
+
+        // Arrange: an older file without a Node:Tor section, and one with an absolute key path
+        Environment.SetEnvironmentVariable("HOME", _tempHome);
+        var configDir = Path.Combine(_tempHome, "configs", "regtest-tor");
+        Directory.CreateDirectory(configDir);
+        File.WriteAllText(Path.Combine(configDir, "appsettings.json"), "{ \"Node\": { \"Network\": \"regtest\" } }");
+        var absoluteDir = Path.Combine(_tempHome, "configs", "regtest-tor-absolute");
+        Directory.CreateDirectory(absoluteDir);
+        File.WriteAllText(Path.Combine(absoluteDir, "appsettings.json"),
+                          "{ \"Node\": { \"Network\": \"regtest\", \"Tor\": { \"OnionServiceKeyFile\": \"/keys/onion.key\" } } }");
+
+        // Act
+        var (config, _, _) = NodeConfigurationExtensions.ReadInitialConfiguration(["--config", configDir]);
+        var (absolute, _, _) = NodeConfigurationExtensions.ReadInitialConfiguration(["--config", absoluteDir]);
+
+        // Assert: the key is the onion address, so it never lands in the working directory
+        Assert.Equal(Path.Combine(configDir, "tor_onion_v3.key"), config["Node:Tor:OnionServiceKeyFile"]);
+        Assert.Equal("/keys/onion.key", absolute["Node:Tor:OnionServiceKeyFile"]);
     }
 
     [Fact]

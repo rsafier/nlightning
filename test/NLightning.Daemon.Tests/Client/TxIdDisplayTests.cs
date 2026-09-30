@@ -104,6 +104,30 @@ public class TxIdDisplayTests
     }
 
     [Fact]
+    public void Given_AnOnionService_When_InfoPrinted_Then_TheTorModeAndOnionAddressAreShown()
+    {
+        // Arrange
+        const string onion = "pk@duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:9735";
+        var response = new NodeInfoIpcResponse
+        {
+            PubKey = s_peer,
+            ListeningTo = ["127.0.0.1:9735"],
+            TorMode = "TorOnly",
+            OnionAddress = onion
+        };
+        var off = new NodeInfoIpcResponse { PubKey = s_peer, ListeningTo = [], TorMode = "Off" };
+
+        // Act
+        var output = Print(w => new NodeInfoPrinter(w).Print(response));
+        var offOutput = Print(w => new NodeInfoPrinter(w).Print(off));
+
+        // Assert
+        Assert.Contains("  Tor:               TorOnly\n", output);
+        Assert.Contains($"  Onion address:     {onion}\n", output);
+        Assert.DoesNotContain("Tor:", offOutput);
+    }
+
+    [Fact]
     public void Given_ChannelWithFundingOutput_When_ListChannelsPrinted_Then_FundingOutputIsInDisplayOrder()
     {
         // Arrange

@@ -31,4 +31,11 @@ public sealed class NodeInfoIpcResponse
 
     /// <summary>Channels shutting down, failed or resolving on chain, not Closed yet.</summary>
     [Key(11)] public int? ClosingChannelCount { get; init; }
+
+    /// <summary>The Tor mode (<c>Off</c>, <c>Hybrid</c>, <c>TorOnly</c>); null from a daemon that does not report it.
+    /// </summary>
+    [Key(12)] public string? TorMode { get; init; }
+
+    /// <summary>Our onion service, <c>pubkey@&lt;56 chars&gt;.onion:port</c>, once Tor accepted it.</summary>
+    [Key(13)] public string? OnionAddress { get; init; }
 }

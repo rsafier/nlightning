@@ -127,6 +127,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// no row and both insert it (UNIQUE constraint on Peers.NodeId).
     /// </summary>
     private readonly ConcurrentDictionary<CompactPubKey, SemaphoreSlim> _peerRowSaveGates = new();
+    private readonly TorOptions _torOptions;
 
     private CancellationTokenSource _reconnectCts = new();
 
@@ -167,6 +168,8 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             ReconnectInitialDelay = nodeOptions.Value.ReconnectInitialDelay;
             ReconnectMaxDelay = nodeOptions.Value.ReconnectMaxDelay;
         }
+
+        _torOptions = nodeOptions?.Value.Tor ?? new TorOptions();
 
         _channelManager = channelManager;
         _channelMemoryRepository = channelMemoryRepository;
@@ -561,7 +564,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
 
         // BOLT 1 has no preferred address (init remote_addr is our address, NL-344): keep the one we connected to
         var peer = new PeerModel(connectedPeer.CompactPubKey, connectedPeer.Host, connectedPeer.Port,
-                                 connectedPeer.TcpClient.Client.ProtocolType == ProtocolType.IPv6 ? "IPv6" : "IPv4")
+                                 ToPeerType(peerAddress.Type))
         {
             LastSeenAt = DateTime.UtcNow
         };
@@ -784,8 +787,9 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// <summary>
     /// The peer's listening address from its <c>node_announcement</c> in the graph (NL-514): its first announced IPv4
     /// or IPv6 address that we could dial (port 0, unspecified and multicast ones refused; a loopback one never, it is
-    /// not the peer's listening address any more than a loopback connection is). Null without a graph, for an
-    /// unannounced node, or when it announced only Tor or DNS addresses (we cannot dial those).
+    /// not the peer's listening address any more than a loopback connection is), or its Tor v3 onion service when Tor
+    /// is on (first in Tor-only mode, after the IP addresses otherwise). Null without a graph, for an unannounced node,
+    /// or when it announced nothing we can dial.
     /// </summary>
     private PeerModel? TryGetAnnouncedPeer(CompactPubKey nodeId)
     {
@@ -793,9 +797,20 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         if (graphStore is null || !graphStore.TryGetNode(nodeId, out var node))
             return null;
 
+        PeerModel? ip = null;
+        PeerModel? onion = null;
         foreach (var descriptor in node.Addresses)
         {
-            if (descriptor.Type is not (AddressDescriptorType.IPv4 or AddressDescriptorType.IPv6))
+            if (descriptor.Type == AddressDescriptorType.TorV3)
+            {
+                if (onion is null && _torOptions.CanDial(descriptor.Type) && descriptor.Port > 0
+                                  && OnionV3Address.IsValid(descriptor.Address))
+                    onion = new PeerModel(nodeId, descriptor.Host, descriptor.Port, ToPeerType(descriptor.Type));
+
+                continue;
+            }
+
+            if (ip is not null || descriptor.Type is not (AddressDescriptorType.IPv4 or AddressDescriptorType.IPv6))
                 continue;
 
             var address = new IPAddress(descriptor.Address);
@@ -803,12 +818,22 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
              || IsLoopback(address.ToString()))
                 continue;
 
-            return new PeerModel(nodeId, address.ToString(), descriptor.Port,
-                                 descriptor.Type == AddressDescriptorType.IPv6 ? "IPv6" : "IPv4");
+            ip = new PeerModel(nodeId, address.ToString(), descriptor.Port, ToPeerType(descriptor.Type));
         }
 
-        return null;
+        return _torOptions.IsTorOnly ? onion ?? ip : ip ?? onion;
     }
+
+    /// <summary>
+    /// The <see cref="PeerModel.Type"/> of an address type: <c>IPv4</c>, <c>IPv6</c>, <c>TorV3</c> or <c>DNS</c>.
+    /// </summary>
+    internal static string ToPeerType(AddressDescriptorType type) => type switch
+    {
+        AddressDescriptorType.IPv6 => "IPv6",
+        AddressDescriptorType.TorV3 => "TorV3",
+        AddressDescriptorType.Dns => "DNS",
+        _ => "IPv4"
+    };
 
     /// <summary>
     /// Whether a connection came from this host: a loopback IP address (IPv4-mapped included) or <c>localhost</c>.

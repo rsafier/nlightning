@@ -136,8 +136,14 @@ public sealed class GossipOptions
             throw new ArgumentException($"'{entry}': write an IPv6 address in brackets ([::1]:9735).", nameof(entry));
         if (IPAddress.TryParse(host, out var ip))
             return AddressDescriptor.FromIpAddress(ip, port);
-        if (host.EndsWith(".onion", StringComparison.OrdinalIgnoreCase))
-            return AddressDescriptor.FromHost(AddressDescriptorType.TorV3, host, port);
+        if (OnionV3Address.IsOnionHost(host))
+        {
+            // A mistyped onion name would be announced to the whole network: check its version and checksum
+            if (!OnionV3Address.TryParse(host, out var onion, out var error))
+                throw new ArgumentException($"'{entry}': {error}.", nameof(entry));
+
+            return AddressDescriptor.FromHost(AddressDescriptorType.TorV3, OnionV3Address.ToHostName(onion), port);
+        }
 
         return AddressDescriptor.FromDnsHostname(host, port);
     }

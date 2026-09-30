@@ -17,11 +17,24 @@ using ValueObjects;
 public readonly record struct SeedPeerCandidate(CompactPubKey NodeId, IPAddress Address, ushort Port, string Seed)
 {
     /// <summary>
+    /// The Tor v3 onion host (<c>&lt;56 chars&gt;.onion</c>) of a graph candidate reached through Tor; null for an IP
+    /// candidate, whose <see cref="Address"/> is then the one dialed (it is <see cref="IPAddress.None"/> for an onion).
+    /// </summary>
+    public string? OnionHost { get; init; }
+
+    /// <summary>
+    /// The dialed endpoint as text: the IP address (IPv6 without brackets) or the onion host, and the port. Dial
+    /// failures are remembered by it.
+    /// </summary>
+    public (string Host, ushort Port) Endpoint => (OnionHost ?? Address.ToString(), Port);
+
+    /// <summary>
     /// The address as <c>pubkey@host:port</c>, with an IPv6 host in brackets (<c>pubkey@[2001:db8::1]:9735</c>).
     /// </summary>
     public PeerAddressInfo ToPeerAddressInfo()
     {
-        var host = Address.AddressFamily == AddressFamily.InterNetworkV6 ? $"[{Address}]" : Address.ToString();
+        var host = OnionHost
+                ?? (Address.AddressFamily == AddressFamily.InterNetworkV6 ? $"[{Address}]" : Address.ToString());
         return new PeerAddressInfo($"{NodeId}@{host}:{Port}");
     }
 }

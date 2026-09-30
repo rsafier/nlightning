@@ -11,6 +11,7 @@ using Domain.Enums;
 using Domain.Gossip.Addresses;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Persistence;
+using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 
@@ -208,16 +209,74 @@ public class NodeAnnouncementServiceTests : IDisposable
         Assert.Empty(Alice.Relay.Queued);
     }
 
+    [Fact]
+    public async Task Given_OurOnionServiceComesUp_When_ItsSourceReportsIt_Then_ANewAnnouncementCarriesIt()
+    {
+        // Arrange
+        const string onion = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion";
+        MarkAnnounced();
+        _gossipOptions.AnnounceAddresses = ["203.0.113.5:9735"];
+        var source = new FakeAddressSource();
+        var service = CreateService(source);
+        var before = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Act
+        source.Set(AddressDescriptor.FromHost(AddressDescriptorType.TorV3, onion, 9735));
+        await service.LastRequest;
+
+        // Assert: re-signed at once, IPv4 then Tor v3 (BOLT 7 ascending type order)
+        Assert.NotNull(before);
+        var after = service.Current;
+        Assert.NotNull(after);
+        Assert.NotSame(before, after);
+        var addresses = AddressDescriptorCodec.DecodeList(after.Addresses.Span).Addresses;
+        Assert.Equal([AddressDescriptorType.IPv4, AddressDescriptorType.TorV3], addresses.Select(a => a.Type));
+        Assert.Equal(onion, addresses[1].Host);
+        Assert.Equal(2, Alice.Sink.NodeAnnouncements.Count);
+    }
+
+    [Fact]
+    public void Given_ConfiguredAndRuntimeAddresses_When_Merged_Then_EachIsKeptOnceInTypeOrder()
+    {
+        // Arrange
+        var onion = AddressDescriptor.FromHost(AddressDescriptorType.TorV3,
+                                               "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion", 9735);
+        var dns = AddressDescriptor.FromDnsHostname("node.example.com", 9735);
+        var ip = AddressDescriptor.FromIpAddress(System.Net.IPAddress.Parse("203.0.113.5"), 9735);
+
+        // Act: the configured onion is the same address; a second DNS name would break BOLT 7
+        var merged = NodeAnnouncementService.MergeAddresses(
+            [ip, dns, onion], [onion, AddressDescriptor.FromDnsHostname("other.example.com", 9735)]);
+
+        // Assert
+        Assert.Equal([ip, onion, dns], merged);
+    }
+
     public void Dispose()
     {
         _provider.Dispose();
         _pair.Dispose();
     }
 
-    private NodeAnnouncementService CreateService() =>
+    private NodeAnnouncementService CreateService(FakeAddressSource? addressSource = null) =>
         new(Alice.Channels, Alice.Signer, NullLogger<NodeAnnouncementService>.Instance,
             new OwnGossipPublisher(Alice.Sink, Alice.Relay), _provider, Options.Create(Alice.NodeOptions),
-            Options.Create(_gossipOptions), _clock);
+            Options.Create(_gossipOptions), _clock, addressSource is null ? null : [addressSource]);
+
+    private sealed class FakeAddressSource : IAnnouncedAddressSource
+    {
+        private IReadOnlyList<AddressDescriptor> _addresses = [];
+
+        public event EventHandler? AnnouncedAddressesChanged;
+
+        public IReadOnlyList<AddressDescriptor> GetAnnouncedAddresses() => _addresses;
+
+        public void Set(AddressDescriptor descriptor)
+        {
+            _addresses = [descriptor];
+            AnnouncedAddressesChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
 
     /// <summary>Both halves of the channel's announcement_signatures exchanged.</summary>
     private void MarkAnnounced()
