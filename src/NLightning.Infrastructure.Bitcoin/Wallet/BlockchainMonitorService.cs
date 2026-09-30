@@ -15,6 +15,9 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -1532,12 +1535,23 @@ public class BlockchainMonitorService : IBlockchainMonitor
                 return;
             }
 
+            ChannelModel? forgotten = null;
             using (var scope = _serviceProvider.CreateScope())
             {
                 using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
                 await uow.BroadcastTransactionDbRepository.MarkAbandonedAsync(broadcast.TransactionId);
+
+                // NL-461: a funder channel waiting for this funding's confirmation can never get it; it is forgotten
+                // (Stale) in the abandonment's save, like an interrupted funding, instead of being listed and resumed
+                // at every start
+                if (BroadcastRefusalRules.IsFunding(broadcast.Purpose) && broadcast.ChannelId is { } fundingChannelId)
+                    forgotten = await StageAbandonedFundingChannelStaleAsync(uow, fundingChannelId);
+
                 await uow.SaveChangesAsync();
             }
+
+            if (forgotten is not null)
+                ForgetChannelInMemory(forgotten);
 
             broadcast.MarkAbandoned();
             _pendingBroadcasts.TryRemove(txId, out _);
@@ -1552,13 +1566,60 @@ public class BlockchainMonitorService : IBlockchainMonitor
             _logger.LogError(refusal,
                              "{Purpose} transaction {TxId} of channel {ChannelId} was refused {Refusals} times in a row "
                            + "for a permanent reason and is abandoned: it is no longer sent ({Released} wallet "
-                           + "output(s) locked to the channel released)",
-                             Enum.GetName(broadcast.Purpose), txId, broadcast.ChannelId, permanentRefusals, released);
+                           + "output(s) locked to the channel released{Forgotten})",
+                             Enum.GetName(broadcast.Purpose), txId, broadcast.ChannelId, permanentRefusals, released,
+                             forgotten is null ? string.Empty : "; the channel is forgotten");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Could not abandon {Purpose} transaction {TxId}; it is sent again after the next block",
                                Enum.GetName(broadcast.Purpose), txId);
+        }
+    }
+
+    /// <summary>
+    /// Stages the <see cref="ChannelState.Stale"/> transition of a funder channel whose funding broadcast was just
+    /// abandoned (NL-461), in the caller's abandonment save. Only a channel still waiting for that funding confirms
+    /// moves: it can never get there, and anything else has moved on on its own.
+    /// </summary>
+    /// <returns>The staged channel model, or null when there is nothing to forget.</returns>
+    private async Task<ChannelModel?> StageAbandonedFundingChannelStaleAsync(IUnitOfWork uow, ChannelId channelId)
+    {
+        var channel = await uow.ChannelDbRepository.GetByIdAsync(channelId);
+        if (channel is not { State: ChannelState.V1FundingSigned })
+            return null;
+
+        channel.UpdateState(ChannelState.Stale);
+        await uow.ChannelDbRepository.UpdateAsync(channel);
+        return channel;
+    }
+
+    /// <summary>
+    /// Moves the in-memory channel of an abandoned funding to <see cref="ChannelState.Stale"/> under the channel's
+    /// lock, after the abandonment save (the manager's copy must not stay <see cref="ChannelState.V1FundingSigned"/>).
+    /// Skipped without the channel layer (unit tests) or when the channel is not registered.
+    /// </summary>
+    private void ForgetChannelInMemory(ChannelModel channel)
+    {
+        var locks = _serviceProvider.GetService<IChannelLockProvider>();
+        var memory = _serviceProvider.GetService<IChannelMemoryRepository>();
+        if (locks is null || memory is null || !memory.TryGetChannel(channel.ChannelId, out var inMemory))
+            return;
+
+        try
+        {
+            using var channelLock = locks.Acquire(channel.ChannelId);
+            if (inMemory.State is not ChannelState.V1FundingSigned)
+                return;
+
+            inMemory.UpdateState(ChannelState.Stale);
+            memory.UpdateChannel(inMemory);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not mark channel {ChannelId} Stale in memory after its funding was "
+                                 + "abandoned; it is Stale in the database and forgotten at the next start",
+                               channel.ChannelId);
         }
     }
 

@@ -16,14 +16,19 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
+using NLightning.Tests.Utils.Channels;
 using Options;
 
 /// <summary>
@@ -47,6 +52,7 @@ public class BlockchainMonitorServiceTests
     private readonly Mock<IWatchedOutpointDbRepository> _mockWatchedOutpointRepository;
     private readonly Mock<IBroadcastTransactionDbRepository> _mockBroadcastRepository;
     private readonly Mock<IBlockHeaderDbRepository> _mockBlockHeaderRepository;
+    private readonly Mock<IChannelDbRepository> _mockChannelRepository = new();
     private readonly List<string> _steps = [];
 
     private readonly BlockchainMonitorService _service;
@@ -72,6 +78,7 @@ public class BlockchainMonitorServiceTests
         _mockUnitOfWork.Setup(x => x.WatchedOutpointDbRepository).Returns(_mockWatchedOutpointRepository.Object);
         _mockUnitOfWork.Setup(x => x.BroadcastTransactionDbRepository).Returns(_mockBroadcastRepository.Object);
         _mockUnitOfWork.Setup(x => x.BlockHeaderDbRepository).Returns(_mockBlockHeaderRepository.Object);
+        _mockUnitOfWork.Setup(x => x.ChannelDbRepository).Returns(_mockChannelRepository.Object);
         _mockUnitOfWork.Setup(x => x.FeeInputReservationDbRepository).Returns(_mockFeeInputReservationRepository.Object);
         _mockUnitOfWork.Setup(x => x.SaveChangesAsync()).Callback(() => _steps.Add("save")).Returns(Task.CompletedTask);
 
@@ -889,6 +896,96 @@ public class BlockchainMonitorServiceTests
                                           && e.Message.Contains("1 wallet output(s)"));
     }
 
+    [Fact]
+    public async Task Given_AFundingRefusedForGood_When_ItsChannelStillWaitsForIt_Then_TheChannelIsForgottenStale()
+    {
+        // Arrange (NL-461): the funder channel of an abandoned funding must not stay V1FundingSigned (listed and
+        // resumed at every start); it is forgotten in the abandonment's save, like an interrupted funding
+        var logger = new RecordingLogger();
+        var service = CreateService(_chain, logger: logger);
+        service.AbandonAfterPermanentRefusals = 3;
+        var utxos = new Mock<IUtxoMemoryRepository>();
+        utxos.Setup(u => u.ReturnUtxosNotSpentOnChannel(It.IsAny<ChannelId>())).Returns([]);
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), utxos.Object);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x4a, 32).ToArray());
+        var stored = CreateChannel(channelId, ChannelState.V1FundingSigned);
+        _mockChannelRepository.Setup(x => x.GetByIdAsync(channelId)).ReturnsAsync(stored);
+        _mockChannelRepository.Setup(x => x.UpdateAsync(It.Is<ChannelModel>(c => c.State == ChannelState.Stale)))
+                              .Callback(() => _steps.Add("channel stale"))
+                              .Returns(Task.CompletedTask);
+        var inMemory = CreateChannel(channelId, ChannelState.V1FundingSigned);
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(x => x.TryGetChannel(channelId, out inMemory)).Returns(true);
+        var locks = new Mock<IChannelLockProvider>();
+        locks.Setup(x => x.Acquire(channelId)).Returns(Mock.Of<IDisposable>());
+        _fakeServiceProvider.AddService(typeof(IChannelLockProvider), locks.Object);
+        _fakeServiceProvider.AddService(typeof(IChannelMemoryRepository), memory.Object);
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        var broadcast = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x4b)), BroadcastPurpose.Funding,
+                                                      channelId, 110);
+        _mockBroadcastRepository.Setup(x => x.MarkAbandonedAsync(broadcast.TransactionId))
+                                .Callback(() => _steps.Add("abandon"))
+                                .ReturnsAsync(true);
+        _chain.SendFailure = new InvalidOperationException("bad-txns-inputs-missingorspent");
+
+        // Act: the first send and two blocks reach the threshold
+        Assert.False(await service.PublishAsync(broadcast));
+        for (var i = 0; i < 5; i++)
+            await service.ProcessNewBlockAsync(_chain.Mine(), _chain.TipHeight);
+        await service.StopAsync();
+
+        // Assert: Stale in the abandonment's save (after the mark, before it) and in memory
+        _mockChannelRepository.Verify(x => x.UpdateAsync(It.Is<ChannelModel>(c => c.State == ChannelState.Stale)),
+                                      Times.Once);
+        var abandonAt = _steps.IndexOf("abandon");
+        Assert.True(abandonAt >= 0 && _steps[abandonAt + 1] == "channel stale" && _steps[abandonAt + 2] == "save",
+                    string.Join(", ", _steps.Skip(Math.Max(0, abandonAt - 1)).Take(4)));
+        memory.Verify(x => x.UpdateChannel(It.Is<ChannelModel>(c => c.State == ChannelState.Stale)), Times.Once);
+        utxos.Verify(u => u.ReturnUtxosNotSpentOnChannel(channelId), Times.Once);
+        Assert.Contains(logger.Entries, e => e.Message.Contains("the channel is forgotten"));
+    }
+
+    [Fact]
+    public async Task Given_AnOpenChannel_When_ASpliceFundingIsAbandoned_Then_TheChannelIsKept()
+    {
+        // Arrange (NL-461): a splice's funding broadcast is a Funding row too; an Open channel is never forgotten for
+        // it (the splice resumes from its rows), only a channel waiting for the funding confirms
+        var logger = new RecordingLogger();
+        var service = CreateService(_chain, logger: logger);
+        service.AbandonAfterPermanentRefusals = 2;
+        var utxos = new Mock<IUtxoMemoryRepository>();
+        utxos.Setup(u => u.ReturnUtxosNotSpentOnChannel(It.IsAny<ChannelId>())).Returns([]);
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), utxos.Object);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x4c, 32).ToArray());
+        var stored = CreateChannel(channelId, ChannelState.Open);
+        _mockChannelRepository.Setup(x => x.GetByIdAsync(channelId)).ReturnsAsync(stored);
+        var inMemory = CreateChannel(channelId, ChannelState.Open);
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(x => x.TryGetChannel(channelId, out inMemory)).Returns(true);
+        var locks = new Mock<IChannelLockProvider>();
+        locks.Setup(x => x.Acquire(channelId)).Returns(Mock.Of<IDisposable>());
+        _fakeServiceProvider.AddService(typeof(IChannelLockProvider), locks.Object);
+        _fakeServiceProvider.AddService(typeof(IChannelMemoryRepository), memory.Object);
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        var broadcast = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x4d)), BroadcastPurpose.Funding,
+                                                      channelId, 110);
+        _mockBroadcastRepository.Setup(x => x.MarkAbandonedAsync(broadcast.TransactionId)).ReturnsAsync(true);
+        _chain.SendFailure = new InvalidOperationException("bad-txns-inputs-missingorspent");
+
+        // Act
+        Assert.False(await service.PublishAsync(broadcast));
+        for (var i = 0; i < 4; i++)
+            await service.ProcessNewBlockAsync(_chain.Mine(), _chain.TipHeight);
+        await service.StopAsync();
+
+        // Assert: the broadcast is abandoned, the channel is untouched
+        _mockBroadcastRepository.Verify(x => x.MarkAbandonedAsync(broadcast.TransactionId), Times.Once);
+        _mockChannelRepository.Verify(x => x.UpdateAsync(It.IsAny<ChannelModel>()), Times.Never);
+        memory.Verify(x => x.UpdateChannel(It.IsAny<ChannelModel>()), Times.Never);
+        Assert.Equal(ChannelState.Open, stored.State);
+        Assert.DoesNotContain(logger.Entries, e => e.Message.Contains("the channel is forgotten"));
+    }
+
     [Theory]
     [InlineData(BroadcastPurpose.LocalCommitment)]
     [InlineData(BroadcastPurpose.Penalty)]
@@ -1153,6 +1250,20 @@ public class BlockchainMonitorServiceTests
         transaction.Inputs.Add(new OutPoint(new uint256(Enumerable.Repeat(seed, 32).ToArray()), seed));
         transaction.Outputs.Add(Money.Satoshis(100_000), new Key().PubKey.WitHash.ScriptPubKey);
         return transaction;
+    }
+
+    /// <summary>A minimal funder channel in <paramref name="state"/> with both sides' dust limits at 354 sat.</summary>
+    private static ChannelModel CreateChannel(ChannelId channelId, ChannelState state)
+    {
+        var nodeKey = new CompactPubKey([0x02, .. Enumerable.Repeat((byte)0x11, 32)]);
+        return new ChannelModel(
+            TestChannelParams.Create(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(253),
+                                     LightningMoney.MilliSatoshis(1_000), LightningMoney.Satoshis(354), 100,
+                                     LightningMoney.MilliSatoshis(100_000_000), 3, false,
+                                     LightningMoney.Satoshis(354), 144, FeatureSupport.No),
+            channelId, null, null, true, null, null, LightningMoney.Zero,
+            new ChannelKeySetModel(0, nodeKey, nodeKey, nodeKey, nodeKey, nodeKey, nodeKey), 0, 0, LightningMoney.Zero,
+            null, 0, new CompactPubKey([0x03, .. Enumerable.Repeat((byte)0x22, 32)]), 0, state, ChannelVersion.V1);
     }
 
     private static Transaction CreateSpend(TxId spentTxId, uint outputIndex)
