@@ -15,6 +15,7 @@ using Graph.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 using Metrics;
+using Relay.Interfaces;
 
 public static class SyncServiceCollectionExtensions
 {
@@ -25,10 +26,12 @@ public static class SyncServiceCollectionExtensions
     /// <c>AddGossipGraphServices</c>), re-queries what <see cref="GossipIngress"/> dropped (NL-353), sizes and paces
     /// its <c>query_short_channel_ids</c> by the ingress queue (<see cref="GossipGraphOptions.MaxQueuedPerPeer"/>) and
     /// takes the tip
-    /// from <see cref="IBlockchainMonitor"/> when one is registered. Bind <see cref="GossipSyncOptions"/> from the
-    /// <c>Gossip</c> section. Idempotent. Nothing needs starting: the timers start with the first peer and stop when the
-    /// container disposes the manager. Also binds <see cref="IGossipScidRefresher"/> to
-    /// <see cref="GossipSyncScidRefresher"/> (G3-T5), replacing the payment layer's no-op default in either order.
+    /// from <see cref="IBlockchainMonitor"/> when one is registered. Its queries, replies and filters go out through
+    /// the relay's <see cref="IGossipPeerSender"/> when one is registered (the peer's outbox, NL-361). Bind
+    /// <see cref="GossipSyncOptions"/> from the <c>Gossip</c> section. Idempotent. Nothing needs starting: the timers
+    /// start with the first peer and stop when the container disposes the manager. Also binds
+    /// <see cref="IGossipScidRefresher"/> to <see cref="GossipSyncScidRefresher"/> (G3-T5), replacing the payment
+    /// layer's no-op default in either order.
     /// </summary>
     public static IServiceCollection AddGossipSyncServices(this IServiceCollection services)
     {
@@ -61,7 +64,8 @@ public static class SyncServiceCollectionExtensions
                                          sp.GetService<GossipMetrics>(),
                                          ingress is null ? null : ingress.QueuedCountOf,
                                          GetPendingChannels(sp, ingress),
-                                         hasChannelWith);
+                                         hasChannelWith,
+                                         sp.GetService<IGossipPeerSender>());
         });
         services.TryAddSingleton<IGossipSyncManager>(sp => sp.GetRequiredService<GossipSyncManager>());
         services.TryAddSingleton<IGossipSyncService>(sp => sp.GetRequiredService<GossipSyncManager>());

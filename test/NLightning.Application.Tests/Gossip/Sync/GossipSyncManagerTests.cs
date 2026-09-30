@@ -4,8 +4,10 @@ namespace NLightning.Application.Tests.Gossip.Sync;
 
 using Application.Gossip.Sync;
 using Application.Gossip.Sync.Interfaces;
+using Application.Gossip.Relay.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Enums;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Queries;
 using Domain.Node.Options;
@@ -784,6 +786,81 @@ public class GossipSyncManagerTests : IDisposable
         Assert.Empty(peer.Warnings);
     }
 
+    [Fact]
+    public async Task Given_ARegisteredSender_When_TheSyncRuns_Then_EverySyncMessageGoesThroughTheOutbox()
+    {
+        // Arrange: NL-361, our queries, replies and filters take the relay's outbox port, not the direct send
+        var known = _graph.AddSignedChannel(new ShortChannelId(100, 0, 0), SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        var sender = new FakeGossipSender();
+        var manager = CreateManager(peerSender: sender);
+        var peer = new FakeGossipPeer(1);
+
+        // Act: a whole range sync (query, scid query, filter) and one reply of ours
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+        manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, known.ShortChannelId,
+                                                                   new ShortChannelId(200, 1, 0)));
+        await peer.NextAsync<QueryShortChannelIdsMessage>();
+        manager.HandleMessage(peer, End());
+        await peer.NextAsync<GossipTimestampFilterMessage>();
+        await manager.WhenIdleAsync(peer, TestContext.Current.CancellationToken);
+        var answered = manager.QueryScidAsync(new ShortChannelId(123, 4, 5),
+                                              TestContext.Current.CancellationToken);
+        await peer.NextAsync<QueryShortChannelIdsMessage>();
+        manager.HandleMessage(peer, End());
+        Assert.True(await answered);
+
+        // Assert: everything went out as outbox offers for this connection, and the peer got exactly those
+        Assert.Equal(peer.Sent.Count, sender.Offers.Count);
+        Assert.All(sender.Offers, offer => Assert.Equal(new GossipPeer(peer.PeerPubKey, peer), offer.Peer));
+        Assert.Equal(3, sender.Offers.Count(m => m.Message is QueryChannelRangeMessage
+                                                                     or QueryShortChannelIdsMessage));
+        Assert.Single(sender.Offers, m => m.Message is GossipTimestampFilterMessage);
+    }
+
+    [Fact]
+    public async Task Given_AFullOutbox_When_AQueryIsOffered_Then_ItIsOfferedAgainUntilItFits()
+    {
+        // Arrange: NL-360, the outbox is at its gossip cap; a sync message is not dropped around it
+        var sender = new FakeGossipSender();
+        var manager = CreateManager(o => o.SyncPeers = 0, peerSender: sender);
+        var peer = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<GossipTimestampFilterMessage>();
+        sender.ScriptNext(2, GossipEnqueueResult.Full);
+        var answered = manager.QueryScidAsync(new ShortChannelId(123, 4, 5),
+                                              TestContext.Current.CancellationToken);
+
+        // Act / Assert: offered three times, delivered on the third
+        await WaitForAsync(() => sender.OfferedCount == 4, TestContext.Current.CancellationToken);
+        var query = await peer.NextAsync<QueryShortChannelIdsMessage>();
+        manager.HandleMessage(peer, End());
+        Assert.True(await answered);
+        Assert.Equal([new ShortChannelId(123, 4, 5)],
+                     GossipQueryCodec.DecodeShortChannelIds(query.Payload.EncodedShortIds.Span, "test"));
+    }
+
+    [Fact]
+    public async Task Given_AConnectionGone_When_AQueryIsOffered_Then_ItFailsWithoutASecondOffer()
+    {
+        // Arrange
+        var sender = new FakeGossipSender();
+        var manager = CreateManager(o => o.SyncPeers = 0, peerSender: sender);
+        var peer = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<GossipTimestampFilterMessage>();
+        sender.ScriptNext(1, GossipEnqueueResult.Gone);
+
+        // Act
+        var answered = manager.QueryScidAsync(new ShortChannelId(123, 4, 5), TestContext.Current.CancellationToken);
+
+        // Assert: gone, so the query is given up (and offered exactly once)
+        Assert.False(await answered.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+        Assert.Equal(2, sender.OfferedCount);
+        Assert.True(await peer.NothingSentWithinAsync(s_quiet));
+        await manager.WhenIdleAsync(peer, TestContext.Current.CancellationToken);
+    }
+
     public void Dispose()
     {
         foreach (var manager in _managers)
@@ -793,7 +870,8 @@ public class GossipSyncManagerTests : IDisposable
     private GossipSyncManager CreateManager(Action<GossipSyncOptions>? configure = null,
                                             Func<int>? getIngressQueueDepth = null, int ingressQueueCapacity = 0,
                                             Func<CompactPubKey, int>? getPeerQueueDepth = null,
-                                            Func<CompactPubKey, bool>? hasChannelWith = null)
+                                            Func<CompactPubKey, bool>? hasChannelWith = null,
+                                            FakeGossipSender? peerSender = null)
     {
         var options = new GossipSyncOptions();
         configure?.Invoke(options);
@@ -808,9 +886,21 @@ public class GossipSyncManagerTests : IDisposable
                                                 _missed = [];
                                                 return taken;
                                             }, () => Tip, getIngressQueueDepth, ingressQueueCapacity,
-                                            getPeerQueueDepth: getPeerQueueDepth, hasChannelWith: hasChannelWith);
+                                            getPeerQueueDepth: getPeerQueueDepth, hasChannelWith: hasChannelWith,
+                                            peerSender: peerSender);
         _managers.Add(manager);
         return manager;
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException("condition not met");
+            await Task.Delay(10, ct);
+        }
     }
 
     private static ReplyShortChannelIdsEndMessage End() => new(new ReplyShortChannelIdsEndPayload(s_chain, true));

@@ -9,6 +9,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Gossip.Enums;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Queries;
 using Domain.Node.Interfaces;
@@ -22,6 +23,7 @@ using Domain.Protocol.ValueObjects;
 using Graph.Interfaces;
 using Interfaces;
 using Metrics;
+using Relay.Interfaces;
 
 /// <inheritdoc cref="IGossipSyncManager"/>
 /// <remarks>
@@ -30,7 +32,8 @@ using Metrics;
 /// loops: the <b>responder</b> answers the peer's queries in arrival order (<see cref="QueryResponder"/>; the replies
 /// of one query go out back to back, not at the relay flush, B7-Q-02), and the <b>querier</b> runs our own queries one
 /// at a time (B7-Q-01, B7-Q-03: never a second query before the first is answered). Nothing is sent before
-/// <see cref="OnPeerInitialized"/> (BOLT 1: init goes first).
+/// <see cref="OnPeerInitialized"/> (BOLT 1: init goes first). Everything we send goes through the outbox port like
+/// the relay's (NL-351, NL-361), so it is FIFO with the rest of the peer's <c>PeerOutbox</c>.
 /// </para>
 /// <para>
 /// At init (plan §3.7; replaces the bootstrap <c>gossip_timestamp_filter(0, 0xFFFFFFFF)</c> of wave G-B):
@@ -109,6 +112,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     private readonly Lock _timerLock = new();
     private readonly Lock _missedLock = new();
     private readonly HashSet<ShortChannelId> _missedBacklog = [];
+    private readonly IGossipPeerSender? _peerSender;
     private ITimer? _rotationTimer;
     private ITimer? _missedTimer;
     private volatile bool _hasCompletedInitialSync;
@@ -143,6 +147,10 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     /// <param name="hasChannelWith">
     /// Whether we have a channel with the peer (null: unknown). Sync peers are chosen channel peers first (NL-363).
     /// </param>
+    /// <param name="peerSender">
+    /// Where our gossip goes out (null: the peer service directly). Like the relay's (NL-351), the peer's outbox
+    /// (NL-361), so our queries, replies and filters are FIFO with everything else queued for the peer.
+    /// </param>
     public GossipSyncManager(IGraphStore graphStore, IOptions<GossipSyncOptions> options,
                              IOptions<NodeOptions> nodeOptions, ILogger<GossipSyncManager> logger,
                              TimeProvider? timeProvider = null, IGossipIngress? ingress = null,
@@ -151,7 +159,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                              int ingressQueueCapacity = 0, GossipMetrics? metrics = null,
                              Func<CompactPubKey, int>? getPeerQueueDepth = null,
                              IEnumerable<IGossipPendingChannels>? pendingChannels = null,
-                             Func<CompactPubKey, bool>? hasChannelWith = null)
+                             Func<CompactPubKey, bool>? hasChannelWith = null,
+                             IGossipPeerSender? peerSender = null)
     {
         _pendingChannels = pendingChannels?.Distinct(ReferenceEqualityComparer.Instance)
                                            .Cast<IGossipPendingChannels>()
@@ -169,6 +178,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         _takeMissedShortChannelIds = takeMissedShortChannelIds;
         _getTipHeight = getTipHeight;
         _hasChannelWith = hasChannelWith;
+        _peerSender = peerSender;
         _responder = new QueryResponder(graphStore, options);
         _queriedChannels = new QueriedChannelTracker(_timeProvider, _options.QueriedChannelTtl);
     }
@@ -568,7 +578,10 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                     _logger.LogDebug("Answering {MessageType} from peer {Peer} with {Count} messages",
                                      Enum.GetName(query.Type), session.Peer.PeerPubKey, replies.Count);
                     foreach (var reply in replies)
-                        await session.Peer.SendGossipMessageAsync(reply);
+                    {
+                        if (!await SendToPeerAsync(session, reply, cancellationToken))
+                            return;
+                    }
                 }
                 catch (WarningException we)
                 {
@@ -619,7 +632,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                     switch (work)
                     {
                         case FilterWork filter:
-                            await SendFilterAsync(session, filter.Filter);
+                            await SendFilterAsync(session, filter.Filter, cancellationToken);
                             break;
                         case RangeSyncWork:
                             await RunRangeSyncAsync(session, cancellationToken);
@@ -745,7 +758,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             try
             {
                 _logger.LogDebug("Querying the channel range of peer {Peer}", session.Peer.PeerPubKey);
-                await session.Peer.SendGossipMessageAsync(query);
+                if (!await SendToPeerAsync(session, query, cancellationToken))
+                    return;
                 while (!collector.IsComplete)
                 {
                     var reply = await ReadReplyAsync(session, cancellationToken);
@@ -856,7 +870,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             {
                 session.SyncFilterSent = true;
                 await SendFilterAsync(session, new GossipTimestampFilter(GetSyncFilterStart(withTimestamps, startedAt),
-                                                                         uint.MaxValue));
+                                                                         uint.MaxValue), cancellationToken);
             }
 
             if (!_hasCompletedInitialSync)
@@ -891,7 +905,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         session.LiveFilterSent = true;
         try
         {
-            await SendFilterAsync(session, new GossipTimestampFilter(NowSeconds(), uint.MaxValue));
+            await SendFilterAsync(session, new GossipTimestampFilter(NowSeconds(), uint.MaxValue), cancellationToken);
         }
         catch (Exception e)
         {
@@ -1048,7 +1062,9 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         var abandoned = false;
         try
         {
-            await session.Peer.SendGossipMessageAsync(query);
+            if (!await SendToPeerAsync(session, query, cancellationToken))
+                return ScidQueryOutcome.Failed;
+
             var reply = await ReadReplyAsync(session, cancellationToken);
             if (reply is null)
             {
@@ -1123,6 +1139,40 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         }
     }
 
+    /// <summary>
+    /// Sends one gossip message of ours (a query, a reply, a <c>gossip_timestamp_filter</c>) to the peer (NL-361):
+    /// through the outbox port like the relay's (NL-351) when one is registered, so it is FIFO with everything else
+    /// queued for the peer; else directly. A full outbox (NL-360) is waited out, not dropped around: a lost query or
+    /// reply would break BOLT 7's sync; a gone connection reports failure. Warnings keep their direct send.
+    /// </summary>
+    private async Task<bool> SendToPeerAsync(PeerSession session, IMessage message,
+                                             CancellationToken cancellationToken)
+    {
+        var sender = _peerSender;
+        if (sender is null)
+        {
+            await session.Peer.SendGossipMessageAsync(message);
+            return true;
+        }
+
+        var peer = session.GossipPeer;
+        while (true)
+        {
+            switch (await sender.SendAsync(peer, message, 0))
+            {
+                case GossipEnqueueResult.Queued:
+                    return true;
+                case GossipEnqueueResult.Gone:
+                    _logger.LogDebug("Not sending {MessageType} to peer {Peer}: the connection is gone",
+                                     Enum.GetName(message.Type), session.Peer.PeerPubKey);
+                    return false;
+                default:
+                    await Task.Delay(s_ingressPollInterval, _timeProvider, cancellationToken);
+                    break;
+            }
+        }
+    }
+
     private async Task<IMessage?> ReadReplyAsync(PeerSession session, CancellationToken cancellationToken)
     {
         // A cancelled read leaves the channel alone, so a late reply is not swallowed by an abandoned wait
@@ -1138,14 +1188,19 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         }
     }
 
-    private async Task SendFilterAsync(PeerSession session, GossipTimestampFilter filter)
+    private async Task<bool> SendFilterAsync(PeerSession session, GossipTimestampFilter filter,
+                                             CancellationToken cancellationToken)
     {
         _logger.LogDebug("Sending gossip_timestamp_filter [{First}, +{Range}) to peer {Peer}", filter.FirstTimestamp,
                          filter.TimestampRange, session.Peer.PeerPubKey);
-        await session.Peer.SendGossipMessageAsync(new GossipTimestampFilterMessage(
-                                                      new GossipTimestampFilterPayload(
-                                                          OurChain, filter.FirstTimestamp, filter.TimestampRange)));
+        if (!await SendToPeerAsync(session, new GossipTimestampFilterMessage(
+                                       new GossipTimestampFilterPayload(
+                                           OurChain, filter.FirstTimestamp, filter.TimestampRange)),
+                                   cancellationToken))
+            return false;
+
         session.SentFilter = filter;
+        return true;
     }
 
     private async Task SendWarningAsync(PeerSession session, WarningException warning)
@@ -1236,6 +1291,12 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         }
 
         public IPeerService Peer { get; }
+
+        private GossipPeer? _gossipPeer;
+
+        /// <summary>This connection as the outbox port addresses it (NL-361).</summary>
+        public GossipPeer GossipPeer => _gossipPeer ??= new GossipPeer(Peer.PeerPubKey, Peer);
+
         public CancellationToken CancellationToken => _cts.Token;
         public ChannelReader<IMessage> Queries => _queries.Reader;
         public ChannelReader<SyncWork> Work => _work.Reader;
