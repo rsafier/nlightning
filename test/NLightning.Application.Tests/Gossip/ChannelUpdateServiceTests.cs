@@ -190,6 +190,64 @@ public class ChannelUpdateServiceTests
     }
 
     [Fact]
+    public void Given_AliasChannel_When_CreatingAnUpdateForAnotherOfItsScids_Then_ItIsSignedForThatScid()
+    {
+        // Arrange - NL-266: an option_scid_alias channel's standing update names the peer's alias, while an onion may
+        // name the channel by one of our local aliases (or the real scid): the failure carries an update for that one
+        var service = CreateService(out var ourSigner);
+        var channel = AddChannel(ChannelState.Open, useScidAlias: FeatureSupport.Optional);
+        var peerAlias = new ShortChannelId(16_000_000, 7, 0);
+        var localAlias = new ShortChannelId(16_000_000, 9, 0);
+        channel.RemoteAlias = peerAlias;
+        channel.LocalAliases = [localAlias];
+        var standing = service.CreateChannelUpdate(channel);
+        Assert.Equal(peerAlias, standing.Payload.ShortChannelId);
+
+        // Act
+        var forAlias = service.CreateChannelUpdateForScid(channel, localAlias);
+        var forRealScid = service.CreateChannelUpdateForScid(channel, s_shortChannelId);
+
+        // Assert: each names the scid it was asked for, with the channel's policy and our signature, and the
+        // standing update is untouched
+        Assert.NotNull(forAlias);
+        Assert.Equal(localAlias, forAlias.Payload.ShortChannelId);
+        Assert.Equal(standing.Payload.FeeBaseMsat, forAlias.Payload.FeeBaseMsat);
+        Assert.Equal(standing.Payload.CltvExpiryDelta, forAlias.Payload.CltvExpiryDelta);
+        Assert.Equal(standing.Payload.MessageFlags, forAlias.Payload.MessageFlags);
+        Assert.True(ourSigner.VerifyNodeMessage(forAlias.Payload.GetSignatureHash(), forAlias.Payload.Signature,
+                                               OurNodeId));
+        Assert.NotNull(forRealScid);
+        Assert.Equal(s_shortChannelId, forRealScid.Payload.ShortChannelId);
+        Assert.True(service.TryGetLocalChannelUpdate(channel.ChannelId, out var kept));
+        Assert.Equal(standing, kept);
+    }
+
+    [Fact]
+    public void Given_AScidThatDoesNotNameTheChannel_When_CreatingAnUpdateForIt_Then_Null()
+    {
+        // Arrange - NL-266: only a short channel id of the channel itself gets an update
+        var service = CreateService(out _);
+        var channel = AddChannel(ChannelState.Open, useScidAlias: FeatureSupport.Optional);
+        channel.RemoteAlias = new ShortChannelId(16_000_000, 7, 0);
+        channel.LocalAliases = [new ShortChannelId(16_000_000, 9, 0)];
+
+        // Act / Assert
+        Assert.Null(service.CreateChannelUpdateForScid(channel, new ShortChannelId(16_000_000, 8, 0)));
+    }
+
+    [Fact]
+    public void Given_AChannelWithoutAUsablePolicy_When_CreatingAnUpdateForItsScid_Then_Null()
+    {
+        // Arrange - the same rules as the standing update (here: the minimum is above the largest HTLC)
+        _nodeOptions.Routing.HtlcMinimumMsat = 300_000_000;
+        var service = CreateService(out _);
+        var channel = AddChannel(ChannelState.Open, capacity: LightningMoney.Satoshis(200_000));
+
+        // Act / Assert
+        Assert.Null(service.CreateChannelUpdateForScid(channel, s_shortChannelId));
+    }
+
+    [Fact]
     public async Task Given_ScidAliasChannelWithoutPeerAlias_When_SendingUpdate_Then_NothingIsSent()
     {
         // Arrange

@@ -2029,16 +2029,22 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
     /// <summary>
     /// Our last signed <c>channel_update</c> for <paramref name="outgoing"/> as a failure field, when its
-    /// <c>short_channel_id</c> is the one the onion used (BOLT 4); else empty (<c>len = 0</c>).
+    /// <c>short_channel_id</c> is the one the onion used (BOLT 4); otherwise one signed for the short channel id the
+    /// onion used, when the channel goes by it (NL-266: an <c>option_scid_alias</c> channel's standing update names
+    /// the peer's alias, while the onion may name the channel by one of our local aliases or the real scid); else
+    /// empty (<c>len = 0</c>).
     /// </summary>
     private byte[] UpdateFor(ChannelModel? outgoing, ShortChannelId requestedScid)
     {
-        if (outgoing is null || _channelUpdateService is null
-                             || !_channelUpdateService.TryGetLocalChannelUpdate(outgoing.ChannelId, out var update)
-                             || update is null || update.Payload.ShortChannelId != requestedScid)
+        if (outgoing is null || _channelUpdateService is null)
             return [];
 
-        return FailureChannelUpdateFactory.Encode(update);
+        if (_channelUpdateService.TryGetLocalChannelUpdate(outgoing.ChannelId, out var update)
+         && update is not null && update.Payload.ShortChannelId == requestedScid)
+            return FailureChannelUpdateFactory.Encode(update);
+
+        var forScid = _channelUpdateService.CreateChannelUpdateForScid(outgoing, requestedScid);
+        return forScid is null ? [] : FailureChannelUpdateFactory.Encode(forScid);
     }
 
     private async Task<HtlcOrigin?> GetOriginAsync(ChannelId channelId, ulong htlcId)

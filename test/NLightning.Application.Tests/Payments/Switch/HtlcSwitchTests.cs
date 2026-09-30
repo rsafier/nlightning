@@ -8,6 +8,7 @@ using Application.Channels.Fees;
 using Application.Channels.Interfaces;
 using Application.Channels.Services;
 using Application.Channels.Switch;
+using Application.Gossip.Interfaces;
 using Application.Payments.FinalHop;
 using Application.Payments.Onion;
 using Application.Payments.Policy;
@@ -17,6 +18,7 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
@@ -27,9 +29,13 @@ using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
+using Domain.Protocol.Constants;
+using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.Factories;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
+using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
 using static Channels.Handlers.NormalOperationTestContext;
@@ -46,6 +52,8 @@ public class HtlcSwitchTests
     private readonly Mock<IChannelOperations> _operations = new();
     private readonly Mock<IForwardCircuitDbRepository> _circuits = new();
     private readonly Mock<ILocalPaymentHtlcHandler> _paymentHandler = new();
+    private readonly Mock<IChannelUpdateService> _channelUpdates = new();
+    private readonly Mock<IFailureOnionService> _failureOnions = new();
     private readonly List<string> _calls = [];
 
     public HtlcSwitchTests()
@@ -411,8 +419,88 @@ public class HtlcSwitchTests
         Assert.Equal(3u, call.HoldTime);
     }
 
+    [Fact]
+    public async Task Given_TheFailureNamesTheChannelByAnAlias_When_TheStandingUpdateNamesAnotherScid_Then_AnUpdateForTheAliasIsCarried()
+    {
+        // Arrange - NL-266: an option_scid_alias channel's standing update names the peer's alias, but the onion
+        // (and so the circuit) named the channel by one of our local aliases: BOLT 4 wants the carried update to
+        // name the scid the onion used, so one is signed for it
+        var incoming = _context.LockIn(HtlcDirection.Incoming, 30_000_000, SecretOf(9));
+        var alias = new ShortChannelId(16_000_000, 9, 0);
+        _context.Channel.ShortChannelId = new ShortChannelId(500, 3, 1);
+        _context.Channel.LocalAliases = [alias];
+        _context.ChannelMemoryRepository.Setup(r => r.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+                                        .Returns([_context.Channel]);
+        _context.ChannelStateDbRepository
+                .Setup(r => r.FindHtlcsByOriginAsync(HtlcOrigin.Forwarded(TestChannelId, incoming.Id)))
+                .ReturnsAsync([]);
+        var circuit = ForwardCircuitModel.Restore(TestChannelId, incoming.Id,
+                                                  LightningMoney.MilliSatoshis(30_000_000), 640, incoming.PaymentHash,
+                                                  SecretOf(0x5E), alias, LightningMoney.MilliSatoshis(29_000_000),
+                                                  600, DateTimeOffset.UtcNow, ForwardCircuitStatus.Pending, null, null,
+                                                  null);
+        _circuits.Setup(r => r.GetByIncomingAsync(TestChannelId, incoming.Id)).ReturnsAsync(circuit);
+        var standing = UpdateNamed(new ShortChannelId(16_000_000, 7, 0));
+        _channelUpdates.Setup(s => s.TryGetLocalChannelUpdate(TestChannelId, out standing)).Returns(true);
+        _channelUpdates.Setup(s => s.CreateChannelUpdateForScid(_context.Channel, alias)).Returns(UpdateNamed(alias));
+        FailureMessage? failure = null;
+        _failureOnions.Setup(f => f.CreateErrorPacket(It.IsAny<Secret>(), It.IsAny<FailureMessage>(), It.IsAny<int>()))
+                      .Callback((Secret _, FailureMessage message, int _) => failure = message)
+                      .Returns(new byte[292]);
+
+        // Act: the pending circuit's offer never persisted, so its replay fails the upstream HTLC locally
+        await CreateSwitch(channelUpdateService: _channelUpdates.Object)
+           .HandleAsync(new IncomingHtlcLockedIn(TestChannelId, incoming), TestContext.Current.CancellationToken);
+
+        // Assert: the temporary_channel_failure carries our update for the alias the onion used
+        Assert.True(FailureChannelUpdateFactory.TryGetChannelUpdate(failure!.ChannelUpdate!.Value, out var carried));
+        Assert.Equal(alias, carried!.Payload.ShortChannelId);
+    }
+
+    [Fact]
+    public async Task Given_TheOnionsScidNamesNoChannel_When_TheCircuitFailsUpstream_Then_TheFailureCarriesLenZero()
+    {
+        // Arrange - NL-266: a short channel id that is not one of the channel's names gets no update (len = 0)
+        var incoming = _context.LockIn(HtlcDirection.Incoming, 30_000_000, SecretOf(9));
+        var unknown = new ShortChannelId(16_000_000, 8, 0);
+        _context.Channel.ShortChannelId = new ShortChannelId(500, 3, 1);
+        _context.Channel.LocalAliases = [new ShortChannelId(16_000_000, 9, 0)];
+        _context.ChannelMemoryRepository.Setup(r => r.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+                                        .Returns([_context.Channel]);
+        _context.ChannelStateDbRepository
+                .Setup(r => r.FindHtlcsByOriginAsync(HtlcOrigin.Forwarded(TestChannelId, incoming.Id)))
+                .ReturnsAsync([]);
+        var circuit = ForwardCircuitModel.Restore(TestChannelId, incoming.Id,
+                                                  LightningMoney.MilliSatoshis(30_000_000), 640, incoming.PaymentHash,
+                                                  SecretOf(0x5E), unknown, LightningMoney.MilliSatoshis(29_000_000),
+                                                  600, DateTimeOffset.UtcNow, ForwardCircuitStatus.Pending, null, null,
+                                                  null);
+        _circuits.Setup(r => r.GetByIncomingAsync(TestChannelId, incoming.Id)).ReturnsAsync(circuit);
+        FailureMessage? failure = null;
+        _failureOnions.Setup(f => f.CreateErrorPacket(It.IsAny<Secret>(), It.IsAny<FailureMessage>(), It.IsAny<int>()))
+                      .Callback((Secret _, FailureMessage message, int _) => failure = message)
+                      .Returns(new byte[292]);
+
+        // Act
+        await CreateSwitch(channelUpdateService: _channelUpdates.Object)
+           .HandleAsync(new IncomingHtlcLockedIn(TestChannelId, incoming), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(failure!.ChannelUpdate!.Value.IsEmpty);
+        _channelUpdates.Verify(s => s.CreateChannelUpdateForScid(It.IsAny<ChannelModel>(), It.IsAny<ShortChannelId>()),
+                               Times.Once);
+    }
+
+    /// <summary>An unsigned-shape update message named <paramref name="scid"/> (the signature is not checked).</summary>
+    private static ChannelUpdateMessage UpdateNamed(ShortChannelId scid) =>
+        new(new ChannelUpdatePayload(ChannelUpdatePayload.EmptySignature, ChainConstants.Regtest, scid, 1,
+                                     ChannelUpdatePayload.MessageFlagMustBeOne
+                                   | ChannelUpdatePayload.MessageFlagDontForward, 1, 40, 1_000, 2_000, 500,
+                                     800_000_000));
+
     private HtlcSwitch CreateSwitch(IAttributionDataService? attributionDataService = null,
-                                    bool advertiseAttribution = false)
+                                    bool advertiseAttribution = false,
+                                    IChannelUpdateService? channelUpdateService = null)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => _context.UnitOfWork.Object);
@@ -426,10 +514,11 @@ public class HtlcSwitchTests
                                                         new Mock<IOnionReplayStore>().Object,
                                                         NullLogger<IncomingOnionProcessor>.Instance);
         return new HtlcSwitch(new ChannelLockProvider(), _context.ChannelMemoryRepository.Object, _operations.Object,
-                              new Mock<IFailureOnionService>().Object,
+                              _failureOnions.Object,
                               new FinalHopProcessor(NullLogger<FinalHopProcessor>.Instance),
                               new HtlcForwardingPolicy(options), NullLogger<HtlcSwitch>.Instance, onionProcessor,
                               new Mock<IPeerLivenessProbe>().Object, provider.GetRequiredService<IServiceScopeFactory>(),
+                              channelUpdateService: channelUpdateService,
                               localPaymentHandlers: [_paymentHandler.Object], nodeOptions: options,
                               attributionDataService: attributionDataService);
     }
