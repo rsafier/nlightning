@@ -16,6 +16,17 @@ public sealed class FundingOutputLookupOptions
     public int ChainLookupsPerSecond { get; set; } = 50;
 
     /// <summary>
+    /// The bitcoind RPCs the lookup starts per second, with a burst of the same size
+    /// (<c>Gossip:ChainRpcsPerSecond</c>, default 250), bounded per RPC instead of per lookup (NL-346): one lookup
+    /// costs 3-5 RPCs (<c>getblockcount</c>, the block's txid list on a miss, <c>gettxout</c>, the
+    /// <c>getblockhash</c> rechecks, a second <c>gettxout</c> for a mempool-only spend), so the per-lookup rate alone
+    /// let 50 lookups a second mean about 250 RPCs. Keep this at least
+    /// <see cref="ChainLookupsPerSecond"/> x 5, or deep lookups queue behind the budget. An
+    /// <c>IFundingTxIdSource</c> (Esplora) rate-limits its own requests.
+    /// </summary>
+    public int ChainRpcsPerSecond { get; set; } = 250;
+
+    /// <summary>
     /// Blocks whose txid list is kept, least recently used evicted first (<c>Gossip:ChainLookupCacheHeights</c>,
     /// default 256).
     /// </summary>
@@ -36,6 +47,8 @@ public sealed class FundingOutputLookupOptions
             errors.Add($"{nameof(ChainLookupConcurrency)} must be at least 1");
         if (ChainLookupsPerSecond < 1)
             errors.Add($"{nameof(ChainLookupsPerSecond)} must be at least 1");
+        if (ChainRpcsPerSecond < 1)
+            errors.Add($"{nameof(ChainRpcsPerSecond)} must be at least 1");
         if (ChainLookupCacheHeights < 1)
             errors.Add($"{nameof(ChainLookupCacheHeights)} must be at least 1");
         if (MempoolSpentRecheckInterval < TimeSpan.Zero)
