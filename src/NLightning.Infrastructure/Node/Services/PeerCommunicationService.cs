@@ -26,6 +26,7 @@ public class PeerCommunicationService : IPeerCommunicationService
     private readonly CancellationTokenSource _cts = new();
     private readonly ILogger<PeerCommunicationService> _logger;
     private readonly IMessageService _messageService;
+    private readonly PingRateLimiter _pingRateLimiter = new();
     private readonly IPingPongService _pingPongService;
     private readonly IServiceProvider _serviceProvider;
     private readonly IMessageFactory _messageFactory;
@@ -328,6 +329,17 @@ public class PeerCommunicationService : IPeerCommunicationService
             {
                 _logger.LogTrace("Ignoring ping with num_pong_bytes >= {threshold} from peer {peer}",
                                  IgnorePingNumPongBytes, PeerCompactPubKey);
+                return;
+            }
+
+            // NL-005, BOLT 1: "limited precautions are recommended against ping flooding" - past a few answered
+            // pings per interval we ignore further ones (no pong); the connection and the channels stay up
+            if (!_pingRateLimiter.TryRegisterAnswer(DateTimeOffset.UtcNow))
+            {
+                _logger.LogDebug(
+                    "Ignoring a ping flood from peer {peer}: more than {maxAnsweredPings} pings within {interval}",
+                    PeerCompactPubKey, PingRateLimiter.DefaultMaxAnsweredPings,
+                    PingRateLimiter.DefaultInterval);
                 return;
             }
 
