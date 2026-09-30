@@ -164,6 +164,26 @@ public class InvoiceTests
     }
 
     [Fact]
+    public void Given_InvoiceWithTaprootFallbackAddress_When_EncodedAndDecoded_Then_TheAddressRoundTrips()
+    {
+        // Given: the P2TR fallback address of the official BOLT 11 vectors (witness version 1)
+        var key = new Key();
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "taproot fallback", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+        var address = BitcoinAddress.Create("bc1pptdvg0d2nj99568qn6ssdy4cygnwuxgw2ukmnwgwz7jpqjz2kszse2s3lm",
+                                            Network.Main);
+
+        // When
+        invoice.FallbackAddresses = [address];
+        var decoded = Invoice.Decode(invoice.ToString(key), BitcoinNetwork.Mainnet);
+
+        // Then
+        var fallback = Assert.Single(decoded.FallbackAddresses!);
+        Assert.IsType<TaprootAddress>(fallback);
+        Assert.Equal(address.ToString(), fallback.ToString());
+    }
+
+    [Fact]
     public void Given_Invoice_When_AddRoutingInfo_Then_InvoiceStringClearedOnInternalChange()
     {
         // Given
