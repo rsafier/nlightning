@@ -13,6 +13,7 @@ namespace NLightning.Application.Tests.Node.Managers;
 
 using Application.Node.Managers;
 using Application.Protocol.Factories;
+using Application.Tests.Payments;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Crypto.ValueObjects;
@@ -169,6 +170,8 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
     /// </summary>
     private sealed class TestNode : IAsyncDisposable
     {
+        private static int s_nextNodeSeed;
+
         private readonly ServiceProvider _serviceProvider;
         private readonly int _port;
 
@@ -186,6 +189,8 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
 
         public bool IsConnectedTo(TestNode other) => PeerManager.GetPeer(other.NodeId) is not null;
 
+        private static byte NextNodeSeed() => (byte)Interlocked.Increment(ref s_nextNodeSeed);
+
         public static async Task<TestNode> StartAsync(IMessageSerializer serializer)
         {
             var port = GetFreePort();
@@ -195,11 +200,10 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
                 NetworkTimeout = TimeSpan.FromSeconds(10)
             };
 
-            var key = new Key();
-            var nodeId = new CompactPubKey(key.PubKey.ToBytes());
-            var keyManager = new Mock<ISecureKeyManager>();
-            keyManager.Setup(k => k.GetNodeKeyPair()).Returns(new CryptoKeyPair(key.ToBytes(), nodeId));
-            keyManager.Setup(k => k.GetNodePubKey()).Returns(nodeId);
+            // A hand-written key manager: the handshake's static ECDH needs ComputeNodeSharedSecret, which Moq
+            // cannot set up (span parameters)
+            var keyManager = new TestNodeKeyManager(NextNodeSeed());
+            var nodeId = keyManager.NodeId;
 
             var peerDbRepository = new Mock<IPeerDbRepository>();
             var unitOfWork = new Mock<IUnitOfWork>();
@@ -212,7 +216,7 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
             services.AddSingleton(Options.Create(nodeOptions));
             services.AddSingleton(serializer);
             services.AddSingleton<IEcdh, TestEcdh>();
-            services.AddSingleton(keyManager.Object);
+            services.AddSingleton<ISecureKeyManager>(keyManager);
             services.AddSingleton<IMessageFactory, MessageFactory>();
             services.AddScoped(_ => unitOfWork.Object);
             services.AddInfrastructureServices();
@@ -223,7 +227,7 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
             var peerManager = new PeerManager(new Mock<IChannelManager>().Object, channelMemoryRepository.Object,
                                               NullLogger<PeerManager>.Instance,
                                               serviceProvider.GetRequiredService<IPeerServiceFactory>(),
-                                              keyManager.Object, serviceProvider.GetRequiredService<ITcpService>(),
+                                              keyManager, serviceProvider.GetRequiredService<ITcpService>(),
                                               serviceProvider, Options.Create(nodeOptions));
             await peerManager.StartAsync(CancellationToken.None);
 

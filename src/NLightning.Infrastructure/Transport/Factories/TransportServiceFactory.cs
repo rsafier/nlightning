@@ -43,4 +43,19 @@ public sealed class TransportServiceFactory : ITransportServiceFactory
         return new TransportService(_ecdh, logger, _messageSerializer, _nodeOptions.NetworkTimeout, isInitiator, s, rs,
                                     tcpClient);
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The handshake does its local static ECDH through <paramref name="protectedStaticEcdh"/>, so the node private
+    /// key never leaves the key manager (NL-436).
+    /// </remarks>
+    public ITransportService CreateTransportService(bool isInitiator, ReadOnlySpan<byte> localStaticPublicKey,
+                                                    ReadOnlySpan<byte> rs, TcpClient tcpClient,
+                                                    ProtectedStaticEcdh protectedStaticEcdh)
+    {
+        var logger = _loggerFactory.CreateLogger<TransportService>();
+
+        return new TransportService(_ecdh, logger, _messageSerializer, _nodeOptions.NetworkTimeout, isInitiator,
+                                    localStaticPublicKey, rs, tcpClient, protectedStaticEcdh);
+    }
 }

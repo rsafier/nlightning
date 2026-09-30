@@ -76,6 +76,18 @@ internal sealed class TransportService : ITransportService
         _networkTimeout = networkTimeout;
     }
 
+    /// <summary>
+    /// Creates a transport service whose local static ECDH is computed by
+    /// <paramref name="protectedStaticEcdh"/>, so the static private key never leaves its key manager (NL-436).
+    /// </summary>
+    public TransportService(IEcdh ecdh, ILogger logger, IMessageSerializer messageSerializer, TimeSpan networkTimeout,
+                            bool isInitiator, ReadOnlySpan<byte> localStaticPublicKey, ReadOnlySpan<byte> rs,
+                            TcpClient tcpClient, ProtectedStaticEcdh protectedStaticEcdh)
+        : this(logger, messageSerializer, networkTimeout,
+               new HandshakeService(isInitiator, localStaticPublicKey, rs, ecdh, protectedStaticEcdh), tcpClient)
+    {
+    }
+
     internal TransportService(ILogger logger, IMessageSerializer messageSerializer, TimeSpan networkTimeout,
                               IHandshakeService handshakeService, TcpClient tcpClient)
     {

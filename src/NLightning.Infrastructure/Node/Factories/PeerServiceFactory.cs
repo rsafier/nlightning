@@ -54,10 +54,12 @@ public class PeerServiceFactory : IPeerServiceFactory
         var commLogger = _loggerFactory.CreateLogger<PeerCommunicationService>();
         var appLogger = _loggerFactory.CreateLogger<PeerService>();
 
-        // Create and Initialize the transport service
-        var key = _secureKeyManager.GetNodeKeyPair();
+        // Create and Initialize the transport service. The handshake's static ECDH runs through the key manager
+        // (like the onion peel), so the node private key never leaves locked memory (NL-436)
         var transportService =
-            _transportServiceFactory.CreateTransportService(true, key.PrivKey, peerPubKey, tcpClient);
+            _transportServiceFactory.CreateTransportService(true, _secureKeyManager.GetNodePubKey(), peerPubKey,
+                                                            tcpClient,
+                                                            _secureKeyManager.ComputeNodeSharedSecret);
 
         try
         {
@@ -100,10 +102,14 @@ public class PeerServiceFactory : IPeerServiceFactory
         var ipAddress = remoteEndPoint.Address.ToString();
         var port = remoteEndPoint.Port;
 
-        // Create and Initialize the transport service
-        var key = _secureKeyManager.GetNodeKeyPair();
+        // Create and Initialize the transport service. The responder's remote static key arrives in act three, so
+        // the own public key is the placeholder the old call passed too; the static ECDH runs through the key
+        // manager (NL-436)
+        var localStaticPublicKey = _secureKeyManager.GetNodePubKey();
         var transportService =
-            _transportServiceFactory.CreateTransportService(false, key.PrivKey, key.CompactPubKey, tcpClient);
+            _transportServiceFactory.CreateTransportService(false, localStaticPublicKey, localStaticPublicKey,
+                                                            tcpClient,
+                                                            _secureKeyManager.ComputeNodeSharedSecret);
         try
         {
             await transportService.InitializeAsync();

@@ -6,6 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ### Breaking
 
+- `ITransportServiceFactory` gains a `CreateTransportService` overload that takes the local static public key and
+  a `ProtectedStaticEcdh` delegate, so the BOLT 8 handshake computes the static ECDH through the key manager instead
+  of holding the static private key (NL-436). Implementations of the interface must add the member;
 - `CompactPubKey`: the implicit conversion from `byte[]` is replaced by an implicit conversion from
   `ReadOnlySpan<byte>`, which copies the bytes. Code compiled against earlier versions that used
   `op_Implicit(byte[])` must be recompiled (`MissingMethodException` otherwise). With C# 14 (the .NET 10 default)
