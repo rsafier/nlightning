@@ -86,6 +86,11 @@ internal sealed class NormalOperationTestContext
         UnitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(ChannelStateDbRepository.Object);
         UnitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(ChannelDbRepository.Object);
         UnitOfWork.SetupGet(u => u.RemoteShachainDbRepository).Returns(RemoteShachainDbRepository.Object);
+        // The row's stored copy: another instance than the shared in-memory model (NL-282)
+        ChannelDbRepository.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
+                           .ReturnsAsync((ChannelId id) => id == Channel.ChannelId
+                                                               ? CreateChannel(localIsFunder, ChannelState.Open)
+                                                               : null);
         UnitOfWork.Setup(u => u.SaveChangesAsync()).Callback(() => Calls.Add("save")).Returns(Task.CompletedTask);
         ChannelStateDbRepository
            .Setup(r => r.ApplyAsync(It.IsAny<ChannelCommitments>(), It.IsAny<ChannelTransition>(),

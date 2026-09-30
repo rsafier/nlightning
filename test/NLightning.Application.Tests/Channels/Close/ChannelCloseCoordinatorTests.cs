@@ -52,11 +52,15 @@ public class ChannelCloseCoordinatorTests
 
     private readonly Mock<IChannelDbRepository> _channelDb = new();
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
+    private readonly Mock<IChannelMemoryRepository> _memory = new();
     private readonly Mock<ILightningSigner> _signer = new();
     private readonly Mock<IBlockchainMonitor> _monitor = new();
     private readonly Mock<IWatchedTransactionDbRepository> _watchedDb = new();
     private readonly List<string> _calls = [];
     private readonly ClosingNegotiationRegistry _registry = new();
+
+    /// <summary>Set to make the next save throw (the database is down).</summary>
+    private Exception? _failNextSave;
 
     public ChannelCloseCoordinatorTests()
     {
@@ -64,7 +68,20 @@ public class ChannelCloseCoordinatorTests
         _channelDb.Setup(r => r.UpdateAsync(It.IsAny<ChannelModel>()))
                   .Callback((ChannelModel c) => _calls.Add($"update:{c.State}"))
                   .Returns(Task.CompletedTask);
-        _unitOfWork.Setup(u => u.SaveChangesAsync()).Callback(() => _calls.Add("save")).Returns(Task.CompletedTask);
+        // The row's stored copy: another instance than the shared in-memory model (NL-282)
+        _channelDb.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
+                  .ReturnsAsync((ChannelId id) => StoredChannel(id));
+        _unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
+        {
+            if (_failNextSave is { } failure)
+            {
+                _failNextSave = null;
+                throw failure;
+            }
+
+            _calls.Add("save");
+            return Task.CompletedTask;
+        });
         _signer.Setup(s => s.SignChannelTransaction(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>()))
                .Returns(s_signature);
         _unitOfWork.SetupGet(u => u.WatchedTransactionDbRepository).Returns(_watchedDb.Object);
@@ -477,6 +494,48 @@ public class ChannelCloseCoordinatorTests
     }
 
     [Fact]
+    public async Task Given_TheSaveCommits_When_OurShutdownIsStored_Then_TheSharedModelFollowsOnlyAfterTheSave()
+    {
+        // Arrange (NL-282): the script and ShuttingDown are staged on the row's copy; the shared model follows the
+        // committed save
+        var channel = CreateChannel(ChannelState.Open);
+        var atSave = new List<(ChannelState State, BitcoinScript? Script)>();
+        _unitOfWork.Setup(u => u.SaveChangesAsync()).Callback(() =>
+        {
+            atSave.Add((channel.State, channel.LocalShutdownScript));
+            _calls.Add("save");
+        }).Returns(Task.CompletedTask);
+
+        // Act
+        await CreateCoordinator().InitiateAsync(channel, new ChannelCloseRequest());
+
+        // Assert: at the save the shared model was still Open with no script stored; afterwards it followed
+        var save = Assert.Single(atSave);
+        Assert.Equal(ChannelState.Open, save.State);
+        Assert.Null(save.Script);
+        Assert.Equal(ChannelState.ShuttingDown, channel.State);
+        Assert.NotNull(channel.LocalShutdownScript);
+    }
+
+    [Fact]
+    public async Task Given_TheSaveFails_When_OurShutdownIsSent_Then_TheSharedModelStaysWhereItWas()
+    {
+        // Arrange (NL-282): the shutdown's save fails; the shared model must stay where it was, not ahead of the
+        // database
+        var channel = CreateChannel(ChannelState.Open);
+        _failNextSave = new InvalidOperationException("database down");
+
+        // Act
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CreateCoordinator().InitiateAsync(channel, new ChannelCloseRequest()));
+
+        // Assert
+        Assert.Equal(ChannelState.Open, channel.State);
+        Assert.Null(channel.LocalShutdownScript);
+        _memory.Verify(m => m.UpdateChannel(It.IsAny<ChannelModel>()), Times.Never);
+    }
+
+    [Fact]
     public async Task Given_BroadcastFails_When_Agreed_Then_StillClosing()
     {
         // Arrange: the peer broadcast first (already in the mempool)
@@ -754,9 +813,8 @@ public class ChannelCloseCoordinatorTests
                                                       ClosingFeeEstimator? feeEstimator = null)
     {
         var nodeOptions = Options.Create(new NodeOptions());
-        var memory = new Mock<IChannelMemoryRepository>();
         var messageFactory = new MessageFactory(nodeOptions);
-        var transitions = new ChannelStateTransitionService(memory.Object, new ChannelDomainEventQueue(),
+        var transitions = new ChannelStateTransitionService(_memory.Object, new ChannelDomainEventQueue(),
                                                             new Mock<ICommitmentSigner>().Object, _signer.Object,
                                                             NullLogger<ChannelStateTransitionService>.Instance,
                                                             messageFactory, new Mock<IMessageSerializer>().Object,
@@ -772,7 +830,7 @@ public class ChannelCloseCoordinatorTests
             feeService = fixedFee.Object;
         }
 
-        return new ChannelCloseCoordinator(new ClosingTransactionBuilder(nodeOptions), memory.Object,
+        return new ChannelCloseCoordinator(new ClosingTransactionBuilder(nodeOptions), _memory.Object,
                                            feeService, _signer.Object,
                                            NullLogger<ChannelCloseCoordinator>.Instance, messageFactory,
                                            Options.Create(new ChannelCloseOptions()), _registry,
@@ -813,6 +871,10 @@ public class ChannelCloseCoordinatorTests
         entry.ShutdownReceivedOnConnection = true;
         return channel;
     }
+
+    /// <summary>The row's stored copy of a channel: another instance than the shared in-memory model (NL-282).</summary>
+    private static ChannelModel StoredChannel(ChannelId channelId) =>
+        CreateChannel(ChannelState.Open, channelIdTag: ((byte[])channelId)[0]);
 
     private static ShutdownMessage Shutdown(BitcoinScript script) =>
         new(new ShutdownPayload(new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray()), script));
