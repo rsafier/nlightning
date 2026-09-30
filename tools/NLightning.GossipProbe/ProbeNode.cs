@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -234,7 +233,8 @@ public sealed class ProbeNode : IAsyncDisposable
         if (File.Exists(KeyPath))
             return SecureKeyManager.FromFilePath(KeyPath, BitcoinNetwork.Mainnet, KeyPassword);
 
-        var manager = new SecureKeyManager(RandomNumberGenerator.GetBytes(32), BitcoinNetwork.Mainnet, KeyPath, Tip);
+        // A new node gets a v3 key file (a standard BIP32 master, NL-159): the legacy constructor would write a v2 one
+        var manager = SecureKeyManager.CreateNew(BitcoinNetwork.Mainnet, KeyPath, Tip);
         manager.SaveToFile(KeyPassword);
         return manager;
     }
