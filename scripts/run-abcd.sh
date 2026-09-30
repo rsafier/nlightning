@@ -17,7 +17,7 @@
 # ABCD_FRAMEWORK picks the target framework (default net10.0; mcr.microsoft.com/dotnet/sdk:11.0 for net11.0, whose
 # image has no net10.0 runtime). The suite always runs on one framework only: two fixtures would force-remove each
 # other's fixed-name containers. ABCD_SDK_IMAGE overrides the runner image. NLTG_TEST_PORT_BASE, when set, is passed
-# on (PortPoolUtil's port range).
+# on (PortPoolUtil's port range). A red run's failing tests are named in its summary, from the run's log (NL-378).
 set -euo pipefail
 
 runs="${1:-3}"
@@ -66,6 +66,12 @@ for run in $(seq 1 "$runs"); do
         "$image" \
         dotnet "$output_dir/NLightning.Integration.Tests.dll" "$@" -showLiveOutput 2>&1 | tee "$log"; then
         echo "===== ABCD run $run/$runs FAILED; stopping (log $log) =====" >&2
+        failing_tests="$(grep -a '\[FAIL\]' "$log" | sed -e $'s/\x1b\\[[0-9;]*m//g' -e 's/^[[:space:]]*//' \
+                             -e 's/ \[FAIL\].*$//' | sort -u || true)"
+        if [ -n "$failing_tests" ]; then
+            echo "Failing tests:" >&2
+            printf '%s\n' "$failing_tests" >&2
+        fi
         exit 1
     fi
 done

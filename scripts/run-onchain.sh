@@ -22,6 +22,7 @@
 # ONCHAIN_SUITE picks the default proofs when no xunit arguments are given: "legacy" (default, the
 # Docker.Onchain namespace), "anchors" (the O7-T4 anchors proofs, Docker.Onchain.Anchors: -namespace matches one
 # namespace exactly, so they never run with the legacy suite) or "all" (both namespaces in one process and fixture).
+# A red run's failing tests are named in its summary, from the run's log (NL-378).
 set -euo pipefail
 
 runs="${1:-3}"
@@ -83,6 +84,12 @@ for run in $(seq 1 "$runs"); do
         "$image" \
         dotnet "$output_dir/NLightning.Integration.Tests.dll" "$@" -showLiveOutput 2>&1 | tee "$log"; then
         echo "===== On-chain run $run/$runs FAILED; stopping (log $log) =====" >&2
+        failing_tests="$(grep -a '\[FAIL\]' "$log" | sed -e $'s/\x1b\\[[0-9;]*m//g' -e 's/^[[:space:]]*//' \
+                             -e 's/ \[FAIL\].*$//' | sort -u || true)"
+        if [ -n "$failing_tests" ]; then
+            echo "Failing tests:" >&2
+            printf '%s\n' "$failing_tests" >&2
+        fi
         exit 1
     fi
 done

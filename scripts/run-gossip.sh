@@ -18,6 +18,7 @@
 # image has no net10.0 runtime). The proofs always run on one framework only (two fixtures would remove each other's
 # containers). GOSSIP_SDK_IMAGE overrides the runner image. By default only the proof namespace runs: the Explicit
 # capture tests in Docker.Gossip.Capture are a sub-namespace, which xunit v3's -namespace does not include.
+# A red run's failing tests are named in its summary, from the run's log (NL-378).
 set -euo pipefail
 
 runs="${1:-1}"
@@ -61,6 +62,12 @@ for run in $(seq 1 "$runs"); do
         "$image" \
         dotnet "$output_dir/NLightning.Integration.Tests.dll" "$@" -showLiveOutput 2>&1 | tee "$log"; then
         echo "===== Gossip run $run/$runs FAILED; stopping (log $log) =====" >&2
+        failing_tests="$(grep -a '\[FAIL\]' "$log" | sed -e $'s/\x1b\\[[0-9;]*m//g' -e 's/^[[:space:]]*//' \
+                             -e 's/ \[FAIL\].*$//' | sort -u || true)"
+        if [ -n "$failing_tests" ]; then
+            echo "Failing tests:" >&2
+            printf '%s\n' "$failing_tests" >&2
+        fi
         exit 1
     fi
 done
