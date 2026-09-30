@@ -74,6 +74,8 @@ Updated 2026-09-28 by lane nl360 (branch `wip/fafo-nl360` from `wip/fafo` at `5a
 
 Updated 2026-09-28 by lane nl417 (branch `wip/fafo-nl417` from `wip/fafo` at `61b74291`, since merged into `wip/fafo`): the mainnet relay proof with two local probes (`tools/NLightning.GossipProbe` `--relay-to-all` relayer on mainnet with `--chain rpc` and `--bootstrap`, `--sink` receiver asking for everything, a throttled proxy for the slow reader; `MAINNET_GOSSIP_PROBE.md` "Relay proof (NL-417, 2026-09-28)"), three relay ordering fixes it found, and the mainnet relay default turned on (owner decision). Fixed: NL-417 (7ceb31ce), NL-548 (new; 4a3f6145, db6eb3e4, 4ba8b967). New: NL-548, NL-549. Targeted tests only, net10.0 Release: Application `Gossip` 466, Daemon 825; Release build 0 errors, no new warnings; Docker gossip suite (`scripts/run-gossip.sh 1 Release`, net10.0) 30/30.
 
+Updated 2026-09-30 by lane nl560 (branch `wip/fafo-nl560` from `wip/fafo` at `c61b21ed`): NL-560 new and fixed at `8175034f` (an undisposed BOLT 8 `HandshakeState` double-freed its native hash state from its finalizer: SIGSEGV on libsodium, a livelock on Release.Native; the finalizer is gone and `Sha256`/`SecureMemory` free once). Non-Docker on net10.0: Release Infrastructure 471, Infrastructure.Bitcoin 1420 (+2 skipped), Integration 939, Application 3125 (`AnnouncementHarnessTests.Given_TheAnnouncementAssembled_*` and the NL-382 `GossipFloodTests` case failed once in the full run under the concurrent Docker load, 10/10 on the class rerun); Release.Native Infrastructure 474, Integration 939.
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -110,10 +112,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 3 | 139 | 142 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 154 | 168 | 398 |
+| fixed | 14 | 62 | 155 | 168 | 399 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **62** | **161** | **313** | **550** |
+| **Total** | **14** | **62** | **162** | **313** | **551** |
 
 ### Epics
 
@@ -3770,6 +3772,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Make the tie-break keep only a connection whose init exchange completed, or retry the survivor; test with two in-process nodes; then drop the harness tolerance.
 - **Blocks/Blocked-by:** Related NL-239, NL-201
 - **Plan ref:** ABCD W0-F
+
+### NL-560 An undisposed BOLT 8 HandshakeState crashed the process from its finalizer (native double free)
+- **Status:** fixed (8175034f)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure/Transport/Handshake/States/HandshakeState.cs` (finalizer, `Dispose`), `src/NLightning.Infrastructure/Crypto/Hashes/Sha256.cs` (`Dispose`), `src/NLightning.Infrastructure/Crypto/Primitives/SecureMemory.cs`, `src/NLightning.Infrastructure/Node/Factories/PeerServiceFactory.cs` (`CreateConnectingPeerAsync`)
+- **Evidence:** Reported by batch3 lane C (NL-436/NL-163) as a native-crash risk. `~HandshakeState` called `Dispose()` on the finalizer thread, which disposed its `SymmetricState` and through it the `Sha256`, `HmacSha256` (inside `Hkdf`) and `SecureMemory` objects under it; those have finalizers of their own, and the finalizers of an unreachable graph run in any order. When a `Sha256` was finalized first its libsodium state (`sodium_malloc`) was freed by `~Sha256`, then freed again through the HandshakeState's finalizer, because `Sha256.Dispose` had no guard. Reproduced before the fix: 2,000 undisposed `HandshakeState`s per round, `GC.Collect`/`WaitForPendingFinalizers`: the Release (libsodium) test host dies with SIGSEGV (exit 139); on Release.Native (`Marshal.FreeHGlobal`) the host livelocked at 140 % CPU until killed after 14 min. Production owners dispose the state on every usual path (`TransportService.InitializeAsync` after the handshake, `PeerServiceFactory` on a failed `InitializeAsync`), so the node hit it only through the inbound path whose handshake ended without a remote key (thrown without disposing the transport) or a `HandshakeState` constructor that threw after building its symmetric state; the BOLT 8 vector tests leave states undisposed and could take down the test host. `Sha256` also wiped only the first 32 of its 104 state bytes.
+- **Fixed:** `HandshakeState` has no finalizer (it owns no native memory itself; its members free theirs in their own finalizers) and its `Dispose` is idempotent and thread-safe (`Interlocked`); a constructor that throws after building the symmetric state disposes it before rethrowing. `Sha256` frees its state once (`Interlocked` guard) and wipes all `LibsodiumSha256StateLen` bytes; `SecureMemory` claims its release with `Interlocked`. `PeerServiceFactory.CreateConnectingPeerAsync` disposes the transport before throwing on a missing remote key. Tests: `Infrastructure.Tests/Transport/States/HandshakeStateDisposeTests` (no finalizer, double and concurrent `Dispose`, a completed handshake disposed, a failing constructor, 5 x 500 abandoned half-used and failed states collected: exit 139 before the fix, green after on both backends), `Sha256Tests`/`SecureMemoryTests` concurrent double `Dispose`, `Node/Factories/PeerServiceFactoryTests` (the transport disposed on a failed handshake in both directions and on a missing remote key).
+- **Blocks/Blocked-by:** Related NL-436, NL-163
+- **Plan ref:** —
 
 ---
 
