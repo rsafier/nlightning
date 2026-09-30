@@ -80,6 +80,7 @@ Updated 2026-09-30 by the batch4 integrator (branch `batch4` rebased onto `wip/f
 
 
 Updated 2026-09-30 by the batch5 integrator (branch `batch5` from `wip/fafo` at `59a62d37`, rebased onto `8d0e9a7e` (NL-567/NL-568) at integration, SHAs below are the rebased ones; 5 lanes run in parallel worktrees, cherry-picked in lane order — lane branches `batch5-*` hold the originals): 19 open lows resolved, with the per-entry SHAs being the `batch5` commits: NL-053, NL-153, NL-178, NL-273, NL-346, NL-361, NL-364, NL-369, NL-424, NL-425, NL-451, NL-463, NL-483, NL-488, NL-507, NL-525, NL-529, NL-545, NL-566 (17 fixed with code, NL-369 and NL-566 closed on evidence with their deliverables noted below). Notes: NL-566 closed as premise-stale with a pinning harness test (no production change); NL-369 closed as documented with zero live sites under a warning-clean build; NL-451 resolved test-side (the validators already expose each rule at its own layer); NL-566/NL-525 notes: `OnionMessages:BlindedPathDummyHops` (default 1, at most 4) changes the wire shape of our reply and offer paths — the M6/B12 CLN Docker proofs have not been re-run; NL-488's flag lives on the persisted funding row; NL-507 derives its interval from persisted broadcast rows; NL-545 ships testnet4 seeds (live-probed) and signet plumbing with an empty answer documented. Gates on the integrated tree, net10.0 Release: build 0 errors/0 warnings; full non-Docker suite and `dotnet format` recorded by the integrator in the batch commit.
+Updated 2026-09-30 by lane tor (branch `wip/tor` from `wip/fafo` at `59a62d37`, code at `9f5cf49`): Tor support NL-569 (new epic, fixed: onion peers through SOCKS5, our v3 onion service through the control port, Tor-only mode; `docs/agents/TOR.md`); NL-542 fixed (no DNS seeds in Tor-only mode) and NL-178 fixed (`TcpService` unit-tested); new NL-570 (found in passing: `SecureKeyManager` stat offsets on Linux x86_64), NL-571..NL-573 (Tor follow-ups). Non-Docker on net10.0, Release: Domain 3801, Application 3191, Integration 941, Serialization 622, Infrastructure 544, Infrastructure.Bitcoin 1438 (2 skipped; the two NL-570 failures on linux-x64), Bolt11 337, Daemon 850, green apart from NL-570 and the known flake NL-434 (green alone). No Docker run (NL-572).
 
 ## How to use this file
 
@@ -124,6 +125,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 ### Epics
 
+- NL-569: Tor: onion peers, our onion service, Tor-only mode (fixed, medium; lane tor, branch `wip/tor`: `Node:Tor` Off/Hybrid/TorOnly, SOCKS5 with isolation, control port with SAFECOOKIE, persisted v3 onion service announced in `node_announcement`, NL-542 and NL-178 fixed; `docs/agents/TOR.md`; follow-ups NL-571..NL-573)
 - NL-426: Static channel backup and restore (fixed, high; wave rf1: encrypted SCB, export/verify/restore IPC 21-23, recovery channels and the data-loss reestablish, proven against LND; wave lh1: NL-430, NL-431 old spends and every peer address, NL-432 persisted peer-storage retrievals with `listpeerstorage` (32); follow-up NL-435)
 - NL-031: HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee) (fixed, critical; N6 in wave 1, reestablish and switch in wave 2; the fail-the-channel broadcast is N9-T4 under NL-094)
 - NL-034: Channel close (shutdown / closing_signed / option_simple_close) (fixed, critical; legacy close in wave 3 W3-B, Docker proof against LND and CLN close in wave 4, option_simple_close NL-020 in wave 6 (default No); NL-279 and NL-045 fixed in wave lh1; NL-285 fixed in batch4; remaining: NL-286)
@@ -3910,13 +3912,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT 10
 
 ### NL-542 BOLT 10 bootstrap has no Tor or proxy mode (DNS leak)
-- **Status:** open
+- **Status:** fixed (9f5cf49)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Protocol/Dns/DnsClientRecordLookup.cs`
 - **Evidence:** Lane bolt10 (NL-113). Seed queries go straight to the system or configured resolvers over TCP/UDP. The node has no Tor/proxy mode yet; once it has one, bootstrap must go through it (or stay off), or DNS reveals that the host runs a Lightning node.
-- **Fix sketch:** With a proxy mode, send the DNS over the proxy (TCP DNS through SOCKS5) or refuse bootstrap with a clear log.
-- **Blocks/Blocked-by:** —
+- **Fix sketch:** With a proxy mode, send the DNS over the proxy (TCP DNS through SOCKS5) or refuse bootstrap with a clear log. Done (lane tor, 9f5cf49): with `Node:Tor:Mode=TorOnly` the seeds are never asked (`PeerBootstrapService.GetSeeds`, logged once); the graph top-up still runs, onion services first. Seeds through Tor are NL-571.
+- **Blocks/Blocked-by:** Related NL-569, NL-571
 - **Plan ref:** —
 
 ### NL-543 A node with too few peers does not connect to graph-known nodes
@@ -5169,7 +5171,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/`
-- **Evidence:** No unit tests for PeerService, PeerCommunicationService, TcpService, ChannelManager, AcceptChannel1/FundingSigned/FundingConfirmed/ChannelReady handlers, MessageFactory, RemoteAddressTlvConverter (beyond IPv4), the IPC stack/formatters/client, and persistence round trips. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): re-scoped: every component listed now has unit tests except `TcpService`: `test/NLightning.Infrastructure.Tests/Node/Services/PeerServiceTests.cs`, `PeerCommunicationServiceTests.cs`, `test/NLightning.Application.Tests/Channels/Managers/ChannelManagerTests.cs`, `Channels/Handlers/{AcceptChannel1,FundingSigned,FundingConfirmed,ChannelReady}MessageHandlerTests.cs`, `Protocol/Factories/MessageFactoryTests.cs`, `RemoteAddressTlvConverterTests.cs` (IPv6, Tor v3, DNS), `test/NLightning.Daemon.Tests/{Ipc,Services/Ipc,Client}/` and `test/NLightning.Integration.Tests/Persistence/{SqlitePersistenceTests,ChannelRoundTripTests}.cs`. Remaining: `src/NLightning.Infrastructure/Transport/Services/TcpService.cs` is exercised only through the Docker suites (`NLightningTestNode`, `CrashableTcpService`); severity lowered to low.
+- **Evidence:** No unit tests for PeerService, PeerCommunicationService, TcpService, ChannelManager, AcceptChannel1/FundingSigned/FundingConfirmed/ChannelReady handlers, MessageFactory, RemoteAddressTlvConverter (beyond IPv4), the IPC stack/formatters/client, and persistence round trips. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): re-scoped: every component listed now has unit tests except `TcpService`: `test/NLightning.Infrastructure.Tests/Node/Services/PeerServiceTests.cs`, `PeerCommunicationServiceTests.cs`, `test/NLightning.Application.Tests/Channels/Managers/ChannelManagerTests.cs`, `Channels/Handlers/{AcceptChannel1,FundingSigned,FundingConfirmed,ChannelReady}MessageHandlerTests.cs`, `Protocol/Factories/MessageFactoryTests.cs`, `RemoteAddressTlvConverterTests.cs` (IPv6, Tor v3, DNS), `test/NLightning.Daemon.Tests/{Ipc,Services/Ipc,Client}/` and `test/NLightning.Integration.Tests/Persistence/{SqlitePersistenceTests,ChannelRoundTripTests}.cs`. Remaining: `src/NLightning.Infrastructure/Transport/Services/TcpService.cs` is exercised only through the Docker suites (`NLightningTestNode`, `CrashableTcpService`); severity lowered to low. Update (lane tor, 9f5cf49): `test/NLightning.Infrastructure.Tests/Transport/Tor/TorTransportTests.cs` covers `TcpService.ConnectToPeerAsync` (direct IP, direct refusal of onions with Tor off, SOCKS5 routes per mode, timeouts, an unreachable proxy) and `PeerManagerConnectTests` its listener; nothing listed is untested any more.
 - **Fix sketch:** Add tests as each area is touched; a Sqlite `:memory:` round-trip is the cheapest persistence test.
 - **Blocks/Blocked-by:** Related NL-179
 - **Plan ref:** —
@@ -5800,6 +5802,56 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence are proven against ldk-server `dc02b76c` without a pin bump (it exposes `splice-in`, `splice-out --address` and `bump-channel-funding-fee`; LDK Node sets `reject_inbound_splices = false`, so no configuration on either side; rust-lightning `697a239f` speaks the final BOLT 2 messages 77/80/81/127 and the `channel_reestablish` TLVs 1/5, bits 35/63): `Docker/Interop/Ldk/LdkSpliceTests` (7) (a) we splice in, (b) we splice out to a bitcoind address, (c) LDK splices in on a channel it opened, (d) LDK splices out to an address, (e) LDK restarts while our splice is pending, (f) our `bumpsplice` followed by LDK, (g) LDK's `bump-channel-funding-fee` followed by us; each with the quiescence initiator's `stfu` first, the splice `commitment_signed` both ways before `tx_signatures` with `shared_input_signature`, `start_batch` batches (of three with an RBF sibling) answered by one `revoke_and_ack` while pending, payments both ways while pending and after the lock, and both `splice_locked`, LDK's `funding_txo`/`channel_value_sats`/`short_channel_id` equal to ours at the lock. The full LDK suite (13) passed twice in a row after the fix of NL-558 (our receiver charged the shared input the maximum witness and refused LDK's splice at 2,488 sat/kw); found as well: NL-559 (LDK keeps no peer storage from us). LDK behaviour recorded in the class header: LDK splices at its `ChannelFunding` estimate (253 sat/kw on an idle regtest, about 2,490 once bitcoind has fee data), its splice-in contribution carries its coin selection's surplus (+2..+6 sat), its splice-out contribution is -(amount + fee), its RBF takes the BOLT 2 minimum (2,490 -> 2,593 sat/kw), and it locks at the channel's `minimum_depth` (6 as fundee). Remaining here: `option_simple_close`, route blinding, onion messages and BOLT 12, public channels and gossip, force closes and on-chain resolution (splices included), zero-fee commitments, LDK's 10 % in-flight limit on announced channels, and the closing-fee observation above.
 - **Fix sketch:** Remaining gaps above; read the negotiated closing fee from our coordinator's `closing_signed` log line as `ClnCloseTests` does.
 - **Blocks/Blocked-by:** Related NL-180, NL-554, NL-558, NL-559
+- **Plan ref:** —
+
+### NL-569 [EPIC] Tor: onion peers, our onion service, Tor-only mode
+- **Status:** fixed (9f5cf49)
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure/Transport/Tor/`, `src/NLightning.Domain/Node/Options/TorOptions.cs`, `src/NLightning.Domain/Gossip/Addresses/OnionV3Address.cs`, `src/NLightning.Infrastructure/Transport/Services/TcpService.cs`, `src/NLightning.Infrastructure/Protocol/Models/PeerAddress.cs`
+- **Evidence:** The node could decode and announce Tor v3 descriptors (NL-008) but not dial one: `PeerAddress` held an `IPAddress` (a `.onion` or DNS host threw, and `http://` hosts were resolved locally), `TcpService` dialed directly only, and there was no onion service or proxy mode, so Tor-only peers (a large part of the mainnet graph, `MAINNET_GOSSIP_PROBE.md`) were unreachable and a private node was impossible.
+- **Fix sketch:** Done (lane tor, branch `wip/tor`, 9f5cf49; operator guide `docs/agents/TOR.md`): `Node:Tor:Mode` Off/Hybrid/TorOnly; RFC 1928/1929 SOCKS5 with per-connection isolation credentials over TCP or Unix sockets, proposal 304 errors explained; a control-port client (PROTOCOLINFO, SAFECOOKIE/COOKIE/password/NULL, ADD_ONION/DEL_ONION) and `TorOnionService` (key file 0600 saved before use and never replaced, not detached, re-added after a Tor restart, announced through `IAnnouncedAddressSource`); onion v3 checksums over a Domain SHA3-256; `PeerAddress` keeps onion and DNS hosts unresolved; TorOnly also proxies the fee-estimation and Esplora HTTP clients and skips the DNS seeds (NL-542); graph bootstrap, the peer manager's announced address (NL-514) and backups use Tor v3 addresses; `info` shows the onion address. Proven in process (a BOLT 8 handshake between two real peer managers through a SOCKS5 tunnel) and live against Tor 0.4.8.10 (`TorLiveTests`, `Explicit`). Ported ideas from `rsafier/TorHiddenServiceHelper`. Follow-ups NL-571, NL-572, NL-573.
+- **Blocks/Blocked-by:** Related NL-008, NL-497, NL-514, NL-542
+- **Plan ref:** `docs/agents/TOR.md`
+
+### NL-570 SecureKeyManager reads st_mode as the owner uid on Linux x86_64
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs` (`GetUnixFileOwner`)
+- **Evidence:** Found by lane tor (not caused by it): `SecureKeyManagerTests.Given_NoKeyFileYet_When_SaveToFile_Then_StatOwnershipIsNotAttempted` and `Given_KeyFileOfAnotherOwner_When_RewrittenByRoot_Then_KeepsItsOwner` fail on linux-x64 (glibc, .NET 10.0.401): the uid read is 33152 (`0100600`, the file's `st_mode`). The code reads `st_uid`/`st_gid` at offsets 24/28, which is the generic (aarch64, macOS-like) `struct stat`; on x86_64 glibc `st_nlink` is 8 bytes and comes before `st_mode`, so `st_uid` is at 28 and `st_gid` at 32. A root rewrite of another user's key file would `chown` it to uid 33152.
+- **Fix sketch:** Pick the offsets by `RuntimeInformation.ProcessArchitecture` (x64: 28/32; arm64 Linux: 24/28; macOS: 16/20), or read ownership through `Mono.Unix`/`statx`; the two tests then pass on x64.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `docs/agents/SECURITY_REVIEW.md`
+
+### NL-571 BOLT 10 seeds cannot be asked through Tor
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Node/Bootstrap/PeerBootstrapService.cs` (`GetSeeds`), `src/NLightning.Infrastructure/Protocol/Dns/`
+- **Evidence:** Lane tor (NL-569) skips the seeds in Tor-only mode (NL-542): Tor's SOCKS port resolves only A/AAAA (`RESOLVE`), and the seeds answer SRV. A new Tor-only node without a graph therefore needs its first peer by `connect`.
+- **Fix sketch:** TCP DNS through a SOCKS5 stream to a public resolver (LND's `tor.dns`, `soa.nodes.lightning.directory:53`), with the DnsClient seam taking a stream factory.
+- **Blocks/Blocked-by:** Related NL-542, NL-569
+- **Plan ref:** BOLT 10
+
+### NL-572 No Docker proof of Tor interop against LND or CLN
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/`
+- **Evidence:** Lane tor proved the transport in process (two peer managers through a SOCKS5 tunnel) and against a real Tor 0.4.8.10 without network (the lane's sandbox could not build circuits). No test opens a channel over Tor with LND (`tor.active`, `tor.v3`) or CLN (`proxy`, `addr=statictor:`), in either direction.
+- **Fix sketch:** A Docker fixture with a private Tor network (chutney) or a Tor container with network access, an LND or CLN onion node, and our node in Hybrid and TorOnly: connect both ways, open, pay, reconnect after a Tor restart.
+- **Blocks/Blocked-by:** Related NL-569, NL-180
+- **Plan ref:** `docs/agents/TOR.md`
+
+### NL-573 Onion service client authorization and PoW defenses are not configurable
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure/Transport/Tor/TorOnionService.cs`
+- **Evidence:** `TorHiddenServiceHelper` supported `ClientAuthV3` (V3Auth) keys; the node's onion service is public and adds none, and Tor's proof-of-work defense (0.4.8, `HiddenServicePoWDefensesEnabled`) is a `torrc` option that `ADD_ONION` does not take. Operators can host the service in `torrc` (`HiddenServiceDir`) and announce it by hand (`TOR.md`).
+- **Fix sketch:** `Node:Tor:OnionServiceClientAuth` (x25519 public keys → `ClientAuthV3=` and `Flags=V3Auth`) for a private node, and dialing authorized services with `ONION_CLIENT_AUTH_ADD`; document the `torrc` route for PoW.
+- **Blocks/Blocked-by:** Related NL-569
 - **Plan ref:** —
 
 ## Docs
