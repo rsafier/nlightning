@@ -8,6 +8,8 @@ namespace NLightning.Application.Payments.Switch;
 
 using Channels.Interfaces;
 using Domain.Bitcoin.Constants;
+using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Factories;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
@@ -1957,11 +1959,40 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                              .Aggregate(0UL, (sum, h) => sum + h.AmountMsat);
             var reserve = channel.ChannelParams.Remote.ChannelReserveAmount.MilliSatoshi;
             var local = commitments.LocalBalanceMsat;
-            availableMsat = local > pendingOutgoing + reserve ? local - pendingOutgoing - reserve : 0;
+            var available = local > pendingOutgoing + reserve ? local - pendingOutgoing - reserve : 0;
+
+            // NL-268: as the funder we also pay the commitment fee of one more HTLC above our reserve at offer time
+            // (B2-ADD-S01/S02): estimate it with the engine's own calculator, so this pre-check does not pass a
+            // forward the offer then refuses with temporary_channel_failure
+            if (commitments.Params.LocalIsFunder)
+            {
+                var feeMsat = CommitmentFeeForOneMoreHtlcMsat(commitments);
+                available = available > feeMsat ? available - feeMsat : 0;
+            }
+
+            availableMsat = available;
         }
 
         return new OutgoingChannelInfo(channel.ChannelId, usable, channel.ChannelParams.Remote.HtlcMinimumAmount,
                                        LightningMoney.MilliSatoshis(availableMsat));
+    }
+
+    /// <summary>
+    /// What offering one more HTLC would cost us as the funder (NL-268): the fee (and, with <c>option_anchors</c>,
+    /// both anchors) of the next commitment with one more untrimmed HTLC, at the feerate the next commitments converge
+    /// to — the terms the engine judges an offer by (B2-ADD-S01/S02), without its fee-spike buffer. Our latest
+    /// commitment's untrimmed HTLC count undercounts HTLCs still in flight; the estimate errs optimistic only by their
+    /// output weight, and the engine stays authoritative.
+    /// </summary>
+    private static ulong CommitmentFeeForOneMoreHtlcMsat(ChannelCommitments commitments)
+    {
+        var commitmentParams = commitments.Params;
+        var feerate = Math.Max(commitments.FeeratePerKw(CommitmentSide.Local), commitments.LatestFeeratePerKw);
+        var untrimmed = CommitmentFeeCalculator.UntrimmedHtlcCount(commitments.LocalCommit.Spec,
+                                                                   commitmentParams.Local.DustLimitSatoshis,
+                                                                   commitmentParams.OptionAnchors);
+        return CommitmentFeeCalculator.FunderCostSatoshis(feerate, commitmentParams.OptionAnchors, untrimmed + 1)
+             * 1_000;
     }
 
     /// <summary>
