@@ -11,6 +11,13 @@ public interface IWatchedTransactionDbRepository
     Task<WatchedTransactionModel?> GetByTransactionIdAsync(TxId transactionId);
 
     /// <summary>
+    /// Stages the removal of the watch of <paramref name="transactionId"/> that can never complete any more: the
+    /// funding transaction of a losing RBF attempt of a dual-funded open, whose rival spent the shared input
+    /// irrecoverably (NL-529). False when the transaction is not watched.
+    /// </summary>
+    Task<bool> DeleteByTransactionIdAsync(TxId transactionId);
+
+    /// <summary>
     /// Stages forgetting the first-seen height and index of every watch that is not completed and was first seen above
     /// <paramref name="height"/> (its block was disconnected, reorg), so the new branch finds it again. Returns how many.
     /// </summary>

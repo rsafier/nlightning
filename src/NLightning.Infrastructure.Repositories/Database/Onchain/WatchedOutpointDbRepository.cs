@@ -68,6 +68,17 @@ public class WatchedOutpointDbRepository : BaseDbRepository<WatchedOutpointEntit
     }
 
     /// <inheritdoc />
+    public async Task<bool> DeleteByTransactionIdAsync(TxId transactionId, uint outputIndex)
+    {
+        var entity = await DbSet.FindAsync(transactionId, outputIndex);
+        if (entity is null)
+            return false;
+
+        DbSet.Remove(entity);
+        return true;
+    }
+
+    /// <inheritdoc />
     public async Task<int> ClearSpendsAboveAsync(uint height)
     {
         var entities = await DbSet.Where(o => o.SpentAtHeight != null && o.SpentAtHeight > height).ToListAsync();

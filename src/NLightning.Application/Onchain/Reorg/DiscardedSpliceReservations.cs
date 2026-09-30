@@ -17,6 +17,7 @@ using Domain.Protocol.InteractiveTx;
 using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.InteractiveTx.Interfaces;
 using Domain.Protocol.InteractiveTx.Models;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
 /// Returns the wallet inputs of a discarded splice to the wallet once the transaction that conflicts with it is
@@ -43,7 +44,11 @@ using Domain.Protocol.InteractiveTx.Models;
 /// attempt can add wallet inputs the others do not have (an accepter that funded nothing at the open contributes in
 /// the RBF), and those stay reserved while the losing attempt is unresolved. Its conflict is the channel's confirmed
 /// funding transaction (<see cref="ChannelModel.FundingCreatedAtBlockHeight"/> is its height once the confirmation
-/// was applied); the kept outpoints are the inputs of the confirmed attempt.</para>
+/// was applied); the kept outpoints are the inputs of the confirmed attempt. In the same round the losing attempts'
+/// funding watches are removed (NL-529): a watch of their funding transaction (a row and the monitor's memory) and of
+/// their funding outpoint (a row and the monitor's memory) can never complete any more, and the chain monitor would
+/// load both again on every start. The rows go in one save per channel under the channel's lock; a failed removal
+/// leaves the round waiting, so it is tried again on the next block.</para>
 /// </remarks>
 internal sealed class DiscardedSpliceReservations
 {
@@ -86,7 +91,9 @@ internal sealed class DiscardedSpliceReservations
             if (_settled.TryGetValue(channel.ChannelId, out var known) && known == key)
                 continue;
 
-            var (due, waiting) = await FindDueAsync(channel, height);
+            var (due, lost, waiting) = await FindDueAsync(channel, height);
+            if (lost.Count > 0)
+                waiting |= !await RemoveFundingWatchesAsync(channel, lost, cancellationToken);
             if (!waiting && due.Count == 0)
                 _settled[channel.ChannelId] = key;
             else
@@ -101,12 +108,16 @@ internal sealed class DiscardedSpliceReservations
 
     /// <summary>
     /// The unresolved negotiations of the channel's discarded splices whose conflict is irrevocable, with the outpoints
-    /// the winning transaction spent; <c>waiting</c> when another one's conflict is not deep enough yet.
+    /// the winning transaction spent, and the losing attempts of a confirmed dual-funded open whose funding watches
+    /// still exist (NL-529); <c>waiting</c> when another one's conflict is not deep enough yet.
     /// </summary>
-    private async Task<(List<(InteractiveTxSessionModel Session, List<(TxId, uint)> Kept)> Due, bool Waiting)>
+    private async Task<(List<(InteractiveTxSessionModel Session, List<(TxId, uint)> Kept)> due,
+                        List<(InteractiveTxSessionModel Session, TxId FundingTxId, uint SharedOutputIndex)> lost,
+                        bool waiting)>
         FindDueAsync(ChannelModel channel, uint height)
     {
         var due = new List<(InteractiveTxSessionModel, List<(TxId, uint)>)>();
+        var lost = new List<(InteractiveTxSessionModel, TxId, uint)>();
         using var scope = _serviceScopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var fundings = await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger);
@@ -115,7 +126,7 @@ internal sealed class DiscardedSpliceReservations
                                 .ToHashSet();
         var confirmedOpen = GetConfirmedDualFundedOpen(channel);
         if (discarded.Count == 0 && confirmedOpen is null)
-            return (due, false);
+            return (due, lost, false);
 
         IReadOnlyList<InteractiveTxSessionModel> sessions;
         try
@@ -124,12 +135,17 @@ internal sealed class DiscardedSpliceReservations
         }
         catch (Exception e) when (e is NotSupportedException or NotImplementedException)
         {
-            return (due, false);
+            return (due, lost, false);
         }
 
         var waiting = false;
         if (confirmedOpen is { } open)
-            waiting = FindLosingOpenAttempts(sessions, open.FundingTxId, open.Height, height, due);
+        {
+            var (attempts, stillWaiting) = FindLosingOpenAttempts(sessions, due, open.FundingTxId, open.Height,
+                                                                  height);
+            waiting = stillWaiting;
+            lost.AddRange(await FindLosingWatchesAsync(unitOfWork, attempts));
+        }
 
         foreach (var session in sessions)
         {
@@ -168,7 +184,7 @@ internal sealed class DiscardedSpliceReservations
             due.Add((session, kept));
         }
 
-        return (due, waiting);
+        return (due, lost, waiting);
     }
 
     /// <summary>
@@ -184,15 +200,19 @@ internal sealed class DiscardedSpliceReservations
             ? (fundingTxId, channel.FundingCreatedAtBlockHeight)
             : null;
 
-    /// <summary>
-    /// Adds to <paramref name="due"/> every unresolved, fully negotiated attempt of the dual-funded open that is not
-    /// <paramref name="confirmedTxId"/> and holds wallet inputs of ours, once the confirmed funding is irrevocable
-    /// (NL-528); true when one of them waits for that depth.
-    /// </summary>
-    private bool FindLosingOpenAttempts(IReadOnlyList<InteractiveTxSessionModel> sessions, TxId confirmedTxId,
-                                        uint confirmedHeight, uint height,
-                                        List<(InteractiveTxSessionModel Session, List<(TxId, uint)> Kept)> due)
+    /// <summary>The losing attempts of the dual-funded open at <paramref name="height"/>, and whether one of them
+    /// still waits for the confirmed funding to become irrevocable (NL-528). An attempt that holds wallet inputs of
+    /// ours is queued for the release of its reservation (NL-492, <paramref name="due"/>); every losing attempt's
+    /// funding watches are removed once the depth is reached (NL-529).</summary>
+    /// <param name="attempts">Every fully negotiated attempt of the open that is not the confirmed funding, whether
+    /// their negotiation is settled or not: their watches go at the same depth as their reservations (NL-529).</param>
+    private (List<(InteractiveTxSessionModel Session, TxId FundingTxId, uint SharedOutputIndex)> Attempts,
+             bool Waiting)
+        FindLosingOpenAttempts(IReadOnlyList<InteractiveTxSessionModel> sessions,
+                               List<(InteractiveTxSessionModel Session, List<(TxId, uint)> Kept)> due,
+                               TxId confirmedTxId, uint confirmedHeight, uint height)
     {
+        var attempts = new List<(InteractiveTxSessionModel, TxId, uint)>();
         var kept = sessions.FirstOrDefault(s => s.ConstructedTx?.TxId == confirmedTxId)?.ConstructedTx!.Inputs
                            .Select(i => (i.PrevTxId, i.PrevTxVout))
                            .ToList()
@@ -200,11 +220,11 @@ internal sealed class DiscardedSpliceReservations
         var waiting = false;
         foreach (var session in sessions)
         {
-            if (session is not { ResolvedAt: null, ConstructedTx: { } constructed }
+            if (session is not { ConstructedTx: { } constructed }
              || session.State == InteractiveTxSessionState.Aborted
              || session.Purpose is not (InteractiveTxPurpose.DualFund or InteractiveTxPurpose.DualFundRbf)
              || constructed.TxId == confirmedTxId
-             || !constructed.Inputs.Any(i => i is { AddedBy: InteractiveTxParty.Local, IsShared: false }))
+             || constructed.SharedOutputIndex is not { } sharedOutputIndex)
                 continue;
 
             if (Depth(height, confirmedHeight) < _irrevocableDepth)
@@ -213,10 +233,98 @@ internal sealed class DiscardedSpliceReservations
                 continue;
             }
 
-            due.Add((session, kept));
+            attempts.Add((session, constructed.TxId, sharedOutputIndex));
+            if (session.ResolvedAt is null
+             && constructed.Inputs.Any(i => i is { AddedBy: InteractiveTxParty.Local, IsShared: false }))
+                due.Add((session, kept));
         }
 
-        return waiting;
+        return (attempts, waiting);
+    }
+
+    /// <summary>The losing attempts whose funding watches still exist: a pending watched transaction, an unspent
+    /// watched funding outpoint, or both (NL-529).</summary>
+    private async Task<List<(InteractiveTxSessionModel Session, TxId FundingTxId, uint SharedOutputIndex)>>
+        FindLosingWatchesAsync(IUnitOfWork unitOfWork,
+                               List<(InteractiveTxSessionModel Session, TxId FundingTxId, uint SharedOutputIndex)>
+                                   attempts)
+    {
+        var lost = new List<(InteractiveTxSessionModel, TxId, uint)>();
+        try
+        {
+            var transactions = unitOfWork.WatchedTransactionDbRepository;
+            var outpoints = unitOfWork.WatchedOutpointDbRepository;
+            if (transactions is null || outpoints is null)
+                return lost;
+
+            foreach (var (session, txId, sharedOutputIndex) in attempts)
+            {
+                if (await transactions.GetByTransactionIdAsync(txId) is { IsCompleted: false })
+                {
+                    lost.Add((session, txId, sharedOutputIndex));
+                    continue;
+                }
+
+                if (await outpoints.GetAsync(txId, sharedOutputIndex) is { SpentAtHeight: null })
+                    lost.Add((session, txId, sharedOutputIndex));
+            }
+        }
+        catch (Exception e) when (e is NotSupportedException or NotImplementedException)
+        {
+            // A unit of work without watch rows keeps none: the releases of the reservations still go
+        }
+
+        return lost;
+    }
+
+    /// <summary>
+    /// Removes, under the channel's lock, the funding watches of the open's losing attempts once the confirmed funding
+    /// is irrevocable (NL-529): the watched transaction (deleted from <c>WatchedTransactions</c>, untracked in the
+    /// chain monitor) and the watched funding outpoint (deleted from <c>WatchedOutpoints</c>, unwatched). They could
+    /// never confirm any more: their shared input was spent by a transaction that can no longer be disconnected. False
+    /// when a removal failed, so the round tries again on the next block; a removal is idempotent.
+    /// </summary>
+    private async Task<bool> RemoveFundingWatchesAsync(ChannelModel channel,
+        List<(InteractiveTxSessionModel Session, TxId FundingTxId, uint SharedOutputIndex)> lost,
+        CancellationToken cancellationToken)
+    {
+        var removedAll = true;
+        foreach (var (_, txId, sharedOutputIndex) in lost)
+        {
+            try
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                using (await _channelLockProvider.AcquireAsync(channel.ChannelId, cancellationToken))
+                {
+                    var removedTransaction =
+                        await unitOfWork.WatchedTransactionDbRepository.DeleteByTransactionIdAsync(txId);
+                    var removedOutpoint =
+                        await unitOfWork.WatchedOutpointDbRepository.DeleteByTransactionIdAsync(txId,
+                                                                                                sharedOutputIndex);
+                    if (removedTransaction || removedOutpoint)
+                        await unitOfWork.SaveChangesAsync();
+                }
+
+                if (scope.ServiceProvider.GetService<IBlockchainMonitor>() is { } monitor)
+                {
+                    monitor.StopWatchingTransaction(txId);
+                    monitor.StopWatchingOutpointSpend(txId, sharedOutputIndex);
+                }
+
+                _logger.LogInformation(
+                    "Channel {ChannelId}: the funding watches of the losing attempt {TxId} are removed (the funding "
+                  + "that confirmed is irrevocable, NL-529)", channel.ChannelId, txId);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                removedAll = false;
+                _logger.LogError(e, "Removing the funding watches of losing attempt {TxId} of channel {ChannelId} "
+                                  + "failed", txId, channel.ChannelId);
+            }
+        }
+
+        return removedAll;
     }
 
     private async Task<int> ReleaseAsync(ChannelId channelId, InteractiveTxSessionModel session,
