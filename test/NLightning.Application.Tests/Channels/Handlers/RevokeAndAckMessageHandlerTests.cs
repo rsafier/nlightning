@@ -3,8 +3,12 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace NLightning.Application.Tests.Channels.Handlers;
 
 using Application.Channels.Handlers;
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Options;
@@ -81,6 +85,57 @@ public class RevokeAndAckMessageHandlerTests
         Assert.Equal(2, commitmentSigned.Payload.HtlcSignatures.Count());
         Assert.Equal(["apply", "save", "apply", "save"], _context.Calls);
         Assert.Equal(2UL, _context.State.RemoteNextCommit!.Commit.Number);
+    }
+
+    [Fact]
+    public async Task Given_APendingSpliceAndChangesPending_When_RevokeAndAck_Then_TheWholeBatchFollows()
+    {
+        // Arrange - our splice is signed and pending; we add an HTLC and sign the batched commitment for it, the peer
+        // adds one and signs our next commitment on every active funding (its batch, SP-OP-05), and its revoke
+        // completes the exchange. Our add still waits for the peer's signature, so the follow-up is a batch too
+        // (NL-483: it must go out with the handler's replies, not deferred to the scheduler)
+        var splice = new ChannelFunding(new TxId(Enumerable.Repeat((byte)0x88, 32).ToArray()), 1, 1_500_000,
+                                        Point(0x31), Point(0x32), 1, 500_000_000, 0, ChannelFundingKind.Splice,
+                                        ChannelFundingStatus.Pending);
+        var state = _context.State.ReceiveSpliceCommitment(splice, new CommitmentSignatures(Signature(9), []),
+                                                           _context.Ports).Next;
+        state = state.SendAdd(50_000_000, HashOf(SecretOf(1)), 600, Onion).Next;
+        state = state.SendCommit(_context.Ports).Next;
+        state = state.ReceiveAdd(0, 40_000_000, HashOf(SecretOf(2)), 600, Onion).Next;
+        // the peer's batch: probe the HTLC signature count through the batch receiver (the single form is refused
+        // while a splice is pending, SP-OP-05), then commit both fundings with it
+        CommitmentsResult result;
+        var currentTxId = _context.Channel.FundingOutput!.TransactionId;
+        for (var count = 0; ; count++)
+        {
+            var signatures = new CommitmentSignatures(Signature(0x61),
+                                                      Enumerable.Repeat(Signature(0x62), count).ToList());
+            try
+            {
+                result = state.ReceiveCommitBatch([new ReceivedCommitmentSigned(splice.FundingTxId, signatures),
+                                                   new ReceivedCommitmentSigned(currentTxId, signatures)],
+                                                  _context.Ports);
+                break;
+            }
+            catch (CommitmentViolationException e) when (e.RequirementId == "B2-CS-R02")
+            {
+                // Try the next count
+            }
+        }
+
+        _context.SetState(result.Next);
+        var handler = CreateHandler();
+
+        // Act
+        var replies = await handler.HandleAsync(CreateRevokeAndAck(SecretOf(0x90), Point(0x22)), ChannelState.Open,
+                                                new FeatureOptions(), PeerNodeId);
+
+        // Assert - SP-OP-03: start_batch then one commitment_signed per active funding, persisted first (D3, D4)
+        Assert.Equal(3, replies.Count);
+        var startBatch = Assert.IsType<StartBatchMessage>(replies[0]);
+        Assert.Equal(2, startBatch.Payload.BatchSize);
+        Assert.Equal(2, replies.OfType<CommitmentSignedMessage>().Count());
+        Assert.Equal(["apply", "save", "apply", "save"], _context.Calls);
     }
 
     [Fact]

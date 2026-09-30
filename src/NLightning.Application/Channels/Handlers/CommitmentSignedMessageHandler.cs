@@ -19,8 +19,8 @@ using Services;
 /// commitment and HTLC signatures (B2-CS-R01..R03) and revokes our previous commitment. The new local commitment is
 /// persisted first (B2-CS-R06, D3); only then does the signer release the revoked commitment's secret for the
 /// <c>revoke_and_ack</c> (B2-CS-R05, I3). If changes are then pending for the peer (for example the peer's adds, which
-/// must reach its commitment too, or our own unsigned updates), our <c>commitment_signed</c> follows the
-/// <c>revoke_and_ack</c>.
+/// must reach its commitment too, or our own unsigned updates), our signature follows the <c>revoke_and_ack</c>: one
+/// <c>commitment_signed</c>, or with pending splices the whole batch in wire order (SP-OP-03).
 /// </summary>
 /// <remarks>
 /// Outside splicing the <c>funding_txid</c> TLV only matters inside a <c>start_batch</c> (BOLT 2), which we never
@@ -73,25 +73,26 @@ public class CommitmentSignedMessageHandler : IChannelMessageHandler<CommitmentS
                              channel.Commitments!.LocalCommit.Number, payload.ChannelId,
                              revokeAndAck.RevokedCommitmentNumber);
 
-        var commitmentSigned = await SignFollowUpAsync(channel);
-        return commitmentSigned is null ? [revokeAndAckMessage] : [revokeAndAckMessage, commitmentSigned];
+        var followUps = await SignFollowUpAsync(channel);
+        return followUps.Count == 0 ? [revokeAndAckMessage] : [revokeAndAckMessage, .. followUps];
     }
 
     /// <summary>
-    /// Signs what is now pending for the peer. A failure here is logged and nothing more is sent: the revoke_and_ack is
-    /// already persisted and must still go out; the next trigger signs again.
+    /// Signs what is now pending for the peer: one commitment_signed, or with pending splices the whole batch
+    /// (start_batch and one per active funding, SP-OP-03), in wire order. A failure here is logged and nothing more is
+    /// sent: the revoke_and_ack is already persisted and must still go out; the next trigger signs again.
     /// </summary>
-    private async Task<IChannelMessage?> SignFollowUpAsync(ChannelModel channel)
+    private async Task<IReadOnlyList<IChannelMessage>> SignFollowUpAsync(ChannelModel channel)
     {
         try
         {
-            return await _transitions.SignIfPendingAsync(channel);
+            return await _transitions.SignPendingAsync(channel);
         }
         catch (Exception e)
         {
             _logger.LogError(e, "Failed to sign the next remote commitment of channel {ChannelId}",
                              channel.ChannelId);
-            return null;
+            return [];
         }
     }
 }
