@@ -373,6 +373,26 @@ public partial class LocalLightningSigner : ILightningSigner
     }
 
     /// <inheritdoc />
+    public void UnregisterChannel(ChannelId channelId)
+    {
+        var removed = false;
+
+        // Under the channel's commitment lock, so a concurrent signing call sees either nothing or everything
+        lock (GetCommitmentLock(channelId))
+        {
+            removed = _channelSigningInfo.TryRemove(channelId, out _);
+            _localCommitmentNumbers.TryRemove(channelId, out _);
+            _broadcastSignedNumbers.TryRemove(channelId, out _);
+            _spliceFundings.TryRemove(channelId, out _);
+        }
+
+        _dataLossChannels.TryRemove(channelId, out _);
+
+        if (removed && _logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Channel {ChannelId} was unregistered from the signer", channelId);
+    }
+
+    /// <inheritdoc />
     public void MarkDataLoss(ChannelId channelId)
     {
         _logger.LogCritical("Data loss on channel {ChannelId}: the signer refuses every further signature for it",

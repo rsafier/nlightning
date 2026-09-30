@@ -268,6 +268,57 @@ public class LocalLightningSignerTests
     }
 
     [Fact]
+    public void Given_ARegisteredChannel_When_UnregisterChannel_Then_TheSignerNoLongerSignsForIt()
+    {
+        // Given - NL-221: a channel the handler forgot must not stay registered with the signer
+        var localSigner = CreateSignerWithChannelKey(new KeyDerivationService(new Secp256K1Math()));
+        var channelId = RegisterChannel(localSigner, 0);
+
+        // When
+        localSigner.UnregisterChannel(channelId);
+
+        // Then
+        Assert.Throws<SignerException>(() => localSigner.GetPerCommitmentPoint(channelId, 0));
+        Assert.Throws<SignerException>(() => localSigner.AdvanceLocalCommitment(channelId, 1));
+        Assert.Throws<SignerException>(() => localSigner.RevealPerCommitmentSecret(channelId, 0));
+    }
+
+    [Fact]
+    public void Given_AnUnregisteredChannel_When_UnregisteredAgain_Then_ItIsANoOp()
+    {
+        // Given - NL-221: the cleanup path runs for channels that may never have been registered
+        var localSigner = CreateSignerWithChannelKey(new KeyDerivationService(new Secp256K1Math()));
+
+        // When
+        var exception = Record.Exception(() => localSigner.UnregisterChannel(ChannelId.Zero));
+
+        // Then
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_AStaleRegistrationWasUnregistered_When_TheChannelIdIsRegisteredAgainWithOtherKeys_Then_ItIsAccepted()
+    {
+        // Given - NL-221: a registration left behind by a failed open would refuse the retry under the same id
+        var localSigner = CreateSignerWithChannelKey(new KeyDerivationService(new Secp256K1Math()));
+        var channelId = RegisterChannel(localSigner, 0);
+        localSigner.UnregisterChannel(channelId);
+
+        // When
+        var exception = Record.Exception(() => localSigner.RegisterChannel(
+                                             channelId,
+                                             new ChannelSigningInfo(Bolt3AppendixBVectors.ExpectedTxId.ToBytes(), 1,
+                                                                    Bolt3AppendixBVectors.FundingSatoshis,
+                                                                    Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
+                                                                    Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(),
+                                                                    ChannelKeyIndex + 1)));
+
+        // Then - and the fresh registration starts from its own commitment number again
+        Assert.Null(exception);
+        localSigner.AdvanceLocalCommitment(channelId, 1);
+    }
+
+    [Fact]
     public void Given_SignatureCountMismatch_When_ValidateLocalHtlcSignatures_Then_Throws()
     {
         // Given

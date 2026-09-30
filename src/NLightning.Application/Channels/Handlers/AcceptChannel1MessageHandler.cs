@@ -174,6 +174,7 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
         // Keep the oldChannelId for later
         var oldChannelId = tempChannel.ChannelId;
 
+        var registeredWithSigner = false;
         try
         {
             var fundingAmount = tempChannel.LocalBalance + tempChannel.RemoteBalance;
@@ -215,6 +216,7 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
 
             // Register the channel with the signer
             _lightningSigner.RegisterChannel(tempChannel.ChannelId, tempChannel.GetSigningInfo());
+            registeredWithSigner = true;
 
             // Generate the base commitment transactions
             var remoteCommitmentTransaction =
@@ -261,6 +263,11 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
             _utxoMemoryRepository.ReturnUtxosNotSpentOnChannel(oldChannelId);
             if (tempChannel.ChannelId != oldChannelId)
                 _utxoMemoryRepository.ReturnUtxosNotSpentOnChannel(tempChannel.ChannelId);
+
+            // NL-221: a channel we forget here must not stay registered with the signer, or a retry of the open under
+            // the same funding txid would hit the stale registration (and the state would leak)
+            if (registeredWithSigner)
+                _lightningSigner.UnregisterChannel(tempChannel.ChannelId);
 
             throw new ChannelErrorException("Error creating commitment transaction", e);
         }
