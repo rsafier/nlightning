@@ -17,6 +17,7 @@ using Domain.Node.Options;
 using Domain.Onchain.Fees;
 using Domain.Onchain.Models;
 using Interfaces;
+using Networks;
 using Outputs;
 
 /// <summary>
@@ -36,8 +37,7 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
 
     public HtlcTransactionBuilder(IOptions<NodeOptions> nodeOptions)
     {
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ??
-                   throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
+        _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
     }
 
     /// <inheritdoc />

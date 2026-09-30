@@ -6,6 +6,7 @@ namespace NLightning.Application.Onchain.Resolvers.Local;
 
 using Domain.Bitcoin.Enums;
 using Domain.Node.Options;
+using Infrastructure.Bitcoin.Networks;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
@@ -25,8 +26,7 @@ public sealed class WalletSweepDestinationProvider : ISweepDestinationProvider
     public WalletSweepDestinationProvider(IOptions<NodeOptions> nodeOptions, IServiceScopeFactory serviceScopeFactory,
                                           IBlockchainMonitor? blockchainMonitor = null)
     {
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ??
-                   throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
+        _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
         _serviceScopeFactory = serviceScopeFactory;
         _blockchainMonitor = blockchainMonitor;
     }

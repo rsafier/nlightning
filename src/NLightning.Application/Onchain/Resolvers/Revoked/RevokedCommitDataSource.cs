@@ -19,6 +19,7 @@ using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Models;
+using Infrastructure.Bitcoin.Networks;
 using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
@@ -56,8 +57,7 @@ public sealed class RevokedCommitDataSource : IRevokedCommitDataSource
         _logger = logger;
         _channelMemoryRepository = channelMemoryRepository;
         _blockchainMonitor = blockchainMonitor;
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ??
-                   throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
+        _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
     }
 
     /// <inheritdoc />

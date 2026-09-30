@@ -16,6 +16,7 @@ using Domain.Protocol.ValueObjects;
 using Infrastructure.Crypto.Ciphers;
 using Infrastructure.Crypto.Factories;
 using Infrastructure.Crypto.Hashes;
+using Networks;
 using Node.Models;
 using Onion;
 
@@ -131,8 +132,7 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
             if (chainCode is not null && chainCode.Length != ChainCodeLength)
                 throw new ArgumentException($"The chain code must be {ChainCodeLength} bytes.", nameof(chainCode));
 
-            _network = Network.GetNetwork(network)
-                    ?? throw new ArgumentException("Invalid network specified.", nameof(network));
+            _network = network.ToNBitcoinNetwork();
             DerivationScheme = chainCode is null
                                    ? KeyDerivationScheme.LegacyGenesisChainCode
                                    : KeyDerivationScheme.Bip32;
@@ -402,8 +402,7 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         var data = JsonSerializer.Deserialize<KeyFileData>(jsonString)
                 ?? throw new SerializationException("Invalid key file");
 
-        var network = Network.GetNetwork(expectedNetwork)
-                   ?? throw new ArgumentException("Invalid network specified.", nameof(expectedNetwork));
+        var network = expectedNetwork.ToNBitcoinNetwork();
 
         // The file stores NBitcoin's name of the network (SaveToFile writes Network.ToString()): "RegTest",
         // "TestNet", "signet", but "Main" for mainnet, which is not "mainnet" in lower case (NL-403)

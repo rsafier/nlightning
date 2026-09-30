@@ -33,7 +33,7 @@ public class NBitcoinNetworkResolverTests
         // Act
         var resolved = BitcoinNetwork.Signet.ToNBitcoinNetwork();
 
-        // Assert: the builders, signer and key manager still call Network.GetNetwork("signet") (not in this lane)
+        // Assert: the builders, the signer and the key manager resolve through this seam (NL-298)
         Assert.Same(NBitcoin.Bitcoin.Instance.Signet, resolved);
         Assert.Same(resolved, Network.GetNetwork(NetworkConstants.Signet));
         Assert.Equal("00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6",
