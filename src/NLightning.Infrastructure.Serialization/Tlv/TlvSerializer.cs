@@ -40,9 +40,9 @@ public class TlvSerializer : ITlvSerializer
     /// A task that represents the asynchronous deserialization operation, containing the deserialized BaseTlv value,
     /// or <c>null</c> when zero bytes remain before the type.
     /// </returns>
-    /// <exception cref="ArgumentException">Thrown when the type or length is truncated.</exception>
     /// <exception cref="SerializationException">
-    /// Thrown when the length exceeds the number of bytes remaining in the stream.
+    /// Thrown when the type or length is truncated, or when the length exceeds the number of bytes remaining in the
+    /// stream.
     /// </exception>
     /// <exception cref="IOException">Thrown when an I/O error occurs during the read operation.</exception>
     public async Task<BaseTlv?> DeserializeAsync(Stream stream)
