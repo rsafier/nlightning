@@ -81,6 +81,8 @@ Updated 2026-09-30 by the batch4 integrator (branch `batch4` rebased onto `wip/f
 
 Updated 2026-09-30 by the batch5 integrator (branch `batch5` from `wip/fafo` at `59a62d37`, rebased onto `8d0e9a7e` (NL-567/NL-568) at integration, SHAs below are the rebased ones; 5 lanes run in parallel worktrees, cherry-picked in lane order — lane branches `batch5-*` hold the originals): 19 open lows resolved, with the per-entry SHAs being the `batch5` commits: NL-053, NL-153, NL-178, NL-273, NL-346, NL-361, NL-364, NL-369, NL-424, NL-425, NL-451, NL-463, NL-483, NL-488, NL-507, NL-525, NL-529, NL-545, NL-566 (17 fixed with code, NL-369 and NL-566 closed on evidence with their deliverables noted below). Notes: NL-566 closed as premise-stale with a pinning harness test (no production change); NL-369 closed as documented with zero live sites under a warning-clean build; NL-451 resolved test-side (the validators already expose each rule at its own layer); NL-566/NL-525 notes: `OnionMessages:BlindedPathDummyHops` (default 1, at most 4) changes the wire shape of our reply and offer paths — the M6/B12 CLN Docker proofs have not been re-run; NL-488's flag lives on the persisted funding row; NL-507 derives its interval from persisted broadcast rows; NL-545 ships testnet4 seeds (live-probed) and signet plumbing with an empty answer documented. Gates on the integrated tree, net10.0 Release: build 0 errors/0 warnings; full non-Docker suite and `dotnet format` recorded by the integrator in the batch commit.
 
+
+Updated 2026-09-30 by the batch6 integrator (branch `batch6` from `wip/fafo` at `f5d38e8f`; 5 lanes run in parallel worktrees, cherry-picked in lane order — lane branches `batch6-*` hold the originals): 8 open lows resolved, with the per-entry SHAs being the `batch6` commits: NL-055, NL-313, NL-433, NL-498, NL-541, NL-563, NL-571, NL-573. Notes: NL-563 — a size refusal must name a byte limit; funded-channel warnings are informational and `DefaultRefusalLimit` is gone; NL-433 — the client gate reads the new `IPeerService.PeerFeatures` (the peer's own init advertisement; `Features` is the negotiated set and cannot express it), provider side unchanged; NL-573 — client-auth and PoW flags ride `ADD_ONION`, PoW requires Tor 0.4.9+ and the service refuses to start undefended on older Tor; NL-571 — implemented LND's `tor.dns` approach (a small RFC 1035 codec over the SOCKS port, `Node:Bootstrap:TorNameServer`, default LND's `soa.nodes.lightning.directory`), so Tor-only nodes ask the seeds after all; NL-541 — the live seeds answer the plain `l` node query (the entry's "answer nothing" held only for conditioned queries) and the reconnect assist dials the saved port on located addresses; NL-313 — `Node:Onchain:CatchUpScanMaxBlocks` (default 1,008, 0 = unbounded) with a clipping warning; NL-498 — the peer's update of our public channel goes out through the own-gossip publisher, `dont_forward` and private channels excepted. NL-295 stays `open` pending the duplicate-of-NL-535 close the batch4 lane evidenced. Gates on the integrated tree, net10.0 Release: build 0 errors/0 warnings; `dotnet format` clean; full non-Docker suite green per project (Daemon 854, Domain 3834, Application 3243, Serialization 622, Bolt11 337, Infrastructure 613, Infrastructure.Bitcoin 1464 +2 platform skips, Integration 949) — two single-test failures across three full runs were the documented loaded-run flakes (`AnnouncementHarnessTests`, NL-561 family; `PeerBootstrapServiceTests.Given_TorOnlyWithATorResolver`), each green alone and the suite green on re-run. Integration findings fixed at the cherry-pick: NL-571's commit conflicted with NL-541's (both touched `DnsSeedClient`, both kept), lane 2's `TryParseTorNameServer` did not parse a bare host name (its own theory expected host -> port 53; the bare-host branch added), and the config template gained the four new `Node:Tor` keys plus `Node:Bootstrap:TorNameServer` (TorConfigTemplateTests).
 Updated 2026-09-30 by lane tor (branch `wip/tor` from `wip/fafo` at `59a62d37`, code at `9f5cf49`; rebased as `tor-int` onto `wip/fafo` at `8d0e9a7e` and again at `649eea3d` (after batch5), code at `0a73ebad`, and its IDs renumbered NL-567..NL-571 → NL-569..NL-573 because `wip/fafo` had taken NL-567/NL-568): Tor support NL-569 (new epic, fixed: onion peers through SOCKS5, our v3 onion service through the control port, Tor-only mode; `docs/agents/TOR.md`); NL-542 fixed (no DNS seeds in Tor-only mode) and NL-178 fixed (`TcpService` unit-tested); new NL-570 (found in passing: `SecureKeyManager` stat offsets on Linux x86_64), NL-571..NL-573 (Tor follow-ups). Non-Docker on net10.0, Release: Domain 3801, Application 3191, Integration 941, Serialization 622, Infrastructure 544, Infrastructure.Bitcoin 1438 (2 skipped; the two NL-570 failures on linux-x64), Bolt11 337, Daemon 850, green apart from NL-570 and the known flake NL-434 (green alone). No Docker run (NL-572).
 
 Updated 2026-09-30 by the tor integrator (branch `tor-int`, rebased onto `wip/fafo` at `649eea3d`): the Tor review's findings fixed (owner decision: all of them), NL-575..NL-590 (NL-574 is reserved for another lane): M1 control-port authentication NL-575, M2 startup dials NL-576, M3 Tor-only listener NL-577, M4 fee estimates over HTTP NL-578, M5 onion-service peers dialed back NL-579, L1..L11 NL-580..NL-590 (the SOCKS5 credentials version NL-587 is a spec-violation, the rest bugs). Non-Docker only (Docker was busy with another lane).
@@ -119,9 +121,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 4 | 83 | 87 |
+| open | 0 | 0 | 4 | 75 | 79 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 163 | 244 | 483 |
+| fixed | 14 | 62 | 163 | 252 | 491 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **62** | **171** | **333** | **580** |
@@ -382,7 +384,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-433 Our peer-storage blob is sent only when option_provide_storage is negotiated by both sides
-- **Status:** open
+- **Status:** fixed (2cd9ac70)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs` (client side)
@@ -403,7 +405,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-563 A peer-storage refusal for another reason is read as a size refusal
-- **Status:** open
+- **Status:** fixed (b2a6b7ea)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs` (the NL-559 warning handling)
@@ -858,7 +860,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-055 Handler discovery uses reflection, fragile under trimming/AOT
-- **Status:** open
+- **Status:** fixed (dfb599de)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/DependencyInjection.cs`
@@ -2841,7 +2843,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` §1.3
 
 ### NL-313 The resolution catch-up scan fetches whole blocks from the parent height to the tip
-- **Status:** open
+- **Status:** fixed (9317109e)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (`CatchUpSpendsAsync`)
@@ -3695,7 +3697,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` SP-G-01
 
 ### NL-498 The peer's channel_update of our own channel reaches our other peers only as relayed gossip
-- **Status:** open
+- **Status:** fixed (85e7a07e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Relay/`
@@ -3905,7 +3907,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-541 BOLT 10 `l` node query and assisted location of known peers are not used
-- **Status:** open
+- **Status:** fixed (a5f97fde)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Node/Bootstrap/DnsSeedQuery.cs`, `src/NLightning.Infrastructure.Bitcoin/Bootstrap/DnsSeedClient.cs`
@@ -5829,7 +5831,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `docs/agents/SECURITY_REVIEW.md`
 
 ### NL-571 BOLT 10 seeds cannot be asked through Tor
-- **Status:** open
+- **Status:** fixed (10a85cad)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Node/Bootstrap/PeerBootstrapService.cs` (`GetSeeds`), `src/NLightning.Infrastructure/Protocol/Dns/`
@@ -5849,7 +5851,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `docs/agents/TOR.md`
 
 ### NL-573 Onion service client authorization and PoW defenses are not configurable
-- **Status:** open
+- **Status:** fixed (3e823ce4)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Transport/Tor/TorOnionService.cs`
