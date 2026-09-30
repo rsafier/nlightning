@@ -294,7 +294,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
         if (_logger.IsEnabled(LogLevel.Trace))
             _logger.LogTrace("Funding output of {ShortChannelId} still spent in the mempool at tip {Tip}; not asking "
                            + "bitcoind again before the next block", shortChannelId, answer.Tip);
-        return FundingOutputLookupResult.Failed(FundingOutputStatus.OutputSpentInMempool);
+        return FundingOutputLookupResult.KeptMempoolSpent();
     }
 
     private bool TryGetMempoolSpent(ShortChannelId shortChannelId, out MempoolSpentAnswer answer)

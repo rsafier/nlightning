@@ -99,6 +99,7 @@ public class FundingOutputLookupMempoolSpentTests
         // Assert
         Assert.Equal(FundingOutputStatus.OutputSpentInMempool, again.Status);
         Assert.True(again.IsTransient);
+        Assert.True(again.FromKeptAnswer); // no RPC made, so the metric tags it cached (NL-421)
         Assert.Equal(tips, _chain.TipCalls);
         Assert.Equal(unspent, _chain.UnspentOutputCalls);
     }
@@ -122,6 +123,7 @@ public class FundingOutputLookupMempoolSpentTests
         // Assert: one real lookup for the block, which finds the output spent for good (nothing kept)
         Assert.Equal(FundingOutputStatus.OutputSpentOrMissing, first.Status);
         Assert.Equal(FundingOutputStatus.OutputSpentOrMissing, second.Status);
+        Assert.False(first.FromKeptAnswer);
         Assert.Equal(unspent + 2, _chain.UnspentOutputCalls);
         Assert.Equal(0, lookup.MempoolSpentCount);
     }
