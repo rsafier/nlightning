@@ -30,6 +30,17 @@ public interface IChannelMemoryRepository
     event EventHandler<ChannelUpdatedEventArgs>? OnChannelUpdated;
 
     /// <summary>
+    /// Event triggered when a channel becomes Open, i.e. ready and usable (NL-054).
+    /// </summary>
+    /// <remarks>
+    /// Raised by <see cref="UpdateChannel"/> when the channel's state moves into <see cref="ChannelState.Open"/> from
+    /// anything else: both <c>channel_ready</c> messages have been exchanged (either order), so normal operation can
+    /// start. It does not fire again while the channel stays Open, and not for an already-Open channel added to the
+    /// repository (e.g. loaded at startup).
+    /// </remarks>
+    event EventHandler<ChannelUpdatedEventArgs>? OnChannelOpened;
+
+    /// <summary>
     /// Attempts to retrieve a channel that matches the specified channel ID.
     /// </summary>
     /// <param name="channelId">The unique identifier of the channel to retrieve.</param>

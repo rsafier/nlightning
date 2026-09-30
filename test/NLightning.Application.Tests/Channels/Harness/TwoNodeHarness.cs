@@ -1016,6 +1016,7 @@ internal sealed class InMemoryChannelRepository : IChannelMemoryRepository
 
     public event EventHandler<ChannelUpgradedEventArgs>? OnChannelUpgraded;
     public event EventHandler<ChannelUpdatedEventArgs>? OnChannelUpdated;
+    public event EventHandler<ChannelUpdatedEventArgs>? OnChannelOpened;
 
     public bool TryGetChannel(ChannelId channelId, [MaybeNullWhen(false)] out ChannelModel channel) =>
         _channels.TryGetValue(channelId, out channel);
@@ -1033,8 +1034,13 @@ internal sealed class InMemoryChannelRepository : IChannelMemoryRepository
 
     public void UpdateChannel(ChannelModel channel)
     {
+        var wasOpen = _channels.TryGetValue(channel.ChannelId, out var previous)
+                   && previous.State == ChannelState.Open;
         _channels[channel.ChannelId] = channel;
         OnChannelUpdated?.Invoke(this, new ChannelUpdatedEventArgs(channel));
+
+        if (!wasOpen && channel.State == ChannelState.Open)
+            OnChannelOpened?.Invoke(this, new ChannelUpdatedEventArgs(channel));
     }
 
     public bool TryRemoveChannel(ChannelId channelId) => _channels.Remove(channelId);

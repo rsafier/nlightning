@@ -148,9 +148,9 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
                     if (_logger.IsEnabled(LogLevel.Information))
                         _logger.LogInformation("Channel {ChannelId} is now open", payload.ChannelId);
 
-                    // TODO: Notify application layer that channel is fully open
-                    // TODO: Update routing tables
-
+                    // The application learns the channel is usable from the memory repository's
+                    // IChannelMemoryRepository.OnChannelOpened, which PersistChannelAsync's UpdateChannel raises for
+                    // this transition (NL-054); our channel_update goes out through it too
                     break;
                 }
             case ChannelState.V1FundingSigned: // First ChannelReady

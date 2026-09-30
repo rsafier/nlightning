@@ -47,6 +47,9 @@ public class ChannelMemoryRepository : IChannelMemoryRepository
     /// <inheritdoc/>
     public event EventHandler<ChannelUpdatedEventArgs>? OnChannelUpdated;
 
+    /// <inheritdoc/>
+    public event EventHandler<ChannelUpdatedEventArgs>? OnChannelOpened;
+
     /// <summary>The longest a temporary channel is kept (<see cref="DefaultTemporaryChannelTimeout"/>).</summary>
     public TimeSpan TemporaryChannelTimeout { get; init; } = DefaultTemporaryChannelTimeout;
 
@@ -89,6 +92,8 @@ public class ChannelMemoryRepository : IChannelMemoryRepository
     }
 
     /// <inheritdoc/>
+    /// <remarks>The state before the update decides <see cref="OnChannelOpened"/>: only a move into
+    /// <see cref="ChannelState.Open"/> raises it, exactly once per channel (NL-054).</remarks>
     public void UpdateChannel(ChannelModel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
@@ -96,10 +101,17 @@ public class ChannelMemoryRepository : IChannelMemoryRepository
         if (!_channels.ContainsKey(channel.ChannelId))
             throw new KeyNotFoundException($"Channel with Id {channel.ChannelId} does not exist.");
 
+        var wasOpen = _channelStates.TryGetValue(channel.ChannelId, out var previous)
+                   && previous == ChannelState.Open;
+
         _channels[channel.ChannelId] = channel;
         _channelStates[channel.ChannelId] = channel.State;
 
         OnChannelUpdated?.Invoke(this, new ChannelUpdatedEventArgs(channel));
+
+        // NL-054: the application notification that the channel became ready/usable (both channel_ready exchanged)
+        if (!wasOpen && channel.State == ChannelState.Open)
+            OnChannelOpened?.Invoke(this, new ChannelUpdatedEventArgs(channel));
     }
 
     /// <inheritdoc/>
