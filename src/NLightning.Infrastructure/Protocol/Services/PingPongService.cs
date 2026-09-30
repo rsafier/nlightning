@@ -20,7 +20,6 @@ internal class PingPongService : IPingPongService
 {
     private readonly Lock _lock = new();
     private readonly IMessageFactory _messageFactory;
-    private readonly NodeOptions _nodeOptions;
     private readonly Random _random = new();
 
     private PingMessage _lastPing;
@@ -38,9 +37,15 @@ internal class PingPongService : IPingPongService
     public PingPongService(IMessageFactory messageFactory, IOptions<NodeOptions> nodeOptions)
     {
         _messageFactory = messageFactory;
-        _nodeOptions = nodeOptions.Value;
         _lastPing = messageFactory.CreatePingMessage();
+        PongTimeout = nodeOptions.Value.NetworkTimeout;
     }
+
+    /// <summary>
+    /// How long the keep-alive loop waits for a pong: <c>Node:NetworkTimeout</c>, or the Tor network timeout for a
+    /// connection through Tor (set by the peer service factory, NL-590).
+    /// </summary>
+    internal TimeSpan PongTimeout { get; set; }
 
     /// <inheritdoc />
     /// <remarks>
@@ -57,7 +62,7 @@ internal class PingPongService : IPingPongService
             // for shutdown first: only a timeout that is not a shutdown means the peer is unresponsive.
             using (var timeoutTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
-                var timeoutTask = Task.Delay(_nodeOptions.NetworkTimeout, timeoutTokenSource.Token);
+                var timeoutTask = Task.Delay(PongTimeout, timeoutTokenSource.Token);
                 var completedTask = await Task.WhenAny(pongReceivedTask, timeoutTask);
                 await timeoutTokenSource.CancelAsync();
 

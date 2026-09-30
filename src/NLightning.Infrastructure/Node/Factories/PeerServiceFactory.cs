@@ -16,7 +16,9 @@ using Domain.Node.Options;
 using Domain.Node.PeerStorage;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.OnionMessages.Interfaces;
+using Protocol.Services;
 using Services;
+using Transport.Tor;
 
 /// <summary>
 /// Factory for creating peer services.
@@ -75,8 +77,9 @@ public class PeerServiceFactory : IPeerServiceFactory
         // Create the message service
         var messageService = _messageServiceFactory.CreateMessageService(transportService);
 
-        // Create the ping pong service
-        var pingPongService = _serviceProvider.GetRequiredService<IPingPongService>();
+        // Create the ping pong service; a connection through Tor waits longer for its pong and init (NL-590)
+        var networkTimeout = TorTcpClient.GetNetworkTimeout(_nodeOptions, tcpClient, inbound: false);
+        var pingPongService = CreatePingPongService(networkTimeout);
 
         // Create the communication service
         var communicationService =
@@ -84,7 +87,7 @@ public class PeerServiceFactory : IPeerServiceFactory
                                          _serviceProvider);
 
         // Create the service
-        return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
+        return new PeerService(communicationService, _nodeOptions.Features, appLogger, networkTimeout,
                                _serviceProvider.GetService<IGossipIngress>(),
                                _serviceProvider.GetService<IGossipSyncService>(),
                                GetPeerStorageService(), _serviceProvider.GetService<IOnionMessageService>());
@@ -130,8 +133,9 @@ public class PeerServiceFactory : IPeerServiceFactory
         // Create the message service
         var messageService = _messageServiceFactory.CreateMessageService(transportService);
 
-        // Create the ping pong service
-        var pingPongService = _serviceProvider.GetRequiredService<IPingPongService>();
+        // Create the ping pong service; a connection that reached our onion service waits longer (NL-590)
+        var networkTimeout = TorTcpClient.GetNetworkTimeout(_nodeOptions, tcpClient, inbound: true);
+        var pingPongService = CreatePingPongService(networkTimeout);
 
         // Create the communication service (infrastructure layer). BOLT 1 (NL-009): as the receiver of the connection
         // our init carries remote_addr: the endpoint the peer connected from, unless it is a private address
@@ -141,10 +145,22 @@ public class PeerServiceFactory : IPeerServiceFactory
                                                                 FromInboundEndPoint(tcpClient.Client.RemoteEndPoint));
 
         // Create the application service (application layer)
-        return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
+        return new PeerService(communicationService, _nodeOptions.Features, appLogger, networkTimeout,
                                _serviceProvider.GetService<IGossipIngress>(),
                                _serviceProvider.GetService<IGossipSyncService>(),
                                GetPeerStorageService(), _serviceProvider.GetService<IOnionMessageService>());
+    }
+
+    /// <summary>
+    /// The connection's ping service (transient) with <paramref name="networkTimeout"/> as its pong wait.
+    /// </summary>
+    private IPingPongService CreatePingPongService(TimeSpan networkTimeout)
+    {
+        var pingPongService = _serviceProvider.GetRequiredService<IPingPongService>();
+        if (pingPongService is PingPongService concrete)
+            concrete.PongTimeout = networkTimeout;
+
+        return pingPongService;
     }
 
     /// <summary>

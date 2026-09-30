@@ -59,7 +59,8 @@ public sealed class TorSocksDialer : ITorSocksDialer
 
     /// <summary>
     /// A TCP client connected to <paramref name="endPoint"/>: an IP or DNS endpoint, or a Unix domain socket wrapped in
-    /// a <see cref="TcpClient"/> (its stream is a plain <see cref="NetworkStream"/>).
+    /// a <see cref="TcpClient"/> (its stream is a plain <see cref="NetworkStream"/>). It is a <see cref="TorTcpClient"/>,
+    /// so a peer connection made over it gets the Tor network timeout (NL-590).
     /// </summary>
     internal static async Task<TcpClient> ConnectToEndPointAsync(EndPoint endPoint, CancellationToken cancellationToken)
     {
@@ -71,7 +72,7 @@ public sealed class TorSocksDialer : ITorSocksDialer
                     try
                     {
                         await socket.ConnectAsync(unix, cancellationToken);
-                        return new TcpClient { Client = socket };
+                        return new TorTcpClient { Client = socket };
                     }
                     catch
                     {
@@ -81,7 +82,7 @@ public sealed class TorSocksDialer : ITorSocksDialer
                 }
             case IPEndPoint ip:
                 {
-                    var client = new TcpClient(ip.AddressFamily);
+                    var client = new TorTcpClient(ip.AddressFamily);
                     try
                     {
                         await client.ConnectAsync(ip, cancellationToken);
@@ -95,7 +96,7 @@ public sealed class TorSocksDialer : ITorSocksDialer
                 }
             case DnsEndPoint dns:
                 {
-                    var client = new TcpClient();
+                    var client = new TorTcpClient();
                     try
                     {
                         await client.ConnectAsync(dns.Host, dns.Port, cancellationToken);

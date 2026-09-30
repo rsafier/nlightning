@@ -87,7 +87,7 @@ public sealed class TorTransportTests : IAsyncDisposable
     }
 
     [Theory]
-    [InlineData("127.0.0.1", 1)]
+    [InlineData("203.0.113.7", 1)]
     [InlineData("node.invalid", 3)]
     public async Task Given_TorOnly_When_DialingAClearnetPeer_Then_ItGoesThroughTorUnresolved(string host,
                                                                                               byte addressType)
@@ -102,7 +102,51 @@ public sealed class TorTransportTests : IAsyncDisposable
         var request = Assert.Single(_proxy.Requests);
         Assert.Equal(host, request.Host);
         Assert.Equal(addressType, request.AddressType);
+        Assert.IsType<TorTcpClient>(peer.TcpClient);
         peer.TcpClient.Dispose();
+    }
+
+    [Fact]
+    public async Task Given_TorOnly_When_DialingALoopbackPeer_Then_ItIsDirect()
+    {
+        // Arrange - NL-588: Tor refuses loopback and private targets, and such a connection never leaves the host/LAN
+        var service = CreateTcpService(TorMode.TorOnly);
+
+        // Act
+        var peer = await service.ConnectToPeerAsync(new PeerAddress(s_pubKey, "127.0.0.1", TargetEndPoint.Port));
+
+        // Assert
+        Assert.Empty(_proxy.Requests);
+        Assert.True(peer.TcpClient.Connected);
+        Assert.IsNotType<TorTcpClient>(peer.TcpClient);
+        peer.TcpClient.Dispose();
+    }
+
+    [Theory]
+    [InlineData(TorMode.Off, false, false, 5)]
+    [InlineData(TorMode.Hybrid, true, false, 30)]
+    [InlineData(TorMode.Hybrid, false, false, 5)]
+    [InlineData(TorMode.TorOnly, false, true, 30)]
+    [InlineData(TorMode.TorOnly, false, false, 5)]
+    public async Task Given_AConnection_When_ItsNetworkTimeoutIsChosen_Then_ATorRoutedOneWaitsLonger(
+        TorMode mode, bool dialedThroughTor, bool inboundFromLoopback, int expectedSeconds)
+    {
+        // Arrange - NL-590: NetworkTimeout 5 s, Tor ConnectTimeout 60 s, so a connection over Tor waits 30 s
+        var ct = TestContext.Current.CancellationToken;
+        var options = CreateOptions(mode, _proxy.EndPoint, TimeSpan.FromSeconds(60));
+        options.Tor.OnionServiceEnabled = mode != TorMode.Off;
+        using var client = dialedThroughTor ? new TorTcpClient() : new TcpClient();
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        await client.ConnectAsync((IPEndPoint)listener.LocalEndpoint, ct);
+        using var accepted = await listener.AcceptTcpClientAsync(ct);
+
+        // Act
+        var timeout = TorTcpClient.GetNetworkTimeout(options, inboundFromLoopback ? accepted : client,
+                                                     inbound: inboundFromLoopback);
+
+        // Assert
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), timeout);
     }
 
     [Fact]

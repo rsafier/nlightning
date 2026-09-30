@@ -10,6 +10,7 @@ using Domain.Serialization.Interfaces;
 using Domain.Transport;
 using Infrastructure.Crypto.Interfaces;
 using Services;
+using Tor;
 
 /// <summary>
 /// Factory for creating a transport service.
@@ -40,8 +41,9 @@ public sealed class TransportServiceFactory : ITransportServiceFactory
         // Create a specific logger for the TransportService class
         var logger = _loggerFactory.CreateLogger<TransportService>();
 
-        return new TransportService(_ecdh, logger, _messageSerializer, _nodeOptions.NetworkTimeout, isInitiator, s, rs,
-                                    tcpClient);
+        return new TransportService(_ecdh, logger, _messageSerializer,
+                                    TorTcpClient.GetNetworkTimeout(_nodeOptions, tcpClient, !isInitiator), isInitiator,
+                                    s, rs, tcpClient);
     }
 
     /// <inheritdoc />
@@ -55,7 +57,8 @@ public sealed class TransportServiceFactory : ITransportServiceFactory
     {
         var logger = _loggerFactory.CreateLogger<TransportService>();
 
-        return new TransportService(_ecdh, logger, _messageSerializer, _nodeOptions.NetworkTimeout, isInitiator,
+        return new TransportService(_ecdh, logger, _messageSerializer,
+                                    TorTcpClient.GetNetworkTimeout(_nodeOptions, tcpClient, !isInitiator), isInitiator,
                                     localStaticPublicKey, rs, tcpClient, protectedStaticEcdh);
     }
 }

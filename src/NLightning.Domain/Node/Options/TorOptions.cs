@@ -143,10 +143,50 @@ public class TorOptions
 
     /// <summary>
     /// Whether a connection to an address of <paramref name="type"/> goes through the SOCKS5 proxy: onions whenever Tor
-    /// is on, everything in <see cref="TorMode.TorOnly"/>.
+    /// is on, everything else in <see cref="TorMode.TorOnly"/> except a loopback or private-network IP address
+    /// (<paramref name="address"/>, see <see cref="IsLocalNetworkAddress"/>), which Tor refuses to reach and which
+    /// never leaves this host or its LAN (NL-588).
     /// </summary>
-    public bool UsesProxy(AddressDescriptorType type) =>
-        type == AddressDescriptorType.TorV3 ? IsEnabled : IsTorOnly;
+    public bool UsesProxy(AddressDescriptorType type, IPAddress? address = null) => type switch
+    {
+        AddressDescriptorType.TorV3 => IsEnabled,
+        _ => IsTorOnly && (address is null || !IsLocalNetworkAddress(address))
+    };
+
+    /// <summary>
+    /// The network timeout of a connection routed through Tor (a peer dialed through the SOCKS5 port, or one that
+    /// reached our onion service): the BOLT 8 handshake, the init exchange and each ping wait
+    /// max(<paramref name="networkTimeout"/>, <see cref="ConnectTimeout"/> / 2), since a round trip over two circuits
+    /// takes seconds (NL-590).
+    /// </summary>
+    public TimeSpan GetNetworkTimeout(TimeSpan networkTimeout)
+    {
+        var half = ConnectTimeout / 2;
+        return half > networkTimeout ? half : networkTimeout;
+    }
+
+    /// <summary>
+    /// True for a loopback (127.0.0.0/8, ::1), RFC 1918 private (10/8, 172.16/12, 192.168/16), link-local
+    /// (169.254/16, fe80::/10) or unique-local (fc00::/7) address; an IPv4-mapped IPv6 address is judged as IPv4.
+    /// Carrier-grade NAT space (100.64/10) is not local: it is the provider's network.
+    /// </summary>
+    public static bool IsLocalNetworkAddress(IPAddress address)
+    {
+        if (address.IsIPv4MappedToIPv6)
+            address = address.MapToIPv4();
+
+        if (IPAddress.IsLoopback(address))
+            return true;
+
+        var bytes = address.GetAddressBytes();
+        return address.AddressFamily switch
+        {
+            AddressFamily.InterNetwork => bytes is [10, ..] or [172, >= 16 and <= 31, ..] or [192, 168, ..]
+                                                  or [169, 254, ..],
+            AddressFamily.InterNetworkV6 => (bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80) || (bytes[0] & 0xfe) == 0xfc,
+            _ => false
+        };
+    }
 
     /// <summary>
     /// The onion service's target: <see cref="OnionServiceTarget"/>, or our first listen address with an any-address

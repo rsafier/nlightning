@@ -102,8 +102,9 @@ public class TcpService : ITcpService
     /// <inheritdoc />
     /// <remarks>
     /// <c>Node:Tor</c> decides the route: an onion service goes through Tor's SOCKS5 port (and cannot be dialed with Tor
-    /// off), and in Tor-only mode every address does, host names resolved by Tor; otherwise the connection is direct, a
-    /// host name resolved locally.
+    /// off), and in Tor-only mode every address does, host names resolved by Tor, except loopback and private-network IP
+    /// addresses, which Tor refuses and which are dialed directly (NL-588); otherwise the connection is direct, a host
+    /// name resolved locally.
     /// </remarks>
     /// <exception cref="ConnectionException">Thrown when the connection to the peer fails.</exception>
     public async Task<ConnectedPeer> ConnectToPeerAsync(PeerAddress peerAddress)
@@ -115,7 +116,7 @@ public class TcpService : ITcpService
                                               + "Node:Tor:Mode to Hybrid or TorOnly and run Tor)"
                                               : $"Cannot connect to {peerAddress.Host}: unsupported address type");
 
-        if (tor.UsesProxy(peerAddress.Type))
+        if (tor.UsesProxy(peerAddress.Type, peerAddress.IpAddress))
             return await ConnectThroughTorAsync(peerAddress, tor.ConnectTimeout);
 
         var tcpClient = new TcpClient();

@@ -197,6 +197,50 @@ public class TorOptionsTests
         Assert.Contains("Unix socket", error);
     }
 
+    [Theory]
+    [InlineData("127.0.0.1", true)]
+    [InlineData("::1", true)]
+    [InlineData("10.1.2.3", true)]
+    [InlineData("172.20.0.5", true)]
+    [InlineData("192.168.1.10", true)]
+    [InlineData("169.254.1.1", true)]
+    [InlineData("fe80::1", true)]
+    [InlineData("fd12:3456::1", true)]
+    [InlineData("::ffff:192.168.1.10", true)]
+    [InlineData("100.64.0.1", false)]
+    [InlineData("172.32.0.1", false)]
+    [InlineData("203.0.113.7", false)]
+    [InlineData("2001:db8::1", false)]
+    public void Given_AnAddress_When_TorOnlyRoutesIt_Then_OnlyLocalNetworkAddressesAreDirect(string host, bool local)
+    {
+        // Arrange - NL-588: Tor refuses loopback and private targets; the provider's CGNAT space is not local
+        var options = new TorOptions { Mode = TorMode.TorOnly };
+        var address = IPAddress.Parse(host);
+        var type = address.AddressFamily == AddressFamily.InterNetworkV6
+                       ? AddressDescriptorType.IPv6
+                       : AddressDescriptorType.IPv4;
+
+        // Act & Assert
+        Assert.Equal(local, TorOptions.IsLocalNetworkAddress(address));
+        Assert.Equal(!local, options.UsesProxy(type, address));
+        Assert.True(options.UsesProxy(type));
+        Assert.False(new TorOptions { Mode = TorMode.Hybrid }.UsesProxy(type, address));
+    }
+
+    [Theory]
+    [InlineData(15, 60, 30)]
+    [InlineData(45, 60, 45)]
+    public void Given_TheTimeouts_When_TheTorNetworkTimeoutIsDerived_Then_ItIsTheLongerOfTheTwo(
+        int networkSeconds, int connectSeconds, int expectedSeconds)
+    {
+        // Arrange - NL-590
+        var options = new TorOptions { ConnectTimeout = TimeSpan.FromSeconds(connectSeconds) };
+
+        // Act & Assert
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds),
+                     options.GetNetworkTimeout(TimeSpan.FromSeconds(networkSeconds)));
+    }
+
     [Fact]
     public void Given_NodeOptionsWithBadTorSettings_When_Validated_Then_TheTorErrorsAreIncluded()
     {
