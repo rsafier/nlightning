@@ -384,7 +384,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-433 Our peer-storage blob is sent only when option_provide_storage is negotiated by both sides
-- **Status:** fixed (2cd9ac70)
+- **Status:** fixed (a746e323)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs` (client side)
@@ -405,7 +405,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-563 A peer-storage refusal for another reason is read as a size refusal
-- **Status:** fixed (b2a6b7ea)
+- **Status:** fixed (5eb9998b)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs` (the NL-559 warning handling)
@@ -860,7 +860,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-055 Handler discovery uses reflection, fragile under trimming/AOT
-- **Status:** fixed (dfb599de)
+- **Status:** fixed (547fe87a)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/DependencyInjection.cs`
@@ -2843,7 +2843,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` §1.3
 
 ### NL-313 The resolution catch-up scan fetches whole blocks from the parent height to the tip
-- **Status:** fixed (9317109e)
+- **Status:** fixed (80d90690)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (`CatchUpSpendsAsync`)
@@ -3697,7 +3697,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` SP-G-01
 
 ### NL-498 The peer's channel_update of our own channel reaches our other peers only as relayed gossip
-- **Status:** fixed (85e7a07e)
+- **Status:** fixed (6f8017ad)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Relay/`
@@ -3907,7 +3907,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-541 BOLT 10 `l` node query and assisted location of known peers are not used
-- **Status:** fixed (a5f97fde)
+- **Status:** fixed (c5de0159)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Node/Bootstrap/DnsSeedQuery.cs`, `src/NLightning.Infrastructure.Bitcoin/Bootstrap/DnsSeedClient.cs`
@@ -5851,7 +5851,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `docs/agents/TOR.md`
 
 ### NL-573 Onion service client authorization and PoW defenses are not configurable
-- **Status:** fixed (3e823ce4)
+- **Status:** fixed (00f7f7a7)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Transport/Tor/TorOnionService.cs`
