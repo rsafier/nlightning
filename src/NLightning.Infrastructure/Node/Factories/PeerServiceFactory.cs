@@ -9,6 +9,7 @@ namespace NLightning.Infrastructure.Node.Factories;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Gossip.Addresses;
 using Domain.Gossip.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -132,16 +133,58 @@ public class PeerServiceFactory : IPeerServiceFactory
         // Create the ping pong service
         var pingPongService = _serviceProvider.GetRequiredService<IPingPongService>();
 
-        // Create the communication service (infrastructure layer)
+        // Create the communication service (infrastructure layer). BOLT 1 (NL-009): as the receiver of the connection
+        // our init carries remote_addr: the endpoint the peer connected from, unless it is a private address
         var communicationService = new PeerCommunicationService(commLogger, messageService, _messageFactory,
                                                                 transportService.RemoteStaticPublicKey.Value,
-                                                                pingPongService, _serviceProvider);
+                                                                pingPongService, _serviceProvider,
+                                                                FromInboundEndPoint(tcpClient.Client.RemoteEndPoint));
 
         // Create the application service (application layer)
         return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
                                _serviceProvider.GetService<IGossipIngress>(),
                                _serviceProvider.GetService<IGossipSyncService>(),
                                GetPeerStorageService(), _serviceProvider.GetService<IOnionMessageService>());
+    }
+
+    /// <summary>
+    /// The BOLT 1 init <c>remote_addr</c> for an inbound connection (NL-009): the connection's remote endpoint as an
+    /// address descriptor. Null when there is nothing worth sending: a non-IP endpoint, port 0, or a private address
+    /// (BOLT 1: the receiver of an IP connection SHOULD set <c>remote_addr</c> to the remote IP address and port, and
+    /// SHOULD NOT set private addresses). Private: this-network, loopback, RFC 1918 and link-local IPv4 (an
+    /// IPv4-mapped IPv6 address is taken as its IPv4 form), and loopback, link-local, site-local, unique-local
+    /// (fc00::/7) and multicast IPv6.
+    /// </summary>
+    internal static AddressDescriptor? FromInboundEndPoint(EndPoint? endPoint)
+    {
+        if (endPoint is not IPEndPoint ipEndPoint || ipEndPoint.Port == 0)
+            return null;
+
+        var address = ipEndPoint.Address.IsIPv4MappedToIPv6 ? ipEndPoint.Address.MapToIPv4() : ipEndPoint.Address;
+        if (IsPrivate(address))
+            return null;
+
+        try
+        {
+            return AddressDescriptor.FromIpAddress(address, (ushort)ipEndPoint.Port);
+        }
+        catch (ArgumentException)
+        {
+            // remote_addr is advisory; an address the descriptor cannot represent (e.g. a scoped IPv6 one) is skipped
+            return null;
+        }
+    }
+
+    private static bool IsPrivate(IPAddress address)
+    {
+        var bytes = address.GetAddressBytes();
+        return address.AddressFamily == AddressFamily.InterNetwork
+            ? bytes[0] is 0 or 10 or 127
+              || (bytes[0] == 169 && bytes[1] == 254)
+              || (bytes[0] == 172 && (bytes[1] & 0xF0) == 0x10)
+              || (bytes[0] == 192 && bytes[1] == 168)
+            : IPAddress.IsLoopback(address) || address.IsIPv6LinkLocal
+            || (bytes[0] & 0xFE) is 0xFC or 0xFE || bytes.All(b => b == 0);
     }
 
     /// <summary>

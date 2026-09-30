@@ -8,12 +8,14 @@ namespace NLightning.Infrastructure.Tests.Node.Services;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.Gossip.Addresses;
 using Domain.Node;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Domain.Protocol.Tlv;
 using Infrastructure.Node.Services;
 using Infrastructure.Protocol.Services;
 
@@ -45,6 +47,50 @@ public class PeerCommunicationServiceTests
         Listen(service);
         RaiseMessage(new InitMessage(new InitPayload(new FeatureSet())));
         return service;
+    }
+
+    [Fact]
+    public async Task Given_AnInboundRemoteAddress_When_Initializing_Then_TheInitCarriesItAsRemoteAddr()
+    {
+        // Arrange - NL-009, BOLT 1: the receiver of an IP connection sends the endpoint the peer connected from
+        var remoteAddress = new AddressDescriptor(AddressDescriptorType.IPv4, [203, 0, 113, 7], 9735);
+        var initMessage = new InitMessage(new InitPayload(new FeatureSet()),
+                                          remoteAddressTlv: new RemoteAddressTlv(remoteAddress));
+        _messageFactoryMock.Setup(x => x.CreateInitMessage(remoteAddress)).Returns(initMessage);
+        var service = new PeerCommunicationService(NullLogger<PeerCommunicationService>.Instance,
+                                                   _messageServiceMock.Object, _messageFactoryMock.Object,
+                                                   _peerPubKey, _pingPongServiceMock.Object,
+                                                   _serviceProviderMock.Object, remoteAddress);
+        Listen(service);
+
+        // Act
+        await service.InitializeAsync(TimeSpan.FromSeconds(30));
+
+        // Assert
+        _messageFactoryMock.Verify(x => x.CreateInitMessage(remoteAddress), Times.Once);
+        _messageServiceMock.Verify(x => x.SendMessageAsync(initMessage, It.IsAny<bool>(),
+                                                           It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_NoRemoteAddress_When_Initializing_Then_NoRemoteAddrIsAskedFor()
+    {
+        // Arrange - BOLT 1: only the receiver of an IP connection sets remote_addr, so an outbound one sends none
+        var initMessage = new InitMessage(new InitPayload(new FeatureSet()));
+        _messageFactoryMock.Setup(x => x.CreateInitMessage(null)).Returns(initMessage);
+        var service = new PeerCommunicationService(NullLogger<PeerCommunicationService>.Instance,
+                                                   _messageServiceMock.Object, _messageFactoryMock.Object,
+                                                   _peerPubKey, _pingPongServiceMock.Object,
+                                                   _serviceProviderMock.Object);
+        Listen(service);
+
+        // Act
+        await service.InitializeAsync(TimeSpan.FromSeconds(30));
+
+        // Assert
+        _messageFactoryMock.Verify(x => x.CreateInitMessage(null), Times.Once);
+        _messageServiceMock.Verify(x => x.SendMessageAsync(initMessage, It.IsAny<bool>(),
+                                                           It.IsAny<CancellationToken>()), Times.Once);
     }
 
     /// <summary>

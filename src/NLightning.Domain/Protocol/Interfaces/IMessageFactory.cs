@@ -3,13 +3,19 @@ namespace NLightning.Domain.Protocol.Interfaces;
 using Bitcoin.ValueObjects;
 using Channels.ValueObjects;
 using Crypto.ValueObjects;
+using Gossip.Addresses;
 using Messages;
 using Money;
 using Tlv;
 
 public interface IMessageFactory
 {
-    InitMessage CreateInitMessage();
+    /// <summary>
+    /// Creates an init message. <paramref name="remoteAddress"/> is the BOLT 1 <c>remote_addr</c> TLV: the address
+    /// descriptor of the connection's remote endpoint, which the receiver of an IP connection SHOULD send (NL-009);
+    /// null sends no <c>remote_addr</c>.
+    /// </summary>
+    InitMessage CreateInitMessage(AddressDescriptor? remoteAddress = null);
     WarningMessage CreateWarningMessage(string message, ChannelId? channelId);
     WarningMessage CreateWarningMessage(byte[] data, ChannelId? channelId);
     StfuMessage CreateStfuMessage(ChannelId channelId, bool initiator);
