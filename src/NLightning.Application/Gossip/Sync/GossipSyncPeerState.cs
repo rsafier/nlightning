@@ -17,7 +17,8 @@ using Domain.Gossip.Queries;
 /// <param name="PeerFilter">The peer's latest <c>gossip_timestamp_filter</c> for our chain, if any.</param>
 /// <param name="OurFilter">The last <c>gossip_timestamp_filter</c> we sent this connection, if any.</param>
 /// <param name="IsQuerySlotPoisoned">
-/// A query of ours went unanswered or broke the rules, so nothing more is asked on this connection.
+/// A reply of ours broke the rules, so nothing more is asked on this connection (a query only answered too late no
+/// longer ends the querying, NL-365).
 /// </param>
 /// <param name="PendingWork">Queued sync work items (range syncs, SCID queries, filters).</param>
 public sealed record GossipSyncPeerState(

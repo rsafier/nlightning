@@ -60,8 +60,11 @@ using Metrics;
 /// ingress dropped (NL-353) are asked for again, from an idle <c>gossip_queries</c> peer.
 /// </para>
 /// <para>
-/// A query that is not answered in time, or whose replies break the rules, ends the querying of that connection for
-/// good (the peer may still be answering it, and a late reply would be taken for the next query's); a sync peer whose
+/// A query that is not answered in time is given up (a slow answer must not stop the sync), but the connection keeps
+/// querying: before its next query, the querier waits for the late reply (or the rest of the late
+/// <c>reply_channel_range</c> stream, recognized by the query's kept collector) and consumes it, so BOLT 7's
+/// one-outstanding-query rule holds and a late reply is never taken for the next query's (NL-365). A reply that breaks
+/// the rules ends the querying of that connection for good (the stream's position is then unknown); a sync peer whose
 /// range sync failed gets <c>gossip_timestamp_filter(now, 0xFFFFFFFF)</c>. With the ingress's queue known, each
 /// <c>query_short_channel_ids</c> asks for at most a tenth of its per-peer capacity in channels and waits until the
 /// queue is at most half full (NL-353), so the answers of a large sync are not dropped. After a sync with timestamps
@@ -599,11 +602,18 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             {
                 try
                 {
-                    if (work is RangeSyncWork or ScidQueryWork && session.IsQuerySlotPoisoned)
+                    if (work is RangeSyncWork or ScidQueryWork)
                     {
-                        // A query of ours may still be answered: nothing more is asked on this connection
-                        (work as ScidQueryWork)?.Completion?.TrySetResult(false);
-                        continue;
+                        if (session.IsQuerySlotPoisoned)
+                        {
+                            // A query of ours may still be answered: nothing more is asked on this connection
+                            (work as ScidQueryWork)?.Completion?.TrySetResult(false);
+                            continue;
+                        }
+
+                        // NL-365: the query given up on before may still be answered; its late reply goes first, so
+                        // BOLT 7's one-outstanding-query rule holds and it never completes the wrong query
+                        await ConsumeOutstandingRepliesAsync(session, cancellationToken);
                     }
 
                     switch (work)
@@ -670,6 +680,47 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         }
     }
 
+    /// <summary>
+    /// Waits, before the next query on this connection (NL-365), for the outstanding reply of the query we gave up
+    /// on: the late <c>reply_short_channel_ids_end</c>, or the rest of a late <c>reply_channel_range</c> stream,
+    /// which is fed to the kept collector of that query until it completes. A late range reply that breaks the rules
+    /// ends the querying on this connection for good (the stream's position is then unknown).
+    /// </summary>
+    private async Task ConsumeOutstandingRepliesAsync(PeerSession session, CancellationToken cancellationToken)
+    {
+        while (session.IsAwaitingOutstandingReply)
+        {
+            var late = await session.Replies.ReadAsync(cancellationToken);
+            if (session.OutstandingCollector is not { } collector)
+            {
+                session.OutstandingReplyConsumed();
+                _logger.LogDebug("The late reply_short_channel_ids_end of peer {Peer} arrived; querying it again",
+                                 session.Peer.PeerPubKey);
+                continue;
+            }
+
+            try
+            {
+                collector.Add((ReplyChannelRangeMessage)late);
+            }
+            catch (WarningException we)
+            {
+                session.OutstandingReplyConsumed();
+                session.PoisonQuerySlot();
+                _logger.LogWarning("The late reply_channel_range of peer {Peer} broke the rules; ending the sync "
+                                 + "with it: {Message}", session.Peer.PeerPubKey, we.Message);
+                return;
+            }
+
+            if (!collector.IsComplete)
+                continue;
+
+            session.OutstandingReplyConsumed();
+            _logger.LogDebug("The late reply_channel_range stream of peer {Peer} finished ({Replies} replies); "
+                           + "querying it again", session.Peer.PeerPubKey, collector.ReplyCount);
+        }
+    }
+
     private async Task RunRangeSyncAsync(PeerSession session, CancellationToken cancellationToken)
     {
         session.IsRangeSyncRunning = true;
@@ -690,6 +741,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
 
             var collector = new RangeReplyCollector(OurChain, 0, numberOfBlocks);
             session.ExpectReplies(MessageTypes.ReplyChannelRange);
+            var abandoned = false;
             try
             {
                 _logger.LogDebug("Querying the channel range of peer {Peer}", session.Peer.PeerPubKey);
@@ -699,11 +751,13 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                     var reply = await ReadReplyAsync(session, cancellationToken);
                     if (reply is null)
                     {
-                        // BOLT 7: no new query before the last one is answered, and a late reply would be taken for
-                        // the next query's: nothing more is asked on this connection
-                        session.PoisonQuerySlot();
-                        _logger.LogInformation("Peer {Peer} did not finish its reply_channel_range in {Timeout}; "
-                                             + "ending the sync with it", session.Peer.PeerPubKey,
+                        // BOLT 7: no new query before the last one is answered. The rest of the reply stream may
+                        // still come, though: the next query of this connection first waits for it and finishes the
+                        // kept collector with it (NL-365), so a late reply is never taken for the next query's
+                        session.AbandonReplyWait(collector);
+                        abandoned = true;
+                        _logger.LogInformation("Peer {Peer} did not finish its reply_channel_range in {Timeout}; its "
+                                             + "next query waits for the late replies", session.Peer.PeerPubKey,
                                                _options.SyncReplyTimeout);
                         return;
                     }
@@ -720,7 +774,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             }
             finally
             {
-                session.ExpectReplies(null);
+                if (!abandoned)
+                    session.ExpectReplies(null);
             }
 
             var entries = collector.Entries;
@@ -990,17 +1045,21 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
 
         await WaitForIngressAsync(session, cancellationToken);
         session.ExpectReplies(MessageTypes.ReplyShortChannelIdsEnd);
+        var abandoned = false;
         try
         {
             await session.Peer.SendGossipMessageAsync(query);
             var reply = await ReadReplyAsync(session, cancellationToken);
             if (reply is null)
             {
-                // BOLT 7: MUST NOT send query_short_channel_ids before reply_short_channel_ids_end, and a late end
-                // would complete the next query: nothing more is asked on this connection
-                session.PoisonQuerySlot();
-                _logger.LogInformation("Peer {Peer} did not answer our query_short_channel_ids in {Timeout}",
-                                       session.Peer.PeerPubKey, _options.SyncReplyTimeout);
+                // BOLT 7: MUST NOT send query_short_channel_ids before reply_short_channel_ids_end. The end may
+                // still come, though: the next query of this connection first waits for it and consumes it (NL-365),
+                // so a late end never completes the wrong query
+                session.AbandonReplyWait(null);
+                abandoned = true;
+                _logger.LogInformation("Peer {Peer} did not answer our query_short_channel_ids in {Timeout}; its "
+                                     + "next query waits for the late end", session.Peer.PeerPubKey,
+                                       _options.SyncReplyTimeout);
                 return ScidQueryOutcome.Failed;
             }
 
@@ -1017,7 +1076,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         }
         finally
         {
-            session.ExpectReplies(null);
+            if (!abandoned)
+                session.ExpectReplies(null);
         }
     }
 
@@ -1207,6 +1267,42 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         public bool IsQuerySlotPoisoned => _querySlotPoisoned;
 
         public void PoisonQuerySlot() => _querySlotPoisoned = true;
+
+        private volatile bool _awaitingOutstandingReply;
+
+        /// <summary>The collector of the abandoned range query, kept to recognize the end of its late reply stream.
+        /// </summary>
+        public RangeReplyCollector? OutstandingCollector { get; private set; }
+
+        /// <summary>A query of ours was given up on (no reply in time), but may still be answered (NL-365).</summary>
+        public bool IsAwaitingOutstandingReply => _awaitingOutstandingReply;
+
+        /// <summary>
+        /// The reply wait was given up (NL-365): the expectation stays armed, and the late reply (or the rest of the
+        /// late <c>reply_channel_range</c> stream, recognized by the kept <paramref name="collector"/>) is consumed
+        /// before the next query of this connection, so it is never taken for the next query's.
+        /// </summary>
+        public void AbandonReplyWait(RangeReplyCollector? collector)
+        {
+            OutstandingCollector = collector;
+            Volatile.Write(ref _awaitingOutstandingReply, true);
+        }
+
+        /// <summary>
+        /// The outstanding reply (stream) arrived and was consumed: drop anything stray of it and take no more
+        /// replies until the next query arms the expectation again (NL-365).
+        /// </summary>
+        public void OutstandingReplyConsumed()
+        {
+            while (_replies.Reader.TryRead(out _))
+            {
+            }
+
+            Volatile.Write(ref _expectedReplyType, -1);
+            OutstandingCollector = null;
+            Volatile.Write(ref _awaitingOutstandingReply, false);
+        }
+
         public DateTimeOffset? LastRangeSyncAt { get; set; }
         public int PendingWork => Volatile.Read(ref _pendingWork);
         public bool IsIdle => PendingWork == 0 && Volatile.Read(ref _queuedQueries) == 0;
