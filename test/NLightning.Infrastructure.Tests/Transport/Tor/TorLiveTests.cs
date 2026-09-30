@@ -126,7 +126,7 @@ public sealed class TorLiveTests : IDisposable
         Assert.True(TorOptions.TryParseEndPoint(Control, out var endPoint));
         await using var client = await TorControlClient.ConnectAsync(endPoint, ct);
         await client.AuthenticateAsync(await client.GetProtocolInfoAsync(ct),
-                                       Environment.GetEnvironmentVariable("NLTG_TEST_TOR_PASSWORD"), null, ct);
+                                       Environment.GetEnvironmentVariable("NLTG_TEST_TOR_PASSWORD"), null, false, ct);
         var key = (await File.ReadAllTextAsync(options.Tor.OnionServiceKeyFile, ct)).Trim();
         return await client.SendAsync($"ADD_ONION {key} Port=9735,127.0.0.1:1", ct);
     }

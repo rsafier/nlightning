@@ -169,7 +169,7 @@ public sealed class TorOnionService : ITorOnionService
         {
             var protocolInfo = await client.GetProtocolInfoAsync(cancellationToken);
             await client.AuthenticateAsync(protocolInfo, _torOptions.ControlPassword, _torOptions.ControlCookieFile,
-                                           cancellationToken);
+                                           _torOptions.AllowUnauthenticatedControlPort, cancellationToken);
             WarnOnOldTor(protocolInfo);
 
             var keyFile = _torOptions.OnionServiceKeyFile;

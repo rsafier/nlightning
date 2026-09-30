@@ -66,9 +66,17 @@ public class TorOptions
 
     /// <summary>
     /// The control port password (<c>HashedControlPassword</c> in <c>torrc</c>). Without it the node authenticates with
-    /// the cookie Tor names in <c>PROTOCOLINFO</c> (SAFECOOKIE, else COOKIE), or with no credentials when Tor allows it.
+    /// the cookie Tor names in <c>PROTOCOLINFO</c> by SAFECOOKIE (never plain COOKIE, which proves nothing about the
+    /// other end), or with no credentials only when <see cref="AllowUnauthenticatedControlPort"/> is set (NL-575).
     /// </summary>
     public string? ControlPassword { get; set; }
+
+    /// <summary>
+    /// Accept a control port that asks for no authentication (NULL). Such a port cannot prove it is Tor, and our onion
+    /// service key goes to it in <c>ADD_ONION</c>, so this is off by default: enable <c>CookieAuthentication</c> in
+    /// <c>torrc</c> or use a <c>ControlSocket</c> instead (NL-575). Default false.
+    /// </summary>
+    public bool AllowUnauthenticatedControlPort { get; set; }
 
     /// <summary>
     /// The control auth cookie to read instead of the one Tor names (Tor in a container with the cookie mounted

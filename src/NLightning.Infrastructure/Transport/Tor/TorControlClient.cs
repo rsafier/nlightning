@@ -6,13 +6,16 @@ using System.Text;
 namespace NLightning.Infrastructure.Transport.Tor;
 
 /// <summary>
-/// A client of Tor's control port (control-spec): <c>PROTOCOLINFO</c>, authentication (SAFECOOKIE, COOKIE,
-/// HASHEDPASSWORD or NULL, the strongest Tor offers that we can use), <c>GETINFO</c>, <c>ADD_ONION</c> and
-/// <c>DEL_ONION</c>. One command at a time; asynchronous events (6xx) are skipped.
+/// A client of Tor's control port (control-spec): <c>PROTOCOLINFO</c>, authentication (HASHEDPASSWORD, SAFECOOKIE, or
+/// NULL only when allowed; never plain COOKIE), <c>GETINFO</c>, <c>ADD_ONION</c> and <c>DEL_ONION</c>. One command at
+/// a time; asynchronous events (6xx) are skipped.
 /// </summary>
 /// <remarks>
-/// An onion service added without <c>Flags=Detach</c> belongs to this connection: Tor removes it when the connection
-/// closes, so a node that dies takes its service down with it and a node that restarts adds it again.
+/// <para>An onion service added without <c>Flags=Detach</c> belongs to this connection: Tor removes it when the
+/// connection closes, so a node that dies takes its service down with it and a node that restarts adds it again.</para>
+/// <para>A command interrupted halfway (cancelled, an I/O error, a malformed reply) leaves an unknown part of its reply
+/// unread, so the client is faulted from then on and every later command fails (NL-582): a stale reply is never taken
+/// for the next command's. Reply lines are bounded while they are read (NL-589).</para>
 /// </remarks>
 public sealed class TorControlClient : IAsyncDisposable
 {
@@ -24,8 +27,12 @@ public sealed class TorControlClient : IAsyncDisposable
 
     private readonly Stream _stream;
     private readonly IDisposable? _owner;
-    private readonly StreamReader _reader;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly byte[] _buffer = new byte[4096];
+
+    private int _bufferOffset;
+    private int _bufferCount;
+    private volatile bool _faulted;
 
     /// <summary>
     /// Wraps a stream connected to the control port.
@@ -36,8 +43,10 @@ public sealed class TorControlClient : IAsyncDisposable
     {
         _stream = stream;
         _owner = owner;
-        _reader = new StreamReader(stream, Encoding.Latin1, false, 4096, leaveOpen: true);
     }
+
+    /// <summary>True once a command was interrupted halfway; the connection is then unusable (NL-582).</summary>
+    public bool IsFaulted => _faulted;
 
     /// <summary>
     /// Connects to the control port at <paramref name="endPoint"/> (TCP or Unix socket).
@@ -59,6 +68,7 @@ public sealed class TorControlClient : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            ThrowIfFaulted();
             await _stream.WriteAsync(Encoding.Latin1.GetBytes(command + "\r\n"), cancellationToken);
             await _stream.FlushAsync(cancellationToken);
             while (true)
@@ -68,9 +78,14 @@ public sealed class TorControlClient : IAsyncDisposable
                     return reply;
             }
         }
-        catch (IOException e)
+        catch (Exception e) when (!_faulted || e is IOException)
         {
-            throw new TorControlException("The Tor control connection failed", e);
+            // Whatever of the reply is left unread would be taken for the next command's (NL-582)
+            _faulted = true;
+            if (e is IOException)
+                throw new TorControlException("The Tor control connection failed", e);
+
+            throw;
         }
         finally
         {
@@ -87,12 +102,19 @@ public sealed class TorControlClient : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            ThrowIfFaulted();
             while (true)
                 _ = await ReadReplyAsync(cancellationToken);
         }
         catch (Exception e) when (e is TorControlException or IOException)
         {
             // Closed
+            _faulted = true;
+        }
+        catch
+        {
+            _faulted = true;
+            throw;
         }
         finally
         {
@@ -114,16 +136,25 @@ public sealed class TorControlClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Authenticates with the strongest method both sides can use: a password when one is given (HASHEDPASSWORD),
-    /// else the cookie by SAFECOOKIE (Tor proves it knows the cookie too), else COOKIE, else NULL.
+    /// Authenticates: with the password when one is given (HASHEDPASSWORD), else with the cookie by SAFECOOKIE, which
+    /// also proves that the other end is the Tor that wrote the cookie, else with no credentials (NULL) when
+    /// <paramref name="allowUnauthenticated"/> is set (NL-575).
     /// </summary>
+    /// <remarks>
+    /// Plain COOKIE is never used: it sends the file's bytes to whatever listens on the control port, and a port that
+    /// offers only COOKIE (every Tor since 0.2.3.13 offers SAFECOOKIE with it) could name any 32-byte file of ours.
+    /// NULL authenticates neither side, so without the explicit option a control port that asks for nothing is
+    /// refused before our onion service key is ever sent to it.
+    /// </remarks>
     /// <param name="protocolInfo">What <see cref="GetProtocolInfoAsync"/> returned.</param>
     /// <param name="password">The control password, if configured.</param>
     /// <param name="cookieFile">A cookie file to read instead of the one Tor names.</param>
+    /// <param name="allowUnauthenticated">Accept a control port that offers only NULL
+    /// (<c>Node:Tor:AllowUnauthenticatedControlPort</c>).</param>
     /// <param name="cancellationToken">Cancels the exchange.</param>
     /// <exception cref="TorControlException">No usable method, or Tor refused the credentials.</exception>
     public async Task AuthenticateAsync(TorProtocolInfo protocolInfo, string? password, string? cookieFile,
-                                        CancellationToken cancellationToken)
+                                        bool allowUnauthenticated, CancellationToken cancellationToken)
     {
         var methods = protocolInfo.AuthMethods;
         string command;
@@ -135,7 +166,7 @@ public sealed class TorControlClient : IAsyncDisposable
 
             command = $"AUTHENTICATE {Quote(password)}";
         }
-        else if (methods.Contains("SAFECOOKIE") || methods.Contains("COOKIE"))
+        else if (methods.Contains("SAFECOOKIE"))
         {
             var path = string.IsNullOrWhiteSpace(cookieFile) ? protocolInfo.CookieFile : cookieFile;
             if (string.IsNullOrWhiteSpace(path))
@@ -156,12 +187,21 @@ public sealed class TorControlClient : IAsyncDisposable
                 throw new TorControlException($"Tor's control cookie {path} is {cookie.Length} bytes, not "
                                             + CookieLength.ToString(CultureInfo.InvariantCulture));
 
-            command = methods.Contains("SAFECOOKIE")
-                          ? $"AUTHENTICATE {await SafeCookieResponseAsync(cookie, cancellationToken)}"
-                          : $"AUTHENTICATE {Convert.ToHexString(cookie)}";
+            command = $"AUTHENTICATE {await SafeCookieResponseAsync(cookie, cancellationToken)}";
+        }
+        else if (methods.Contains("COOKIE"))
+        {
+            throw new TorControlException("The control port offers COOKIE but not SAFECOOKIE authentication, which "
+                                        + "every maintained Tor offers; refusing to send the cookie to it (set "
+                                        + "Node:Tor:ControlPassword to use a password instead)");
         }
         else if (methods.Contains("NULL"))
         {
+            if (!allowUnauthenticated)
+                throw new TorControlException("Tor's control port asks for no authentication, so it cannot prove it is "
+                                            + "Tor: enable CookieAuthentication 1 in torrc (or use a ControlSocket), or "
+                                            + "set Node:Tor:AllowUnauthenticatedControlPort true");
+
             command = "AUTHENTICATE";
         }
         else
@@ -237,7 +277,7 @@ public sealed class TorControlClient : IAsyncDisposable
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        _reader.Dispose();
+        _faulted = true;
         await _stream.DisposeAsync();
         _owner?.Dispose();
         _gate.Dispose();
@@ -403,7 +443,7 @@ public sealed class TorControlClient : IAsyncDisposable
             var line = await ReadLineAsync(cancellationToken);
             if (line.Length < 4 || !int.TryParse(line.AsSpan(0, 3), NumberStyles.None, CultureInfo.InvariantCulture,
                                                  out var status))
-                throw new TorControlException($"Malformed control reply line '{line}'");
+                throw Malformed(line);
 
             var separator = line[3];
             lines.Add(line[4..]);
@@ -425,18 +465,55 @@ public sealed class TorControlClient : IAsyncDisposable
 
                     continue;
                 default:
-                    throw new TorControlException($"Malformed control reply line '{line}'");
+                    throw Malformed(line);
             }
         }
     }
 
+    /// <summary>
+    /// Reads one line (Latin-1, without its CRLF or LF), never holding more than <see cref="MaxLineLength"/> bytes of
+    /// it (NL-589).
+    /// </summary>
     private async Task<string> ReadLineAsync(CancellationToken cancellationToken)
     {
-        var line = await _reader.ReadLineAsync(cancellationToken)
-                ?? throw new TorControlException("Tor closed the control connection");
-        if (line.Length > MaxLineLength)
-            throw new TorControlException("Control reply line too long");
+        var line = new List<byte>();
+        while (true)
+        {
+            if (_bufferCount == 0)
+            {
+                _bufferOffset = 0;
+                _bufferCount = await _stream.ReadAsync(_buffer, cancellationToken);
+                if (_bufferCount == 0)
+                    throw new TorControlException("Tor closed the control connection");
+            }
 
-        return line;
+            var available = _buffer.AsSpan(_bufferOffset, _bufferCount);
+            var newLine = available.IndexOf((byte)'\n');
+            var take = newLine < 0 ? available.Length : newLine;
+            if (line.Count + take > MaxLineLength)
+                throw new TorControlException("Control reply line too long");
+
+            line.AddRange(available[..take]);
+            var consumed = newLine < 0 ? take : take + 1;
+            _bufferOffset += consumed;
+            _bufferCount -= consumed;
+            if (newLine < 0)
+                continue;
+
+            if (line.Count > 0 && line[^1] == (byte)'\r')
+                line.RemoveAt(line.Count - 1);
+
+            return Encoding.Latin1.GetString(line.ToArray());
+        }
+    }
+
+    private static TorControlException Malformed(string line) =>
+        new($"Malformed control reply line '{TorControlReply.Redact(line)}'");
+
+    private void ThrowIfFaulted()
+    {
+        if (_faulted)
+            throw new TorControlException("The Tor control connection is unusable after an interrupted command; "
+                                        + "reconnect");
     }
 }

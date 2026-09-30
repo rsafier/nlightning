@@ -10,11 +10,11 @@ using Infrastructure.Transport.Tor;
 public class TorControlClientTests
 {
     [Theory]
-    [InlineData("COOKIE,SAFECOOKIE", "AUTHCHALLENGE SAFECOOKIE")]
-    [InlineData("COOKIE", "AUTHENTICATE ")]
-    [InlineData("NULL", "AUTHENTICATE")]
-    public async Task Given_AnAuthMethod_When_Authenticating_Then_TheStrongestUsableOneIsUsed(string methods,
-                                                                                              string expected)
+    [InlineData("COOKIE,SAFECOOKIE", false, "AUTHCHALLENGE SAFECOOKIE")]
+    [InlineData("NULL,COOKIE,SAFECOOKIE", false, "AUTHCHALLENGE SAFECOOKIE")]
+    [InlineData("NULL", true, "AUTHENTICATE")]
+    public async Task Given_AnAuthMethod_When_Authenticating_Then_TheStrongestUsableOneIsUsed(
+        string methods, bool allowUnauthenticated, string expected)
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
@@ -23,7 +23,7 @@ public class TorControlClientTests
 
         // Act
         var info = await client.GetProtocolInfoAsync(ct);
-        await client.AuthenticateAsync(info, null, null, ct);
+        await client.AuthenticateAsync(info, null, null, allowUnauthenticated, ct);
         var version = await client.GetInfoAsync("version", ct);
 
         // Assert
@@ -32,6 +32,29 @@ public class TorControlClientTests
         Assert.Equal(new Version(0, 4, 8, 13), info.GetNumericVersion());
         Assert.Equal("0.4.8.13", version);
         Assert.Contains(tor.Commands, c => c.StartsWith(expected, StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("COOKIE", "SAFECOOKIE")]
+    [InlineData("NULL", "AllowUnauthenticatedControlPort")]
+    public async Task Given_AControlPortThatCannotProveItIsTor_When_Authenticating_Then_NothingIsSent(
+        string methods, string expectedInMessage)
+    {
+        // Arrange - NL-575: plain COOKIE hands the file's bytes to whatever listens (a fake port could name any
+        // 32-byte file), and NULL proves nothing at all
+        var ct = TestContext.Current.CancellationToken;
+        await using var tor = new FakeTorControlPort(methods);
+        await using var client = await TorControlClient.ConnectAsync(IPEndPoint.Parse(tor.EndPoint), ct);
+        var info = await client.GetProtocolInfoAsync(ct);
+
+        // Act
+        var e = await Assert.ThrowsAsync<TorControlException>(
+            () => client.AuthenticateAsync(info, null, null, false, ct));
+
+        // Assert
+        Assert.Contains(expectedInMessage, e.Message);
+        Assert.DoesNotContain(tor.Commands, c => c.StartsWith("AUTHENTICATE", StringComparison.Ordinal));
+        Assert.DoesNotContain(tor.Commands, c => c.StartsWith("AUTHCHALLENGE", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -44,7 +67,7 @@ public class TorControlClientTests
         var info = await client.GetProtocolInfoAsync(ct);
 
         // Act
-        await client.AuthenticateAsync(info, "s3cret", null, ct);
+        await client.AuthenticateAsync(info, "s3cret", null, false, ct);
 
         // Assert
         Assert.Contains("AUTHENTICATE \"s3cret\"", tor.Commands);
@@ -60,7 +83,8 @@ public class TorControlClientTests
         var info = await client.GetProtocolInfoAsync(ct);
 
         // Act & Assert
-        var e = await Assert.ThrowsAsync<TorControlException>(() => client.AuthenticateAsync(info, "nope", null, ct));
+        var e = await Assert.ThrowsAsync<TorControlException>(
+            () => client.AuthenticateAsync(info, "nope", null, false, ct));
         Assert.Equal(515, e.Reply?.Status);
     }
 
@@ -74,7 +98,8 @@ public class TorControlClientTests
         var info = await client.GetProtocolInfoAsync(ct);
 
         // Act & Assert
-        var e = await Assert.ThrowsAsync<TorControlException>(() => client.AuthenticateAsync(info, null, null, ct));
+        var e = await Assert.ThrowsAsync<TorControlException>(
+            () => client.AuthenticateAsync(info, null, null, false, ct));
         Assert.Contains("ControlPassword", e.Message);
     }
 
@@ -93,7 +118,7 @@ public class TorControlClientTests
         {
             // Act & Assert
             var e = await Assert.ThrowsAsync<TorControlException>(
-                () => client.AuthenticateAsync(info, null, otherCookie, ct));
+                () => client.AuthenticateAsync(info, null, otherCookie, false, ct));
             Assert.Contains("SAFECOOKIE hash does not match", e.Message);
             Assert.DoesNotContain(tor.Commands, c => c.StartsWith("AUTHENTICATE", StringComparison.Ordinal));
         }
@@ -113,7 +138,7 @@ public class TorControlClientTests
 
         // Act
         var info = await client.GetProtocolInfoAsync(ct);
-        await client.AuthenticateAsync(info, null, null, ct);
+        await client.AuthenticateAsync(info, null, null, false, ct);
         var (serviceId, key) = await client.AddOnionAsync(null, 9735, "127.0.0.1:9735", ct);
 
         // Assert
@@ -129,7 +154,7 @@ public class TorControlClientTests
         var ct = TestContext.Current.CancellationToken;
         await using var tor = new FakeTorControlPort();
         await using var client = await TorControlClient.ConnectAsync(IPEndPoint.Parse(tor.EndPoint), ct);
-        await client.AuthenticateAsync(await client.GetProtocolInfoAsync(ct), null, null, ct);
+        await client.AuthenticateAsync(await client.GetProtocolInfoAsync(ct), null, null, false, ct);
         var (first, key) = await client.AddOnionAsync(null, 9735, "127.0.0.1:9735", ct);
         await client.DeleteOnionAsync(first, ct);
 
@@ -149,7 +174,7 @@ public class TorControlClientTests
         var ct = TestContext.Current.CancellationToken;
         await using var tor = new FakeTorControlPort();
         await using var client = await TorControlClient.ConnectAsync(IPEndPoint.Parse(tor.EndPoint), ct);
-        await client.AuthenticateAsync(await client.GetProtocolInfoAsync(ct), null, null, ct);
+        await client.AuthenticateAsync(await client.GetProtocolInfoAsync(ct), null, null, false, ct);
 
         // Act & Assert: 552 is not an error
         await client.DeleteOnionAsync("nosuchservice", ct);
@@ -211,6 +236,92 @@ public class TorControlClientTests
                                                                            TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public void Given_AnAddOnionReplyWithAPrivateKey_When_ItIsShown_Then_TheKeyIsRedacted()
+    {
+        // Arrange - NL-581: a failed exchange puts the reply in the exception message, which is logged
+        var reply = new TorControlReply(250, ["ServiceID=abc", "PrivateKey=ED25519-V3:c2VjcmV0a2V5", "OK"]);
+        var failed = new TorControlException("ADD_ONION returned no ServiceID", reply);
+
+        // Act
+        var text = reply.ToString();
+
+        // Assert
+        Assert.DoesNotContain("c2VjcmV0a2V5", text);
+        Assert.DoesNotContain("c2VjcmV0a2V5", failed.Message);
+        Assert.Contains("PrivateKey=[redacted]", text);
+        Assert.Contains("ServiceID=abc", text);
+        Assert.Equal("ADD_ONION ED25519-V3:[redacted] Port=9735",
+                     TorControlReply.Redact("ADD_ONION ED25519-V3:c2VjcmV0a2V5 Port=9735"));
+    }
+
+    [Fact]
+    public async Task Given_AMalformedLineWithAKey_When_Read_Then_TheErrorHidesTheKey()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        await using var client = new TorControlClient(new ScriptedStream(new MemoryStream(
+            Encoding.ASCII.GetBytes("2x0-PrivateKey=ED25519-V3:c2VjcmV0a2V5\r\n"))));
+
+        // Act
+        var e = await Assert.ThrowsAsync<TorControlException>(() => client.SendAsync("GETINFO version", ct));
+
+        // Assert
+        Assert.DoesNotContain("c2VjcmV0a2V5", e.Message);
+    }
+
+    [Fact]
+    public async Task Given_ACommandCancelledMidReply_When_TheNextCommandIsSent_Then_ItFailsInsteadOfReadingTheStaleReply()
+    {
+        // Arrange - NL-582: the first reply arrives only after the first command was given up
+        var ct = TestContext.Current.CancellationToken;
+        var server = new GatedStream();
+        await using var client = new TorControlClient(server);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var first = client.SendAsync("GETINFO version", cts.Token);
+        await cts.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        server.Release("250-version=stale\r\n250 OK\r\n250-version=fresh\r\n250 OK\r\n");
+
+        // Act
+        var e = await Assert.ThrowsAsync<TorControlException>(() => client.GetInfoAsync("version", ct));
+
+        // Assert
+        Assert.True(client.IsFaulted);
+        Assert.Contains("interrupted", e.Message);
+    }
+
+    [Fact]
+    public async Task Given_AnEndlessLine_When_Read_Then_ItIsRefusedOnceItPassesTheLimit()
+    {
+        // Arrange - NL-589: a line without a newline is refused as it grows, not after it was all buffered
+        var ct = TestContext.Current.CancellationToken;
+        var endless = new EndlessStream();
+        await using var client = new TorControlClient(endless);
+
+        // Act
+        var e = await Assert.ThrowsAsync<TorControlException>(() => client.SendAsync("GETINFO version", ct));
+
+        // Assert
+        Assert.Contains("too long", e.Message);
+        Assert.InRange(endless.BytesRead, 64 * 1024, 64 * 1024 + 8192);
+    }
+
+    [Fact]
+    public async Task Given_RepliesSplitAcrossReads_When_Read_Then_TheLinesAreJoined()
+    {
+        // Arrange: one byte per read, CRLF and bare LF endings
+        var ct = TestContext.Current.CancellationToken;
+        await using var client = new TorControlClient(new ScriptedStream(new OneByteStream(
+            Encoding.ASCII.GetBytes("250-version=0.4.8.13\n250 OK\r\n"))));
+
+        // Act
+        var version = await client.GetInfoAsync("version", ct);
+
+        // Assert
+        Assert.Equal("0.4.8.13", version);
+    }
+
     /// <summary>
     /// A stream that reads a script and records what is written.
     /// </summary>
@@ -234,5 +345,83 @@ public class TorControlClientTests
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => Written.Write(buffer, offset, count);
+    }
+
+    /// <summary>
+    /// A stream whose reads wait until <see cref="Release"/> gives them bytes; a cancelled read gives up.
+    /// </summary>
+    private sealed class GatedStream : Stream
+    {
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly MemoryStream _data = new();
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public void Release(string text)
+        {
+            _data.Write(Encoding.ASCII.GetBytes(text));
+            _data.Position = 0;
+            _released.TrySetResult();
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await _released.Task.WaitAsync(cancellationToken);
+            return _data.Read(buffer.Span);
+        }
+
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) { }
+    }
+
+    /// <summary>
+    /// A stream that reads 'x' forever and counts it.
+    /// </summary>
+    private sealed class EndlessStream : Stream
+    {
+        public long BytesRead { get; private set; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            buffer.AsSpan(offset, count).Fill((byte)'x');
+            BytesRead += count;
+            return count;
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) { }
+    }
+
+    /// <summary>
+    /// A stream over <paramref name="data"/> that returns one byte per read.
+    /// </summary>
+    private sealed class OneByteStream(byte[] data) : MemoryStream(data)
+    {
+        public override int Read(byte[] buffer, int offset, int count) => base.Read(buffer, offset, Math.Min(count, 1));
     }
 }
