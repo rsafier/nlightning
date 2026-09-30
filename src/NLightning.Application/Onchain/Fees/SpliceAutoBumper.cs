@@ -23,23 +23,25 @@ using Domain.Protocol.InteractiveTx;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
-/// The splice auto-bump (wave SPR, SPR-T3, lane SPR-B): on each block, RBFs every pending splice of ours whose latest
-/// attempt has waited <see cref="SpliceOptions.AutoBumpAfterBlocks"/> blocks, through
-/// <see cref="ISpliceService.BumpAsync(SpliceBumpRequest, CancellationToken)"/> at the fee service's estimate, at least
-/// the IT-RBF-01 minimum of the latest attempt (<see cref="InteractiveTxRbfRules.GetMinimumNextFeerate"/>). Off unless
-/// <c>Splice:AutoBumpAfterBlocks</c> is set (null or 0 = off).
+/// The splice auto-bump (wave SPR, SPR-T3, lane SPR-B): on each block, RBFs every pending splice whose latest attempt
+/// has waited <see cref="SpliceOptions.AutoBumpAfterBlocks"/> blocks, through
+/// <see cref="ISpliceService.BumpAsync(SpliceBumpRequest, CancellationToken)"/> at the estimate for a
+/// <see cref="ConfirmationTarget"/>-block confirmation (the node-wide rate when the fee service has none for that
+/// target), at least the IT-RBF-01 minimum of the latest attempt
+/// (<see cref="InteractiveTxRbfRules.GetMinimumNextFeerate"/>). Any pending splice is a candidate: BOLT 2 lets either
+/// quiescence initiator send the <c>tx_init_rbf</c> (<see cref="SpliceRules.CheckSendRbf"/>), and the bumper starts its
+/// own quiescence (NL-507). Off unless <c>Splice:AutoBumpAfterBlocks</c> is set (null or 0 = off).
 /// </summary>
 /// <remarks>
 /// <para>A splice is bumped when, at the round's height: the channel is <see cref="ChannelState.Open"/>; its latest
 /// pending attempt (<see cref="FundingSet.LatestAttempt"/>) is unconfirmed, as are all its siblings, and no
-/// <c>splice_locked</c> was sent for any of them; the splice is ours (our side contributed to it, a non-zero
-/// <see cref="ChannelFunding.LocalBalanceDeltaMsat"/>, or the service's last negotiation on the channel is ours and
-/// named one of the attempts); it has fewer than <see cref="SpliceOptions.MaxRbfAttempts"/> RBF attempts; no splice
-/// negotiation runs on the channel and no bump of ours is running; and the latest attempt has waited
-/// <c>AutoBumpAfterBlocks</c> blocks since it was first broadcast (its <c>BroadcastTransactions</c> row's
-/// <c>FirstBroadcastHeight</c>; without a row, the height this bumper first saw it) and since our last bump attempt on
-/// it. So a splice is bumped at most once per interval: a bump the peer refuses (or that finds the peer offline) is
-/// tried again one interval later, and a bump that succeeds starts the interval of the new attempt.</para>
+/// <c>splice_locked</c> was sent for any of them; it has fewer than <see cref="SpliceOptions.MaxRbfAttempts"/> RBF
+/// attempts; no splice negotiation runs on the channel and no bump of ours is running; and the latest attempt has
+/// waited <c>AutoBumpAfterBlocks</c> blocks since it was first broadcast. The interval counts from the attempt's
+/// persisted <c>BroadcastTransactions</c> row (<c>FirstBroadcastHeight</c>, NL-507): the row is written in the same
+/// save that made the attempt pending (SP-I7), so it survives a restart; a pending attempt whose row has not appeared
+/// yet waits for the round that reads it. Our own last try of the current process is kept on top of that in memory, so
+/// a bump the peer refuses (or that finds the peer offline) is retried one interval later, not on every block.</para>
 /// <para>Spending limits (the operator's, not the acceptor bound <see cref="SpliceOptions.MaxFeeratePerKw"/>): the
 /// feerate is clamped to <see cref="SpliceOptions.AutoBumpMaxFeeratePerKw"/>; a splice whose IT-RBF-01 minimum is
 /// already above it is not bumped (logged once per interval, left to <c>bumpsplice</c>); every request carries
@@ -55,6 +57,13 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// </remarks>
 public sealed class SpliceAutoBumper : ISpliceAutoBumper
 {
+    /// <summary>
+    /// The confirmation target the bump buys, in blocks (NL-507): a pending splice carries the channel's HTLCs, so the
+    /// bumper pays for a comfortable confirmation rather than the node-wide next-block rate; the operator's
+    /// <see cref="SpliceOptions.AutoBumpMaxFeeratePerKw"/> still caps what it may propose.
+    /// </summary>
+    private const uint ConfirmationTarget = 12;
+
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ISpliceService _spliceService;
     private readonly ISpliceStatePort _statePort;
@@ -66,7 +75,6 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
     private readonly Lock _gate = new();
 
     // Under _gate
-    private readonly Dictionary<TxId, uint> _firstSeen = [];
     private readonly Dictionary<ChannelId, (TxId LatestAttempt, uint Height)> _lastBump = [];
     private readonly HashSet<ChannelId> _running = [];
     private readonly HashSet<Task<SpliceResult>> _inFlight = [];
@@ -127,7 +135,7 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
         if (due.Count == 0)
             return [];
 
-        // One estimate per round, read only when a splice is due
+        // One estimate per round, for the bump's confirmation target, read only when a splice is due
         var estimate = await GetEstimateAsync(cancellationToken);
         var bumps = new List<Task<SpliceResult>>(due.Count);
         var ceiling = _options.AutoBumpMaxFeeratePerKw;
@@ -266,8 +274,8 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
         if (negotiation is { State: not (SpliceNegotiationState.Signed or SpliceNegotiationState.Aborted) })
             return null;
 
-        if (!IsOurs(fundings, latest, negotiation))
-            return null;
+        // BOLT 2 lets either quiescence initiator send the tx_init_rbf (SpliceRules.CheckSendRbf has no "ours" rule),
+        // so any pending splice is a candidate: the bumper starts its own quiescence (NL-507)
 
         var rbfAttempts = fundings.Pending.Count - 1;
         if (rbfAttempts >= _options.MaxRbfAttempts)
@@ -283,7 +291,7 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
                             ? null
                             : await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(
                                   latest.FundingTxId);
-        if (broadcast is { State: not BroadcastState.Pending })
+        if (broadcast is not { State: BroadcastState.Pending })
             return null;
 
         uint baseline;
@@ -292,27 +300,20 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
             if (_running.Contains(channel.ChannelId))
                 return null;
 
-            if (!_firstSeen.TryGetValue(latest.FundingTxId, out var firstSeen))
-                _firstSeen[latest.FundingTxId] = firstSeen = height;
-
-            baseline = broadcast?.FirstBroadcastHeight ?? firstSeen;
+            // NL-507: the interval counts from the attempt's persisted row (FirstBroadcastHeight), which survives a
+            // restart; the row is written in the same save that made the attempt pending (SP-I7), so a pending attempt
+            // without one has not committed yet and waits for the round that reads it. Our last try of this process
+            // (a refused or lost bump, which creates no new attempt) pushes the interval out on top of the row.
+            baseline = broadcast.FirstBroadcastHeight;
             if (_lastBump.TryGetValue(channel.ChannelId, out var last) && last.LatestAttempt == latest.FundingTxId)
                 baseline = Math.Max(baseline, last.Height);
         }
 
-        if (height < (ulong)baseline + interval)
+        if (height < baseline + interval)
             return null;
 
         return (latest, height - baseline);
     }
-
-    /// <summary>
-    /// The splice is ours to bump: our side contributed to it, or the service's last negotiation on the channel was
-    /// ours and named one of its attempts.
-    /// </summary>
-    private static bool IsOurs(FundingSet fundings, ChannelFunding latest, SpliceNegotiationModel? negotiation) =>
-        latest.LocalBalanceDeltaMsat != 0
-     || negotiation is { IsInitiator: true, SpliceTxId: { } txId } && fundings.Pending.Any(p => p.FundingTxId == txId);
 
     /// <summary>
     /// Starts the bump and waits for it at most <see cref="SpliceOptions.AutoBumpMaxWait"/>. A bump still negotiating
@@ -384,16 +385,8 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
 
     private async Task<uint> GetEstimateAsync(CancellationToken cancellationToken)
     {
-        try
-        {
-            var estimate = await _feeService.GetFeeRatePerKwAsync(cancellationToken);
-            return (uint)Math.Clamp(estimate?.Satoshi ?? 0, 0, uint.MaxValue);
-        }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            _logger.LogWarning("No fee estimate for the splice auto-bump ({Reason}); using the RBF minimum", e.Message);
-            return 0;
-        }
+        // NL-507: the bump buys a confirmation within ConfirmationTarget blocks, not the node-wide next-block rate
+        return await FeeEstimates.GetForTargetAsync(_feeService, ConfirmationTarget, _logger, cancellationToken);
     }
 
     /// <summary>Drops the heights kept for attempts that are no longer the latest of a pending splice.</summary>
@@ -401,8 +394,6 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
     {
         lock (_gate)
         {
-            foreach (var txId in _firstSeen.Keys.Where(t => !latestAttempts.Contains(t)).ToList())
-                _firstSeen.Remove(txId);
             foreach (var channelId in _lastBump.Where(b => !latestAttempts.Contains(b.Value.LatestAttempt))
                                                .Select(b => b.Key).ToList())
                 _lastBump.Remove(channelId);
