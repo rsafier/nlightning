@@ -120,6 +120,13 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// </summary>
     private readonly ConcurrentDictionary<Task, byte> _inboundSetups = new();
 
+    /// <summary>
+    /// One gate per peer id for the peer-row saves of the two connect paths (NL-524): both read the row, decide
+    /// insert or update, and flush, so without the gate a simultaneous inbound and outbound connection can both see
+    /// no row and both insert it (UNIQUE constraint on Peers.NodeId).
+    /// </summary>
+    private readonly ConcurrentDictionary<CompactPubKey, SemaphoreSlim> _peerRowSaveGates = new();
+
     private CancellationTokenSource _reconnectCts = new();
 
     /// <summary>
@@ -234,7 +241,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
 
             try
             {
-                _ = await ConnectToPeerAsync(peer.PeerAddressInfo, uow);
+                _ = await ConnectToPeerAsync(peer.PeerAddressInfo);
                 continue;
             }
             catch (InvalidOperationException)
@@ -366,14 +373,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// <exception cref="InvalidOperationException">Thrown when the connection to the peer already exists.</exception>
     public async Task<PeerModel> DialPeerAsync(PeerAddressInfo peerAddressInfo, CancellationToken cancellationToken)
     {
-        using var scope = _serviceProvider.CreateScope();
-        using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-
-        var peer = await ConnectToPeerAsync(peerAddressInfo, uow, cancellationToken);
-
-        await uow.SaveChangesAsync();
-
-        return peer;
+        return await ConnectToPeerAsync(peerAddressInfo, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -509,7 +509,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         StartReconnectLoop(dialable);
     }
 
-    private async Task<PeerModel> ConnectToPeerAsync(PeerAddressInfo peerAddressInfo, IUnitOfWork uow,
+    private async Task<PeerModel> ConnectToPeerAsync(PeerAddressInfo peerAddressInfo,
                                                      CancellationToken cancellationToken = default)
     {
         // Convert and validate the address
@@ -580,9 +580,40 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
                 throw new InvalidOperationException($"Already connected to peer {peer.NodeId}");
         }
 
-        await uow.PeerDbRepository.AddOrUpdateAsync(peer);
+        // The peer's row is saved under its save gate (NL-524), committed before the gate is released
+        await SavePeerRowAsync(peer.NodeId, async uow =>
+        {
+            await uow.PeerDbRepository.AddOrUpdateAsync(peer);
+            return null;
+        });
 
         return peer;
+    }
+
+    /// <summary>
+    /// Saves a peer row under the peer's save gate (NL-524): the outbound and inbound connect paths both read the
+    /// row, decide insert or update, and flush, so the gate makes that whole sequence atomic per peer — the second
+    /// path to save a row the first one just committed reads it and updates instead of inserting a duplicate
+    /// (UNIQUE constraint on Peers.NodeId). Each save gets its own scope, so the row is committed before the gate
+    /// is released and what one path wrote is what the other path reads.
+    /// </summary>
+    private async Task<PeerModel?> SavePeerRowAsync(CompactPubKey nodeId, Func<IUnitOfWork, Task<PeerModel?>> save)
+    {
+        var gate = _peerRowSaveGates.GetOrAdd(nodeId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync();
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            var saved = await save(uow);
+            await uow.SaveChangesAsync();
+            return saved;
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     /// <summary>
@@ -713,42 +744,40 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     }
 
     /// <summary>
-    /// Saves a peer that connected to us. A saved dialable row survives every inbound connection (NL-514): where the
-    /// peer connected from is not where it listens, so only the row's last-seen time moves. Without a dialable row, a
-    /// loopback peer is saved inbound-only, without an address (empty host, port 0), so nothing that reads the peer
-    /// rows (the static channel backup, a restore) takes the loopback host for the peer's (NL-497); any other peer is
-    /// saved at the address of its <c>node_announcement</c> when the graph has one (NL-514), else at the host it
-    /// connected from with the default port (its listening port is unknown until it announces itself).
+    /// Saves a peer that connected to us, under its save gate (NL-524). A saved dialable row survives every inbound
+    /// connection (NL-514): where the peer connected from is not where it listens, so only the row's last-seen time
+    /// moves. Without a dialable row, a loopback peer is saved inbound-only, without an address (empty host, port 0),
+    /// so nothing that reads the peer rows (the static channel backup, a restore) takes the loopback host for the
+    /// peer's (NL-497); any other peer is saved at the address of its <c>node_announcement</c> when the graph has one
+    /// (NL-514), else at the host it connected from with the default port (its listening port is unknown until it
+    /// announces itself).
     /// </summary>
     /// <returns>The saved dialable row of an inbound-only peer, the one the reconnect loop dials; else null.</returns>
-    private async Task<PeerModel?> SaveInboundPeerAsync(PeerModel peer)
+    private Task<PeerModel?> SaveInboundPeerAsync(PeerModel peer)
     {
-        using var scope = _serviceProvider.CreateScope();
-        using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-
-        var saved = await uow.PeerDbRepository.GetByNodeIdAsync(peer.NodeId);
-        if (saved is { IsInboundOnly: false })
+        return SavePeerRowAsync(peer.NodeId, async uow =>
         {
-            saved.LastSeenAt = peer.LastSeenAt;
-            uow.PeerDbRepository.Update(saved);
-        }
-        else if (peer.IsInboundOnly)
-        {
-            await uow.PeerDbRepository.AddOrUpdateAsync(new PeerModel(peer.NodeId, string.Empty, 0, peer.Type)
+            var saved = await uow.PeerDbRepository.GetByNodeIdAsync(peer.NodeId);
+            if (saved is { IsInboundOnly: false })
             {
-                LastSeenAt = peer.LastSeenAt,
-                IsInboundOnly = true
-            });
-            saved = null;
-        }
-        else
-        {
-            await uow.PeerDbRepository.AddOrUpdateAsync(TryGetAnnouncedPeer(peer.NodeId) ?? peer);
-            saved = null;
-        }
+                saved.LastSeenAt = peer.LastSeenAt;
+                uow.PeerDbRepository.Update(saved);
+                return saved;
+            }
 
-        await uow.SaveChangesAsync();
-        return saved;
+            if (peer.IsInboundOnly)
+            {
+                await uow.PeerDbRepository.AddOrUpdateAsync(new PeerModel(peer.NodeId, string.Empty, 0, peer.Type)
+                {
+                    LastSeenAt = peer.LastSeenAt,
+                    IsInboundOnly = true
+                });
+                return null;
+            }
+
+            await uow.PeerDbRepository.AddOrUpdateAsync(TryGetAnnouncedPeer(peer.NodeId) ?? peer);
+            return null;
+        });
     }
 
     /// <summary>

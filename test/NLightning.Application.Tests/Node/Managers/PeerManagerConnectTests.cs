@@ -18,6 +18,7 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Crypto.ValueObjects;
 using Domain.Node.Interfaces;
+using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Node.ValueObjects;
 using Domain.Persistence.Interfaces;
@@ -91,6 +92,46 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task Given_AnOutboundConnectAndAnInboundOneAtTheSameTime_When_BothSaveThePeerRow_Then_TheRowIsWrittenOnce()
+    {
+        // Arrange (NL-524): both saves run on the node that dialed and is dialed back (bob), so bob gets the fake
+        // peer table. The fake parks bob's outbound save of carol's row between its read (no row) and its insert,
+        // exactly where the inbound save of a simultaneous connection runs in production.
+        var peerDbRepository = new FakePeerDbRepository();
+        var bob = await StartNodeAsync(peerDbRepository);
+        var carol = await StartNodeAsync();
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act: bob dials carol; his save parks with the row still unwritten
+        peerDbRepository.ParkKey = carol.NodeId;
+        var outbound = bob.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(carol.Address));
+        await peerDbRepository.ParkEntered.Task;
+        await WaitUntilAsync(() => carol.PeerManager.GetPeer(bob.NodeId) is not null,
+                             "the first connection installed on carol", ct);
+
+        // Carol drops that connection and dials bob again: her new inbound connection runs bob's inbound save
+        // while bob's outbound save is still parked
+        carol.PeerManager.DisconnectPeer(bob.NodeId);
+        await WaitUntilAsync(() => !bob.IsConnectedTo(carol) && !carol.IsConnectedTo(bob),
+                             "the first connection dropped", ct);
+        var inbound = carol.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(bob.Address));
+        await WaitUntilAsync(() => bob.IsConnectedTo(carol), "the second connection installed", ct);
+        Assert.Equal(0, peerDbRepository.SavedRowCount);
+
+        peerDbRepository.ReleaseParkedInsert();
+        await outbound;
+
+        // Assert: the outbound row is committed first, so the inbound save reads it and updates it; nothing
+        // violated the (unique) node id, and the dialable row was not replaced by an inbound-only one
+        await WaitUntilAsync(() => peerDbRepository.WriteCount(carol.NodeId) >= 2, "the inbound save ran", ct);
+        await inbound;
+        Assert.Empty(peerDbRepository.ConstraintViolations);
+        Assert.Equal(1, peerDbRepository.InsertCount(carol.NodeId));
+        Assert.Equal(2, peerDbRepository.WriteCount(carol.NodeId));
+        Assert.False(peerDbRepository.Row(carol.NodeId)!.IsInboundOnly);
+    }
+
     public async ValueTask DisposeAsync()
     {
         foreach (var node in _nodes)
@@ -100,6 +141,13 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
     private async Task<TestNode> StartNodeAsync()
     {
         var node = await TestNode.StartAsync(_serializer);
+        _nodes.Add(node);
+        return node;
+    }
+
+    private async Task<TestNode> StartNodeAsync(FakePeerDbRepository peerDbRepository)
+    {
+        var node = await TestNode.StartAsync(_serializer, peerDbRepository);
         _nodes.Add(node);
         return node;
     }
@@ -191,7 +239,8 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
 
         private static byte NextNodeSeed() => (byte)Interlocked.Increment(ref s_nextNodeSeed);
 
-        public static async Task<TestNode> StartAsync(IMessageSerializer serializer)
+        public static async Task<TestNode> StartAsync(IMessageSerializer serializer,
+                                                      IPeerDbRepository? peerDbRepository = null)
         {
             var port = GetFreePort();
             var nodeOptions = new NodeOptions
@@ -205,9 +254,10 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
             var keyManager = new TestNodeKeyManager(NextNodeSeed());
             var nodeId = keyManager.NodeId;
 
-            var peerDbRepository = new Mock<IPeerDbRepository>();
+            var peerDbRepositoryMock = new Mock<IPeerDbRepository>();
             var unitOfWork = new Mock<IUnitOfWork>();
-            unitOfWork.Setup(u => u.PeerDbRepository).Returns(peerDbRepository.Object);
+            unitOfWork.Setup(u => u.PeerDbRepository)
+                      .Returns(peerDbRepository ?? peerDbRepositoryMock.Object);
             unitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync(() => []);
 
             var services = new ServiceCollection();
@@ -314,6 +364,120 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
             return _messages.TryRemove(BinaryPrimitives.ReadInt64BigEndian(bytes), out var message)
                        ? message
                        : throw new InvalidOperationException("Unknown message handle");
+        }
+    }
+
+    /// <summary>
+    /// The seam the two connect paths of NL-524 race on: a peer-row table that commits inside
+    /// <see cref="AddOrUpdateAsync"/>, so the test can park a save between its read (no row) and its insert. An
+    /// insert of a row that appeared in between throws, as the database's UNIQUE constraint on Peers.NodeId does
+    /// when the second save flushes.
+    /// </summary>
+    private sealed class FakePeerDbRepository : IPeerDbRepository
+    {
+        private readonly object _lock = new();
+        private readonly Dictionary<CompactPubKey, PeerModel> _rows = [];
+        private readonly Dictionary<CompactPubKey, int> _inserts = [];
+        private readonly Dictionary<CompactPubKey, int> _writes = [];
+        private readonly List<Exception> _constraintViolations = [];
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private bool _parked;
+
+        /// <summary>The node id whose first insert parks between its read and its write; set before the connect.</summary>
+        public CompactPubKey? ParkKey { get; set; }
+
+        /// <summary>Completed when the parked insert has read (no row) and is waiting to write.</summary>
+        public TaskCompletionSource ParkEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public IReadOnlyList<Exception> ConstraintViolations
+        {
+            get { lock (_lock) return [.. _constraintViolations]; }
+        }
+
+        public int SavedRowCount
+        {
+            get { lock (_lock) return _rows.Count; }
+        }
+
+        public void ReleaseParkedInsert() => _release.TrySetResult();
+
+        public int InsertCount(CompactPubKey nodeId)
+        {
+            lock (_lock) return _inserts.GetValueOrDefault(nodeId);
+        }
+
+        public int WriteCount(CompactPubKey nodeId)
+        {
+            lock (_lock) return _writes.GetValueOrDefault(nodeId);
+        }
+
+        public PeerModel? Row(CompactPubKey nodeId)
+        {
+            lock (_lock) return _rows.GetValueOrDefault(nodeId);
+        }
+
+        public async Task AddOrUpdateAsync(PeerModel peerModel)
+        {
+            bool park;
+            lock (_lock)
+            {
+                park = !_rows.ContainsKey(peerModel.NodeId) && peerModel.NodeId == ParkKey && !_parked;
+                if (park)
+                    _parked = true;
+            }
+
+            if (park)
+            {
+                ParkEntered.TrySetResult();
+                await _release.Task;
+            }
+
+            lock (_lock)
+            {
+                if (_rows.ContainsKey(peerModel.NodeId))
+                {
+                    // The row appeared while this save was parked between its read and its write
+                    var violation = new InvalidOperationException("UNIQUE constraint failed: Peers.NodeId");
+                    _constraintViolations.Add(violation);
+                    throw violation;
+                }
+
+                _rows[peerModel.NodeId] = peerModel;
+                _inserts[peerModel.NodeId] = _inserts.GetValueOrDefault(peerModel.NodeId) + 1;
+                _writes[peerModel.NodeId] = _writes.GetValueOrDefault(peerModel.NodeId) + 1;
+            }
+        }
+
+        public void Update(PeerModel peerModel)
+        {
+            lock (_lock)
+            {
+                _rows[peerModel.NodeId] = peerModel;
+                _writes[peerModel.NodeId] = _writes.GetValueOrDefault(peerModel.NodeId) + 1;
+            }
+        }
+
+        public Task<IEnumerable<PeerModel>> GetAllAsync()
+        {
+            lock (_lock)
+                return Task.FromResult<IEnumerable<PeerModel>>([.. _rows.Values]);
+        }
+
+        public Task<PeerModel?> GetByNodeIdAsync(CompactPubKey nodeId)
+        {
+            lock (_lock)
+                return Task.FromResult(_rows.GetValueOrDefault(nodeId));
+        }
+
+        public Task UpdatePeerLastSeenAsync(CompactPubKey peerCompactPubKey)
+        {
+            lock (_lock)
+            {
+                if (_rows.TryGetValue(peerCompactPubKey, out var row))
+                    row.LastSeenAt = DateTime.UtcNow;
+            }
+
+            return Task.CompletedTask;
         }
     }
 }
