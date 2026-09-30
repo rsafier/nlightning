@@ -406,6 +406,73 @@ public class GossipMemoryBudgetTests : IDisposable
         Assert.True(kit.Ingress.IsPendingAnnouncement(other));
     }
 
+    [Fact]
+    public async Task Given_AnAnnouncementRefusedOverTheBudget_When_TheBudgetResumes_Then_TheScidIsAskedForAgain()
+    {
+        // Arrange (NL-419: a refusal over the budget is not the end — the sync asks for the channel once new
+        // channels are accepted again, instead of waiting for the next range sync or peer rotation)
+        var (kit, budget) = await CreateKitWithChannelAsync();
+        var peer = GraphTestKit.CreatePeer();
+        var other = new ShortChannelId(111, 1, 0);
+        _clock.Now += TimeSpan.FromSeconds(1);
+        _reader.WorkingSet = 1_100 * MiB;
+        Assert.True(budget.IsOverBudget);
+        var refused = await kit.Ingress.ProcessAsync(peer.Object,
+                                                     GraphTestKit.SignedChannelAnnouncement(
+                                                         other, s_bob, s_carol, s_bobFunding, s_carolFunding), 0,
+                                                     TestContext.Current.CancellationToken);
+        Assert.Equal(GossipMetricReasons.MemoryBudget, refused.LimitReason);
+        Assert.Empty(kit.Ingress.TakeMissedShortChannelIds());
+
+        // Act: still over the budget, nothing is handed to the sync
+        Assert.Equal(0, kit.Ingress.ReleaseBudgetRefused());
+        Assert.Empty(kit.Ingress.TakeMissedShortChannelIds());
+        _clock.Now += TimeSpan.FromSeconds(1);
+        _reader.WorkingSet = 800 * MiB;
+        Assert.False(budget.IsOverBudget);
+
+        // Assert
+        Assert.Equal(1, kit.Ingress.ReleaseBudgetRefused());
+        Assert.Equal([other], kit.Ingress.TakeMissedShortChannelIds());
+        Assert.Equal(0, kit.Ingress.ReleaseBudgetRefused());
+        await kit.Ingress.StopAsync();
+    }
+
+    [Fact]
+    public async Task Given_APromotionRefusedOverTheBudget_When_TheBudgetResumes_Then_TheScidIsAskedForAgain()
+    {
+        // Arrange (NL-419 at the promotion: the announcement stays pending, but if no further update comes the sync
+        // asks for the channel again once the budget has resumed)
+        var (kit, budget) = await CreateKitWithChannelAsync();
+        var peer = GraphTestKit.CreatePeer();
+        var other = new ShortChannelId(111, 1, 0);
+        var kept = await kit.Ingress.ProcessAsync(peer.Object,
+                                                  GraphTestKit.SignedChannelAnnouncement(
+                                                      other, s_bob, s_carol, s_bobFunding, s_carolFunding), 0,
+                                                  TestContext.Current.CancellationToken);
+        Assert.Equal(GossipIngressOutcome.Pending, kept.Outcome);
+        _clock.Now += TimeSpan.FromSeconds(1);
+        _reader.WorkingSet = 1_100 * MiB;
+        Assert.True(budget.IsOverBudget);
+        var refused = await kit.Ingress.ProcessAsync(peer.Object,
+                                                     GraphTestKit.SignedChannelUpdate(
+                                                         other, s_bob, GraphTestKit.DirectionOf(s_bob, s_carol),
+                                                         s_now - 100), 0,
+                                                     TestContext.Current.CancellationToken);
+        Assert.Equal(GossipMetricReasons.MemoryBudget, refused.LimitReason);
+
+        // Act
+        _clock.Now += TimeSpan.FromSeconds(1);
+        _reader.WorkingSet = 800 * MiB;
+        Assert.False(budget.IsOverBudget);
+
+        // Assert: handed to the sync, and forgotten once the channel is in the graph
+        Assert.Equal(1, kit.Ingress.ReleaseBudgetRefused());
+        Assert.Equal([other], kit.Ingress.TakeMissedShortChannelIds());
+        Assert.True(kit.Ingress.IsPendingAnnouncement(other));
+        await kit.Ingress.StopAsync();
+    }
+
     private GossipMemoryBudget CreateBudget(GossipGraphOptions? options = null,
                                             ILogger<GossipMemoryBudget>? logger = null) =>
         new(Microsoft.Extensions.Options.Options.Create(options ?? new GossipGraphOptions()),

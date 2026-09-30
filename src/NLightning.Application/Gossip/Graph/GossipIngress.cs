@@ -110,6 +110,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     private readonly Channel<OwnGossipItem> _ownQueue = Channel.CreateUnbounded<OwnGossipItem>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
     private readonly ConcurrentDictionary<ShortChannelId, byte> _missed = new();
+    private readonly ConcurrentDictionary<ShortChannelId, byte> _budgetRefused = new();
     private readonly CompactPubKey? _ourNodeId;
     private readonly GossipRateLimiter _rateLimiter;
     private readonly GossipMisbehaviourTracker _misbehaviour;
@@ -553,6 +554,41 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     }
 
     /// <summary>
+    /// Remembers that a new channel for <paramref name="shortChannelId"/> was refused while the process was over
+    /// <see cref="GossipGraphOptions.MaxMemoryMb"/> (NL-373, NL-419), so <see cref="ReleaseBudgetRefused"/> can hand
+    /// it to the sync once the budget has resumed (bounded like <see cref="MarkMissed"/>).
+    /// </summary>
+    private void MarkBudgetRefused(ShortChannelId shortChannelId)
+    {
+        if (_budgetRefused.Count < _options.MaxMissedShortChannelIds)
+            _budgetRefused.TryAdd(shortChannelId, 0);
+    }
+
+    /// <summary>
+    /// Hands the short channel ids refused over the memory budget (NL-419) to the sync to be asked for again, once
+    /// new channels are accepted below <see cref="GossipGraphOptions.MemoryResumePercent"/> (the write-behind loop,
+    /// and tests): without this they would come back only with the next range sync or peer rotation. Returns how
+    /// many were handed over.
+    /// </summary>
+    internal int ReleaseBudgetRefused()
+    {
+        if (_budgetRefused.IsEmpty || (_memoryBudget?.IsOverBudget ?? false))
+            return 0;
+
+        var released = 0;
+        foreach (var shortChannelId in _budgetRefused.Keys)
+        {
+            if (_budgetRefused.TryRemove(shortChannelId, out _))
+            {
+                MarkMissed(shortChannelId);
+                released++;
+            }
+        }
+
+        return released;
+    }
+
+    /// <summary>
     /// Runs the whole pipeline for one message and returns what was done (the workers call it; tests call it
     /// directly). <paramref name="attempt"/> above 0 is a retry of a deferred message.
     /// </summary>
@@ -623,9 +659,13 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             return GraphFull($"the graph holds {_options.MaxChannels} channels",
                              announcement.ShortChannelId.ToString());
 
-        // NL-373: over Gossip:MaxMemoryMb no new channel (known ones keep updating)
+        // NL-373: over Gossip:MaxMemoryMb no new channel (known ones keep updating); NL-419: the scid is re-queried
+        // once the budget has resumed
         if (known is null && _memoryBudget?.RefuseNew("channels") is { } overBudget)
+        {
+            MarkBudgetRefused(announcement.ShortChannelId);
             return overBudget;
+        }
 
         if (!VerifyChannelAnnouncement(announcement))
         {
@@ -771,9 +811,13 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             return GraphFull($"the graph holds {_options.MaxChannels} channels", update.ShortChannelId.ToString());
 
         // NL-373 with NL-406: the promotion is where a channel enters the graph, so the budget holds here too (the
-        // announcement stays pending; a later update promotes it once the process is back under the budget)
+        // announcement stays pending; a later update promotes it once the process is back under the budget).
+        // NL-419: if none comes, the scid is re-queried once the budget has resumed
         if (_memoryBudget?.RefuseNew("channels") is { } overBudget)
+        {
+            MarkBudgetRefused(update.ShortChannelId);
             return overBudget;
+        }
 
         var check = await CheckFundingAsync(pending, announcement, cancellationToken);
         if (check.Failure is { } failure)
@@ -1043,6 +1087,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
 
             _pending.Remove(channel.ShortChannelId);
             _missed.TryRemove(channel.ShortChannelId, out _);
+            _budgetRefused.TryRemove(channel.ShortChannelId, out _);
 
             updates = _orphans.TakeUpdates(channel.ShortChannelId);
             foreach (var nodeId in (ReadOnlySpan<CompactPubKey>)[channel.NodeId1, channel.NodeId2])
@@ -1569,6 +1614,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                 _orphans.PruneExpired();
                 PrunePendingAnnouncements();
                 ReplayRateLimited();
+                ReleaseBudgetRefused();
                 _rateLimiter.Prune();
                 _misbehaviour.Prune();
                 PruneBans();
