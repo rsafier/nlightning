@@ -1,19 +1,11 @@
-using System.Reflection;
-using System.Runtime.ExceptionServices;
 using NBitcoin;
 
 namespace NLightning.Application.Tests.Onchain.Resolvers.Local;
 
 using Application.Onchain.Resolvers.Local;
-using Channels.Services;
-using Domain.Bitcoin.Interfaces;
-using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
-using Domain.Channels.ValueObjects;
-using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Models;
-using Domain.Protocol.Interfaces;
 
 /// <summary>
 /// A stand-in for the wallet behind <see cref="IAnchorFeeInputProvider"/> (O7-T1's selector and
@@ -107,71 +99,5 @@ internal sealed class AnchorTestWallet : IAnchorFeeInputProvider
         Released.Add(owner);
         Reservations.Remove(owner);
         return Task.CompletedTask;
-    }
-}
-
-/// <summary>
-/// Alice's real signer, except that <c>SignLocalHtlcTransaction</c> of a combined anchors HTLC transaction (more than
-/// one input) is signed here with her HTLC key for the commitment's point, as the signer is to do once it accepts a
-/// combined transaction (the signer seam of O7-T3: <c>LocalLightningSigner</c> still refuses more than one input).
-/// </summary>
-internal class CombinedHtlcSigningProxy : DispatchProxy
-{
-    private ILightningSigner _inner = null!;
-    private Func<(RealSigningNode Node, IKeyDerivationService KeyDerivation)> _resolve = null!;
-
-    /// <summary>How many combined transactions it signed.</summary>
-    public int CombinedSignatures { get; private set; }
-
-    /// <param name="inner">The real signer.</param>
-    /// <param name="resolve">The node whose keys sign and the key derivation, read at the first combined signature
-    /// (the harness builds its container before they exist).</param>
-    public static ILightningSigner Create(ILightningSigner inner,
-                                          Func<(RealSigningNode Node, IKeyDerivationService KeyDerivation)> resolve)
-    {
-        var proxy = Create<ILightningSigner, CombinedHtlcSigningProxy>();
-        var self = (CombinedHtlcSigningProxy)(object)proxy;
-        self._inner = inner;
-        self._resolve = resolve;
-        return proxy;
-    }
-
-    protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
-    {
-        ArgumentNullException.ThrowIfNull(targetMethod);
-        if (targetMethod.Name == nameof(ILightningSigner.SignLocalHtlcTransaction)
-         && args is [ChannelId, HtlcSigningContext context]
-         && Transaction.Load(context.HtlcTransaction.Transaction.RawTxBytes, Network.Main).Inputs.Count > 1)
-            return SignCombined(context);
-
-        try
-        {
-            return targetMethod.Invoke(_inner, args);
-        }
-        catch (TargetInvocationException e) when (e.InnerException is not null)
-        {
-            ExceptionDispatchInfo.Capture(e.InnerException).Throw();
-            throw;
-        }
-    }
-
-    private CompactSignature SignCombined(HtlcSigningContext context)
-    {
-        CombinedSignatures++;
-        var (node, keyDerivation) = _resolve();
-
-        // The node's channel key m/i' and its HTLC basepoint secret m/i'/4' (LocalLightningSigner's layout)
-        var rootKey = new ExtKey(new Key(Enumerable.Repeat((byte)node.KeyIndex, 32).ToArray()), new byte[32]);
-        using var htlcBasepointSecret = rootKey.Derive((int)node.KeyIndex, true).Derive(4, true).PrivateKey;
-        Assert.Equal((byte[])node.Basepoints.HtlcBasepoint, htlcBasepointSecret.PubKey.ToBytes());
-
-        var built = context.HtlcTransaction;
-        var tx = Transaction.Load(built.Transaction.RawTxBytes, Network.Main);
-        var witnessScript = new Script((byte[])built.SpentWitnessScript);
-        var spent = new TxOut(Money.Satoshis(built.SpentAmount.Satoshi), witnessScript.WitHash.ScriptPubKey);
-        var hash = tx.GetSignatureHash(witnessScript, 0, SigHash.All, spent, HashVersion.WitnessV0);
-        using var htlcKey = new Key(keyDerivation.DerivePrivateKey(htlcBasepointSecret.ToBytes(),
-                                                                   context.PerCommitmentPoint));
-        return htlcKey.Sign(hash, new SigningOptions(SigHash.All, false)).Signature.MakeCanonical().ToCompact();
     }
 }

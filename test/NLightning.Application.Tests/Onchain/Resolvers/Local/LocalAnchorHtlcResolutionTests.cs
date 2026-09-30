@@ -15,7 +15,6 @@ using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Fees;
 using Domain.Onchain.Models;
-using Domain.Protocol.Interfaces;
 using static LocalCommitResolutionHarness;
 
 /// <summary>
@@ -251,11 +250,7 @@ public sealed class LocalAnchorHtlcResolutionTests
                                                               Action<RealSigningCommitmentPair> setup,
                                                               uint feeEstimatePerKw = FeeratePerKw)
     {
-        LocalCommitResolutionHarness? harness = null;
-        harness = new LocalCommitResolutionHarness(setup, hasAnchors: true, feeInputProvider: wallet,
-                                                   wrapSigner: signer => CombinedHtlcSigningProxy.Create(
-                                                       signer, () => (harness!.Pair.Alice,
-                                                                      harness.GetService<IKeyDerivationService>())))
+        var harness = new LocalCommitResolutionHarness(setup, hasAnchors: true, feeInputProvider: wallet)
         {
             FeeEstimatePerKw = feeEstimatePerKw
         };

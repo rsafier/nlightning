@@ -10,7 +10,6 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Fees;
-using Domain.Protocol.Interfaces;
 
 /// <summary>
 /// NL-314 review (O7-T3): a broadcast anchors HTLC transaction is funded by wallet inputs, so the resolver keeps it
@@ -164,13 +163,8 @@ public sealed class LocalAnchorHtlcMaintenanceTests
         // Arrange: too small at first
         var logger = new LevelRecordingLogger<LocalCommitResolver>();
         var wallet = new AnchorTestWallet(300);
-        LocalCommitResolutionHarness? harness = null;
-        harness = new LocalCommitResolutionHarness(Setup, hasAnchors: true, feeInputProvider: wallet,
-                                                   wrapSigner: signer => CombinedHtlcSigningProxy.Create(
-                                                       signer, () => (harness!.Pair.Alice,
-                                                                      harness.GetService<IKeyDerivationService>())),
-                                                   resolverLogger: logger);
-        using var disposable = harness;
+        using var harness = new LocalCommitResolutionHarness(Setup, hasAnchors: true, feeInputProvider: wallet,
+                                                             resolverLogger: logger);
 
         // Act
         await harness.ResolveAsync();
@@ -194,11 +188,7 @@ public sealed class LocalAnchorHtlcMaintenanceTests
 
     private static LocalCommitResolutionHarness CreateHarness(AnchorTestWallet wallet)
     {
-        LocalCommitResolutionHarness? harness = null;
-        harness = new LocalCommitResolutionHarness(Setup, hasAnchors: true, feeInputProvider: wallet,
-                                                   wrapSigner: signer => CombinedHtlcSigningProxy.Create(
-                                                       signer, () => (harness!.Pair.Alice,
-                                                                      harness.GetService<IKeyDerivationService>())));
+        var harness = new LocalCommitResolutionHarness(Setup, hasAnchors: true, feeInputProvider: wallet);
         foreach (var funding in wallet.FundingTransactions)
             harness.AddKnownTransaction(funding);
         return harness;
