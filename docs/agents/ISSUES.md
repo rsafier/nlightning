@@ -78,6 +78,8 @@ Updated 2026-09-30 by lane nl560 (branch `wip/fafo-nl560` from `wip/fafo` at `c6
 
 Updated 2026-09-30 by the batch4 integrator (branch `batch4` rebased onto `wip/fafo` at `7aa5f41f`; 12 lanes run in parallel worktrees, cherry-picked in lane order — lane branches `batch4-*` hold the originals, plus the integration fixes `5eed8421` (NL-524: the private dial core renamed `ConnectPeerCoreAsync`, which cleared the xUnit1051 format gate) and `0f0ae4fe` (NL-285: the rangeless first-offer raise capped at our commitment's base fee)): 43 open lows fixed with the per-entry SHAs being the rebased `batch4` commits: NL-009, NL-054, NL-171, NL-179, NL-223, NL-233, NL-260, NL-261, NL-265, NL-266, NL-269, NL-274, NL-285, NL-290, NL-308, NL-318, NL-329, NL-333, NL-334, NL-345, NL-363, NL-365, NL-368, NL-371, NL-378, NL-383, NL-384, NL-386, NL-389, NL-390, NL-391, NL-418, NL-419, NL-420, NL-421, NL-446, NL-461, NL-464, NL-473, NL-474, NL-509, NL-524, NL-549. No new IDs. Docker on net10.0 Release, one process at a time: ABCD 10/10, CLN interop 77/77 (+4 Explicit; `ClnCloseTests` rechecks NL-285), on-chain + anchors 47/47 (+2 Explicit), gossip 30/30, LDK interop 15/15.
 
+
+Updated 2026-09-30 by the batch5 integrator (branch `batch5` from `wip/fafo` at `59a62d37`; 5 lanes run in parallel worktrees, cherry-picked in lane order — lane branches `batch5-*` hold the originals): 19 open lows resolved, with the per-entry SHAs being the `batch5` commits: NL-053, NL-153, NL-178, NL-273, NL-346, NL-361, NL-364, NL-369, NL-424, NL-425, NL-451, NL-463, NL-483, NL-488, NL-507, NL-525, NL-529, NL-545, NL-566 (17 fixed with code, NL-369 and NL-566 closed on evidence with their deliverables noted below). Notes: NL-566 closed as premise-stale with a pinning harness test (no production change); NL-369 closed as documented with zero live sites under a warning-clean build; NL-451 resolved test-side (the validators already expose each rule at its own layer); NL-566/NL-525 notes: `OnionMessages:BlindedPathDummyHops` (default 1, at most 4) changes the wire shape of our reply and offer paths — the M6/B12 CLN Docker proofs have not been re-run; NL-488's flag lives on the persisted funding row; NL-507 derives its interval from persisted broadcast rows; NL-545 ships testnet4 seeds (live-probed) and signet plumbing with an empty answer documented. Gates on the integrated tree, net10.0 Release: build 0 errors/0 warnings; full non-Docker suite and `dotnet format` recorded by the integrator in the batch commit.
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -112,9 +114,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 100 | 103 |
+| open | 0 | 0 | 3 | 81 | 84 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 157 | 211 | 444 |
+| fixed | 14 | 62 | 157 | 230 | 463 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **62** | **164** | **317** | **557** |
@@ -830,7 +832,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N1-T6
 
 ### NL-053 FundingCreatedMessageHandler flagged "REVIEW FULL FLOW"
-- **Status:** open
+- **Status:** fixed (9f0e8438)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Channels/Handlers/FundingCreatedMessageHandler.cs:132`
@@ -1130,7 +1132,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N7-T2
 
 ### NL-273 PeerChannelErrorSender bypasses the PeerOutbox ordering
-- **Status:** open
+- **Status:** fixed (c6b337ea)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Safety/` (`PeerChannelErrorSender`), `IPeerService.SendErrorAsync`
@@ -1427,7 +1429,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` SPR-T1
 
 ### NL-483 commitment_signed and revoke_and_ack handlers defer their follow-up signature while a splice is pending
-- **Status:** open
+- **Status:** fixed (f2c5259c)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Channels/Handlers/CommitmentSignedMessageHandler.cs`, `RevokeAndAckMessageHandler.cs`
@@ -1457,7 +1459,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` SP2-B-T2, D12
 
 ### NL-488 A locked splice's announcement_signatures flag is never stored, and SP2-A's contract fallbacks remain
-- **Status:** open (partial: 9d13d0de)
+- **Status:** fixed (d1c90cdd; the flag on the persisted funding row, the dead fallback removed)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Channels/Reestablish/ReestablishService.cs` (`GetSpliceStateAsync`, `IsReadyForAnnouncementSignatures`), `src/NLightning.Application/Channels/Handlers/ChannelReestablishMessageHandler.cs:369`, `src/NLightning.Domain/Channels/Splicing/ChannelFunding.cs` (`AnnouncementSignaturesReceived`)
@@ -1607,7 +1609,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` SPR-T1
 
 ### NL-507 The splice auto-bumper keeps its state in memory and uses the node-wide fee estimate
-- **Status:** open
+- **Status:** fixed (5c5c8bb9)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Fees/SpliceAutoBumper.cs`
@@ -2480,7 +2482,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT12_PLAN.md` B0-T4, B4-T2
 
 ### NL-451 offers-test.json malformed cases fail at the TLV layer, not at the rule they name
-- **Status:** open
+- **Status:** fixed (35e1f0f0)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/BOLT12/Vectors/offers-test.json` (bolts 1aadb719), `test/NLightning.Domain.Tests/Offers/`
@@ -3076,7 +3078,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O7-T2
 
 ### NL-463 Wallet address growth: every hand-out reserves an address and restore has no gap limit
-- **Status:** open
+- **Status:** fixed (5443bdb9)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinWalletService.cs` (`GetUnusedAddressAsync`), `src/NLightning.Application/Onchain/Resolvers/Local/WalletSweepDestinationProvider.cs`, `src/NLightning.Application/Channels/Close/UpfrontShutdownScriptSource.cs`
@@ -3200,7 +3202,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G0-T3, G0-T5
 
 ### NL-346 Funding output lookup: rate limit counts lookups, not RPCs; pruned path unproven live
-- **Status:** open (partial: 8c64733, 0fa7cf3, c0a71af)
+- **Status:** fixed (63428cc9; the per-RPC budget; the live -prune half stays with NL-422)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Gossip/FundingOutputLookup.cs`, `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs`
@@ -3281,7 +3283,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G5-T1, §3.8
 
 ### NL-361 Gossip sync queries, replies and timestamp filters bypass the PeerOutbox
-- **Status:** open
+- **Status:** fixed (3953b2c1)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs` (`session.Peer.SendGossipMessageAsync`)
@@ -3311,7 +3313,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G3-T2, §3.7
 
 ### NL-364 Offline disable of announced channels: offline time in memory, re-enable waits for a check
-- **Status:** open
+- **Status:** fixed (356c4f7d)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Services/ChannelUpdateService.cs` (`_offlineSince`, `GetOfflineCheckInterval`)
@@ -3655,7 +3657,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 D3
 
 ### NL-424 A wrong-network Esplora index fails silently at Debug level
-- **Status:** open
+- **Status:** fixed (ba316251)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Gossip/EsploraTxIdSource.cs`
@@ -3665,7 +3667,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 D3
 
 ### NL-425 A node_announcement whose node has only pending channels can expire as an orphan
-- **Status:** open
+- **Status:** fixed (1646a44d)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.cs` (orphan cache, 10 min TTL)
@@ -3936,7 +3938,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-545 No BOLT 10 seeds for testnet4 and signets
-- **Status:** open
+- **Status:** fixed (39102ad0)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Node/Options/BootstrapOptions.cs` (`GetDefaultSeeds`, `IsSeedNetwork`)
@@ -4384,7 +4386,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N5-T2
 
 ### NL-369 Value objects with an implicit byte[] conversion misbehave in conditional expressions
-- **Status:** open
+- **Status:** fixed (5d268c57)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Domain/Bitcoin/ValueObjects/TxId.cs` and the other byte-backed value objects (`ChannelId`, `CompactPubKey`, `Hash`)
@@ -4558,7 +4560,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M4-T6; BOLT2 N0-T8, N8-T2, N8-T3, N10-T3
 
 ### NL-153 BitcoinChainService ctor makes a blocking RPC call; key creation needs bitcoind
-- **Status:** open
+- **Status:** fixed (e4171c35)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs`
@@ -4764,7 +4766,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` wave DF, "Lane dfrbf record"
 
 ### NL-529 The funding watches of a dual-funded open's losing RBF attempts are never removed
-- **Status:** open
+- **Status:** fixed (9beb6519)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`StageFundingWatchesAsync`, `OnFundingConfirmedAsync`), `IWatchedTransactionDbRepository`, `IBlockchainMonitor`
@@ -4845,7 +4847,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-518, NL-532, NL-534
 - **Plan ref:** `DAY0_RUNBOOK.md` §5
 ### NL-525 Our onion-message paths have no dummy hops
-- **Status:** open
+- **Status:** fixed (f7733ac4)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Onion/OnionMessages/BlindedMessagePathBuilder.cs`, `src/NLightning.Application/OnionMessages/OnionMessageService.cs`, `src/NLightning.Application/Offers/Receive/OfferService.cs`
@@ -5161,7 +5163,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-178 Untested components
-- **Status:** open
+- **Status:** fixed (61439026)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/`
@@ -5726,7 +5728,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-566 keysend's "No route" error drops the graph reason that getroute gives
-- **Status:** open
+- **Status:** fixed (b5051212, premise stale: the graph reason is stored verbatim and is now pinned by a harness test; the live bare "No route" could not be reproduced)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Payments/Send/` (the route planner's no-route message on the keysend path)
