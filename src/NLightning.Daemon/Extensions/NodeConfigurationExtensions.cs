@@ -446,11 +446,13 @@ public static class NodeConfigurationExtensions
                      "Control": "{{TOR_CONTROL}}",
                      "ControlPassword": null,
                      "ControlCookieFile": null,
+                     "AllowUnauthenticatedControlPort": false,
                      "OnionServiceEnabled": null,
                      "OnionServicePort": 9735,
                      "OnionServiceTarget": null,
                      "OnionServiceKeyFile": "{{TOR_KEY_FILE}}",
-                     "AnnounceOnionService": true
+                     "AnnounceOnionService": true,
+                     "AllowClearnetListen": false
                    },
                    "Features": {
                      "AllowExperimentalFeatures": false

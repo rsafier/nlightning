@@ -152,6 +152,51 @@ public class TorOptionsTests
         Assert.Empty(options.GetValidationErrors(["127.0.0.1:9735"]));
     }
 
+    [Theory]
+    [InlineData("0.0.0.0:9735")]
+    [InlineData("[::]:9735")]
+    [InlineData("192.168.1.5:9735")]
+    public void Given_TorOnlyListeningOffLoopback_When_Validated_Then_ItIsRefused(string listen)
+    {
+        // Arrange - NL-577: such a listener is reachable without Tor
+        var options = new TorOptions { Mode = TorMode.TorOnly, OnionServiceTarget = "127.0.0.1:9735" };
+
+        // Act
+        var errors = options.GetValidationErrors(["127.0.0.1:9735", listen]);
+
+        // Assert
+        var error = Assert.Single(errors);
+        Assert.Contains(listen, error);
+        Assert.Contains("AllowClearnetListen", error);
+    }
+
+    [Theory]
+    [InlineData(TorMode.TorOnly, true)]
+    [InlineData(TorMode.Hybrid, false)]
+    public void Given_AClearnetListenerThatIsAllowed_When_Validated_Then_ItIsValid(TorMode mode, bool allow)
+    {
+        // Arrange: explicitly allowed in Tor-only mode, and never a question in Hybrid mode
+        var options = new TorOptions { Mode = mode, AllowClearnetListen = allow, OnionServiceEnabled = true };
+
+        // Act & Assert
+        Assert.Empty(options.GetValidationErrors(["0.0.0.0:9735"]));
+    }
+
+    [Fact]
+    public void Given_AUnixSocketTarget_When_Validated_Then_ItIsRefused()
+    {
+        // Arrange - NL-585: the node cannot listen on a Unix socket yet, so Tor would send every connection nowhere
+        var options = new TorOptions { Mode = TorMode.TorOnly, OnionServiceTarget = "unix:/var/run/nltg.sock" };
+
+        // Act
+        var errors = options.GetValidationErrors(["127.0.0.1:9735"]);
+
+        // Assert
+        var error = Assert.Single(errors);
+        Assert.Contains("OnionServiceTarget", error);
+        Assert.Contains("Unix socket", error);
+    }
+
     [Fact]
     public void Given_NodeOptionsWithBadTorSettings_When_Validated_Then_TheTorErrorsAreIncluded()
     {

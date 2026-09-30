@@ -95,8 +95,9 @@ public class TorOptions
     public ushort OnionServicePort { get; set; } = 9735;
 
     /// <summary>
-    /// Where Tor sends the onion service's connections: <c>host:port</c> or <c>unix:/path</c>. Unset means our first
-    /// <c>Node:ListenAddresses</c> entry, with an any-address (<c>0.0.0.0</c>, <c>[::]</c>) replaced by loopback.
+    /// Where Tor sends the onion service's connections: <c>host:port</c>. Unset means our first
+    /// <c>Node:ListenAddresses</c> entry, with an any-address (<c>0.0.0.0</c>, <c>[::]</c>) replaced by loopback. A
+    /// <c>unix:/path</c> target is refused until the node can listen on a Unix socket (NL-585).
     /// </summary>
     public string? OnionServiceTarget { get; set; }
 
@@ -112,6 +113,13 @@ public class TorOptions
     /// true.
     /// </summary>
     public bool AnnounceOnionService { get; set; } = true;
+
+    /// <summary>
+    /// In <see cref="TorMode.TorOnly"/>, allow <c>Node:ListenAddresses</c> entries that are not loopback. Such a
+    /// listener is reachable without Tor, so a Tor-only node refuses to start with one unless this is set (NL-577).
+    /// Default false.
+    /// </summary>
+    public bool AllowClearnetListen { get; set; }
 
     /// <summary>True unless <see cref="Mode"/> is <see cref="TorMode.Off"/>.</summary>
     public bool IsEnabled => Mode != TorMode.Off;
@@ -178,6 +186,13 @@ public class TorOptions
             errors.Add($"{prefix}{nameof(SocksProxy)} '{SocksProxy}' is not host:port, [ipv6]:port or unix:/path.");
         if (ConnectTimeout <= TimeSpan.Zero)
             errors.Add($"{prefix}{nameof(ConnectTimeout)} must be positive.");
+        if (IsTorOnly && !AllowClearnetListen)
+            foreach (var listen in listenAddresses ?? [])
+                if (IPEndPoint.TryParse(listen.Trim(), out var listenEndPoint)
+                 && !IPAddress.IsLoopback(listenEndPoint.Address))
+                    errors.Add($"{prefix}Tor-only mode listens on {listen}, which is reachable without Tor: listen on "
+                             + $"127.0.0.1 (Node:ListenAddresses, the onion service's target) or set "
+                             + $"{prefix}{nameof(AllowClearnetListen)} true.");
         if (!IsOnionServiceEnabled)
             return errors;
 
@@ -194,9 +209,11 @@ public class TorOptions
         if (target is null)
             errors.Add($"{prefix}{nameof(OnionServiceTarget)} is not set and Node:ListenAddresses has no ip:port entry "
                      + "to send the onion service's connections to.");
+        else if (target.StartsWith(UnixPrefix, StringComparison.OrdinalIgnoreCase))
+            errors.Add($"{prefix}{nameof(OnionServiceTarget)} '{target}' is a Unix socket, but the node listens on TCP "
+                     + "only: use host:port.");
         else if (!TryParseEndPoint(target, out _))
-            errors.Add($"{prefix}{nameof(OnionServiceTarget)} '{target}' is not host:port, [ipv6]:port or "
-                     + "unix:/path.");
+            errors.Add($"{prefix}{nameof(OnionServiceTarget)} '{target}' is not host:port or [ipv6]:port.");
 
         return errors;
     }
