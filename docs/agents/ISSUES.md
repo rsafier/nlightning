@@ -76,6 +76,8 @@ Updated 2026-09-28 by lane nl417 (branch `wip/fafo-nl417` from `wip/fafo` at `61
 
 Updated 2026-09-30 by lane nl560 (branch `wip/fafo-nl560` from `wip/fafo` at `c61b21ed`): NL-560 new and fixed at `8175034f` (an undisposed BOLT 8 `HandshakeState` double-freed its native hash state from its finalizer: SIGSEGV on libsodium, a livelock on Release.Native; the finalizer is gone and `Sha256`/`SecureMemory` free once). Non-Docker on net10.0: Release Infrastructure 471, Infrastructure.Bitcoin 1420 (+2 skipped), Integration 939, Application 3125 (`AnnouncementHarnessTests.Given_TheAnnouncementAssembled_*` and the NL-382 `GossipFloodTests` case failed once in the full run under the concurrent Docker load, 10/10 on the class rerun); Release.Native Infrastructure 474, Integration 939.
 
+Updated 2026-09-30 by the batch4 integrator (branch `batch4` rebased onto `wip/fafo` at `7aa5f41f`; 12 lanes run in parallel worktrees, cherry-picked in lane order — lane branches `batch4-*` hold the originals, plus the integration fixes `5eed8421` (NL-524: the private dial core renamed `ConnectPeerCoreAsync`, which cleared the xUnit1051 format gate) and `0f0ae4fe` (NL-285: the rangeless first-offer raise capped at our commitment's base fee)): 43 open lows fixed with the per-entry SHAs being the rebased `batch4` commits: NL-009, NL-054, NL-171, NL-179, NL-223, NL-233, NL-260, NL-261, NL-265, NL-266, NL-269, NL-274, NL-285, NL-290, NL-308, NL-318, NL-329, NL-333, NL-334, NL-345, NL-363, NL-365, NL-368, NL-371, NL-378, NL-383, NL-384, NL-386, NL-389, NL-390, NL-391, NL-418, NL-419, NL-420, NL-421, NL-446, NL-461, NL-464, NL-473, NL-474, NL-509, NL-524, NL-549. No new IDs. Docker on net10.0 Release, one process at a time: ABCD 10/10, CLN interop 77/77 (+4 Explicit; `ClnCloseTests` rechecks NL-285), on-chain + anchors 47/47 (+2 Explicit), gossip 30/30, LDK interop 15/15.
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -110,9 +112,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 143 | 146 |
+| open | 0 | 0 | 3 | 100 | 103 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 157 | 168 | 401 |
+| fixed | 14 | 62 | 157 | 211 | 444 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **62** | **164** | **317** | **557** |
@@ -121,16 +123,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 - NL-426: Static channel backup and restore (fixed, high; wave rf1: encrypted SCB, export/verify/restore IPC 21-23, recovery channels and the data-loss reestablish, proven against LND; wave lh1: NL-430, NL-431 old spends and every peer address, NL-432 persisted peer-storage retrievals with `listpeerstorage` (32); follow-up NL-435)
 - NL-031: HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee) (fixed, critical; N6 in wave 1, reestablish and switch in wave 2; the fail-the-channel broadcast is N9-T4 under NL-094)
-- NL-034: Channel close (shutdown / closing_signed / option_simple_close) (fixed, critical; legacy close in wave 3 W3-B, Docker proof against LND and CLN close in wave 4, option_simple_close NL-020 in wave 6 (default No); NL-279 and NL-045 fixed in wave lh1; remaining: NL-285, NL-286)
+- NL-034: Channel close (shutdown / closing_signed / option_simple_close) (fixed, critical; legacy close in wave 3 W3-B, Docker proof against LND and CLN close in wave 4, option_simple_close NL-020 in wave 6 (default No); NL-279 and NL-045 fixed in wave lh1; NL-285 fixed in batch4; remaining: NL-286)
 - NL-035: channel_reestablish / option_data_loss_protect (fixed, critical; ABCD wave 2 W2-A; shutdown re-send is N10, Closing resumption NL-036)
-- NL-037: Dual funding / interactive-tx (v2 open) (fixed, medium; closed 2026-09-28: DF3, NL-521, NL-528, NL-530; wave d13: DF3 done, `option_dual_fund` Optional by default (D13); wave qit: the interactive-tx layer (engine, Bitcoin side, wire and `AddInteractiveTxSessions`, driver and handlers; NL-041, NL-219 fixed) is done and registered; wave sp1 lane SP1-F: the v2 open (DF1, DF2) behind experimental `OptionDualFund` with Proof DF green against CLN v26.06.8, which also proves the interactive-tx layer on the wire; tx_init_rbf bugs NL-475, NL-476 fixed; wave sp2: the v2 open's `next_funding` goes through the shared reestablish planner, backups hold every signed dual-funded RBF candidate, day-0 Docker proof of a dual-funded public open between two nodes; remaining: DF3 (out of experimental, not scheduled), follow-ups NL-473, NL-474; lane rbf: NL-521 fixed, a changed contribution in either RBF message followed, follow-up NL-527; lane dfrbf: NL-527 and NL-528 fixed, the channel follows whichever signed attempt of an RBF confirms, `Node:DualFund:AllowRbf` true by default, `bumpopen` (IPC 38); follow-up NL-529; lane accrbf: NL-530 fixed, the accepter may bump too (CLN v26.06.8 refuses it with `tx_abort`))
+- NL-037: Dual funding / interactive-tx (v2 open) (fixed, medium; closed 2026-09-28: DF3, NL-521, NL-528, NL-530; wave d13: DF3 done, `option_dual_fund` Optional by default (D13); wave qit: the interactive-tx layer (engine, Bitcoin side, wire and `AddInteractiveTxSessions`, driver and handlers; NL-041, NL-219 fixed) is done and registered; wave sp1 lane SP1-F: the v2 open (DF1, DF2) behind experimental `OptionDualFund` with Proof DF green against CLN v26.06.8, which also proves the interactive-tx layer on the wire; tx_init_rbf bugs NL-475, NL-476 fixed; wave sp2: the v2 open's `next_funding` goes through the shared reestablish planner, backups hold every signed dual-funded RBF candidate, day-0 Docker proof of a dual-funded public open between two nodes; remaining: DF3 (out of experimental, not scheduled), follow-ups NL-473, NL-474 (both fixed in batch4); lane rbf: NL-521 fixed, a changed contribution in either RBF message followed, follow-up NL-527; lane dfrbf: NL-527 and NL-528 fixed, the channel follows whichever signed attempt of an RBF confirms, `Node:DualFund:AllowRbf` true by default, `bumpopen` (IPC 38); follow-up NL-529; lane accrbf: NL-530 fixed, the accepter may bump too (CLN v26.06.8 refuses it with `tx_abort`))
 - NL-021: Splicing (fixed, low; wave d13 at `f30f3be3`: D13 applied, `option_splice`/`option_quiesce` Optional by default, RBF recency by blocks NL-520; wave sp1 at `3660bff2`: wire, several-funding engine, per-funding signer, `AddSpliceFundings`, negotiation, `splicein`/`spliceout` (33/34), Proof SP1 green against CLN v26.06.8; wave sp2 at `31950b81`: reestablish across splices, full `splice_locked`, the 72-block retired SCID map, re-announcement, BOLT 5 across fundings, `listchannels` fundings, backups across splices, restart mid-splice (NL-484), Proof SP2 green against CLN v26.06.8 (11/11) and `OnchainSpliceTests` 5/5; NL-478, NL-479 fixed; `OptionSplice` experimental; wave spr at `a0800ac2`: splice RBF both ways (NL-489, NL-481 fixed), `bumpsplice` (37) and the optional auto-bump, Proof SPR 5/5 against CLN v26.06.8, day-0 hardening NL-490, NL-492, NL-494, NL-495, NL-497 fixed; wave d13 at `f30f3be3` (branch `wip/fafo-d13`): D13 applied, `OptionSplice`/`OptionQuiesce` Optional by default on every network, splice RBF recency by blocks (NL-520); follow-ups NL-477, NL-480, NL-483, NL-488, NL-493, NL-496, NL-502, NL-507..NL-511; NL-514 fixed (ca83deab), NL-515 fixed (af3eaf69))
 - NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 fixed: library done in wave 6, persisted and wired into the switch and send paths in wave 7 (NL-326); `OptionAttributionData` stays experimental (NL-332))
 - NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; wave 6: persistent replay set NL-078, basic_mpp receive NL-081, retries and MPP send NL-270; wave 7: HTLC-set commitment NL-323, attribution_data NL-326, block-driven replay pruning NL-327)
 - NL-079: Route blinding payload handling (ONION M5) (fixed, medium; wave rf1: send, receive and forward, advertised Optional, proven against LND 0.20; limits NL-440 fixed (MPP over blinded paths and own-introduction paths in wave B12, BOLT 11 blinded paths (bLIP 39) and dummy hops in wave nl440; message-path dummy hops NL-525); onion messages (M6) are NL-080, fixed in wave M6)
 - NL-447: BOLT 12 offers (fixed, medium; wave B12 at `a3445f3f`: codecs, signer, schema, `createoffer`/`listoffers`/`disableoffer`/`payoffer`/`fetchinvoice` (IPC 26-30), both directions proven against CLN v26.06.8; closed in wave lh1 with the CLN-captured vectors NL-450, the invoice prune NL-448 and NL-442, NL-444, NL-453..NL-455; carried: NL-451, NL-452)
-- NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (fixed, critical; fail-the-channel broadcast in wave 3; O0/O1 plumbing and the O2-O6 building blocks in wave 4; O2-O5 wired and proven against LND in wave 5; wave 6: O6-T1 `SweepScheduler` (NL-317, NL-296) and O6-T3 reorg re-resolution (NL-292, NL-293, NL-096) with Docker Proof O6; wave 7: final-hop HTLCs claimed on chain (NL-316, NL-322, Docker `OnchainFinalHopTests`); gossip wave G-A: O8 mempool (NL-098) and the halt gate (NL-216); gossip wave G-B: the O6-T4 blockers NL-311, NL-320, NL-337 fixed and Proofs O3-O6 green; gossip wave G-D: O6-T4 done, HTLCs on for every network by default (6de56ad, kept by the integrator in 48a8951), NL-315 fixed; wave O7: O7-T1..T3 done (NL-067, NL-314 fixed), anchors Docker proofs 12/12; wave O7b: NL-379, NL-380, NL-381, NL-385 fixed and O7-T4 done (`option_anchors` Optional by default, d4cc3f8), anchors Docker proofs 18/18; carried: follow-ups NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336, NL-384 (partial), NL-386, NL-387, NL-389..NL-393)
-- NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (fixed, high; closed in ledger hygiene lh1: G0-G4 done, G5-T1..T4 done, D12 decided at wave d12 (graph and sync on by default everywhere, relay of others' gossip off on mainnet), Docker gossip 28/28 and CLN gossip green; carried as their own entries: the unmet 24 h soak proof of G5-T5 NL-376 (medium; D12 opened mainnet sync without it), the outbox cap NL-360 (medium, fixed in lane nl360), mainnet relay NL-417 (fixed 2026-09-28: two-probe mainnet proof, relay on by default on mainnet), and the low follow-ups NL-345..NL-347, NL-357, NL-361..NL-372 (NL-369 is the value-object conversion trap the gossip code hit), NL-374, NL-375, NL-377, NL-378, NL-382, NL-394, NL-407, NL-416, NL-418..NL-425)
+- NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (fixed, critical; fail-the-channel broadcast in wave 3; O0/O1 plumbing and the O2-O6 building blocks in wave 4; O2-O5 wired and proven against LND in wave 5; wave 6: O6-T1 `SweepScheduler` (NL-317, NL-296) and O6-T3 reorg re-resolution (NL-292, NL-293, NL-096) with Docker Proof O6; wave 7: final-hop HTLCs claimed on chain (NL-316, NL-322, Docker `OnchainFinalHopTests`); gossip wave G-A: O8 mempool (NL-098) and the halt gate (NL-216); gossip wave G-B: the O6-T4 blockers NL-311, NL-320, NL-337 fixed and Proofs O3-O6 green; gossip wave G-D: O6-T4 done, HTLCs on for every network by default (6de56ad, kept by the integrator in 48a8951), NL-315 fixed; wave O7: O7-T1..T3 done (NL-067, NL-314 fixed), anchors Docker proofs 12/12; wave O7b: NL-379, NL-380, NL-381, NL-385 fixed and O7-T4 done (`option_anchors` Optional by default, d4cc3f8), anchors Docker proofs 18/18; carried: follow-ups NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336, NL-384 (partial), NL-386, NL-387, NL-389..NL-393; batch4 fixed NL-308, NL-318, NL-329, NL-384, NL-386, NL-389..NL-391, NL-461)
+- NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (fixed, high; closed in ledger hygiene lh1: G0-G4 done, G5-T1..T4 done, D12 decided at wave d12 (graph and sync on by default everywhere, relay of others' gossip off on mainnet), Docker gossip 28/28 and CLN gossip green; carried as their own entries: the unmet 24 h soak proof of G5-T5 NL-376 (medium; D12 opened mainnet sync without it), the outbox cap NL-360 (medium, fixed in lane nl360), mainnet relay NL-417 (fixed 2026-09-28: two-probe mainnet proof, relay on by default on mainnet), and the low follow-ups NL-345..NL-347, NL-357, NL-361..NL-372 (NL-369 is the value-object conversion trap the gossip code hit), NL-374, NL-375, NL-377, NL-378, NL-382, NL-394, NL-407, NL-416, NL-418..NL-425; batch4 fixed NL-345, NL-363, NL-365, NL-368, NL-371, NL-378, NL-418..NL-421, NL-549)
 - NL-459: Keysend and custom onion records (fixed, medium; wave lh1 lane l3: send and receive, IPC `keysend` (31), proven against LND 0.20 both ways; follow-up NL-460)
 - NL-114: Invoices not wired into the node: invoice store, create/pay commands, final-hop checks (fixed, high; receive, route hints and pay done in wave 2)
 - NL-137: Payment/forwarding persistence: shared secrets, circuits, invoices, attempts, replay set, SCID map (fixed, high; closed in ledger hygiene lh1: shared secrets, circuits with replay, invoices, payments, HTLC origins, the persistent replay set (NL-078), the SCID/alias map (`Channels.ShortChannelId`, `ChannelLocalAliases`, `Channels.RemoteAlias`) and the graph tables exist; carried: per-part MPP send rows NL-321 and forward failure reasons NL-457)
@@ -220,11 +222,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-009 Our init never sends remote_addr
-- **Status:** open
+- **Status:** fixed (9b4f8b46)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Node/Options/FeatureOptions.cs:241`
-- **Evidence:** Commented out with `TODO: Review this when implementing BOLT7`. Update (gossip wave G-B, `5bbfbb5`): the peer's `remote_addr` is now kept as `IPeerService.ObservedAddress` (NL-344 fixed, 2635956), so the observed address is available; our init still sends no `remote_addr`, and `Gossip:AnnounceAddresses` is configured by hand.
+- **Evidence:** Commented out with `TODO: Review this when implementing BOLT7`. Update (gossip wave G-B, `5bbfbb5`): the peer's `remote_addr` is now kept as `IPeerService.ObservedAddress` (NL-344 fixed, 2635956), so the observed address is available; our init still sends no `remote_addr`, and `Gossip:AnnounceAddresses` is configured by hand. Fixed (batch4, `9b4f8b46`): the receiver of an inbound connection sends the peer's remote endpoint as `remote_addr` in its init (private addresses skipped, BOLT 1 SHOULD NOT; outbound inits carry none); the dead `FeatureOptions.RemoteAddress` is gone.
 - **Fix sketch:** Send the peer's observed address once NL-008 is fixed. Update (gossip wave G-A): NL-008 is fixed; the address we see for a peer is not kept separately yet (NL-344).
 - **Blocks/Blocked-by:** Blocked-by NL-008
 - **Plan ref:** —
@@ -838,11 +840,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-054 channel_ready: no application notification or routing-table update
-- **Status:** open
+- **Status:** fixed (11ef9981)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Handlers/ChannelReadyMessageHandler.cs:106-107`, `FundingConfirmedMessageHandler.cs:79-80`
-- **Evidence:** TODOs only.
+- **Evidence:** TODOs only. Fixed (batch4, `11ef9981`): `IChannelMemoryRepository.OnChannelOpened` fires when a channel moves into Open; the routing side already reacts to Open (our `channel_update`, the announcement_signatures flow), so the TODOs are resolved.
 - **Fix sketch:** Raise a domain event; feed the graph once NL-099 exists.
 - **Blocks/Blocked-by:** Blocked-by NL-099
 - **Plan ref:** —
@@ -1098,11 +1100,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N7-T5
 
 ### NL-260 channel_ready retransmitted at reestablish carries only the first local alias
-- **Status:** open
+- **Status:** fixed (7819e5bc)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Reestablish/` (retransmission), `FundingConfirmedMessageHandler.cs`
-- **Evidence:** `FundingConfirmedMessageHandler` sends one channel_ready per alias; the reestablish retransmission sends one with the first local alias (or the real scid) (reported by W2-A). Only matters with option_scid_alias, which defaults to No.
+- **Evidence:** `FundingConfirmedMessageHandler` sends one channel_ready per alias; the reestablish retransmission sends one with the first local alias (or the real scid) (reported by W2-A). Only matters with option_scid_alias, which defaults to No. Fixed (batch4, `7819e5bc`): the reestablish retransmits one channel_ready per local alias, as the funding confirmation does.
 - **Fix sketch:** Retransmit one channel_ready per local alias.
 - **Blocks/Blocked-by:** Related NL-103
 - **Plan ref:** BOLT2 N7-T3
@@ -1118,11 +1120,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N7-T2; ABCD W2-A/W2-B
 
 ### NL-269 A channel that turned Open on this connection may send an update before LND finishes its reestablish sync (unverified)
-- **Status:** open
+- **Status:** fixed (9e65e656)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs`, `Reestablish/ReestablishTracker`
-- **Evidence:** A channel opened on this connection counts as reestablished, so an update can go out before LND's link has processed its own channel_reestablish; LND would then see update_add_htlc as its first sync message. Not reproduced; no Docker proof covers a reconnect before channel_ready (reported by W2-A).
+- **Evidence:** A channel opened on this connection counts as reestablished, so an update can go out before LND's link has processed its own channel_reestablish; LND would then see update_add_htlc as its first sync message. Not reproduced; no Docker proof covers a reconnect before channel_ready (reported by W2-A). Fixed (batch4, `9e65e656`): closed with evidence, no code change: the reestablish is raised into the FIFO outbox before the connection's message loop reads anything, so an update unlocked on that connection always goes out after it; a unit test pins the sequence (still no Docker proof of a reconnect before channel_ready).
 - **Fix sketch:** Add a Docker proof with a reconnect before channel_ready; if LND objects, hold updates until the peer's reestablish arrives.
 - **Blocks/Blocked-by:** Related NL-035
 - **Plan ref:** BOLT2 N7-T2
@@ -1138,11 +1140,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N9-T4
 
 ### NL-274 HtlcExpiryMonitor treats an invoice settled by another HTLC as preimage-known
-- **Status:** open
+- **Status:** fixed (e358d01f)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Safety/HtlcExpiryMonitor.cs` (incoming resolution)
-- **Evidence:** The monitor derives "preimage known" from the invoice status. An invoice settled by another HTLC of the same payment hash makes an unrelated incoming HTLC look fulfillable, so the channel is failed at cltv_expiry - 18 instead of the HTLC being failed back. A residual race with a switch forward exists only if the switch read a height more than cltv_expiry_delta + ExpiryTooSoonBlocks blocks old (reported by W3-A).
+- **Evidence:** The monitor derives "preimage known" from the invoice status. An invoice settled by another HTLC of the same payment hash makes an unrelated incoming HTLC look fulfillable, so the channel is failed at cltv_expiry - 18 instead of the HTLC being failed back. A residual race with a switch forward exists only if the switch read a height more than cltv_expiry_delta + ExpiryTooSoonBlocks blocks old (reported by W3-A). Fixed (batch4, `e358d01f`): the resolution is per HTLC since NL-337 (c4fab04, `FinalHopClaims.GetAcceptedPreimageAsync`); this commit pins the scenario (two HTLCs of one hash, the unmarked one failed back, the channel kept).
 - **Fix sketch:** Resolve per HTLC (stored preimage or origin), not per invoice.
 - **Blocks/Blocked-by:** Related NL-094
 - **Plan ref:** BOLT2 N9-T2
@@ -1198,11 +1200,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N10-T3
 
 ### NL-285 Closing negotiation holds our fee at our limit instead of proposing strictly between (B2-CLS-R09 deviation)
-- **Status:** open (partial: 8096700, b67e065)
+- **Status:** fixed (5fd59834, 0f0ae4fe)
 - **Severity:** low
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Domain/Channels/Closing/LegacyClosingNegotiator.cs`
-- **Evidence:** LND 0.20 sends no fee_range and lowers its fee 10 % per closing_signed from its own estimate (4225 sat vs our funder limit 513 sat), so the old R09 rule failed the channel on LND's second message. We now re-send our limit, but only to a peer that already moved strictly towards us (R07); otherwise warning + close, and after `MaxRounds` (100) warning + close (9733937, 5d0aafc). Takes about 19 rounds against LND. A strict peer (CLN/Eclair legacy) may fail over a repeated fee (reported by W3-B). Update (ABCD wave 4, `6b5d50e`): the `fee_range` receive path is proven against CLN in both roles (`ClnCloseTests`, R03/R05/R06), so the repeated-fee path only runs with a peer that sends no `fee_range` (LND 0.20). The integrator listed this as fixed; the ledger keeps it open because the R09 deviation itself is unchanged (option_simple_close, NL-020, is the real fix). Update (ABCD wave 6, `3ce3cad`): `option_simple_close` (NL-020) removes the negotiation with peers that support it, but `OptionSimpleClose` defaults to No, so the legacy close (and this deviation) is still the default path.
+- **Evidence:** LND 0.20 sends no fee_range and lowers its fee 10 % per closing_signed from its own estimate (4225 sat vs our funder limit 513 sat), so the old R09 rule failed the channel on LND's second message. We now re-send our limit, but only to a peer that already moved strictly towards us (R07); otherwise warning + close, and after `MaxRounds` (100) warning + close (9733937, 5d0aafc). Takes about 19 rounds against LND. A strict peer (CLN/Eclair legacy) may fail over a repeated fee (reported by W3-B). Update (ABCD wave 4, `6b5d50e`): the `fee_range` receive path is proven against CLN in both roles (`ClnCloseTests`, R03/R05/R06), so the repeated-fee path only runs with a peer that sends no `fee_range` (LND 0.20). The integrator listed this as fixed; the ledger keeps it open because the R09 deviation itself is unchanged (option_simple_close, NL-020, is the real fix). Update (ABCD wave 6, `3ce3cad`): `option_simple_close` (NL-020) removes the negotiation with peers that support it, but `OptionSimpleClose` defaults to No, so the legacy close (and this deviation) is still the default path. Fixed (batch4, `5fd59834`, capped by the integrator in `0f0ae4fe`): on the peer's first rangeless offer above our funder limit we raise our acceptable maximum to that offer, at most to the base fee of our commitment (the lane bounded it only by the funder's balance, which would let a peer burn it), so the negotiation ends on the peer's fee (R08) instead of repeating our limit; an offer above the cap is answered with the cap and the R09 hold continues.
 - **Fix sketch:** A better funder limit (e.g. the peer's first offer capped by the commitment fee), or option_simple_close (NL-020).
 - **Blocks/Blocked-by:** Related NL-034, NL-020
 - **Plan ref:** BOLT2 N10-T3, B2-CLS-R09
@@ -1238,11 +1240,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N9-T1, B2-FEE-R01
 
 ### NL-290 Snapshots without a stored dust limit offer unlimited dust on the send side
-- **Status:** open
+- **Status:** fixed (ad049109)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Fees/DustExposurePolicy.cs`, engine `UpdateValidator`
-- **Evidence:** The engine's send rules B2-DUST-03/04 read `CommitmentParams.MaxDustHtlcExposureMsat` from the snapshot; channels whose first snapshot predates wave 3 have none, and the `NodeOptions` fallback covers only the receive and fee checks (reported by W3-C, 9bfa09d).
+- **Evidence:** The engine's send rules B2-DUST-03/04 read `CommitmentParams.MaxDustHtlcExposureMsat` from the snapshot; channels whose first snapshot predates wave 3 have none, and the `NodeOptions` fallback covers only the receive and fee checks (reported by W3-C, 9bfa09d). Fixed (batch4, `ad049109`): a snapshot stored without a dust limit loads with the configured `NodeOptions.MaxDustHtlcExposureMsat` (an explicit stored value still wins) and the next state save persists it.
 - **Fix sketch:** Backfill the stored limit from `NodeOptions` at load (a migration or a one-time save).
 - **Blocks/Blocked-by:** Related NL-254
 - **Plan ref:** BOLT2 N9-T3
@@ -1310,11 +1312,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-461 A funder channel whose funding the monitor abandoned stays V1FundingSigned
-- **Status:** open
+- **Status:** fixed (11354dd9)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (NL-294 abandonment), `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`ForgetStaleChannels`)
-- **Evidence:** Since NL-294 (f365bc13) the chain monitor abandons a funding bitcoind refuses for good and releases its UTXO locks, but the channel stays V1FundingSigned in memory and in the database: funder channels never time out in `ForgetStaleChannels`, so the dead channel is listed and resumed at every start (reported by lane l1, wave lh1).
+- **Evidence:** Since NL-294 (f365bc13) the chain monitor abandons a funding bitcoind refuses for good and releases its UTXO locks, but the channel stays V1FundingSigned in memory and in the database: funder channels never time out in `ForgetStaleChannels`, so the dead channel is listed and resumed at every start (reported by lane l1, wave lh1). Fixed (batch4, `11354dd9`): a funder channel whose abandoned funding can never confirm is forgotten.
 - **Fix sketch:** Mark the channel Stale (or surface it for the operator) in the abandonment's save.
 - **Blocks/Blocked-by:** Related NL-259, NL-294
 - **Plan ref:** —
@@ -1361,21 +1363,21 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` Q1-T3, Q1-T6, IT3-T2, "Seams to reconcile"
 
 ### NL-473 Interactive-tx dust check uses Bitcoin Core's thresholds, not a negotiated dust_limit
-- **Status:** open
+- **Status:** fixed (2c509957)
 - **Severity:** low
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Domain/Protocol/InteractiveTx/InteractiveTxRules.cs:50,198,604` (`GetDustThreshold`)
-- **Evidence:** BOLT 2 says the receiver of `tx_add_output` fails the negotiation when `sats` is below the `dust_limit`; `InteractiveTxSessionParameters` carries no dust limit, so the rules use Bitcoin Core's per-script dust threshold at 3000 sat/kvB (294 sat P2WPKH, 330 P2WSH/P2TR, 546 P2PKH, 540 P2SH, 0 OP_RETURN) (reported by lane IT-A, wave qit).
+- **Evidence:** BOLT 2 says the receiver of `tx_add_output` fails the negotiation when `sats` is below the `dust_limit`; `InteractiveTxSessionParameters` carries no dust limit, so the rules use Bitcoin Core's per-script dust threshold at 3000 sat/kvB (294 sat P2WPKH, 330 P2WSH/P2TR, 546 P2PKH, 540 P2SH, 0 OP_RETURN) (reported by lane IT-A, wave qit). Fixed (batch4, `2c509957`): `tx_add_output` is checked against the negotiated dust limit.
 - **Fix sketch:** Add the channel's dust limit to the session parameters (a contract change for the DF/SP1 contracts) and check against the larger of the two.
 - **Blocks/Blocked-by:** Part of NL-037
 - **Plan ref:** `SPLICING_PLAN.md` IT1-T1
 
 ### NL-474 InteractiveTransactionConstants is mostly dead code
-- **Status:** open
+- **Status:** fixed (8b957c42)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Domain/Protocol/Constants/InteractiveTransactionConstants.cs`
-- **Evidence:** Since the old validators were deleted (081d599f) only `MaxSequence` is used (`TxAddInputPayload`); `MaxInputsAllowed`, `MaxOutputsAllowed`, `MaxMoney` and `MaxStandardTxWeight` duplicate the limits `InteractiveTxRules` now owns (reported by lane IT-A, wave qit).
+- **Evidence:** Since the old validators were deleted (081d599f) only `MaxSequence` is used (`TxAddInputPayload`); `MaxInputsAllowed`, `MaxOutputsAllowed`, `MaxMoney` and `MaxStandardTxWeight` duplicate the limits `InteractiveTxRules` now owns (reported by lane IT-A, wave qit). Fixed (batch4, `8b957c42`): the dead constants are removed from `InteractiveTransactionConstants`.
 - **Fix sketch:** Delete the unused constants or point `InteractiveTxRules` at them.
 - **Blocks/Blocked-by:** Part of NL-037
 - **Plan ref:** —
@@ -1585,11 +1587,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` SPR-E
 
 ### NL-524 A simultaneous inbound and outbound connection can both insert the peer row
-- **Status:** open
+- **Status:** fixed (91d90f21, 5eed8421)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Node/Managers/PeerManager.cs` (`ConnectToPeerAsync`, the save at about line 353)
-- **Evidence:** Wave d13 LND suite (70/71): `MultiNodeHarnessTests.Given_BobAndCarol_When_ConnectingToEachOtherAtTheSameTime_*` failed once in the full run with `SqliteException: UNIQUE constraint failed: Peers.NodeId` thrown by bob's `ConnectToPeerAsync` save: the inbound connection from carol saved carol's row while bob's own connect to carol was about to insert it too. The class passed alone 5/5 right after; not a D13 change (nothing in the peer path moved). The connection kept by the LND tie-break survives, but the `connect` call that lost the race fails with a database error instead of reporting the kept connection.
+- **Evidence:** Wave d13 LND suite (70/71): `MultiNodeHarnessTests.Given_BobAndCarol_When_ConnectingToEachOtherAtTheSameTime_*` failed once in the full run with `SqliteException: UNIQUE constraint failed: Peers.NodeId` thrown by bob's `ConnectToPeerAsync` save: the inbound connection from carol saved carol's row while bob's own connect to carol was about to insert it too. The class passed alone 5/5 right after; not a D13 change (nothing in the peer path moved). The connection kept by the LND tie-break survives, but the `connect` call that lost the race fails with a database error instead of reporting the kept connection. Fixed (batch4, `91d90f21`): both connect paths save the peer row under one per-peer gate, each save in its own unit of work.
 - **Fix sketch:** Upsert the peer row (or re-read and update on a unique-key conflict) in `ConnectToPeerAsync` and the inbound path, under one per-peer lock.
 - **Blocks/Blocked-by:** Related NL-239, NL-240, NL-497
 - **Plan ref:** —
@@ -1615,11 +1617,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` SPR-T3
 
 ### NL-509 InteractiveTxDriver.RejectRbf and its tx_abort echo never end the quiescence
-- **Status:** open
+- **Status:** fixed (bafe870b)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`RejectRbf`)
-- **Evidence:** `SpliceService` ends the quiescence itself when it refuses a splice RBF, but any other RBF host running behind quiescence would stay quiescent until the quiescence timeout after a rejected `tx_init_rbf` (reported by lane SPR-A).
+- **Evidence:** `SpliceService` ends the quiescence itself when it refuses a splice RBF, but any other RBF host running behind quiescence would stay quiescent until the quiescence timeout after a rejected `tx_init_rbf` (reported by lane SPR-A). Fixed (batch4, `bafe870b`): quiescence is released when we reject an RBF and on the `tx_abort` echo.
 - **Fix sketch:** End the quiescence from the driver's rejection and echo paths (or give the host a callback), with a test for a non-splice host.
 - **Blocks/Blocked-by:** Related NL-470, NL-489
 - **Plan ref:** —
@@ -2235,21 +2237,21 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M4-T4
 
 ### NL-265 An outgoing HTLC with no stored origin never reaches the payment handlers
-- **Status:** open
+- **Status:** fixed (5d9b8868)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs` (origin dispatch)
-- **Evidence:** With no stored origin the switch logs a warning and does not call `ILocalPaymentHtlcHandler`; W2-C asked for "Local or no circuit". Since NL-250 every new add stores its origin, so only HTLCs offered by older builds are affected, and `PaymentService.ReconcileInFlightPaymentsAsync` (startup and re-pay) still resolves them (reported by the integrator).
+- **Evidence:** With no stored origin the switch logs a warning and does not call `ILocalPaymentHtlcHandler`; W2-C asked for "Local or no circuit". Since NL-250 every new add stores its origin, so only HTLCs offered by older builds are affected, and `PaymentService.ReconcileInFlightPaymentsAsync` (startup and re-pay) still resolves them (reported by the integrator). Fixed (batch4, `5d9b8868`): an outgoing HTLC with no stored origin is handed to the `ILocalPaymentHtlcHandlers` like a Local one.
 - **Fix sketch:** Call the local payment handlers for an outgoing HTLC with neither an origin nor a circuit.
 - **Blocks/Blocked-by:** Related NL-250
 - **Plan ref:** ONION M4-T5
 
 ### NL-266 UPDATE-class failures embed our channel_update only when its scid equals the onion's
-- **Status:** open
+- **Status:** fixed (342a1439)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs`, `Application/Gossip/ChannelUpdateService.cs`
-- **Evidence:** For option_scid_alias channels `ChannelUpdateService` signs with `RemoteAlias`, so an onion that names one of our `LocalAliases` gets `len=0` (allowed by BOLT 4). Needs an alias-policy decision; moot while ScidAlias=No (reported by W2-B).
+- **Evidence:** For option_scid_alias channels `ChannelUpdateService` signs with `RemoteAlias`, so an onion that names one of our `LocalAliases` gets `len=0` (allowed by BOLT 4). Needs an alias-policy decision; moot while ScidAlias=No (reported by W2-B). Fixed (batch4, `342a1439`): UPDATE-class failures embed a channel_update signed for the scid the onion named (`IChannelUpdateService.CreateChannelUpdateForScid`, ephemeral), `len=0` only when the scid names no channel or no usable policy.
 - **Fix sketch:** Sign an update for the scid the onion used (alias or real), or keep one update per alias.
 - **Blocks/Blocked-by:** Related NL-099, NL-236
 - **Plan ref:** ABCD W3-C
@@ -2345,21 +2347,21 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M3b
 
 ### NL-333 PaymentRetryPolicy ignores the attribution_data blame
-- **Status:** open
+- **Status:** fixed (1a0496ca)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentRetryPolicy.cs`, `PaymentService.cs`
-- **Evidence:** When no hop authenticates the return packet but attribution_data blames hop i, the payment records `FailureSourceIndex = i`, but the retry policy still avoids our own first channel instead of the blamed hop's channel (reported by W7-A).
+- **Evidence:** When no hop authenticates the return packet but attribution_data blames hop i, the payment records `FailureSourceIndex = i`, but the retry policy still avoids our own first channel instead of the blamed hop's channel (reported by W7-A). Fixed (batch4, `1a0496ca`): the retry policy honors the attribution_data blame.
 - **Fix sketch:** Feed the blamed index into the retry decision (exclude the channel after hop i).
 - **Blocks/Blocked-by:** Related NL-072, NL-270
 - **Plan ref:** ONION M3b, M4-T6
 
 ### NL-334 A fulfill reverted by a disconnect loses its attribution_data on replay
-- **Status:** open
+- **Status:** fixed (f328b2f0)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Channels/Commitments/` (`RevertUncommitted`, `DerivePending`), `Payments/Switch/HtlcSwitch.cs`
-- **Evidence:** A fulfill that a disconnect reverts keeps only `KnownPreimage`; the replayed `OutgoingHtlcFulfilled` then carries no attribution, so a forwarding node wraps an all-zero block and the origin sees an invalid HMAC at the downstream hop (hold times lost, no funds impact) (reported by W7-A).
+- **Evidence:** A fulfill that a disconnect reverts keeps only `KnownPreimage`; the replayed `OutgoingHtlcFulfilled` then carries no attribution, so a forwarding node wraps an all-zero block and the origin sees an invalid HMAC at the downstream hop (hold times lost, no funds impact) (reported by W7-A). Fixed (batch4, `f328b2f0`): a replayed fulfill carrying neither attribution_data nor a fulfillment_payload goes upstream without attribution_data (the origin reads it as Absent, not an invalid HMAC); the block itself is still not kept across the revert (that would need new columns).
 - **Fix sketch:** Keep the attribution bytes with the preimage when a fulfill is reverted, or treat a missing block as "no attribution" instead of wrapping zeros.
 - **Blocks/Blocked-by:** Related NL-326
 - **Plan ref:** ONION M3b
@@ -2438,11 +2440,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT12_PLAN.md` OM0-T1
 
 ### NL-446 Onion message rate-limit defaults are untuned and the meter has no queue gauge
-- **Status:** open
+- **Status:** fixed (0ff6a437)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/OnionMessages/{OnionMessageRateLimiter,OnionMessageMetrics,OnionMessageOptions}.cs`, `src/NLightning.Application/Node/Managers/PeerManager.cs`
-- **Evidence:** The global burst (2,560 KiB), global message cap (200/s, burst 200) and per-peer message burst (20) were chosen by lane M6-C; plan §3.4 gives only 640 KiB/s global and marks every value "to be tuned". `PeerManager.QueuedOutboxOnionMessageCount` exists but no gauge publishes it in `Meter("NLightning.OnionMessages")` (plan §3.4 asks for the queue depth); outbox refusals are counted by the service as `dropped{reason=outbox_full}` (reported by lane M6-C).
+- **Evidence:** The global burst (2,560 KiB), global message cap (200/s, burst 200) and per-peer message burst (20) were chosen by lane M6-C; plan §3.4 gives only 640 KiB/s global and marks every value "to be tuned". `PeerManager.QueuedOutboxOnionMessageCount` exists but no gauge publishes it in `Meter("NLightning.OnionMessages")` (plan §3.4 asks for the queue depth); outbox refusals are counted by the service as `dropped{reason=outbox_full}` (reported by lane M6-C). Fixed (batch4, `0ff6a437`): the global burst is tuned to LND's and the onion message meter has an outbox queue-depth gauge.
 - **Fix sketch:** Add an observable gauge for the outbox and handler queues; tune the defaults from a Mutinynet or mainnet run with LND 0.21/CLN peers.
 - **Blocks/Blocked-by:** Follow-up of NL-080
 - **Plan ref:** `BOLT12_PLAN.md` §3.4, OM2-T2, OM3-T3
@@ -2538,11 +2540,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `REMAINING_WORK.md`
 
 ### NL-464 Malformed onion_message drops are counted on a second static Meter
-- **Status:** open
+- **Status:** fixed (0a977574)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure/Protocol/Services/MessageService.cs` (`HandleMalformedOnionMessage`), `src/NLightning.Application/OnionMessages/OnionMessageMetrics.cs`
-- **Evidence:** The NL-444 fix counts a malformed 513 on a static `Meter("NLightning.OnionMessages")` in Infrastructure, beside the service's own meter of the same name, so the exported metric is right but `OnionMessageMetrics`' in-memory counts (and anything reading them) miss malformed drops (reported by lane l2, wave lh1).
+- **Evidence:** The NL-444 fix counts a malformed 513 on a static `Meter("NLightning.OnionMessages")` in Infrastructure, beside the service's own meter of the same name, so the exported metric is right but `OnionMessageMetrics`' in-memory counts (and anything reading them) miss malformed drops (reported by lane l2, wave lh1). Fixed (batch4, `0a977574`): malformed 513 drops are counted on the shared onion message counter set.
 - **Fix sketch:** Route the malformed drop through one onion-message metrics port that Infrastructure can call, or document the split.
 - **Blocks/Blocked-by:** Follow-up of NL-444
 - **Plan ref:** `BOLT12_PLAN.md` OM0-T1
@@ -2790,11 +2792,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O2-T5
 
 ### NL-308 An Unknown funding spend moves the channel to OnchainResolving instead of Failed
-- **Status:** open
+- **Status:** fixed (c96ef045)
 - **Severity:** low
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Application/Onchain/OnchainChannelWatcher.cs`
-- **Evidence:** A funding spend the classifier cannot identify goes to `OnchainResolving` with no outputs and a B5-GEN-06 critical alert, and closes at the irrevocable depth; plan §3.3 says Failed (deviation reported by W5-A). Nothing of ours is recoverable from such a tx, and the alert is raised either way.
+- **Evidence:** A funding spend the classifier cannot identify goes to `OnchainResolving` with no outputs and a B5-GEN-06 critical alert, and closes at the irrevocable depth; plan §3.3 says Failed (deviation reported by W5-A). Nothing of ours is recoverable from such a tx, and the alert is raised either way. Fixed (batch4, `c96ef045`): decided and documented: the deviation is kept (a Failed channel gets no resolution rounds; resolved as data loss since NL-320), `BOLT5_ONCHAIN_PLAN.md` §3.3/§3.9 updated and the watcher test pins it.
 - **Fix sketch:** Decide and document: keep the deviation (record it in the plan) or persist Failed.
 - **Blocks/Blocked-by:** Part of NL-094
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` §3.3, O2-T5
@@ -2881,11 +2883,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O6-T1
 
 ### NL-318 The revoked-commitment resolver does not persist an on-chain preimage
-- **Status:** open
+- **Status:** fixed (edcd5be6)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Resolvers/RevokedCommitResolver.cs`
-- **Evidence:** A preimage in the cheater's HTLC-success fulfills upstream at once, but it is not staged into `HtlcRecord.KnownPreimage` (the remote resolver does, 202341b); after a restart the fulfill is rebuilt from the recorded spend, which needs the spending tx to be readable again, and the switch's `DerivePending` replay does not see it (reported by W5-D). Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): the resolver moved to `Onchain/Resolvers/RevokedCommitResolver.cs` (its data source stays in `Resolvers/Revoked/`); still open: it reads `KnownPreimage` (`RevokedCommitResolver.cs:341,443,498`) and raises the fulfill from the witness (`:271-276`), but never stages it as `RemoteCommitResolver.StageKnownPreimageAsync` does (`RemoteCommitResolver.cs:1015`).
+- **Evidence:** A preimage in the cheater's HTLC-success fulfills upstream at once, but it is not staged into `HtlcRecord.KnownPreimage` (the remote resolver does, 202341b); after a restart the fulfill is rebuilt from the recorded spend, which needs the spending tx to be readable again, and the switch's `DerivePending` replay does not see it (reported by W5-D). Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): the resolver moved to `Onchain/Resolvers/RevokedCommitResolver.cs` (its data source stays in `Resolvers/Revoked/`); still open: it reads `KnownPreimage` (`RevokedCommitResolver.cs:341,443,498`) and raises the fulfill from the witness (`:271-276`), but never stages it as `RemoteCommitResolver.StageKnownPreimageAsync` does (`RemoteCommitResolver.cs:1015`). Fixed (batch4, `edcd5be6`): the revoked-commitment resolver persists a preimage it learns on chain.
 - **Fix sketch:** Stage the preimage with a `StageWriteAction` in the round's save, as `RemoteCommitResolver` does.
 - **Blocks/Blocked-by:** Part of NL-094
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O5-T2
@@ -2911,11 +2913,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O3/O4, §3.4
 
 ### NL-329 A funding tx reorged out and never reconfirmed keeps its old SCID
-- **Status:** open
+- **Status:** fixed (01809851)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Reorg/FundingReconfirmationHandler.cs`, invoice route hints
-- **Evidence:** The SCID moves only when the funding tx confirms again; a funding tx that never reconfirms leaves the channel Open with the old SCID, and invoices issued before a move keep the old SCID in their route hints (reported by W6-F).
+- **Evidence:** The SCID moves only when the funding tx confirms again; a funding tx that never reconfirms leaves the channel Open with the old SCID, and invoices issued before a move keep the old SCID in their route hints (reported by W6-F). Fixed (batch4, `01809851`): an Open channel whose funding tx never reconfirms after a reorg is failed.
 - **Fix sketch:** Pause or fail a channel whose funding confirmation was rolled back and not re-seen within a grace; document that old invoices' hints go stale.
 - **Blocks/Blocked-by:** Related NL-292, NL-096
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O6-T3
@@ -2994,11 +2996,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O7-T2, O7-T4
 
 ### NL-384 A reorg that unconfirms a CPFP child after its reservation ended does not reserve its inputs again
-- **Status:** open (partial: 41ce320)
+- **Status:** fixed (f0e5b0d2)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/FeeInputSelector.cs` (`ConfirmAsync`), `BlockchainMonitorService` rewind
-- **Evidence:** Once `ConfirmAsync` has ended a reservation (after the chain monitor processed the spend), a reorg that removes the child re-adds its inputs as spendable wallet UTXOs and nothing reserves them again; only the pending-broadcast exclusion of `ReserveAsync` (a56a013) keeps them from new fee selections while the child's row is pending again, and channel fundings do not have that exclusion (NL-385). Documented on `IFeeInputSelector` (reported by X1). Update (wave O7b, `c16d6e1`): since NL-385 (41ce320) both fee-input and funding selection skip the inputs of a child that a reorg put back to Pending (`PendingBroadcastOutpoints`), so we cannot double-spend them; the reservation itself is still not re-created and there is no reorg proof (wave O7b integrator).
+- **Evidence:** Once `ConfirmAsync` has ended a reservation (after the chain monitor processed the spend), a reorg that removes the child re-adds its inputs as spendable wallet UTXOs and nothing reserves them again; only the pending-broadcast exclusion of `ReserveAsync` (a56a013) keeps them from new fee selections while the child's row is pending again, and channel fundings do not have that exclusion (NL-385). Documented on `IFeeInputSelector` (reported by X1). Update (wave O7b, `c16d6e1`): since NL-385 (41ce320) both fee-input and funding selection skip the inputs of a child that a reorg put back to Pending (`PendingBroadcastOutpoints`), so we cannot double-spend them; the reservation itself is still not re-created and there is no reorg proof (wave O7b integrator). Fixed (batch4, `f0e5b0d2`): a pending CPFP child's wallet inputs are reserved again after a reorg unconfirms it.
 - **Fix sketch:** Re-reserve the inputs of a pending `AnchorCpfp`/anchors HTLC row after a rewind, or make every wallet selection skip outputs of pending broadcasts (NL-385).
 - **Blocks/Blocked-by:** Related NL-385, NL-292
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O7-T1
@@ -3014,11 +3016,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O7-T1
 
 ### NL-386 A confirmed commitment's pending CPFP child keeps its inputs up to 2016 blocks when bitcoind is unreachable
-- **Status:** open
+- **Status:** fixed (78bde107)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Onchain/Anchors/AnchorCpfpService.cs`, `AnchorCpfpOptions.ConfirmedCommitmentChildWaitBlocks`
-- **Evidence:** After our commitment confirms, a pending child keeps its reservation until `IBitcoinChainService` shows our anchor spent, or `ConfirmedCommitmentChildWaitBlocks` (2016) have passed. Without a reachable chain service the wallet inputs stay reserved that long, and abandoning after the wait can still leave the child in other mempools (reported by X2's review).
+- **Evidence:** After our commitment confirms, a pending child keeps its reservation until `IBitcoinChainService` shows our anchor spent, or `ConfirmedCommitmentChildWaitBlocks` (2016) have passed. Without a reachable chain service the wallet inputs stay reserved that long, and abandoning after the wait can still leave the child in other mempools (reported by X2's review). Fixed (batch4, `78bde107`): a settled child's wallet inputs are spent back to the wallet at the end of the wait.
 - **Fix sketch:** Double-spend the child's wallet inputs back to the wallet at the end of the wait (or once the anchor is known spent by someone else) instead of only abandoning the row.
 - **Blocks/Blocked-by:** Related NL-314, NL-379 (since wave O7b those reserved inputs also leave the balance that backs the anchors reserve, so they can refuse new anchors opens)
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O7-T2
@@ -3044,31 +3046,31 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O7-T2
 
 ### NL-389 The peer's commitment below our mempool minimum is never packaged with our anchor child
-- **Status:** open
+- **Status:** fixed (c9ec0c78)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Anchors/AnchorCpfpService.Peer.cs`
-- **Evidence:** A peer commitment that pays less than our bitcoind's mempool minimum never enters our mempool, so `getrawtransaction` does not find it and it is not bumped; the O8 hand-over has its bytes, but we never `submitpackage` it with our child (reported by lane Y2; documented in `src/NLightning.Application/CLAUDE.md`).
+- **Evidence:** A peer commitment that pays less than our bitcoind's mempool minimum never enters our mempool, so `getrawtransaction` does not find it and it is not bumped; the O8 hand-over has its bytes, but we never `submitpackage` it with our child (reported by lane Y2; documented in `src/NLightning.Application/CLAUDE.md`). Fixed (batch4, `c9ec0c78`): a handed-over peer commitment below the mempool minimum is packaged with our anchor child.
 - **Fix sketch:** When `getrawtransaction` misses a handed-over peer commitment, send its bytes with our child through `SubmitPackageAsync`.
 - **Blocks/Blocked-by:** Related NL-380, NL-381, NL-098
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O7-T2
 
 ### NL-390 The peer-commitment hand-over to AnchorCpfpService is kept in memory only
-- **Status:** open
+- **Status:** fixed (8827f63d)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Onchain/Anchors/AnchorCpfpService.Peer.cs`
-- **Evidence:** The peer commitment handed over by `MempoolReactor` is not persisted. (a) After a restart it is found again only by `getrawtransaction` of the rebuilt txids and only while the channel is Failed or OnchainResolving, so an Open channel whose peer commitment was seen before the restart and has no persisted child waits for the HTLC deadline monitor to fail it. (b) Without an `IBitcoinChainService` the handed-over commitment is trusted until a close is recorded; if it was evicted and no close comes, our child of it keeps its reservation. (c) A crash-orphaned reservation while the peer's commitment is evicted and no close is ever recorded stays reserved; only the recorded-close case is released (50f005a) (reported by lane Y2).
+- **Evidence:** The peer commitment handed over by `MempoolReactor` is not persisted. (a) After a restart it is found again only by `getrawtransaction` of the rebuilt txids and only while the channel is Failed or OnchainResolving, so an Open channel whose peer commitment was seen before the restart and has no persisted child waits for the HTLC deadline monitor to fail it. (b) Without an `IBitcoinChainService` the handed-over commitment is trusted until a close is recorded; if it was evicted and no close comes, our child of it keeps its reservation. (c) A crash-orphaned reservation while the peer's commitment is evicted and no close is ever recorded stays reserved; only the recorded-close case is released (50f005a) (reported by lane Y2). Fixed (batch4, `8827f63d`): the peer-commitment hand-over is persisted and the trust in it bounded.
 - **Fix sketch:** Persist the hand-over (or rescan the mempool at startup for commitments of Open anchors channels) and bound the life of a reservation whose parent is gone.
 - **Blocks/Blocked-by:** Related NL-381, NL-386
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O7-T2
 
 ### NL-391 A package refused for fee is remembered in memory only
-- **Status:** open
+- **Status:** fixed (9ea484b6)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Onchain/Anchors/AnchorCpfpService.cs`
-- **Evidence:** When `submitpackage` refuses a commitment and child for fee, the child is marked in memory so the next round replaces it without waiting `RbfIntervalBlocks`; after a restart the first round has to see the refusal again, costing one block (reported by lane Y2).
+- **Evidence:** When `submitpackage` refuses a commitment and child for fee, the child is marked in memory so the next round replaces it without waiting `RbfIntervalBlocks`; after a restart the first round has to see the refusal again, costing one block (reported by lane Y2). Fixed (batch4, `9ea484b6`): a fee-refused package's child is replaced in the same round.
 - **Fix sketch:** Persist the mark on the child's `BroadcastTransactions` row, or resubmit the package at the first round after a restart and act on its result in the same round.
 - **Blocks/Blocked-by:** Related NL-380
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O7-T2
@@ -3188,11 +3190,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7_GOSSIP_PLAN G0/G1 (GG2)
 
 ### NL-345 Gossip signature tests for 256/257 only check self-signed messages
-- **Status:** open
+- **Status:** fixed (ec22b429)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Infrastructure.Bitcoin.Tests/Gossip/GossipSignatureVerifierTests.cs`, `src/NLightning.Infrastructure.Bitcoin/Gossip/GossipSignedRanges.cs`
-- **Evidence:** The `GossipSignedRanges` 256/257 tests sign their own messages, so a wrong signed range would pass (circular). The captured LND/CLN vectors (`Tests.Utils/Vectors/Bolt7Vectors.cs`, 7d318b5) landed in another lane of the same wave and are not used there; `Bolt7CapturedVectorTests` checks them through the typed payloads only. The 259 captures cannot be verified without the completed announcement.
+- **Evidence:** The `GossipSignedRanges` 256/257 tests sign their own messages, so a wrong signed range would pass (circular). The captured LND/CLN vectors (`Tests.Utils/Vectors/Bolt7Vectors.cs`, 7d318b5) landed in another lane of the same wave and are not used there; `Bolt7CapturedVectorTests` checks them through the typed payloads only. The 259 captures cannot be verified without the completed announcement. Fixed (batch4, `ec22b429`): the captured cross-signed 256/257 go through the gossip signed-range tests.
 - **Fix sketch:** Run every captured 256/257 through `GossipSignedRanges` + `GossipSignatureVerifier`; add a 259 vector from our own two-node exchange once G1-T3/T4 land.
 - **Blocks/Blocked-by:** Part of NL-099
 - **Plan ref:** BOLT7 G0-T3, G0-T5
@@ -3299,11 +3301,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G1-T4, G2-T5
 
 ### NL-363 Gossip sync peers are chosen first come, first served
-- **Status:** open
+- **Status:** fixed (2221049b)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs`
-- **Evidence:** Plan §3.7 prefers channel peers as sync peers; the manager takes the first connected `gossip_queries` peers (reported by lane C1).
+- **Evidence:** Plan §3.7 prefers channel peers as sync peers; the manager takes the first connected `gossip_queries` peers (reported by lane C1). Fixed (batch4, `2221049b`): channel peers and peers that answer are preferred as sync peers.
 - **Fix sketch:** Prefer peers we have channels with, then rotate as planned.
 - **Blocks/Blocked-by:** Part of NL-099
 - **Plan ref:** BOLT7 G3-T2, §3.7
@@ -3319,11 +3321,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G1-T5
 
 ### NL-365 A gossip query timeout or bad reply ends querying on that connection
-- **Status:** open
+- **Status:** fixed (8e2a6c0d)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs` (`ExpectReplies(null)` after a timeout)
-- **Evidence:** Review fix 4b4f7b6 keeps BOLT 7's one-outstanding-query rule by never querying a connection again after a reply timeout (`SyncReplyTimeout`, 2 min per reply) or a broken reply; only a reconnect restores it. A rate-limited LND answering a large graph slowly can therefore stop being a sync peer for the rest of the connection (reported by lane C1 review).
+- **Evidence:** Review fix 4b4f7b6 keeps BOLT 7's one-outstanding-query rule by never querying a connection again after a reply timeout (`SyncReplyTimeout`, 2 min per reply) or a broken reply; only a reconnect restores it. A rate-limited LND answering a large graph slowly can therefore stop being a sync peer for the rest of the connection (reported by lane C1 review). Fixed (batch4, `8e2a6c0d`): after a timeout the connection waits for the late reply and resumes querying.
 - **Fix sketch:** Keep waiting for the outstanding end marker before sending the next query instead of dropping the peer; measure against a signet-sized graph in G5.
 - **Blocks/Blocked-by:** Part of NL-099
 - **Plan ref:** BOLT7 G3-T2
@@ -3339,11 +3341,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G5-T1
 
 ### NL-368 The relay can still send a channel_update without its channel_announcement on one connection
-- **Status:** open
+- **Status:** fixed (d5b3ae55)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Gossip/Relay/GossipRelayScheduler.Relay.cs`
-- **Evidence:** Review fix 4b4f7b6 keeps a 256 unseen until its channel has a relayable update, but a 256 whose only update falls outside one peer's `gossip_timestamp_filter` at its first flush is dropped for that connection and a later in-filter 258 can go out alone; the peer then ignores the 258 (reported by lane C1 review).
+- **Evidence:** Review fix 4b4f7b6 keeps a 256 unseen until its channel has a relayable update, but a 256 whose only update falls outside one peer's `gossip_timestamp_filter` at its first flush is dropped for that connection and a later in-filter 258 can go out alone; the peer then ignores the 258 (reported by lane C1 review). Fixed (batch4, `d5b3ae55`): a connection's missed channel_announcement is sent with its next update.
 - **Fix sketch:** Track per connection which 256s went out and queue the 256 with any later 258 for that SCID.
 - **Blocks/Blocked-by:** Part of NL-099
 - **Plan ref:** BOLT7 G3-T3
@@ -3359,11 +3361,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G5-T2
 
 ### NL-371 Funding mismatches count toward the gossip misbehaviour ban
-- **Status:** open
+- **Status:** fixed (f5a2f45e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.cs` (`ScoreMisbehaviour`)
-- **Evidence:** As plan §3.8 says, `ScriptMismatch`, `AmountMismatch` and `TransactionIndexOutOfRange` count toward the 5-in-10-min ban. An honest peer that does not check funding outputs itself (e.g. an LND neutrino or `assumechanvalid` node relaying unchecked announcements) could be banned for 1 h and disconnected once; its channels are unaffected (reported by lane D1, gossip wave G-D).
+- **Evidence:** As plan §3.8 says, `ScriptMismatch`, `AmountMismatch` and `TransactionIndexOutOfRange` count toward the 5-in-10-min ban. An honest peer that does not check funding outputs itself (e.g. an LND neutrino or `assumechanvalid` node relaying unchecked announcements) could be banned for 1 h and disconnected once; its channels are unaffected (reported by lane D1, gossip wave G-D). Fixed (batch4, `f5a2f45e`): funding mismatches no longer count toward the misbehaviour ban.
 - **Fix sketch:** After the G5-T5 soak, count only invalid signatures and bad encodings, or raise the threshold for chain mismatches.
 - **Blocks/Blocked-by:** Part of NL-099
 - **Plan ref:** BOLT7 G5-T2, §3.8
@@ -3593,41 +3595,41 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 D12, G5-T5
 
 ### NL-418 Four forging peers can block a channel's real announcement for the pending TTL
-- **Status:** open
+- **Status:** fixed (162f2002)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Gossip/Graph/PendingAnnouncementIndex.cs` (`MaxCandidatesPerChannel` = 4)
-- **Evidence:** If four distinct peers announce different forgeries of one scid before the real `channel_announcement` arrives, the real one is refused (`pending_candidates_full`) until those candidates expire (`Gossip:PendingAnnouncementTtl`, 14 days). Needs four peer identities and connections; documented in the Application CLAUDE.md (reported by lane d12-Z1's review step).
+- **Evidence:** If four distinct peers announce different forgeries of one scid before the real `channel_announcement` arrives, the real one is refused (`pending_candidates_full`) until those candidates expire (`Gossip:PendingAnnouncementTtl`, 14 days). Needs four peer identities and connections; documented in the Application CLAUDE.md (reported by lane d12-Z1's review step). Fixed (batch4, `162f2002`): candidates an orphaned channel_update proves wrong make way for a fifth announcement.
 - **Fix sketch:** Shorten the TTL of candidates whose scid already has an orphaned `channel_update` that matches none of them, or evict such candidates when a fifth one arrives.
 - **Blocks/Blocked-by:** Part of NL-099; follow-up of NL-406
 - **Plan ref:** BOLT7 G5-T2
 
 ### NL-419 Channel announcements refused over the memory budget are not re-queried
-- **Status:** open
+- **Status:** fixed (75397984)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.cs` (`RefuseNew`), `Gossip/Sync/GossipSyncManager.cs` (`TakeMissedShortChannelIds`)
-- **Evidence:** A new channel refused with reason `memory_budget` is not handed to the missed-scid re-query, so it comes back only with the next range sync or peer rotation (20 min) (reported by lane d12-Z2).
+- **Evidence:** A new channel refused with reason `memory_budget` is not handed to the missed-scid re-query, so it comes back only with the next range sync or peer rotation (20 min) (reported by lane d12-Z2). Fixed (batch4, `75397984`): channels refused over the memory budget are re-queried once it resumes.
 - **Fix sketch:** Mark refused scids missed (`MarkMissed`) once the budget has resumed, or let the sync re-diff after a resume.
 - **Blocks/Blocked-by:** Part of NL-099; follow-up of NL-373
 - **Plan ref:** BOLT7 G5-T1
 
 ### NL-420 GossipIngress does not report its queued or deferred channels as IGossipPendingChannels
-- **Status:** open
+- **Status:** fixed (9e6d522c)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.cs`, `src/NLightning.Domain/Gossip/Interfaces/IGossipPendingChannels.cs`
-- **Evidence:** Only `FundingOutputLookup` implements the Domain `IGossipPendingChannels` seam, so the sync's re-diff does not skip scids whose announcement is queued, deferred or in retry in the ingress, and a channel whose funding output is spent in the mempool is still re-downloaded once per block (reported by lane d12-Z3; `AddGossipSyncServices` picks up any registered implementation). The d12 mainnet download multiple is 2.3x against the 1.9x target of NL-415.
+- **Evidence:** Only `FundingOutputLookup` implements the Domain `IGossipPendingChannels` seam, so the sync's re-diff does not skip scids whose announcement is queued, deferred or in retry in the ingress, and a channel whose funding output is spent in the mempool is still re-downloaded once per block (reported by lane d12-Z3; `AddGossipSyncServices` picks up any registered implementation). The d12 mainnet download multiple is 2.3x against the 1.9x target of NL-415. Fixed (batch4, `9e6d522c`): `GossipIngress` reports its queued, deferred and pending channels as `IGossipPendingChannels`.
 - **Fix sketch:** Implement `IGossipPendingChannels` on the ingress (queued/deferred 256 scids plus `IsPendingAnnouncement`) and register it.
 - **Blocks/Blocked-by:** Part of NL-099; follow-up of NL-414, NL-415
 - **Plan ref:** BOLT7 G3-T2, G5-T1
 
 ### NL-421 The chain lookup counter counts reused mempool answers that make no RPC
-- **Status:** open
+- **Status:** fixed (f19925ef)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Gossip/Metrics/GossipMetrics.cs`, `Gossip/Graph/GossipIngress.cs`
-- **Evidence:** Since NL-414, `FundingOutputLookup` answers `OutputSpentInMempool` from memory until the next block, but `nlightning.gossip.chain.lookups` still counts each of those answers as a lookup (reported by lane d12-Z3).
+- **Evidence:** Since NL-414, `FundingOutputLookup` answers `OutputSpentInMempool` from memory until the next block, but `nlightning.gossip.chain.lookups` still counts each of those answers as a lookup (reported by lane d12-Z3). Fixed (batch4, `f19925ef`): reused mempool chain answers are tagged `cached=true` in the lookup metrics.
 - **Fix sketch:** Tag reused answers (e.g. `cached=true`) or skip them in the counter.
 - **Blocks/Blocked-by:** Part of NL-099
 - **Plan ref:** BOLT7 G5-T4
@@ -3704,11 +3706,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G3-T3, §3.8
 
 ### NL-549 A new filter's backlog and the first flush after it can send the same version twice
-- **Status:** open
+- **Status:** fixed (70980d50)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Gossip/Relay/GossipRelayScheduler.Relay.cs` (`Collect`, backlog)
-- **Evidence:** NL-417 final run: the sink received 10 duplicates out of 96,085 (4 and 7 in earlier runs), right after the backlog ended. A change applied between the relay's last collect and the backlog's snapshot is in the snapshot and in the next collect's diff, so the first flush after the backlog sends it again. Harmless (receivers drop duplicates) and bounded by one collect interval (10 s) of changes.
+- **Evidence:** NL-417 final run: the sink received 10 duplicates out of 96,085 (4 and 7 in earlier runs), right after the backlog ended. A change applied between the relay's last collect and the backlog's snapshot is in the snapshot and in the next collect's diff, so the first flush after the backlog sends it again. Harmless (receivers drop duplicates) and bounded by one collect interval (10 s) of changes. Fixed (batch4, `70980d50`): the first flush after a new filter's backlog no longer resends the backlog's versions.
 - **Fix sketch:** Collect right before taking a backlog snapshot, or skip pending items whose version equals the one the backlog sent.
 - **Blocks/Blocked-by:** Related NL-548
 - **Plan ref:** BOLT7 G3-T3
@@ -5089,11 +5091,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-171 ~20 nullability warnings (10 unique sites)
-- **Status:** open
+- **Status:** fixed (78ff547d)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `FundingConfirmedMessageHandler.cs:52`, `FundingCreatedMessageHandler.cs:74`, `ChannelManager.cs:245,320`, `OpenChannelClientSubscriptionHandler.cs:120`, `ChannelDbRepository.cs:121,147`, `PeerService.cs:65,256`, `SignedTransactionFormatter.cs:14`
-- **Evidence:** CS8602/CS8604/CS8622 in a Release build. Update: 8 CS86xx warnings remain after the swarm (FundingConfirmedMessageHandler, FundingCreatedMessageHandler, ChannelManager, OpenChannelClientSubscriptionHandler, ChannelDbRepository, PeerService); `SignedTransactionFormatter` is fixed (NL-145). Update (ABCD wave 0, `0b7e617`): 7 CS86xx warnings in Release and Release.Native: `FundingCreatedMessageHandler.cs:75`, `ChannelManager.cs:549`, `OpenChannelClientSubscriptionHandler.cs:120`, `ChannelDbRepository.cs:302,320`, `PeerService.cs:127,413`. Update (ABCD wave 1, `342d22e`): 5 CS86xx warning sites in Release and Release.Native (each reported twice): `FundingCreatedMessageHandler.cs:75`, `ChannelManager.cs:840`, `OpenChannelClientSubscriptionHandler.cs:120`, `ChannelDbRepository.cs:310,328`; the two `PeerService` warnings went away with the W1-E connect rewrite (df4ca92). Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): a Release build (`-p:NltgTargetNet11=false`) shows the same 5 sites: `FundingCreatedMessageHandler.cs:75`, `ChannelManager.cs:1801`, `OpenChannelClientSubscriptionHandler.cs:120`, `ChannelDbRepository.cs:328,346` (the title's counts are historical).
+- **Evidence:** CS8602/CS8604/CS8622 in a Release build. Update: 8 CS86xx warnings remain after the swarm (FundingConfirmedMessageHandler, FundingCreatedMessageHandler, ChannelManager, OpenChannelClientSubscriptionHandler, ChannelDbRepository, PeerService); `SignedTransactionFormatter` is fixed (NL-145). Update (ABCD wave 0, `0b7e617`): 7 CS86xx warnings in Release and Release.Native: `FundingCreatedMessageHandler.cs:75`, `ChannelManager.cs:549`, `OpenChannelClientSubscriptionHandler.cs:120`, `ChannelDbRepository.cs:302,320`, `PeerService.cs:127,413`. Update (ABCD wave 1, `342d22e`): 5 CS86xx warning sites in Release and Release.Native (each reported twice): `FundingCreatedMessageHandler.cs:75`, `ChannelManager.cs:840`, `OpenChannelClientSubscriptionHandler.cs:120`, `ChannelDbRepository.cs:310,328`; the two `PeerService` warnings went away with the W1-E connect rewrite (df4ca92). Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): a Release build (`-p:NltgTargetNet11=false`) shows the same 5 sites: `FundingCreatedMessageHandler.cs:75`, `ChannelManager.cs:1801`, `OpenChannelClientSubscriptionHandler.cs:120`, `ChannelDbRepository.cs:328,346` (the title's counts are historical). Fixed (batch4, `78ff547d`): the last 5 CS86xx sites are fixed: the Release and Release.Native builds print 0 code warnings (the nullable-as-errors half of the sketch is not done).
 - **Fix sketch:** Fix each, then enable nullable warnings as errors.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -5169,11 +5171,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-179 InternalsVisibleTo gaps
-- **Status:** open
+- **Status:** fixed (541bba1a)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Daemon/AssemblyInfo.cs:3`, `src/NLightning.Domain/AssemblyInfo.cs`, `src/NLightning.Application/AssemblyInfo.cs`
-- **Evidence:** Daemon lists a stale `NLightning.Bolts.Tests` and not `NLightning.Daemon.Tests`; Domain.Tests/Application.Tests have no internals access. Update: Application lists `NLightning.Application.Tests` (424ae84) and Daemon lists `NLightning.Daemon.Tests`; Daemon still lists the stale `NLightning.Bolts.Tests`, and Domain.Tests still has no internals access (the N4 engine is public instead).
+- **Evidence:** Daemon lists a stale `NLightning.Bolts.Tests` and not `NLightning.Daemon.Tests`; Domain.Tests/Application.Tests have no internals access. Update: Application lists `NLightning.Application.Tests` (424ae84) and Daemon lists `NLightning.Daemon.Tests`; Daemon still lists the stale `NLightning.Bolts.Tests`, and Domain.Tests still has no internals access (the N4 engine is public instead). Fixed (batch4, `541bba1a`): the stale `NLightning.Bolts.Tests` entry is dropped from Daemon and `NLightning.Domain.Tests` gets internals access.
 - **Fix sketch:** Fix the lists.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -5199,21 +5201,21 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-223 Persistence provider projects share one BaseOutputPath
-- **Status:** open
+- **Status:** fixed (f1a14a08)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Persistence.{Postgres,Sqlite,SqlServer}/*.csproj`, `src/NLightning.Infrastructure.Persistence/scripts/*`
-- **Evidence:** All three write to `Persistence/bin`, which can race in parallel builds (not reproduced in 3 runs). The EF migration scripts depend on the shared output (ci-build batch).
+- **Evidence:** All three write to `Persistence/bin`, which can race in parallel builds (not reproduced in 3 runs). The EF migration scripts depend on the shared output (ci-build batch). Fixed (batch4, `f1a14a08`): the provider projects build into their own `bin/` (the shared `BaseOutputPath` override is gone).
 - **Fix sketch:** Point `dotnet ef` at each provider's own output, then split the paths.
 - **Blocks/Blocked-by:** Related NL-174
 - **Plan ref:** —
 
 ### NL-233 dotnet-ef loads stale Debug provider assemblies when generating migrations
-- **Status:** open
+- **Status:** fixed (7056608d, f1a14a08)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Persistence/bin/Debug`, `src/NLightning.Infrastructure.Persistence/scripts/add_migration.sh`
-- **Evidence:** During the four-lane integration, `dotnet ef` loaded the provider migration assemblies from the shared `Persistence/bin/Debug`; they were stale until the three provider projects were rebuilt in Debug, and until then both the regeneration and the `HasPendingModelChanges` check gave wrong results.
+- **Evidence:** During the four-lane integration, `dotnet ef` loaded the provider migration assemblies from the shared `Persistence/bin/Debug`; they were stale until the three provider projects were rebuilt in Debug, and until then both the regeneration and the `HasPendingModelChanges` check gave wrong results. Fixed (batch4, `7056608d`): every `dotnet ef` call passes the provider as both `--project` and `--startup-project`, and the scripts build the providers in Debug explicitly.
 - **Fix sketch:** Build the three provider projects in Debug before `migrations add`/`has-pending-model-changes` (script it), and fix the shared output path (NL-223).
 - **Blocks/Blocked-by:** Related NL-223
 - **Plan ref:** —
@@ -5229,11 +5231,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-261 PeerService.SendErrorAsync has no unit test
-- **Status:** open
+- **Status:** fixed (67f0f2e5)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `src/NLightning.Infrastructure/Node/Services/PeerService.cs` (`SendErrorAsync`), `test/NLightning.Infrastructure.Tests/`
-- **Evidence:** W2-A added `IPeerService.SendErrorAsync` (error without disconnect, NL-200); it is covered only through `PeerManager`/Docker, and Infrastructure.Tests was outside that lane (reported by W2-A).
+- **Evidence:** W2-A added `IPeerService.SendErrorAsync` (error without disconnect, NL-200); it is covered only through `PeerManager`/Docker, and Infrastructure.Tests was outside that lane (reported by W2-A). Fixed (batch4, `67f0f2e5`): `PeerService.SendErrorAsync` is covered (sent without a disconnect).
 - **Fix sketch:** Add a PeerService test that the error is sent and the connection stays open.
 - **Blocks/Blocked-by:** Related NL-200
 - **Plan ref:** BOLT2 N6-T3
@@ -5411,11 +5413,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G5-T3
 
 ### NL-378 The Docker runner scripts print only totals
-- **Status:** open
+- **Status:** fixed (18a56b33)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `scripts/run-gossip.sh`, `scripts/run-onchain.sh`, `scripts/run-abcd.sh`
-- **Evidence:** The in-container xunit v3 runner prints no per-test PASS lines, so a run's evidence is its totals; a skipped or not-discovered test is visible only as a lower count (reported by the G-D integrator).
+- **Evidence:** The in-container xunit v3 runner prints no per-test PASS lines, so a run's evidence is its totals; a skipped or not-discovered test is visible only as a lower count (reported by the G-D integrator). Fixed (batch4, `18a56b33`): the runner scripts name a red run's failing tests in their summaries.
 - **Fix sketch:** Pass `-reporter verbose` (or write a TRX/xUnit XML result to `TestResults/`) and print the per-test outcome at the end.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -5432,11 +5434,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G5-T2
 
 ### NL-383 CombinedHtlcSigningProxy is no longer needed in the anchors resolver tests
-- **Status:** open
+- **Status:** fixed (1e37d4fc)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `test/NLightning.Application.Tests/Onchain/Resolvers/Local/AnchorTestWallet.cs`
-- **Evidence:** X3 wrapped the signer in `CombinedHtlcSigningProxy` because `SignLocalHtlcTransaction` refused a multi-input HTLC tx; since the signer seam (658e086) the real signer signs input 0 of a combined anchors HTLC tx, so the proxy only hides it (wave O7 integrator).
+- **Evidence:** X3 wrapped the signer in `CombinedHtlcSigningProxy` because `SignLocalHtlcTransaction` refused a multi-input HTLC tx; since the signer seam (658e086) the real signer signs input 0 of a combined anchors HTLC tx, so the proxy only hides it (wave O7 integrator). Fixed (batch4, `1e37d4fc`): the anchors resolver tests run on the real signer; `CombinedHtlcSigningProxy` is gone.
 - **Fix sketch:** Drop the proxy and run the anchors resolver tests on the real `LocalLightningSigner`.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O7-T3
