@@ -2,7 +2,6 @@
 
   <PropertyGroup>
     <Configurations>Debug;Release;Debug.Native;Debug.Wasm;Release.Native;Release.Wasm</Configurations>
-    <BaseOutputPath>..\NLightning.Infrastructure.Persistence\bin\</BaseOutputPath>
   </PropertyGroup>
 
   <PropertyGroup Condition="$(Configuration.Contains('Debug'))">
