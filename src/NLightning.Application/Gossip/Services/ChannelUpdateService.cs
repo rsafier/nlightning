@@ -183,6 +183,26 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     }
 
     /// <inheritdoc/>
+    public ChannelUpdateMessage? CreateChannelUpdateForScid(ChannelModel channel, ShortChannelId shortChannelId)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (!NamesChannel(channel, shortChannelId)
+         || !TryGetPolicy(channel, out var policy, out _, shortChannelId))
+            return null;
+
+        var unsigned = BuildUnsignedUpdate(channel, policy, disabled: false, NextTimestamp(channel.ChannelId));
+        var signature = _lightningSigner.SignNodeMessage(unsigned.GetSignatureHash());
+        return new ChannelUpdateMessage(unsigned.WithSignature(signature));
+    }
+
+    /// <summary>Whether <paramref name="shortChannelId"/> is one of the names <paramref name="channel"/> goes by: its
+    /// real short channel id, the alias the peer sent us, or one of the aliases we sent it.</summary>
+    private static bool NamesChannel(ChannelModel channel, ShortChannelId shortChannelId) =>
+        (channel.ShortChannelId != default && channel.ShortChannelId == shortChannelId)
+     || channel.RemoteAlias == shortChannelId
+     || (channel.LocalAliases?.Contains(shortChannelId) ?? false);
+
+    /// <inheritdoc/>
     public ChannelUpdateMessage? OnChannelAnnounced(ChannelModel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
@@ -560,13 +580,21 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
 
     /// <summary>
     /// The channel-dependent fields of our update (rules in the class remarks), or why the channel can't have one.
+    /// With <paramref name="shortChannelIdOverride"/> (NL-266), that short channel id stands in for the one the
+    /// channel's standing update carries (the rest of the policy is the channel's own); the caller checked that it is
+    /// one of the channel's names.
     /// </summary>
-    private bool TryGetPolicy(ChannelModel channel, out UpdatePolicy policy, out string reason)
+    private bool TryGetPolicy(ChannelModel channel, out UpdatePolicy policy, out string reason,
+                              ShortChannelId? shortChannelIdOverride = null)
     {
         policy = default;
 
         ShortChannelId shortChannelId;
-        if (IsPublic(channel))
+        if (shortChannelIdOverride is { } overridden)
+        {
+            shortChannelId = overridden;
+        }
+        else if (IsPublic(channel))
         {
             // BOLT 7: the announced channel is named by its real short channel id, alias or not
             shortChannelId = channel.ShortChannelId;

@@ -74,4 +74,18 @@ public interface IChannelUpdateService
     /// The latest <c>channel_update</c> we made for the channel (e.g. for a BOLT 4 UPDATE-class failure).
     /// </summary>
     bool TryGetLocalChannelUpdate(ChannelId channelId, out ChannelUpdateMessage? update);
+
+    /// <summary>
+    /// Builds and signs our current <c>channel_update</c> for <paramref name="channel"/> named by
+    /// <paramref name="shortChannelId"/> — one of the channel's short channel ids (its real one, the peer's alias or
+    /// one of our local aliases), not necessarily the one our standing update carries (NL-266): for a BOLT 4
+    /// UPDATE-class failure whose onion named the channel by another of its ids, the carried update must name that id
+    /// (BOLT 4: the update's <c>short_channel_id</c> MUST be the one the incoming onion used). Not stored as the
+    /// channel's standing update, not sent to the peer and not relayed: it exists only to travel inside the failure.
+    /// </summary>
+    /// <param name="channel">An open channel.</param>
+    /// <param name="shortChannelId">The short channel id the onion used.</param>
+    /// <returns>The signed update, or null when the id does not name the channel or the channel has no valid policy.
+    /// </returns>
+    ChannelUpdateMessage? CreateChannelUpdateForScid(ChannelModel channel, ShortChannelId shortChannelId);
 }
