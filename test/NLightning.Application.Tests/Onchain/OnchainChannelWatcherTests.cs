@@ -452,7 +452,9 @@ public sealed class OnchainChannelWatcherTests : IDisposable
     [Fact]
     public async Task Given_UnknownSpend_When_FundingSpent_Then_UnknownCloseWithoutOutputs()
     {
-        // Arrange (B5-GEN-06): not a commitment and no shutdown script
+        // Arrange (B5-GEN-06): not a commitment and no shutdown script. OnchainResolving and not Failed is the
+        // recorded deviation (NL-308): a Failed channel gets no resolution rounds, and the remote commitment
+        // resolver resolves an Unknown close as data loss (NL-320)
         var transaction = Network.RegTest.CreateTransaction();
         transaction.Inputs.Add(new OutPoint(new uint256(_channel.FundingOutput!.TransactionId!.Value), 0));
         transaction.Outputs.Add(Money.Satoshis(900_000), new Key().PubKey.WitHash.ScriptPubKey);

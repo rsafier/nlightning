@@ -200,7 +200,7 @@ Keys: *ours* = derived from our basepoint secrets (signer); *point* = the per-co
 | Revoked | any HTLC output | `RevokedHtlc(id, direction, cltv, revocation key)` | penalty `<revsig> <revocationpubkey>`; if their HTLC tx spends it first → new descriptor `RevokedSecondLevel` on its output, penalty `<revsig> 1`; extract a preimage from an HTLC-success witness (B5-REV-07) |
 | Revoked | to_remote (ours) | `PaymentToRemote` | sweep (D5), may share the penalty tx (+272 weight) |
 | FutureRemote (data loss) | to_remote | `PaymentToRemote` | sweep; everything else unrecoverable: CRITICAL alert (B5-RMT-03) |
-| Unknown | — | — | CRITICAL alert, channel `Failed`, nothing to sweep (B5-GEN-06) |
+| Unknown | — | — | CRITICAL alert (B5-GEN-06); channel OnchainResolving, not Failed (NL-308: a Failed channel gets no resolution rounds); resolved as data loss (NL-320): every output watched by script, our to_remote swept, our offered HTLCs failed upstream once expired and reasonably deep |
 
 "Committed HTLCs with no output" (B5-LCL-LO-04, B5-RMT-LO-03): computed per case from the persisted HTLC states against the HTLCs present in the on-chain commitment. Preimage known → `RaiseFulfilled` at once; else `RaiseFailed` once the commitment is `Onchain:ReasonableDepth` deep (default 6), or at once if no valid commitment (neither our current, the peer's current nor the peer's next) holds an output for it (trimmed everywhere). The same rule applies to a **revoked** commitment on chain (B5-REV-RES-02, §3.4): our offered HTLCs that are committed but have no output in the revoked commitment are failed upstream once the revoked commitment is `ReasonableDepth` deep, or fulfilled at once if the preimage is known.
 
@@ -263,7 +263,7 @@ Repositories: `IRevokedCommitmentDbRepository` is written by `ChannelStateDbRepo
 - Switch events raised for an HTLC resolution are final: a fulfill is safe (preimage knowledge survives reorgs); a failure upstream is raised only at `ReasonableDepth`, which is the reorg bound we accept (documented risk §8).
 
 ### 3.9 Channel states
-`OnchainResolving = 37` (between `Failed = 35` and `Closed = 40`, strictly increasing per `ChannelModel.UpdateState`): a commitment (ours, theirs or revoked) is confirmed and outputs are being resolved. A failed channel whose commitment we broadcast stays `Failed` until the commitment confirms, then moves to 37. `Closed` only after every output is irrevocably resolved. A mutual close goes `Closing (30) → Closed (40)` after 100 blocks (B5-MUT-01).
+`OnchainResolving = 37` (between `Failed = 35` and `Closed = 40`, strictly increasing per `ChannelModel.UpdateState`): a commitment (ours, theirs or revoked) is confirmed — or the funding spend is unidentifiable (Unknown, §3.3, NL-308) — and outputs are being resolved. A failed channel whose commitment we broadcast stays `Failed` until the commitment confirms, then moves to 37. `Closed` only after every output is irrevocably resolved. A mutual close goes `Closing (30) → Closed (40)` after 100 blocks (B5-MUT-01).
 
 ### 3.10 IPC (append-only `ClientCommand`)
 | Value | Command | Milestone |
