@@ -1,5 +1,7 @@
 namespace NLightning.Application.Tests.Onchain;
 
+using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
@@ -30,6 +32,7 @@ internal sealed class OnchainTestStore
     public Dictionary<(TxId, uint), OutputResolutionModel> Outputs { get; } = [];
     public Dictionary<(TxId, uint), WatchedOutpointModel> Watches { get; } = [];
     public List<BroadcastTransactionModel> Broadcasts { get; } = [];
+    public Dictionary<TxId, WatchedTransactionModel> TransactionWatches { get; } = [];
     public List<ChannelState> PersistedChannelStates { get; } = [];
     public List<ChannelId> DeletedRevocationLogs { get; } = [];
     public Dictionary<(ChannelId, ulong), RevokedCommitmentModel> RevocationLog { get; } = [];
@@ -64,6 +67,7 @@ internal sealed class OnchainTestStore
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.OnchainResolutionDbRepository).Returns(new ResolutionRepository(this));
         unitOfWork.SetupGet(u => u.WatchedOutpointDbRepository).Returns(CreateWatchedOutpoints().Object);
+        unitOfWork.SetupGet(u => u.WatchedTransactionDbRepository).Returns(CreateWatchedTransactions().Object);
         unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(CreateBroadcasts().Object);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(CreateChannels().Object);
         unitOfWork.SetupGet(u => u.RevokedCommitmentDbRepository).Returns(CreateRevocationLog().Object);
@@ -120,6 +124,14 @@ internal sealed class OnchainTestStore
                        _pending.Add($"watch {index} spent");
                    })
                   .Returns(Task.CompletedTask);
+        return repository;
+    }
+
+    private Mock<IWatchedTransactionDbRepository> CreateWatchedTransactions()
+    {
+        var repository = new Mock<IWatchedTransactionDbRepository>();
+        repository.Setup(r => r.GetByTransactionIdAsync(It.IsAny<TxId>()))
+                  .ReturnsAsync((TxId txId) => TransactionWatches.GetValueOrDefault(txId));
         return repository;
     }
 

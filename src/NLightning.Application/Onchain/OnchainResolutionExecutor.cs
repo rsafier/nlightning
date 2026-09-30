@@ -85,6 +85,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     private readonly SpliceReorgMonitor _spliceReorgMonitor;
     private readonly DiscardedSpliceReservations _discardedSpliceReservations;
     private readonly RecordedFundingSpendReplay _recordedFundingSpendReplay;
+    private readonly FundingReconfirmGraceMonitor _fundingReconfirmGrace;
     private readonly ConcurrentDictionary<ChannelId, byte> _noCloseLogged = new();
 
     private readonly Lock _gate = new();
@@ -111,6 +112,8 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                                                                        _options.IrrevocableDepth);
         _recordedFundingSpendReplay =
             new RecordedFundingSpendReplay(channelMemoryRepository, logger, serviceScopeFactory);
+        _fundingReconfirmGrace = new FundingReconfirmGraceMonitor(channelMemoryRepository, logger, serviceScopeFactory,
+                                                                  _options.FundingReconfirmGraceBlocks);
 
         // NL-292: a funding transaction confirmed again after a reorg moves its channel's short channel id
         if (outpointWatcher is IBlockchainMonitor blockchainMonitor)
@@ -218,6 +221,21 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             _logger.LogError(e, "Checking the locked splices at height {Height} failed", height);
         }
 
+        // NL-329: an Open channel whose funding confirmation a reorg rolled back is failed once the reconfirm grace
+        // is over without the funding being seen again
+        try
+        {
+            await _fundingReconfirmGrace.CheckAsync(height, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Checking the funding reconfirm graces at height {Height} failed", height);
+        }
+
         // NL-311: after every channel's time-critical round, one scan for spends of the saved watches of the channels
         // not caught up yet in this process that the chain monitor processed before they were tracked (a crash
         // between a save and the tracking)
@@ -244,6 +262,9 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
 
     /// <summary>The NL-493 startup replay of recorded funding spends (tests, diagnostics).</summary>
     internal RecordedFundingSpendReplay FundingSpendReplay => _recordedFundingSpendReplay;
+
+    /// <summary>The NL-329 funding-reconfirm grace check (tests, diagnostics).</summary>
+    internal FundingReconfirmGraceMonitor FundingReconfirms => _fundingReconfirmGrace;
 
     /// <inheritdoc />
     public Task ResolveChannelAsync(ChannelId channelId, uint height, CancellationToken cancellationToken = default) =>
