@@ -346,6 +346,38 @@ public class PaymentRetryPolicyTests
     }
 
     [Fact]
+    public void Given_AnUnattributedErrorBlamedByAttributionData_When_Decided_Then_TheBlamedHopsChannelIsAvoided()
+    {
+        // Act - NL-333: the attribution_data blames Carol (hop 0, its HMAC did not verify), so her outgoing channel
+        // Carol → David is behind the failure, not our channel to her
+        var (retry, note) = Policy().Decide(Part(), HtlcRemovalKind.Fail,
+                                            new FailureInterpretation { ShouldRetry = true }, _constraints,
+                                            attributionBlame: 0);
+
+        // Assert
+        Assert.True(retry);
+        Assert.Contains(s_scidCd, _constraints.ExcludedChannels);
+        Assert.DoesNotContain(s_toCarol.ChannelId, _constraints.ExcludedLocalChannels);
+        Assert.Contains("blames hop 0", note);
+    }
+
+    [Theory]
+    [InlineData(1)] // the payee has no outgoing channel
+    [InlineData(7)] // beyond the route
+    public void Given_AnUnattributedErrorWithABlameWithoutAChannel_When_Decided_Then_OurChannelIsAvoided(int blame)
+    {
+        // Act
+        var (retry, _) = Policy().Decide(Part(), HtlcRemovalKind.Fail,
+                                         new FailureInterpretation { ShouldRetry = true }, _constraints,
+                                         attributionBlame: blame);
+
+        // Assert: the fallback avoids our own channel as before
+        Assert.True(retry);
+        Assert.Contains(s_toCarol.ChannelId, _constraints.ExcludedLocalChannels);
+        Assert.Empty(_constraints.ExcludedChannels);
+    }
+
+    [Fact]
     public void Given_AnUpdateFailure_When_Decided_Then_TheGossipSyncIsAskedForTheChannelAndTheGraphPolicyIsPerPayment()
     {
         // Arrange
