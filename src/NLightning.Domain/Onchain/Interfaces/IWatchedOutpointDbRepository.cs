@@ -25,6 +25,12 @@ public interface IWatchedOutpointDbRepository
     Task MarkSpentAsync(TxId transactionId, uint outputIndex, TxId spendingTransactionId, uint height,
                         Hash blockHash);
 
+    /// <summary>
+    /// Stages the removal of a watch that can never see a spend: the funding output of a losing RBF attempt of a
+    /// dual-funded open, whose rival spent the shared input irrecoverably (NL-529). False when the outpoint has no row.
+    /// </summary>
+    Task<bool> DeleteByTransactionIdAsync(TxId transactionId, uint outputIndex);
+
     /// <summary>Stages clearing every spend recorded above <paramref name="height"/> (reorg); returns how many.</summary>
     Task<int> ClearSpendsAboveAsync(uint height);
 
