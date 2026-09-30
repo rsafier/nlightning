@@ -21,20 +21,31 @@ public class TlvStreamSerializer : ITlvStreamSerializer
     }
 
     /// <summary>
-    /// Serializes every TLV in <paramref name="tlvStream"/> in ascending type order.
+    /// Serializes every TLV in <paramref name="tlvStream"/> in insertion order.
     /// </summary>
     /// <remarks>
     /// Typed TLVs are converted through the converter registered for their exact runtime type. A raw
     /// <see cref="BaseTlv"/> (runtime type exactly <see cref="BaseTlv"/>) is written as-is.
     /// </remarks>
-    /// <exception cref="SerializationException">Thrown when no converter is registered for a typed TLV.</exception>
+    /// <exception cref="SerializationException">
+    /// Thrown when no converter is registered for a typed TLV, or when the types are not strictly increasing (BOLT 1
+    /// requires ascending types on the wire; <see cref="TlvStream"/> keeps insertion order, so a hand-built stream in
+    /// the wrong order fails here instead of being silently re-sorted).
+    /// </exception>
     public async Task SerializeAsync(TlvStream? tlvStream, Stream stream)
     {
         if (tlvStream is null)
             return;
 
+        BigSize? previousType = null;
         foreach (var tlv in tlvStream.GetTlvs())
         {
+            // BOLT 1: types MUST be strictly increasing on the wire (this also rejects duplicates).
+            if (previousType is { } previous && tlv.Type.Value <= previous.Value)
+                throw new SerializationException(
+                    $"TLV type {tlv.Type.Value} is not greater than the previous type {previous.Value}.");
+
+            previousType = tlv.Type;
             var baseTlv = ConvertToBase(tlv);
             await _tlvSerializer.SerializeAsync(baseTlv, stream);
         }

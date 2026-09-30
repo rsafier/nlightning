@@ -53,4 +53,35 @@ public class TlvStreamTests
         Assert.Equal(tlv1, retrievedTlv1);
         Assert.Equal(tlv2, retrievedTlv2);
     }
+
+    [Fact]
+    public void Given_TlvsAddedOutOfTypeOrder_When_Enumerated_Then_InsertionOrderIsPreserved()
+    {
+        // Given
+        var tlvStream = new TlvStream();
+        var tlv2 = new BaseTlv(new BigSize(2), [0x02]);
+        var tlv1 = new BaseTlv(new BigSize(1), [0x01]);
+
+        // When
+        tlvStream.Add(tlv2);
+        tlvStream.Add(tlv1);
+
+        // Then: the stream keeps insertion order instead of silently re-sorting (NL-013)
+        Assert.Equal([tlv2, tlv1], tlvStream.GetTlvs().ToList());
+    }
+
+    [Fact]
+    public void Given_MultipleNullTlvs_When_AddedToStream_Then_NullsAreSkipped()
+    {
+        // Given
+        var tlvStream = new TlvStream();
+        var tlv = new BaseTlv(new BigSize(1), [0x01]);
+
+        // When
+        tlvStream.Add(null, tlv, null);
+
+        // Then
+        Assert.True(tlvStream.Any());
+        Assert.True(tlvStream.TryGetTlv(tlv.Type, out _));
+    }
 }
