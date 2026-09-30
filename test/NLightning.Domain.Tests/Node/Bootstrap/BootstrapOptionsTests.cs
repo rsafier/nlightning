@@ -208,6 +208,7 @@ public class BootstrapOptionsTests
         { o => o.Seeds = ["-bad.example.org"], "Seeds" },
         { o => o.NameServers = ["not-an-ip"], "NameServers" },
         { o => o.NameServers = ["1.1.1.1:99999"], "NameServers" },
+        { o => o.TorNameServer = "soa.nodes.lightning.directory:53:9", "TorNameServer" },
         { o => o.AddressFamilies = 0, "AddressFamilies" }
     };
 
@@ -243,6 +244,45 @@ public class BootstrapOptionsTests
         Assert.True(parsed);
         Assert.Equal(System.Net.IPAddress.Parse(address), endPoint.Address);
         Assert.Equal(port, endPoint.Port);
+    }
+
+    [Theory]
+    [InlineData("soa.nodes.lightning.directory:53", "soa.nodes.lightning.directory", 53)]
+    [InlineData("resolver.example", "resolver.example", 53)]
+    [InlineData("1.1.1.1", "1.1.1.1", 53)]
+    [InlineData("9.9.9.9:5353", "9.9.9.9", 5353)]
+    [InlineData("[2001:db8::1]:53", "2001:db8::1", 53)]
+    public void Given_ATorNameServer_When_Parsed_Then_TheHostAndPortAreRead(string value, string host, int port)
+    {
+        // Act - NL-571: the host name is kept for Tor to resolve, never resolved here
+        var parsed = BootstrapOptions.TryParseTorNameServer(value, out var parsedHost, out var parsedPort);
+
+        // Assert
+        Assert.True(parsed);
+        Assert.Equal(host, parsedHost);
+        Assert.Equal(port, parsedPort);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("host:")]
+    [InlineData("host:0")]
+    [InlineData("host:99999")]
+    [InlineData("host:name")]
+    [InlineData("soa.nodes.lightning.directory:53:9")]
+    public void Given_ABadTorNameServer_When_Parsed_Then_ItIsRefused(string value)
+    {
+        // Act & Assert
+        Assert.False(BootstrapOptions.TryParseTorNameServer(value, out _, out _));
+    }
+
+    [Fact]
+    public void Given_TheDefaults_When_Read_Then_TheTorNameServerIsLndsTorDns()
+    {
+        // Assert - NL-571: a Tor-only node asks the seeds through Tor out of the box
+        Assert.Equal("soa.nodes.lightning.directory:53", BootstrapOptions.DefaultTorNameServer);
+        Assert.Equal(BootstrapOptions.DefaultTorNameServer, new BootstrapOptions().TorNameServer);
+        Assert.DoesNotContain(new BootstrapOptions().GetValidationErrors(), e => e.Contains("TorNameServer"));
     }
 
     [Theory]

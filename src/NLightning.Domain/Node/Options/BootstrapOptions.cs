@@ -54,6 +54,12 @@ public class BootstrapOptions
     public static IReadOnlyList<string> DefaultFallbackNameServers { get; } = ["1.1.1.1", "8.8.8.8"];
 
     /// <summary>
+    /// The default <see cref="TorNameServer"/>: the resolver LND asks over its Tor SOCKS port
+    /// (<c>tor.dns</c>), the zone of one of the mainnet seeds (it recurses for the others).
+    /// </summary>
+    public const string DefaultTorNameServer = "soa.nodes.lightning.directory:53";
+
+    /// <summary>
     /// Bootstrap from DNS seeds; unset means on on mainnet and off on every other network (D-B10-1 as reversed on
     /// 2026-09-28). Read the effective value from <see cref="IsEnabledOn"/>.
     /// </summary>
@@ -127,6 +133,15 @@ public class BootstrapOptions
     /// </summary>
     public bool UsesFallbackResolvers =>
         FallbackToPublicResolvers && NameServers.Count == 0 && FallbackNameServers.Count > 0;
+
+    /// <summary>
+    /// The resolver a Tor-only node asks the seeds through (NL-571): DNS over TCP to <c>host[:port]</c> or
+    /// <c>ip[:port]</c>, carried through Tor's SOCKS port like a peer connection, because Tor's own resolution does
+    /// A/AAAA only while the seeds answer SRV. <see cref="DefaultTorNameServer"/> by default (LND's <c>tor.dns</c>);
+    /// empty means the seeds are not asked at all in Tor-only mode. Only used when Tor is on in
+    /// <see cref="TorMode.TorOnly"/>; everywhere else the seeds go over the normal resolvers.
+    /// </summary>
+    public string TorNameServer { get; set; } = DefaultTorNameServer;
 
     /// <summary>How DNS queries travel; TCP by default (D-B10-3: 25 SRV records do not fit in 512 bytes).</summary>
     public DnsSeedTransport Transport { get; set; } = DnsSeedTransport.Tcp;
@@ -292,6 +307,9 @@ public class BootstrapOptions
             if (!TryParseNameServer(nameServer, out _))
                 errors.Add($"{prefix}{nameof(FallbackNameServers)} '{nameServer}' is not ip[:port].");
 
+        if (!string.IsNullOrWhiteSpace(TorNameServer) && !TryParseTorNameServer(TorNameServer, out _, out _))
+            errors.Add($"{prefix}{nameof(TorNameServer)} '{TorNameServer}' is not host:port or ip[:port].");
+
         return errors;
 
         void CheckPositive(int value, string name)
@@ -324,6 +342,37 @@ public class BootstrapOptions
             parsed.Port = 53;
 
         endPoint = parsed;
+        return true;
+    }
+
+    /// <summary>
+    /// Parses <see cref="TorNameServer"/> as <c>host:port</c>, <c>ip[:port]</c> or <c>[ipv6]:port</c>; port 53 when
+    /// none is given. Unlike a clearnet resolver the host name is never resolved here: it is handed to Tor
+    /// (<see cref="TorMode.TorOnly"/> resolves every name itself).
+    /// </summary>
+    public static bool TryParseTorNameServer(string? value, out string? host, out int port)
+    {
+        host = null;
+        port = 0;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var text = value.Trim();
+        if (IPEndPoint.TryParse(text, out var ipEndPoint))
+        {
+            // ip or [ipv6] alone: IPEndPoint.TryParse leaves the port 0, the default 53 applies
+            host = ipEndPoint.Address.ToString();
+            port = ipEndPoint.Port == 0 ? 53 : ipEndPoint.Port;
+            return true;
+        }
+
+        var separator = text.LastIndexOf(':');
+        if (separator <= 0 || text.IndexOf(':') != separator
+            || !int.TryParse(text[(separator + 1)..], out port) || port is 0 or > 65535
+            || Uri.CheckHostName(text[..separator]) != UriHostNameType.Dns)
+            return false;
+
+        host = text[..separator];
         return true;
     }
 }

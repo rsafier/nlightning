@@ -13,7 +13,7 @@ whole reply, authenticates with COOKIE or a password only, detaches its services
 |---|---|---|---|---|---|
 | `Off` (default) | refused: "set Node:Tor:Mode" | direct | off | as configured | direct |
 | `Hybrid` | through Tor | direct | off (set `OnionServiceEnabled` true to publish one) | as configured | direct |
-| `TorOnly` | through Tor | through Tor (exit), host names resolved by Tor; loopback and private-network IPs direct | on | skipped (logged once) | through Tor |
+| `TorOnly` | through Tor | through Tor (exit), host names resolved by Tor; loopback and private-network IPs direct | on | through Tor (`Bootstrap:TorNameServer`, NL-571) | through Tor |
 
 `Hybrid` is the "clearnet node that can peer with Tor-only nodes" setting. `TorOnly` is the private node.
 
@@ -152,8 +152,12 @@ CookieAuthFileGroupReadable 1
 ## What Tor-only mode does not cover
 
 - bitcoind RPC/ZMQ connections are made as configured (normally local); a remote bitcoind is reached directly.
-- BOLT 10 DNS seeds are skipped (SRV lookups cannot go through Tor's SOCKS port): a new Tor-only node needs its first
-  peer by `connect`, or a graph from a previous run (NL-571).
+- BOLT 10 DNS seeds (NL-571): a seed is asked for SRV records, which Tor's own SOCKS resolution (`RESOLVE`, A/AAAA
+  only) cannot carry. In `TorOnly` the seeds are therefore asked with a plain DNS-over-TCP query to
+  `Node:Bootstrap:TorNameServer` (default `soa.nodes.lightning.directory:53`, LND's `tor.dns`), sent through the SOCKS
+  port like any peer connection — the node's seed interest is visible to that resolver and the exit, never to a
+  clearnet resolver of the host. Set the option empty to go back to skipping the seeds. Outside `TorOnly` nothing
+  changes (the system or configured resolvers, clearnet included in `Hybrid`).
 - Dialing someone else's *authorized* onion service is configured in Tor itself: `ONION_CLIENT_AUTH_ADD` on the control
   port, or a `ClientOnionAuthDir` in `torrc`. Only the service side of client authorization is ours
   (`OnionServiceClientAuthKeys`, NL-573).
@@ -173,6 +177,8 @@ set `OnionServiceEnabled` false, host the onion service in Arti's own configurat
   `ADD_ONION` line (NL-573), `TcpService` routes per mode incl. direct loopback in `TorOnly`, the
   Tor network timeout, the Tor-only HTTP handler, the start-up checks) over the fakes
   `test/NLightning.Tests.Utils/Mocks/{FakeSocks5Proxy,FakeTorControlPort}`,
+  `test/NLightning.Infrastructure.Tests/Protocol/Dns/` (the DNS-over-TCP wire codec, and the seed resolver end to end
+  through the SOCKS5 proxy, NL-571),
   `PeerManagerConnectTests.Given_ATorOnlyNode_When_ItDialsAnOnionPeer_*`: two real peer managers, the BOLT 8 handshake
   and init through the SOCKS5 tunnel, and `PeerManagerTests.Tor.cs` (startup dials of unreachable peers, an inbound
   onion-service peer saved at its announced onion).

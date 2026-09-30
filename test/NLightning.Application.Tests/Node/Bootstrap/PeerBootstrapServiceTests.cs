@@ -29,6 +29,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Protocol.Dns;
 
 public class PeerBootstrapServiceTests
 {
@@ -108,14 +109,15 @@ public class PeerBootstrapServiceTests
         return peer;
     }
 
-    private PeerBootstrapService CreateService()
+    private PeerBootstrapService CreateService(ITorDnsRecordLookup? torDnsLookup = null)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => _unitOfWork.Object);
         var provider = services.BuildServiceProvider();
         return new PeerBootstrapService(_dnsSeedClient.Object, _logger, Options.Create(_nodeOptions),
                                         _peerManager.Object, provider.GetRequiredService<IServiceScopeFactory>(),
-                                        _secureKeyManager.Object, _graphStore, _blockchainMonitor.Object, _clock);
+                                        _secureKeyManager.Object, _graphStore, _blockchainMonitor.Object, _clock,
+                                        torDnsLookup);
     }
 
     private async Task RunToEndAsync(PeerBootstrapService service)
@@ -1105,8 +1107,8 @@ public class PeerBootstrapServiceTests
     [Fact]
     public async Task Given_TorOnlyOnMainnet_When_Bootstrapping_Then_NoSeedIsAskedAndTheOnionIsDialedFirst()
     {
-        // Arrange: seeds are clearnet DNS, so a Tor-only node asks none; a node with an IP and an onion is dialed at
-        // its onion
+        // Arrange: without a Tor resolver the seeds have no way through Tor; a node with an IP and an onion is dialed
+        // at its onion
         const string onion = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion";
         _nodeOptions.Tor.Mode = TorMode.TorOnly;
         _nodeOptions.Bootstrap.MinPeers = 1;
@@ -1126,6 +1128,26 @@ public class PeerBootstrapServiceTests
                                            .Arguments[0];
         Assert.EndsWith($"@{onion}:9735", dialed.Address);
         VerifyNoSeedQuery();
+    }
+
+    [Fact]
+    public async Task Given_TorOnlyWithATorResolver_When_Bootstrapping_Then_TheSeedsAreAsked()
+    {
+        // Arrange - NL-571: the seeds go through Node:Bootstrap:TorNameServer over Tor's SOCKS port
+        _nodeOptions.Tor.Mode = TorMode.TorOnly;
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        SetupSeed(SeedA, Ok(SeedA, Candidate(SeedA)));
+        DialsSucceed();
+        var torLookup = new Mock<ITorDnsRecordLookup>();
+        torLookup.SetupGet(l => l.IsAvailable).Returns(true);
+        var service = CreateService(torLookup.Object);
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        _dnsSeedClient.Verify(c => c.QuerySeedAsync(SeedA, It.IsAny<DnsSeedAddressTypes>(), It.IsAny<int>(),
+                                                    It.IsAny<CancellationToken>()), Times.AtLeastOnce);
     }
 
     [Fact]

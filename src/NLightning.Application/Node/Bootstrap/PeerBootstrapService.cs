@@ -18,6 +18,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Gossip.Graph.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Protocol.Dns;
 
 /// <summary>
 /// BOLT 10 bootstrap (NL-113) and graph top-up (NL-543): a node with fewer than
@@ -75,6 +76,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ISecureKeyManager _secureKeyManager;
     private readonly TimeProvider _timeProvider;
+    private readonly ITorDnsRecordLookup? _torDnsLookup;
 
     // Endpoints whose dial failed, with the failure's time: skipped until FailedEndpointTtl passed (NL-547)
     private readonly Lock _failedEndpointsLock = new();
@@ -107,7 +109,8 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
                                 IOptions<NodeOptions> nodeOptions, IPeerManager peerManager,
                                 IServiceScopeFactory scopeFactory, ISecureKeyManager secureKeyManager,
                                 IGraphStore? graphStore = null, IBlockchainMonitor? blockchainMonitor = null,
-                                TimeProvider? timeProvider = null)
+                                TimeProvider? timeProvider = null,
+                                ITorDnsRecordLookup? torDnsLookup = null)
     {
         _dnsSeedClient = dnsSeedClient;
         _graphStore = graphStore;
@@ -118,6 +121,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         _scopeFactory = scopeFactory;
         _secureKeyManager = secureKeyManager;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _torDnsLookup = torDnsLookup;
     }
 
     private BootstrapOptions Options => _nodeOptions.Bootstrap;
@@ -586,21 +590,23 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     }
 
     /// <summary>
-    /// The seeds to ask: none in Tor-only mode (a BOLT 10 seed is asked for SRV records over clearnet DNS, which Tor
-    /// cannot carry, so asking would reveal the node's address to the resolvers); the graph top-up still runs there,
-    /// onion services first.
+    /// The seeds to ask: none in Tor-only mode without a Tor resolver (a BOLT 10 seed is asked for SRV records, which
+    /// Tor's own resolution cannot carry, and clearnet DNS would reveal the node's address to the resolvers); with
+    /// <c>Node:Bootstrap:TorNameServer</c> (the default) the seeds go through Tor's SOCKS port instead (NL-571). The
+    /// graph top-up runs either way, onion services first.
     /// </summary>
     private IReadOnlyList<string> GetSeeds(out bool ignoredConfigured)
     {
         var seeds = Options.GetEffectiveSeeds(_nodeOptions.BitcoinNetwork, out ignoredConfigured);
-        if (!_nodeOptions.Tor.IsTorOnly || seeds.Count == 0)
+        if (!_nodeOptions.Tor.IsTorOnly || seeds.Count == 0 || _torDnsLookup is { IsAvailable: true })
             return seeds;
 
         if (!_warnedTorOnlySeeds)
         {
             _warnedTorOnlySeeds = true;
-            _logger.LogInformation("BOLT 10 bootstrap: the DNS seeds are not asked in Tor-only mode (clearnet DNS); "
-                                 + "only graph nodes are dialed, so a new node needs one peer by connect");
+            _logger.LogInformation("BOLT 10 bootstrap: the DNS seeds are not asked in Tor-only mode "
+                                 + "(Node:Bootstrap:TorNameServer is empty, so the SRV queries have no way through "
+                                 + "Tor); only graph nodes are dialed, so a new node needs one peer by connect");
         }
 
         return [];
