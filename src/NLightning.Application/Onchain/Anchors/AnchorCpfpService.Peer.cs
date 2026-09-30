@@ -146,7 +146,7 @@ public sealed partial class AnchorCpfpService
                 staged |= await repository.MarkAbandonedAsync(settled.TransactionId);
             // The null arm is typed: a bare null here compiles to (TxId)null — the user conversion from byte[] —
             // which throws when the arm is taken
-            TxId? keepTxId = isPeers ? close.CommitmentTransactionId : (TxId?)null;
+            var keepTxId = isPeers ? close.CommitmentTransactionId : (TxId?)null;
             staged |= await AbandonStaleHandOversAsync(handOvers, repository, keepTxId);
             if (staged)
                 await unitOfWork.SaveChangesAsync();
