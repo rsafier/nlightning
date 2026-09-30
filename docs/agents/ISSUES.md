@@ -110,12 +110,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 142 | 145 |
+| open | 0 | 0 | 3 | 143 | 146 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 62 | 157 | 168 | 401 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **62** | **164** | **316** | **556** |
+| **Total** | **14** | **62** | **164** | **317** | **557** |
 
 ### Epics
 
@@ -5721,6 +5721,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Failed once in lane nl562's full Application run on net10.0 Debug (2026-09-30); the class passed alone (83/83) on the rerun. The lane's change (open policy and commitment feerate floor) does not touch the peer manager.
 - **Fix sketch:** Capture the failure on the next occurrence; check for a wall-clock wait in the test.
 - **Blocks/Blocked-by:** Related NL-482
+- **Plan ref:** —
+
+### NL-566 keysend's "No route" error drops the graph reason that getroute gives
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/` (the route planner's no-route message on the keysend path)
+- **Evidence:** Live on Mutinynet, 2026-09-30 (keysend sweep of 80 graph nodes): `keysend <node> 1` to an unreachable node prints "No route to the payee: direct: no usable channel to <node>; " with nothing after the separator, while `getroute <node> 1000` for the same node says "…; the graph has no path for the whole amount within the limits." All 49 such targets were really unreachable (none has an enabled policy toward it), so only the message is wrong.
+- **Fix sketch:** Carry the graph step's reason into the keysend path's no-route message as `payinvoice`/`getroute` do.
+- **Blocks/Blocked-by:** Related NL-459
 - **Plan ref:** —
 
 ### NL-553 No pinned official multi-arch Eclair image; the interop fixture builds its own
