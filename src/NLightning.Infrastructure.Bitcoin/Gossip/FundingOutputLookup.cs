@@ -24,8 +24,10 @@ using Wallet.Interfaces;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Bounded by <see cref="FundingOutputLookupOptions.ChainLookupConcurrency"/> lookups at once and
-/// <see cref="FundingOutputLookupOptions.ChainLookupsPerSecond"/> started per second. A cached txid list is used only
+/// Bounded by <see cref="FundingOutputLookupOptions.ChainLookupConcurrency"/> lookups at once,
+/// <see cref="FundingOutputLookupOptions.ChainLookupsPerSecond"/> started per second and
+/// <see cref="FundingOutputLookupOptions.ChainRpcsPerSecond"/> bitcoind RPCs per second (one lookup costs 3-5 RPCs,
+/// NL-346). A cached txid list is used only
 /// while <c>getblockhash</c> still names the same block, and every cached height at or above a disconnected block is
 /// dropped on <see cref="IOutpointWatcher.OnBlockDisconnected"/>, so a reorg never serves a stale list.
 /// </para>
@@ -63,6 +65,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
     private readonly IOutpointWatcher? _outpointWatcher;
     private readonly SemaphoreSlim _concurrency;
     private readonly TokenBucketRateLimiter _rateLimiter;
+    private readonly TokenBucketRateLimiter _rpcLimiter;
     private readonly int _cacheCapacity;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _mempoolSpentRecheckInterval;
@@ -96,6 +99,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
         _concurrency = new SemaphoreSlim(settings.ChainLookupConcurrency, settings.ChainLookupConcurrency);
         _timeProvider = timeProvider ?? TimeProvider.System;
         _rateLimiter = new TokenBucketRateLimiter(settings.ChainLookupsPerSecond, _timeProvider);
+        _rpcLimiter = new TokenBucketRateLimiter(settings.ChainRpcsPerSecond, _timeProvider);
         _cacheCapacity = settings.ChainLookupCacheHeights;
         _mempoolSpentRecheckInterval = settings.MempoolSpentRecheckInterval;
         _txIdSource = txIdSource;
@@ -271,6 +275,16 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
     }
 
     /// <summary>
+    /// Runs one bitcoind RPC through the per-RPC budget (NL-346): the per-lookup rate bounds how many lookups start,
+    /// this one how many RPCs they cost together (3-5 each).
+    /// </summary>
+    private async Task<T> RpcAsync<T>(Func<Task<T>> call, CancellationToken cancellationToken)
+    {
+        await _rpcLimiter.WaitAsync(cancellationToken);
+        return await call();
+    }
+
+    /// <summary>
     /// NL-414: the kept "only spent in the mempool" answer while no block came since it was read (see the remarks of
     /// this class); null when there is none or it no longer holds (then it is forgotten).
     /// </summary>
@@ -282,7 +296,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
         if (_blockMonitor is null)
         {
             // No block events: one getblockcount tells whether a block came
-            var tip = await _chain.GetCurrentBlockHeightAsync();
+            var tip = await RpcAsync(() => _chain.GetCurrentBlockHeightAsync(), CancellationToken.None);
             ObserveTip(tip);
             if (tip != answer.Tip)
             {
@@ -352,7 +366,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
         ShortChannelId shortChannelId, CancellationToken cancellationToken)
     {
         var height = shortChannelId.BlockHeight;
-        var tip = await _chain.GetCurrentBlockHeightAsync();
+        var tip = await RpcAsync(() => _chain.GetCurrentBlockHeightAsync(), cancellationToken);
         ObserveTip(tip);
         if (height > tip)
             return (FundingOutputLookupResult.Failed(FundingOutputStatus.BlockNotFound), tip);
@@ -368,11 +382,11 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
 
         var txId = position.TxId!;
         var outPoint = new OutPoint(txId, shortChannelId.OutputIndex);
-        var unspent = await _chain.GetUnspentOutputAsync(outPoint);
+        var unspent = await RpcAsync(() => _chain.GetUnspentOutputAsync(outPoint), cancellationToken);
         if (unspent is not { } found)
         {
             // Spent in a block, missing, or only spent by a mempool transaction (a close not mined yet: transient)
-            var confirmed = await _chain.GetConfirmedUnspentOutputAsync(outPoint);
+            var confirmed = await RpcAsync(() => _chain.GetConfirmedUnspentOutputAsync(outPoint), cancellationToken);
             return (FundingOutputLookupResult.Failed(confirmed is { } c && c.Height == height
                                                         ? FundingOutputStatus.OutputSpentInMempool
                                                         : FundingOutputStatus.OutputSpentOrMissing), tip);
@@ -388,7 +402,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
 
         // A reorg between reading the txid list and gettxout can mine the same tx at the same height at another index:
         // the list must still be the active chain's block at that height
-        var blockHashNow = await _chain.GetBlockHashAsync(height);
+        var blockHashNow = await RpcAsync(() => _chain.GetBlockHashAsync(height), cancellationToken);
         if (blockHashNow != position.BlockHash)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
@@ -411,7 +425,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
             return await _txIdSource.GetTxIdAsync(shortChannelId.BlockHeight, shortChannelId.TransactionIndex,
                                                   cancellationToken);
 
-        var block = await GetTxIdsAsync(shortChannelId.BlockHeight);
+        var block = await GetTxIdsAsync(shortChannelId.BlockHeight, cancellationToken);
         if (block is not { } list)
         {
             LogPrunedHintOnce(shortChannelId.BlockHeight);
@@ -435,7 +449,8 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
           + "headers, or Gossip:FundingValidation=SkipUnavailable to keep such channels unverified", height);
     }
 
-    private async Task<(uint256 BlockHash, IReadOnlyList<uint256> TxIds)?> GetTxIdsAsync(uint height)
+    private async Task<(uint256 BlockHash, IReadOnlyList<uint256> TxIds)?> GetTxIdsAsync(
+        uint height, CancellationToken cancellationToken)
     {
         bool cached;
         lock (_cacheGate)
@@ -445,7 +460,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
         // getblockhash, since GetBlockTxIdsAsync reads the hash it lists (one RPC less per miss, NL-411)
         if (cached)
         {
-            var blockHash = await _chain.GetBlockHashAsync(height);
+            var blockHash = await RpcAsync(() => _chain.GetBlockHashAsync(height), cancellationToken);
             lock (_cacheGate)
             {
                 if (_cache.TryGetValue(height, out var node))
@@ -464,7 +479,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IGossipPendingCh
             }
         }
 
-        var block = await _chain.GetBlockTxIdsAsync(height);
+        var block = await RpcAsync(() => _chain.GetBlockTxIdsAsync(height), cancellationToken);
         if (block is not { } fetched)
             return null;
 

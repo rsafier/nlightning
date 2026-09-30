@@ -517,6 +517,38 @@ public class FundingOutputLookupTests
     }
 
     [Fact]
+    public async Task Given_APerRpcBudgetOfOneLookup_When_ASecondLookupStarts_Then_ItsFirstRpcWaitsForTheClock()
+    {
+        // Arrange (NL-346): a lookup costs 4 RPCs (tip, txid list, gettxout, the recheck), so a budget of 4 admits
+        // exactly one; the per-lookup rate stays high so only the RPC budget can hold the second lookup back
+        var clock = new ManualTimeProvider();
+        using var lookup = CreateLookup(new FundingOutputLookupOptions { ChainRpcsPerSecond = 4 }, clock);
+        var ct = TestContext.Current.CancellationToken;
+        var first = await lookup.LookupAsync(FundingScid, ct);
+        Assert.True(first.IsFound);
+        Assert.Equal(1, _chain.TipCalls);
+
+        // Act
+        var second = lookup.LookupAsync(FundingScid, ct);
+
+        // Assert: the second lookup waits before its first RPC (the getblockcount), one token (250 ms) per RPC
+        var waitedBeforeAdvance = !second.IsCompleted && clock.PendingTimers == 1 && _chain.TipCalls == 1;
+        clock.Advance(TimeSpan.FromMilliseconds(249));
+        var waitedAt249Ms = !second.IsCompleted && _chain.TipCalls == 1;
+        clock.Advance(TimeSpan.FromMilliseconds(1));
+        var tippedAfterOneToken = _chain.TipCalls == 2;
+        clock.Advance(TimeSpan.FromMilliseconds(750));
+        var result = await second.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        // Assert
+        Assert.True(waitedBeforeAdvance);
+        Assert.True(waitedAt249Ms);
+        Assert.True(tippedAfterOneToken);
+        Assert.True(result.IsFound);
+        Assert.Equal(2, _chain.TipCalls);
+    }
+
+    [Fact]
     public async Task Given_RateOfOnePerSecond_When_TwoLookups_Then_SecondWaitsForTheClock()
     {
         // Arrange
