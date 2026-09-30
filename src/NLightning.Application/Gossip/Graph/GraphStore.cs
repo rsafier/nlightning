@@ -37,6 +37,11 @@ using StoredVerification = Domain.Gossip.Persistence.GraphChannelVerification;
 /// batches of <see cref="LoadBatchSize"/> under the writer lock. <see cref="GetMemoryEstimate"/> is kept up to date on
 /// every change.
 /// </para>
+/// <para>
+/// NL-372: a ban past its end is forgotten (its memory and its row) at the next flush. The load reads only the bans
+/// that still last, and marks the expired rows of the table for the first flush after it, so bans never outlive
+/// their end anywhere.
+/// </para>
 /// </remarks>
 public sealed class GraphStore : IGraphStore
 {
@@ -61,6 +66,7 @@ public sealed class GraphStore : IGraphStore
     private readonly HashSet<CompactPubKey> _dirtyNodes = [];
     private readonly HashSet<CompactPubKey> _deletedNodes = [];
     private readonly HashSet<CompactPubKey> _dirtyBans = [];
+    private bool _deleteExpiredBans;
 
     private readonly GossipMetrics? _metrics;
 
@@ -217,6 +223,8 @@ public sealed class GraphStore : IGraphStore
                     foreach (var ban in bans)
                         _bans.TryAdd(ban.NodeId, ban);
 
+                    // NL-372: rows that ended while the node was down are deleted at the first flush
+                    _deleteExpiredBans = true;
                     _version++;
                     _isLoaded = true;
                 }
@@ -241,13 +249,16 @@ public sealed class GraphStore : IGraphStore
         await _flushGate.WaitAsync(cancellationToken);
         try
         {
+            bool deleteExpiredBans;
             FlushWork work;
             lock (_lock)
             {
                 work = TakeWorkLocked();
+                deleteExpiredBans = _deleteExpiredBans;
+                _deleteExpiredBans = false;
             }
 
-            if (work.IsEmpty)
+            if (work.IsEmpty && !deleteExpiredBans)
                 return;
 
             var batches = work.ToBatches(WriteBatchSize);
@@ -255,6 +266,12 @@ public sealed class GraphStore : IGraphStore
             var stopwatch = Stopwatch.StartNew();
             try
             {
+                // NL-372: the expired rows go first, in a unit of work of their own, so a renewed ban's upsert can
+                // never be ordered against their deletion; it is idempotent, and a later failure just schedules it
+                // again
+                if (deleteExpiredBans)
+                    await DeleteExpiredBansAsync();
+
                 for (; written < batches.Count; written++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -274,12 +291,12 @@ public sealed class GraphStore : IGraphStore
                 _logger.LogWarning(e, "Failed to write the graph; {Pending} of {Batches} batches stay pending",
                                    batches.Count - written, batches.Count);
                 lock (_lock)
-                    RestoreWorkLocked(batches.Skip(written));
+                    RestoreWorkLocked(batches.Skip(written), deleteExpiredBans);
             }
             catch
             {
                 lock (_lock)
-                    RestoreWorkLocked(batches.Skip(written));
+                    RestoreWorkLocked(batches.Skip(written), deleteExpiredBans);
                 throw;
             }
         }
@@ -588,6 +605,17 @@ public sealed class GraphStore : IGraphStore
         await unitOfWork.SaveChangesAsync();
     }
 
+    /// <summary>NL-372: deletes every stored ban that ended, in a unit of work of its own.</summary>
+    private async Task DeleteExpiredBansAsync()
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var deleted = await unitOfWork.GraphDbRepository.DeleteExpiredBansAsync(_timeProvider.GetUtcNow());
+        await unitOfWork.SaveChangesAsync();
+        if (deleted > 0)
+            _logger.LogDebug("Deleted {Count} expired gossip bans", deleted);
+    }
+
     private void ApplyLoadedChannels(List<(GraphChannelRecord Record, GraphChannel Channel)> batch)
     {
         if (batch.Count == 0)
@@ -706,6 +734,25 @@ public sealed class GraphStore : IGraphStore
 
     private FlushWork TakeWorkLocked()
     {
+        // NL-372: a ban past its end is forgotten here, and its row deleted by this flush
+        var now = _timeProvider.GetUtcNow();
+        List<CompactPubKey>? expired = null;
+        foreach (var (nodeId, ban) in _bans)
+        {
+            if (ban.Until > now)
+                continue;
+
+            (expired ??= []).Add(nodeId);
+        }
+
+        if (expired is not null)
+        {
+            foreach (var nodeId in expired)
+                _bans.Remove(nodeId);
+
+            _deleteExpiredBans = true;
+        }
+
         var channels = new List<GraphChannelRecord>(_dirtyChannels.Count);
         foreach (var shortChannelId in _dirtyChannels)
         {
@@ -740,9 +787,12 @@ public sealed class GraphStore : IGraphStore
         return work;
     }
 
-    private void RestoreWorkLocked(IEnumerable<FlushWork> batches)
+    private void RestoreWorkLocked(IEnumerable<FlushWork> batches, bool deleteExpiredBans = false)
     {
         // Keys only: the next flush writes whatever the values are by then
+        if (deleteExpiredBans)
+            _deleteExpiredBans = true;
+
         foreach (var work in batches)
         {
             foreach (var shortChannelId in work.DeletedChannels.Where(s => !_channels.ContainsKey(s)))
