@@ -1465,6 +1465,17 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         && CanSendOnionMessage(session)
         && session.Outbox.TryEnqueueOnionMessage(message);
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// The peer's current connection only: a channel <c>error</c> keeps the connection up (BOLT 1), so it is queued on
+    /// the outbox like any channel message and follows everything queued for the peer before it (NL-273).
+    /// </remarks>
+    public bool TryEnqueueChannelError(CompactPubKey peerNodeId, ErrorMessage error) =>
+        error is not null
+        && _peers.TryGetValue(peerNodeId, out var session)
+        && !session.IsDisconnected
+        && session.Outbox.TryEnqueueError(error);
+
     private static bool CanSendOnionMessage(PeerSession session) =>
         !session.IsDisconnected && session.PeerService.Features.OptionOnionMessages != FeatureSupport.No;
 

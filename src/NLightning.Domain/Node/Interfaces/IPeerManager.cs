@@ -2,6 +2,7 @@ namespace NLightning.Domain.Node.Interfaces;
 
 using Crypto.ValueObjects;
 using Models;
+using Protocol.Messages;
 using ValueObjects;
 
 /// <summary>
@@ -50,4 +51,11 @@ public interface IPeerManager
 
     List<PeerModel> ListPeers();
     PeerModel? GetPeer(CompactPubKey peerId);
+
+    /// <summary>
+    /// Queues a channel <c>error</c> on the peer's outbox (NL-273): the connection stays up (BOLT 1 MAY) and the
+    /// error follows everything queued for the peer before it.
+    /// </summary>
+    /// <returns>False when the peer is not connected or its connection is going away.</returns>
+    bool TryEnqueueChannelError(CompactPubKey peerId, ErrorMessage error);
 }

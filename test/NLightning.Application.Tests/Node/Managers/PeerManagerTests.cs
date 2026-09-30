@@ -11,6 +11,7 @@ using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Node.Managers;
 
+using Application.Channels.Safety;
 using Application.Channels.Services;
 using Application.Gossip;
 using Application.Gossip.Events;
@@ -708,6 +709,68 @@ public class PeerManagerTests
         Assert.Equal(new[] { "reply", "disconnect" }, events);
         _mockChannelManager.Verify(cm => cm.HandleChannelMessageAsync(afterError, It.IsAny<FeatureOptions>(),
                                                                       It.IsAny<CompactPubKey>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_QueuedReplyStillSending_When_AChannelErrorIsSentThroughTheErrorSender_Then_TheErrorFollowsTheReply()
+    {
+        // Arrange (NL-273: the fail-the-channel `error` goes through the peer's outbox, so it cannot overtake a reply
+        // queued before it)
+        var peerManager = await CreatePeerManagerWithPeerAsync();
+        _fakeServiceProvider.AddService(typeof(IPeerManager), peerManager);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x41, 32).ToArray());
+        var reply = CreateMessages(1)[0];
+        SetupChannelManagerReplies(reply);
+        var order = new List<string>();
+        var replySendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerService.Setup(p => p.SendMessageAsync(It.IsAny<IChannelMessage>()))
+                        .Returns(async () =>
+                         {
+                             replySendStarted.TrySetResult();
+                             await Task.Delay(150);
+                             lock (order)
+                                 order.Add("reply");
+                         });
+        var errorSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerService.Setup(p => p.SendErrorAsync(It.IsAny<ErrorMessage>()))
+                        .Callback(() =>
+                         {
+                             lock (order)
+                                 order.Add("error");
+                             errorSent.TrySetResult();
+                         })
+                        .Returns(Task.CompletedTask);
+        var errorSender = new PeerChannelErrorSender(new Mock<ILogger<PeerChannelErrorSender>>().Object,
+                                                     _fakeServiceProvider);
+
+        // Act
+        RaiseChannelMessage(CreateInboundMessage(channelId));
+        await replySendStarted.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        var queued = await errorSender.TrySendAsync(_compactPubKey,
+                                                    new ErrorMessage(new ErrorPayload(channelId, "channel failed")));
+
+        // Assert (the reply's send is still in flight when the error is enqueued: the error must wait behind it)
+        Assert.True(queued);
+        await errorSent.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        Assert.Equal(new[] { "reply", "error" }, order);
+    }
+
+    [Fact]
+    public async Task Given_PeerNotConnected_When_AChannelErrorIsSentThroughTheErrorSender_Then_ItReturnsFalse()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        _fakeServiceProvider.AddService(typeof(IPeerManager), peerManager);
+        var errorSender = new PeerChannelErrorSender(new Mock<ILogger<PeerChannelErrorSender>>().Object,
+                                                     _fakeServiceProvider);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x41, 32).ToArray());
+
+        // Act
+        var queued = await errorSender.TrySendAsync(_compactPubKey,
+                                                    new ErrorMessage(new ErrorPayload(channelId, "channel failed")));
+
+        // Assert
+        Assert.False(queued);
     }
 
     [Fact]
