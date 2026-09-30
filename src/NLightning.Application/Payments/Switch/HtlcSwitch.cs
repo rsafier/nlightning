@@ -1518,10 +1518,14 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         }
 
         if (AddsAttribution(incoming)
-         && await GetIncomingSharedSecretAsync(incomingChannelId, incoming) is { } sharedSecret)
+         && await GetIncomingSharedSecretAsync(incomingChannelId, incoming) is { } sharedSecret
+         && (!fulfilled.AttributionData.IsEmpty || !fulfilled.FulfillmentPayload.IsEmpty))
         {
-            // The attribution seam (NL-326): wrap the downstream attribution_data and fulfillment_payload (all zero /
-            // none when none came, e.g. after a disconnect reverted the fulfill) with our hold time
+            // The attribution seam (NL-326): wrap the downstream attribution_data and fulfillment_payload with our
+            // hold time. Nothing came to wrap when both are empty - a downstream that added no attribution, or a
+            // fulfill a disconnect reverted, whose replay keeps only the preimage (NL-334): wrapping an all-zero
+            // block would make the origin see an invalid HMAC at the downstream hop, so the fulfill goes upstream
+            // without attribution_data at all (which the origin reads as "no attribution", not as a garbled block)
             var holdTime = await _channelOperations.GetHoldTimeAsync(incomingChannelId, incomingHtlcId,
                                                                      cancellationToken);
             var attribution = _attributionDataService!.WrapFulfillment(sharedSecret, fulfilled.AttributionData.Span,

@@ -420,6 +420,32 @@ public class HtlcSwitchTests
     }
 
     [Fact]
+    public async Task Given_AttributionAdvertised_When_ARevertedFulfillIsReplayedWithoutItsBlock_Then_UpstreamGetsNoAttribution()
+    {
+        // Arrange - NL-334: a disconnect reverted the downstream fulfill, so its replay keeps only the preimage and
+        // carries no attribution_data or fulfillment_payload: wrapping an all-zero block would make the origin see an
+        // invalid HMAC at the downstream hop, so the fulfill goes upstream without attribution_data
+        var preimage = SecretOf(9);
+        var incoming = _context.LockIn(HtlcDirection.Incoming, 30_000_000, preimage);
+        SetOrigin(4, HtlcOrigin.Forwarded(TestChannelId, incoming.Id));
+        _circuits.Setup(r => r.GetByIncomingAsync(TestChannelId, incoming.Id))
+                 .ReturnsAsync(Circuit(ForwardCircuitStatus.Offered, incoming.Id));
+        _operations.Setup(o => o.FulfillHtlcAsync(TestChannelId, incoming.Id, preimage, It.IsAny<CancellationToken>()))
+                   .Callback(() => _calls.Add("fulfill"))
+                   .Returns(Task.CompletedTask);
+        var attribution = new RecordingAttributionService();
+
+        // Act
+        await CreateSwitch(attribution, advertiseAttribution: true)
+           .HandleAsync(new OutgoingHtlcFulfilled(s_otherChannelId, 4, incoming.PaymentHash, preimage),
+                        TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(["fulfill", "circuit Fulfilled"], _calls);
+        Assert.Empty(attribution.Calls);
+    }
+
+    [Fact]
     public async Task Given_FulfilledHtlcWithoutStoredOrigin_When_Handled_Then_ThePaymentHandlersAreCalled()
     {
         // Arrange - NL-265: an HTLC offered before NL-250 carries no origin; it is our own payment (W2-C "Local or no
