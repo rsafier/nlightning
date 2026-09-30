@@ -153,6 +153,48 @@ public class ChannelMemoryRepositoryTests
         Assert.False(repository.TryGetTemporaryChannel(s_peerA, temporary.ChannelId, out _));
     }
 
+    [Fact]
+    public void Given_AChannelTurningOpen_When_Updated_Then_OnChannelOpenedIsRaisedOnce()
+    {
+        // Arrange - NL-054: the application notification that both channel_ready messages were exchanged
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddChannel(channel);
+        var opened = 0;
+        repository.OnChannelOpened += (_, args) =>
+        {
+            Assert.Equal(channel.ChannelId, args.Channel.ChannelId);
+            Assert.Equal(ChannelState.Open, args.Channel.State);
+            opened++;
+        };
+
+        // Act
+        channel.UpdateState(ChannelState.Open);
+        repository.UpdateChannel(channel);
+        repository.UpdateChannel(channel); // staying Open is not another open
+
+        // Assert
+        Assert.Equal(1, opened);
+    }
+
+    [Fact]
+    public void Given_AnAlreadyOpenChannel_When_AddedAndUpdated_Then_OnChannelOpenedIsNotRaised()
+    {
+        // Arrange - a channel loaded at startup is already usable; nothing became ready
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        channel.UpdateState(ChannelState.Open);
+        var raised = false;
+        repository.OnChannelOpened += (_, _) => raised = true;
+
+        // Act
+        repository.AddChannel(channel);
+        repository.UpdateChannel(channel);
+
+        // Assert
+        Assert.False(raised);
+    }
+
     private static ChannelModel CreateTemporaryChannel(CompactPubKey peer, byte seed)
     {
         var channelId = new ChannelId(Enumerable.Repeat(seed, 32).ToArray());
