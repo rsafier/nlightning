@@ -9,8 +9,9 @@ using NLightning.Tests.Utils.Mocks;
 namespace NLightning.Infrastructure.Bitcoin.Tests.Gossip;
 
 /// <summary>
-/// An Esplora HTTP API over a <see cref="FakeBitcoinChain"/>: <c>GET block/{hash}/txid/{index}</c> and
-/// <c>GET tx/{txid}/merkle-proof</c>, with hooks to answer something else (429, 5xx, a lie).
+/// An Esplora HTTP API over a <see cref="FakeBitcoinChain"/>: <c>GET block/{hash}/txid/{index}</c>,
+/// <c>GET tx/{txid}/merkle-proof</c> and <c>GET block-height/{height}</c>, with hooks to answer something else
+/// (429, 5xx, a lie).
 /// </summary>
 [ExcludeFromCodeCoverage]
 internal sealed class FakeEsploraHandler(FakeBitcoinChain chain) : HttpMessageHandler
@@ -38,6 +39,9 @@ internal sealed class FakeEsploraHandler(FakeBitcoinChain chain) : HttpMessageHa
     public Func<uint256, (IReadOnlyList<uint256> Branch, int Position)?, (IReadOnlyList<uint256> Branch, int Position)?>?
         ProofOverride
     { get; set; }
+
+    /// <summary>When set, the block hash answered for a height (an index on another chain, NL-424).</summary>
+    public Func<uint, uint256>? BlockHeightOverride { get; set; }
 
     /// <summary>Set when a request arrives.</summary>
     public TaskCompletionSource RequestSeen { get; private set; } = NewSignal();
@@ -91,6 +95,15 @@ internal sealed class FakeEsploraHandler(FakeBitcoinChain chain) : HttpMessageHa
             return Task.FromResult(scripted());
 
         var parts = path.Split('/');
+        if (parts is ["block-height", var heightText] && uint.TryParse(heightText, out var blockHeight))
+        {
+            if (BlockHeightOverride is { } overridden)
+                return Task.FromResult(Text(overridden(blockHeight).ToString()));
+            return Task.FromResult(blockHeight <= chain.TipHeight
+                                       ? Text(chain[blockHeight].GetHash().ToString())
+                                       : new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+
         if (parts is ["block", var hash, "txid", var indexText]
          && uint256.TryParse(hash, out var blockHash) && uint.TryParse(indexText, out var index))
         {

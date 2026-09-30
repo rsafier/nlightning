@@ -36,6 +36,12 @@ using Wallet.Interfaces;
 /// never held against the peer that sent the announcement. Proven answers are cached by (block hash, index), so a
 /// reorg never serves one for another block.
 /// </para>
+/// <para>
+/// A wrong-network index would otherwise show up only as a graph that never fills (NL-424): the first failed lookup
+/// therefore reads which chain the index serves (<c>GET block-height/0</c> against our node's genesis hash) — an
+/// error, and a refusal of the source, when it serves another one; a warning when it cannot be checked. Once refused,
+/// lookups fail at once without asking the index.
+/// </para>
 /// </remarks>
 public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
 {
@@ -58,6 +64,8 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
     private DateTimeOffset _pausedUntil = DateTimeOffset.MinValue;
     private int _rateLimitedInARow;
     private long _rateLimitedTotal;
+    private int _chainChecked;
+    private int _refused;
 
     /// <param name="chain">Our own node: block hashes and headers.</param>
     /// <param name="httpClient">The client for the index; its timeout is set from the options when owned.</param>
@@ -106,9 +114,33 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
     /// <summary>Requests answered 429 so far (tests, diagnostics).</summary>
     public long RateLimitedResponses => Interlocked.Read(ref _rateLimitedTotal);
 
+    /// <summary>True once the index was found serving another chain; every lookup fails at once (NL-424).</summary>
+    public bool Refused => Volatile.Read(ref _refused) == 1;
+
     /// <inheritdoc />
     public async Task<FundingTxIdAtPosition> GetTxIdAsync(uint height, uint index,
                                                           CancellationToken cancellationToken = default)
+    {
+        if (Refused)
+            throw new EsploraUnavailableException(
+                $"the Esplora index at {_baseUri} serves another chain; fix Gossip:EsploraUrl");
+
+        try
+        {
+            return await GetTxIdCoreAsync(height, index, cancellationToken);
+        }
+        catch (EsploraUnavailableException)
+        {
+            // The index may simply be on another network (NL-424): surface it once instead of at Debug per lookup.
+            // Awaited (a failed lookup is already the slow path), but never behind a pause a 429 of the real lookups
+            // started, so the check cannot hold this lookup for the index's sake
+            await CheckIndexChainOnceAsync();
+            throw;
+        }
+    }
+
+    private async Task<FundingTxIdAtPosition> GetTxIdCoreAsync(uint height, uint index,
+                                                               CancellationToken cancellationToken)
     {
         var blockHash = await _chain.GetBlockHashAsync(height);
         if (TryGetCached(blockHash, index, out var cachedTxId))
@@ -148,6 +180,52 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
 
         Store(blockHash, index, txId);
         return FundingTxIdAtPosition.Found(blockHash, txId);
+    }
+
+    /// <summary>
+    /// Reads, once, which chain the index serves (NL-424): its block at height 0 must be our node's genesis hash. A
+    /// mismatch is logged at Error and refuses the source (every later lookup fails at once); an index that cannot be
+    /// asked (down, not indexed) only gets a warning, and the lookups stay transient. Runs off the caller's
+    /// cancellation, so a cancelled lookup still leaves the check done.
+    /// </summary>
+    private async Task CheckIndexChainOnceAsync()
+    {
+        if (Interlocked.Exchange(ref _chainChecked, 1) != 0)
+            return;
+
+        try
+        {
+            var answered = await GetStringAsync("block-height/0", CancellationToken.None, skipInitialPause: true);
+            if (answered?.Trim() is not { } body || !uint256.TryParse(body, out var indexGenesis))
+            {
+                if (_logger.IsEnabled(LogLevel.Warning))
+                    _logger.LogWarning("Could not read which chain the Esplora index at {EsploraUrl} serves (no block "
+                                     + "at height 0); its failing lookups stay transient", _baseUri);
+                return;
+            }
+
+            var ourGenesis = await _chain.GetBlockHashAsync(0);
+            if (indexGenesis == ourGenesis)
+            {
+                if (_logger.IsEnabled(LogLevel.Information))
+                    _logger.LogInformation("The Esplora index at {EsploraUrl} serves our chain; its failing lookups "
+                                         + "stay transient", _baseUri);
+                return;
+            }
+
+            Volatile.Write(ref _refused, 1);
+            _logger.LogError(
+                "The Esplora index at {EsploraUrl} serves another chain: its block at height 0 is {IndexGenesis}, "
+              + "ours is {OurGenesis}, so its answers would be wrong and it is refused from now on (every funding "
+              + "lookup reports the index unavailable). Check Gossip:EsploraUrl against our network",
+                _baseUri, indexGenesis, ourGenesis);
+        }
+        catch (Exception e)
+        {
+            if (_logger.IsEnabled(LogLevel.Warning))
+                _logger.LogWarning(e, "Could not check which chain the Esplora index at {EsploraUrl} serves; its "
+                                 + "failing lookups stay transient", _baseUri);
+        }
     }
 
     public void Dispose()
@@ -229,14 +307,19 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
 
     /// <summary>
     /// GET <paramref name="path"/> under the base URL: the body of a 2xx, null for a 404, a retry after the pause for a
-    /// 429, and <see cref="EsploraUnavailableException"/> for anything else.
+    /// 429, and <see cref="EsploraUnavailableException"/> for anything else. With
+    /// <paramref name="skipInitialPause"/> (the chain check, NL-424), a pause the real lookups' 429s started is not
+    /// waited out before the first attempt — the check never holds a lookup for the index's sake; a 429 of its own
+    /// still starts (and waits out) the usual pause.
     /// </summary>
-    private async Task<string?> GetStringAsync(string path, CancellationToken cancellationToken)
+    private async Task<string?> GetStringAsync(string path, CancellationToken cancellationToken,
+                                               bool skipInitialPause = false)
     {
         var uri = new Uri(_baseUri, path);
         for (var attempt = 0; ; attempt++)
         {
-            await WaitForPauseAsync(uri, cancellationToken);
+            if (attempt > 0 || !skipInitialPause)
+                await WaitForPauseAsync(uri, cancellationToken);
             await _rateLimiter.WaitAsync(cancellationToken);
 
             HttpResponseMessage response;
