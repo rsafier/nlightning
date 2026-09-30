@@ -1,4 +1,5 @@
 using System.Text.Json;
+using NBitcoin;
 
 namespace NLightning.Bolt11.Tests.Models;
 
@@ -14,6 +15,8 @@ public class InvoiceSpecVectorTests
     private const string VectorFile = "Vectors/invoice-test.json";
     private const string TwoDistinctPFields = "Two distinct p fields in an otherwise valid invoice";
     private const string SamePFieldTwice = "The same p field twice in an otherwise valid invoice";
+    private const string P2trFallbackDescription =
+        "On mainnet, with fallback (P2TR) address bc1pptdvg0d2nj99568qn6ssdy4cygnwuxgw2ukmnwgwz7jpqjz2kszse2s3lm";
 
     private static readonly Lazy<IReadOnlyList<SpecVector>> s_vectors = new(LoadVectors);
 
@@ -91,6 +94,22 @@ public class InvoiceSpecVectorTests
         // Assert
         Assert.IsType<ArgumentException>(exception.InnerException);
         Assert.Contains("more than one payment hash", exception.InnerException.Message);
+    }
+
+    [Fact]
+    public void Given_TheP2trFallbackVector_When_Decoded_Then_TheFallbackAddressIsTheTaprootAddress()
+    {
+        // Arrange
+        // witness version 1 is P2TR, so the `f` field must surface the bech32m address (NL-118)
+        var vector = GetVector(P2trFallbackDescription);
+
+        // Act
+        var invoice = Invoice.Decode(vector.Invoice);
+
+        // Assert
+        var fallback = Assert.Single(invoice.FallbackAddresses!);
+        Assert.IsType<TaprootAddress>(fallback);
+        Assert.Equal("bc1pptdvg0d2nj99568qn6ssdy4cygnwuxgw2ukmnwgwz7jpqjz2kszse2s3lm", fallback.ToString());
     }
 
     private static SpecVector GetVector(string description) =>
