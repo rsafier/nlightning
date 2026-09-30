@@ -44,9 +44,11 @@ internal static class InteractiveTxTestData
                                                             CompactPubKey? localNodeId = null,
                                                             CompactPubKey? remoteNodeId = null,
                                                             uint feeratePerKw = 253,
+                                                            ulong dustLimitSatoshis = 0,
                                                             IReadOnlyList<ConstructedInteractiveTx>? previousAttempts =
                                                                 null) =>
-        new(TestChannelId, isInitiator, feeratePerKw, 120, contribution ?? InteractiveTxContribution.Empty, shared,
+        new(TestChannelId, isInitiator, feeratePerKw, 120, dustLimitSatoshis,
+            contribution ?? InteractiveTxContribution.Empty, shared,
             false, false, localNodeId ?? LowNodeId, remoteNodeId ?? HighNodeId, previousAttempts ?? []);
 
     public static ContributedInput Input(int seed, long sats = 100_000, uint sequence = Sequence) =>

@@ -563,7 +563,8 @@ public sealed class InteractiveTxSession
         var violation = InteractiveTxRules.CheckReceivedAddOutputCount(ReceivedAddOutputCount)
                         ?? InteractiveTxRules.CheckAddedSerialId(payload.SerialId, isSenderInitiator,
                                                                  Outputs.Any(o => o.SerialId == payload.SerialId))
-                        ?? InteractiveTxRules.CheckOutput(payload.Amount, payload.Script);
+                        ?? InteractiveTxRules.CheckOutput(payload.Amount, payload.Script,
+                                                          Parameters.DustLimitSatoshis);
         if (violation is not null)
             return Fail(violation);
 

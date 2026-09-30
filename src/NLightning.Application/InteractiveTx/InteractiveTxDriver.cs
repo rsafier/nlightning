@@ -949,7 +949,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
     {
         var sharedFunding = await entry.Host!.GetSharedFundingAsync(terms, cancellationToken);
         return new InteractiveTxSessionParameters(terms.ChannelId, terms.IsInitiator, terms.FeeratePerKw,
-                                                  terms.Locktime, contribution, sharedFunding,
+                                                  terms.Locktime, terms.DustLimitSatoshis, contribution, sharedFunding,
                                                   terms.LocalRequiresConfirmedInputs,
                                                   terms.RemoteRequiresConfirmedInputs, terms.LocalNodeId,
                                                   terms.RemoteNodeId,

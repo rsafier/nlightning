@@ -13,6 +13,10 @@ using Crypto.ValueObjects;
 /// the common fields (IT-S-01..03).</param>
 /// <param name="FeeratePerKw">The agreed feerate (sat/kw) each side's contribution must pay (IT-R-04).</param>
 /// <param name="Locktime">The agreed <c>nLockTime</c>.</param>
+/// <param name="DustLimitSatoshis">The channel's negotiated dust limit (sat), the larger of both sides'
+/// <c>dust_limit_satoshis</c>: a received <c>tx_add_output</c> below it fails the negotiation (IT-R-02, NL-473). 0
+/// when none is known (only Bitcoin Core's standardness floor applies, see
+/// <see cref="InteractiveTxRules.CheckOutput"/>).</param>
 /// <param name="LocalContribution">What we add.</param>
 /// <param name="SharedFunding">The shared input/output, or null when there is none.</param>
 /// <param name="LocalRequiresConfirmedInputs">We sent <c>require_confirmed_inputs</c>: every input the peer adds must be
@@ -30,6 +34,7 @@ public sealed record InteractiveTxSessionParameters(
     bool IsInitiator,
     uint FeeratePerKw,
     uint Locktime,
+    ulong DustLimitSatoshis,
     InteractiveTxContribution LocalContribution,
     SharedFundingSpec? SharedFunding,
     bool LocalRequiresConfirmedInputs,

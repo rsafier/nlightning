@@ -401,7 +401,10 @@ internal sealed record ReferenceNegotiation : IInteractiveTxNegotiation
         error = CheckSerialId(payload.SerialId, OutputList.Select(o => o.SerialId));
         if (error is not null)
             return null;
-        if (payload.Amount < s_dustLimit || payload.Amount > s_maxMoney)
+
+        // NL-473: the negotiated dust limit rules, the reference engine's flat 330 sat stays as the floor
+        var dust = LightningMoney.Satoshis(Math.Max(Parameters.DustLimitSatoshis, (ulong)s_dustLimit.Satoshi));
+        if (payload.Amount < dust || payload.Amount > s_maxMoney)
         {
             error = "output amount below dust or above MAX_MONEY";
             return null;

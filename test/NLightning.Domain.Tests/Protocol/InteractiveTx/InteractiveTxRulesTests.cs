@@ -259,33 +259,39 @@ public class InteractiveTxRulesTests
 
     #region IT-R-02 tx_add_output
 
-    public static TheoryData<string, long, string, string?> OutputCases => new()
+    public static TheoryData<string, long, ulong, string, string?> OutputCases => new()
     {
-        // name, sats, script hex, expected requirement (null = ok)
-        { "P2WPKH at dust", 294, "0014" + new string('0', 40), null },
-        { "P2WPKH below dust", 293, "0014" + new string('0', 40), "IT-R-02" },
-        { "P2WSH at dust", 330, "0020" + new string('0', 64), null },
-        { "P2WSH below dust", 329, "0020" + new string('0', 64), "IT-R-02" },
-        { "P2TR at dust", 330, "5120" + new string('0', 64), null },
-        { "P2PKH at dust", 546, "76a914" + new string('0', 40) + "88ac", null },
-        { "P2PKH below dust", 545, "76a914" + new string('0', 40) + "88ac", "IT-R-02" },
-        { "P2SH at dust", 540, "a914" + new string('0', 40) + "87", null },
-        { "OP_RETURN zero", 0, "6a0400000000", null },
-        { "empty script", 10_000, "", "IT-R-02" },
-        { "bare multisig", 10_000, "5121" + new string('0', 66) + "51ae", "IT-R-02" },
-        { "v0 of 25 bytes", 10_000, "0019" + new string('0', 50), "IT-R-02" }
+        // name, sats, negotiated dust limit (sat), script hex, expected requirement (null = ok)
+        { "P2WPKH at dust", 294, 0UL, "0014" + new string('0', 40), null },
+        { "P2WPKH below dust", 293, 0UL, "0014" + new string('0', 40), "IT-R-02" },
+        { "P2WSH at dust", 330, 0UL, "0020" + new string('0', 64), null },
+        { "P2WSH below dust", 329, 0UL, "0020" + new string('0', 64), "IT-R-02" },
+        { "P2TR at dust", 330, 0UL, "5120" + new string('0', 64), null },
+        { "P2PKH at dust", 546, 0UL, "76a914" + new string('0', 40) + "88ac", null },
+        { "P2PKH below dust", 545, 0UL, "76a914" + new string('0', 40) + "88ac", "IT-R-02" },
+        { "P2SH at dust", 540, 0UL, "a914" + new string('0', 40) + "87", null },
+        { "OP_RETURN zero", 0, 0UL, "6a0400000000", null },
+        { "empty script", 10_000, 0UL, "", "IT-R-02" },
+        { "bare multisig", 10_000, 0UL, "5121" + new string('0', 66) + "51ae", "IT-R-02" },
+        { "v0 of 25 bytes", 10_000, 0UL, "0019" + new string('0', 50), "IT-R-02" },
+
+        // NL-473: the negotiated dust limit of the channel rules over Bitcoin Core's per-script threshold
+        { "negotiated limit at 1000", 1_000, 1_000UL, "0014" + new string('0', 40), null },
+        { "below the negotiated limit", 999, 1_000UL, "0014" + new string('0', 40), "IT-R-02" },
+        { "negotiated limit over the OP_RETURN zero", 0, 1_000UL, "6a0400000000", "IT-R-02" },
+        { "negotiated limit below the P2PKH threshold", 500, 350UL, "76a914" + new string('0', 40) + "88ac", "IT-R-02" }
     };
 
     [Theory]
     [MemberData(nameof(OutputCases))]
-    public void Given_Output_When_Checking_Then_MatchesTheTable(string name, long sats, string scriptHex,
-                                                                string? expected)
+    public void Given_Output_When_Checking_Then_MatchesTheTable(string name, long sats, ulong dustLimitSatoshis,
+                                                                string scriptHex, string? expected)
     {
         // Arrange
         var script = new BitcoinScript(Convert.FromHexString(scriptHex));
 
         // Act
-        var violation = InteractiveTxRules.CheckOutput(LightningMoney.Satoshis(sats), script);
+        var violation = InteractiveTxRules.CheckOutput(LightningMoney.Satoshis(sats), script, dustLimitSatoshis);
 
         // Assert
         Assert.True(expected == violation?.RequirementId, $"{name}: {violation?.Reason}");

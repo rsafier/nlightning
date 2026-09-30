@@ -1311,9 +1311,21 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         var model = negotiation.Model;
         var nodeId = _serviceProvider.GetRequiredService<ISecureKeyManager>().GetNodePubKey();
         return new InteractiveTxTerms(negotiation.ChannelId, nodeId, negotiation.PeerPubKey, negotiation.IsInitiator,
-                                      model.FeeratePerKw, model.Locktime, model.LocalRequiresConfirmedInputs,
-                                      model.RemoteRequiresConfirmedInputs, null, contribution);
+                                      model.FeeratePerKw, model.Locktime, GetDustLimitSatoshis(negotiation.ChannelId),
+                                      model.LocalRequiresConfirmedInputs, model.RemoteRequiresConfirmedInputs, null,
+                                      contribution);
     }
+
+    /// <summary>
+    /// The channel's negotiated dust limit for the interactive-tx <c>tx_add_output</c> check (NL-473): the larger of
+    /// both sides' <c>dust_limit_satoshis</c>, since the funding output serves both commitments. 0 when the channel is
+    /// no longer in memory (only Bitcoin Core's standardness floor applies then).
+    /// </summary>
+    private ulong GetDustLimitSatoshis(ChannelId channelId) =>
+        _channelMemoryRepository.TryGetChannel(channelId, out var channel)
+            ? (ulong)Math.Max(channel.ChannelParams.Local.DustLimitAmount.Satoshi,
+                              channel.ChannelParams.Remote.DustLimitAmount.Satoshi)
+            : 0;
 
     private SpliceNegotiationHost CreateHost(SpliceNegotiation negotiation)
     {
