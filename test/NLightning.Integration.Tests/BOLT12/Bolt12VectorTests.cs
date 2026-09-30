@@ -32,9 +32,9 @@ public class Bolt12VectorTests
     /// Upstream quirk (commit 1aadb719): the six "blinded_path" malformed cases encode <c>offer_paths</c> with a length
     /// of 2 or 3, so their stream already breaks BOLT 1 ordering before any path is read, and "type &gt; 1999999999" and
     /// "unknown even type (1000000002)" encode their type as a 3-byte <c>fd</c> BigSize (30517, 15258) whose length
-    /// runs past the end. They are rejected as malformed streams (B12-ENC-03); the rules they name (num_hops 0, points
-    /// off the curve, the range, unknown even types) are covered with well-formed streams in
-    /// <c>NLightning.Domain.Tests.Offers</c>.
+    /// runs past the end. They are rejected as malformed streams (B12-ENC-03) as committed; the rules they name are
+    /// asserted on well-formed streams by <see cref="Given_AnUpstreamBrokenCase_When_ItsNamedRuleRunsOnAWellFormedStream_Then_ThatRuleRejectsIt"/>
+    /// and covered in <c>NLightning.Domain.Tests.Offers</c>.
     /// </remarks>
     private static readonly Dictionary<string, string> s_expectedOfferViolations = new()
     {
@@ -80,6 +80,31 @@ public class Bolt12VectorTests
 
     public static TheoryData<int, string> InvalidOfferCases() =>
         Cases(s_offers, v => v.Description, v => !v.Valid);
+
+    /// <summary>
+    /// The eight invalid cases whose committed bytes are rejected at the TLV stream before the rule they name
+    /// (see the remarks of <see cref="s_expectedOfferViolations"/>).
+    /// </summary>
+    private static readonly string[] s_upstreamBrokenOfferCases =
+    [
+        "Malformed: truncated offer_paths",
+        "Malformed: zero num_hops in blinded_path",
+        "Malformed: truncated onionmsg_hop in blinded_path",
+        "Malformed: bad first_node_id in blinded_path",
+        "Malformed: bad path_key in blinded_path",
+        "Malformed: bad blinded_node_id in onionmsg_hop",
+        "Contains type > 1999999999",
+        "Contains unknown even type (1000000002)"
+    ];
+
+    public static TheoryData<int, string> UpstreamBrokenOfferCases()
+    {
+        var data = new TheoryData<int, string>();
+        foreach (var description in s_upstreamBrokenOfferCases)
+            data.Add(s_offers.Select((v, i) => (v, i)).First(p => p.v.Description == description).i, description);
+
+        return data;
+    }
 
     public static TheoryData<int, string> SignatureCases() => Cases(s_signatures, v => v.Comment);
 
@@ -195,6 +220,73 @@ public class Bolt12VectorTests
         Assert.Equal(vector.Fields.Select(f => (f.Type, f.Value)),
                      offer.Stream.Records.Select(r => (r.Type, r.Value.ToArray())));
         Assert.NotNull(description);
+    }
+
+    [Theory]
+    [MemberData(nameof(UpstreamBrokenOfferCases))]
+    public void Given_AnUpstreamBrokenCase_When_ItsNamedRuleRunsOnAWellFormedStream_Then_ThatRuleRejectsIt(
+        int index, string description)
+    {
+        // Arrange: the stream the case means, with its broken record length or type encoding repaired (the committed
+        // bytes cannot carry it: they die in the TLV stream parse first). Each rule is asserted at the layer that
+        // owns it: the blinded_path codec behind the offer field, and the offer's TLV type ranges.
+        var onCurve = Enumerable.Repeat((byte)0x02, 33).ToArray();
+        var offCurve = Enumerable.Repeat((byte)0x03, 33).ToArray();
+        var paths = description switch
+        {
+            "Malformed: truncated offer_paths"
+                => onCurve.Concat(onCurve).Append((byte)1).Concat(onCurve).ToArray(),
+            "Malformed: zero num_hops in blinded_path"
+                => onCurve.Concat(onCurve).Append((byte)0).ToArray(),
+            "Malformed: truncated onionmsg_hop in blinded_path"
+                => onCurve.Concat(onCurve).Append((byte)1).Concat(onCurve).Append((byte)0).Append((byte)5).ToArray(),
+            "Malformed: bad first_node_id in blinded_path"
+                => offCurve.Concat(onCurve).Append((byte)1).Concat(onCurve).Append((byte)0).Append((byte)0)
+                          .ToArray(),
+            "Malformed: bad path_key in blinded_path"
+                => onCurve.Concat(offCurve).Append((byte)1).Concat(onCurve).Append((byte)0).Append((byte)0)
+                          .ToArray(),
+            "Malformed: bad blinded_node_id in onionmsg_hop"
+                => onCurve.Concat(onCurve).Append((byte)1).Concat(offCurve).Append((byte)0).Append((byte)0)
+                          .ToArray(),
+            _ => null
+        };
+        var type = paths is null
+                       ? (description.StartsWith("Contains type") ? 2_000_000_000UL : 1_000_000_002UL)
+                       : 0;
+        var requirementId = description switch
+        {
+            "Malformed: zero num_hops in blinded_path" => Bolt12RequirementIds.OfferReader,
+            "Contains type > 1999999999" => Bolt12RequirementIds.TlvRange,
+            _ => Bolt12RequirementIds.TlvStream
+        };
+        var reasonPart = description switch
+        {
+            "Malformed: truncated offer_paths" => "truncated before enclen",
+            "Malformed: zero num_hops in blinded_path" => "num_hops 0",
+            "Malformed: truncated onionmsg_hop in blinded_path" => "enclen 5 runs past the end",
+            "Malformed: bad first_node_id in blinded_path" => "first_node_id is not a point on the curve",
+            "Malformed: bad path_key in blinded_path" => "first_path_key is not a point on the curve",
+            "Malformed: bad blinded_node_id in onionmsg_hop" => "blinded_node_id is not a point on the curve",
+            _ => null
+        };
+        Assert.False(s_offers[index].Valid);
+        var builder = new Bolt12TlvStreamBuilder().SetUtf8(Bolt12TlvTypes.OfferDescription, "ALICE");
+        if (paths is not null)
+            builder.Set(Bolt12TlvTypes.OfferPaths, paths);
+        else
+            builder.Set(type, [(byte)1]);
+
+        // Act
+        var ok = Offer.TryParse(builder.Build(), out _, out var violation);
+
+        // Assert: the rule the case is about is the one that rejects the stream
+        Assert.False(ok);
+        Assert.Equal(requirementId, violation!.RequirementId);
+        if (paths is not null)
+            Assert.Contains(reasonPart, violation.Reason);
+        else
+            Assert.Equal(type, violation.Field);
     }
 
     [Theory]
