@@ -52,6 +52,7 @@ public class GossipOptionsTests
     [InlineData("203.0.113.5:70000")]
     [InlineData("2001:db8::1:9735")]
     [InlineData("expyuzz4wqqyqhjn.onion:9735")]
+    [InlineData("duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczae.onion:9735")]
     [InlineData(" ")]
     public void Given_ABadAddress_When_Validated_Then_ItIsAnError(string address)
     {

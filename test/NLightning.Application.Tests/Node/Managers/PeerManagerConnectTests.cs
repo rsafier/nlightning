@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NBitcoin;
+using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Node.Managers;
 
@@ -132,15 +133,65 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
         Assert.False(peerDbRepository.Row(carol.NodeId)!.IsInboundOnly);
     }
 
+    [Fact]
+    public async Task Given_ATorOnlyNode_When_ItDialsAnOnionPeer_Then_TheHandshakeRunsThroughTheSocksTunnel()
+    {
+        // Arrange: carol is reachable as an onion service only; the proxy plays Tor, rendezvous included (the
+        // connection arrives at carol from a loopback address, as from a local Tor)
+        const string onion = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion";
+        var ct = TestContext.Current.CancellationToken;
+        var carol = await StartNodeAsync();
+        await using var proxy = new FakeSocks5Proxy
+        {
+            RequireAuthentication = true,
+            Route = (host, port) => host == onion && port == 9735 ? new IPEndPoint(IPAddress.Loopback, carol.Port) : null
+        };
+        var bob = await StartNodeAsync(new TorOptions
+        {
+            Mode = TorMode.TorOnly,
+            SocksProxy = proxy.EndPoint,
+            OnionServiceEnabled = false
+        });
+
+        // Act
+        var peer = await bob.PeerManager.ConnectToPeerAsync(
+            new PeerAddressInfo($"{Convert.ToHexString(carol.NodeId).ToLowerInvariant()}@{onion}:9735"));
+
+        // Assert: the BOLT 8 handshake and init ran through the tunnel, and both ends keep the connection
+        Assert.Equal(carol.NodeId, peer.NodeId);
+        Assert.Equal(onion, peer.Host);
+        Assert.Equal("TorV3", peer.Type);
+        Assert.Equal(new PeerAddressInfo($"{Convert.ToHexString(carol.NodeId).ToLowerInvariant()}@{onion}:9735"),
+                     peer.PeerAddressInfo);
+        await AssertStableConnectionAsync(bob, carol, "through Tor", ct);
+        var request = Assert.Single(proxy.Requests);
+        Assert.Equal((onion, 9735, (byte)3), (request.Host, request.Port, request.AddressType));
+        Assert.StartsWith("nltg-", request.Username);
+    }
+
+    [Fact]
+    public async Task Given_ANodeWithoutTor_When_ItDialsAnOnionPeer_Then_TheConnectFailsWithTheTorSetting()
+    {
+        // Arrange
+        var bob = await StartNodeAsync();
+
+        // Act & Assert
+        var e = await Assert.ThrowsAsync<Domain.Exceptions.ConnectionException>(
+            () => bob.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(
+                "028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7@"
+              + "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:9735")));
+        Assert.Contains("Node:Tor:Mode", e.Message);
+    }
+
     public async ValueTask DisposeAsync()
     {
         foreach (var node in _nodes)
             await node.DisposeAsync();
     }
 
-    private async Task<TestNode> StartNodeAsync()
+    private async Task<TestNode> StartNodeAsync(TorOptions? torOptions = null)
     {
-        var node = await TestNode.StartAsync(_serializer);
+        var node = await TestNode.StartAsync(_serializer, torOptions: torOptions);
         _nodes.Add(node);
         return node;
     }
@@ -225,6 +276,7 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
 
         public PeerManager PeerManager { get; }
         public CompactPubKey NodeId { get; }
+        public int Port => _port;
         public string Address => $"{Convert.ToHexString(NodeId).ToLowerInvariant()}@127.0.0.1:{_port}";
 
         private TestNode(ServiceProvider serviceProvider, PeerManager peerManager, CompactPubKey nodeId, int port)
@@ -240,13 +292,15 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
         private static byte NextNodeSeed() => (byte)Interlocked.Increment(ref s_nextNodeSeed);
 
         public static async Task<TestNode> StartAsync(IMessageSerializer serializer,
-                                                      IPeerDbRepository? peerDbRepository = null)
+                                                      IPeerDbRepository? peerDbRepository = null,
+                                                      TorOptions? torOptions = null)
         {
             var port = GetFreePort();
             var nodeOptions = new NodeOptions
             {
                 ListenAddresses = [$"127.0.0.1:{port}"],
-                NetworkTimeout = TimeSpan.FromSeconds(10)
+                NetworkTimeout = TimeSpan.FromSeconds(10),
+                Tor = torOptions ?? new TorOptions()
             };
 
             // A hand-written key manager: the handshake's static ECDH needs ComputeNodeSharedSecret, which Moq

@@ -1097,6 +1097,52 @@ public class PeerBootstrapServiceTests
     }
 
     [Fact]
+    public async Task Given_TorOnlyOnMainnet_When_Bootstrapping_Then_NoSeedIsAskedAndTheOnionIsDialedFirst()
+    {
+        // Arrange: seeds are clearnet DNS, so a Tor-only node asks none; a node with an IP and an onion is dialed at
+        // its onion
+        const string onion = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion";
+        _nodeOptions.Tor.Mode = TorMode.TorOnly;
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        SetupSeed(SeedA, Ok(SeedA, Candidate(SeedA)));
+        var node = AddGraphNode(descriptor: AddressDescriptor.FromHost(AddressDescriptorType.TorV3, onion, 9735));
+        UseGraph();
+        DialsSucceed();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(node, Assert.Single(_connected.Keys));
+        var dialed = (PeerAddressInfo)Assert.Single(_peerManager.Invocations,
+                                                    i => i.Method.Name == nameof(IPeerManager.DialPeerAsync))
+                                           .Arguments[0];
+        Assert.EndsWith($"@{onion}:9735", dialed.Address);
+        VerifyNoSeedQuery();
+    }
+
+    [Fact]
+    public async Task Given_TorOffAndAnOnionOnlyGraphNode_When_Bootstrapping_Then_ItIsNotDialed()
+    {
+        // Arrange
+        _nodeOptions.BitcoinNetwork = BitcoinNetwork.Signet;
+        _nodeOptions.Bootstrap.MinPeers = 1;
+        AddGraphNode(descriptor: AddressDescriptor.FromHost(
+                         AddressDescriptorType.TorV3, "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion",
+                         9735));
+        UseGraph();
+        DialsSucceed();
+        var service = CreateService();
+
+        // Act
+        await RunToEndAsync(service);
+
+        // Assert
+        Assert.Equal(0, DialCount());
+    }
+
+    [Fact]
     public async Task Given_BootstrapDisabledAndAGraph_When_Started_Then_NothingIsDialed()
     {
         // Arrange: the graph top-up follows Node:Bootstrap:Enabled
@@ -1326,8 +1372,7 @@ public class PeerBootstrapServiceTests
         var service = CreateService();
         var start = clock.GetUtcNow();
         var endpoints = Enumerable.Range(0, PeerBootstrapService.MaxFailedEndpoints + 10)
-                                  .Select(i => (IPAddress.Parse($"13.{(i >> 16) & 0xff}.{(i >> 8) & 0xff}.{i & 0xff}"),
-                                                (ushort)9735))
+                                  .Select(i => ($"13.{(i >> 16) & 0xff}.{(i >> 8) & 0xff}.{i & 0xff}", (ushort)9735))
                                   .ToList();
 
         // Act
@@ -1347,16 +1392,16 @@ public class PeerBootstrapServiceTests
         // Arrange
         var clock = UseManualClock();
         var service = CreateService();
-        service.RecordFailedEndpoint((IPAddress.Parse("13.0.0.1"), 9735), clock.GetUtcNow());
+        service.RecordFailedEndpoint(("13.0.0.1", 9735), clock.GetUtcNow());
         clock.Advance(TimeSpan.FromMinutes(30));
-        service.RecordFailedEndpoint((IPAddress.Parse("13.0.0.2"), 9735), clock.GetUtcNow());
+        service.RecordFailedEndpoint(("13.0.0.2", 9735), clock.GetUtcNow());
 
         // Act
         clock.Advance(TimeSpan.FromMinutes(30));
         var failed = service.GetFailedEndpoints();
 
         // Assert
-        Assert.Equal((IPAddress.Parse("13.0.0.2"), (ushort)9735), Assert.Single(failed));
+        Assert.Equal(("13.0.0.2", (ushort)9735), Assert.Single(failed));
         Assert.Equal(1, service.FailedEndpointCount);
     }
 

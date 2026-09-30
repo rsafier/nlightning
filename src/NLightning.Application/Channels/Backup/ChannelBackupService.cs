@@ -458,15 +458,17 @@ public sealed class ChannelBackupService : IChannelBackupService
     }
 
     /// <summary>
-    /// The addresses of <paramref name="node"/>'s announcement this node can connect to: IPv4, IPv6 and DNS with a
-    /// port (no Tor support).
+    /// The addresses of <paramref name="node"/>'s announcement a node can connect to: IPv4, IPv6, Tor v3 (valid
+    /// checksum; dialed through Tor) and DNS with a port, in the announcement's (ascending type) order. A backup keeps
+    /// the onion service of a Tor-only peer even when this node runs without Tor: the restoring one may not.
     /// </summary>
     public static IEnumerable<AddressDescriptor> ConnectableAddresses(GraphNode node)
     {
         ArgumentNullException.ThrowIfNull(node);
         return node.Addresses.Where(a => a.Port > 0
-                                      && a.Type is AddressDescriptorType.IPv4 or AddressDescriptorType.IPv6
-                                                   or AddressDescriptorType.Dns);
+                                      && (a.Type is AddressDescriptorType.IPv4 or AddressDescriptorType.IPv6
+                                                    or AddressDescriptorType.Dns
+                                       || (a.Type == AddressDescriptorType.TorV3 && OnionV3Address.IsValid(a.Address))));
     }
 
     private GraphNode? GetGraphNode(Domain.Crypto.ValueObjects.CompactPubKey nodeId)
@@ -604,6 +606,7 @@ public sealed class ChannelBackupService : IChannelBackupService
     {
         AddressDescriptorType.IPv4 => "IPv4",
         AddressDescriptorType.IPv6 => "IPv6",
+        AddressDescriptorType.TorV3 => "TorV3",
         _ => "DNS"
     };
 

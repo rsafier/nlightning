@@ -25,11 +25,17 @@ public class GraphPeerCandidateSelectorTests
         return new CompactPubKey(bytes);
     }
 
-    private CompactPubKey AddNode(string address, int channels, ulong announcedAgo = 0, ulong updatedAgo = 0)
+    private const string Onion = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion";
+
+    private CompactPubKey AddNode(string address, int channels, ulong announcedAgo = 0, ulong updatedAgo = 0) =>
+        AddNode([AddressDescriptor.FromIpAddress(IPAddress.Parse(address), 9735)], channels, announcedAgo, updatedAgo);
+
+    private CompactPubKey AddNode(List<AddressDescriptor> addresses, int channels, ulong announcedAgo = 0,
+                                  ulong updatedAgo = 0)
     {
         var id = NewKey();
         _nodes.Add(new GraphNode(id, (uint)(Now - announcedAgo), ReadOnlyMemory<byte>.Empty, new byte[32],
-                                 new byte[3], [AddressDescriptor.FromIpAddress(IPAddress.Parse(address), 9735)]));
+                                 new byte[3], addresses));
         for (var i = 0; i < channels; i++)
         {
             var other = NewKey();
@@ -43,10 +49,12 @@ public class GraphPeerCandidateSelectorTests
         return id;
     }
 
-    private List<SeedPeerCandidate> Select(int limit = 100, int seed = 1) =>
+    private List<SeedPeerCandidate> Select(int limit = 100, int seed = 1,
+                                           OnionCandidates onions = OnionCandidates.None,
+                                           HashSet<(string, ushort)>? failed = null) =>
         GraphPeerCandidateSelector.Select(new GraphSnapshot(_channels, _nodes), Now, new HashSet<CompactPubKey>(),
-                                          new HashSet<(IPAddress, ushort)>(), DnsSeedAddressTypes.Both, false,
-                                          limit, new Random(seed));
+                                          failed ?? [], DnsSeedAddressTypes.Both, false, limit, new Random(seed),
+                                          onions);
 
     [Fact]
     public void Given_GoodAndWeakerNodes_When_Selecting_Then_GoodNodesComeFirst()
@@ -114,5 +122,76 @@ public class GraphPeerCandidateSelectorTests
 
         // Assert
         Assert.Equal(fresh, Assert.Single(candidates).NodeId);
+    }
+
+    [Fact]
+    public void Given_AnOnionOnlyNode_When_SelectingWithoutTor_Then_ItIsSkipped()
+    {
+        // Arrange
+        AddNode([AddressDescriptor.FromHost(AddressDescriptorType.TorV3, Onion, 9735)], 3);
+
+        // Act & Assert
+        Assert.Empty(Select());
+    }
+
+    [Theory]
+    [InlineData(OnionCandidates.Fallback)]
+    [InlineData(OnionCandidates.Preferred)]
+    public void Given_AnOnionOnlyNode_When_SelectingWithTor_Then_ItsOnionIsTheCandidate(OnionCandidates onions)
+    {
+        // Arrange
+        var id = AddNode([AddressDescriptor.FromHost(AddressDescriptorType.TorV3, Onion, 9735)], 3);
+
+        // Act
+        var candidate = Assert.Single(Select(onions: onions));
+
+        // Assert
+        Assert.Equal(id, candidate.NodeId);
+        Assert.Equal(Onion, candidate.OnionHost);
+        Assert.Equal((Onion, (ushort)9735), candidate.Endpoint);
+        Assert.EndsWith($"@{Onion}:9735", candidate.ToPeerAddressInfo().Address);
+    }
+
+    [Theory]
+    [InlineData(OnionCandidates.Fallback, false)]
+    [InlineData(OnionCandidates.Preferred, true)]
+    public void Given_ANodeWithAnIpAndAnOnion_When_Selecting_Then_TheModeDecidesWhichIsDialed(OnionCandidates onions,
+                                                                                               bool expectOnion)
+    {
+        // Arrange
+        AddNode([AddressDescriptor.FromIpAddress(IPAddress.Parse("12.0.5.1"), 9735),
+                 AddressDescriptor.FromHost(AddressDescriptorType.TorV3, Onion, 9735)], 3);
+
+        // Act
+        var candidate = Assert.Single(Select(onions: onions));
+
+        // Assert
+        Assert.Equal(expectOnion, candidate.OnionHost is not null);
+    }
+
+    [Fact]
+    public void Given_AFailedOnion_When_Selecting_Then_TheNodesIpIsDialedInstead()
+    {
+        // Arrange
+        AddNode([AddressDescriptor.FromIpAddress(IPAddress.Parse("12.0.6.1"), 9735),
+                 AddressDescriptor.FromHost(AddressDescriptorType.TorV3, Onion, 9735)], 3);
+
+        // Act
+        var candidate = Assert.Single(Select(onions: OnionCandidates.Preferred, failed: [(Onion, 9735)]));
+
+        // Assert
+        Assert.Null(candidate.OnionHost);
+        Assert.Equal(IPAddress.Parse("12.0.6.1"), candidate.Address);
+    }
+
+    [Fact]
+    public void Given_AnOnionWithABadChecksum_When_Selecting_Then_ItIsSkipped()
+    {
+        // Arrange: FromHost does not check the checksum; the selector does
+        var bad = Convert.FromHexString("1d04a1d04a338c6e6ae970bfabee49049d6702250984ca950c01673f4ec034ad000003");
+        AddNode([new AddressDescriptor(AddressDescriptorType.TorV3, bad, 9735)], 3);
+
+        // Act & Assert
+        Assert.Empty(Select(onions: OnionCandidates.Preferred));
     }
 }

@@ -54,6 +54,8 @@ internal sealed class NodeInfoIpcHandler : IIpcCommandHandler
                 BestBlockTime = resp.BestBlockTime,
                 Implementation = resp.Implementation,
                 Version = resp.Version,
+                TorMode = resp.TorMode,
+                OnionAddress = resp.OnionAddress,
                 PeerCount = _peerManager?.ListPeers().Count,
                 ActiveChannelCount = channels?.Count(c => c.State == ChannelState.Open),
                 PendingChannelCount = channels?.Count(c => c.State is > ChannelState.None and < ChannelState.Open),

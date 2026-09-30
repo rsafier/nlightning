@@ -15,6 +15,7 @@ using Protocol.Services;
 using Transport.Factories;
 using Transport.Interfaces;
 using Transport.Services;
+using Transport.Tor;
 
 public static class DependencyInjection
 {
@@ -24,6 +25,9 @@ public static class DependencyInjection
         services.AddSingleton<IChannelIdFactory, ChannelIdFactory>();
         services.AddSingleton<IMessageServiceFactory, MessageServiceFactory>();
         services.AddSingleton<IPeerServiceFactory, PeerServiceFactory>();
+        services.AddSingleton<ITorSocksDialer, TorSocksDialer>();
+        services.AddSingleton<ITorOnionService, TorOnionService>();
+        services.AddSingleton<IAnnouncedAddressSource>(sp => sp.GetRequiredService<ITorOnionService>());
         services.AddSingleton<ITcpService, TcpService>();
         // Shared by singletons (ChannelFactory) and scoped users alike: per-thread state, so concurrent callers never
         // mix their data (NL-247)
