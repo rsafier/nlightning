@@ -10,6 +10,7 @@ using Domain.Channels.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Bootstrap;
+using Domain.Node.Constants;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
@@ -203,6 +204,113 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
             };
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<SeedPeerCandidate>> LocatePeerAsync(CompactPubKey nodeId,
+                                                                        CancellationToken cancellationToken)
+    {
+        var seeds = GetSeeds(out _);
+        if (seeds.Count == 0)
+            return [];
+
+        var watch = Stopwatch.StartNew();
+        var found = new List<SeedPeerCandidate>();
+        foreach (var seed in seeds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            DnsSeedNodeLocation location;
+            try
+            {
+                location = await _dnsSeedClient.LocateNodeAsync(seed, nodeId, Options.AddressFamilies,
+                                                                cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception e)
+            {
+                _logger.LogWarning("BOLT 10 assisted location: seed {Seed} failed: {Message}", seed, e.Message);
+                Record(_seedQueries, new BootstrapSeedQueryRecord(0, _timeProvider.GetUtcNow(), seed,
+                                                                  DnsSeedOutcome.Error, 0, 0, false, null,
+                                                                  watch.Elapsed, e.Message));
+                continue;
+            }
+
+            Record(_seedQueries, new BootstrapSeedQueryRecord(0, _timeProvider.GetUtcNow(), seed, location.Outcome,
+                                                              location.Candidates.Count, location.Rejected,
+                                                              location.UsedFallbackResolver,
+                                                              location.SystemResolverOutcome, watch.Elapsed, null));
+            found.AddRange(location.Candidates);
+        }
+
+        // One answer per endpoint: two seeds may know the node at the same address and port
+        var located = found.DistinctBy(c => c.Endpoint).ToArray();
+        if (located.Length > 0)
+            _logger.LogInformation("BOLT 10 assisted location: {Node} is at {Endpoints}", nodeId,
+                                   string.Join(", ", located.Select(c => c.ToPeerAddressInfo().Address)));
+        else
+            _logger.LogDebug("BOLT 10 assisted location: no seed knows {Node}", nodeId);
+        return located;
+    }
+
+    /// <summary>The most reconnecting peers one check locates through the seeds (NL-541).</summary>
+    internal const int MaxLocatedPeersPerCheck = 4;
+
+    /// <summary>
+    /// BOLT 10's assisted location on the reconnect path (NL-541): a saved peer with active channels that stays
+    /// unreachable may have moved. The gate skips the run for exactly those peers (the peer manager keeps dialing
+    /// their saved address); this asks the seeds each such peer's virtual host and dials the answers that are neither
+    /// the endpoint already being retried nor one whose dial failed within
+    /// <see cref="BootstrapOptions.FailedEndpointTtl"/>. When the seed answered only the default port and the peer's
+    /// saved port differs, the saved port is dialed on the located address too (the live seeds answer the addresses
+    /// but not the per-node SRV port). Called only for a reconnecting-peers skip, so a halted chain locates nothing.
+    /// </summary>
+    /// <returns>The dials that connected.</returns>
+    internal async Task<int> LocateReconnectingPeersAsync(int run, CancellationToken ct)
+    {
+        var connectedIds = _peerManager.ListPeers().Select(p => p.NodeId).ToHashSet();
+        var reconnecting = (await GetSavedPeersAsync())
+                           .Where(p => !p.IsInboundOnly && !string.IsNullOrWhiteSpace(p.Host)
+                                    && !p.Host.EndsWith(".onion", StringComparison.OrdinalIgnoreCase)
+                                    && !connectedIds.Contains(p.NodeId) && HasActiveChannels(p))
+                           .Take(MaxLocatedPeersPerCheck)
+                           .ToArray();
+        if (reconnecting.Length == 0)
+            return 0;
+
+        var failed = GetFailedEndpoints();
+        var candidates = new List<SeedPeerCandidate>();
+        foreach (var peer in reconnecting)
+        {
+            ct.ThrowIfCancellationRequested();
+            var located = await LocatePeerAsync(peer.NodeId, ct);
+            var savedHost = peer.Host.Trim('[', ']');
+            var savedPort = (ushort)peer.Port;
+            foreach (var candidate in located)
+            {
+                if (candidate.Endpoint == (savedHost, savedPort) || failed.Contains(candidate.Endpoint))
+                    continue;
+
+                candidates.Add(candidate);
+                if (candidate.Port == NodeConstants.DefaultPort && savedPort != NodeConstants.DefaultPort
+                 && !failed.Contains((candidate.Address.ToString(), savedPort)))
+                    candidates.Add(candidate with { Port = savedPort });
+            }
+        }
+
+        if (candidates.Count == 0)
+        {
+            _logger.LogDebug("BOLT 10 assisted location: {Peers} saved channel peers unreachable (run {Run}), no seed "
+                           + "answered with a new endpoint", reconnecting.Length, run);
+            return 0;
+        }
+
+        _logger.LogInformation("BOLT 10 assisted location: {Peers} saved channel peers unreachable (run {Run}), "
+                             + "dialing {Candidates} located endpoints", reconnecting.Length, run, candidates.Count);
+        var (connected, _) = await DialAsync(run, candidates, candidates.Count, ct);
+        return connected;
+    }
+
     private async Task RunLoopAsync(CancellationToken ct)
     {
         var endReason = "stopped";
@@ -241,6 +349,10 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
                         lastSkip = skip.Reason;
                         Record(_runs, new BootstrapRunRecord(run, startedAt, skip.Reason, 0, 0, 0, 0,
                                                              _peerManager.ListPeers().Count));
+
+                        // The peers this skip waits for are exactly the ones worth locating (NL-541)
+                        if (skip is { Kind: GateKind.Wait, LocatePeers: true })
+                            await LocateReconnectingPeersAsync(run, ct);
                     }
                     else
                     {
@@ -386,6 +498,10 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
             {
                 Maintenance = true
             });
+
+            // The peers this skip waits for are exactly the ones worth locating (NL-541)
+            if (skip is { Kind: GateKind.Wait, LocatePeers: true })
+                await LocateReconnectingPeersAsync(run, ct);
             return MaintenanceCheck.Skipped;
         }
 
@@ -463,7 +579,8 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
                                                              && !connectedIds.Contains(p.NodeId)
                                                              && HasActiveChannels(p));
         if (reconnecting > 0)
-            return new Gate($"{reconnecting} saved peers with channels to reconnect", GateKind.Wait);
+            return new Gate($"{reconnecting} saved peers with channels to reconnect", GateKind.Wait,
+                            LocatePeers: true);
 
         return null;
     }
@@ -842,8 +959,9 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
                 _failedEndpoints.Remove(endpoint);
     }
 
-    /// <summary>Why a run does not top up.</summary>
-    private readonly record struct Gate(string Reason, GateKind Kind);
+    /// <summary>Why a run does not top up. <paramref name="LocatePeers"/> marks the reconnecting-peers wait: the
+    /// peers it waits for are the ones the seeds are asked to locate (NL-541).</summary>
+    private readonly record struct Gate(string Reason, GateKind Kind, bool LocatePeers = false);
 
     private enum GateKind
     {
