@@ -36,7 +36,9 @@ using Payments.Switch;
 /// that is no longer waiting for a resolution is passed on (the decorated switch skips it), and an HTLC the decorated
 /// switch already started on (a forward circuit or a stored onion secret exists) is never failed here, so an HTLC that
 /// was forwarded is never failed behind the switch's back. A refused failure (the peer is away) persists nothing; the
-/// event is derived again when the link comes back.</para>
+/// event is derived again when the link comes back. On a channel that can no longer carry an update (Failed,
+/// <c>OnchainResolving</c>) nothing is failed here at all: the event goes to the decorated switch, whose on-chain
+/// final-hop rules decide (NL-336; the off-chain fail would be refused and swallow that decision).</para>
 /// </remarks>
 public sealed class DustExposureHtlcSwitch : IHtlcSwitch
 {
@@ -94,6 +96,12 @@ public sealed class DustExposureHtlcSwitch : IHtlcSwitch
         if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
          || channel.Commitments is not { } commitments
          || commitments.GetHtlc(HtlcDirection.Incoming, htlcId) is not { State: HtlcState.RcvdAddAckRevocation } htlc)
+            return false;
+
+        // NL-336: a channel that can no longer carry an update (failed, or its commitment is on chain) cannot take the
+        // off-chain fail: passing the event on lets the decorated switch make the on-chain final-hop decision (NL-316)
+        // instead of a fail that is refused here and would swallow it
+        if (channel.State is ChannelState.Failed or ChannelState.OnchainResolving)
             return false;
 
         if (DustExposurePolicy.Resolve(commitments, _nodeOptions.Value.MaxDustHtlcExposureMsat) is not { } maxDust
