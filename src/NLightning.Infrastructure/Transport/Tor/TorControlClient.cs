@@ -240,22 +240,42 @@ public sealed class TorControlClient : IAsyncDisposable
     /// <summary>
     /// <c>ADD_ONION</c> of a v3 service: a new key (<paramref name="keyBlob"/> null) or the saved one
     /// (<c>ED25519-V3:&lt;base64&gt;</c>), one virtual port to <paramref name="target"/>. Not detached: the service
-    /// lives as long as this connection.
+    /// lives as long as this connection. <paramref name="clientAuthKeys"/> (v3 client authorization, rend-spec-v3
+    /// §G.1.2 base32 x25519 public keys) adds <c>Flags=V3Auth</c> and one <c>ClientAuthV3=</c> per key;
+    /// <paramref name="pow"/> adds the PoW defense arguments (Tor 0.4.9 or newer only).
     /// </summary>
     /// <returns>The service id (the onion name without <c>.onion</c>) and, for a new key, its blob.</returns>
     public async Task<(string ServiceId, string? PrivateKey)> AddOnionAsync(string? keyBlob, int virtualPort,
                                                                             string target,
-                                                                            CancellationToken cancellationToken)
+                                                                            CancellationToken cancellationToken,
+                                                                            IReadOnlyList<string>? clientAuthKeys = null,
+                                                                            TorOnionPoWOptions? pow = null)
     {
         if (keyBlob is not null && !keyBlob.StartsWith("ED25519-V3:", StringComparison.Ordinal))
             throw new ArgumentException("Only ED25519-V3 keys are supported.", nameof(keyBlob));
-        if (target.Any(char.IsWhiteSpace) || keyBlob?.Any(char.IsWhiteSpace) == true)
-            throw new ArgumentException("The key and target must not contain white space.");
+        if (target.Any(char.IsWhiteSpace) || keyBlob?.Any(char.IsWhiteSpace) == true
+            || (clientAuthKeys?.Any(k => k.Any(char.IsWhiteSpace)) ?? false))
+            throw new ArgumentException("The key, target and client auth keys must not contain white space.");
 
         var keySpec = keyBlob ?? "NEW:ED25519-V3";
-        var reply = await SendAsync(
-            $"ADD_ONION {keySpec} Port={virtualPort.ToString(CultureInfo.InvariantCulture)},{target}",
-            cancellationToken);
+        var command = $"ADD_ONION {keySpec} Port={virtualPort.ToString(CultureInfo.InvariantCulture)},{target}";
+        if (pow is not null)
+        {
+            command += $" PoWDefensesEnabled={Convert.ToInt32(pow.Enabled)}";
+            if (pow.QueueRate is { } rate)
+                command += $" PoWQueueRate={rate.ToString(CultureInfo.InvariantCulture)}";
+            if (pow.QueueBurst is { } burst)
+                command += $" PoWQueueBurst={burst.ToString(CultureInfo.InvariantCulture)}";
+        }
+
+        if (clientAuthKeys is { Count: > 0 })
+        {
+            command += " Flags=V3Auth";
+            foreach (var key in clientAuthKeys)
+                command += $" ClientAuthV3={key}";
+        }
+
+        var reply = await SendAsync(command, cancellationToken);
         if (!reply.IsOk)
             throw new TorControlException("ADD_ONION failed", reply);
 

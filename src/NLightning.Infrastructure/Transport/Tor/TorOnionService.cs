@@ -20,6 +20,9 @@ public sealed class TorOnionService : ITorOnionService
     /// <summary>The oldest Tor series still maintained (0.4.8, the stable series since 2023).</summary>
     internal static readonly Version MinimumRecommendedVersion = new(0, 4, 8);
 
+    /// <summary>The oldest Tor whose ADD_ONION takes the PoW defense options (0.4.9).</summary>
+    internal static readonly Version MinimumVersionForOnionPoW = new(0, 4, 9);
+
     private readonly ILogger<TorOnionService> _logger;
     private readonly TorOptions _torOptions;
     private readonly IReadOnlyList<string> _listenAddresses;
@@ -137,9 +140,9 @@ public sealed class TorOnionService : ITorOnionService
             {
                 return;
             }
-            catch (TorOnionKeyFileException e)
+            catch (Exception e) when (e is TorOnionKeyFileException or TorOnionSetupException)
             {
-                // Never paper over a key problem with a new address: stop trying
+                // Never paper over a key or version problem with a default service: stop trying
                 _logger.LogError("Tor onion service not started: {Message}", e.Message);
                 return;
             }
@@ -192,13 +195,17 @@ public sealed class TorOnionService : ITorOnionService
                                            _torOptions.AllowUnauthenticatedControlPort, cancellationToken);
             WarnOnOldTor(protocolInfo);
 
+            var clientAuthKeys = _torOptions.OnionServiceClientAuthKeys
+                .Where(k => !string.IsNullOrWhiteSpace(k)).Select(k => k.Trim()).ToList();
+            var pow = BuildPoWOptions(protocolInfo);
+
             var keyFile = _torOptions.OnionServiceKeyFile;
             var savedKey = TorOnionKeyFile.Read(keyFile);
             if (savedKey is not null && TorOnionKeyFile.HasGroupOrOtherPermissions(keyFile))
                 _logger.LogWarning("The onion service key {KeyFile} is readable by other users; whoever reads it can "
                                  + "take over our onion address: chmod 600 it (NL-584)", keyFile);
             var (serviceId, newKey) = await client.AddOnionAsync(savedKey, _torOptions.OnionServicePort, target,
-                                                                  cancellationToken);
+                                                                  cancellationToken, clientAuthKeys, pow);
             if (savedKey is null)
             {
                 if (newKey is null)
@@ -235,8 +242,11 @@ public sealed class TorOnionService : ITorOnionService
                 _descriptor = descriptor;
             }
 
-            _logger.LogInformation("Tor onion service {OnionHost}:{Port} is up (to {Target}, Tor {TorVersion})", host,
-                                   _torOptions.OnionServicePort, target, protocolInfo.TorVersion ?? "unknown");
+            _logger.LogInformation("Tor onion service {OnionHost}:{Port} is up (to {Target}, Tor {TorVersion}{Private}"
+                                 + "){Defense}", host, _torOptions.OnionServicePort, target,
+                                   protocolInfo.TorVersion ?? "unknown",
+                                   clientAuthKeys.Count > 0 ? $", {clientAuthKeys.Count} authorized client(s)" : "",
+                                   pow is not null ? ", PoW defenses on" : "");
             if (changed)
                 AnnouncedAddressesChanged?.Invoke(this, EventArgs.Empty);
 
@@ -247,6 +257,27 @@ public sealed class TorOnionService : ITorOnionService
             await client.DisposeAsync();
             throw;
         }
+    }
+
+    /// <summary>
+    /// The PoW defense options for <c>ADD_ONION</c>, or null when none are configured. A Tor too old for the options
+    /// (0.4.8 refuses the whole command) stops the service with a clear error instead of adding it without the
+    /// defenses the operator asked for.
+    /// </summary>
+    private TorOnionPoWOptions? BuildPoWOptions(TorProtocolInfo protocolInfo)
+    {
+        if (_torOptions.OnionServicePoWEnabled is not { } enabled)
+            return null;
+
+        var version = protocolInfo.GetNumericVersion();
+        if (version is null || version < MinimumVersionForOnionPoW)
+            throw new TorOnionSetupException(
+                $"Node:Tor:OnionServicePoWEnabled needs Tor {MinimumVersionForOnionPoW} or newer, whose ADD_ONION "
+                + $"takes the PoW options; Tor {protocolInfo.TorVersion ?? "of unknown version"} would refuse the "
+                + "whole service. Configure HiddenServicePoWDefensesEnabled in torrc instead, or upgrade Tor and "
+                + "start the node again");
+
+        return new TorOnionPoWOptions(enabled, _torOptions.OnionServicePoWQueueRate, _torOptions.OnionServicePoWQueueBurst);
     }
 
     private void WarnOnOldTor(TorProtocolInfo protocolInfo)

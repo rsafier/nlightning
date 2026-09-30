@@ -152,6 +152,58 @@ public class TorOptionsTests
         Assert.Empty(options.GetValidationErrors(["127.0.0.1:9735"]));
     }
 
+    [Fact]
+    public void Given_ACanonicalClientAuthKey_When_Validated_Then_ItIsAccepted()
+    {
+        // Arrange - NL-573: 52 base32 characters, a canonical 32-byte x25519 public key
+        Assert.True(TorOptions.IsValidClientAuthKey(new string('a', 52)));
+        Assert.True(TorOptions.IsValidClientAuthKey("ai" + new string('a', 50)));
+        Assert.True(TorOptions.IsValidClientAuthKey(new string('A', 52)));
+    }
+
+    [Fact]
+    public void Given_ABadClientAuthKey_When_Validated_Then_ItIsRefused()
+    {
+        // Act & Assert
+        Assert.False(TorOptions.IsValidClientAuthKey(null));
+        Assert.False(TorOptions.IsValidClientAuthKey(""));
+        Assert.False(TorOptions.IsValidClientAuthKey("abc"));
+        Assert.False(TorOptions.IsValidClientAuthKey(new string('a', 51)));
+        Assert.False(TorOptions.IsValidClientAuthKey(new string('a', 53)));
+        Assert.False(TorOptions.IsValidClientAuthKey(new string('a', 51) + '1'));
+        Assert.False(TorOptions.IsValidClientAuthKey(new string('a', 51) + 'b'));
+        Assert.False(TorOptions.IsValidClientAuthKey(new string('a', 26) + ' ' + new string('a', 25)));
+    }
+
+    [Fact]
+    public void Given_BadClientAuthOrPowSettings_When_Validated_Then_TheyAreListed()
+    {
+        // Arrange - NL-573
+        var bad = new TorOptions
+        {
+            Mode = TorMode.TorOnly,
+            OnionServiceClientAuthKeys = ["nope", new string('a', 51)],
+            OnionServicePoWQueueRate = 100
+        };
+
+        // Act & Assert
+        var errors = bad.GetValidationErrors(["127.0.0.1:9735"]);
+        Assert.Contains(errors, e => e.Contains("OnionServiceClientAuthKeys[0]"));
+        Assert.Contains(errors, e => e.Contains("OnionServiceClientAuthKeys[1]"));
+        Assert.Contains(errors, e => e.Contains("OnionServicePoWQueueRate is set"));
+
+        // A tuned private service is valid
+        var good = new TorOptions
+        {
+            Mode = TorMode.TorOnly,
+            OnionServiceClientAuthKeys = [new string('a', 52)],
+            OnionServicePoWEnabled = true,
+            OnionServicePoWQueueRate = 100,
+            OnionServicePoWQueueBurst = 3000
+        };
+        Assert.Empty(good.GetValidationErrors(["127.0.0.1:9735"]));
+    }
+
     [Theory]
     [InlineData("0.0.0.0:9735")]
     [InlineData("[::]:9735")]

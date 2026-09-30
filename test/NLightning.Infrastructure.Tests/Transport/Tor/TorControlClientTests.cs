@@ -9,6 +9,12 @@ using Infrastructure.Transport.Tor;
 
 public class TorControlClientTests
 {
+    /// <summary>A canonical base32 x25519 client authorization key (32 zero bytes).</summary>
+    private static readonly string s_clientAuthKeyA = new('a', 52);
+
+    /// <summary>Another one (32 bytes, the first 2).</summary>
+    private static readonly string s_clientAuthKeyB = "ai" + new string('a', 50);
+
     [Theory]
     [InlineData("COOKIE,SAFECOOKIE", false, "AUTHCHALLENGE SAFECOOKIE")]
     [InlineData("NULL,COOKIE,SAFECOOKIE", false, "AUTHCHALLENGE SAFECOOKIE")]
@@ -129,7 +135,7 @@ public class TorControlClientTests
     }
 
     [Fact]
-    public async Task Given_AsyncEvents_When_SendingCommands_Then_TheyAreSkipped()
+    public async Task Given_ASyncEvents_When_SendingCommands_Then_TheyAreSkipped()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
@@ -145,6 +151,57 @@ public class TorControlClientTests
         Assert.True(OnionV3Address.TryParse(serviceId, out _, out _));
         Assert.StartsWith("ED25519-V3:", key);
         Assert.Contains("ADD_ONION NEW:ED25519-V3 Port=9735,127.0.0.1:9735", tor.Commands);
+    }
+
+    [Fact]
+    public async Task Given_ClientAuthKeys_When_AddingTheOnion_Then_V3AuthAndEveryKeyGoOnTheCommand()
+    {
+        // Arrange - NL-573: a private service
+        var ct = TestContext.Current.CancellationToken;
+        await using var tor = new FakeTorControlPort();
+        await using var client = await TorControlClient.ConnectAsync(IPEndPoint.Parse(tor.EndPoint), ct);
+        await client.AuthenticateAsync(await client.GetProtocolInfoAsync(ct), null, null, false, ct);
+
+        // Act
+        await client.AddOnionAsync(null, 9735, "127.0.0.1:9735", ct, [s_clientAuthKeyA, s_clientAuthKeyB]);
+
+        // Assert
+        Assert.Contains("ADD_ONION NEW:ED25519-V3 Port=9735,127.0.0.1:9735 Flags=V3Auth "
+                      + $"ClientAuthV3={s_clientAuthKeyA} ClientAuthV3={s_clientAuthKeyB}", tor.Commands);
+    }
+
+    [Fact]
+    public async Task Given_PowOptions_When_AddingTheOnion_Then_TheyGoOnTheCommand()
+    {
+        // Arrange - NL-573
+        var ct = TestContext.Current.CancellationToken;
+        await using var tor = new FakeTorControlPort();
+        await using var client = await TorControlClient.ConnectAsync(IPEndPoint.Parse(tor.EndPoint), ct);
+        await client.AuthenticateAsync(await client.GetProtocolInfoAsync(ct), null, null, false, ct);
+
+        // Act
+        await client.AddOnionAsync(null, 9735, "127.0.0.1:9735", ct,
+                                   pow: new TorOnionPoWOptions(true, QueueRate: 250, QueueBurst: 3000));
+
+        // Assert
+        Assert.Contains("ADD_ONION NEW:ED25519-V3 Port=9735,127.0.0.1:9735 PoWDefensesEnabled=1 PoWQueueRate=250 "
+                      + "PoWQueueBurst=3000", tor.Commands);
+    }
+
+    [Fact]
+    public async Task Given_PowWithoutAuthOrTuning_When_AddingTheOnion_Then_OnlyTheSwitchIsSent()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        await using var tor = new FakeTorControlPort();
+        await using var client = await TorControlClient.ConnectAsync(IPEndPoint.Parse(tor.EndPoint), ct);
+        await client.AuthenticateAsync(await client.GetProtocolInfoAsync(ct), null, null, false, ct);
+
+        // Act
+        await client.AddOnionAsync(null, 9735, "127.0.0.1:9735", ct, pow: new TorOnionPoWOptions(false));
+
+        // Assert
+        Assert.Contains("ADD_ONION NEW:ED25519-V3 Port=9735,127.0.0.1:9735 PoWDefensesEnabled=0", tor.Commands);
     }
 
     [Fact]

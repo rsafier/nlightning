@@ -13,6 +13,12 @@ public sealed class TorOnionServiceTests : IDisposable
 {
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(20);
 
+    /// <summary>A canonical base32 x25519 client authorization key (32 zero bytes).</summary>
+    private static readonly string s_clientAuthKeyA = new('a', 52);
+
+    /// <summary>Another one (32 bytes, the first 2).</summary>
+    private static readonly string s_clientAuthKeyB = "ai" + new string('a', 50);
+
     private readonly string _directory = Path.Combine(Path.GetTempPath(), $"nltg-onion-{Guid.NewGuid():N}");
 
     private string KeyFile => Path.Combine(_directory, "tor", "onion.key");
@@ -202,6 +208,66 @@ public sealed class TorOnionServiceTests : IDisposable
         // Assert
         Assert.Empty(service.GetAnnouncedAddresses());
         await service.StopAsync();
+    }
+
+    [Fact]
+    public async Task Given_ClientAuthKeys_When_Started_Then_TheServiceIsAddedPrivateWithTheKeys()
+    {
+        // Arrange - NL-573: blanks around a configured key are trimmed, the service needs Flags=V3Auth
+        var ct = TestContext.Current.CancellationToken;
+        await using var tor = new FakeTorControlPort();
+        var service = CreateService(tor, o => o.OnionServiceClientAuthKeys = [s_clientAuthKeyA, $" {s_clientAuthKeyB} "]);
+
+        // Act
+        await service.StartAsync(ct);
+        await WaitUntilAsync(() => service.OnionHost is not null, ct);
+
+        // Assert
+        Assert.Contains("ADD_ONION NEW:ED25519-V3 Port=9735,127.0.0.1:19735 Flags=V3Auth "
+                      + $"ClientAuthV3={s_clientAuthKeyA} ClientAuthV3={s_clientAuthKeyB}", tor.Commands);
+        await service.StopAsync();
+    }
+
+    [Fact]
+    public async Task Given_PowDefensesConfigured_When_Started_Then_TheyAreSentWithAddOnion()
+    {
+        // Arrange - NL-573: the fake names a Tor whose ADD_ONION takes the PoW options (0.4.9+)
+        var ct = TestContext.Current.CancellationToken;
+        await using var tor = new FakeTorControlPort { TorVersion = "0.4.9.13" };
+        var service = CreateService(tor, o =>
+        {
+            o.OnionServicePoWEnabled = true;
+            o.OnionServicePoWQueueRate = 250;
+            o.OnionServicePoWQueueBurst = 3000;
+        });
+
+        // Act
+        await service.StartAsync(ct);
+        await WaitUntilAsync(() => service.OnionHost is not null, ct);
+
+        // Assert
+        Assert.Contains("ADD_ONION NEW:ED25519-V3 Port=9735,127.0.0.1:19735 PoWDefensesEnabled=1 PoWQueueRate=250 "
+                      + "PoWQueueBurst=3000", tor.Commands);
+        await service.StopAsync();
+    }
+
+    [Fact]
+    public async Task Given_PowDefensesOnATorThatCannotTakeThem_When_Started_Then_TheServiceStopsDown()
+    {
+        // Arrange - NL-573: 0.4.8 refuses an ADD_ONION with PoW options, so the service is never added without
+        // the defenses the operator asked for
+        var ct = TestContext.Current.CancellationToken;
+        await using var tor = new FakeTorControlPort();
+        var service = CreateService(tor, o => o.OnionServicePoWEnabled = true);
+
+        // Act
+        await service.StartAsync(ct);
+        await service.Loop.WaitAsync(s_timeout, ct);
+
+        // Assert
+        Assert.Null(service.OnionHost);
+        Assert.Empty(service.GetAnnouncedAddresses());
+        Assert.DoesNotContain(tor.Commands, c => c.StartsWith("ADD_ONION", StringComparison.Ordinal));
     }
 
     [Fact]
