@@ -3,9 +3,13 @@ using System.Diagnostics.Metrics;
 
 namespace NLightning.Application.OnionMessages;
 
+using Domain.Protocol.OnionMessages.Interfaces;
+
 /// <summary>
 /// The onion-message counters (plan OM3-T3): one <see cref="Meter"/> named <see cref="MeterName"/> per instance (a
-/// singleton in the node). The same counts are kept in memory for tests and logs.
+/// singleton in the node). The same counts are kept in memory for tests and logs. As the node's
+/// <see cref="IOnionMessageDropCounter"/> it also takes the drops of callers outside this project (the message
+/// reader's malformed 513s, NL-464), so one counter set holds every drop.
 /// </summary>
 /// <remarks>
 /// <para>Instruments (tags in brackets):</para>
@@ -20,7 +24,7 @@ namespace NLightning.Application.OnionMessages;
 /// the service's <c>incoming</c> and <c>handler</c> queues and the peer manager's outbox (<c>outbox</c>).</item>
 /// </list>
 /// </remarks>
-public sealed class OnionMessageMetrics : IDisposable
+public sealed class OnionMessageMetrics : IDisposable, IOnionMessageDropCounter
 {
     /// <summary>The meter name.</summary>
     public const string MeterName = "NLightning.OnionMessages";
@@ -89,7 +93,9 @@ public sealed class OnionMessageMetrics : IDisposable
         Increment("delivered:" + kind);
     }
 
-    internal void RecordDropped(string reason)
+    /// <inheritdoc />
+    /// <remarks>Public for <see cref="IOnionMessageDropCounter"/> (NL-464); the service calls it internally.</remarks>
+    public void RecordDropped(string reason)
     {
         _dropped.Add(1, new KeyValuePair<string, object?>("reason", reason));
         Increment("dropped");

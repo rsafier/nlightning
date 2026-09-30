@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Application.Tests.OnionMessages;
 
@@ -70,6 +71,26 @@ public class OnionMessageMetricsTests
         Assert.Equal(0, incoming);
         Assert.Equal(0, handler);
         Assert.True(double.IsNaN(outbox));
+    }
+
+    [Fact]
+    public void Given_AddOnionMessageServices_When_TheDropCounterIsResolved_Then_ItIsTheMetrics()
+    {
+        // Arrange: NL-464, the message reader's malformed 513s reach the metrics through this port
+        var services = new ServiceCollection();
+        services.AddOnionMessageServices();
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var counter = provider.GetRequiredService<Domain.Protocol.OnionMessages.Interfaces.IOnionMessageDropCounter>();
+        counter.RecordDropped(OnionMessageDropReasons.Malformed);
+        counter.RecordDropped(OnionMessageDropReasons.Malformed);
+        var metrics = provider.GetRequiredService<OnionMessageMetrics>();
+
+        // Assert: the shared counter set (the exported one and the in-memory one)
+        Assert.Same(metrics, counter);
+        Assert.Equal(2, metrics.GetDropped(OnionMessageDropReasons.Malformed));
+        Assert.Equal(2, metrics.DroppedTotal);
     }
 
     /// <summary>

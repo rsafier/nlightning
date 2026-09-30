@@ -64,9 +64,8 @@ public static class OnionMessageDropReasons
     public const string HandlerQueueFull = "handler_queue";
 
     /// <summary>
-    /// The 513 message itself did not parse (NL-444): ignored by the transport's message service, which counts it on
-    /// the same meter and instrument; it never reaches the service, so <see cref="OnionMessageMetrics"/>' in-memory
-    /// counts do not include it.
+    /// The 513 message itself did not parse (NL-444): ignored by the transport's message service, which counts it
+    /// through the shared drop counter (NL-464); it never reaches the service itself.
     /// </summary>
     public const string Malformed = "malformed";
 }
