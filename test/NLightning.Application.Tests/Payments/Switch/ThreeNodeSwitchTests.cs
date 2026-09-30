@@ -239,6 +239,62 @@ public class ThreeNodeSwitchTests
     }
 
     [Fact]
+    public async Task Given_AForwardThatOnlyFitsWithoutItsCommitmentFee_When_BobForwards_Then_HeRefusesItBeforeTheCircuit()
+    {
+        // Arrange: Bob funds the Bob-Carol channel; at a raised feerate what is left of his balance above Carol's
+        // reserve no longer covers the commitment fee of one more HTLC (B2-ADD-S01), so the engine would refuse the
+        // offer only after the circuit was saved: the liquidity pre-check must refuse it before that (NL-268)
+        await using var harness = await ThreeNodeHarness.CreateAsync();
+        await harness.Bob.Operations.UpdateFeeAsync(ThreeNodeHarness.BobCarolChannelId, 25_000,
+                                                    TestContext.Current.CancellationToken);
+        await harness.PumpAsync();
+
+        var amount = LightningMoney.MilliSatoshis(1_170_000_000);
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(amount, "tight", null,
+                                                                      TestContext.Current.CancellationToken);
+        var route = harness.RouteToCarol(amount, invoice.PaymentHash, invoice.PaymentSecret);
+
+        // Act
+        var (_, onion) = await harness.AlicePaysAsync(route);
+        await harness.PumpAsync();
+
+        // Assert: temporary_channel_failure from hop 0, with no circuit and no downstream HTLC: refused by the
+        // pre-check, not by the engine at offer time
+        var decrypted = Decrypt(harness, onion, Assert.Single(harness.Alice.PaymentHandler.Failed));
+        Assert.Equal(0, decrypted.ErringHopIndex);
+        Assert.Equal(FailureCode.TemporaryChannelFailure, decrypted.Code);
+        Assert.DoesNotContain(harness.Carol.Received, m => m is UpdateAddHtlcMessage);
+        Assert.Null(await GetCircuitAsync(harness, 0));
+        AssertNoHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_AForwardAboveTheFeeEstimate_When_BobForwards_Then_ItStillForwards()
+    {
+        // Arrange: the same raised feerate, and an amount the channel can send including the fee estimate: the
+        // pre-check must not refuse forwards the engine accepts (NL-268)
+        await using var harness = await ThreeNodeHarness.CreateAsync();
+        await harness.Bob.Operations.UpdateFeeAsync(ThreeNodeHarness.BobCarolChannelId, 25_000,
+                                                    TestContext.Current.CancellationToken);
+        await harness.PumpAsync();
+
+        var amount = LightningMoney.MilliSatoshis(1_120_000_000);
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(amount, "fits", null,
+                                                                      TestContext.Current.CancellationToken);
+        var route = harness.RouteToCarol(amount, invoice.PaymentHash, invoice.PaymentSecret);
+
+        // Act
+        await harness.AlicePaysAsync(route);
+        await harness.PumpAsync();
+
+        // Assert
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Equal(ForwardCircuitStatus.Fulfilled, (await GetCircuitAsync(harness, 0))!.Status);
+        AssertNoHtlcs(harness);
+    }
+
+    [Fact]
     public async Task Given_BobRestartsAfterDownstreamFulfill_When_Replayed_Then_UpstreamFulfilledExactlyOnce()
     {
         // Arrange: the HTLC reaches Carol, who does not settle yet
