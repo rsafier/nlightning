@@ -7,6 +7,7 @@ namespace NLightning.Infrastructure.Bitcoin.Gossip;
 
 using Domain.Gossip.Interfaces;
 using Domain.Onchain.Interfaces;
+using Infrastructure.Transport.Tor;
 using Wallet.Interfaces;
 
 public static class GossipBitcoinServiceCollectionExtensions
@@ -39,7 +40,7 @@ public static class GossipBitcoinServiceCollectionExtensions
         {
             var options = sp.GetRequiredService<IOptions<FundingTxIdSourceOptions>>();
             var handler = esploraHandler?.Invoke(sp)
-                       ?? new SocketsHttpHandler { PooledConnectionLifetime = s_connectionLifetime };
+                       ?? TorHttpHandler.Create(sp, s_connectionLifetime);
             var httpClient = new HttpClient(handler) { Timeout = options.Value.EsploraTimeout };
             httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("NLightning");
             return new EsploraTxIdSource(sp.GetRequiredService<IBitcoinChainService>(), httpClient,

@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -78,7 +77,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
 
     // Endpoints whose dial failed, with the failure's time: skipped until FailedEndpointTtl passed (NL-547)
     private readonly Lock _failedEndpointsLock = new();
-    private readonly Dictionary<(IPAddress, ushort), DateTimeOffset> _failedEndpoints = [];
+    private readonly Dictionary<(string, ushort), DateTimeOffset> _failedEndpoints = [];
 
     // The run counter and the keeper's backoff; only the initial phase, then the keeper, touch them (NL-547)
     private int _runCount;
@@ -97,6 +96,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     private DateTimeOffset? _nextTopUpAt;
 
     private bool _warnedIgnoredSeeds;
+    private bool _warnedTorOnlySeeds;
 
     private CancellationTokenSource? _cts;
     private Task? _loop;
@@ -435,7 +435,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     private async Task<Gate?> CheckGateAsync(CancellationToken ct)
     {
         var network = _nodeOptions.BitcoinNetwork;
-        var seeds = Options.GetEffectiveSeeds(network, out var ignoredConfigured);
+        var seeds = GetSeeds(out var ignoredConfigured);
         if (ignoredConfigured && !_warnedIgnoredSeeds)
         {
             _warnedIgnoredSeeds = true;
@@ -468,6 +468,27 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         return null;
     }
 
+    /// <summary>
+    /// The seeds to ask: none in Tor-only mode (a BOLT 10 seed is asked for SRV records over clearnet DNS, which Tor
+    /// cannot carry, so asking would reveal the node's address to the resolvers); the graph top-up still runs there,
+    /// onion services first.
+    /// </summary>
+    private IReadOnlyList<string> GetSeeds(out bool ignoredConfigured)
+    {
+        var seeds = Options.GetEffectiveSeeds(_nodeOptions.BitcoinNetwork, out ignoredConfigured);
+        if (!_nodeOptions.Tor.IsTorOnly || seeds.Count == 0)
+            return seeds;
+
+        if (!_warnedTorOnlySeeds)
+        {
+            _warnedTorOnlySeeds = true;
+            _logger.LogInformation("BOLT 10 bootstrap: the DNS seeds are not asked in Tor-only mode (clearnet DNS); "
+                                 + "only graph nodes are dialed, so a new node needs one peer by connect");
+        }
+
+        return [];
+    }
+
     private static bool HasActiveChannels(PeerModel peer) =>
         peer.Channels is { Count: > 0 } channels
      && channels.Any(c => c.State is not (ChannelState.Closed or ChannelState.Stale));
@@ -485,7 +506,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         // already knows, and asks the seeds only when those do not bring it to MinPeers
         var (graphSelected, graphAttempted, graphConnected) = await TopUpFromGraphAsync(run, maxPeers, ct);
         var peers = _peerManager.ListPeers().Count;
-        var seeds = Options.GetEffectiveSeeds(_nodeOptions.BitcoinNetwork, out _).ToArray();
+        var seeds = GetSeeds(out _).ToArray();
         if (peers >= Options.MinPeers || seeds.Length == 0 || graphConnected >= maxPeers)
         {
             if (graphAttempted > 0 || seeds.Length == 0)
@@ -605,7 +626,12 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         var candidates = GraphPeerCandidateSelector.Select(_graphStore.GetSnapshot(), now, excluded,
                                                            GetFailedEndpoints(),
                                                            Options.AddressFamilies, Options.AllowNonRoutableAddresses,
-                                                           maxPeers * 3, Random.Shared);
+                                                           maxPeers * 3, Random.Shared,
+                                                           _nodeOptions.Tor.IsTorOnly
+                                                               ? OnionCandidates.Preferred
+                                                               : _nodeOptions.Tor.IsEnabled
+                                                                   ? OnionCandidates.Fallback
+                                                                   : OnionCandidates.None);
         if (candidates.Count == 0)
         {
             _logger.LogDebug("BOLT 10 bootstrap: no usable graph node to dial (run {Run})", run);
@@ -635,9 +661,9 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
             excluded.Add(peer.NodeId);
 
         var failed = GetFailedEndpoints();
-        var candidates = collected.Where(c => !excluded.Contains(c.NodeId) && !failed.Contains((c.Address, c.Port)))
+        var candidates = collected.Where(c => !excluded.Contains(c.NodeId) && !failed.Contains(c.Endpoint))
                                   .DistinctBy(c => c.NodeId)
-                                  .DistinctBy(c => (c.Address, c.Port))
+                                  .DistinctBy(c => c.Endpoint)
                                   .ToArray();
         Random.Shared.Shuffle(candidates);
         return [.. candidates];
@@ -691,7 +717,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
                         break;
                     case BootstrapDialOutcome.Failed or BootstrapDialOutcome.TimedOut:
                         perSeed[batch[i].Seed]--;
-                        RecordFailedEndpoint((batch[i].Address, batch[i].Port), _timeProvider.GetUtcNow());
+                        RecordFailedEndpoint(batch[i].Endpoint, _timeProvider.GetUtcNow());
                         break;
                     default:
                         perSeed[batch[i].Seed]--;
@@ -711,6 +737,12 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
         // The timeout cancels the dial itself, which closes its connection, rather than stop waiting for it
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var connectTimeout = Options.GetEffectiveConnectTimeout(_nodeOptions.NetworkTimeout);
+
+        // A connection through Tor builds a circuit first (a rendezvous for an onion service)
+        if (_nodeOptions.Tor.IsTorOnly || (candidate.OnionHost is not null && _nodeOptions.Tor.IsEnabled))
+            connectTimeout = connectTimeout > _nodeOptions.Tor.ConnectTimeout
+                                 ? connectTimeout
+                                 : _nodeOptions.Tor.ConnectTimeout;
         timeout.CancelAfter(connectTimeout);
         BootstrapDialOutcome outcome;
         string? error;
@@ -781,7 +813,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     /// Remembers a failed dial of <paramref name="endpoint"/> (NL-547). Expired failures are forgotten first; when
     /// <see cref="MaxFailedEndpoints"/> are still remembered, the oldest failure makes room.
     /// </summary>
-    internal void RecordFailedEndpoint((IPAddress, ushort) endpoint, DateTimeOffset failedAt)
+    internal void RecordFailedEndpoint((string, ushort) endpoint, DateTimeOffset failedAt)
     {
         lock (_failedEndpointsLock)
         {
@@ -793,7 +825,7 @@ internal sealed class PeerBootstrapService : IPeerBootstrapService
     }
 
     /// <summary>The endpoints whose dial failed within <see cref="BootstrapOptions.FailedEndpointTtl"/>.</summary>
-    internal IReadOnlySet<(IPAddress, ushort)> GetFailedEndpoints()
+    internal IReadOnlySet<(string, ushort)> GetFailedEndpoints()
     {
         lock (_failedEndpointsLock)
         {

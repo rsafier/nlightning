@@ -36,4 +36,21 @@ public class SeedPeerCandidateTests
         // Assert
         Assert.Equal($"{NodeIdHex}@[2001:db8::1]:9735", info.Address);
     }
+
+    [Fact]
+    public void Given_AnOnionCandidate_When_Formatted_Then_TheOnionHostIsDialed()
+    {
+        // Arrange
+        const string onion = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion";
+        var candidate = new SeedPeerCandidate(new CompactPubKey(Convert.FromHexString(NodeIdHex)), IPAddress.None,
+                                              9735, "graph")
+        { OnionHost = onion };
+
+        // Act
+        var info = candidate.ToPeerAddressInfo();
+
+        // Assert
+        Assert.Equal($"{NodeIdHex}@{onion}:9735", info.Address);
+        Assert.Equal((onion, (ushort)9735), candidate.Endpoint);
+    }
 }

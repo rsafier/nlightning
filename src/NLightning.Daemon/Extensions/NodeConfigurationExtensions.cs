@@ -24,6 +24,7 @@ public static class NodeConfigurationExtensions
     private const string NodeNetworkKey = "Node:Network";
     private const string CustomSignetNameKey = "Node:CustomSignet:Name";
     private const string FeeCacheFileKey = "FeeEstimation:CacheFile";
+    private const string OnionKeyFileKey = "Node:Tor:OnionServiceKeyFile";
 
     /// <summary>
     /// Configures the host builder with NLTG configuration and Serilog
@@ -239,6 +240,14 @@ public static class NodeConfigurationExtensions
             yield return new KeyValuePair<string, string?>(FeeCacheFileKey,
                                                            Path.GetFullPath(Path.Combine(configPath, cacheFile)));
 
+        // The onion service key sits next to the node key, also when the file does not name it (Node:Tor)
+        var onionKeyFile = fileConfiguration[OnionKeyFileKey];
+        if (string.IsNullOrWhiteSpace(onionKeyFile))
+            onionKeyFile = TorOptions.DefaultOnionServiceKeyFile;
+        if (!Path.IsPathRooted(onionKeyFile))
+            yield return new KeyValuePair<string, string?>(OnionKeyFileKey,
+                                                           Path.GetFullPath(Path.Combine(configPath, onionKeyFile)));
+
         // The file sinks of Serilog's WriteTo array ("WriteTo": [ { "Name": "File", ... } ]) or named object
         // ("WriteTo": { "File": ... }); both flatten to a section per sink with Args:path
         foreach (var sink in fileConfiguration.GetSection("Serilog:WriteTo").GetChildren())
@@ -314,7 +323,8 @@ public static class NodeConfigurationExtensions
     /// (BOLT 4 onion messages, wave M6); they apply only once <c>Node:Features:OptionOnionMessages</c> is advertised.
     /// <c>Offers</c> carries the <see cref="OfferOptions"/> defaults (BOLT 12 offers, wave B12; NL-454).
     /// <c>Node:Bootstrap</c> (BOLT 10, NL-113) is on on mainnet and off elsewhere (D-B10-1 as reversed on 2026-09-28),
-    /// with the network's seeds and the public fallback resolvers (D-B10-7).
+    /// with the network's seeds and the public fallback resolvers (D-B10-7). <c>Node:Tor</c> is off, with Tor's usual
+    /// SOCKS5 and control ports and the onion key next to the node key.
     /// </remarks>
     /// <exception cref="ArgumentException">The network is unknown.</exception>
     internal static string CreateDefaultConfigJson(string network)
@@ -427,6 +437,20 @@ public static class NodeConfigurationExtensions
                    "ListenAddresses": [
                      "0.0.0.0:9735"
                    ],
+                   "Tor": {
+                     "Mode": "Off",
+                     "SocksProxy": "{{TOR_SOCKS}}",
+                     "StreamIsolation": true,
+                     "ConnectTimeout": "00:01:00",
+                     "Control": "{{TOR_CONTROL}}",
+                     "ControlPassword": null,
+                     "ControlCookieFile": null,
+                     "OnionServiceEnabled": null,
+                     "OnionServicePort": 9735,
+                     "OnionServiceTarget": null,
+                     "OnionServiceKeyFile": "{{TOR_KEY_FILE}}",
+                     "AnnounceOnionService": true
+                   },
                    "Features": {
                      "AllowExperimentalFeatures": false
                    },
@@ -550,6 +574,9 @@ public static class NodeConfigurationExtensions
                   .Replace("{{BOOTSTRAP_TRANSPORT}}", bootstrap.Transport.ToString())
                   .Replace("{{BOOTSTRAP_MIN_PEERS}}", Invariant(bootstrap.MinPeers))
                   .Replace("{{BOOTSTRAP_MAX_PEERS}}", Invariant(bootstrap.MaxPeersFromBootstrap))
+                  .Replace("{{TOR_SOCKS}}", TorOptions.DefaultSocksProxy)
+                  .Replace("{{TOR_CONTROL}}", TorOptions.DefaultControl)
+                  .Replace("{{TOR_KEY_FILE}}", TorOptions.DefaultOnionServiceKeyFile)
                   .Replace("{{BOOTSTRAP_MAX_PER_SEED}}", Invariant(bootstrap.MaxPerSeed))
                   .Replace("{{BOOTSTRAP_DIAL_CONCURRENCY}}", Invariant(bootstrap.MaxDialConcurrency))
                   .Replace("{{BOOTSTRAP_PER_SEED_TIMEOUT}}", Invariant(bootstrap.PerSeedTimeout))

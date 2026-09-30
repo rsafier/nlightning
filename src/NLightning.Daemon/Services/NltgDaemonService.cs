@@ -18,6 +18,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Client.Interfaces;
+using Domain.Gossip.Addresses;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Node.PeerStorage;
@@ -26,6 +27,7 @@ using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.Managers;
 using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Transport.Tor;
 
 public class NltgDaemonService : BackgroundService
 {
@@ -52,6 +54,8 @@ public class NltgDaemonService : BackgroundService
     private readonly IRetiredScidMap? _retiredScidMap;
     private readonly SpliceAutoBumper? _spliceAutoBumper;
     private readonly IPeerBootstrapService? _peerBootstrapService;
+    private readonly ITorOnionService? _torOnionService;
+    private readonly GossipOptions? _gossipOptions;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
                              IConfiguration configuration, IFeeService feeService,
@@ -67,8 +71,12 @@ public class NltgDaemonService : BackgroundService
                              SpliceDepthWatcher? spliceDepthWatcher = null,
                              IRetiredScidMap? retiredScidMap = null,
                              SpliceAutoBumper? spliceAutoBumper = null,
-                             IPeerBootstrapService? peerBootstrapService = null)
+                             IPeerBootstrapService? peerBootstrapService = null,
+                             ITorOnionService? torOnionService = null,
+                             IOptions<GossipOptions>? gossipOptions = null)
     {
+        _torOnionService = torOnionService;
+        _gossipOptions = gossipOptions?.Value;
         _peerBootstrapService = peerBootstrapService;
         _spliceAutoBumper = spliceAutoBumper;
         _retiredScidMap = retiredScidMap;
@@ -133,6 +141,12 @@ public class NltgDaemonService : BackgroundService
             // Start the peer manager service
             await _peerManager.StartAsync(stoppingToken);
 
+            // Tor (Node:Tor): our onion service is registered in the background once the listener is up; a Tor that
+            // is not running yet only delays it
+            LogTorSettings();
+            if (_torOnionService is not null)
+                await _torOnionService.StartAsync(stoppingToken);
+
             // BOLT 10 DNS seed bootstrap (NL-113): runs in the background (off unless Node:Bootstrap:Enabled)
             if (_peerBootstrapService is not null)
                 await _peerBootstrapService.StartAsync(stoppingToken);
@@ -186,6 +200,30 @@ public class NltgDaemonService : BackgroundService
         }
     }
 
+    private void LogTorSettings()
+    {
+        var tor = _nodeOptions.Tor;
+        if (!tor.IsEnabled)
+            return;
+
+        _logger.LogInformation("Tor {Mode}: peers dialed through {SocksProxy}{Isolation}; onion service {OnionService}",
+                               tor.Mode, tor.SocksProxy, tor.StreamIsolation ? " (stream isolation)" : string.Empty,
+                               tor.IsOnionServiceEnabled ? $"through {tor.Control}" : "off");
+
+        IReadOnlyList<AddressDescriptor> announced;
+        try
+        {
+            announced = _gossipOptions?.GetAnnounceAddressDescriptors() ?? [];
+        }
+        catch (ArgumentException)
+        {
+            announced = [];
+        }
+
+        foreach (var warning in TorStartupChecks.GetWarnings(_nodeOptions, announced))
+            _logger.LogWarning("{Warning}", warning);
+    }
+
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("NLTG shutdown requested");
@@ -201,6 +239,10 @@ public class NltgDaemonService : BackgroundService
         // The bootstrap dials through the peer manager, so it stops first (NL-113)
         if (_peerBootstrapService is not null)
             await _peerBootstrapService.StopAsync(cancellationToken);
+
+        // Closing the control connection takes our onion service down before the listener goes
+        if (_torOnionService is not null)
+            await _torOnionService.StopAsync();
 
         await Task.WhenAll(_blockchainMonitor.StopAsync(), _feeService.StopAsync(), _peerManager.StopAsync(),
                            _namedPipeIpcService.StopAsync(), base.StopAsync(cancellationToken));

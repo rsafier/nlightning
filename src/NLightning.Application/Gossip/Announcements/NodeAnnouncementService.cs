@@ -9,6 +9,7 @@ using Domain.Channels.Interfaces;
 using Domain.Enums;
 using Domain.Gossip.Addresses;
 using Domain.Gossip.Persistence;
+using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Payloads;
@@ -26,6 +27,7 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
     private readonly NodeOptions _nodeOptions;
     private readonly GossipOptions _gossipOptions;
     private readonly TimeProvider _timeProvider;
+    private readonly IReadOnlyList<IAnnouncedAddressSource> _addressSources;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private NodeAnnouncementPayload? _current;
@@ -35,7 +37,8 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
                                    ILightningSigner lightningSigner, ILogger<NodeAnnouncementService> logger,
                                    OwnGossipPublisher publisher, IServiceProvider serviceProvider,
                                    IOptions<NodeOptions> nodeOptions, IOptions<GossipOptions>? gossipOptions = null,
-                                   TimeProvider? timeProvider = null)
+                                   TimeProvider? timeProvider = null,
+                                   IEnumerable<IAnnouncedAddressSource>? addressSources = null)
     {
         _channelMemoryRepository = channelMemoryRepository;
         _lightningSigner = lightningSigner;
@@ -45,6 +48,11 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
         _nodeOptions = nodeOptions.Value;
         _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _addressSources = addressSources?.ToList() ?? [];
+
+        // A run-time address (our onion service coming up) goes out at once, once we have an announced channel
+        foreach (var source in _addressSources)
+            source.AnnouncedAddressesChanged += (_, _) => RequestAnnouncement();
     }
 
     /// <inheritdoc />
@@ -143,9 +151,44 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
     {
         var features = _nodeOptions.Features.GetNodeFeatures(FeatureContext.NodeAnnouncement).GetWireBytes() ?? [];
         var alias = NodeAnnouncementPayload.EncodeAlias(_nodeOptions.Alias ?? string.Empty);
-        var descriptors = _gossipOptions.GetAnnounceAddressDescriptors();
+        var descriptors = MergeAddresses(_gossipOptions.GetAnnounceAddressDescriptors(),
+                                         _addressSources.SelectMany(GetSourceAddresses));
         return new AnnouncementFields(features, alias, _nodeOptions.GetColorBytes(),
                                       AddressDescriptorCodec.EncodeList(descriptors), descriptors.Count);
+    }
+
+    /// <summary>
+    /// The configured addresses and the run-time ones (our onion service), each once, in the ascending type order BOLT 7
+    /// requires. A run-time address that would break the origin rules (a second DNS name) is left out.
+    /// </summary>
+    internal static List<AddressDescriptor> MergeAddresses(IReadOnlyList<AddressDescriptor> configured,
+                                                           IEnumerable<AddressDescriptor> runtime)
+    {
+        var merged = configured.ToList();
+        foreach (var descriptor in runtime)
+        {
+            if (merged.Contains(descriptor) || descriptor.Port == 0
+                                            || descriptor.Type is AddressDescriptorType.TorV2
+             || (descriptor.Type == AddressDescriptorType.Dns && merged.Any(d => d.Type == AddressDescriptorType.Dns)))
+                continue;
+
+            merged.Add(descriptor);
+        }
+
+        return [.. merged.OrderBy(d => d.Type)];
+    }
+
+    private IReadOnlyList<AddressDescriptor> GetSourceAddresses(IAnnouncedAddressSource source)
+    {
+        try
+        {
+            return source.GetAnnouncedAddresses();
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Could not read the run-time addresses of {Source}", source.GetType().Name);
+            return [];
+        }
     }
 
     private sealed record AnnouncementFields(byte[] Features, byte[] Alias, byte[] Color, byte[] Addresses,

@@ -13,4 +13,10 @@ public sealed class NodeInfoResponse
     public DateTimeOffset? BestBlockTime { get; init; }
     public string? Implementation { get; init; } = "NLightning";
     public string? Version { get; init; }
+
+    /// <summary>The Tor mode (<c>Off</c>, <c>Hybrid</c>, <c>TorOnly</c>).</summary>
+    public string? TorMode { get; init; }
+
+    /// <summary>Our onion service as <c>pubkey@&lt;56 chars&gt;.onion:port</c> once Tor accepted it; else null.</summary>
+    public string? OnionAddress { get; init; }
 }

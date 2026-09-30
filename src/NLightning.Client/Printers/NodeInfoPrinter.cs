@@ -21,6 +21,11 @@ public sealed class NodeInfoPrinter : IPrinter<NodeInfoIpcResponse>
             _output.WriteLine("                     {0}", t);
         }
 
+        if (item.TorMode is not null && item.TorMode != "Off")
+            _output.WriteLine("  Tor:               {0}", item.TorMode);
+        if (item.OnionAddress is not null)
+            _output.WriteLine("  Onion address:     {0}", item.OnionAddress);
+
         if (item.PeerCount is not null)
             _output.WriteLine("  Peers:             {0}", item.PeerCount);
         if (item.ActiveChannelCount is not null)
