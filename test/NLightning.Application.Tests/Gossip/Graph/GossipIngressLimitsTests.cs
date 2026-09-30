@@ -380,10 +380,10 @@ public class GossipIngressLimitsTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_ThrowawayNodeIds_When_EachIsBannedForMisbehaviour_Then_NothingIsPersistedAndTheBansAreBoundedAndPruned()
+    public async Task Given_ThrowawayNodeIds_When_EachIsBannedForMisbehaviour_Then_TheBansArePersistedAndTheMemoryIsBoundedAndPruned()
     {
-        // Arrange: node ids that are not in the graph cost a flooder one handshake each; their bans must cost us
-        // neither a database row nor memory that is never given back
+        // Arrange: node ids that are not in the graph cost a flooder one handshake each; their bans are persisted now
+        // (NL-370: a ban survives a restart), but the memory they keep is bounded and pruned at their end
         var kit = await CreateKitWithChannelAsync(o => o.MaxMisbehaviourBans = 3);
         var direction = GraphTestKit.DirectionOf(s_alice, s_bob);
 
@@ -403,11 +403,42 @@ public class GossipIngressLimitsTests : IDisposable
 
         // Assert
         Assert.Equal(5, _recorder.Sum("nlightning.gossip.peers.banned"));
-        Assert.Empty(kit.Repository.Bans);
+        Assert.Equal(5, kit.Repository.Bans.Count);
         Assert.Equal(3, bannedWhileActive);
         Assert.True(lastStillBanned);
         Assert.Equal(3, pruned);
         Assert.Equal(0, kit.Ingress.BannedPeerCount);
+    }
+
+    [Fact]
+    public async Task Given_APeerBannedForMisbehaviour_When_TheNodeRestarts_Then_ItsGossipIsStillDroppedUntilTheBanEnds()
+    {
+        // Arrange (NL-370): a peer that is not a node of the graph is banned; the ban is persisted with its end
+        var kit = await CreateKitWithChannelAsync();
+        var bannedPeer = GraphTestKit.CreatePeer(0xA0);
+        var direction = GraphTestKit.DirectionOf(s_alice, s_bob);
+        for (var i = 1; i <= 5; i++)
+            await ProcessAsync(kit, bannedPeer, Update(s_mallory, direction, s_now - 100 + (uint)i, i));
+        Assert.True(kit.Ingress.IsBannedForMisbehaviour(bannedPeer.Object.PeerPubKey));
+        await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
+
+        // Act: a restart over the same database
+        var restarted = new GraphTestKit(kit.Repository, metrics: _metrics);
+        await restarted.Ingress.StartAsync();
+        var bannedAtStart = restarted.Ingress.IsBannedForMisbehaviour(bannedPeer.Object.PeerPubKey);
+        var whileBanned = restarted.Ingress.TryEnqueue(GraphTestKit.CreatePeer(0xA0).Object,
+                                                       Update(s_alice, direction, s_now - 10, 50));
+        restarted.Clock.Now = GraphTestKit.DefaultNow.AddHours(1);
+        var afterTheBan = restarted.Ingress.TryEnqueue(GraphTestKit.CreatePeer(0xA0).Object,
+                                                       Update(s_alice, direction, s_now - 9, 51));
+
+        // Assert
+        Assert.True(bannedAtStart);
+        Assert.False(whileBanned);
+        Assert.True(afterTheBan);
+        Assert.Equal(1, _recorder.Sum("nlightning.gossip.messages.rejected",
+                                      (GossipMetrics.ReasonTag, GossipMetricReasons.BannedPeer)));
+        await restarted.Ingress.StopAsync();
     }
 
     [Fact]

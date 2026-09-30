@@ -144,14 +144,15 @@ public sealed class GossipGraphOptions
     public TimeSpan MisbehaviourWindow { get; set; } = TimeSpan.FromMinutes(10);
 
     /// <summary>
-    /// How long a misbehaving peer is banned (plan §3.8: 1 h): the gossip it hands over is dropped unvalidated. Kept
-    /// in memory; persisted in <c>GraphBannedNodes</c> (its own gossip ignored too) only when the peer is a graph node.
+    /// How long a misbehaving peer is banned (plan §3.8: 1 h): the gossip it hands over is dropped unvalidated.
+    /// Persisted in <c>GraphBannedNodes</c> with its end (NL-370), so a ban survives a restart.
     /// </summary>
     public TimeSpan MisbehaviourBanDuration { get; set; } = TimeSpan.FromHours(1);
 
     /// <summary>
-    /// The most peers banned for misbehaviour at once (in memory; the ban ending first makes room). A flooder with
-    /// throwaway node ids never grows it beyond this. <c>Gossip:MaxMisbehaviourBans</c>.
+    /// The most peers banned for misbehaviour kept in memory at once (the ban ending first makes room), so a flooder
+    /// with throwaway node ids never grows it beyond this; the persisted bans are pruned at their end (NL-372).
+    /// <c>Gossip:MaxMisbehaviourBans</c>.
     /// </summary>
     public int MaxMisbehaviourBans { get; set; } = 10_000;
 

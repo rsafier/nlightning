@@ -6,6 +6,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Gossip.Graph;
+using Domain.Gossip.Persistence;
 
 /// <summary>
 /// The node's network graph (plan BOLT7 §3.1, D2): authoritative in memory, persisted write-behind through
@@ -87,6 +88,11 @@ public interface IGraphStore
 
     /// <summary>True when the gossip of <paramref name="nodeId"/> is ignored (a ban that has not ended).</summary>
     bool IsBanned(CompactPubKey nodeId);
+
+    /// <summary>
+    /// The bans that still last (NL-370: the ingress restores its peer bans from them when it starts).
+    /// </summary>
+    IReadOnlyList<GraphBannedNodeRecord> GetActiveBans();
 
     /// <summary>
     /// Adds a channel (with <see cref="GraphChannel.RawAnnouncement"/> set); false when one with that short channel id
