@@ -5745,12 +5745,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-567 FeatureSet.ToString() drops the highest feature when only its optional bit is set (listpeers never shows OptionSplice)
-- **Status:** fixed (0467e086)
+- **Status:** fixed (0467e086, 93525ee5)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Node/FeatureSet.cs` (`ToString`, the `i < FeatureFlags.Length` loop over odd bits; a set built bit by bit is sized to the highest set bit + 1 at line ~181)
 - **Evidence:** Live on Mutinynet, 2026-09-30: `listpeers` shows no `OptionSplice` for any peer, FAFO<->FAFO2 included (they splice), nor for cumulo-mutinynet / cdk-ldk-node, whose node_announcements carry bit 62/63. With splice optional (bit 62) as the highest feature the array length is 63, so the loop stops at i = 61 and never prints feature 63. Display only; negotiation is unaffected.
 - **Fixed:** `ToString` loops while `i - 1 < FeatureFlags.Length`, so the last odd bit is reached when only its even partner is set; `FeatureSetTests.Given_TheHighestFeatureWithOnlyItsOptionalBit_When_ToString_Then_ItIsListed`.
+- **Update (93525ee5):** the live nodes on 0467e086 still did not list OptionSplice: the IPC `FeatureSetFormatter` wrote `SizeInBits` bits, and `SizeInBits` is the highest set bit's index, so every feature set crossing IPC lost its highest bit. It now writes `SizeInBits + 1` bits; `FormatterTests.GivenAFeatureSetWhoseHighestBitIs_*` (bits 62, 63, 1) and `GivenAnEmptyFeatureSet_*` fail without it. `ToString`'s fix stays needed for sets built bit by bit.
 - **Fix sketch:** Loop while `i - 1 < FeatureFlags.Length` (or `i <= FeatureFlags.Length`); add a test with only an even highest bit set.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
