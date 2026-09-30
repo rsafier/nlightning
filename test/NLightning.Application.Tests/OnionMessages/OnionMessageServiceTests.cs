@@ -246,16 +246,65 @@ public sealed class OnionMessageServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_ANextNodeThatIsBobHimself_When_BobForwards_Then_Dropped()
+    public async Task Given_AHopThatRelaysToHimself_When_BobReadsIt_Then_HePeelsItLikeHisOwnDummyHop()
     {
-        // Arrange
-        var path = _carol.PathBuilder.CreateMessagePath([_bob.NodeId, _bob.NodeId]);
+        // Arrange (NL-525): a hop whose next_node_id is Bob himself is a dummy hop of a path he made; he peels it
+        // and processes the rest here instead of dropping the message as a loop. The final hop carries no payload
+        // field, so the peeled message is delivered as an empty one.
+        var path = _carol.Raw.CreatePath([_bob.NodeId, _bob.NodeId, _bob.NodeId],
+        [
+            new BlindedRecipientData { NextNodeId = _bob.NodeId },
+            new BlindedRecipientData { NextNodeId = _bob.NodeId },
+            new BlindedRecipientData()
+        ]);
+        var message = Craft(path, (_, hop) => Tlvs(hop, []));
+
+        // Act
+        await AliceSendsToBobAsync(message);
+
+        // Assert
+        await OnionMessageTestWaits.UntilAsync(() => _bob.Metrics.GetDelivered("empty") == 1,
+                                               TestContext.Current.CancellationToken);
+        Assert.Equal(0, _bob.Metrics.GetDropped(OnionMessageDropReasons.Loop));
+        Assert.Empty(_bob.LinkTo(_carol).Sent);
+    }
+
+    [Fact]
+    public void Given_MoreHopsRelayingToHimselfThanTheCap_When_BobProcessesIt_Then_DroppedAsLoop()
+    {
+        // Arrange: 22 self hops, past OnionMessageService.MaxSelfForwardHops (a message cannot get that deep from a
+        // path we made; a sender flooding self relays must not spin the worker either)
+        var path = _carol.Raw.CreatePath(Enumerable.Repeat(_bob.NodeId, 22).ToList(),
+                                         Enumerable.Repeat(new BlindedRecipientData { NextNodeId = _bob.NodeId }, 21)
+                                                   .Append(new BlindedRecipientData())
+                                                   .ToList());
+        var message = _alice.PacketBuilder.Build([], path, OnionMessageContents.Single(TestType, new byte[] { 1 }),
+                                                 null);
+
+        // Act
+        _bob.Service.ProcessIncoming(_alice.NodeId, message);
+
+        // Assert
+        Assert.Equal(1, _bob.Metrics.GetDropped(OnionMessageDropReasons.Loop));
+        Assert.Equal(0, _bob.Metrics.GetDelivered("handler"));
+        Assert.Equal(0, _bob.Metrics.GetDelivered("empty"));
+    }
+
+    [Fact]
+    public async Task Given_AReplyPathWithItsDummyHop_When_AliceSendsToIt_Then_CarolDeliversAfterPeeelingIt()
+    {
+        // Arrange (NL-525): Carol's default reply path is [Bob, Carol, Carol (dummy)]; the dummy relays to herself
+        var pathId = new byte[] { 1, 2, 3, 4 };
+        var path = _carol.PathBuilder.CreateMessagePath([_bob.NodeId, _carol.NodeId], pathId, dummyHops: 1);
 
         // Act
         await AliceSendsToBobAsync(CraftStandard(path));
 
-        // Assert
-        await ExpectBobDropAsync(OnionMessageDropReasons.Loop);
+        // Assert: Carol peeled her dummy hop and delivered the final hop to her handler
+        await _carolHandler.WaitForAsync(1, TestContext.Current.CancellationToken);
+        Assert.Equal(pathId, Assert.Single(_carolHandler.Received).PathId!.Value.ToArray());
+        Assert.Equal(0, _carol.Metrics.GetDropped(OnionMessageDropReasons.Loop));
+        Assert.Equal(1, _bob.Metrics.Forwarded);
     }
 
     [Fact]

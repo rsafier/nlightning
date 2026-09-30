@@ -185,6 +185,46 @@ public class BlindedMessagePathBuilderTests
     }
 
     [Fact]
+    public void Given_DummyHops_When_CreatingAMessagePath_Then_TheyRelayToTheRecipientAndCarryThePadding()
+    {
+        // Arrange (NL-525): the recipient's dummy hops obscure the path length
+        var pathId = new byte[] { 7, 8 };
+
+        // Act
+        var path = _kit.PathBuilder.CreateMessagePath(_kit.NodeIds[..2], pathId, dummyHops: 2);
+
+        // Assert: peer, us, us, us — every padded alike, the dummies relay to the recipient, the last has the path_id
+        Assert.Equal(4, path.Hops.Count);
+        Assert.Single(path.Hops.Select(h => h.EncryptedRecipientData.Length).Distinct());
+        var pathKey = path.FirstPathKey;
+        var keys = new[] { _kit.NodeKeys[0], _kit.NodeKeys[1], _kit.NodeKeys[1], _kit.NodeKeys[1] };
+        for (var i = 0; i < path.Hops.Count; i++)
+        {
+            var unblinded = _kit.RouteBlinding.Unblind(keys[i], pathKey, path.Hops[i].EncryptedRecipientData);
+            if (i < path.Hops.Count - 1)
+            {
+                Assert.Equal(_kit.NodeIds[1], unblinded.RecipientData.NextNodeId);
+                Assert.Null(unblinded.RecipientData.PathId);
+            }
+            else
+            {
+                Assert.Null(unblinded.RecipientData.NextNodeId);
+                Assert.Equal(pathId, unblinded.RecipientData.PathId!.Value.ToArray());
+            }
+
+            pathKey = unblinded.NextPathKey;
+        }
+    }
+
+    [Fact]
+    public void Given_NegativeDummyHops_When_CreatingAMessagePath_Then_Refused()
+    {
+        // Act & Assert
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => _kit.PathBuilder.CreateMessagePath(_kit.NodeIds[..1], dummyHops: -1));
+    }
+
+    [Fact]
     public void Given_NoSessionKey_When_CreatingTwoPaths_Then_EachGetsAFreshOne()
     {
         // Act

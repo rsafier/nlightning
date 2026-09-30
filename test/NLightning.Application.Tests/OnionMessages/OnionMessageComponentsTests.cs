@@ -219,7 +219,7 @@ public class OnionMessageComponentsTests
     }
 
     [Fact]
-    public void Given_NoPeers_When_CreatingAReplyPath_Then_ItIsOneHopToUs()
+    public void Given_NoPeers_When_CreatingAReplyPath_Then_ItIsOurHopAndTheDefaultDummyToUs()
     {
         // Arrange
         using var node = new OnionMessageTestNode("alice", 1);
@@ -234,9 +234,14 @@ public class OnionMessageComponentsTests
         var path = factory.Create(pathId);
         var unblinded = node.RouteBlinding.UnblindAsLocalNode(path.FirstPathKey, path.Hops[0].EncryptedRecipientData);
 
-        // Assert
+        // Assert: our hop relays to our default dummy hop (NL-525), which carries the path_id
         Assert.Equal(node.NodeId, path.FirstNodeId);
-        Assert.Single(path.Hops);
-        Assert.Equal(pathId, unblinded.RecipientData.PathId!.Value.ToArray());
+        Assert.Equal(2, path.Hops.Count);
+        Assert.Equal(node.NodeId, unblinded.RecipientData.NextNodeId);
+        var atDummy = node.RouteBlinding
+                       .UnblindAsLocalNode(path.FirstPathKey, path.Hops[0].EncryptedRecipientData).NextPathKey;
+        var dummy = node.RouteBlinding.UnblindAsLocalNode(atDummy, path.Hops[1].EncryptedRecipientData);
+        Assert.Null(dummy.RecipientData.NextNodeId);
+        Assert.Equal(pathId, dummy.RecipientData.PathId!.Value.ToArray());
     }
 }

@@ -491,6 +491,7 @@ public static class NodeConfigurationExtensions
                    "MaxPendingReplies": {{OM_MAX_PENDING_REPLIES}},
                    "ReplyTimeout": "{{OM_REPLY_TIMEOUT}}",
                    "MaxPathHops": {{OM_MAX_PATH_HOPS}},
+                   "BlindedPathDummyHops": {{OM_DUMMY_HOPS}},
                    "PeerBytesPerSecond": {{OM_PEER_BPS}},
                    "PeerBurstBytes": {{OM_PEER_BURST}},
                    "PeerMessagesPerSecond": {{OM_PEER_MPS}},
@@ -580,6 +581,7 @@ public static class NodeConfigurationExtensions
                   .Replace("{{OM_MAX_PENDING_REPLIES}}", Invariant(onionMessages.MaxPendingReplies))
                   .Replace("{{OM_REPLY_TIMEOUT}}", Invariant(onionMessages.ReplyTimeout))
                   .Replace("{{OM_MAX_PATH_HOPS}}", Invariant(onionMessages.MaxPathHops))
+                  .Replace("{{OM_DUMMY_HOPS}}", Invariant(onionMessages.BlindedPathDummyHops))
                   .Replace("{{OM_PEER_BPS}}", Invariant(onionMessages.PeerBytesPerSecond))
                   .Replace("{{OM_PEER_BURST}}", Invariant(onionMessages.PeerBurstBytes))
                   .Replace("{{OM_PEER_MPS}}", Invariant(onionMessages.PeerMessagesPerSecond))
