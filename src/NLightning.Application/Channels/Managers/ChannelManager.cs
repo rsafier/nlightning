@@ -2182,10 +2182,11 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             var remoteNodeId = channel.RemoteNodeId;
             fundingConfirmedHandler.OnMessageReady += (_, message) => RaiseResponseMessages(remoteNodeId, [message]);
 
-            // Add confirmation information to the channel
+            // Add confirmation information to the channel (a channel awaiting its confirmation always knows its
+            // funding outpoint: the funder built the transaction, the fundee got it with funding_created)
             channel.FundingCreatedAtBlockHeight = firstSeenAtHeight;
             channel.ShortChannelId = new ShortChannelId(firstSeenAtHeight, transactionIndex,
-                                                        channel.FundingOutput.Index!.Value);
+                                                        channel.FundingOutput!.Index!.Value);
 
             await fundingConfirmedHandler.HandleAsync(channel);
 

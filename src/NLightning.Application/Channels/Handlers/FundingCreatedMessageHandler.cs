@@ -72,7 +72,8 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         if (!_channelMemoryRepository.TryGetTemporaryChannel(peerPubKey, payload.ChannelId, out var channel))
             throw new ChannelErrorException("Temporary channel not found", payload.ChannelId);
 
-        channel.FundingOutput.TransactionId = payload.FundingTxId;
+        // The temporary channel is born with its funding output (ChannelFactory.CreateChannelV1AsNonInitiatorAsync)
+        channel.FundingOutput!.TransactionId = payload.FundingTxId;
         channel.FundingOutput.Index = payload.FundingOutputIndex;
 
         // Create a new channelId
