@@ -15,7 +15,8 @@ public static class ClientUtils
         Console.WriteLine();
         Console.WriteLine("Commands:");
         Console.WriteLine("  info                         Get node information via IPC");
-        Console.WriteLine("  connect <node>               Connect to a peer node");
+        Console.WriteLine("  connect <node>               Connect to a peer node (pubkey@host:port; the host is an IP,");
+        Console.WriteLine("                               a DNS name or a Tor v3 .onion, which needs Node:Tor)");
         Console.WriteLine("  listpeers                    List all connected peers");
         Console.WriteLine("  disconnect <node_id> [--force]");
         Console.WriteLine("                               Disconnect a peer (alias: disconnect-peer); refused while");
