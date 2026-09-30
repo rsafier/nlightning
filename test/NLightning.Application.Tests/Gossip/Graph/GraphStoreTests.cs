@@ -183,6 +183,47 @@ public class GraphStoreTests
     }
 
     [Fact]
+    public async Task Given_AnExpiredBan_When_Flushed_Then_ItIsForgottenAndItsRowDeleted()
+    {
+        // Arrange (NL-372): the ban is stored, then ends
+        var kit = new GraphTestKit();
+        kit.Store.Ban(s_alice.PubKey, "test", GraphTestKit.DefaultNow.AddHours(1));
+        kit.Store.Ban(s_bob.PubKey, "test", GraphTestKit.DefaultNow.AddHours(5));
+        await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, kit.Repository.Bans.Count);
+
+        // Act
+        kit.Clock.Now = GraphTestKit.DefaultNow.AddHours(2);
+        Assert.False(kit.Store.IsBanned(s_alice.PubKey));
+        await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
+
+        // Assert: only alice's row is gone; bob's still lasts
+        Assert.False(kit.Store.IsBanned(s_alice.PubKey));
+        Assert.Equal([s_bob.PubKey], kit.Repository.Bans.Keys);
+        Assert.Equal(0, kit.Store.PendingChanges);
+    }
+
+    [Fact]
+    public async Task Given_ExpiredBanRows_When_LoadedIntoANewStoreAndFlushed_Then_TheRowsAreDeleted()
+    {
+        // Arrange: a row that ended while the node was down (the load reads only the bans that still last)
+        var kit = new GraphTestKit();
+        kit.Store.Ban(s_alice.PubKey, "test", GraphTestKit.DefaultNow.AddHours(1));
+        await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
+        kit.Clock.Now = GraphTestKit.DefaultNow.AddHours(2);
+        var restarted = new GraphTestKit(kit.Repository, now: GraphTestKit.DefaultNow.AddHours(2));
+        await restarted.Store.LoadAsync(TestContext.Current.CancellationToken);
+        Assert.Single(kit.Repository.Bans);
+
+        // Act: the first flush after the load, with no other change pending
+        await restarted.Store.FlushAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(kit.Repository.Bans);
+        Assert.Equal(0, restarted.Store.PendingChanges);
+    }
+
+    [Fact]
     public async Task Given_SpentChannel_When_TheSpendIsReorgedOut_Then_ItIsUnspentAgainAndPersistedSo()
     {
         // Arrange
