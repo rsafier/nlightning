@@ -346,12 +346,14 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         // final); nothing re-checks it against the new close's HTLC outputs — the switch alerts when a preimage of
         // such an HTLC shows up on the new close (NL-330) — so the operator is told what was told upstream
         var resolvedHtlcs = new List<string>();
-        foreach (var row in rows.Where(r => r.HtlcId is not null && r.TransactionId != newSpend
-                                         && r.State is OutputResolutionState.Resolved
-                                                    or OutputResolutionState.Irrevocable))
+        foreach (var row in rows)
         {
+            if (row.HtlcId is not { } htlcId || row.TransactionId == newSpend
+             || row.State is not (OutputResolutionState.Resolved or OutputResolutionState.Irrevocable))
+                continue;
+
             var outcome = row.HtlcDirection == HtlcDirection.Outgoing
-                ? await HtlcUpstreamOutcomeReader.ReadAsync(unitOfWork, channelId, row.HtlcId.Value)
+                ? await HtlcUpstreamOutcomeReader.ReadAsync(unitOfWork, channelId, htlcId)
                 : HtlcUpstreamOutcome.Unknown;
             var told = outcome switch
             {
@@ -359,7 +361,7 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                 HtlcUpstreamOutcome.Fulfilled => " (fulfilled upstream)",
                 _ => string.Empty
             };
-            resolvedHtlcs.Add($"{row.HtlcDirection} {row.HtlcId}{told}");
+            resolvedHtlcs.Add($"{row.HtlcDirection} {htlcId}{told}");
         }
 
         if (resolvedHtlcs.Count > 0)

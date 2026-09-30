@@ -428,10 +428,13 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     internal static ChannelEntity MapDomainToEntity(ChannelModel channelModel)
     {
         var config = ChannelConfigDbRepository.MapDomainToEntity(channelModel.ChannelId, channelModel.ChannelParams);
+
+        // A persisted channel always carries both key sets and its funding output (the factories create them together;
+        // the dual-fund placeholder is persisted only after the negotiation fills them)
         ImmutableArray<ChannelKeySetEntity> keySets =
         [
             ChannelKeySetDbRepository.MapDomainToEntity(channelModel.ChannelId, true, channelModel.LocalKeySet),
-            ChannelKeySetDbRepository.MapDomainToEntity(channelModel.ChannelId, false, channelModel.RemoteKeySet)
+            ChannelKeySetDbRepository.MapDomainToEntity(channelModel.ChannelId, false, channelModel.RemoteKeySet!)
         ];
 
         List<ChannelLocalAliasEntity>? localAliasEntities = null;
@@ -449,7 +452,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             ChannelId = channelModel.ChannelId,
 
             FundingCreatedAtBlockHeight = channelModel.FundingCreatedAtBlockHeight,
-            FundingTxId = channelModel.FundingOutput.TransactionId ?? new byte[CryptoConstants.Sha256HashLen],
+            FundingTxId = channelModel.FundingOutput!.TransactionId ?? new byte[CryptoConstants.Sha256HashLen],
             FundingOutputIndex = channelModel.FundingOutput.Index ?? 0,
             FundingAmountSatoshis = channelModel.FundingOutput.Amount.Satoshi,
 
