@@ -298,6 +298,36 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
         _failureService.VerifyNoOtherCalls();
     }
 
+    [Fact]
+    public async Task Given_HtlcForInvoiceSettledByAnotherHtlc_When_FulfillDeadline_Then_FailedBackNotChannelFailed()
+    {
+        // Arrange (NL-274): two HTLCs for the same payment hash; the invoice was settled through the marked one,
+        // while the unrelated one carries no mark of its own - resolved per HTLC (stored preimage or origin), the
+        // settled invoice alone never makes it look fulfillable
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var settledId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv + 500);
+        var unrelatedId = _pair.Add(_pair.Alice, 19_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        MarkPreimage(_pair.Bob, settledId, preimage);
+        UseChannel(_pair.Bob);
+        _invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
+                 .ReturnsAsync(Invoice(RealSigningCommitmentPair.Hash(preimage), InvoiceStatus.Settled));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety - 1, TestContext.Current.CancellationToken);
+        _failureService.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert: the unrelated HTLC is failed back at its fulfillment deadline; the marked one, whose deadline is
+        // far away, keeps the channel up and the channel is never failed for the unrelated HTLC
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, unrelatedId, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, settledId, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Never);
+        _failureService.VerifyNoOtherCalls();
+    }
+
     [Theory]
     [InlineData(InvoiceStatus.Open)]
     [InlineData(InvoiceStatus.Accepted)]
