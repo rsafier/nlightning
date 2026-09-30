@@ -10,6 +10,7 @@ using Application.Gossip.Announcements;
 using Application.Protocol.Factories;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
@@ -191,6 +192,33 @@ public class ChannelAnnouncementSpliceTests
         Assert.Null(pair.Alice.Channel.RemoteAnnouncementSignatures);
         Assert.Equal(0, pair.Alice.Saves);
         Assert.Empty(pair.Alice.Sink.ChannelAnnouncements);
+    }
+
+    [Fact]
+    public async Task Given_ThePeersDeferredHalfTakenAtTheLock_When_Processed_Then_TheFundingRowKeepsItsHalf()
+    {
+        // Arrange - NL-488: the locked splice's row flag is what bit 0 of my_current_funding_locked reads after a
+        // restart, so the deferred half marks its row when it is taken
+        using var pair = new AnnouncementTestPair();
+        var current = ChannelFunding.FromFundingOutput(pair.Alice.Channel.FundingOutput!)!;
+        var rows = new Mock<IChannelFundingDbRepository>();
+        rows.Setup(r => r.GetFundingSetAsync(AnnouncementTestPair.ChannelId))
+            .ReturnsAsync(FundingSet.Single(current));
+        pair.Alice.UnitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(rows.Object);
+        var bobsHalf = pair.Bob.Service.CreateAnnouncementSignatures(pair.Bob.Channel).Payload;
+        pair.Alice.Service.DeferRemoteAnnouncementSignatures(
+            AnnouncementTestPair.ChannelId, bobsHalf.ShortChannelId,
+            new ChannelAnnouncementSignatures(bobsHalf.NodeSignature, bobsHalf.BitcoinSignature));
+
+        // Act
+        await pair.Alice.Service.ProcessDeferredRemoteAnnouncementSignaturesAsync(
+            pair.Alice.Channel, pair.Bob.NodeId, pair.Alice.UnitOfWork.Object);
+
+        // Assert: the current funding row is upserted with the half's flag
+        rows.Verify(r => r.UpsertAsync(AnnouncementTestPair.ChannelId,
+                                       It.Is<ChannelFunding>(f => f.AnnouncementSignaturesReceived
+                                                                && f.FundingTxId == current.FundingTxId)),
+                    Times.Once);
     }
 
     #endregion

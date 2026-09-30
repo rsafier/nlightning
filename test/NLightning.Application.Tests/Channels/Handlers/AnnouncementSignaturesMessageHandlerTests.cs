@@ -3,7 +3,9 @@ namespace NLightning.Application.Tests.Channels.Handlers;
 using Application.Gossip.Announcements;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Options;
@@ -284,6 +286,30 @@ public class AnnouncementSignaturesMessageHandlerTests
         await Assert.ThrowsAsync<ChannelErrorException>(
             () => pair.Bob.Handler.HandleAsync(half, ChannelState.Open, s_features, pair.Bob.NodeId));
         Assert.Equal(0, pair.Bob.Saves);
+    }
+
+    [Fact]
+    public async Task Given_AHalfStoredForTheFunding_When_Handled_Then_TheFundingRowKeepsTheHalf()
+    {
+        // Arrange - NL-488: the funding row's flag is what a reestablish reads for a locked splice, so storing the
+        // half stages it on the row in the handler's save
+        using var pair = new AnnouncementTestPair();
+        var current = ChannelFunding.FromFundingOutput(pair.Bob.Channel.FundingOutput!)!;
+        var fundingRows = new Mock<IChannelFundingDbRepository>();
+        fundingRows.Setup(r => r.GetFundingSetAsync(AnnouncementTestPair.ChannelId))
+                   .ReturnsAsync(FundingSet.Single(current));
+        pair.Bob.UnitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(fundingRows.Object);
+        var half = SendOwn(pair.Alice);
+
+        // Act
+        await pair.Bob.Handler.HandleAsync(half, ChannelState.Open, s_features, pair.Alice.NodeId);
+
+        // Assert
+        fundingRows.Verify(
+            r => r.UpsertAsync(AnnouncementTestPair.ChannelId,
+                               It.Is<ChannelFunding>(f => f.AnnouncementSignaturesReceived
+                                                         && f.FundingTxId == current.FundingTxId)),
+            Times.Once);
     }
 
     /// <summary>The node's own half, marked sent on its connection as the announcement service does.</summary>

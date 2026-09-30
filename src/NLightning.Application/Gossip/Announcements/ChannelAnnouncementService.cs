@@ -336,6 +336,7 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
         }
 
         channel.SetRemoteAnnouncementSignatures(deferred.Signatures);
+        await StageFundingHalfStoredAsync(channel, unitOfWork);
         AnnouncementSignaturesMessage? reply = null;
         if (CanSendAnnouncementSignatures(channel) && !WasSentOnConnection(channel.ChannelId))
         {
@@ -353,6 +354,30 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
         if (TryAssembleAnnouncement(channel) is { } announcement)
             OnChannelAnnounced(channel, announcement);
         return reply;
+    }
+
+    /// <summary>
+    /// Stages the current funding row's <c>AnnouncementSignaturesReceived</c> (splicing plan SP-RE-02): the deferred
+    /// half names that funding's own announcement, so bit 0 of <c>my_current_funding_locked</c> stays clear for the
+    /// locked splice across a restart too (NL-488). The row is written with the lock's round in the same save; a unit
+    /// of work without funding rows (tests) skips it.
+    /// </summary>
+    private async Task StageFundingHalfStoredAsync(ChannelModel channel, IUnitOfWork unitOfWork)
+    {
+        try
+        {
+            if (unitOfWork.ChannelFundingDbRepository is not { } fundings)
+                return;
+            if (await fundings.GetFundingSetAsync(channel.ChannelId) is not { } set)
+                return;
+
+            await fundings.UpsertAsync(channel.ChannelId,
+                                       set.Current with { AnnouncementSignaturesReceived = true });
+        }
+        catch (NotSupportedException)
+        {
+            // A unit of work that does not store channel fundings: nothing to mark
+        }
     }
 
     private ChainHash ChainHash => _nodeOptions.BitcoinNetwork.ChainHash;
