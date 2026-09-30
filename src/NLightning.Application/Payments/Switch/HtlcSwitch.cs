@@ -134,6 +134,13 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private readonly KeyedAsyncLock<Hash> _paymentHashLocks = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _unhandledLocalResolutions = new();
 
+    /// <summary>
+    /// The upstream HTLCs whose preimage was revealed on chain after the upstream was already failed (a close a reorg
+    /// replaced, NL-330): the conflict is alerted once per HTLC.
+    /// </summary>
+    private readonly ConcurrentDictionary<(ChannelId IncomingChannelId, ulong IncomingHtlcId), byte>
+        _fulfillConflictsAlerted = new();
+
     // basic_mpp (ABCD W6-B): the HTLC sets being held, by payment hash (read and changed only under its hash lock),
     // the parts of a timed-out set whose mpp_timeout failure was refused (failed again on their replay), and the
     // timeout rounds running in the background
@@ -1466,7 +1473,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                             OutgoingHtlcFulfilled fulfilled, CancellationToken cancellationToken)
     {
         if (GetAwaitingIncomingHtlc(incomingChannelId, incomingHtlcId) is not { } incoming)
+        {
+            await AlertUpstreamAlreadyFailedAsync(incomingChannelId, incomingHtlcId, fulfilled);
             return;
+        }
 
         if (AddsAttribution(incoming)
          && await GetIncomingSharedSecretAsync(incomingChannelId, incoming) is { } sharedSecret)
@@ -1488,6 +1498,55 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
         _logger.LogInformation("Fulfilled upstream HTLC {HtlcId} of channel {ChannelId}", incomingHtlcId,
                                incomingChannelId);
+    }
+
+    /// <summary>
+    /// A preimage arrived for an incoming HTLC that can no longer be fulfilled (not locked in, no removal pending).
+    /// When the upstream was already <b>failed</b> — the preimage of a close that a reorg replaced with another
+    /// commitment carrying the HTLC again (NL-330), or any other late reveal — the amount was paid downstream without
+    /// reimbursement: the operator is told once per HTLC. Any other reason (fulfilled already, the channel gone) stays
+    /// silent, as the repeated events of the resolvers always have.
+    /// </summary>
+    private async Task AlertUpstreamAlreadyFailedAsync(ChannelId incomingChannelId, ulong incomingHtlcId,
+                                                       OutgoingHtlcFulfilled fulfilled)
+    {
+        try
+        {
+            var incoming = _channelMemoryRepository.TryGetChannel(incomingChannelId, out var channel)
+                        ? channel.Commitments?.GetHtlc(HtlcDirection.Incoming, incomingHtlcId)
+                        : null;
+            bool failed;
+            if (incoming?.Removal is { } removal)
+                failed = removal.Kind != HtlcRemovalKind.Fulfill;
+            else if (incoming is null)
+            {
+                // Not loaded (the upstream channel is closed or not in this process): the circuit decides
+                using var scope = _serviceScopeFactory.CreateScope();
+                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                var circuit = await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(incomingChannelId,
+                                  incomingHtlcId);
+                failed = circuit?.Status == ForwardCircuitStatus.Failed;
+            }
+            else
+                return;
+
+            if (!failed
+             || !_fulfillConflictsAlerted.TryAdd((incomingChannelId, incomingHtlcId), 0))
+                return;
+
+            _logger.LogCritical(
+                "[B5-GEN-06] The preimage of our HTLC {HtlcId} on channel {ChannelId} (payment hash {PaymentHash}) was "
+              + "revealed on chain, but the upstream HTLC {IncomingHtlcId} of channel {IncomingChannelId} was already "
+              + "failed: it cannot be fulfilled, so the amount was paid downstream without reimbursement. A close "
+              + "replaced by a reorg can carry the HTLC again (NL-330); check both channels by hand",
+                fulfilled.HtlcId, fulfilled.ChannelId, fulfilled.PaymentHash, incomingHtlcId, incomingChannelId);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // The fulfill is a no-op either way; the alert must not break the switch's event handling
+            _logger.LogWarning(e, "Could not check the upstream of HTLC {HtlcId} of channel {ChannelId} for the "
+                              + "late preimage", incomingHtlcId, incomingChannelId);
+        }
     }
 
     /// <summary>

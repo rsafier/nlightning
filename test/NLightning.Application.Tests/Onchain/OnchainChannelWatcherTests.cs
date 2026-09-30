@@ -24,9 +24,13 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
+using Domain.Payments.Enums;
+using Domain.Payments.Models;
+using Domain.Payments.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Infrastructure.Bitcoin;
@@ -270,6 +274,57 @@ public sealed class OnchainChannelWatcherTests : IDisposable
                                             && m.Contains("had already resolved", StringComparison.Ordinal)
                                             && m.Contains($"{htlcRow.HtlcDirection} {htlcRow.HtlcId}",
                                                           StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Given_ReplacedCloseWithAResolvedOutgoingHtlcFailedUpstream_When_AnotherSpendIsRaised_Then_TheAlertNamesTheOutcome()
+    {
+        // Arrange (NL-330): our commitment was recorded and one of our offered HTLCs was resolved by its timeout, so
+        // the upstream was failed at reasonable depth; a reorg took the close out and the peer's commitment confirmed
+        var local = _pair.Alice.State.LocalCommit;
+        var ours = BuildCommitment(CommitmentSide.Local, local.Spec, local.Number, null);
+        await Watcher.HandleFundingSpentAsync(SpentBy(ours), TestContext.Current.CancellationToken);
+        var htlcRow = _store.Outputs.Values.First(o => o.TransactionId == ours.TxId
+                                                    && o.HtlcDirection == HtlcDirection.Outgoing);
+        _store.Outputs[(htlcRow.TransactionId, htlcRow.OutputIndex)] =
+            htlcRow with { State = OutputResolutionState.Resolved, ResolvedHeight = SpendHeight + 1 };
+        var upstreamChannelId = new ChannelId(Enumerable.Repeat((byte)0x5A, 32).ToArray());
+        var outgoingChannelId = new ChannelId(Enumerable.Repeat((byte)0x5C, 32).ToArray());
+        _store.Origins[(_channel.ChannelId, HtlcDirection.Outgoing, htlcRow.HtlcId!.Value)] =
+            HtlcOrigin.Forwarded(upstreamChannelId, 7);
+        _store.Circuits[(upstreamChannelId, 7)] = Circuit(ForwardCircuitStatus.Failed, upstreamChannelId, 7,
+                                                          outgoingChannelId);
+        var remote = _pair.Alice.State.RemoteCommit;
+        var theirs = BuildCommitment(CommitmentSide.Remote, remote.Spec, remote.Number, remote.PerCommitmentPoint);
+        var reorged = new OutpointSpentEventArgs(_channel.ChannelId, theirs, SpendHeight + 2, 1,
+                                                 _channel.FundingOutput!.TransactionId!.Value,
+                                                 _channel.FundingOutput.Index!.Value, OnchainTestStore.BlockHash(9));
+
+        // Act
+        await Watcher.HandleFundingSpentAsync(reorged, TestContext.Current.CancellationToken);
+
+        // Assert: the alert names what was told upstream, so the operator knows a later preimage on the new close
+        // cannot be forwarded
+        Assert.Contains(_logger.Messages, m => m.Contains("[B5-GEN-06]", StringComparison.Ordinal)
+                                            && m.Contains($"Outgoing {htlcRow.HtlcId} (failed upstream)",
+                                                          StringComparison.Ordinal));
+        // The incoming HTLC row of the same close has no upstream to name
+        Assert.DoesNotContain(_logger.Messages, m => m.Contains("Incoming (failed upstream", StringComparison.Ordinal)
+                                                  || m.Contains("Incoming (fulfilled upstream",
+                                                                StringComparison.Ordinal));
+    }
+
+    /// <summary>A forward circuit for the origin lookups of the replaced-close tests.</summary>
+    private static ForwardCircuitModel Circuit(ForwardCircuitStatus status, ChannelId incomingChannelId,
+                                               ulong incomingHtlcId, ChannelId outgoingChannelId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return ForwardCircuitModel.Restore(incomingChannelId, incomingHtlcId, LightningMoney.MilliSatoshis(20_000_000),
+                                           640, new Hash(Enumerable.Repeat((byte)0xAB, 32).ToArray()),
+                                           new Secret(Enumerable.Repeat((byte)0x5B, 32).ToArray()),
+                                           new ShortChannelId(1, 2, 3), LightningMoney.MilliSatoshis(19_000_000), 600,
+                                           now, status, outgoingChannelId, 7,
+                                           status is ForwardCircuitStatus.Offered ? null : now);
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 namespace NLightning.Application.Tests.Onchain;
 
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -9,6 +10,9 @@ using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
+using Domain.Payments.Interfaces;
+using Domain.Payments.Models;
+using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 
 /// <summary>
@@ -29,6 +33,12 @@ internal sealed class OnchainTestStore
     public List<ChannelState> PersistedChannelStates { get; } = [];
     public List<ChannelId> DeletedRevocationLogs { get; } = [];
     public Dictionary<(ChannelId, ulong), RevokedCommitmentModel> RevocationLog { get; } = [];
+
+    /// <summary>The origins stored per outgoing HTLC (<c>ChannelStateDbRepository.GetHtlcOriginAsync</c>).</summary>
+    public Dictionary<(ChannelId ChannelId, HtlcDirection Direction, ulong HtlcId), HtlcOrigin> Origins { get; } = [];
+
+    /// <summary>The forward circuits (<c>ForwardCircuitDbRepository.GetByIncomingAsync</c>).</summary>
+    public Dictionary<(ChannelId IncomingChannelId, ulong IncomingHtlcId), ForwardCircuitModel> Circuits { get; } = [];
 
     /// <summary>The first commitment number the revocation log covers (<c>GetLogStartAsync</c>).</summary>
     public ulong RevocationLogStart { get; set; }
@@ -57,6 +67,8 @@ internal sealed class OnchainTestStore
         unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(CreateBroadcasts().Object);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(CreateChannels().Object);
         unitOfWork.SetupGet(u => u.RevokedCommitmentDbRepository).Returns(CreateRevocationLog().Object);
+        unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(CreateChannelState().Object);
+        unitOfWork.SetupGet(u => u.ForwardCircuitDbRepository).Returns(CreateCircuits().Object);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             if (FailNextSave is { } failure)
@@ -180,6 +192,30 @@ internal sealed class OnchainTestStore
                        _pending.Add("revocation log deleted");
                    })
                   .Returns(Task.CompletedTask);
+        return repository;
+    }
+
+    private Mock<IChannelStateDbRepository> CreateChannelState()
+    {
+        var repository = new Mock<IChannelStateDbRepository>();
+        repository.Setup(r => r.GetHtlcOriginAsync(It.IsAny<ChannelId>(), It.IsAny<HtlcKey>()))
+                  .ReturnsAsync((ChannelId channelId, HtlcKey key) =>
+                   {
+                       var keyBytes = (ChannelId: channelId, key.Direction, key.Id);
+                       return Origins.TryGetValue(keyBytes, out var origin) ? origin : null;
+                   });
+        return repository;
+    }
+
+    private Mock<IForwardCircuitDbRepository> CreateCircuits()
+    {
+        var repository = new Mock<IForwardCircuitDbRepository>();
+        repository.Setup(r => r.GetByIncomingAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>()))
+                  .ReturnsAsync((ChannelId channelId, ulong htlcId) =>
+                   {
+                       var keyBytes = (IncomingChannelId: channelId, IncomingHtlcId: htlcId);
+                       return Circuits.TryGetValue(keyBytes, out var circuit) ? circuit : null;
+                   });
         return repository;
     }
 

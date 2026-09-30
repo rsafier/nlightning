@@ -20,6 +20,7 @@ using Domain.Onchain.Classifiers;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
+using Domain.Payments.Enums;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -341,12 +342,25 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         var rows = await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(channelId);
 
         // An HTLC of the old close already resolved may have been removed upstream (a fail at reasonable depth is
-        // final); nothing re-checks it against the new close's HTLC outputs, so the operator is told
-        var resolvedHtlcs = rows.Where(r => r.HtlcId is not null && r.TransactionId != newSpend
+        // final); nothing re-checks it against the new close's HTLC outputs — the switch alerts when a preimage of
+        // such an HTLC shows up on the new close (NL-330) — so the operator is told what was told upstream
+        var resolvedHtlcs = new List<string>();
+        foreach (var row in rows.Where(r => r.HtlcId is not null && r.TransactionId != newSpend
                                          && r.State is OutputResolutionState.Resolved
-                                                    or OutputResolutionState.Irrevocable)
-                                .Select(r => $"{r.HtlcDirection} {r.HtlcId}")
-                                .ToList();
+                                                    or OutputResolutionState.Irrevocable))
+        {
+            var outcome = row.HtlcDirection == HtlcDirection.Outgoing
+                ? await HtlcUpstreamOutcomeReader.ReadAsync(unitOfWork, channelId, row.HtlcId.Value)
+                : HtlcUpstreamOutcome.Unknown;
+            var told = outcome switch
+            {
+                HtlcUpstreamOutcome.Failed => " (failed upstream)",
+                HtlcUpstreamOutcome.Fulfilled => " (fulfilled upstream)",
+                _ => string.Empty
+            };
+            resolvedHtlcs.Add($"{row.HtlcDirection} {row.HtlcId}{told}");
+        }
+
         if (resolvedHtlcs.Count > 0)
             _logger.LogCritical("[B5-GEN-06] Channel {ChannelId}: the reorged-out close {TxId} had already resolved "
                               + "HTLC output(s) {Htlcs}; their upstream removal (a fail at reasonable depth) may not "

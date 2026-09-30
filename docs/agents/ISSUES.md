@@ -60,6 +60,8 @@ Updated 2026-09-28 by lane rbf (branch `wip/fafo-rbf` from `wip/fafo` at `2b5dff
 
 Updated 2026-09-28 by lane bolt10 (branch `wip/fafo-bolt10` from `978ad275`, code at `f09ff53d`, since merged into `wip/fafo`): BOLT 10 DNS seed bootstrap implemented and off by default. Fixed: NL-113. New: NL-541..NL-545 (NL-536..NL-540 left to the concurrent cli-lognoise lane). Targeted tests only (owner request), net10.0 Release: Domain `Node/Bootstrap` 91, Infrastructure 479, Infrastructure.Bitcoin `Bootstrap` 34, Application `PeerBootstrapServiceTests` 24, Daemon `NodeServiceExtensionsTests` 68; no Docker, no full matrix. Review fixes at `644bc5a8` (NL-113 entry): address filter ranges, SRV (target, port), the `n` condition, BOLT 10 example vectors, cancellable dials, gate retries, obsolete `Node:DnsSeedServers` ignored; no new IDs. Targeted, net10.0 Release: Domain 3660, Infrastructure.Bitcoin 1394, Application `Node` namespace 208 (3 runs), Daemon 799.
 
+Updated 2026-09-29 by lane nl330 (branch `nl330` from `nl559` at `ebd9659e`, i.e. `wip/fafo` with NL-559, not merged into `wip/fafo`): NL-330 fixed (a preimage revealed on a close that a reorg replaced is checked against what was already told upstream; when that was a fail, a critical `[B5-GEN-06]` names the HTLC and both channels once, and the retirement alert names the outcome per resolved HTLC; the upstream outcome is derived from the switch's one-way state by the new `HtlcUpstreamOutcomeReader`, no schema change). No new IDs. Docker: the on-chain suite re-ran green (no Docker test exercises a replaced close with HTLCs). Non-Docker on net10.0, Release: full suite green (Domain 3701, Application 3095, Integration 933, Serialization 613, Infrastructure 484, Infrastructure.Bitcoin 1414, Bolt11 327, Daemon 840).
+
 Updated 2026-09-29 by lane nl559 (branch `nl559` from `wip/fafo` at `3044f55e`, merged into `wip/fafo` through PR #15): NL-559 fixed at `002b6acd` (a peer that refuses our `peer_storage` blob for its size — LDK's 1,024-byte limit — is answered at once with one padded to exactly the limit its warning names, the limit relearned per process, the refusals counted and listed by `listpeerstorage`; Docker Proof `LdkPeerStorageTests`). No new IDs. Docker from the host on net10.0, Release: the full LDK trait 14/14 (the new proof included, 205 s) and the CLN trait 77 green (+4 Explicit not run, 847 s; `ClnPeerStorageTests` included). Non-Docker on net10.0, Release: Domain 3701, Application 3092, Integration 933, Serialization 613, Infrastructure 484, Infrastructure.Bitcoin 1414, Bolt11 327, Daemon 840, all green.
 
 Updated 2026-09-28 by lane nl543 (branch `wip/fafo-nl543` from `wip/fafo` at `ef7ad335`, code at `d4eb9582`, since merged into `wip/fafo`): the bootstrap tops up from the gossip graph before the DNS seeds (owner decision, light testing). Fixed: NL-543. New: NL-547. Targeted tests only, net10.0 Release: Application `NLightning.Application.Tests.Node` 223, Domain `Node/Bootstrap` 158; no Docker, no full matrix, no live run.
@@ -104,9 +106,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 4 | 171 | 175 |
+| open | 0 | 0 | 3 | 171 | 174 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 153 | 136 | 365 |
+| fixed | 14 | 62 | 154 | 136 | 366 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **62** | **161** | **313** | **550** |
@@ -2883,12 +2885,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O6-T3
 
 ### NL-330 Upstream fails made for a close that a reorg replaced are not re-checked
-- **Status:** open
+- **Status:** fixed (<SHA>)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/OnchainChannelWatcher.cs` (`RetireReplacedCloseAsync`)
 - **Evidence:** When a reorg replaces a close whose HTLC outputs were already resolved (and possibly failed upstream at reasonable depth), the rows of the old close are ignored and a critical `[B5-GEN-06]` alert names them, but the new close's HTLC outputs are not reconciled with what was already told upstream, so a preimage claim on the new close cannot be forwarded to an upstream HTLC already failed (reported by W6-F). Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): the method lives in `OnchainChannelWatcher.cs:216`, not the executor; still open: it only logs the critical `[B5-GEN-06]` alert for already-resolved HTLC rows and marks the old rows Ignored.
 - **Fix sketch:** Keep the upstream outcome per HTLC across closes; on a replaced close, resolve the new close's HTLC outputs against it and alert on a conflict.
+- **Fixed:** The upstream outcome of an offered HTLC is now readable per HTLC at any time and checked at the moment the new close reveals a preimage. New `HtlcUpstreamOutcome` (Domain `Payments/Enums`: Unknown/Fulfilled/Failed) and `HtlcUpstreamOutcomeReader` (Application `Onchain`): derives the outcome from the one-way state the switch already keeps (the incoming HTLC's removal of a loaded upstream channel, else its `ForwardCircuitStatus`, else the local payment's status), mirroring the resolvers' `ComputeUpstreamResolvedAsync` but naming the outcome; nothing new is stored (a fail upstream is final, so nothing can change once it is not Unknown), which keeps the fix migration-free. `HtlcSwitch` (`AlertUpstreamAlreadyFailedAsync`): a preimage arriving for an incoming HTLC that can no longer be fulfilled (the resolver raises `OutgoingHtlcFulfilled` unconditionally, also for a claim on a replaced close) is checked against the upstream outcome; when it was **failed**, a critical `[B5-GEN-06]` alert names the HTLC, both channels and the payment hash, once per HTLC (in-memory dedup) — the amount was paid downstream without reimbursement, the exact loss the reorg can cause; an already-fulfilled upstream stays silent (the resolvers' repeated events). `RetireReplacedCloseAsync` now annotates its alert per resolved HTLC row with what was told upstream (`(failed upstream)`/`(fulfilled upstream)`; outgoing rows only — an incoming row has no upstream). The timeout direction needed no change: the resolvers already suppress a second fail (`UpstreamResolved`), and a failed-then-timeout-again is the correct outcome. Not covered (observed, out of scope): a late preimage on a **local** payment whose HTLC resolved failed goes to `PaymentService` as before. Tests: `OnchainEventsTests` (`Given_UpstreamAlreadyFailed_When_PreimageRaisedOnChain_Then_CriticalAlertOnceAndNoFulfill`, `Given_UpstreamAlreadyFulfilled_When_PreimageRaisedAgain_Then_Silent`), `OnchainChannelWatcherTests.Given_ReplacedCloseWithAResolvedOutgoingHtlcFailedUpstream_When_AnotherSpendIsRaised_Then_TheAlertNamesTheOutcome` (with `OnchainTestStore` gaining `Origins`/`Circuits`).
 - **Blocks/Blocked-by:** Part of NL-094; related NL-292
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O6-T3, B5-GEN-06
 

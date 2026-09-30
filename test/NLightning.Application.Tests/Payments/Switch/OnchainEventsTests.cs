@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -47,6 +48,7 @@ public class OnchainEventsTests
     private readonly Mock<IForwardCircuitDbRepository> _circuits = new();
     private readonly Mock<IFailureOnionService> _failureOnions = new();
     private readonly List<FailureMessage> _createdFailures = [];
+    private readonly RecordingLogger<HtlcSwitch> _logger = new();
     private readonly HtlcRecord _incoming;
 
     public OnchainEventsTests()
@@ -295,10 +297,60 @@ public class OnchainEventsTests
                                                         NullLogger<IncomingOnionProcessor>.Instance);
         return new HtlcSwitch(new ChannelLockProvider(), _context.ChannelMemoryRepository.Object, _operations.Object,
                               _failureOnions.Object, new FinalHopProcessor(NullLogger<FinalHopProcessor>.Instance),
-                              new HtlcForwardingPolicy(options), NullLogger<HtlcSwitch>.Instance, onionProcessor,
+                              new HtlcForwardingPolicy(options), _logger, onionProcessor,
                               new Mock<IPeerLivenessProbe>().Object, provider.GetRequiredService<IServiceScopeFactory>(),
                               blockchainMonitor: height is { } tip ? Monitor(tip) : null,
                               onchainOptions: onchainOptions is null ? null : Options.Create(onchainOptions));
+    }
+
+    /// <summary>
+    /// NL-330: the preimage of a forwarded HTLC was revealed on chain after the upstream was already failed (a close
+    /// a reorg replaced can carry the HTLC again): the fulfill is a no-op and the operator is told once.
+    /// </summary>
+    [Fact]
+    public async Task Given_UpstreamAlreadyFailed_When_PreimageRaisedOnChain_Then_CriticalAlertOnceAndNoFulfill()
+    {
+        // Arrange: the upstream fail went out (the incoming HTLC carries its removal) and the circuit recorded it
+        _context.SetState(_context.State.SendFail(_incoming.Id, new byte[292]).Next);
+        _circuits.Setup(r => r.GetByIncomingAsync(TestChannelId, _incoming.Id))
+                 .ReturnsAsync(() => Circuit(ForwardCircuitStatus.Failed));
+        var htlcSwitch = CreateSwitch();
+        var fulfilled = new OutgoingHtlcFulfilled(s_downstreamChannelId, DownstreamHtlcId, HashOf(s_preimage),
+                                                  s_preimage);
+
+        // Act: the resolver raises the preimage twice (the block that revealed it and a replay)
+        await htlcSwitch.HandleAsync(fulfilled, TestContext.Current.CancellationToken);
+        await htlcSwitch.HandleAsync(fulfilled, TestContext.Current.CancellationToken);
+
+        // Assert: nothing goes upstream, and the conflict is alerted exactly once
+        _operations.Verify(o => o.FulfillHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(), It.IsAny<Secret>(),
+                                                   It.IsAny<CancellationToken>()), Times.Never);
+        var alert = Assert.Single(_logger.Messages, m => m.Contains("[B5-GEN-06]", StringComparison.Ordinal)
+                                                       && m.Contains("was already failed", StringComparison.Ordinal));
+        Assert.Contains($"HTLC {DownstreamHtlcId} on channel {s_downstreamChannelId}", alert,
+                        StringComparison.Ordinal);
+        Assert.Contains($"upstream HTLC {_incoming.Id} of channel {TestChannelId}", alert, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Given_UpstreamAlreadyFulfilled_When_PreimageRaisedAgain_Then_Silent()
+    {
+        // Arrange: the upstream fulfill went out (a normal replay of the resolver's event)
+        _context.SetState(_context.State.SendFulfill(_incoming.Id, s_preimage,
+                                                     new Infrastructure.Crypto.Hashes.Sha256()).Next);
+        _circuits.Setup(r => r.GetByIncomingAsync(TestChannelId, _incoming.Id))
+                 .ReturnsAsync(() => Circuit(ForwardCircuitStatus.Fulfilled));
+        var htlcSwitch = CreateSwitch();
+
+        // Act
+        await htlcSwitch.HandleAsync(new OutgoingHtlcFulfilled(s_downstreamChannelId, DownstreamHtlcId,
+                                                               HashOf(s_preimage), s_preimage),
+                                     TestContext.Current.CancellationToken);
+
+        // Assert: no send, no alert
+        _operations.Verify(o => o.FulfillHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(), It.IsAny<Secret>(),
+                                                   It.IsAny<CancellationToken>()), Times.Never);
+        Assert.Empty(_logger.Messages);
     }
 
     private static IBlockchainMonitor Monitor(uint height)
@@ -316,5 +368,31 @@ public class OnchainEventsTests
                                            LightningMoney.MilliSatoshis(29_000_000), 600, now, status,
                                            s_downstreamChannelId, DownstreamHtlcId,
                                            status is ForwardCircuitStatus.Offered ? null : now);
+    }
+
+    /// <summary>Captures the formatted log lines, for the alert assertions.</summary>
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        private readonly List<string> _messages = [];
+
+        public IReadOnlyList<string> Messages
+        {
+            get
+            {
+                lock (_messages)
+                    return _messages.ToList();
+            }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                                Func<TState, Exception?, string> formatter)
+        {
+            lock (_messages)
+                _messages.Add(formatter(state, exception));
+        }
     }
 }
