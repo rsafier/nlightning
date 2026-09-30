@@ -62,7 +62,8 @@ using Sync.Interfaces;
 /// <b>Backlog:</b> a new filter asks for the graph inside it: one pass over the snapshot taken at the next tick (per
 /// channel its announcement then its updates, then the node announcements), paced at
 /// <see cref="GossipRelayOptions.BacklogMessagesPerSecond"/>; it replaces the pending set and any backlog still
-/// running.
+/// running. What the backlog sent is remembered per connection, so the first flush after it does not send the same
+/// version again (a change applied between the last collect and the snapshot is in both; NL-549).
 /// </para>
 /// <para>
 /// <b>Backpressure (NL-360):</b> the peer's outbox bounds its gossip share (<c>Gossip:MaxOutboxGossipPerPeer</c>,
@@ -335,6 +336,10 @@ public sealed partial class GossipRelayScheduler
         if (state.TruncatedAt is { } cut)
             pending = CompleteAfterTruncatedBacklog(state, pending, cut);
 
+        // NL-549: a change applied between the relay's last collect and a backlog's snapshot is in the snapshot and
+        // in this collect's diff, so the first flush after the backlog would send the version the backlog just sent
+        pending.RemoveAll(state.ConsumeBacklogSent);
+
         // NL-368: a 258 never goes out before its 256 on this connection. A 256 whose only update fell outside the
         // filter at an earlier flush was dropped here and counts as seen (never collected again), so the first
         // in-filter 258 of that channel brings the 256 with it
@@ -433,7 +438,7 @@ public sealed partial class GossipRelayScheduler
                     state.AdvanceBacklogPosition(item);
                     if (item.Type == MessageTypes.ChannelAnnouncement)
                         state.RememberAnnounced(item.ShortChannelId);
-
+                    state.RememberBacklogSent(item); // NL-549
                     break;
                 case SendResult.Full:
                     state.HeldBacklogItem = item;
@@ -975,6 +980,37 @@ public sealed partial class GossipRelayScheduler
 
         public bool WasAnnounced(Domain.Channels.ValueObjects.ShortChannelId shortChannelId) =>
             _announced.Contains(shortChannelId);
+
+        private readonly Dictionary<GossipMessageKey, uint> _backlogSent = [];
+
+        /// <summary>
+        /// Remembers the version the backlog sent per slot (NL-549): a change that reached the graph between the
+        /// relay's last collect and the backlog's snapshot is in the snapshot and collected again, and its first flush
+        /// after the backlog must not send it twice. Bounded like <see cref="RememberAnnounced"/>.
+        /// </summary>
+        public void RememberBacklogSent(RelayItem item)
+        {
+            if (_backlogSent.Count >= 4 * Math.Max(maxPending, 16))
+                _backlogSent.Clear();
+
+            _backlogSent[item.Slot] = item.Timestamp;
+        }
+
+        /// <summary>
+        /// True when the backlog already sent this version of the slot (a <c>channel_announcement</c> has no version);
+        /// the memory is consumed, so a newer version still goes out (NL-549).
+        /// </summary>
+        public bool ConsumeBacklogSent(RelayItem item)
+        {
+            if (!_backlogSent.TryGetValue(item.Slot, out var version))
+                return false;
+
+            if (item.Type != MessageTypes.ChannelAnnouncement && version != item.Timestamp)
+                return false;
+
+            _backlogSent.Remove(item.Slot);
+            return true;
+        }
 
         public void RequestBacklog() => Interlocked.Exchange(ref _backlogRequested, 1);
 
