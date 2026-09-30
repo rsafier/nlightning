@@ -21,6 +21,9 @@ All notable changes to this project will be documented in this file.
   to version 2, never to 3. Builds older than this one cannot read a version 3 key file;
 - Key file rewrites (upgrade, index update, backup) never keep group or other permission bits (a key file written by
   an old build with mode 0644 becomes 0600, with a warning on stderr);
+- Key file rewrites also keep the file's Unix owner and group where the process may set them (a rewrite by another
+  user, e.g. root, hands the file back to its owner), and copy the file's Windows ACL instead of the new file
+  inheriting the directory's (NL-224);
 - Version 1 key files written on Windows with a non-ASCII password (marshalled in the ANSI code page by the old
   libsodium P/Invoke) open again (NL-212);
 

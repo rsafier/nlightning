@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
 using System.Security.Cryptography;
@@ -696,6 +697,7 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
             }
 
             CopyOwnerFileMode(modeSourcePath ?? targetPath, tempPath);
+            CopyOwnershipAndAcl(targetPath, tempPath);
             File.Move(tempPath, targetPath, true);
         }
         catch
@@ -749,6 +751,13 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     [DllImport("libc", EntryPoint = "close", SetLastError = true)]
     private static extern int UnixClose(int fd);
 
+    // stat(2) and chown(2) of RestoreUnixOwnership: the owner/group of the key file survive a rewrite (SR-14)
+    [DllImport("libc", EntryPoint = "stat", SetLastError = true, CharSet = CharSet.Ansi)]
+    private static extern int UnixStat([MarshalAs(UnmanagedType.LPUTF8Str)] string path, [Out] byte[] buffer);
+
+    [DllImport("libc", EntryPoint = "chown", SetLastError = true, CharSet = CharSet.Ansi)]
+    private static extern int UnixChown([MarshalAs(UnmanagedType.LPUTF8Str)] string path, uint owner, uint group);
+
     /// <summary>
     /// Follows symlinks so an atomic replace swaps the real file, not the link.
     /// </summary>
@@ -790,6 +799,89 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
                                     "owner-only. Consider the key exposed if other users had access to this host.");
 
         File.SetUnixFileMode(destinationPath, sourceMode & ~GroupOrOtherMode);
+    }
+
+    /// <summary>
+    /// Keeps the existing file's owner, group (Unix) and Windows ACL across the atomic replace (SECURITY_REVIEW
+    /// SR-14): the temp file is created by the running user, so a rewrite by another user, e.g. root, would otherwise
+    /// hand the key file (and its 0600 mode) to that user instead of its owner.
+    /// </summary>
+    private static void CopyOwnershipAndAcl(string targetPath, string tempPath)
+    {
+        if (OperatingSystem.IsWindows())
+            CopyWindowsAcl(targetPath, tempPath);
+        else
+            RestoreUnixOwnership(targetPath, tempPath);
+    }
+
+    /// <summary>
+    /// Copies the existing key file's Windows ACL onto the temp file, so explicit ACEs an operator set on the key file
+    /// survive the replace (without this the new file inherits only the directory's ACL). Best effort: when the ACL
+    /// cannot be read or set, the new file keeps the directory's inheritance.
+    /// </summary>
+    private static void CopyWindowsAcl(string targetPath, string tempPath)
+    {
+        if (!OperatingSystem.IsWindows() || !File.Exists(targetPath))
+            return;
+
+        try
+        {
+            var security = new FileInfo(targetPath).GetAccessControl();
+            new FileInfo(tempPath).SetAccessControl(security);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or SystemException)
+        {
+            // The directory's inherited ACL still applies; a hard failure here would lose the key-file write.
+        }
+    }
+
+    /// <summary>
+    /// Restores the existing key file's Unix owner and group onto the temp file. Best effort: only root (or another
+    /// chown-capable process) can give the file back to its owner after someone else rewrote it, and a group change
+    /// needs membership; when the chown is not permitted, the file stays with the running user, as before this
+    /// preservation existed. The owner/group come from <c>stat(2)</c>'s <c>st_uid</c>/<c>st_gid</c> fields (offsets of
+    /// the 64-bit <c>struct stat</c> of macOS and Linux).
+    /// </summary>
+    private static void RestoreUnixOwnership(string targetPath, string tempPath)
+    {
+        if ((!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+         || !File.Exists(targetPath) || !Environment.Is64BitProcess)
+            return;
+
+        var owner = GetUnixFileOwner(targetPath);
+        if (owner is null)
+            return;
+
+        _ = UnixChown(tempPath, owner.Value.Uid, owner.Value.Gid);
+    }
+
+    /// <summary>
+    /// Reads a Unix file's <c>st_uid</c>/<c>st_gid</c> through <c>stat(2)</c>, or null when the platform has no
+    /// direct <c>stat</c> symbol (glibc older than 2.33) or the call failed. Internal for the tests.
+    /// </summary>
+    internal static (uint Uid, uint Gid)? GetUnixFileOwner(string path)
+    {
+        // A buffer comfortably larger than every platform's struct stat (144 bytes): the native call writes its own
+        // size, the untouched tail is ignored
+        try
+        {
+            var buffer = new byte[256];
+            if (UnixStat(path, buffer) != 0)
+                return null;
+
+            // macOS: st_uid at 16, st_gid at 20. Linux (glibc and musl, 64-bit): st_uid at 24, st_gid at 28.
+            var littleEndian = BitConverter.IsLittleEndian;
+            return RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+                       ? (littleEndian ? BitConverter.ToUInt32(buffer, 16) : BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(16)),
+                          littleEndian ? BitConverter.ToUInt32(buffer, 20) : BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(20)))
+                       : (littleEndian ? BitConverter.ToUInt32(buffer, 24) : BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(24)),
+                          littleEndian ? BitConverter.ToUInt32(buffer, 28) : BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(28)));
+        }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException)
+        {
+            // libc without a direct stat symbol (glibc older than 2.33): leave the ownership alone
+            return null;
+        }
     }
 
     private static void TryDeleteFile(string path)
