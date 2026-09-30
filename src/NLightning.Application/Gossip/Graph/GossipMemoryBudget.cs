@@ -20,8 +20,9 @@ using Metrics;
 /// New entries are accepted again once the process is below <see cref="GossipGraphOptions.MemoryResumePercent"/> of
 /// the budget (hysteresis, so a graph at the edge does not flap). Each crossing is logged once (a warning going over,
 /// an information coming back) and counted in <c>nlightning.gossip.memory.budget.exceeded</c>; the gauge
-/// <c>nlightning.gossip.memory.working_set</c> reads the process too (at most once per sample interval). A refused channel is not queued for a re-request: the next range
-/// sync with a peer asks for it again.
+/// <c>nlightning.gossip.memory.working_set</c> reads the process too (at most once per sample interval). A refused
+/// channel is asked for again once the budget has resumed (NL-419): until then the next range sync with a peer asks
+/// for it.
 /// </para>
 /// <para>
 /// The process is read lazily, at most once per <see cref="GossipGraphOptions.MemorySampleInterval"/>, when the ingress
