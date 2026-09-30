@@ -185,7 +185,7 @@ public sealed class AnchorPeerCpfpTests : IDisposable
         await Service.WhenIdleAsync();
 
         // Assert: a pending PeerCommitment row holds the bytes for a restart
-        var row = Assert.Single(_store.Rows.Where(r => r.Purpose == BroadcastPurpose.PeerCommitment));
+        var row = Assert.Single(_store.Rows, r => r.Purpose == BroadcastPurpose.PeerCommitment);
         Assert.Equal(_channel.ChannelId, row.ChannelId);
         Assert.Equal(new TxId(peer.GetHash().ToBytes()), row.TransactionId);
         Assert.Equal(peer.ToBytes(), row.RawTransaction);
@@ -230,7 +230,7 @@ public sealed class AnchorPeerCpfpTests : IDisposable
         Service.OnPeerCommitmentInMempool(_channel.ChannelId, ToSigned(peer), false);
         await Service.WhenIdleAsync();
         var child = Assert.Single(_store.Children);
-        var handOver = Assert.Single(_store.Rows.Where(r => r.Purpose == BroadcastPurpose.PeerCommitment));
+        var handOver = Assert.Single(_store.Rows, r => r.Purpose == BroadcastPurpose.PeerCommitment);
         _chain.Transactions.Remove(peer.GetHash());
 
         // Act: five blocks without it (the monitor is at bitcoind's tip; the deadline keeps the RBF replacing it),
@@ -258,7 +258,7 @@ public sealed class AnchorPeerCpfpTests : IDisposable
         Service.OnPeerCommitmentInMempool(_channel.ChannelId, ToSigned(peer), false);
         await Service.WhenIdleAsync();
         var child = Assert.Single(_store.Children);
-        var handOver = Assert.Single(_store.Rows.Where(r => r.Purpose == BroadcastPurpose.PeerCommitment));
+        var handOver = Assert.Single(_store.Rows, r => r.Purpose == BroadcastPurpose.PeerCommitment);
         ours.MarkConfirmed(505, new Hash(new byte[32]));
         _close = new ChannelCloseModel(_channel.ChannelId, ChannelCloseKind.LocalCommitment, ours.TransactionId,
                                        ours.CommitmentNumber, 505, new Hash(new byte[32]), DateTimeOffset.UtcNow);
