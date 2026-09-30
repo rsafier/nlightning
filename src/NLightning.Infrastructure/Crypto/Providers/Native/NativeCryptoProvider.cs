@@ -16,6 +16,11 @@ internal sealed partial class NativeCryptoProvider : ICryptoProvider
 {
     private readonly IncrementalHash _sha256 = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
+    /// <summary>
+    /// Guard so a persistent mlock failure (RLIMIT_MEMLOCK on Linux) is reported once, not per locked allocation.
+    /// </summary>
+    private static int s_memoryLockWarningLogged;
+
     public void Sha256Init(IntPtr state)
     {
         // There's no need to initialize it here, since if it was used before, it was already reseted
@@ -89,8 +94,22 @@ internal sealed partial class NativeCryptoProvider : ICryptoProvider
             return VirtualLock(addr, len) ? 0 : Marshal.GetLastWin32Error();
         }
 
-        // TODO: Log somewhere that Memory lock is not available on this platform.
-        // but return success so the process can continue
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            if (len == 0)
+                return 0;
+
+            // mlock(2) operates on whole pages (macOS refuses an unaligned address, Linux rounds), so pin the pages
+            // that hold the range. mlock can fail for a non-root process over RLIMIT_MEMLOCK: that only means the
+            // pages may be swapped out, so fail-soft (log once, keep going unlocked) instead of failing the caller.
+            var (pageStart, pageLength) = PageAlign(addr, len);
+            if (UnixMlock(pageStart, pageLength) != 0)
+                WarnMemoryLockUnavailable(Marshal.GetLastPInvokeError());
+
+            return 0;
+        }
+
+        // Other platforms: memory locking is not available, but return success so the process can continue.
         return 0;
     }
 
@@ -99,12 +118,17 @@ internal sealed partial class NativeCryptoProvider : ICryptoProvider
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             _ = VirtualUnlock(addr, len);
+            return;
         }
-        // else
-        // {
-        // TODO: Log somewhere that Memory unlock is not available on this platform.
-        // but don't fail so the process can continue
-        // }
+
+        if ((RuntimeInformation.IsOSPlatform(OSPlatform.Linux) || RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            && len > 0)
+        {
+            // Best effort: the memory is wiped and freed right after, and a failed lock above left nothing locked
+            var (pageStart, pageLength) = PageAlign(addr, len);
+            _ = UnixMunlock(pageStart, pageLength);
+        }
+        // Other platforms: memory unlocking is not available, but don't fail so the process can continue
     }
 
     public int AeadXChaCha20Poly1305IetfEncrypt(ReadOnlySpan<byte> key, ReadOnlySpan<byte> nonce,
@@ -301,6 +325,31 @@ internal sealed partial class NativeCryptoProvider : ICryptoProvider
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool VirtualUnlock(IntPtr lpAddress, ulong dwSize);
+
+    // P/Invoke for the Unix mlock(2)/munlock(2) of MemoryLock/MemoryUnlock
+    [LibraryImport("libc", EntryPoint = "mlock", SetLastError = true)]
+    private static partial int UnixMlock(IntPtr addr, nuint length);
+
+    [LibraryImport("libc", EntryPoint = "munlock", SetLastError = true)]
+    private static partial int UnixMunlock(IntPtr addr, nuint length);
+
+    private static void WarnMemoryLockUnavailable(int errno)
+    {
+        if (Interlocked.Exchange(ref s_memoryLockWarningLogged, 1) != 0)
+            return;
+
+        Console.Error.WriteLine(
+            "Failed to lock secrets in memory with mlock(2) (errno {0}); they may be swapped to disk. " +
+            "Consider raising RLIMIT_MEMLOCK (ulimit -l).", errno);
+    }
+
+    private static (IntPtr Start, nuint Length) PageAlign(IntPtr addr, ulong len)
+    {
+        var pageMask = (ulong)Environment.SystemPageSize - 1;
+        var start = (ulong)addr & ~pageMask;
+        var end = ((ulong)addr + len + pageMask) & ~pageMask;
+        return ((IntPtr)start, (nuint)(end - start));
+    }
 
     public void Dispose()
     {
