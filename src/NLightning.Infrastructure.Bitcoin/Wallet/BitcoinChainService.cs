@@ -39,8 +39,9 @@ public class BitcoinChainService : IBitcoinChainService
             UserPassword = new NetworkCredential(bitcoinOptions.Value.RpcUser, bitcoinOptions.Value.RpcPassword)
         };
 
+        // No RPC here: the service must be constructible without a live bitcoind (NL-153; a new key's birth height is
+        // the one caller that needs it, and it asks async). Every call fails on its own until bitcoind is reachable.
         _rpcClient = new RPCClient(rpcCredentials, bitcoinOptions.Value.RpcEndpoint, network);
-        _rpcClient.GetBlockchainInfo();
     }
 
     public async Task<uint256> SendTransactionAsync(Transaction transaction)

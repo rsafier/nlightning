@@ -106,7 +106,9 @@ try
         }
         catch (Exception e)
         {
-            Log.Logger.Error(e, "An error occurred while creating new key.");
+            // The birth height comes from bitcoind (NL-153: the service itself constructs without it)
+            Log.Logger.Error(e, "An error occurred while creating new key; a new key needs a reachable bitcoind for "
+                              + "its birth height.");
             return 1;
         }
     }
