@@ -242,15 +242,11 @@ public class PeerBootstrapServiceTests
         Assert.Contains("MaxRuns", status.EndReason);
     }
 
-    [Theory]
-    [InlineData("regtest")]
-    [InlineData("signet")]
-    [InlineData("mutinynet")]
-    public async Task Given_ANetworkWithoutSeedsAndConfiguredSeeds_When_Started_Then_NoQueryAndAWarning(
-        string network)
+    [Fact]
+    public async Task Given_ANetworkWithoutSeedsAndConfiguredSeeds_When_Started_Then_NoQueryAndAWarning()
     {
-        // Arrange
-        _nodeOptions.BitcoinNetwork = BitcoinNetwork.Resolve(network);
+        // Arrange (regtest is the only network without public seeds since NL-545)
+        _nodeOptions.BitcoinNetwork = BitcoinNetwork.Regtest;
         _nodeOptions.Bootstrap.Seeds = [SeedA];
         var service = CreateService();
 
@@ -1084,8 +1080,8 @@ public class PeerBootstrapServiceTests
     [Fact]
     public async Task Given_ANetworkWithoutSeedsButAGraph_When_Enabled_Then_GraphNodesAreDialed()
     {
-        // Arrange: signet has no seeds; the graph still tops up
-        _nodeOptions.BitcoinNetwork = BitcoinNetwork.Signet;
+        // Arrange: regtest has no seeds (NL-545); the graph still tops up
+        _nodeOptions.BitcoinNetwork = BitcoinNetwork.Regtest;
         _nodeOptions.Bootstrap.MinPeers = 1;
         var node = AddGraphNode();
         UseGraph();

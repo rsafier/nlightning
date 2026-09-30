@@ -694,10 +694,12 @@ public class NodeServiceExtensionsTests
         Assert.Equal(customSignetName, options.CustomSignet?.Name ?? string.Empty);
         Assert.Empty(options.GetValidationErrors());
         Assert.Empty(configuration.GetSection("Node:DnsSeedServers").GetChildren());
-        Assert.Empty(configuration.GetSection("Node:Bootstrap:Seeds").GetChildren());
+        Assert.Equal(["signet.nodes.lightning.wiki"],
+                     configuration.GetSection("Node:Bootstrap:Seeds").GetChildren().Select(s => s.Value).ToArray());
         Assert.False(configuration.GetValue<bool>("Node:Bootstrap:Enabled"));
         Assert.False(options.Bootstrap.IsEnabledOn(options.BitcoinNetwork));
-        Assert.Empty(options.Bootstrap.GetEffectiveSeeds(options.BitcoinNetwork, out _));
+        Assert.Equal(["signet.nodes.lightning.wiki"],
+                     options.Bootstrap.GetEffectiveSeeds(options.BitcoinNetwork, out _));
         Assert.Equal(FeeEstimationOptions.SourceHttp, fees.Source);
         Assert.Equal(feeUrl, fees.Url);
         Assert.Equal("sat/vB", fees.RateUnit);
@@ -1052,12 +1054,13 @@ public class NodeServiceExtensionsTests
     [InlineData("mainnet", true, new[] { "nodes.lightning.directory", "nodes.lightning.wiki" })]
     [InlineData("testnet", false, new[] { "test.nodes.lightning.directory" })]
     [InlineData("regtest", false, new string[0])]
-    [InlineData("signet", false, new string[0])]
-    [InlineData("mutinynet", false, new string[0])]
+    [InlineData("signet", false, new[] { "signet.nodes.lightning.wiki" })]
+    [InlineData("mutinynet", false, new[] { "signet.nodes.lightning.wiki" })]
     public void Given_DefaultConfigJson_When_Bound_Then_BootstrapIsOnOnlyOnMainnetWithTheNetworksSeeds(string network,
         bool enabled, string[] seeds)
     {
-        // Arrange (NL-113, D-B10-1 as reversed on 2026-09-28, D-B10-2, D-B10-7)
+        // Arrange (NL-113, D-B10-1 as reversed on 2026-09-28, D-B10-2, D-B10-7; NL-545: signet's seed for signet
+        // and mutinynet, which resolves to signet)
         var json = NodeConfigurationExtensions.CreateDefaultConfigJson(network);
         var configuration = new ConfigurationBuilder()
                            .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
