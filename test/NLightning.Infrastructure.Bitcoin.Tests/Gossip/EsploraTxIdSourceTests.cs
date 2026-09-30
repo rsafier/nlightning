@@ -194,9 +194,12 @@ public class EsploraTxIdSourceTests
         // Act
         var result = await lookup.LookupAsync(FundingScid, TestContext.Current.CancellationToken);
 
-        // Assert: asked with our own node's block hash
+        // Assert: asked with our own node's block hash; the one-time chain check (NL-424) then found our genesis,
+        // so the index is not refused
         Assert.Equal(FundingOutputStatus.ChainUnavailable, result.Status);
-        Assert.Equal($"block/{_chain.Inner[FundingHeight].GetHash()}/txid/{FundingIndex}", _esplora.Requests.Single());
+        Assert.Equal([$"block/{_chain.Inner[FundingHeight].GetHash()}/txid/{FundingIndex}", "block-height/0"],
+                     _esplora.Requests);
+        Assert.False(source.Refused);
     }
 
     [Fact]
@@ -210,9 +213,11 @@ public class EsploraTxIdSourceTests
         // Act
         var result = await lookup.LookupAsync(FundingScid, TestContext.Current.CancellationToken);
 
-        // Assert
+        // Assert: the failing lookup, then the one-time chain check (NL-424), which the index answers
         Assert.Equal(FundingOutputStatus.ChainUnavailable, result.Status);
-        Assert.Single(_esplora.Requests);
+        Assert.Equal(["block-height/0"], _esplora.Requests.Skip(1).ToArray());
+        Assert.Single(_esplora.Requests, r => r.StartsWith("block/"));
+        Assert.False(source.Refused);
     }
 
     [Fact]
@@ -229,6 +234,75 @@ public class EsploraTxIdSourceTests
         // Assert
         Assert.Equal(FundingOutputStatus.TransactionIndexOutOfRange, result.Status);
         Assert.Empty(_esplora.Requests);
+    }
+
+    [Fact]
+    public async Task Given_AnIndexOnAnotherChain_When_ALookupFails_Then_TheMismatchIsAnErrorAndTheSourceIsRefused()
+    {
+        // Arrange (NL-424): the index does not know our block (404) and serves another chain's genesis
+        _esplora.Scripted.Enqueue(() => new HttpResponseMessage(HttpStatusCode.NotFound));
+        _esplora.BlockHeightOverride = _ => RandomUtils.GetUInt256();
+        var logger = new CapturingLogger<EsploraTxIdSource>();
+        using var source = CreateSource(logger: logger);
+        using var lookup = CreateLookup(source);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var first = await lookup.LookupAsync(FundingScid, ct);
+        var second = await lookup.LookupAsync(FundingScid, ct);
+
+        // Assert: the mismatch is an error, logged once; the refused source fails every later lookup at once,
+        // without the index
+        Assert.Equal(FundingOutputStatus.ChainUnavailable, first.Status);
+        Assert.Equal(FundingOutputStatus.ChainUnavailable, second.Status);
+        Assert.True(source.Refused);
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("another chain"));
+        Assert.Equal([$"block/{_chain.Inner[FundingHeight].GetHash()}/txid/{FundingIndex}", "block-height/0"],
+                     _esplora.Requests);
+    }
+
+    [Fact]
+    public async Task Given_AnIndexOnOurChain_When_ALookupFailsOnce_Then_TheCheckConfirmsItAndLookupsGoOn()
+    {
+        // Arrange: the index serves our genesis; the one block is just not indexed (yet)
+        _esplora.Scripted.Enqueue(() => new HttpResponseMessage(HttpStatusCode.NotFound));
+        var logger = new CapturingLogger<EsploraTxIdSource>();
+        using var source = CreateSource(logger: logger);
+        using var lookup = CreateLookup(source);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var failed = await lookup.LookupAsync(FundingScid, ct);
+
+        // Assert: confirmed on our chain (not an error, not refused); the lookup succeeds once the index catches up
+        Assert.Equal(FundingOutputStatus.ChainUnavailable, failed.Status);
+        Assert.False(source.Refused);
+        Assert.DoesNotContain(logger.Entries, e => e.Level == LogLevel.Error);
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Information && e.Message.Contains("serves our chain"));
+        Assert.Equal(FundingOutputStatus.Found, (await lookup.LookupAsync(FundingScid, ct)).Status);
+        Assert.Equal(4, _esplora.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Given_AnIndexThatCannotBeAsked_When_ALookupFails_Then_TheCheckWarnsInsteadOfRefusing()
+    {
+        // Arrange: both the position and the chain check run into a server error
+        _esplora.Scripted.Enqueue(() => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        _esplora.Scripted.Enqueue(() => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        var logger = new CapturingLogger<EsploraTxIdSource>();
+        using var source = CreateSource(logger: logger);
+        using var lookup = CreateLookup(source);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var result = await lookup.LookupAsync(FundingScid, ct);
+
+        // Assert: inconclusive is a warning, and the source stays in use
+        Assert.Equal(FundingOutputStatus.ChainUnavailable, result.Status);
+        Assert.False(source.Refused);
+        Assert.Contains(logger.Entries,
+                        e => e.Level == LogLevel.Warning && e.Message.Contains("Could not check which chain"));
+        Assert.Equal(FundingOutputStatus.Found, (await lookup.LookupAsync(FundingScid, ct)).Status);
     }
 
     [Fact]
@@ -283,10 +357,11 @@ public class EsploraTxIdSourceTests
         var result = await lookup.LookupAsync(new ShortChannelId(FundingHeight, 1, 0),
                                               TestContext.Current.CancellationToken);
 
-        // Assert: unprovable, so transient; never OutputSpentOrMissing from a gettxout of the fake txid
+        // Assert: unprovable, so transient; never OutputSpentOrMissing from a gettxout of the fake txid; the index
+        // was asked once — for the chain check (NL-424), never for the position
         Assert.Equal(FundingOutputStatus.ChainUnavailable, result.Status);
         Assert.True(result.IsTransient);
-        Assert.Empty(_esplora.Requests);
+        Assert.Equal(["block-height/0"], _esplora.Requests);
         Assert.Equal(0, _chain.UnspentOutputCalls);
         Assert.False(EsploraTxIdSource.VerifyMerkleProof(inner, fullBranch.Skip(1).ToList(), 1,
                                                          block.Header.HashMerkleRoot, 0));
@@ -309,13 +384,14 @@ public class EsploraTxIdSourceTests
         clock.Advance(TimeSpan.FromSeconds(60));
         var after = await lookup.LookupAsync(FundingScid, ct).WaitAsync(TimeSpan.FromSeconds(10), ct);
 
-        // Assert: the refused request only, nothing sent during the pause, then the index again
+        // Assert: the refused request and the pause-skipping chain check (NL-424), nothing else during the pause,
+        // then the index again
         Assert.Equal(FundingOutputStatus.ChainUnavailable, first.Status);
         Assert.Equal(FundingOutputStatus.ChainUnavailable, duringPause.Status);
-        Assert.Equal(1, requestsDuringPause);
+        Assert.Equal(2, requestsDuringPause);
         Assert.Equal(0, clock.PendingTimers);
         Assert.Equal(FundingOutputStatus.Found, after.Status);
-        Assert.Equal(3, _esplora.Requests.Count);
+        Assert.Equal(4, _esplora.Requests.Count);
     }
 
     [Fact]
@@ -342,14 +418,15 @@ public class EsploraTxIdSourceTests
         clock.Advance(TimeSpan.FromSeconds(2));
         var result = await pending.WaitAsync(TimeSpan.FromSeconds(10), ct);
 
-        // Assert: gave up after the retry; the second 429 started a 4 s pause for the next request
+        // Assert: gave up after the retry (then the one-time chain check, NL-424); the second 429 started a 4 s
+        // pause for the next request
         Assert.Equal(FundingOutputStatus.ChainUnavailable, result.Status);
-        Assert.Equal(2, _esplora.Requests.Count);
+        Assert.Equal(3, _esplora.Requests.Count);
         Assert.Equal(2, source.RateLimitedResponses);
         var next = lookup.LookupAsync(FundingScid, ct);
         await WaitForAsync(() => clock.PendingTimers == 1, ct);
         clock.Advance(TimeSpan.FromMilliseconds(3_999));
-        Assert.Equal(2, _esplora.Requests.Count);
+        Assert.Equal(3, _esplora.Requests.Count);
         clock.Advance(TimeSpan.FromMilliseconds(1));
         Assert.Equal(FundingOutputStatus.Found, (await next.WaitAsync(TimeSpan.FromSeconds(10), ct)).Status);
     }
