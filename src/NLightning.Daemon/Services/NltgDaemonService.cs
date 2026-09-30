@@ -26,6 +26,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.Managers;
 using Infrastructure.Bitcoin.Onion;
+using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Transport.Tor;
 
@@ -56,6 +57,7 @@ public class NltgDaemonService : BackgroundService
     private readonly IPeerBootstrapService? _peerBootstrapService;
     private readonly ITorOnionService? _torOnionService;
     private readonly GossipOptions? _gossipOptions;
+    private readonly FeeEstimationOptions? _feeEstimationOptions;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
                              IConfiguration configuration, IFeeService feeService,
@@ -73,8 +75,10 @@ public class NltgDaemonService : BackgroundService
                              SpliceAutoBumper? spliceAutoBumper = null,
                              IPeerBootstrapService? peerBootstrapService = null,
                              ITorOnionService? torOnionService = null,
-                             IOptions<GossipOptions>? gossipOptions = null)
+                             IOptions<GossipOptions>? gossipOptions = null,
+                             IOptions<FeeEstimationOptions>? feeEstimationOptions = null)
     {
+        _feeEstimationOptions = feeEstimationOptions?.Value;
         _torOnionService = torOnionService;
         _gossipOptions = gossipOptions?.Value;
         _peerBootstrapService = peerBootstrapService;
@@ -220,7 +224,8 @@ public class NltgDaemonService : BackgroundService
             announced = [];
         }
 
-        foreach (var warning in TorStartupChecks.GetWarnings(_nodeOptions, announced))
+        var feeOverHttp = _feeEstimationOptions?.IsSource(FeeEstimationOptions.SourceHttp) ?? false;
+        foreach (var warning in TorStartupChecks.GetWarnings(_nodeOptions, announced, feeOverHttp))
             _logger.LogWarning("{Warning}", warning);
     }
 

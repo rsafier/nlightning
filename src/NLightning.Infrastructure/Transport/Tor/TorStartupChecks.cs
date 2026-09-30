@@ -15,8 +15,10 @@ public static class TorStartupChecks
     /// </summary>
     /// <param name="nodeOptions">The node options (<c>Node:Tor</c>, <c>Node:ListenAddresses</c>).</param>
     /// <param name="announcedAddresses">Our configured <c>Gossip:AnnounceAddresses</c>.</param>
+    /// <param name="feeEstimationOverHttp">True when <c>FeeEstimation:Source</c> is <c>Http</c>.</param>
     public static IReadOnlyList<string> GetWarnings(NodeOptions nodeOptions,
-                                                    IEnumerable<AddressDescriptor> announcedAddresses)
+                                                    IEnumerable<AddressDescriptor> announcedAddresses,
+                                                    bool feeEstimationOverHttp = false)
     {
         var tor = nodeOptions.Tor;
         var warnings = new List<string>();
@@ -34,6 +36,12 @@ public static class TorStartupChecks
                                    or AddressDescriptorType.Dns)
                 warnings.Add($"Tor-only mode announces the clearnet address {descriptor.Host}:{descriptor.Port} "
                            + "(Gossip:AnnounceAddresses); peers can link it to this node");
+
+        // Exits often block or rate-limit fee APIs; a failed request leaves the node on the fallback rate (NL-578)
+        if (feeEstimationOverHttp)
+            warnings.Add("Tor-only mode fetches fee estimates over HTTP through a Tor exit, which fee APIs often block "
+                       + "or rate-limit; when it fails the node silently uses FeeEstimation:FallbackFeeRatePerKw. "
+                       + "Set FeeEstimation:Source to Bitcoind (estimatesmartfee on our own bitcoind)");
 
         if (!tor.IsOnionServiceEnabled)
             warnings.Add("Tor-only mode without an onion service (Node:Tor:OnionServiceEnabled false): peers cannot "

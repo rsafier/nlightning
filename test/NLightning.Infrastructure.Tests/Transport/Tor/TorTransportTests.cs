@@ -185,6 +185,19 @@ public sealed class TorTransportTests : IAsyncDisposable
         Assert.Null(handler.ConnectCallback);
     }
 
+    [Fact]
+    public void Given_TorOnlyWithoutADialer_When_TheHttpHandlerIsMade_Then_ItRefusesInsteadOfGoingClearnet()
+    {
+        // Arrange - NL-580
+        var services = new ServiceCollection();
+        services.AddSingleton(Options.Create(CreateOptions(TorMode.TorOnly, _proxy.EndPoint, null)));
+        using var provider = services.BuildServiceProvider();
+
+        // Act & Assert
+        var e = Assert.Throws<InvalidOperationException>(() => TorHttpHandler.Create(provider, TimeSpan.FromMinutes(1)));
+        Assert.Contains("ITorSocksDialer", e.Message);
+    }
+
     public async ValueTask DisposeAsync()
     {
         _target.Stop();
