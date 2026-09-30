@@ -14,6 +14,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Gossip.Enums;
 using Domain.Gossip.Graph;
+using Domain.Gossip.Models;
 using Domain.Gossip.Queries;
 using Domain.Gossip.Validation;
 using Domain.Money;
@@ -465,6 +466,43 @@ public class PendingAnnouncementTests : IDisposable
         Assert.Equal(GossipIngressOutcome.Accepted, fresh.Outcome);
     }
 
+    [Fact]
+    public async Task Given_AChannelQueuedBehindABusyWorker_When_TheSyncAsks_Then_ItIsReportedPending()
+    {
+        // Arrange (NL-420): the single worker is held inside a funding lookup the test controls
+        var kit = CreateKit();
+        var held = new TaskCompletionSource<FundingOutputLookupResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lookupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        kit.FundingLookup.Setup(l => l.VerifyAsync(It.IsAny<ShortChannelId>(), It.IsAny<CompactPubKey>(),
+                                                   It.IsAny<CompactPubKey>(), It.IsAny<LightningMoney?>(),
+                                                   It.IsAny<CancellationToken>()))
+                         .Callback(() => lookupStarted.TrySetResult())
+                         .Returns(held.Task);
+        var peer = GraphTestKit.CreatePeer();
+        var other = new ShortChannelId(121, 1, 0);
+
+        // Act: s_scid's promotion holds the worker, so the other channel's messages stay queued
+        Assert.True(kit.Ingress.TryEnqueue(peer.Object, Announcement()));
+        Assert.True(kit.Ingress.TryEnqueue(peer.Object, AliceUpdate(s_now - 10)));
+        await lookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.True(kit.Ingress.TryEnqueue(peer.Object, Announcement(other)));
+        Assert.True(kit.Ingress.TryEnqueue(peer.Object, AliceUpdate(s_now - 10, other)));
+
+        // Assert: both channels are pending for the sync, the other one before it even reached the pending index
+        Assert.True(kit.Ingress.IsPending(s_scid));
+        Assert.True(kit.Ingress.IsPending(other));
+        Assert.False(kit.Ingress.IsPendingAnnouncement(other));
+
+        held.SetResult(FundingOutputLookupResult.WithOutput(FundingOutputStatus.Found, GraphTestKit.TxIdFor(s_scid),
+                                                            LightningMoney.Satoshis(1_000_000), [0x00, 0x20], 6));
+        Assert.True(await WaitForAsync(() => kit.Store.TryGetChannel(s_scid, out _)
+                                            && kit.Store.TryGetChannel(other, out _)
+                                            && kit.Ingress.ChannelsInFlightCount == 0));
+        Assert.False(kit.Ingress.IsPending(s_scid));
+        Assert.False(kit.Ingress.IsPending(other));
+        await kit.Ingress.StopAsync();
+    }
+
     private GraphTestKit CreateKit(long amountSat = 1_000_000, Action<GossipGraphOptions>? configure = null)
     {
         var kit = new GraphTestKit(configure: configure, metrics: _metrics);
@@ -505,6 +543,13 @@ public class PendingAnnouncementTests : IDisposable
 
     private static ChannelUpdateMessage AliceUpdate(uint timestamp, ShortChannelId? scid = null) =>
         GraphTestKit.SignedChannelUpdate(scid ?? s_scid, s_alice, GraphTestKit.DirectionOf(s_alice, s_bob), timestamp);
+
+    private static async Task<bool> WaitForAsync(Func<bool> condition)
+    {
+        for (var i = 0; i < 200 && !condition(); i++)
+            await Task.Delay(25, TestContext.Current.CancellationToken);
+        return condition();
+    }
 
     private static Task<GossipIngressResult> ProcessAsync(GraphTestKit kit, IPeerService peer,
                                                           Domain.Protocol.Interfaces.IMessage message) =>

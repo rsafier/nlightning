@@ -83,11 +83,16 @@ using Metrics;
 /// Everything is counted in <see cref="GossipMetrics"/> when one is given.
 /// </para>
 /// <para>
+/// NL-420: the ingress answers the sync's <see cref="IGossipPendingChannels"/> question: a short channel id is
+/// pending while a message of its channel sits in a worker queue or is being processed, or while its announcement
+/// waits in the <see cref="PendingAnnouncementIndex"/> — such a channel's answer would only be downloaded twice.
+/// </para>
+/// <para>
 /// The workers and the store's write-behind loop start with <see cref="StartAsync"/>, or on the first queued message.
 /// <see cref="StopAsync"/> stops them and writes what is pending.
 /// </para>
 /// </remarks>
-public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDisposable, IDisposable
+public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendingChannels, IAsyncDisposable, IDisposable
 {
     private readonly IGraphStore _store;
     private readonly IGossipSignatureVerifier _signatureVerifier;
@@ -111,6 +116,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
     private readonly ConcurrentDictionary<ShortChannelId, byte> _missed = new();
     private readonly ConcurrentDictionary<ShortChannelId, byte> _budgetRefused = new();
+    private readonly ConcurrentDictionary<ShortChannelId, int> _channelsInFlight = new();
     private readonly CompactPubKey? _ourNodeId;
     private readonly GossipRateLimiter _rateLimiter;
     private readonly GossipMisbehaviourTracker _misbehaviour;
@@ -191,6 +197,18 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     /// <c>channel_update</c> (NL-406): not in the graph, never served or relayed.
     /// </summary>
     public bool IsPendingAnnouncement(ShortChannelId shortChannelId) => _pending.Contains(shortChannelId);
+
+    /// <summary>
+    /// True while the channel's announcement or an update of it sits in a worker queue, is being processed by one, or
+    /// its announcement waits in the <see cref="PendingAnnouncementIndex"/> (NL-420): the sync does not ask another
+    /// peer for such a channel. Answers from memory and may be stale by a moment; a false "not pending" only costs a
+    /// duplicate download.
+    /// </summary>
+    public bool IsPending(ShortChannelId shortChannelId) =>
+        _channelsInFlight.ContainsKey(shortChannelId) || _pending.Contains(shortChannelId);
+
+    /// <summary>The channels with a message queued in or being processed by a worker (for tests).</summary>
+    internal int ChannelsInFlightCount => _channelsInFlight.Count;
 
     /// <summary>The number of worker queues (NL-408; one per worker).</summary>
     internal int PartitionCount => _partitions.Length;
@@ -1513,45 +1531,56 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             await foreach (var item in reader.ReadAllAsync(cancellationToken))
             {
                 Interlocked.Decrement(ref _queuedTotal);
-                if (item.Attempt == 0 && item.Origin is not null)
-                {
-                    ReleasePeerSlot(item.Origin.PeerPubKey);
-
-                    // Queued before the peer was banned: its flood must not reach the validation stages
-                    if (IsPeerBanned(item.Origin.PeerPubKey))
-                    {
-                        _metrics?.RecordRejected(item.Message.Type, GossipMetricReasons.BannedPeer);
-                        continue;
-                    }
-                }
-
+                // NL-420: the channel counts as pending until this item has been handled (a deferred message is
+                // counted again by its retry)
+                var shortChannelId = ChannelOf(item.Message);
                 try
                 {
-                    var result = await ProcessAsync(item.Origin, item.Message, item.Attempt, cancellationToken);
-                    if (result.Outcome == GossipIngressOutcome.Deferred)
-                        ScheduleRetry(item, result.Detail, cancellationToken);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    return;
-                }
-                catch (Exception e)
-                {
-                    _logger.LogWarning(e, "Failed to process {MessageType} from peer {Peer}",
-                                       Enum.GetName(item.Message.Type), item.Origin?.PeerPubKey);
-                }
+                    if (item.Attempt == 0 && item.Origin is not null)
+                    {
+                        ReleasePeerSlot(item.Origin.PeerPubKey);
 
-                if (_store.PendingChanges >= _options.FlushBatchSize
-                 && Interlocked.CompareExchange(ref _flushRequested, 1, 0) == 0)
-                {
+                        // Queued before the peer was banned: its flood must not reach the validation stages
+                        if (IsPeerBanned(item.Origin.PeerPubKey))
+                        {
+                            _metrics?.RecordRejected(item.Message.Type, GossipMetricReasons.BannedPeer);
+                            continue;
+                        }
+                    }
+
                     try
                     {
-                        await _store.FlushAsync(cancellationToken);
+                        var result = await ProcessAsync(item.Origin, item.Message, item.Attempt, cancellationToken);
+                        if (result.Outcome == GossipIngressOutcome.Deferred)
+                            ScheduleRetry(item, result.Detail, cancellationToken);
                     }
-                    finally
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
-                        Volatile.Write(ref _flushRequested, 0);
+                        return;
                     }
+                    catch (Exception e)
+                    {
+                        _logger.LogWarning(e, "Failed to process {MessageType} from peer {Peer}",
+                                           Enum.GetName(item.Message.Type), item.Origin?.PeerPubKey);
+                    }
+
+                    if (_store.PendingChanges >= _options.FlushBatchSize
+                     && Interlocked.CompareExchange(ref _flushRequested, 1, 0) == 0)
+                    {
+                        try
+                        {
+                            await _store.FlushAsync(cancellationToken);
+                        }
+                        finally
+                        {
+                            Volatile.Write(ref _flushRequested, 0);
+                        }
+                    }
+                }
+                finally
+                {
+                    if (shortChannelId is not null)
+                        ReleaseChannelInFlight(shortChannelId.Value);
                 }
             }
         }
@@ -1643,10 +1672,45 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         }
 
         if (_partitions[PartitionOf(item.Message, _partitions.Length)].Writer.TryWrite(item))
+        {
+            // NL-420: the sync must not ask another peer for a channel whose message is queued here
+            if (ChannelOf(item.Message) is { } shortChannelId)
+                _channelsInFlight.AddOrUpdate(shortChannelId, 1, (_, count) => count + 1);
             return true;
+        }
 
         Interlocked.Decrement(ref _queuedTotal);
         return false;
+    }
+
+    /// <summary>
+    /// The short channel id a queued graph message is about (none for a <c>node_announcement</c>), or null.
+    /// Deliberately no switch expression with a <c>null</c> arm: its best-common-type inference picks
+    /// <see cref="ShortChannelId"/> and converts the null through <c>op_Implicit((byte[])null)</c>, which throws
+    /// (the NL-369 value-object conversion trap).
+    /// </summary>
+    private static ShortChannelId? ChannelOf(IMessage message)
+    {
+        if (message is ChannelAnnouncementMessage announcement)
+            return announcement.Payload.ShortChannelId;
+        if (message is ChannelUpdateMessage update)
+            return update.Payload.ShortChannelId;
+        return null;
+    }
+
+    /// <summary>
+    /// Drops one in-flight claim of <paramref name="shortChannelId"/> (<see cref="ChannelOf"/> counted it when the
+    /// message was queued; NL-420). The last claim removes the key.
+    /// </summary>
+    private void ReleaseChannelInFlight(ShortChannelId shortChannelId)
+    {
+        while (_channelsInFlight.TryGetValue(shortChannelId, out var count))
+        {
+            if (count <= 1
+                ? _channelsInFlight.TryRemove(new KeyValuePair<ShortChannelId, int>(shortChannelId, count))
+                : _channelsInFlight.TryUpdate(shortChannelId, count - 1, count))
+                return;
+        }
     }
 
     /// <summary>
