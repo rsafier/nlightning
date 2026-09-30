@@ -80,6 +80,11 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// </summary>
     private const int MaxBatchSize = 20;
 
+    /// <summary>
+    /// Stored peers dialed at the same time on startup (NL-576).
+    /// </summary>
+    private const int MaxParallelStartupDials = 16;
+
     private static readonly TimeSpan s_stopTimeout = TimeSpan.FromSeconds(5);
 
     private readonly IChannelManager _channelManager;
@@ -137,6 +142,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     private CancellationTokenSource _stoppingCts = new();
 
     private CancellationTokenSource? _cts;
+    private Task _startupDials = Task.CompletedTask;
     private CompactPubKey? _localNodeId;
     private volatile bool _stopping;
 
@@ -157,6 +163,13 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// </summary>
     internal TimeSpan SimultaneousConnectWindow { get; set; } = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// How long <see cref="StartAsync"/> waits for the startup dials of the stored peers (<c>Node:NetworkTimeout</c>).
+    /// A dial still running then goes on in the background (an onion peer may take <c>Node:Tor:ConnectTimeout</c>),
+    /// so offline peers never hold back what the host starts after the peer manager (NL-576).
+    /// </summary>
+    internal TimeSpan StartupDialWait { get; set; } = TimeSpan.FromSeconds(15);
+
     public PeerManager(IChannelManager channelManager, IChannelMemoryRepository channelMemoryRepository,
                        ILogger<PeerManager> logger, IPeerServiceFactory peerServiceFactory,
                        ISecureKeyManager secureKeyManager, ITcpService tcpService, IServiceProvider serviceProvider,
@@ -167,6 +180,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         {
             ReconnectInitialDelay = nodeOptions.Value.ReconnectInitialDelay;
             ReconnectMaxDelay = nodeOptions.Value.ReconnectMaxDelay;
+            StartupDialWait = nodeOptions.Value.NetworkTimeout;
         }
 
         _torOptions = nodeOptions?.Value.Tor ?? new TorOptions();
@@ -233,6 +247,13 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         foreach (var peer in peers)
             await RegisterExistingChannelsAsync(peer);
 
+        // Dial the stored peers in parallel and wait for them at most StartupDialWait: the host starts the chain
+        // monitor and the HTLC deadline monitor after us, and an offline peer (an onion dial waits up to
+        // Tor:ConnectTimeout) must not hold them back. A dial still running goes on in the background and hands a
+        // failure to the reconnect loop like any other (NL-576)
+        // Not disposed: dials still waiting on it outlive StartAsync (it holds no wait handle)
+        var dialGate = new SemaphoreSlim(MaxParallelStartupDials);
+        var dials = new List<Task>();
         foreach (var peer in peers)
         {
             // A peer we know no address of (it connected to us from a loopback address, NL-497): its channels are
@@ -243,32 +264,61 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
                 continue;
             }
 
-            try
-            {
-                _ = await ConnectToPeerAsync(peer.PeerAddressInfo);
-                continue;
-            }
-            catch (InvalidOperationException)
-            {
-                // Already connected (the peer connected to us first)
-                continue;
-            }
-            catch (ConnectionException)
-            {
-                _logger.LogWarning("Unable to connect to peer {PeerId} on startup", peer.NodeId);
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Error connecting to peer {PeerId} on startup", peer.NodeId);
-            }
-
-            if (HasActiveChannels(peer))
-                StartReconnectLoop(peer);
+            dials.Add(DialOnStartupAsync(peer, dialGate));
         }
+
+        _startupDials = Task.WhenAll(dials);
+        var waited = await Task.WhenAny(_startupDials, Task.Delay(StartupDialWait, _cts.Token));
+        if (waited != _startupDials)
+            _logger.LogInformation("Startup dials still running after {Wait}; they continue in the background",
+                                   StartupDialWait);
 
         await uow.SaveChangesAsync();
 
         await _tcpService.StartListeningAsync(_cts.Token);
+    }
+
+    /// <summary>
+    /// One startup dial (NL-576): at most <see cref="MaxParallelStartupDials"/> at a time, cancelled by
+    /// <see cref="StopAsync"/>; a peer with active channels that could not be reached goes to the reconnect loop.
+    /// </summary>
+    private async Task DialOnStartupAsync(PeerModel peer, SemaphoreSlim dialGate)
+    {
+        var token = _reconnectCts.Token;
+        try
+        {
+            await dialGate.WaitAsync(token);
+            try
+            {
+                _ = await DialPeerAsync(peer.PeerAddressInfo, token);
+                return;
+            }
+            finally
+            {
+                dialGate.Release();
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // Already connected (the peer connected to us first)
+            return;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Stopping
+            return;
+        }
+        catch (ConnectionException)
+        {
+            _logger.LogWarning("Unable to connect to peer {PeerId} on startup", peer.NodeId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Error connecting to peer {PeerId} on startup", peer.NodeId);
+        }
+
+        if (HasActiveChannels(peer))
+            StartReconnectLoop(peer);
     }
 
     public async Task StopAsync()
@@ -293,8 +343,18 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             _logger.LogWarning(e, "Error stopping the TCP listeners");
         }
 
-        // Stop reconnecting first, so no loop connects a peer while we disconnect them
+        // Stop reconnecting first, so no loop connects a peer while we disconnect them; startup dials still running
+        // are cancelled too, and start no loop once cancelled (NL-576)
         await _reconnectCts.CancelAsync();
+        try
+        {
+            await _startupDials;
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Startup dial ended with an error");
+        }
+
         try
         {
             await Task.WhenAll(_reconnectLoops.Values);
@@ -445,6 +505,9 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     private void StartReconnectLoop(PeerModel peer)
     {
         var token = _reconnectCts.Token;
+        if (token.IsCancellationRequested)
+            return;
+
         _reconnectLoops.GetOrAdd(peer.NodeId, _ => Task.Run(() => ReconnectWithBackoffAsync(peer, token), token));
     }
 
@@ -752,11 +815,13 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// connection (NL-514): where the peer connected from is not where it listens, so only the row's last-seen time
     /// moves. Without a dialable row, a loopback peer is saved inbound-only, without an address (empty host, port 0),
     /// so nothing that reads the peer rows (the static channel backup, a restore) takes the loopback host for the
-    /// peer's (NL-497); any other peer is saved at the address of its <c>node_announcement</c> when the graph has one
-    /// (NL-514), else at the host it connected from with the default port (its listening port is unknown until it
-    /// announces itself).
+    /// peer's (NL-497), unless Tor is on and its <c>node_announcement</c> names an address we can dial (an onion
+    /// service, or an IP): a peer that reached our onion service is then saved there and dialed back (NL-579); any
+    /// other peer is saved at the address of its <c>node_announcement</c> when the graph has one (NL-514), else at the
+    /// host it connected from with the default port (its listening port is unknown until it announces itself).
     /// </summary>
-    /// <returns>The saved dialable row of an inbound-only peer, the one the reconnect loop dials; else null.</returns>
+    /// <returns>The saved dialable row of an inbound-only peer (kept or from its announcement), the one the reconnect
+    /// loop dials; else null.</returns>
     private Task<PeerModel?> SaveInboundPeerAsync(PeerModel peer)
     {
         return SavePeerRowAsync(peer.NodeId, async uow =>
@@ -771,6 +836,15 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
 
             if (peer.IsInboundOnly)
             {
+                // Tor delivers our onion service's connections from loopback: the peer's announcement says where to
+                // dial it back (NL-579)
+                if (_torOptions.IsEnabled && TryGetAnnouncedPeer(peer.NodeId) is { } announced)
+                {
+                    announced.LastSeenAt = peer.LastSeenAt;
+                    await uow.PeerDbRepository.AddOrUpdateAsync(announced);
+                    return announced;
+                }
+
                 await uow.PeerDbRepository.AddOrUpdateAsync(new PeerModel(peer.NodeId, string.Empty, 0, peer.Type)
                 {
                     LastSeenAt = peer.LastSeenAt,
