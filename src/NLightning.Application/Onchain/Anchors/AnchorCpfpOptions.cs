@@ -36,7 +36,9 @@ public sealed class AnchorCpfpOptions
     /// How long (blocks after the commitment's confirmation, default 2016, about bitcoind's two-week mempool expiry)
     /// a pending child of a confirmed commitment keeps its wallet inputs reserved when the chain never shows its
     /// anchor spent: such a child can still confirm, so its inputs must not go to another spend (a funding
-    /// transaction would conflict with it under BIP 125). Past it the child is abandoned and the inputs released.
+    /// transaction would conflict with it under BIP 125). Past it the child is abandoned, the inputs are spent back
+    /// to the wallet (NL-386: the child may still be alive in other mempools, so the reclaim replaces it) and
+    /// released.
     /// </summary>
     public uint ConfirmedCommitmentChildWaitBlocks { get; set; } = 2016;
 

@@ -74,12 +74,18 @@ public sealed partial class AnchorCpfpService
             foreach (var stale in pendingChildren.Except(onClose))
                 staged |= await repository.MarkAbandonedAsync(stale.TransactionId);
 
-            if (onClose.Count > 0 && !await ChildrenSettledAsync(channelId, close.CommitmentTransactionId,
-                                                                 AnchorVoutOf(onClose), close.SpentAtHeight, height))
+            if (onClose.Count > 0)
             {
-                if (staged)
-                    await unitOfWork.SaveChangesAsync();
-                return PathState.Active;
+                var settlement = await ChildrenSettlementAsync(channelId, close.CommitmentTransactionId,
+                                                               AnchorVoutOf(onClose), close.SpentAtHeight, height);
+                if (settlement == ChildrenSettlement.NotYet)
+                {
+                    if (staged)
+                        await unitOfWork.SaveChangesAsync();
+                    return PathState.Active;
+                }
+
+                await PlanInputsRescueAsync(channelId, unitOfWork, onClose, result, settlement, cancellationToken);
             }
 
             foreach (var settled in onClose)

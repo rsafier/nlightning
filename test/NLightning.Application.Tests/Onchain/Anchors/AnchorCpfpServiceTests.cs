@@ -469,6 +469,66 @@ public sealed class AnchorCpfpServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_WaitPassedWithBitcoindUnreachable_When_TheChildSettles_Then_ItsInputsAreSpentBackToTheWallet()
+    {
+        // Arrange: bitcoind is unreachable, so only the wait ends it (NL-386); the child may still be alive in other
+        // mempools, so releasing its inputs alone would let a funding conflict with it
+        var commitment = BroadcastCommitment();
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var child = Assert.Single(_store.Children);
+        var childTx = Load(child);
+        var childFee = childTx.Inputs.Skip(1).Aggregate(0UL, (sum, i) => sum + (ulong)_wallet.GetSpentOutput(i.PrevOut)!
+                                                                                      .Value.Satoshi)
+                    - AnchorTx.OutputsSat(childTx);
+        commitment.MarkConfirmed(501, OnchainTestStore.BlockHash(1));
+        _chain.Throws = true;
+        var wait = new AnchorCpfpOptions().ConfirmedCommitmentChildWaitBlocks;
+
+        // Act
+        await Service.RunOnceAsync(501 + wait, TestContext.Current.CancellationToken);
+
+        // Assert: one reclaim, spending the child's wallet inputs back to the wallet at a fee that replaces the child
+        var reclaim = Assert.Single(_store.Rows.Where(r => r.Purpose == BroadcastPurpose.WalletSend));
+        Assert.Equal(BroadcastState.Pending, reclaim.State);
+        Assert.Equal(reclaim, Assert.Single(_published.Skip(1)));
+        var rescue = Load(reclaim);
+        var rescueInputs = rescue.Inputs.Select(i => i.PrevOut).ToList();
+        Assert.All(childTx.Inputs.Skip(1).Select(i => i.PrevOut), spent => Assert.Contains(spent, rescueInputs));
+        Assert.Single(rescue.Outputs);
+        Assert.Equal(_walletScript, rescue.Outputs[0].ScriptPubKey.ToBytes());
+        Assert.Equal(0xFFFFFFFDu, (uint)rescue.Inputs[0].Sequence);
+        Assert.All(rescue.Inputs.AsIndexedInputs(),
+                   i => Assert.True(i.VerifyScript(_wallet.GetSpentOutput(i.PrevOut), out var error), $"{error}"));
+        var rescueFee = rescueInputs.Aggregate(0UL, (sum, o) => sum + (ulong)_wallet.GetSpentOutput(o)!.Value.Satoshi)
+                       - AnchorTx.OutputsSat(rescue);
+        Assert.True(rescueFee > childFee + (ulong)rescue.GetVirtualSize(), $"{rescueFee} does not replace {childFee}");
+        Assert.Equal(BroadcastState.Abandoned, child.State);
+        Assert.Equal(1, _wallet.ReleaseCount);
+    }
+
+    [Fact]
+    public async Task Given_TheAnchorSpentBySomeoneElse_When_TheChildSettles_Then_ReleasedWithoutAReclaim()
+    {
+        // Arrange: the child's parent output was spent in the active chain, so the child is dead in every mempool
+        var commitment = BroadcastCommitment();
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var child = Assert.Single(_store.Children);
+        commitment.MarkConfirmed(501, OnchainTestStore.BlockHash(1));
+        var anchorVout = FindOurAnchor(Load(commitment));
+        _chain.Spent.Add(new OutPoint(Load(commitment).GetHash(), anchorVout));
+        _chain.Tip = 507;
+
+        // Act: the first round records the spend at bitcoind's tip; the second knows the monitor caught up
+        await Service.RunOnceAsync(507, TestContext.Current.CancellationToken);
+        await Service.RunOnceAsync(507, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(BroadcastState.Abandoned, child.State);
+        Assert.Equal(1, _wallet.ReleaseCount);
+        Assert.DoesNotContain(_store.Rows, r => r.Purpose == BroadcastPurpose.WalletSend);
+    }
+
+    [Fact]
     public async Task Given_PendingChildBeforeARestart_When_BumpIsDue_Then_ReplacementReusesTheDurableReservation()
     {
         // Arrange: the port keeps its reservations across the restart (IAnchorFeeInputSource's contract)
