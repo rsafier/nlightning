@@ -8,6 +8,7 @@ using NLightning.Tests.Utils.Mocks;
 namespace NLightning.Application.Tests.Onchain;
 
 using Application.Channels.Safety;
+using Application.Channels.Safety.Interfaces;
 using Application.Channels.Services;
 using Application.Gossip.Announcements.Interfaces;
 using Application.Gossip.Interfaces;
@@ -50,6 +51,8 @@ public sealed class OnchainReorgTests : IDisposable
     private readonly RealSigningCommitmentPair _pair = new(hasAnchors: false);
     private readonly OnchainTestStore _store = new();
     private readonly Mock<IChannelMemoryRepository> _memory = new();
+    private readonly Mock<IChannelFailureService> _failureService = new();
+    private readonly List<ChannelModel> _extraChannels = [];
     private readonly Mock<IChainBroadcaster> _broadcaster = new();
     private readonly Mock<IOutpointWatcher> _outpointWatcher = new();
     private readonly RecordingResolver _resolver = new();
@@ -74,7 +77,14 @@ public sealed class OnchainReorgTests : IDisposable
                     return channel is not null;
                 }));
         _memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
-               .Returns((Func<ChannelModel, bool> predicate) => predicate(_channel) ? [_channel] : []);
+               .Returns((Func<ChannelModel, bool> predicate) =>
+                {
+                    var channels = new List<ChannelModel>();
+                    if (predicate(_channel))
+                        channels.Add(_channel);
+                    channels.AddRange(_extraChannels.Where(predicate));
+                    return channels;
+                });
         _broadcaster.Setup(b => b.PublishAsync(It.IsAny<BroadcastTransactionModel>()))
                     .Callback<BroadcastTransactionModel>(_published.Add)
                     .ReturnsAsync(true);
@@ -105,6 +115,7 @@ public sealed class OnchainReorgTests : IDisposable
         services.AddScoped<IOutputResolver>(_ => _resolver);
         services.AddSingleton<IBitcoinChainService>(_chain);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        services.AddSingleton(_failureService.Object);
         _provider = services.BuildServiceProvider();
 
         // The peer's commitment confirmed at SpentAt; the funding outpoint is watched
@@ -394,6 +405,78 @@ public sealed class OnchainReorgTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_FundingConfirmationRolledBack_When_TheGracePassesWithoutReconfirm_Then_TheChannelIsFailed()
+    {
+        // Arrange (NL-329): an open channel at 500x3 whose funding confirmation the reorg rolled back — the funding
+        // watch is pending again, with no first-seen height, and the transaction never confirms again
+        var open = AddOpenChannel(500, 3);
+        var watch = new WatchedTransactionModel(open.ChannelId, open.FundingOutput!.TransactionId!.Value, 6);
+        _store.TransactionWatches[watch.TransactionId] = watch;
+        var executor = CreateExecutor(reconfirmGrace: 2);
+
+        // Act: rounds inside the grace, then past it
+        await executor.RunRoundAsync(1_000, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(1_001, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(1_002, TestContext.Current.CancellationToken);
+
+        // Assert: failed once through the failure service, without a commitment broadcast (our commitment spends the
+        // funding output and cannot confirm while the funding is not in the chain); the failure service owns the
+        // transition, so the model itself is not touched here
+        _failureService.Verify(f => f.FailChannelAsync(open.ChannelId,
+                                   It.Is<ChannelFailureRequest>(r => r.Broadcast == false
+                                                                  && r.PeerMessage == "funding transaction not confirmed"),
+                                   It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(ChannelState.Open, open.State);
+        Assert.False(executor.FundingReconfirms.IsPendingReconfirm(open.ChannelId));
+
+        // And not again: the channel left the check (or its grace restarts) after the attempt
+        await executor.RunRoundAsync(1_003, TestContext.Current.CancellationToken);
+        _failureService.Verify(f => f.FailChannelAsync(It.IsAny<ChannelId>(), It.IsAny<ChannelFailureRequest>(),
+                                                       It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_FundingSeenAgainBeforeTheGrace_When_Rounds_Then_NoFailureAndTheCountStartsOver()
+    {
+        // Arrange: the same rolled-back confirmation, but the funding transaction is seen again in a block (it will
+        // reach its depth and the confirmation handler moves the short channel id)
+        var open = AddOpenChannel(500, 3);
+        var watch = new WatchedTransactionModel(open.ChannelId, open.FundingOutput!.TransactionId!.Value, 6);
+        _store.TransactionWatches[watch.TransactionId] = watch;
+        var executor = CreateExecutor(reconfirmGrace: 2);
+
+        // Act: the funding re-enters the chain before the grace is over, and stays there
+        await executor.RunRoundAsync(1_000, TestContext.Current.CancellationToken);
+        watch.SetHeightAndIndex(1_001, 2);
+        await executor.RunRoundAsync(1_001, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(1_002, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(1_005, TestContext.Current.CancellationToken);
+
+        // Assert: never failed
+        _failureService.Verify(f => f.FailChannelAsync(It.IsAny<ChannelId>(), It.IsAny<ChannelFailureRequest>(),
+                                                       It.IsAny<CancellationToken>()), Times.Never);
+        Assert.False(executor.FundingReconfirms.IsPendingReconfirm(open.ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_FundingWatchMissing_When_Rounds_Then_NothingIsJudged()
+    {
+        // Arrange: an open channel whose funding watch row is unknown to the store (a test double) — not ours to
+        // judge, so no failure
+        var open = AddOpenChannel(500, 3);
+        var executor = CreateExecutor(reconfirmGrace: 1);
+
+        // Act
+        await executor.RunRoundAsync(1_000, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(1_005, TestContext.Current.CancellationToken);
+
+        // Assert
+        _failureService.Verify(f => f.FailChannelAsync(It.IsAny<ChannelId>(), It.IsAny<ChannelFailureRequest>(),
+                                                       It.IsAny<CancellationToken>()), Times.Never);
+        Assert.False(executor.FundingReconfirms.IsPendingReconfirm(open.ChannelId));
+    }
+
+    [Fact]
     public async Task Given_FirstFundingConfirmation_When_Handled_Then_LeftToTheChannelManager()
     {
         // Arrange: no short channel id yet
@@ -426,11 +509,27 @@ public sealed class OnchainReorgTests : IDisposable
         _pair.Dispose();
     }
 
-    private OnchainResolutionExecutor CreateExecutor(uint irrevocableDepth = 100) =>
+    private OnchainResolutionExecutor CreateExecutor(uint irrevocableDepth = 100, uint? reconfirmGrace = null) =>
         new(_broadcaster.Object, new ChannelLockProvider(), _memory.Object,
             NullLogger<OnchainResolutionExecutor>.Instance, _outpointWatcher.Object,
             _provider.GetRequiredService<IServiceScopeFactory>(),
-            Options.Create(new OnchainOptions { IrrevocableDepth = irrevocableDepth, ReorgGraceBlocks = Grace }));
+            Options.Create(new OnchainOptions
+            {
+                IrrevocableDepth = irrevocableDepth,
+                ReorgGraceBlocks = Grace,
+                FundingReconfirmGraceBlocks = reconfirmGrace ?? 12
+            }));
+
+    /// <summary>An extra open channel with a short channel id, served by the memory repository and the store.</summary>
+    private ChannelModel AddOpenChannel(uint block, uint index)
+    {
+        var open = _pair.Bob.Channel;
+        Assert.Equal(ChannelState.Open, open.State);
+        open.ShortChannelId = new ShortChannelId(block, index, open.FundingOutput!.Index!.Value);
+        open.FundingCreatedAtBlockHeight = block;
+        _extraChannels.Add(open);
+        return open;
+    }
 
     private void UseClose(ChannelCloseKind kind, Block block, uint height = SpentAt) =>
         _store.Closes[_channel.ChannelId] = new ChannelCloseModel(_channel.ChannelId, kind, _commitmentTxId,

@@ -36,6 +36,13 @@ public sealed class OnchainOptions
     public uint ReorgGraceBlocks { get; set; } = 6;
 
     /// <summary>
+    /// Blocks an Open channel waits for its funding transaction to confirm again after a reorg took its confirmation
+    /// out of the chain, before the channel is failed (<c>Node:Onchain:FundingReconfirmGraceBlocks</c>, NL-329). Must
+    /// be above the funding depth, since a funding that re-enters the chain needs that many blocks to reach it again.
+    /// </summary>
+    public uint FundingReconfirmGraceBlocks { get; set; } = 12;
+
+    /// <summary>
     /// The reaction to unconfirmed spends of our channels' outputs (<c>Node:Onchain:Mempool</c>, BOLT 5 plan O8,
     /// NL-098).
     /// </summary>
