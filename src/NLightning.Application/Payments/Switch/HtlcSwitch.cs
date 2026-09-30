@@ -447,12 +447,19 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             // incomplete or by a stop before the settle, commits to nothing and keeps every check)
             var committed = current.KnownPreimage is { } known && invoice is { Status: InvoiceStatus.Settled }
                          && known == invoice.Preimage;
+            // NL-335: the on-chain decision judges the invoice's expiry at the HTLC's lock-in (its persisted AddedAt),
+            // not at the decision: an HTLC locked in while its invoice was open is claimed on chain even though the
+            // invoice has expired since (the peer would otherwise time it out)
+            var addedAt = onchain
+                ? await unitOfWork.ChannelStateDbRepository.GetHtlcAddedAtAsync(
+                      channelId, new HtlcKey(HtlcDirection.Incoming, htlc.Id))
+                : null;
             // After dummy hops of our own path (NL-440) the final-hop checks see what our final hop would have
             // received, as if the dummy hops were other nodes
             decision = _finalHopProcessor.Evaluate(invoice, htlc.PaymentHash, final.Blinded?.ReceivedAmount ?? amount,
                                                    final.Blinded?.ReceivedCltvExpiry ?? htlc.CltvExpiry,
                                                    final.Payload, height, _acceptMultiPart, committed,
-                                                   final.Blinded?.RecipientData);
+                                                   final.Blinded?.RecipientData, addedAt);
         }
 
         if (decision.InvoiceAlreadySettled)

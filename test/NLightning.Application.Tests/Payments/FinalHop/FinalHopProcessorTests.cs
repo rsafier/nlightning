@@ -227,6 +227,37 @@ public class FinalHopProcessorTests
     }
 
     [Fact]
+    public void Given_InvoiceExpiredAfterLockIn_When_EvaluatedAtTheLockIn_Then_Accepted()
+    {
+        // Arrange - NL-335: the HTLC locked in while the invoice was open; the on-chain decision judges the expiry
+        // there instead of now
+        var lockIn = DateTimeOffset.UtcNow.AddHours(-2);
+
+        // Act
+        var result = _processor.Evaluate(CreateInvoice(createdAt: lockIn.AddMinutes(-1)), s_paymentHash,
+                                         LightningMoney.MilliSatoshis(AmountMsat), HtlcCltv, CreatePayload(), Height,
+                                         evaluatedAt: lockIn);
+
+        // Assert
+        Assert.True(result.IsAccepted, result.Reason);
+    }
+
+    [Fact]
+    public void Given_InvoiceAlreadyExpiredAtLockIn_When_EvaluatedAtTheLockIn_Then_0x400F()
+    {
+        // Arrange - NL-335: the lock-in rule cuts both ways: an HTLC added after its invoice expired is still refused
+        var lockIn = DateTimeOffset.UtcNow.AddHours(-2);
+
+        // Act
+        var result = _processor.Evaluate(CreateInvoice(createdAt: lockIn.AddHours(-2)), s_paymentHash,
+                                         LightningMoney.MilliSatoshis(AmountMsat), HtlcCltv, CreatePayload(), Height,
+                                         evaluatedAt: lockIn);
+
+        // Assert
+        AssertUnknownPaymentDetails(result);
+    }
+
+    [Fact]
     public void Given_TotalMsatAboveAmtToForward_When_Evaluated_Then_0x400FBecauseMppIsNotSupported()
     {
         // Act: a multi-part payment of 2 x 100000 msat
