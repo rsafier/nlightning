@@ -195,12 +195,15 @@ public static class InteractiveTxRules
     /// (<c>MAX_MONEY</c>)".
     /// </summary>
     /// <remarks>
-    /// The <c>dust_limit</c> is Bitcoin Core's standard dust threshold of the script (<see cref="GetDustThreshold"/>),
-    /// since the session parameters carry no negotiated one: 294 sat for P2WPKH, 330 for P2WSH/P2TR, 546 for P2PKH,
-    /// 540 for P2SH and 0 for <c>OP_RETURN</c>. "Non-standard" is anything but P2PKH, P2SH, a witness program (v0 of 20
-    /// or 32 bytes, v1-16 of 2-40 bytes) or an <c>OP_RETURN</c> (<see cref="IsStandardOutputScript"/>).
+    /// The <c>dust_limit</c> is the larger of the channel's negotiated dust limit and Bitcoin Core's standard dust
+    /// threshold of the script (<see cref="GetDustThreshold"/>): 294 sat for P2WPKH, 330 for P2WSH/P2TR, 546 for P2PKH,
+    /// 540 for P2SH and 0 for <c>OP_RETURN</c> (NL-473: the negotiated limit rules, the per-script one stays as the
+    /// standardness floor for outputs an unspendable script would need). "Non-standard" is anything but P2PKH, P2SH, a
+    /// witness program (v0 of 20 or 32 bytes, v1-16 of 2-40 bytes) or an <c>OP_RETURN</c>
+    /// (<see cref="IsStandardOutputScript"/>).
     /// </remarks>
-    public static InteractiveTxRuleViolation? CheckOutput(LightningMoney amount, BitcoinScript script)
+    public static InteractiveTxRuleViolation? CheckOutput(LightningMoney amount, BitcoinScript script,
+                                                          ulong dustLimitSatoshis = 0)
     {
         ArgumentNullException.ThrowIfNull(amount);
 
@@ -212,7 +215,7 @@ public static class InteractiveTxRules
         if (amount.MilliSatoshi % 1_000 != 0)
             return new InteractiveTxRuleViolation("IT-R-02", "the output amount is not whole satoshis");
 
-        var dust = GetDustThreshold(bytes);
+        var dust = Math.Max(dustLimitSatoshis, GetDustThreshold(bytes));
         if (sats < dust)
             return new InteractiveTxRuleViolation("IT-R-02", $"the sats amount {sats} is less than the dust limit {dust}");
 

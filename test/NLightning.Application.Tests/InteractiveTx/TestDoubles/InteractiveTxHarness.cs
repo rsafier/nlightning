@@ -52,7 +52,7 @@ public static class InteractiveTxEngines
     internal static bool IsDomainEngineImplemented()
     {
         var key = new Key().PubKey.ToBytes();
-        var parameters = new InteractiveTxSessionParameters(new ChannelId(new byte[32]), true, 253, 0,
+        var parameters = new InteractiveTxSessionParameters(new ChannelId(new byte[32]), true, 253, 0, 0,
                                                             InteractiveTxContribution.Empty, null, false, false, key,
                                                             key, []);
         try

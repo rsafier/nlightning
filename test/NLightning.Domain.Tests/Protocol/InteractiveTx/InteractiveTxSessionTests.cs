@@ -70,8 +70,10 @@ public class InteractiveTxSessionTests
         string.Join(",", log.Select(e => (e.FromInitiator ? "A:" : "B:") + e.Message.Type));
 
     private static InteractiveTxSession NonInitiator(InteractiveTxContribution? contribution = null,
-                                                     SharedFundingSpec? shared = null, uint feeratePerKw = 253) =>
-        InteractiveTxSession.Create(Parameters(false, contribution, shared, feeratePerKw: feeratePerKw));
+                                                     SharedFundingSpec? shared = null, uint feeratePerKw = 253,
+                                                     ulong dustLimitSatoshis = 0) =>
+        InteractiveTxSession.Create(Parameters(false, contribution, shared, feeratePerKw: feeratePerKw,
+                                               dustLimitSatoshis: dustLimitSatoshis));
 
     /// <summary>Our non-initiator session after the peer's first message.</summary>
     private InteractiveTxStepResult Receive(InteractiveTxSession session, IChannelMessage message) =>
@@ -646,6 +648,23 @@ public class InteractiveTxSessionTests
 
         // Assert
         Assert.False(result.Aborted, result.AbortReason);
+    }
+
+    [Fact]
+    public void Given_ANegotiatedDustLimit_When_ThePeerAddsAnOutputBelowIt_Then_Aborts()
+    {
+        // Arrange (NL-473: the negotiated dust_limit rules, not Bitcoin Core's per-script threshold; the session's
+        // parameters carry the larger of both sides' dust_limit_satoshis)
+        var session = NonInitiator(dustLimitSatoshis: 1_000);
+
+        // Act: 500 sat is above the 294 sat P2WPKH threshold but below the negotiated limit
+        var below = Receive(session, AddOutput(0, 500));
+        var atLimit = Receive(NonInitiator(dustLimitSatoshis: 1_000), AddOutput(0, 1_000));
+
+        // Assert
+        AssertAborted(below, "IT-R-02");
+        Assert.False(atLimit.Aborted, atLimit.AbortReason);
+        Assert.Single(atLimit.Next.Outputs);
     }
 
     #endregion

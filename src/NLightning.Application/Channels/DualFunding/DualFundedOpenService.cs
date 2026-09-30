@@ -1530,8 +1530,19 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                            uint locktime, InteractiveTxContributionRequest? request = null,
                                            InteractiveTxContribution? contribution = null) =>
         new(negotiation.ChannelId, _lightningSigner.GetNodePublicKey(), negotiation.Peer, isInitiator, feeratePerKw,
-            locktime, negotiation.LocalRequiresConfirmedInputs, negotiation.RemoteRequiresConfirmedInputs, request,
-            contribution);
+            locktime, GetDustLimitSatoshis(negotiation), negotiation.LocalRequiresConfirmedInputs,
+            negotiation.RemoteRequiresConfirmedInputs, request, contribution);
+
+    /// <summary>
+    /// The channel's negotiated dust limit for the interactive-tx <c>tx_add_output</c> check (NL-473): the larger of
+    /// both sides' <c>dust_limit_satoshis</c>, since the funding output serves both commitments. Our own configured dust
+    /// limit while the channel is not parametrized yet (the opener's placeholder), 0 for none.
+    /// </summary>
+    private ulong GetDustLimitSatoshis(DualFundNegotiation negotiation) =>
+        negotiation.Channel is not { } channel
+            ? (ulong)_nodeOptions.DustLimitAmount.Satoshi
+            : (ulong)Math.Max(channel.ChannelParams.Local.DustLimitAmount.Satoshi,
+                              channel.ChannelParams.Remote.DustLimitAmount.Satoshi);
 
     /// <summary>
     /// The values we announce. v2 has no reserve field: the reserve is fixed from both contributions

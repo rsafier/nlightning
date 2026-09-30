@@ -252,6 +252,30 @@ public class InteractiveTxDriverTests
         Assert.IsType<TxAbortMessage>(Assert.Single(replies));
     }
 
+    [Theory]
+    [MemberData(nameof(InteractiveTxHarnessTests.Engines), MemberType = typeof(InteractiveTxHarnessTests))]
+    public async Task Given_ANegotiatedDustLimit_When_ThePeerAddsAnOutputBelowIt_Then_TxAbort(string engine)
+    {
+        // Arrange (NL-473: the terms' negotiated dust limit reaches the session's tx_add_output check)
+        var ct = TestContext.Current.CancellationToken;
+        var node = CreateNode(engine: InteractiveTxEngines.Get(engine));
+        var peer = CreateNode(0x22);
+        var terms = node.Terms(s_channelId, peer, false, 1_000, false) with { DustLimitSatoshis = 1_000 };
+        await node.Driver.StartAsync(terms, node.Host, ct);
+        var output = new TxAddOutputMessage(new TxAddOutputPayload(Domain.Money.LightningMoney.Satoshis(500),
+                                                                   s_channelId,
+                                                                   InteractiveTxMessages.P2WpkhScript, 0));
+
+        // Act: 500 sat is above Bitcoin Core's 294 sat P2WPKH threshold (and the reference engine's 330 sat floor),
+        // so only the negotiated 1,000 refused it
+        var replies = await node.Driver.ReceiveAsync(output, peer.NodeId, node.UnitOfWork, ct);
+
+        // Assert
+        var abort = Assert.IsType<TxAbortMessage>(Assert.Single(replies));
+        Assert.Contains("dust", System.Text.Encoding.ASCII.GetString(abort.Payload.Data),
+                        StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task Given_ACompletedNegotiation_When_TheHostRejectsTheRbf_Then_TxAbort()
     {

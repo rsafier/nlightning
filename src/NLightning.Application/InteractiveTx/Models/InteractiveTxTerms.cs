@@ -16,6 +16,9 @@ using Domain.Protocol.InteractiveTx.Models;
 /// <param name="IsInitiator">Whether we send the first message and even <c>serial_id</c>s (IT-S-01/02).</param>
 /// <param name="FeeratePerKw">The agreed feerate (sat/kw).</param>
 /// <param name="Locktime">The agreed <c>nLockTime</c>.</param>
+/// <param name="DustLimitSatoshis">The channel's negotiated dust limit (sat, the larger of both sides'
+/// <c>dust_limit_satoshis</c>) for the session's <c>tx_add_output</c> check (IT-R-02, NL-473); 0 keeps only Bitcoin
+/// Core's standardness floor.</param>
 /// <param name="LocalRequiresConfirmedInputs">We sent <c>require_confirmed_inputs</c>: the driver checks every input
 /// the peer adds with <see cref="Domain.Protocol.InteractiveTx.Interfaces.IPrevTxInspector.IsConfirmedAsync"/>.</param>
 /// <param name="RemoteRequiresConfirmedInputs">The peer sent <c>require_confirmed_inputs</c>.</param>
@@ -31,6 +34,7 @@ public sealed record InteractiveTxTerms(
     bool IsInitiator,
     uint FeeratePerKw,
     uint Locktime,
+    ulong DustLimitSatoshis = 0,
     bool LocalRequiresConfirmedInputs = false,
     bool RemoteRequiresConfirmedInputs = false,
     InteractiveTxContributionRequest? ContributionRequest = null,
