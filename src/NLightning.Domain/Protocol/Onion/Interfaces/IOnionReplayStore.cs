@@ -26,9 +26,12 @@ using Channels.ValueObjects;
 /// forwarded (its <c>outgoing_cltv_value</c> is below the incoming expiry, so it is in the past) and a final-hop replay
 /// meets an invoice already paid or failed. Implementations decide when to forget: the persistent store prunes lazily
 /// inside <see cref="TryAddAsync"/> (at most once per new chain height, from the chain monitor's last processed
-/// height), the in-memory one evicts the soonest-expiring entry when full. <see cref="PruneAsync"/> is an optional
-/// explicit prune; nothing in the node has to call it. A node that receives no HTLCs does not prune, which is harmless:
-/// the set only holds entries of HTLCs it already received.
+/// height), the in-memory one evicts the soonest-expiring entry when full. <see cref="PruneAsync"/> is the hook the
+/// node's block pruner drives: since NL-327 <c>OnionReplayBlockPruner</c> (Infrastructure.Bitcoin, registered by
+/// <c>AddOnionReplayBlockPruner()</c> and started/stopped with the chain monitor) calls it at every new block's height,
+/// with prunes coalesced to the highest height seen and a failed prune retried by the next block, so even a node that
+/// receives no HTLCs prunes; the lazy prune in <see cref="TryAddAsync"/> stays as the fallback. The set only holds
+/// entries of HTLCs the node already received, so a missed prune is harmless.
 /// </para>
 /// <para>
 /// Persistence (migration <c>AddOnionReplaySet</c>): one row per HMAC, <c>OnionReplayEntries(Hmac primary key,
