@@ -420,6 +420,65 @@ public class HtlcSwitchTests
     }
 
     [Fact]
+    public async Task Given_FulfilledHtlcWithoutStoredOrigin_When_Handled_Then_ThePaymentHandlersAreCalled()
+    {
+        // Arrange - NL-265: an HTLC offered before NL-250 carries no origin; it is our own payment (W2-C "Local or no
+        // circuit"), and the handler matches the event by channel and HTLC id
+        var preimage = SecretOf(9);
+        var fulfilled = new OutgoingHtlcFulfilled(s_otherChannelId, 4, HashOf(preimage), preimage);
+        _paymentHandler.Setup(h => h.HandleFulfilledAsync(fulfilled, HashOf(preimage), It.IsAny<CancellationToken>()))
+                       .Callback(() => _calls.Add("handled"))
+                       .Returns(Task.CompletedTask);
+
+        // Act
+        await CreateSwitch().HandleAsync(fulfilled, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(["handled"], _calls);
+    }
+
+    [Fact]
+    public async Task Given_FailedHtlcWithoutStoredOrigin_When_Handled_Then_ThePaymentHandlersAreCalled()
+    {
+        // Arrange - NL-265: the failure of an origin-less HTLC reaches the handlers like a local one
+        var hash = HashOf(SecretOf(3));
+        var failed = new OutgoingHtlcFailed(s_otherChannelId, 4, hash, HtlcRemoval.Fail(new byte[] { 1 }));
+        _paymentHandler.Setup(h => h.HandleFailedAsync(failed, hash, It.IsAny<CancellationToken>()))
+                       .Callback(() => _calls.Add("handled"))
+                       .Returns(Task.CompletedTask);
+
+        // Act
+        await CreateSwitch().HandleAsync(failed, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(["handled"], _calls);
+    }
+
+    [Fact]
+    public async Task Given_PaymentHandlerFails_When_AnOriginlessFulfillSettles_Then_TheRowIsKeptUntilAHandledReplay()
+    {
+        // Arrange - NL-265: the fallback treated the origin-less HTLC as our own payment, and the handler's save failed
+        var preimage = SecretOf(9);
+        var fulfilled = new OutgoingHtlcFulfilled(s_otherChannelId, 4, HashOf(preimage), preimage);
+        _paymentHandler.Setup(h => h.HandleFulfilledAsync(fulfilled, HashOf(preimage), It.IsAny<CancellationToken>()))
+                       .ThrowsAsync(new InvalidOperationException("database down"));
+        var htlcSwitch = CreateSwitch();
+
+        // Act
+        await htlcSwitch.HandleAsync(fulfilled, TestContext.Current.CancellationToken);
+        await htlcSwitch.HandleAsync(Settled(4), TestContext.Current.CancellationToken);
+        var prunedFirst = _calls.Contains("prune");
+        _paymentHandler.Setup(h => h.HandleFulfilledAsync(fulfilled, HashOf(preimage), It.IsAny<CancellationToken>()))
+                       .Returns(Task.CompletedTask);
+        await htlcSwitch.HandleAsync(fulfilled, TestContext.Current.CancellationToken);
+        await htlcSwitch.HandleAsync(Settled(4), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(prunedFirst);
+        Assert.Equal(["prune"], _calls);
+    }
+
+    [Fact]
     public async Task Given_TheFailureNamesTheChannelByAnAlias_When_TheStandingUpdateNamesAnotherScid_Then_AnUpdateForTheAliasIsCarried()
     {
         // Arrange - NL-266: an option_scid_alias channel's standing update names the peer's alias, but the onion
