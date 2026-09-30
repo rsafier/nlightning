@@ -160,7 +160,10 @@ public class FeatureOptions
     /// Enable attribution data.
     /// </summary>
     /// <remarks>
-    /// Defaults to No until error onions carry attribution data (onion M3b).
+    /// Stays No and in <see cref="ExperimentalFeatures"/> although attribution_data is implemented (onion M3b, NL-072;
+    /// used by the switch and payments since ABCD wave 7) and proven between NLightning nodes (Docker
+    /// <c>AttributionFlowTests</c>): LND 0.20 has no <c>option_attribution_data</c>, so un-gating it needs an interop
+    /// decision (NL-332).
     /// </remarks>
     public FeatureSupport OptionAttributionData { get; set; } = FeatureSupport.No;
 
