@@ -408,7 +408,13 @@ public static class NodeConfigurationExtensions
                    "MinFeeratePerKw": 253,
                    "MaxFeeratePerKw": 250000,
                    "RequireConfirmedInputs": false,
-                   "MinRbfBlocks": 1
+                   "MinRbfBlocks": 1,
+                   "MaxRbfAttempts": 8,
+                   "MaxRbfFeeShareSatoshis": 50000,
+                   "AutoBumpAfterBlocks": 0,
+                   "AutoBumpMaxFeeratePerKw": 25000,
+                   "AutoBumpMaxFeeSat": 100000,
+                   "AutoBumpMaxWait": "00:02:00"
                  },
                  "Gossip": {
                    "Enabled": {{GOSSIP_ON}},
