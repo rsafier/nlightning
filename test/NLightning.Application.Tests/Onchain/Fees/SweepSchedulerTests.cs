@@ -194,7 +194,7 @@ public sealed class SweepSchedulerTests
         // Act
         var actions = await scheduler.PlanAsync(kit.Close, kit.Rows.ToList(), height, CreateUnitOfWork(kit),
                                                 TestContext.Current.CancellationToken);
-        kit.Apply(actions);
+        await kit.ApplyAsync(actions);
 
         // Assert: the same revoked outputs, re-signed with the revocation key (script-valid), at a BIP 125 higher fee
         var replacement = Assert.Single(actions.OfType<BroadcastAction>()).Transaction;
