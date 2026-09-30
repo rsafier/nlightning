@@ -116,11 +116,9 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     /// <param name="hasAnchors">An option_anchors channel (O7-T3).</param>
     /// <param name="feeInputProvider">The wallet's fee inputs for anchors HTLC transactions (the default registration
     /// when null).</param>
-    /// <param name="wrapSigner">Replaces Alice's signer in the resolver's container (e.g. with a decorator).</param>
     /// <param name="resolverLogger">The resolver's logger (a null logger when null).</param>
     public LocalCommitResolutionHarness(Action<RealSigningCommitmentPair>? setup = null, bool hasAnchors = false,
                                         IAnchorFeeInputProvider? feeInputProvider = null,
-                                        Func<ILightningSigner, ILightningSigner>? wrapSigner = null,
                                         ILogger<LocalCommitResolver>? resolverLogger = null)
     {
         Pair = new RealSigningCommitmentPair(hasAnchors);
@@ -160,7 +158,7 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
         services.AddSingleton(new Mock<IUtxoMemoryRepository>().Object);
         services.AddBitcoinInfrastructure();
         services.AddSingleton(chainService.Object);
-        services.AddSingleton(wrapSigner is null ? Pair.Alice.Signer : wrapSigner(Pair.Alice.Signer));
+        services.AddSingleton(Pair.Alice.Signer);
         if (feeInputProvider is not null)
             services.AddSingleton(feeInputProvider);
         services.AddSingleton<ICommitmentTransactionModelFactory, CommitmentTransactionModelFactory>();
