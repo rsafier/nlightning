@@ -38,8 +38,12 @@ using Domain.Protocol.Models;
 /// <para>Retirement (NL-294): a pending transaction whose input was spent on chain by another transaction can never
 /// confirm and is abandoned; a pending one that no output row names any more and that a later row replaces (a penalty
 /// batch split into singles, O5-T3) is marked replaced. Neither is rebroadcast after that.</para>
-/// <para>Pre-signed HTLC-timeout/success transactions and our commitment carry a fee fixed at signing and are never
-/// bumped (no anchors: O7).</para>
+/// <para>Pre-signed HTLC-timeout/success transactions and our commitment carry a fee fixed at signing and are not
+/// bumped here (the scheduler deliberately skips <see cref="BroadcastPurpose.HtlcTransaction"/>). Without anchors such
+/// an HTLC transaction pays its fee from the HTLC output and cannot be replaced. With anchors (wave O7) the bumping
+/// belongs to the resolvers instead: <c>LocalCommitResolver.MaintainAnchorHtlcTransactionAsync</c> RBF-replaces our
+/// wallet-funded anchors HTLC transactions on the <see cref="SweepFeePolicy.ShouldBump"/> schedule, and the anchors
+/// commitment is fee-bumped through its CPFP child (<c>AnchorCpfpService</c> builds and RBF-bumps the child).</para>
 /// </remarks>
 public sealed class SweepScheduler : ISweepScheduler
 {
