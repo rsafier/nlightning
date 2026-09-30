@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
 using Bitcoin.Wallet;
 using Domain.Node.Options;
+using Domain.Protocol.Constants;
 using Domain.Protocol.ValueObjects;
 using Options;
 
@@ -29,5 +30,30 @@ public class BitcoinChainServiceTests
         Assert.Throws<ArgumentException>(() => new BitcoinChainService(bitcoinOptions,
                                                                        NullLogger<BitcoinChainService>.Instance,
                                                                        nodeOptions));
+    }
+
+    [Fact]
+    public void Given_BitcoindUnreachable_When_Constructed_Then_ItDoesNotTalkToBitcoind()
+    {
+        // Arrange (NL-153: DI resolves the service without a live bitcoind; the RPCs fail on their own)
+        var bitcoinOptions = new OptionsWrapper<BitcoinOptions>(new BitcoinOptions
+        {
+            RpcEndpoint = "http://127.0.0.1:1",
+            RpcUser = "user",
+            RpcPassword = "password",
+            ZmqHost = "127.0.0.1",
+            ZmqBlockPort = 1,
+            ZmqTxPort = 1
+        });
+        var nodeOptions = new OptionsWrapper<NodeOptions>(new NodeOptions
+        {
+            BitcoinNetwork = new BitcoinNetwork(NetworkConstants.Regtest)
+        });
+
+        // Act
+        var service = new BitcoinChainService(bitcoinOptions, NullLogger<BitcoinChainService>.Instance, nodeOptions);
+
+        // Assert
+        Assert.NotNull(service);
     }
 }
