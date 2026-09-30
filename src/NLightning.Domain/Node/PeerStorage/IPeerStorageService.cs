@@ -31,9 +31,10 @@ public interface IPeerStorageService
 
     /// <summary>
     /// Handles a <c>warning</c> (never an <c>error</c>) from <paramref name="peer"/>. A peer that refused our backup
-    /// blob for its size is learned from it: the next backup to it is built within the limit its warning names (a
-    /// default small length when it names none) and the refusal is listed by <see cref="GetRefusals"/>. Only queues
-    /// work; never throws.
+    /// blob for its size is learned from it: the next backup to it is built within the byte limit its warning names
+    /// and the refusal is listed by <see cref="GetRefusals"/>. Only an unambiguous size refusal counts (NL-563): a
+    /// peer-storage warning that names no byte limit (e.g. LDK before any channel with it is funded) is informational
+    /// and changes nothing. Only queues work; never throws.
     /// </summary>
     void HandleWarning(IPeerService peer, string message);
 

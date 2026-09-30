@@ -669,9 +669,9 @@ public class PeerStorageServiceTests
     }
 
     [Fact]
-    public async Task Given_ARefusalNamingNoLimit_When_ItsWarningArrives_Then_TheDefaultLimitIsUsed()
+    public async Task Given_APeerStorageWarningWithoutAByteLimit_When_ItArrives_Then_ItIsNotACountedRefusal()
     {
-        // Arrange
+        // Arrange: a size-sounding refusal that names no limit is not an unambiguous size refusal (NL-563)
         using var context = new PeerStorageTestContext();
         var peer = new FakeGossipPeer(51);
         context.AddChannel(peer.PeerPubKey);
@@ -682,11 +682,40 @@ public class PeerStorageServiceTests
         context.Service.HandleWarning(peer, "your peer storage blob is too large for me");
         await context.Service.LastWork;
 
-        // Assert
-        var fitted = await peer.NextAsync<PeerStorageMessage>();
-        Assert.Equal(PeerStorageService.DefaultRefusalLimit, fitted.Payload.Blob.Length);
-        Assert.Equal(PeerStorageService.DefaultRefusalLimit,
-                     Assert.Single(context.Service.GetRefusals()).AcceptedLimitBytes);
+        // Assert: nothing is counted and nothing is adapted or resent
+        Assert.True(await peer.NothingSentWithinAsync(s_quiet));
+        Assert.Empty(context.Service.GetRefusals());
+    }
+
+    [Fact]
+    public async Task Given_TheFundedChannelWarning_When_ItArrives_Then_NothingIsCountedAndTheLimitIsUntouched()
+    {
+        // Arrange: a peer's answer before any channel with it was funded, verbatim from Mutinynet (NL-563)
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(57);
+        var channel = context.AddChannel(peer.PeerPubKey);
+        context.Service.OnPeerInitialized(peer);
+        await peer.NextAsync<PeerStorageMessage>();
+
+        // Act
+        context.Service.HandleWarning(
+            peer, "Ignoring peer_storage message, as peer storage is currently supported only for peers with an "
+                + "active funded channel.");
+        await context.Service.LastWork;
+
+        // Assert: informational, so nothing is resent and no refusal is counted ...
+        Assert.True(await peer.NothingSentWithinAsync(s_quiet));
+        Assert.Empty(context.Service.GetRefusals());
+
+        // ... and no limit was learned: the changed backup still goes out at the full BOLT 1 length
+        context.AddChannel(new FakeGossipPeer(58).PeerPubKey);
+        context.Time.Advance(TimeSpan.FromMinutes(1));
+        await context.Service.RunRoundAsync();
+        var sent = await peer.NextAsync<PeerStorageMessage>();
+        Assert.Equal(PeerStorageConstants.MaxBlobLength, sent.Payload.Blob.Length);
+        var contents = await context.BlobProvider.TryReadBlobAsync(sent.Payload.Blob,
+                                                                   TestContext.Current.CancellationToken);
+        Assert.Contains(contents!.Channels, c => c.ChannelId == channel.ChannelId);
     }
 
     [Fact]
@@ -741,7 +770,7 @@ public class PeerStorageServiceTests
         await peer.NextAsync<PeerStorageMessage>();
 
         // Act: the peer restarts grown, but the blob it has fits and was never refused again
-        context.Service.HandleWarning(peer, "peer storage: refusing your blob");
+        context.Service.HandleWarning(peer, "Supports only data up to 4096 bytes in peer storage.");
         await context.Service.LastWork;
 
         // Assert: the limit stays 1,024 and nothing is resent for it (what we last sent fits)

@@ -42,10 +42,13 @@ using Domain.Protocol.Payloads;
 /// the last blob sent (<see cref="PeerBackupRetrieval.MatchesLastSent"/>). A blob handed back that is not ours is only
 /// logged; one of ours naming channels we have no record of is a sign of data loss, logged and kept for the restore
 /// flow (<see cref="GetRetrievals"/>). A peer that answers our blob with a <c>warning</c> refusing its size (e.g. LDK,
-/// which takes at most 1,024 bytes) is answered at once with one that fits the limit its warning names — or
-/// <see cref="DefaultRefusalLimit"/> when it names none — and the refusal is counted
-/// (<see cref="GetRefusals"/>, NL-559); the limit lives in memory only, so a restart first offers the full-size blob
-/// again and relearns it from the next refusal.
+/// which takes at most 1,024 bytes) is answered at once with one that fits the byte limit the warning names, and the
+/// refusal is counted (<see cref="GetRefusals"/>, NL-559). Only an unambiguous size refusal moves the learned limit or
+/// the count (NL-563): the warning must name a byte limit ("<c>up to 1024 bytes</c>"). A peer-storage warning without
+/// one — LDK's "peer storage is currently supported only for peers with an active funded channel", sent before any
+/// channel with it is funded — is informational and changes nothing; such a peer keeps nothing either way, and once a
+/// channel is funded the changed backup goes out with the next round. The limit lives in memory only, so a restart
+/// first offers the full-size blob again and relearns it from the next refusal.
 /// </para>
 /// <para>
 /// The peer's copy is the evidence of a data loss, so it is never overwritten before we read it: at the first
@@ -90,17 +93,15 @@ public sealed partial class PeerStorageService : IPeerStorageService, IDisposabl
     /// <summary>At most this many peers' blobs are held while no channel with the peer exists (64 KiB each).</summary>
     internal const int MaxPendingWithoutChannel = 64;
 
-    /// <summary>
-    /// The blob length sent to a peer whose refusal names no limit of its own (NL-559): LDK's
-    /// <c>MAX_PEER_STORAGE_SIZE</c>, the smallest limit any major implementation enforces today.
-    /// </summary>
-    internal const int DefaultRefusalLimit = 1024;
-
     /// <summary>A warning is about peer storage only when it says so (LDK: "… bytes in peer storage.").</summary>
     [GeneratedRegex(@"peer\s*storage", RegexOptions.IgnoreCase)]
     private static partial Regex PeerStorageTopicRegex();
 
-    /// <summary>The limit a refusal names ("<c>up to 1024 bytes</c>"); thousand separators are stripped first.</summary>
+    /// <summary>
+    /// What makes a peer-storage warning an unambiguous size refusal (NL-563): it names the limit itself
+    /// ("<c>up to 1024 bytes</c>"); thousand separators are stripped first. A peer-storage warning that names no
+    /// byte count (e.g. LDK's "supported only for peers with an active funded channel") is informational.
+    /// </summary>
     [GeneratedRegex(@"(\d+)\s*bytes", RegexOptions.IgnoreCase)]
     private static partial Regex ByteLimitRegex();
 
@@ -215,43 +216,59 @@ public sealed partial class PeerStorageService : IPeerStorageService, IDisposabl
             if (string.IsNullOrEmpty(message) || !PeerStorageTopicRegex().IsMatch(message))
                 return;
 
-            var limit = DefaultRefusalLimit;
+            // Only a warning that names the limit it accepts is an unambiguous size refusal (NL-563): LDK answers
+            // a blob it will not even look at because no channel is funded yet with a peer-storage warning that
+            // names no byte count, and that must not move the learned limit or the refusal count
             var match = ByteLimitRegex().Match(message.Replace(",", string.Empty));
             if (match.Success
              && int.TryParse(match.Groups[1].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture, out var named))
-                limit = named;
-
-            limit = Math.Clamp(limit, 1, PeerStorageConstants.MaxBlobLength - 1);
-
-            var peerId = peer.PeerPubKey;
-            var refusedLength = _lastSent.TryGetValue(peerId, out var last) ? last.Blob.Length : 0;
-            var now = _timeProvider.GetUtcNow();
-            var refusal = _refusals.AddOrUpdate(
-                peerId,
-                _ => new PeerRefusal(limit, refusedLength, now, 1),
-                (_, existing) => existing with
-                {
-                    // A later refusal can only lower the limit: a peer that grew it would keep refusing nothing
-                    AcceptedLimitBytes = Math.Min(existing.AcceptedLimitBytes, limit),
-                    LastRefusedBlobLength = refusedLength,
-                    LastRefusalAt = now,
-                    Count = existing.Count + 1
-                });
+            {
+                RecordSizeRefusal(peer, named);
+                return;
+            }
 
             _logger.LogInformation(
-                "Peer {Peer} refused our peer_storage backup ({Refused} bytes): it takes at most {Limit}; the next backup to it fits that",
-                peerId, refusal.LastRefusedBlobLength, refusal.AcceptedLimitBytes);
-
-            // What we last sent it does not fit: answer on this connection with one that does (a blob that fits is
-            // not resent — nothing is sent when even one channel does not fit the limit)
-            if (refusal.LastRefusedBlobLength > refusal.AcceptedLimitBytes
-             && _storagePeers.TryGetValue(peerId, out var current) && ReferenceEquals(current, peer))
-                LastWork = SendBackupAsync(peer, force: true);
+                "Peer {Peer} sent a peer storage warning that names no size limit, so it is not taken as a refusal "
+              + "of our backup's length: {Message}", peer.PeerPubKey, message);
         }
         catch (Exception e)
         {
             _logger.LogError(e, "Peer storage failed to handle a warning of peer {Peer}", peer.PeerPubKey);
         }
+    }
+
+    /// <summary>
+    /// Records the size refusal of a peer-storage warning that names its byte limit (NL-559), and answers it at once
+    /// with a backup that fits when what we last sent does not.
+    /// </summary>
+    private void RecordSizeRefusal(IPeerService peer, int named)
+    {
+        var limit = Math.Clamp(named, 1, PeerStorageConstants.MaxBlobLength - 1);
+
+        var peerId = peer.PeerPubKey;
+        var refusedLength = _lastSent.TryGetValue(peerId, out var last) ? last.Blob.Length : 0;
+        var now = _timeProvider.GetUtcNow();
+        var refusal = _refusals.AddOrUpdate(
+            peerId,
+            _ => new PeerRefusal(limit, refusedLength, now, 1),
+            (_, existing) => existing with
+            {
+                // A later refusal can only lower the limit: a peer that grew it would keep refusing nothing
+                AcceptedLimitBytes = Math.Min(existing.AcceptedLimitBytes, limit),
+                LastRefusedBlobLength = refusedLength,
+                LastRefusalAt = now,
+                Count = existing.Count + 1
+            });
+
+        _logger.LogInformation(
+            "Peer {Peer} refused our peer_storage backup ({Refused} bytes): it takes at most {Limit}; the next backup to it fits that",
+            peerId, refusal.LastRefusedBlobLength, refusal.AcceptedLimitBytes);
+
+        // What we last sent it does not fit: answer on this connection with one that does (a blob that fits is
+        // not resent — nothing is sent when even one channel does not fit the limit)
+        if (refusal.LastRefusedBlobLength > refusal.AcceptedLimitBytes
+         && _storagePeers.TryGetValue(peerId, out var current) && ReferenceEquals(current, peer))
+            LastWork = SendBackupAsync(peer, force: true);
     }
 
     /// <inheritdoc />
