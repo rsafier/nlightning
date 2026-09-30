@@ -488,7 +488,7 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         await Service.RunOnceAsync(501 + wait, TestContext.Current.CancellationToken);
 
         // Assert: one reclaim, spending the child's wallet inputs back to the wallet at a fee that replaces the child
-        var reclaim = Assert.Single(_store.Rows.Where(r => r.Purpose == BroadcastPurpose.WalletSend));
+        var reclaim = Assert.Single(_store.Rows, r => r.Purpose == BroadcastPurpose.WalletSend);
         Assert.Equal(BroadcastState.Pending, reclaim.State);
         Assert.Equal(reclaim, Assert.Single(_published.Skip(1)));
         var rescue = Load(reclaim);
@@ -498,7 +498,7 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         Assert.Equal(_walletScript, rescue.Outputs[0].ScriptPubKey.ToBytes());
         Assert.Equal(0xFFFFFFFDu, (uint)rescue.Inputs[0].Sequence);
         Assert.All(rescue.Inputs.AsIndexedInputs(),
-                   i => Assert.True(i.VerifyScript(_wallet.GetSpentOutput(i.PrevOut), out var error), $"{error}"));
+                   i => Assert.True(i.VerifyScript(_wallet.GetSpentOutput(i.PrevOut)!, out var error), $"{error}"));
         var rescueFee = rescueInputs.Aggregate(0UL, (sum, o) => sum + (ulong)_wallet.GetSpentOutput(o)!.Value.Satoshi)
                        - AnchorTx.OutputsSat(rescue);
         Assert.True(rescueFee > childFee + (ulong)rescue.GetVirtualSize(), $"{rescueFee} does not replace {childFee}");

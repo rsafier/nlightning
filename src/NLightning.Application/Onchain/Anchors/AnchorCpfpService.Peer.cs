@@ -56,7 +56,7 @@ public sealed partial class AnchorCpfpService
 
         _peerCommitments[channelId] = new PeerCommitmentSeen(commitment.TxId,
                                                              (byte[])commitment.RawTxBytes.Clone(), isNextCommitment);
-        PersistPeerCommitmentAsync(channelId, commitment.TxId, commitment.RawTxBytes);
+        _ = PersistPeerCommitmentAsync(channelId, commitment.TxId, commitment.RawTxBytes);
         ScheduleCommitmentRound(channelId);
     }
 
