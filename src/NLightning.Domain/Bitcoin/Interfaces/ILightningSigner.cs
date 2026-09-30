@@ -119,6 +119,20 @@ public interface ILightningSigner
     void RegisterChannel(ChannelId channelId, ChannelSigningInfo signingInfo);
 
     /// <summary>
+    /// Forget everything the signer keeps for a channel: its signing info, its local commitment number, its
+    /// broadcast-signed mark (invariant S1), its data-loss flag and its pending/retired splice fundings. A no-op for a
+    /// channel that is not registered.
+    /// </summary>
+    /// <remarks>
+    /// Only for channels that are discarded before they were ever established (the cleanup of a failed
+    /// <c>accept_channel</c>, NL-221) or whose on-chain resolution is done: unregistering also drops the channel's
+    /// sticky guards, so a channel that may still hold a broadcast-signed commitment must never be unregistered. The
+    /// per-channel commitment lock object stays behind, so concurrent callers never hold different locks for the same
+    /// channel id.
+    /// </remarks>
+    void UnregisterChannel(ChannelId channelId);
+
+    /// <summary>
     /// Reveal the per-commitment secret of one of our commitment transactions, for <c>revoke_and_ack</c> or
     /// <c>channel_reestablish</c>.
     /// </summary>

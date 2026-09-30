@@ -47,6 +47,7 @@ public class AcceptChannel1MessageHandlerTests
     private readonly Mock<IBitcoinWalletService> _mockWalletService = new();
     private readonly Mock<IUnitOfWork> _mockUnitOfWork = new();
     private readonly Mock<IUtxoMemoryRepository> _mockUtxoMemoryRepository = new();
+    private readonly Mock<ILightningSigner> _mockSigner = new();
     private readonly ChannelModel _tempChannel;
     private readonly AcceptChannel1MessageHandler _handler;
 
@@ -101,9 +102,8 @@ public class AcceptChannel1MessageHandlerTests
                                          .Returns(new SignedTransaction(TxId.Zero, [0x01]));
 
         var signature = new CompactSignature(new byte[64]);
-        var mockSigner = new Mock<ILightningSigner>();
-        mockSigner.Setup(s => s.SignChannelTransaction(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>()))
-                  .Returns(signature);
+        _mockSigner.Setup(s => s.SignChannelTransaction(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>()))
+                   .Returns(signature);
 
         var mockMessageFactory = new Mock<IMessageFactory>();
         mockMessageFactory
@@ -121,7 +121,7 @@ public class AcceptChannel1MessageHandlerTests
                                                     _mockCommitmentTransactionBuilder.Object,
                                                     mockCommitmentTransactionModelFactory.Object,
                                                     _mockFundingTransactionBuilder.Object,
-                                                    _mockFundingTransactionModelFactory.Object, mockSigner.Object,
+                                                    _mockFundingTransactionModelFactory.Object, _mockSigner.Object,
                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
                                                     mockMessageFactory.Object, new FakeSha256(),
                                                     _mockUnitOfWork.Object, _mockUtxoMemoryRepository.Object);
@@ -229,6 +229,55 @@ public class AcceptChannel1MessageHandlerTests
         // Assert
         _mockChannelMemoryRepository.Verify(r => r.TryRemoveTemporaryChannel(s_pubKey, s_tempChannelId), Times.Once);
         _mockUtxoMemoryRepository.Verify(r => r.ReturnUtxosNotSpentOnChannel(s_tempChannelId), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ErrorAfterSignerRegistration_When_HandleAsync_Then_TheChannelIsUnregisteredWithTheSigner()
+    {
+        // Arrange (NL-221: the registration must not outlive the forgotten channel)
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+        _mockCommitmentTransactionBuilder.Setup(b => b.Build(It.IsAny<CommitmentTransactionModel>()))
+                                         .Throws(new InvalidOperationException("boom"));
+
+        // Act
+        await Assert.ThrowsAsync<ChannelErrorException>(() => _handler.HandleAsync(
+                                                            message, ChannelState.None, new FeatureOptions(),
+                                                            s_pubKey));
+
+        // Assert
+        _mockSigner.Verify(s => s.RegisterChannel(s_newChannelId, It.IsAny<ChannelSigningInfo>()), Times.Once);
+        _mockSigner.Verify(s => s.UnregisterChannel(s_newChannelId), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ErrorBeforeSignerRegistration_When_HandleAsync_Then_TheSignerIsNeverTouched()
+    {
+        // Arrange (NL-221: nothing was registered yet, so nothing may be unregistered)
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+        _mockUtxoMemoryRepository.Setup(r => r.GetLockedUtxosForChannel(It.IsAny<ChannelId>()))
+                                 .Throws(new InvalidOperationException("boom"));
+
+        // Act
+        await Assert.ThrowsAsync<ChannelErrorException>(() => _handler.HandleAsync(
+                                                            message, ChannelState.None, new FeatureOptions(),
+                                                            s_pubKey));
+
+        // Assert
+        _mockSigner.Verify(s => s.UnregisterChannel(It.IsAny<ChannelId>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ASuccessfulAccept_When_HandleAsync_Then_TheChannelStaysRegisteredWithTheSigner()
+    {
+        // Arrange
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+
+        // Act
+        await _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey);
+
+        // Assert
+        _mockSigner.Verify(s => s.RegisterChannel(s_newChannelId, It.IsAny<ChannelSigningInfo>()), Times.Once);
+        _mockSigner.Verify(s => s.UnregisterChannel(It.IsAny<ChannelId>()), Times.Never);
     }
 
     [Fact]
