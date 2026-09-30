@@ -31,8 +31,10 @@ using Routing;
 ///   the update); <c>temporary_channel_failure</c> bounds what the channel may forward to less than the failed HTLC
 ///   (and uses the update); every other channel failure (PERM ones, <c>unknown_next_peer</c>,
 ///   <c>channel_disabled</c>, BADONION from downstream) avoids the channel.</item>
-///   <item>An error no hop authenticated, or <c>update_fail_malformed_htlc</c> from our peer: our channel of that part is
-///   avoided, unless our peer is a blinded hop of a path we introduced (B12-PAY-02): then that path is avoided. An
+///   <item>An error no hop authenticated: with <c>attribution_data</c> blaming hop <c>i</c> (its attribution HMAC did
+///   not verify, BOLT 4 M3b, NL-333) the channel after hop <c>i</c> is avoided, else our channel of that part is.
+///   <c>update_fail_malformed_htlc</c> from our peer: our channel of that part is avoided, unless our peer is a blinded
+///   hop of a path we introduced (B12-PAY-02): then that path is avoided. An
 ///   HTLC timed out on chain: that channel is closed and avoided.</item>
 /// </list>
 /// <para>Beyond the payment (BOLT 7 plan G4-T2, G3-T5): every attributed failure is also handed to
@@ -69,9 +71,12 @@ internal sealed class PaymentRetryPolicy
     /// <param name="interpretation">The decrypted and interpreted error onion (for <see cref="HtlcRemovalKind.Fail"/>).
     /// </param>
     /// <param name="constraints">The payment's constraints, updated in place.</param>
+    /// <param name="attributionBlame">The hop the <c>attribution_data</c> blames (the first hop whose attribution HMAC
+    /// did not verify, BOLT 4 M3b), when the error onion names no erring hop (NL-333).</param>
     /// <returns>Whether to retry, and a short note of what was learnt (for the failure reason and logs).</returns>
     public (bool Retry, string Note) Decide(PaymentPart part, HtlcRemovalKind removalKind,
-                                            FailureInterpretation? interpretation, RouteConstraints constraints)
+                                            FailureInterpretation? interpretation, RouteConstraints constraints,
+                                            int? attributionBlame = null)
     {
         ArgumentNullException.ThrowIfNull(part);
         ArgumentNullException.ThrowIfNull(constraints);
@@ -97,13 +102,23 @@ internal sealed class PaymentRetryPolicy
         if (interpretation is null)
             return (false, "the error could not be read");
 
+        var hops = part.Route.Hops;
         if (!interpretation.IsAttributed)
         {
+            // attribution_data (BOLT 4, M3b): a hop whose attribution HMAC did not verify shares the blame with its
+            // upstream neighbour, so the failure is at or behind its outgoing channel; avoid that one instead of our
+            // own first channel (NL-333). The blame of the payee (no outgoing channel) keeps the fallback
+            if (attributionBlame is { } blamed && blamed < hops.Count
+             && hops[blamed].OutgoingShortChannelId is { } blamedScid)
+            {
+                constraints.ExcludedChannels.Add(blamedScid);
+                return (true, $"attribution_data blames hop {blamed}; channel {blamedScid} is avoided");
+            }
+
             constraints.ExcludedLocalChannels.Add(part.Channel.ChannelId);
             return (true, $"no hop authenticated the error; our channel {part.Channel.ShortChannelId} is avoided");
         }
 
-        var hops = part.Route.Hops;
         var index = interpretation.ErringHopIndex!.Value;
         if (index < hops.Count)
             _missionControl?.RecordFailure(part.Route, index, interpretation.Code);

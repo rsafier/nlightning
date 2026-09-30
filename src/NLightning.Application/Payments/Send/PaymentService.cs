@@ -1520,7 +1520,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
 
         part.Status = PaymentPartStatus.Failed;
         var (code, sourceIndex, reason, interpretation, attribution) = DescribeFailure(part.Hops, failed.Removal);
-        var (retry, note) = _retryPolicy.Decide(part, failed.Removal.Kind, interpretation, session.Constraints);
+        var (retry, note) = _retryPolicy.Decide(part, failed.Removal.Kind, interpretation, session.Constraints,
+                                                attribution.InvalidHopIndex);
         session.LastFailure = (code, sourceIndex, $"{reason} ({note}).");
         session.LastFailureHoldTimes = attribution.IsPresent
                                            ? (failed.ChannelId, failed.HtlcId, ToDurations(attribution))
