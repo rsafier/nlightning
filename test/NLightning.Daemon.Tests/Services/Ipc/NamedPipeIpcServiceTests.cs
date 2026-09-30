@@ -1,6 +1,7 @@
 using System.IO.Pipes;
 using MessagePack;
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Client.Ipc;
 
 namespace NLightning.Daemon.Tests.Services.Ipc;
 
@@ -9,8 +10,11 @@ using Daemon.Ipc.Interfaces;
 using Daemon.Services.Ipc;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
+using Domain.Crypto.ValueObjects;
 using TestCollections;
 using Transport.Ipc;
+using Transport.Ipc.MessagePack;
+using Transport.Ipc.Responses;
 
 [Collection(SerialTestCollection.Name)]
 public class NamedPipeIpcServiceTests : IDisposable
@@ -169,7 +173,7 @@ public class NamedPipeIpcServiceTests : IDisposable
     {
         // Arrange: without a deadline a silent client held a pipe instance until the daemon stopped
         var service = new NamedPipeIpcService(new Mock<IIpcAuthenticator>().Object, _configPath,
-                                              new LengthPrefixedIpcFraming(),
+                                              new IpcFraming(),
                                               NullLogger<NamedPipeIpcService>.Instance,
                                               new Mock<IIpcRequestRouter>().Object)
         {
@@ -272,8 +276,8 @@ public class NamedPipeIpcServiceTests : IDisposable
     [Fact]
     public async Task Given_AnEnvelope_When_WrittenAndReadByTheFraming_Then_RoundTrips()
     {
-        // Arrange: the server reads with MessagePack's untrusted-data security
-        var framing = new LengthPrefixedIpcFraming();
+        // Arrange: the one shared framing (NL-154); the server reads with MessagePack's untrusted-data security
+        var framing = new IpcFraming();
         var envelope = new IpcEnvelope
         {
             Command = ClientCommand.NodeInfo,
@@ -282,17 +286,73 @@ public class NamedPipeIpcServiceTests : IDisposable
             Kind = IpcEnvelopeKind.Request
         };
         using var stream = new MemoryStream();
+        var expectedPayload = MessagePackSerializer.Serialize(envelope,
+                                                              cancellationToken: TestContext.Current.CancellationToken);
 
         // Act
         await framing.WriteAsync(stream, envelope, TestContext.Current.CancellationToken);
+        var wire = stream.ToArray();
+
+        // Assert: a 4-byte big-endian length prefix (architecture-independent) followed by the envelope
+        Assert.Equal(4 + expectedPayload.Length, wire.Length);
+        Assert.Equal(0, wire[0]);
+        Assert.Equal((byte)(expectedPayload.Length >> 16), wire[1]);
+        Assert.Equal((byte)(expectedPayload.Length >> 8), wire[2]);
+        Assert.Equal((byte)expectedPayload.Length, wire[3]);
+        Assert.Equal(expectedPayload, wire.AsSpan(4).ToArray());
+
         stream.Position = 0;
         var read = await framing.ReadAsync(stream, TestContext.Current.CancellationToken);
-
-        // Assert
         Assert.Equal(envelope.CorrelationId, read.CorrelationId);
         Assert.Equal("token", read.AuthToken);
         Assert.Equal(envelope.Payload, read.Payload);
         Assert.Equal(ClientCommand.NodeInfo, read.Command);
+    }
+
+    [Fact]
+    public async Task Given_TheSharedFramingOnBothEnds_When_TheCliClientCallsTheDaemon_Then_TheyInteroperate()
+    {
+        // Arrange: the daemon's pipe server and the CLI client read and write the same frames (NL-154)
+        MessagePackSerializer.DefaultOptions = NLightningMessagePackOptions.Options;
+        var response = new NodeInfoIpcResponse
+        {
+            PubKey = new CompactPubKey(Enumerable.Repeat((byte)2, 33).ToArray()),
+            ListeningTo = []
+        };
+        var router = new Mock<IIpcRequestRouter>();
+        router.Setup(r => r.RouteAsync(It.IsAny<IpcEnvelope>(), It.IsAny<CancellationToken>()))
+              .ReturnsAsync((IpcEnvelope request, CancellationToken _) => new IpcEnvelope
+              {
+                  Version = request.Version,
+                  Command = request.Command,
+                  CorrelationId = request.CorrelationId,
+                  Payload = MessagePackSerializer.Serialize(response,
+                                                            cancellationToken: TestContext.Current.CancellationToken),
+                  Kind = IpcEnvelopeKind.Response
+              });
+        var authenticator = new Mock<IIpcAuthenticator>();
+        authenticator.Setup(a => a.ValidateAsync(It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                     .ReturnsAsync(true);
+        var service = new NamedPipeIpcService(authenticator.Object, _configPath, new IpcFraming(),
+                                              NullLogger<NamedPipeIpcService>.Instance, router.Object);
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            // Act
+            await using var client = new NamedPipeIpcClient(NodeUtils.GetNamedPipeFilePath(_configPath),
+                                                            NodeUtils.GetCookieFilePath(_configPath));
+            var info = await client.GetNodeInfoAsync(TestContext.Current.CancellationToken);
+
+            // Assert
+            Assert.Equal(response.PubKey, info.PubKey);
+            Assert.Equal(response.ListeningTo, info.ListeningTo);
+            Assert.Equal("NLightning", info.Implementation);
+        }
+        finally
+        {
+            await service.StopAsync();
+        }
     }
 
     private NamedPipeIpcService CreateService()

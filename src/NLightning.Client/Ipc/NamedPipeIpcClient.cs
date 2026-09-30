@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.IO.Pipes;
 using MessagePack;
 using NLightning.Domain.Channels.ValueObjects;
@@ -17,6 +16,11 @@ using Transport.Ipc.Responses;
 
 public sealed class NamedPipeIpcClient : IAsyncDisposable
 {
+    /// <summary>
+    /// The shared framing (NL-154): the daemon's pipe server reads and writes the same frames.
+    /// </summary>
+    private static readonly IpcFraming s_framing = new();
+
     private readonly string _namedPipeFilePath;
     private readonly string _cookieFilePath;
     private readonly string _server;
@@ -698,48 +702,10 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
                 "Could not connect to NLightning node IPC pipe. Ensure the node is running and listening for IPC.");
         }
 
-        // Send request
-        var bytes = MessagePackSerializer.Serialize(envelope, cancellationToken: ct);
-        var lenPrefix = BitConverter.GetBytes(bytes.Length);
-        await client.WriteAsync(lenPrefix, ct);
-        await client.WriteAsync(bytes, ct);
-        await client.FlushAsync(ct);
-
-        // Read response length
-        var header = new byte[4];
-        await ReadExactAsync(client, header, ct);
-        var respLen = BitConverter.ToInt32(header, 0);
-        if (respLen is <= 0 or > 10_000_000)
-            throw new IOException("Invalid IPC response length.");
-
-        // Read payload
-        var respBuf = ArrayPool<byte>.Shared.Rent(respLen);
-        try
-        {
-            await ReadExactAsync(client, respBuf.AsMemory(0, respLen), ct);
-            var env = MessagePackSerializer.Deserialize<IpcEnvelope>(respBuf.AsMemory(0, respLen),
-                                                                     cancellationToken: ct);
-            return env;
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(respBuf);
-        }
+        // Send request and read the response with the one shared framing (NL-154)
+        await s_framing.WriteAsync(client, envelope, ct);
+        return await s_framing.ReadAsync(client, ct);
     }
-
-    private static async Task ReadExactAsync(Stream stream, Memory<byte> buffer, CancellationToken ct)
-    {
-        var total = 0;
-        while (total < buffer.Length)
-        {
-            var read = await stream.ReadAsync(buffer[total..], ct);
-            if (read == 0) throw new EndOfStreamException();
-            total += read;
-        }
-    }
-
-    private static async Task ReadExactAsync(Stream stream, byte[] buffer, CancellationToken ct)
-        => await ReadExactAsync(stream, buffer.AsMemory(), ct);
 
     private async Task<string> GetAuthTokenAsync(CancellationToken ct)
     {

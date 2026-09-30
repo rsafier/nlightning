@@ -57,6 +57,7 @@ using Infrastructure.Serialization;
 using Interfaces;
 using Services;
 using Services.Ipc;
+using Transport.Ipc;
 
 public static class NodeServiceExtensions
 {
@@ -188,7 +189,7 @@ public static class NodeServiceExtensions
             DescribeGraphClientHandler>();
 
         // Register IPC routing and command handlers
-        services.AddSingleton<IIpcFraming, LengthPrefixedIpcFraming>();
+        services.AddSingleton<IIpcFraming, IpcFraming>();
         services.AddSingleton<IIpcRequestRouter, IpcRequestRouter>();
         services.AddSingleton<INodeInfoQueryService, NodeInfoQueryService>();
         services.AddSingleton<IIpcCommandHandler, NodeInfoIpcHandler>();

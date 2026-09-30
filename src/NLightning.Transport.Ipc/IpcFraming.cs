@@ -1,29 +1,37 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using MessagePack;
 
-namespace NLightning.Daemon.Services.Ipc;
-
-using Daemon.Ipc.Interfaces;
-using Transport.Ipc;
+namespace NLightning.Transport.Ipc;
 
 /// <summary>
-/// Length-prefixed MessagePack framing for IpcEnvelope.
+/// The one length-prefixed framing shared by the daemon's pipe server and the CLI client (NL-154): a 4-byte
+/// big-endian length prefix (architecture-independent) followed by the MessagePack-serialized envelope, at most
+/// <see cref="MaxFrameLength"/> bytes.
 /// </summary>
-public sealed class LengthPrefixedIpcFraming : IIpcFraming
+/// <remarks>
+/// Every frame is parsed with MessagePack's untrusted-data security (object-graph depth, collision-resistant
+/// hashing): the server reads the request before the client is authenticated, and the client reads whatever answers
+/// its connection.
+/// </remarks>
+public sealed class IpcFraming : IIpcFraming
 {
+    /// <summary>
+    /// The most bytes one frame may carry.
+    /// </summary>
+    public const int MaxFrameLength = 10_000_000;
+
     public async Task<IpcEnvelope> ReadAsync(Stream stream, CancellationToken ct)
     {
         var header = new byte[4];
         await ReadExactAsync(stream, header, ct);
-        var len = BitConverter.ToInt32(header, 0);
-        if (len is <= 0 or > 10_000_000) throw new IOException("Invalid IPC frame length.");
+        var len = BinaryPrimitives.ReadInt32BigEndian(header);
+        if (len is <= 0 or > MaxFrameLength) throw new IOException("Invalid IPC frame length.");
 
         var buffer = ArrayPool<byte>.Shared.Rent(len);
         try
         {
             await ReadExactAsync(stream, buffer.AsMemory(0, len), ct);
-            // The envelope is read before the client is authenticated: parse it with MessagePack's untrusted-data
-            // limits (object graph depth, collision-resistant hashing)
             var options = MessagePackSerializer.DefaultOptions.WithSecurity(MessagePackSecurity.UntrustedData);
             return MessagePackSerializer.Deserialize<IpcEnvelope>(buffer.AsMemory(0, len), options, ct);
         }
@@ -36,8 +44,9 @@ public sealed class LengthPrefixedIpcFraming : IIpcFraming
     public async Task WriteAsync(Stream stream, IpcEnvelope envelope, CancellationToken ct)
     {
         var payload = MessagePackSerializer.Serialize(envelope, cancellationToken: ct);
-        var len = BitConverter.GetBytes(payload.Length);
-        await stream.WriteAsync(len, ct);
+        var header = new byte[4];
+        BinaryPrimitives.WriteInt32BigEndian(header, payload.Length);
+        await stream.WriteAsync(header, ct);
         await stream.WriteAsync(payload, ct);
         await stream.FlushAsync(ct);
     }
