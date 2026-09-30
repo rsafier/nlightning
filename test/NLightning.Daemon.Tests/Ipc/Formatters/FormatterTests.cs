@@ -42,6 +42,43 @@ public class FormatterTests
         Assert.Equal([0xc4, 0x20, .. s_bytes32], bytes);
     }
 
+    [Theory]
+    [InlineData(62)]
+    [InlineData(63)]
+    [InlineData(1)]
+    public void GivenAFeatureSetWhoseHighestBitIs_WhenRoundTripped_ThenEveryBitIsKept(int highestBit)
+    {
+        // Arrange: the IPC formatter used to write SizeInBits bits, one short of the highest set bit (NL-567)
+        var features = Domain.Node.FeatureSet.DeserializeFromBytes([0x00]);
+        features.SetFeature(highestBit, true);
+        features.SetFeature(0, true);
+
+        // Act
+        var result = MessagePackSerializer.Deserialize<Domain.Node.FeatureSet>(
+            MessagePackSerializer.Serialize(features, s_options, TestContext.Current.CancellationToken), s_options,
+            TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Equal(features.GetSetBits(), result.GetSetBits());
+    }
+
+    [Fact]
+    public void GivenAnEmptyFeatureSet_WhenRoundTripped_ThenItStaysEmpty()
+    {
+        // Arrange
+        var features = Domain.Node.FeatureSet.DeserializeFromBytes([0x00]);
+
+        // Act
+        var result = MessagePackSerializer.Deserialize<Domain.Node.FeatureSet>(
+            MessagePackSerializer.Serialize(features, s_options, TestContext.Current.CancellationToken), s_options,
+            TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotNull(result);
+        Assert.Empty(result.GetSetBits());
+    }
+
     [Fact]
     public void GivenHashAndTxId_WhenRoundTripped_ThenValuesArePreserved()
     {
