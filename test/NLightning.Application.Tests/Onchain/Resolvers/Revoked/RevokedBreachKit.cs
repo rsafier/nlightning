@@ -15,6 +15,9 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Node.Options;
 using Domain.Onchain.Enums;
@@ -66,6 +69,12 @@ internal sealed class RevokedBreachKit : IDisposable
     public List<AlertAction> Alerts { get; } = [];
     public Dictionary<TxId, uint> Confirmed { get; } = [];
 
+    /// <summary>The snapshots the resolver staged for persistence (<c>IChannelStateDbRepository.ApplyAsync</c>).</summary>
+    public List<ChannelCommitments> StagedSnapshots { get; } = [];
+
+    /// <summary>The node's database (an <see cref="OnchainTestStore"/>); its channel copy is the shared model.</summary>
+    public OnchainTestStore Store { get; } = new();
+
     public ChannelCloseModel Close => new(RealSigningCommitmentPair.ChannelId, ChannelCloseKind.RevokedCommitment,
                                           RevokedChainTx.TxId, RevokedNumber, SpentAtHeight,
                                           new Hash(new byte[32]), DateTimeOffset.UtcNow);
@@ -95,8 +104,24 @@ internal sealed class RevokedBreachKit : IDisposable
         return new RevokedCommitResolver(DataSource, CreateMapper(Victim), new PenaltyTransactionBuilder(sweepBuilder),
                                          sweepBuilder, Victim.Signer, KeyDerivationService,
                                          NullLogger<RevokedCommitResolver>.Instance,
-                                         _options is null ? null : Options.Create(_options));
+                                         _options is null ? null : Options.Create(_options), modelFactory: null,
+                                         VictimMemory().Object);
     }
+
+    /// <summary>The memory repository serving the victim's channel (the loaded channel of the node under test).</summary>
+    private Mock<IChannelMemoryRepository> VictimMemory()
+    {
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(m => m.TryGetChannel(It.IsAny<ChannelId>(), out It.Ref<ChannelModel?>.IsAny))
+              .Returns(new TryGetChannelCallback((ChannelId id, out ChannelModel? channel) =>
+               {
+                   channel = id == Victim.Channel.ChannelId ? Victim.Channel : null;
+                   return channel is not null;
+               }));
+        return memory;
+    }
+
+    private delegate bool TryGetChannelCallback(ChannelId channelId, out ChannelModel? channel);
 
     /// <summary>
     /// Captures the cheater's current commitment as the one it will broadcast (Bob's <c>RemoteCommit</c> = Alice's
@@ -144,7 +169,7 @@ internal sealed class RevokedBreachKit : IDisposable
     public async Task<IReadOnlyList<OutputResolverAction>> RunAsync(uint height)
     {
         var actions = await Resolver.ResolveAsync(Close, Rows.ToList(), height, TestContext.Current.CancellationToken);
-        Apply(actions);
+        await ApplyAsync(actions);
         return actions;
     }
 
@@ -166,14 +191,14 @@ internal sealed class RevokedBreachKit : IDisposable
             Rows[index] = Rows[index] with { State = OutputResolutionState.Resolved, ResolvedHeight = height };
             var actions = await Resolver.OnOutputSpentAsync(Close, Rows[index], transaction, height,
                                                              TestContext.Current.CancellationToken);
-            Apply(actions);
+            await ApplyAsync(actions);
             all.AddRange(actions);
         }
 
         return all;
     }
 
-    public void Apply(IEnumerable<OutputResolverAction> actions)
+    public async Task ApplyAsync(IEnumerable<OutputResolverAction> actions)
     {
         foreach (var action in actions)
         {
@@ -199,8 +224,29 @@ internal sealed class RevokedBreachKit : IDisposable
                 case AlertAction alert:
                     Alerts.Add(alert);
                     break;
+                case StageWriteAction stage:
+                    await StageAsync(stage);
+                    break;
             }
         }
+    }
+
+    /// <summary>
+    /// Runs a staged write against the victim's node (an <see cref="OnchainTestStore"/>): the database serves the same
+    /// channel instance (the in-memory model is its copy, as in the single-model tests) and snapshot writes are
+    /// recorded in <see cref="StagedSnapshots"/>.
+    /// </summary>
+    private async Task StageAsync(StageWriteAction stage)
+    {
+        Store.LoadChannel = _ => Victim.Channel;
+        var unitOfWork = Store.CreateUnitOfWork();
+        Mock.Get(unitOfWork.Object.ChannelStateDbRepository)
+            .Setup(s => s.ApplyAsync(It.IsAny<ChannelCommitments>(), It.IsAny<ChannelTransition>(),
+                                     It.IsAny<ChannelStateExtras?>()))
+            .Callback<ChannelCommitments, ChannelTransition, ChannelStateExtras?>(
+                 (next, _, _) => StagedSnapshots.Add(next))
+            .Returns(Task.CompletedTask);
+        await stage.Stage(unitOfWork.Object, TestContext.Current.CancellationToken);
     }
 
     /// <summary>The spends recorded for watched outputs (the chain monitor's rows).</summary>

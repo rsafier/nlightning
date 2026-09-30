@@ -192,6 +192,60 @@ public class RevokedResolutionTests
     }
 
     [Fact]
+    public async Task Given_TheirHtlcSuccessRevealsPreimage_When_Spent_Then_ThePreimageIsStagedBeforeTheFulfill()
+    {
+        // Arrange (NL-318): the cheater claims b1 (our offered HTLC) with its HTLC-success
+        using var kit = CreateBreach();
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        var htlcSuccess = kit.CheaterSecondLevel(HtlcDirection.Outgoing, 0, s_b1Preimage);
+
+        // Act
+        var onSpent = await kit.ConfirmAsync(htlcSuccess, RevokedBreachKit.SpentAtHeight + 2);
+
+        // Assert: the preimage is staged into the HTLC's record (BOLT2 I10) in the same round, before the fulfill
+        // event, so the switch's replays see it after a restart
+        var stage = Assert.Single(onSpent.OfType<StageWriteAction>());
+        Assert.Contains("preimage of HTLC 0", stage.Description);
+        var ordered = onSpent.ToList();
+        Assert.True(ordered.IndexOf(stage) < ordered.IndexOf(
+                        Assert.Single(ordered.OfType<RaiseChannelEventAction>())),
+                    "the stage write must precede the fulfill event");
+        var staged = Assert.Single(kit.StagedSnapshots).GetHtlc(HtlcDirection.Outgoing, 0)!;
+        Assert.Equal(s_b1Preimage, staged.KnownPreimage);
+        Assert.Equal(s_b1Preimage, kit.Victim.Channel.Commitments!.GetHtlc(HtlcDirection.Outgoing, 0)!.KnownPreimage);
+
+        // Later rounds re-ask the fulfill (the switch is idempotent) but stage nothing: the record holds the preimage
+        kit.StagedSnapshots.Clear();
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 3);
+        Assert.Empty(kit.StagedSnapshots);
+    }
+
+    [Fact]
+    public async Task Given_ThePreimageWasStaged_When_TheProcessRestarted_Then_TheRecordFulfillsWithoutTheSpend()
+    {
+        // Arrange: the cheater's HTLC-success revealed b1's preimage and it was staged; then the process restarted
+        using var kit = CreateBreach();
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        var htlcSuccess = kit.CheaterSecondLevel(HtlcDirection.Outgoing, 0, s_b1Preimage);
+        await kit.ConfirmAsync(htlcSuccess, RevokedBreachKit.SpentAtHeight + 2);
+        kit.StagedSnapshots.Clear();
+        kit.RestartResolver();
+        kit.Events.Clear();
+
+        // Act: a round past reasonable depth, the spending transaction fetch failing (a pruned node)
+        kit.DataSource.FetchFails = true;
+        for (var h = RevokedBreachKit.SpentAtHeight + 2;
+             h < RevokedBreachKit.SpentAtHeight + 2 + OutputResolutionFacts.DefaultReasonableDepth + 2;
+             h++)
+            await kit.RunAsync(h);
+
+        // Assert: the staged preimage is final knowledge — no fail follows it (the output is held, never guessed),
+        // so the upstream HTLC is not failed while the preimage the record holds may still settle it
+        Assert.DoesNotContain(kit.Events, e => e is OutgoingHtlcFailed);
+        Assert.Empty(kit.StagedSnapshots);
+    }
+
+    [Fact]
     public async Task Given_FulfillLostWithAFailedSave_When_NextRound_Then_FulfillAskedAgain()
     {
         // Arrange: the cheater's HTLC-success reveals b1's preimage, and the executor's save of that block fails (so

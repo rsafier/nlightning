@@ -12,6 +12,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
@@ -24,6 +25,7 @@ using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
 using Domain.Onchain.Parsers;
 using Domain.Onchain.Planners;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Onchain.Interfaces;
@@ -60,9 +62,11 @@ using Revoked;
 /// while the output's row still says it was spent at that height) and the set of HTLCs a fulfill was asked for (so no
 /// failure follows it): every decision is taken again from the rows and the chain each round, and repeated until its
 /// effect is on chain (the executor dedupes broadcasts by txid, watches by outpoint, and the switch is idempotent).
-/// Switch events are raised again every round, since an executor save that fails applies none of them. A recorded
-/// spend whose transaction cannot be fetched is never guessed: a spend by one of our transactions is known from its
-/// txid, any other holds the output until the transaction can be read.
+/// Switch events are raised again every round, since an executor save that fails applies none of them. A preimage
+/// learnt from a witness is staged into the HTLC's <c>KnownPreimage</c> first (BOLT2 I10, NL-318), in the same save
+/// that precedes the fulfill event, so a restart replays the fulfill from the record without the spending transaction
+/// having to be readable again. A recorded spend whose transaction cannot be fetched is never guessed: a spend by one
+/// of our transactions is known from its txid, any other holds the output until the transaction can be read.
 /// </para>
 /// </remarks>
 public sealed class RevokedCommitResolver : IOutputResolver
@@ -73,6 +77,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
     private readonly IRevokedCommitDataSource _dataSource;
     private readonly IKeyDerivationService _keyDerivationService;
     private readonly ILogger<RevokedCommitResolver> _logger;
+    private readonly IChannelMemoryRepository? _channelMemoryRepository;
     private readonly ICommitmentOutputMapper _mapper;
     private readonly ICommitmentTransactionModelFactory? _modelFactory;
     private readonly RevokedCommitResolverOptions _options;
@@ -85,12 +90,14 @@ public sealed class RevokedCommitResolver : IOutputResolver
                                  ISweepTransactionBuilder sweepTransactionBuilder, ILightningSigner signer,
                                  IKeyDerivationService keyDerivationService, ILogger<RevokedCommitResolver> logger,
                                  IOptions<RevokedCommitResolverOptions>? options = null,
-                                 ICommitmentTransactionModelFactory? modelFactory = null)
+                                 ICommitmentTransactionModelFactory? modelFactory = null,
+                                 IChannelMemoryRepository? channelMemoryRepository = null)
     {
         _dataSource = dataSource;
         _mapper = mapper;
         _modelFactory = modelFactory;
         _keyDerivationService = keyDerivationService;
+        _channelMemoryRepository = channelMemoryRepository;
         _logger = logger;
         _options = options?.Value ?? new RevokedCommitResolverOptions();
         _composer = new PenaltyTransactionComposer(penaltyTransactionBuilder, sweepTransactionBuilder, signer,
@@ -278,7 +285,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
          && HtlcWitnessParser.TryExtractPreimage(spendingTransaction, output.TransactionId, output.OutputIndex,
                                                  htlc.PaymentHash, out var preimage)
          && !IsUpstreamResolved(context.Channel, htlc))
-            Raise(actions, new OutgoingHtlcFulfilled(close.ChannelId, htlc.Id, htlc.PaymentHash, preimage));
+            AddFulfill(null, context.Channel, htlc, preimage, actions);
 
         return OncePerProcess(actions);
     }
@@ -382,8 +389,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
 
                 case ResolutionActionKind.RaiseFulfilled when descriptor.Htlc is { } fulfilled
                                                             && action.Preimage is { } preimage:
-                    Raise(round.Actions, new OutgoingHtlcFulfilled(round.Close.ChannelId, fulfilled.Id,
-                                                                    fulfilled.PaymentHash, new Secret(preimage)));
+                    AddFulfill(round, context.Channel, fulfilled, new Secret(preimage), round.Actions);
                     break;
 
                 case ResolutionActionKind.RaiseFailed when descriptor.Htlc is { } failed:
@@ -451,8 +457,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
             foreach (var action in plan.Actions)
             {
                 if (action is { Kind: ResolutionActionKind.RaiseFulfilled, Preimage: { } preimage })
-                    Raise(round.Actions, new OutgoingHtlcFulfilled(round.Close.ChannelId, spec.Id, spec.PaymentHash,
-                                                                    new Secret(preimage)));
+                    AddFulfill(round, round.Context.Channel, spec, new Secret(preimage), round.Actions);
                 else if (action.Kind == ResolutionActionKind.RaiseFailed)
                     Raise(round.Actions, new OutgoingHtlcFailed(round.Close.ChannelId, spec.Id, spec.PaymentHash,
                                                                  OnchainHtlcRemovals.OnchainTimeout()));
@@ -512,7 +517,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
             }
 
             if (preimage is { } known)
-                Raise(round.Actions, new OutgoingHtlcFulfilled(round.Close.ChannelId, spec.Id, spec.PaymentHash, known));
+                AddFulfill(round, channel, spec, known, round.Actions);
             else if (allSpentDeep)
                 Raise(round.Actions, new OutgoingHtlcFailed(round.Close.ChannelId, spec.Id, spec.PaymentHash,
                                                              OnchainHtlcRemovals.OnchainTimeout()));
@@ -814,6 +819,67 @@ public sealed class RevokedCommitResolver : IOutputResolver
     }
 
     /// <summary>
+    /// Fulfills our offered HTLC upstream (B5-REV-07, B5-REV-RES-01..03): a preimage learnt on chain (the cheater's
+    /// HTLC-success, a spend of an unmapped output) or already known is staged into the HTLC's record first when it is
+    /// not stored there yet (BOLT2 I10, NL-318), in the same save that precedes the event. <paramref name="round"/> is
+    /// null on the <see cref="OnOutputSpentAsync"/> path, where each call is one round.
+    /// </summary>
+    private void AddFulfill(Round? round, ChannelModel channel, SpecHtlc htlc, Secret preimage,
+                            List<OutputResolverAction> actions)
+    {
+        var channelId = channel.ChannelId;
+        var record = channel.Commitments?.GetHtlc(HtlcDirection.Outgoing, htlc.Id);
+        if (record is not null && record.KnownPreimage != preimage
+         && (round is null || round.StagedPreimages.Add(htlc.Id)))
+        {
+            var memory = _channelMemoryRepository;
+            actions.Add(new StageWriteAction($"preimage of HTLC {htlc.Id} of channel {channelId}",
+                                             (unitOfWork, _) => StageKnownPreimageAsync(unitOfWork, memory, channelId,
+                                                                                        htlc.Id, preimage)));
+        }
+
+        Raise(actions, new OutgoingHtlcFulfilled(channelId, htlc.Id, htlc.PaymentHash, preimage));
+    }
+
+    /// <summary>
+    /// Stages <see cref="HtlcRecord.KnownPreimage"/> of our offered HTLC in the round's unit of work, and puts it into
+    /// the loaded channel's snapshot so the switch's replays see it.
+    /// </summary>
+    private async Task StageKnownPreimageAsync(IUnitOfWork unitOfWork, IChannelMemoryRepository? memory,
+                                               ChannelId channelId, ulong htlcId, Secret preimage)
+    {
+        var channel = await unitOfWork.ChannelDbRepository.GetByIdAsync(channelId);
+        if (channel?.Commitments is not { } commitments
+         || commitments.GetHtlc(HtlcDirection.Outgoing, htlcId) is not { } record)
+        {
+            // The fulfill is still raised; the per-block round reads the preimage from the chain again
+            _logger.LogError("Cannot persist the preimage of our HTLC {HtlcId} of channel {ChannelId} seen on chain: "
+                           + "the channel or its HTLC record is not stored", htlcId, channelId);
+            return;
+        }
+
+        if (record.KnownPreimage == preimage)
+            return;
+
+        var updated = record with { KnownPreimage = preimage };
+        await unitOfWork.ChannelStateDbRepository.ApplyAsync(WithRecord(commitments, updated),
+                                                             new ChannelTransition([updated], [], [], false, false,
+                                                                                   false, false));
+
+        if (memory is not null && memory.TryGetChannel(channelId, out var loaded)
+                               && loaded.Commitments is { } loadedCommitments
+                               && loadedCommitments.GetHtlc(HtlcDirection.Outgoing, htlcId) is { } loadedRecord)
+            loaded.UpdateCommitments(WithRecord(loadedCommitments, loadedRecord with { KnownPreimage = preimage }));
+    }
+
+    private static ChannelCommitments WithRecord(ChannelCommitments commitments, HtlcRecord record) =>
+        ChannelCommitments.Restore(commitments.ChannelId, commitments.Params, commitments.LocalBalanceMsat,
+                                   commitments.RemoteBalanceMsat, commitments.Htlcs.SetItem(record.Key, record).Values,
+                                   commitments.FeeUpdates, commitments.LocalNextHtlcId,
+                                   commitments.RemoteNextHtlcId, commitments.LocalCommit, commitments.RemoteCommit,
+                                   commitments.RemoteNextCommit, commitments.RemoteNextPerCommitmentPoint);
+
+    /// <summary>
     /// Asks the switch for an upstream event, every round the planner decides it (the switch is idempotent, and a
     /// failed executor save applies nothing, so a remembered event could be lost until a restart). Within a round each
     /// HTLC gets one event, and a fulfill wins: once a fulfill was asked for in this process, no failure follows it (a
@@ -910,6 +976,9 @@ public sealed class RevokedCommitResolver : IOutputResolver
         public uint Height { get; }
         public List<OutputResolverAction> Actions { get; } = [];
         public IReadOnlyList<OutputResolutionModel> AllRows => _rows;
+
+        /// <summary>The offered HTLCs a preimage was staged for this round, so it is staged once (NL-318).</summary>
+        public HashSet<ulong> StagedPreimages { get; } = [];
 
         public Round(RevokedCommitContext context, ChannelCloseModel close,
                      IReadOnlyList<OutputResolutionModel> rows, uint height)

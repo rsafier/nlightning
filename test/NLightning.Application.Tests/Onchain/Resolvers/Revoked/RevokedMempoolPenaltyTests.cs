@@ -29,7 +29,7 @@ public class RevokedMempoolPenaltyTests
         var actions = await kit.Resolver.PrepareUnconfirmedPenaltiesAsync(
                           RealSigningCommitmentPair.ChannelId, kit.RevokedChainTx, kit.RevokedNumber,
                           RevokedBreachKit.SpentAtHeight - 1, TestContext.Current.CancellationToken);
-        kit.Apply(actions);
+        await kit.ApplyAsync(actions);
 
         // Assert: one batched penalty over every output (to_local, both HTLCs, our to_remote), script-valid against
         // the unconfirmed commitment; no row, watch or switch event (they wait for the block)
@@ -60,7 +60,7 @@ public class RevokedMempoolPenaltyTests
         var actions = await kit.Resolver.PrepareUnconfirmedPenaltiesAsync(
                           RealSigningCommitmentPair.ChannelId, kit.RevokedChainTx, kit.RevokedNumber,
                           RevokedBreachKit.SpentAtHeight - 1, TestContext.Current.CancellationToken);
-        kit.Apply(actions);
+        await kit.ApplyAsync(actions);
 
         // Assert: to_local and both HTLCs are penalized, script-valid; neither anchor nor the CSV-1 to_remote (an
         // input with nSequence 1 is not BIP 68 final while the commitment is unconfirmed) is spent
