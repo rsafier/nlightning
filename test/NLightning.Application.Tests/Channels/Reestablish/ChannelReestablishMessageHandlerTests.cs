@@ -75,6 +75,35 @@ public class ChannelReestablishMessageHandlerTests
     }
 
     [Fact]
+    public async Task Given_LocalAliases_When_ChannelReadyIsRetransmitted_Then_OnePerAliasInOrder()
+    {
+        // Arrange - NL-260: the funding confirmation sent one channel_ready per local alias, so the retransmission
+        // carries them all instead of only the first one
+        var handler = CreateHandler();
+        _tracker.MarkSent(s_channelId, s_peer);
+        var aliases = new List<ShortChannelId>
+        {
+            new([0x00, 0x03, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x01]),
+            new([0x00, 0x03, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x02]),
+            new([0x00, 0x03, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x03])
+        };
+        _context.Channel.LocalAliases = aliases;
+
+        // Act
+        var replies = await handler.HandleAsync(Reestablish(1, 0), ChannelState.Open, new FeatureOptions(), s_peer);
+
+        // Assert - the same second point every original carried
+        var secondPoint = NormalOperationTestContext.Point(0x41);
+        Assert.Equal(aliases.Count, replies.Count);
+        for (var i = 0; i < aliases.Count; i++)
+        {
+            var ready = Assert.IsType<ChannelReadyMessage>(replies[i]);
+            Assert.Equal(secondPoint, ready.Payload.SecondPerCommitmentPoint);
+            Assert.Equal(aliases[i], ready.ShortChannelIdTlv!.ShortChannelId);
+        }
+    }
+
+    [Fact]
     public async Task Given_AlreadyAnsweredOnThisConnection_When_ReestablishRepeats_Then_Ignored()
     {
         // Arrange
