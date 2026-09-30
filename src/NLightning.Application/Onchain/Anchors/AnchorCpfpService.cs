@@ -69,7 +69,8 @@ using Resolvers.Local;
 /// kept, so no other spend (a funding transaction) conflicts with it, until the chain shows our anchor spent
 /// (<see cref="IBitcoinChainService.GetConfirmedUnspentOutputAsync"/>; every child spends it, so none can confirm any
 /// more) and the monitor has processed that block (a child still pending then lost), or until
-/// <see cref="AnchorCpfpOptions.ConfirmedCommitmentChildWaitBlocks"/> passed. The reservation is shared by every child
+/// <see cref="AnchorCpfpOptions.ConfirmedCommitmentChildWaitBlocks"/> passed, in which case the inputs are first
+/// spent back to the wallet (NL-386). The reservation is shared by every child
 /// of the channel (ours and the peer's commitment's; only one commitment can confirm) and released once neither has a
 /// child that can still confirm. It must be durable (<see cref="IAnchorFeeInputSource"/>): the service never
 /// re-reserves after a restart.</para>
@@ -518,14 +519,18 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         if (commitment.State != BroadcastState.Pending)
         {
             // A child of a confirmed commitment may still confirm: keep it (and its wallet inputs) until it cannot
-            if (commitment.State == BroadcastState.Confirmed && pendingChildren.Count > 0
-                                                             && !await ChildrenSettledAsync(
-                                                                    channel.ChannelId, commitment.TransactionId,
-                                                                    _builder.FindAnchorOutput(
-                                                                        commitment.RawTransaction,
-                                                                        channel.LocalFundingPubKey),
-                                                                    commitment.ConfirmedHeight, height))
-                return PathState.Active;
+            if (commitment.State == BroadcastState.Confirmed && pendingChildren.Count > 0)
+            {
+                var settlement = await ChildrenSettlementAsync(
+                    channel.ChannelId, commitment.TransactionId,
+                    _builder.FindAnchorOutput(commitment.RawTransaction, channel.LocalFundingPubKey),
+                    commitment.ConfirmedHeight, height);
+                if (settlement == ChildrenSettlement.NotYet)
+                    return PathState.Active;
+
+                await PlanInputsRescueAsync(channel.ChannelId, unitOfWork, pendingChildren, result, settlement,
+                                            cancellationToken);
+            }
 
             // The commitment confirmed and no child can confirm any more, or the commitment can no longer confirm
             var staged = false;
@@ -624,6 +629,13 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         if (result.PeerChild is { } peerChild && !await _blockchainMonitor.PublishAsync(peerChild))
             _logger.LogWarning("Anchor child {TxId} of the peer's commitment (channel {ChannelId}) was refused; it is "
                              + "sent again after every block", Display(peerChild.TransactionId), channelId);
+
+        if (result.Rescue is { } reclaim)
+        {
+            if (!await _blockchainMonitor.PublishAsync(reclaim))
+                _logger.LogWarning("The wallet-input reclaim {TxId} of channel {ChannelId} was refused; it is sent "
+                                 + "again after every block", Display(reclaim.TransactionId), channelId);
+        }
 
         if (result.Release && _feeInputSource is not null)
         {
@@ -1197,33 +1209,35 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     }
 
     /// <summary>
-    /// Whether the pending children of a confirmed commitment can no longer confirm, so their wallet inputs may go back:
-    /// the wait (<see cref="AnchorCpfpOptions.ConfirmedCommitmentChildWaitBlocks"/>) passed, or our anchor at
+    /// How the pending children of a confirmed commitment stopped being able to confirm: not yet, the wait
+    /// (<see cref="AnchorCpfpOptions.ConfirmedCommitmentChildWaitBlocks"/>) passed, or our anchor at
     /// <paramref name="anchorVout"/>, which every child spends, is spent in the active chain and the monitor has
     /// processed the block that spent it (seen in an earlier round at a bitcoind tip at or below this round's height;
     /// this round's rows were read after that processing, so a child that won is already <c>Confirmed</c>).
     /// </summary>
-    private async Task<bool> ChildrenSettledAsync(ChannelId channelId, TxId commitmentTxId, uint? anchorVout,
-                                                  uint? confirmedHeight, uint height)
+    private async Task<ChildrenSettlement> ChildrenSettlementAsync(ChannelId channelId, TxId commitmentTxId,
+                                                                   uint? anchorVout, uint? confirmedHeight,
+                                                                   uint height)
     {
         if (confirmedHeight is { } confirmed
          && height >= (ulong)confirmed + _options.ConfirmedCommitmentChildWaitBlocks)
         {
             _logger.LogWarning("Commitment {TxId} of channel {ChannelId} confirmed at {Height} but its anchor child is "
-                             + "still unconfirmed; it is abandoned and its wallet inputs released",
+                             + "still unconfirmed; it is abandoned, its wallet inputs spent back to the wallet and "
+                             + "released",
                                Display(commitmentTxId), channelId, confirmed);
-            return true;
+            return ChildrenSettlement.WaitPassed;
         }
 
         if (_chainService is null || anchorVout is not { } vout)
-            return false;
+            return ChildrenSettlement.NotYet;
 
         lock (_anchorSpentSeenAtTip)
         {
             if (_anchorSpentSeenAtTip.TryGetValue(commitmentTxId, out var seenAtTip) && height >= seenAtTip)
             {
                 _anchorSpentSeenAtTip.Remove(commitmentTxId);
-                return true;
+                return ChildrenSettlement.AnchorSpent;
             }
         }
 
@@ -1234,7 +1248,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             {
                 lock (_anchorSpentSeenAtTip)
                     _anchorSpentSeenAtTip.Remove(commitmentTxId);
-                return false;
+                return ChildrenSettlement.NotYet;
             }
 
             var tip = await _chainService.GetCurrentBlockHeightAsync();
@@ -1248,8 +1262,137 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
                   + "wallet inputs", Display(commitmentTxId), channelId);
         }
 
-        return false;
+        return ChildrenSettlement.NotYet;
     }
+
+    /// <summary>
+    /// The reclaim of a settled child's wallet inputs (NL-386): a child the wait gave up on may still be alive in other
+    /// mempools, so instead of only abandoning its rows and releasing the reservation (which would let a funding
+    /// conflict with it), the inputs are first spent back to the wallet itself: every reserved input, one output to the
+    /// wallet, a fee above every pending child's own fee plus BIP 125's relay increment, BIP 125 opt-in. Wherever a
+    /// child is, the reclaim replaces it, and its row is rebroadcast until the reclaim confirms. The inputs are signed
+    /// while the reservation is still held (the release happens after this round's publish) and the reclaim row is
+    /// stored in the caller's save. A child whose anchor someone else spent is dead everywhere already: no reclaim.
+    /// No fee-input source, nothing held, or a spend that cannot be signed or verified: released without one (logged).
+    /// Stages nothing but the row; the caller saves.
+    /// </summary>
+    private async Task PlanInputsRescueAsync(ChannelId channelId, IUnitOfWork unitOfWork,
+                                             IReadOnlyList<BroadcastTransactionModel> pendingChildren,
+                                             RoundResult result, ChildrenSettlement settlement,
+                                             CancellationToken cancellationToken)
+    {
+        if (_feeInputSource is null || settlement != ChildrenSettlement.WaitPassed)
+            return;
+
+        var held = (await _feeInputSource.GetReservedAsync(channelId, cancellationToken)).ToList();
+        if (held.Count == 0)
+        {
+            LogOnce($"{channelId}:rescue:noinputs",
+                    "The anchor children of channel {ChannelId} are abandoned past their wait, but the wallet holds "
+                  + "no inputs of theirs to reclaim", channelId);
+            return;
+        }
+
+        try
+        {
+            byte[] destination;
+            try
+            {
+                destination = await _sweepDestinationProvider.GetDestinationScriptAsync(cancellationToken);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                LogOnce($"{channelId}:rescue:destination", e, "No wallet script to reclaim the inputs of the anchor "
+                                                      + "children of channel {ChannelId}: {Reason}", channelId,
+                                                        e.Message);
+                return;
+            }
+
+            var totalSat = held.Aggregate(0UL, (sum, i) => sum + i.AmountSat);
+            var feeSat = RescueFeeSat(held, pendingChildren, destination);
+            if (totalSat <= feeSat
+             || totalSat - feeSat < ShutdownScriptValidator.GetDustThresholdSat(destination))
+            {
+                LogOnce($"{channelId}:rescue:dust",
+                        "The {Total} sat held for the anchor children of channel {ChannelId} cannot pay a {Fee} sat "
+                      + "reclaim fee; they are released without one", totalSat, channelId, feeSat);
+                return;
+            }
+
+            var rescue = Network.Main.CreateTransaction();
+            rescue.Version = 2;
+            rescue.LockTime = LockTime.Zero;
+            foreach (var input in held)
+                rescue.Inputs.Add(new TxIn(new OutPoint(new uint256(input.TxId), input.OutputIndex))
+                {
+                    // Opt in to replacement (BIP 125): the reclaim replaces every pending child in every mempool
+                    Sequence = new Sequence(0xFFFFFFFD)
+                });
+            rescue.Outputs.Add(Money.Satoshis(totalSat - feeSat), new Script(destination));
+
+            var signed = new SignedTransaction(new TxId(rescue.GetHash().ToBytes()), rescue.ToBytes());
+            if (!_lightningSigner.SignWalletTransaction(signed, []))
+                throw new InvalidOperationException("the signer signed no input of the reclaim");
+
+            var tx = Transaction.Load(signed.RawTxBytes, Network.Main);
+            if (new TxId(tx.GetHash().ToBytes()) != signed.TxId)
+                throw new InvalidOperationException("Signing changed the reclaim's txid");
+
+            var spentOutputs = held.Select(i => new TxOut(Money.Satoshis(i.AmountSat), new Script(i.ScriptPubKey)))
+                                   .ToArray();
+            var validator = tx.CreateValidator(spentOutputs);
+            for (var i = 0; i < tx.Inputs.Count; i++)
+            {
+                var check = validator.ValidateInput(i);
+                if (check.Error is { } error)
+                    throw new InvalidOperationException($"Input {i} of the reclaim does not verify: {error}");
+            }
+
+            var row = new BroadcastTransactionModel(signed, BroadcastPurpose.WalletSend, null,
+                                                    _blockchainMonitor.LastProcessedBlockHeight);
+            unitOfWork.BroadcastTransactionDbRepository.Add(row);
+            result.Rescue = row;
+            _logger.LogWarning("The anchor child(ren) of channel {ChannelId} never confirmed; their {Count} wallet "
+                             + "input(s) are spent back to the wallet in {TxId} (fee {Fee} sat), which replaces every "
+                             + "child still in a mempool", channelId, held.Count, Display(row.TransactionId), feeSat);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            LogOnce($"{channelId}:rescue", e, "Cannot reclaim the wallet inputs of the anchor children of channel "
+                                            + "{ChannelId}; they are released without a reclaim", channelId);
+        }
+    }
+
+    /// <summary>
+    /// The reclaim's fee: at least the relay minimum over its own weight, and above every pending child's fee upper
+    /// bound plus BIP 125's one-sat/vB increment over the reclaim's virtual size, so the reclaim replaces each child
+    /// wherever it sits.
+    /// </summary>
+    private static ulong RescueFeeSat(IReadOnlyList<AnchorWalletInput> held,
+                                      IReadOnlyList<BroadcastTransactionModel> pendingChildren, byte[] destination)
+    {
+        var weight = 42L + held.Aggregate(0L, (sum, i) => sum + i.InputWeight)
+                   + (8 + CompactSizeLength(destination.Length) + destination.Length) * 4;
+        var vsize = (ulong)((weight + 3) / 4);
+        var fee = 253UL * (ulong)weight / 1000 + 1;
+        foreach (var child in pendingChildren)
+        {
+            try
+            {
+                var childFeeUpper = ((ulong)child.FeeratePerKw + 1)
+                                  * (ulong)GetWeight(Transaction.Load(child.RawTransaction, Network.Main)) / 1000 + 1;
+                fee = Math.Max(fee, childFeeUpper + vsize + 1);
+            }
+            catch (FormatException)
+            {
+                // A child whose row does not parse cannot be replaced; the relay minimum stays
+            }
+        }
+
+        return fee;
+    }
+
+    private static int CompactSizeLength(int value) => value < 0xFD ? 1 : value <= 0xFFFF ? 3 : 5;
 
     /// <summary>
     /// The deadline (earliest <c>cltv_expiry</c>) and our stake (to_local plus the HTLCs, in sat) of the channel's local
@@ -1344,6 +1487,14 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         Done
     }
 
+    /// <summary>How a confirmed commitment's pending children stopped being able to confirm (NL-386).</summary>
+    private enum ChildrenSettlement
+    {
+        NotYet,
+        WaitPassed,
+        AnchorSpent
+    }
+
     private sealed class RoundResult
     {
         public BroadcastTransactionModel? Publish { get; set; }
@@ -1356,6 +1507,9 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
         /// <summary>A new child (or replacement) of the peer's commitment (NL-381).</summary>
         public BroadcastTransactionModel? PeerChild { get; set; }
+
+        /// <summary>The wallet-input reclaim of a settled child's reservation (NL-386), stored in the round's save.</summary>
+        public BroadcastTransactionModel? Rescue { get; set; }
 
         /// <summary>The peer's commitment spends the funding output in bitcoind's mempool this round.</summary>
         public bool PeerCommitmentInMempool { get; set; }
