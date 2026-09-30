@@ -6,7 +6,6 @@ using Application.Gossip.Relay.Interfaces;
 using Domain.Gossip.Enums;
 using Domain.Gossip.Models;
 using Domain.Protocol.Interfaces;
-using Domain.Protocol.Messages;
 
 /// <summary>
 /// A fake <see cref="IGossipPeerSender"/> for the sync tests (NL-361): records every message handed to it and, unless
@@ -49,6 +48,7 @@ internal sealed class FakeGossipSender : IGossipPeerSender
 
     public async ValueTask<GossipEnqueueResult> SendAsync(GossipPeer peer, IMessage message, int size)
     {
+        _ = size; // the sync sends without a known wire size (the outbox counts it by message only)
         lock (_lock)
             _offers.Add((peer, message));
 
