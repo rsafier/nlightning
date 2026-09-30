@@ -134,9 +134,10 @@ public sealed class GossipGraphOptions
     public TimeSpan MaxFutureTimestamp { get; set; } = Services.ChannelUpdateService.MaxFutureTimestamp;
 
     /// <summary>
-    /// Invalid signatures, bad encodings or contradicted funding outputs from one peer inside
-    /// <see cref="MisbehaviourWindow"/> that get it a <c>warning</c>, a disconnection and a ban (plan §3.8: 5). Zero
-    /// turns the score off. <c>Gossip:MisbehaviourThreshold</c>.
+    /// Invalid signatures or bad encodings from one peer inside <see cref="MisbehaviourWindow"/> that get it a
+    /// <c>warning</c>, a disconnection and a ban (plan §3.8: 5). A funding output that contradicts an announcement
+    /// proves the announcement false but never scores the relaying peer (NL-371). Zero turns the score off.
+    /// <c>Gossip:MisbehaviourThreshold</c>.
     /// </summary>
     public int MisbehaviourThreshold { get; set; } = 5;
 

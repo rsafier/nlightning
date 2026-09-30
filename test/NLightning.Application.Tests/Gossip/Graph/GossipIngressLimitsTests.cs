@@ -486,14 +486,15 @@ public class GossipIngressLimitsTests : IDisposable
     }
 
     [Theory]
-    [InlineData(FundingOutputStatus.ScriptMismatch, true)]
-    [InlineData(FundingOutputStatus.AmountMismatch, true)]
-    [InlineData(FundingOutputStatus.TransactionIndexOutOfRange, true)]
-    [InlineData(FundingOutputStatus.OutputSpentOrMissing, false)]
-    public async Task Given_FiveAnnouncementsTheChainContradicts_When_Processed_Then_OnlyMismatchesBanThePeer(
-        FundingOutputStatus status, bool banned)
+    [InlineData(FundingOutputStatus.ScriptMismatch)]
+    [InlineData(FundingOutputStatus.AmountMismatch)]
+    [InlineData(FundingOutputStatus.TransactionIndexOutOfRange)]
+    [InlineData(FundingOutputStatus.OutputSpentOrMissing)]
+    public async Task Given_AnnouncementsTheChainContradicts_When_Processed_Then_TheyAreRefusedAndNobodyIsBanned(
+        FundingOutputStatus status)
     {
-        // Arrange (a spent funding output is a closed channel, never the relaying peer's fault)
+        // Arrange (NL-371: a contradiction proves the announcement false, not the peers liars — honest ones relay
+        // unchecked announcements too; a spent funding output is a closed channel, never anybody's fault)
         var kit = new GraphTestKit(metrics: _metrics);
         kit.FundingFails(status);
         var peer = GraphTestKit.CreatePeer(0x66);
@@ -510,12 +511,16 @@ public class GossipIngressLimitsTests : IDisposable
                                                                 s_now));
         }
 
-        // Assert
-        Assert.Equal(banned, kit.Ingress.IsBannedForMisbehaviour(peer.Object.PeerPubKey));
-        peer.Verify(p => p.Disconnect(It.IsAny<Exception>()), banned ? Times.Once() : Times.Never());
+        // Assert: refused as chain mismatches, the peer neither scored nor disconnected
+        Assert.False(kit.Ingress.IsBannedForMisbehaviour(peer.Object.PeerPubKey));
+        Assert.Equal(0, kit.Ingress.Misbehaviour.GetScore(peer.Object.PeerPubKey));
+        peer.Verify(p => p.Disconnect(It.IsAny<Exception>()), Times.Never);
+        peer.Verify(p => p.SendWarningAsync(It.IsAny<WarningException>()), Times.Never);
         Assert.Equal(0, kit.Ingress.PendingAnnouncementCount);
         Assert.Equal(5, _recorder.Sum("nlightning.gossip.chain.lookups",
                                       (GossipMetrics.StatusTag, GossipMetrics.TagValue(status))));
+        Assert.Equal(5, _recorder.Sum("nlightning.gossip.messages.rejected",
+                                      (GossipMetrics.TypeTag, "channel_announcement")));
     }
 
     [Fact]

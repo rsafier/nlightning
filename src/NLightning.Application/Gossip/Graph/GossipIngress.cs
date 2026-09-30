@@ -71,8 +71,9 @@ using Metrics;
 /// <see cref="GossipGraphOptions.MaxFutureTimestamp"/> ahead dropped; no new channel or node beyond
 /// <see cref="GossipGraphOptions.MaxChannels"/>/<see cref="GossipGraphOptions.MaxNodes"/>, nor while the process is over
 /// <see cref="GossipGraphOptions.MaxMemoryMb"/> (<see cref="GossipMemoryBudget"/>); and a per-peer misbehaviour
-/// score (<see cref="GossipMisbehaviourTracker"/>: invalid signatures, bad encodings, funding outputs that contradict
-/// the announcement) that bans the peer with one <c>warning</c> and a disconnection. The ban is persisted with its end
+/// score (<see cref="GossipMisbehaviourTracker"/>: invalid signatures and bad encodings; a funding output that
+/// contradicts an announcement proves the announcement false but never scores the relaying peer, NL-371) that bans
+/// the peer with one <c>warning</c> and a disconnection. The ban is persisted with its end
 /// (<see cref="IGraphStore.Ban"/>, <c>GraphBannedNodes</c>; pruned when it ends, NL-372) and restored from there at
 /// start, so it survives a restart (NL-370); in memory at most <see cref="GossipGraphOptions.MaxMisbehaviourBans"/> of
 /// them are kept at once. For the rest of the ban everything the peer hands over is dropped at the door without being
@@ -761,7 +762,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         if (_memoryBudget?.RefuseNew("channels") is { } overBudget)
             return overBudget;
 
-        var check = await CheckFundingAsync(pending, announcement, origin, cancellationToken);
+        var check = await CheckFundingAsync(pending, announcement, cancellationToken);
         if (check.Failure is { } failure)
         {
             if (failure.Outcome != GossipIngressOutcome.Deferred)
@@ -789,7 +790,6 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     /// </summary>
     private async Task<FundingCheck> CheckFundingAsync(PendingAnnouncement pending,
                                                        ChannelAnnouncementPayload announcement,
-                                                       IPeerService? updateOrigin,
                                                        CancellationToken cancellationToken)
     {
         if (_options.AssumeChannelValid)
@@ -829,12 +829,9 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                     return FundingCheck.Failed(
                         GossipIngressResult.Deferred($"the chain lookup returned {lookup.Status}"));
 
-                // The announcement's sender answers for it; a connection is closed only when the update came from that
-                // same peer (the announcement may have come long ago, on a connection that is gone)
-                var connection = updateOrigin is not null && updateOrigin.PeerPubKey == pending.OriginNodeId
-                                     ? updateOrigin
-                                     : null;
-                return FundingCheck.Failed(FundingCheckFailed(pending.OriginNodeId, connection,
+                // The announcement's sender answers for it, but a contradiction never bans (NL-371): honest peers
+                // relay unchecked announcements too
+                return FundingCheck.Failed(FundingCheckFailed(pending.OriginNodeId,
                                                               announcement.ShortChannelId, lookup.Status));
         }
 
@@ -1163,11 +1160,13 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     }
 
     /// <summary>
-    /// A funding output check that failed for good. A contradiction (another script or amount, no such transaction
-    /// index) is the announcer's lie that the relaying peer should have caught, so it counts against the peer; a spent
-    /// output (a closed channel) or an unreadable block never does.
+    /// A funding output check that failed for good: the announcement is refused. A contradiction (another script or
+    /// amount, no such transaction index) proves the announcement false, but not any single peer a liar: honest peers
+    /// that relay unchecked announcements (an LND neutrino or <c>assumechanvalid</c> node) would be banned for it
+    /// (NL-371), so a contradiction never counts against the peer — only invalid signatures and bad encodings score
+    /// (plan §3.8). A spent output (a closed channel) or an unreadable block never did.
     /// </summary>
-    private GossipIngressResult FundingCheckFailed(CompactPubKey? origin, IPeerService? connection,
+    private GossipIngressResult FundingCheckFailed(CompactPubKey? origin,
                                                    ShortChannelId shortChannelId, FundingOutputStatus status)
     {
         var detail = $"funding output check: {status}";
@@ -1177,9 +1176,6 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                                                     or FundingOutputStatus.TransactionIndexOutOfRange:
                 _logger.LogDebug("The funding output of channel_announcement {ShortChannelId} from peer {Peer} "
                                + "contradicts it: {Status}", shortChannelId, origin?.ToString() ?? "us", status);
-                ScoreMisbehaviour(origin, connection,
-                                  $"channel_announcement for {shortChannelId} contradicted by the chain",
-                                  disconnect: true);
                 return GossipIngressResult.Limited(detail, GossipMetricReasons.ChainMismatch);
             case FundingOutputStatus.OutputSpentOrMissing:
                 return GossipIngressResult.Limited(detail, GossipMetricReasons.FundingSpent);
