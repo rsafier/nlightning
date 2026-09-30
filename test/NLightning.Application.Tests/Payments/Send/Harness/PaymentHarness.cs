@@ -561,7 +561,11 @@ internal sealed class PaymentHarnessNode : IDisposable
                                        CancellationToken cancellationToken = default) =>
             Task.FromResult(_links.ContainsKey(channelId));
 
-        public void MarkLinkUp(ChannelId channelId, CompactPubKey peerPubKey) => _links[channelId] = 0;
+        public void MarkLinkUp(ChannelId channelId, CompactPubKey peerPubKey)
+        {
+            _links[channelId] = 0;
+            LinkUp?.Invoke(this, new ChannelLinkUpEventArgs(channelId, peerPubKey));
+        }
 
         public event EventHandler<ChannelLinkUpEventArgs>? LinkUp;
     }
