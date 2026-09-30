@@ -87,7 +87,7 @@ public class HopPayloadSerializer : IHopPayloadSerializer
         {
             length = await _bigSizeSerializer.DeserializeAsync(stream);
         }
-        catch (Exception e) when (e is ArgumentException or IOException)
+        catch (Exception e) when (e is ArgumentException or SerializationException or IOException)
         {
             throw InvalidOnionPayloadFailureFactory.Create(0, 0, "Malformed hop payload length.", e);
         }
@@ -215,7 +215,7 @@ public class HopPayloadSerializer : IHopPayloadSerializer
         {
             return await _bigSizeSerializer.DeserializeAsync(stream);
         }
-        catch (Exception e) when (e is ArgumentException or IOException)
+        catch (Exception e) when (e is ArgumentException or SerializationException or IOException)
         {
             return null;
         }
