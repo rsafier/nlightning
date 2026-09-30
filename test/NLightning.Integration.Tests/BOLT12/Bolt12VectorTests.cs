@@ -284,7 +284,7 @@ public class Bolt12VectorTests
         Assert.False(ok);
         Assert.Equal(requirementId, violation!.RequirementId);
         if (paths is not null)
-            Assert.Contains(reasonPart, violation.Reason);
+            Assert.Contains(reasonPart, violation.Reason ?? string.Empty);
         else
             Assert.Equal(type, violation.Field);
     }

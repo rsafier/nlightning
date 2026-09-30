@@ -695,7 +695,8 @@ public class NodeServiceExtensionsTests
         Assert.Empty(options.GetValidationErrors());
         Assert.Empty(configuration.GetSection("Node:DnsSeedServers").GetChildren());
         Assert.Equal(["signet.nodes.lightning.wiki"],
-                     configuration.GetSection("Node:Bootstrap:Seeds").GetChildren().Select(s => s.Value).ToArray());
+                     configuration.GetSection("Node:Bootstrap:Seeds").GetChildren()
+                                 .Select(s => s.Value!).ToArray());
         Assert.False(configuration.GetValue<bool>("Node:Bootstrap:Enabled"));
         Assert.False(options.Bootstrap.IsEnabledOn(options.BitcoinNetwork));
         Assert.Equal(["signet.nodes.lightning.wiki"],
