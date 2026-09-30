@@ -5,6 +5,7 @@ namespace NLightning.Application.Protocol.Factories;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Addresses;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
@@ -33,16 +34,19 @@ public class MessageFactory : IMessageFactory
     /// <summary>
     /// Create an Init message.
     /// </summary>
+    /// <param name="remoteAddress">The BOLT 1 <c>remote_addr</c> TLV: the connection's remote endpoint as an address
+    /// descriptor, sent by the receiver of an IP connection (NL-009); null sends no <c>remote_addr</c>.</param>
     /// <returns>The Init message.</returns>
     /// <seealso cref="InitMessage"/>
     /// <seealso cref="InitPayload"/>
-    public InitMessage CreateInitMessage()
+    public InitMessage CreateInitMessage(AddressDescriptor? remoteAddress = null)
     {
         // Get features from options
         var features = _nodeOptions.Features.GetNodeFeatures();
         var payload = new InitPayload(features);
 
-        return new InitMessage(payload, _nodeOptions.Features.GetInitTlvs());
+        return new InitMessage(payload, _nodeOptions.Features.GetInitTlvs(),
+                               remoteAddress is null ? null : new RemoteAddressTlv(remoteAddress));
     }
 
     #endregion

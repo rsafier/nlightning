@@ -1,5 +1,3 @@
-using System.Net;
-
 namespace NLightning.Domain.Node.Options;
 
 using Domain.Crypto.Constants;
@@ -228,14 +226,6 @@ public class FeatureOptions
     public IEnumerable<ChainHash> ChainHashes { get; set; } = [];
 
     /// <summary>
-    /// The remote address of the node.
-    /// </summary>
-    /// <remarks>
-    /// This is used to connect to our node.
-    /// </remarks>
-    public IPAddress? RemoteAddress { get; set; } = null;
-
-    /// <summary>
     /// Get Features set for the node.
     /// </summary>
     /// <param name="context">The context the features will be presented in (defaults to <c>init</c>).</param>
@@ -447,13 +437,6 @@ public class FeatureOptions
         }
 
         return new NetworksTlv(ChainHashes);
-
-        // TODO: Review this when implementing BOLT7
-        // // If RemoteAddress is set, add it to the extension
-        // if (RemoteAddress != null)
-        // {
-        //     extension.Add(new(new BigSize(3), RemoteAddress.GetAddressBytes()));
-        // }
     }
 
     /// <summary>

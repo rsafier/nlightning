@@ -7,6 +7,7 @@ namespace NLightning.Infrastructure.Tests.Node.Factories;
 
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.Gossip.Addresses;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Transport;
@@ -14,12 +15,83 @@ using Infrastructure.Node.Factories;
 
 /// <summary>
 /// NL-560: every path that gives up on a transport service disposes it, so its handshake state never waits for the
-/// finalizer thread.
+/// finalizer thread. NL-009: an inbound connection's remote endpoint becomes our init's <c>remote_addr</c>, unless it
+/// is private or unusable.
 /// </summary>
 public class PeerServiceFactoryTests
 {
     private static readonly CompactPubKey s_nodePubKey =
         Convert.FromHexString("028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7");
+
+    [Fact]
+    public void Given_APublicIpv4EndPoint_When_TakenAsInboundRemoteAddress_Then_AnIpv4DescriptorIsBuilt()
+    {
+        // Act
+        var descriptor = PeerServiceFactory.FromInboundEndPoint(new IPEndPoint(IPAddress.Parse("203.0.113.7"), 9735));
+
+        // Assert
+        Assert.Equal(AddressDescriptorType.IPv4, descriptor!.Type);
+        Assert.Equal("203.0.113.7", descriptor.Host);
+        Assert.Equal((ushort)9735, descriptor.Port);
+    }
+
+    [Theory]
+    [InlineData("172.32.1.2", 9735)]
+    [InlineData("192.0.2.1", 65535)]
+    [InlineData("2606:4700:4700::1111", 9735)]
+    public void Given_APublicOrRoutableButNotPrivateEndPoint_When_TakenAsInboundRemoteAddress_Then_ItIsSent(string host,
+                                                                                                            int port)
+    {
+        // Act
+        var descriptor = PeerServiceFactory.FromInboundEndPoint(new IPEndPoint(IPAddress.Parse(host), port));
+
+        // Assert
+        Assert.NotNull(descriptor);
+    }
+
+    [Fact]
+    public void Given_AIpv4MappedPublicEndPoint_When_TakenAsInboundRemoteAddress_Then_TheMappedIpv4FormIsSent()
+    {
+        // Act
+        var descriptor =
+            PeerServiceFactory.FromInboundEndPoint(new IPEndPoint(IPAddress.Parse("::ffff:203.0.113.7"), 9735));
+
+        // Assert
+        Assert.Equal(AddressDescriptorType.IPv4, descriptor!.Type);
+        Assert.Equal("203.0.113.7", descriptor.Host);
+    }
+
+    [Theory]
+    [InlineData("127.0.0.1", 9735)]      // loopback
+    [InlineData("10.1.2.3", 9735)]       // RFC 1918
+    [InlineData("172.16.0.9", 9735)]     // RFC 1918 (172.16/12 runs to 172.31.255.255)
+    [InlineData("172.31.255.1", 9735)]   // RFC 1918
+    [InlineData("192.168.1.2", 9735)]    // RFC 1918
+    [InlineData("169.254.9.9", 9735)]    // link-local
+    [InlineData("0.0.0.0", 9735)]        // unspecified
+    [InlineData("::1", 9735)]            // loopback
+    [InlineData("::", 9735)]             // unspecified
+    [InlineData("fd00::1", 9735)]        // unique-local
+    [InlineData("fe80::1", 9735)]        // link-local
+    [InlineData("ff02::1", 9735)]        // multicast
+    [InlineData("::ffff:127.0.0.1", 9735)] // an IPv4-mapped loopback
+    public void Given_APrivateEndPoint_When_TakenAsInboundRemoteAddress_Then_NothingIsSent(string host, int port)
+    {
+        // Act
+        var descriptor = PeerServiceFactory.FromInboundEndPoint(new IPEndPoint(IPAddress.Parse(host), port));
+
+        // Assert
+        Assert.Null(descriptor);
+    }
+
+    [Fact]
+    public void Given_ANonIpOrPortlessEndPoint_When_TakenAsInboundRemoteAddress_Then_NothingIsSent()
+    {
+        // Act / Assert
+        Assert.Null(PeerServiceFactory.FromInboundEndPoint(new DnsEndPoint("peer.example.com", 9735)));
+        Assert.Null(PeerServiceFactory.FromInboundEndPoint(new IPEndPoint(IPAddress.Parse("203.0.113.7"), 0)));
+        Assert.Null(PeerServiceFactory.FromInboundEndPoint(null));
+    }
 
     [Fact]
     public async Task Given_AHandshakeThatFails_When_APeerConnects_Then_TheTransportIsDisposed()

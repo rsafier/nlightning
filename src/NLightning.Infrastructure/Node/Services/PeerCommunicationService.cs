@@ -6,6 +6,7 @@ namespace NLightning.Infrastructure.Node.Services;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.Gossip.Addresses;
 using Domain.Node.Interfaces;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
@@ -28,6 +29,7 @@ public class PeerCommunicationService : IPeerCommunicationService
     private readonly IMessageService _messageService;
     private readonly PingRateLimiter _pingRateLimiter = new();
     private readonly IPingPongService _pingPongService;
+    private readonly AddressDescriptor? _remoteAddress;
     private readonly IServiceProvider _serviceProvider;
     private readonly IMessageFactory _messageFactory;
     private readonly TaskCompletionSource<bool> _pingPongTcs = new();
@@ -96,9 +98,12 @@ public class PeerCommunicationService : IPeerCommunicationService
     /// <param name="peerCompactPubKey">The peer's public key.</param>
     /// <param name="pingPongService">The ping pong service.</param>
     /// <param name="serviceProvider">The service provider.</param>
+    /// <param name="remoteAddress">The connection's remote endpoint as an address descriptor for our init's
+    /// <c>remote_addr</c> TLV (BOLT 1: the receiver of an IP connection SHOULD set it, NL-009); null sends none.</param>
     public PeerCommunicationService(ILogger<PeerCommunicationService> logger, IMessageService messageService,
                                     IMessageFactory messageFactory, CompactPubKey peerCompactPubKey,
-                                    IPingPongService pingPongService, IServiceProvider serviceProvider)
+                                    IPingPongService pingPongService, IServiceProvider serviceProvider,
+                                    AddressDescriptor? remoteAddress = null)
     {
         _logger = logger;
         _messageService = messageService;
@@ -106,6 +111,7 @@ public class PeerCommunicationService : IPeerCommunicationService
         PeerCompactPubKey = peerCompactPubKey;
         _pingPongService = pingPongService;
         _serviceProvider = serviceProvider;
+        _remoteAddress = remoteAddress;
 
         _messageService.OnExceptionRaised += HandleExceptionRaised;
         _pingPongService.DisconnectEvent += HandlePingPongDisconnect;
@@ -135,7 +141,7 @@ public class PeerCommunicationService : IPeerCommunicationService
 
         // Always send an init message upon connection
         _logger.LogTrace("Sending init message to peer {peer}", PeerCompactPubKey);
-        var initMessage = _messageFactory.CreateInitMessage();
+        var initMessage = _messageFactory.CreateInitMessage(_remoteAddress);
         try
         {
             await _messageService.SendMessageAsync(initMessage, true, _cts.Token);
