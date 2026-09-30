@@ -350,7 +350,7 @@ public class FundingCreatedMessageHandlerTests
     }
 
     [Fact]
-    public async Task HandleAsync_WhenChannelAlreadyExists_ThrowsChannelWarningException()
+    public async Task HandleAsync_WhenChannelAlreadyExists_ThrowsChannelErrorException()
     {
         // Arrange
         _mockChannelMemoryRepository
@@ -371,19 +371,65 @@ public class FundingCreatedMessageHandlerTests
             })
            .Returns(true);
 
-        // Channel already exists in database
+        // A channel with the derived funding outpoint is already in the database
         _mockChannelDbRepository
            .Setup(x => x.GetByIdAsync(It.IsAny<ChannelId>()))
            .ReturnsAsync(_channel);
 
-        // Act & Assert
+        // Act & Assert (NL-053: the channel is failed before anything is registered or signed)
         var exception =
-            await Assert.ThrowsAsync<ChannelWarningException>(() => _handler.HandleAsync(
-                                                                  _validMessage, ChannelState.None, _negotiatedFeatures,
-                                                                  _peerPubKey));
+            await Assert.ThrowsAsync<ChannelErrorException>(() => _handler.HandleAsync(
+                                                                _validMessage, ChannelState.None, _negotiatedFeatures,
+                                                                _peerPubKey));
 
-        Assert.Equal("Channel already exists", exception.Message);
+        Assert.Equal("A channel with this funding outpoint already exists", exception.Message);
         Assert.Equal(_newChannelId, exception.ChannelId);
         Assert.Equal("This channel is already in our database", exception.PeerMessage);
+        _mockLightningSigner.Verify(
+            x => x.RegisterChannel(It.IsAny<ChannelId>(), It.IsAny<ChannelSigningInfo>()), Times.Never);
+        _mockChannelDbRepository.Verify(x => x.AddAsync(It.IsAny<ChannelModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task HandleAsync_WhenPeerSignatureIsInvalid_ThrowsChannelErrorExceptionAndForgetsTheChannel()
+    {
+        // Arrange (NL-053: a bad funding_created signature fails the channel; nothing is persisted, so it is forgotten)
+        _mockChannelMemoryRepository
+           .Setup(x => x.TryGetTemporaryChannelState(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                                     out It.Ref<ChannelState>.IsAny))
+           .Callback((CompactPubKey _, ChannelId _, out ChannelState state) =>
+            {
+                state = ChannelState.V1Opening;
+            })
+           .Returns(true);
+
+        _mockChannelMemoryRepository
+           .Setup(x => x.TryGetTemporaryChannel(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                                out It.Ref<ChannelModel>.IsAny!))
+           .Callback((CompactPubKey _, ChannelId _, out ChannelModel? channel) =>
+            {
+                channel = _channel;
+            })
+           .Returns(true);
+
+        _mockLightningSigner
+           .Setup(x => x.ValidateSignature(It.IsAny<ChannelId>(), It.IsAny<CompactSignature>(),
+                                           It.IsAny<SignedTransaction>()))
+           .Throws(new SignerException("Peer signature is invalid", _newChannelId, "Invalid signature provided"));
+
+        // Act & Assert
+        var exception =
+            await Assert.ThrowsAsync<SignerException>(() => _handler.HandleAsync(
+                                                           _validMessage, ChannelState.None, _negotiatedFeatures,
+                                                           _peerPubKey));
+
+        Assert.Equal("Invalid signature provided", exception.PeerMessage);
+        _mockChannelDbRepository.Verify(x => x.AddAsync(It.IsAny<ChannelModel>()), Times.Never);
+        _mockUnitOfWork.Verify(x => x.SaveChangesAsync(), Times.Never);
+        _mockBlockchainMonitor.Verify(
+            x => x.WatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<TxId>(), It.IsAny<uint>()), Times.Never);
+        _mockChannelMemoryRepository.Verify(x => x.AddChannel(It.IsAny<ChannelModel>()), Times.Never);
+        _mockChannelMemoryRepository.Verify(
+            x => x.TryRemoveTemporaryChannel(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>()), Times.Never);
     }
 }
