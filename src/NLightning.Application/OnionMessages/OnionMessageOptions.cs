@@ -42,6 +42,24 @@ public sealed class OnionMessageOptions
     /// </summary>
     public int MaxPathHops { get; set; } = 3;
 
+    /// <summary>The default of <see cref="BlindedPathDummyHops"/>.</summary>
+    public const int DefaultBlindedPathDummyHops = 1;
+
+    /// <summary>The most dummy hops <see cref="BlindedPathDummyHops"/> may ask for.</summary>
+    public const int MaxBlindedPathDummyHops = 4;
+
+    /// <summary>
+    /// How many dummy hops the blinded paths we hand out end with (BOLT 4: the writer MAY add dummy hops at the end of
+    /// the path, which it will ignore on receipt): our reply paths (<c>SendAndWaitForReplyAsync</c>) and the
+    /// <c>offer_paths</c> of <c>createoffer</c>. Each dummy is a hop of our own node that relays to itself
+    /// (<c>next_node_id</c> = us), padded like every other hop, so a sender sees <c>2 + BlindedPathDummyHops</c> hops
+    /// that look like one through <c>BlindedPathDummyHops</c> more nodes; we peel them ourselves on receipt (NL-525).
+    /// Default 1, like the blinded payment paths (<c>Node:Invoices:BlindedPathDummyHops</c>); 0 turns them off; at
+    /// most <see cref="MaxBlindedPathDummyHops"/>. A value outside 0 to that is a configuration error, which keeps
+    /// onion messages (and with them offers) off.
+    /// </summary>
+    public int BlindedPathDummyHops { get; set; } = DefaultBlindedPathDummyHops;
+
     /// <summary>
     /// Per peer: bytes per second admitted (default 64 KiB/s). Over the limit, a message is dropped (BOLT 4 MAY).
     /// </summary>
@@ -92,6 +110,8 @@ public sealed class OnionMessageOptions
             errors.Add($"{SectionName}:{nameof(ReplyTimeout)} must be positive.");
         if (MaxPathHops is < 0 or > 16)
             errors.Add($"{SectionName}:{nameof(MaxPathHops)} must be 0 to 16.");
+        if (BlindedPathDummyHops is < 0 or > MaxBlindedPathDummyHops)
+            errors.Add($"{SectionName}:{nameof(BlindedPathDummyHops)} must be 0 to {MaxBlindedPathDummyHops}.");
         if (PeerBytesPerSecond < 1 || PeerBurstBytes < 1 || PeerMessagesPerSecond < 1 || PeerBurstMessages < 1
          || GlobalBytesPerSecond < 1 || GlobalBurstBytes < 1 || GlobalMessagesPerSecond < 1 || GlobalBurstMessages < 1)
             errors.Add($"{SectionName}: the rate limits must be at least 1.");

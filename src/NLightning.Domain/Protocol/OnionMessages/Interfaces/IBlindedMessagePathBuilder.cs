@@ -39,7 +39,12 @@ public interface IBlindedMessagePathBuilder
     /// <param name="nodeIds">The real node ids, introduction node first, recipient last.</param>
     /// <param name="pathId">The recipient's <c>path_id</c> (a secret of ours for a reply path), or null.</param>
     /// <param name="sessionKey">The path's first ephemeral private key; null draws a fresh one.</param>
-    /// <exception cref="ArgumentException">The list is empty or a key is invalid.</exception>
+    /// <param name="dummyHops">How many dummy hops of the recipient end the path (BOLT 4: the writer MAY add dummy
+    /// hops at the end of the path, which it will ignore on receipt): each is another copy of the last node id whose
+    /// data relays to it (<c>next_node_id</c> = the recipient), padded like every other hop. Only for paths to
+    /// ourselves (our reply and offer paths); 0 by default.</param>
+    /// <exception cref="ArgumentException">The list is empty, a key is invalid, or
+    /// <paramref name="dummyHops"/> is negative.</exception>
     BlindedPath CreateMessagePath(IReadOnlyList<CompactPubKey> nodeIds, ReadOnlyMemory<byte>? pathId = null,
-                                  PrivKey? sessionKey = null);
+                                  PrivKey? sessionKey = null, int dummyHops = 0);
 }

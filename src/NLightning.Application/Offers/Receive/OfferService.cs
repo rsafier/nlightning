@@ -35,10 +35,11 @@ using OnionMessages;
 /// or signet chain hash), 16 random bytes of <c>offer_metadata</c>, <c>offer_amount</c> in msat (never a currency),
 /// <c>offer_description</c>, <c>offer_absolute_expiry</c>, <c>offer_issuer</c>, <c>offer_quantity_max</c>,
 /// <c>offer_issuer_id</c> = our node id (plan D2), and <c>offer_paths</c> when we have no announced open channel or
-/// the request forces them: one two-hop message path per connected onion-message peer with an open channel (only when
+/// the request forces them: one message path per connected onion-message peer with an open channel (only when
 /// none has one, other connected peers, with a warning; <see cref="SelectIntroductionNodes"/>,
 /// <see cref="OfferOptions.MaxOfferPaths"/>), the peer as introduction node and our hop's <c>path_id</c> from
-/// <see cref="OfferPathIds"/>. Our <c>offer_id</c> is SHA256 of the offer bytes; the string is <c>lno1...</c>.</para>
+/// <see cref="OfferPathIds"/>, ended by our dummy hops (<see cref="OnionMessageOptions.BlindedPathDummyHops"/>,
+/// NL-525). Our <c>offer_id</c> is SHA256 of the offer bytes; the string is <c>lno1...</c>.</para>
 /// <para>The offer is saved (<see cref="IUnitOfWork.OfferDbRepository"/>, one save in its own scope) before it is
 /// returned. Invoice_requests for it are answered by <see cref="InvoiceRequestHandler"/>.</para>
 /// <para>Singleton; thread-safe.</para>
@@ -56,13 +57,14 @@ public sealed class OfferService : IOfferService
     private readonly IServiceProvider _serviceProvider;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<OfferService> _logger;
+    private readonly int _pathDummyHops;
 
     public OfferService(IServiceScopeFactory serviceScopeFactory, ISecureKeyManager secureKeyManager,
                         IOptions<NodeOptions> nodeOptions, OfferPathIds pathIds,
                         IBlindedMessagePathBuilder pathBuilder, IPeerManager peerManager,
                         IChannelMemoryRepository channelMemoryRepository, IServiceProvider serviceProvider,
                         ILogger<OfferService> logger, IOptions<OfferOptions>? offerOptions = null,
-                        TimeProvider? timeProvider = null)
+                        IOptions<OnionMessageOptions>? onionMessageOptions = null, TimeProvider? timeProvider = null)
     {
         _serviceScopeFactory = serviceScopeFactory;
         _secureKeyManager = secureKeyManager;
@@ -74,6 +76,10 @@ public sealed class OfferService : IOfferService
         _serviceProvider = serviceProvider;
         _logger = logger;
         _offerOptions = offerOptions?.Value ?? new OfferOptions();
+        // The offer paths end in the same dummy hops as our reply paths (NL-525); the option is validated by the
+        // onion-message service, whose availability offers need, so an out-of-range value never gets here
+        _pathDummyHops = onionMessageOptions?.Value.BlindedPathDummyHops
+                         ?? OnionMessageOptions.DefaultBlindedPathDummyHops;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -238,7 +244,8 @@ public sealed class OfferService : IOfferService
                                 .Any(ChannelAnnouncementService.IsAnnounced);
 
     /// <summary>
-    /// Two-hop message paths to us, introduced by connected onion-message peers (<see cref="SelectIntroductionNodes"/>).
+    /// Message paths to us, introduced by connected onion-message peers (<see cref="SelectIntroductionNodes"/>),
+    /// ended by our dummy hops (<see cref="OnionMessageOptions.BlindedPathDummyHops"/>, NL-525).
     /// </summary>
     private List<WireBlindedPath> CreateOfferPaths(byte[] metadata)
     {
@@ -260,7 +267,8 @@ public sealed class OfferService : IOfferService
 
         var pathId = _pathIds.Compute(metadata);
         return introductionNodes.Select(peer => WireBlindedPath.FromBlindedPath(
-                                            _pathBuilder.CreateMessagePath([peer, ourNodeId], pathId)))
+                                            _pathBuilder.CreateMessagePath([peer, ourNodeId], pathId,
+                                                                          dummyHops: _pathDummyHops)))
                                 .ToList();
     }
 

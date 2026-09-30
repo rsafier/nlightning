@@ -42,18 +42,30 @@ internal sealed class BlindedMessagePathBuilder : IBlindedMessagePathBuilder
 
     /// <inheritdoc />
     public BlindedPath CreateMessagePath(IReadOnlyList<CompactPubKey> nodeIds, ReadOnlyMemory<byte>? pathId = null,
-                                         PrivKey? sessionKey = null)
+                                         PrivKey? sessionKey = null, int dummyHops = 0)
     {
         ArgumentNullException.ThrowIfNull(nodeIds);
         if (nodeIds.Count == 0)
             throw new ArgumentException("A blinded path has at least one hop.", nameof(nodeIds));
+        ArgumentOutOfRangeException.ThrowIfNegative(dummyHops);
 
-        var data = new List<BlindedRecipientData>(nodeIds.Count);
-        for (var i = 0; i < nodeIds.Count - 1; i++)
-            data.Add(new BlindedRecipientData { NextNodeId = nodeIds[i + 1] });
+        // The dummy hops of the recipient (NL-525): copies of the last node id that relay to itself, so a sender
+        // cannot tell the recipient's hop from the padding after it. The recipient peels them on receipt.
+        var hops = nodeIds;
+        if (dummyHops > 0)
+        {
+            var withDummies = new List<CompactPubKey>(nodeIds.Count + dummyHops);
+            withDummies.AddRange(nodeIds);
+            withDummies.AddRange(Enumerable.Repeat(nodeIds[^1], dummyHops));
+            hops = withDummies;
+        }
+
+        var data = new List<BlindedRecipientData>(hops.Count);
+        for (var i = 0; i < hops.Count - 1; i++)
+            data.Add(new BlindedRecipientData { NextNodeId = hops[i + 1] });
         data.Add(new BlindedRecipientData { PathId = pathId });
 
-        return CreatePath(nodeIds, data, sessionKey);
+        return CreatePath(hops, data, sessionKey);
     }
 
     /// <summary>
