@@ -374,7 +374,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// <exception cref="InvalidOperationException">Thrown when the connection to the peer already exists.</exception>
     public async Task<PeerModel> DialPeerAsync(PeerAddressInfo peerAddressInfo, CancellationToken cancellationToken)
     {
-        return await ConnectToPeerAsync(peerAddressInfo, cancellationToken);
+        return await ConnectPeerCoreAsync(peerAddressInfo, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -510,8 +510,8 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         StartReconnectLoop(dialable);
     }
 
-    private async Task<PeerModel> ConnectToPeerAsync(PeerAddressInfo peerAddressInfo,
-                                                     CancellationToken cancellationToken = default)
+    private async Task<PeerModel> ConnectPeerCoreAsync(PeerAddressInfo peerAddressInfo,
+                                                       CancellationToken cancellationToken)
     {
         // Convert and validate the address
         var peerAddress = new PeerAddress(peerAddressInfo.Address);
