@@ -18,6 +18,22 @@ using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
+/// <summary>
+/// Handles the funder's <c>funding_created</c> (BOLT 2): the fundee derives the real channel id from the funding
+/// outpoint, checks the funder's signature of its initial commitment, signs the funder's initial commitment, persists
+/// the channel as V1FundingSigned and answers with <c>funding_signed</c>.
+/// </summary>
+/// <remarks>
+/// The non-initiator flow against BOLT 2, as reviewed (NL-053): a <c>funding_created</c> for a channel we did not
+/// negotiate (or not in V1Opening) fails the channel with an `error` naming the temporary channel id; a channel id
+/// already derived from the same funding outpoint fails it too, before anything is registered or signed. The funder's
+/// signature is validated over our initial commitment (number 0, NL-188) before we sign theirs, and a bad signature
+/// surfaces as a <see cref="SignerException"/> (a <see cref="ChannelErrorException"/>): the channel is failed with the
+/// signer's peer message and never persisted, so it is forgotten (BOLT 2: the fundee SHOULD forget it). On success the
+/// channel is persisted (one save) before the reply, the funding transaction is watched at the channel's minimum depth
+/// (the watch row is persisted with it), and <see cref="ChannelModel.FundingCreatedAtBlockHeight"/> starts the 2016
+/// blocks after which a never-confirming funding is forgotten (BOLT 2).
+/// </remarks>
 public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreatedMessage>
 {
     private readonly IBlockchainMonitor _blockchainMonitor;
@@ -80,6 +96,11 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         var oldChannelId = channel.ChannelId;
         channel.UpdateChannelId(_channelIdFactory.CreateV1(payload.FundingTxId, payload.FundingOutputIndex));
 
+        // The peer must not reuse a funding outpoint; fail the channel before anything is registered or signed
+        if (await _unitOfWork.ChannelDbRepository.GetByIdAsync(channel.ChannelId) is not null)
+            throw new ChannelErrorException("A channel with this funding outpoint already exists", channel.ChannelId,
+                                            "This channel is already in our database");
+
         // Register the channel with the signer
         _lightningSigner.RegisterChannel(channel.ChannelId, channel.GetSigningInfo());
 
@@ -112,7 +133,8 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         channel.FundingCreatedAtBlockHeight = _blockchainMonitor.LastProcessedBlockHeight;
 
         // Save to the database
-        await PersistChannelAsync(channel);
+        await _unitOfWork.ChannelDbRepository.AddAsync(channel);
+        await _unitOfWork.SaveChangesAsync();
 
         // Create the funding signed message
         var fundingSignedMessage =
@@ -128,31 +150,5 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
                                                        channel.ChannelParams.MinimumDepth);
 
         return [fundingSignedMessage];
-    }
-
-    /// <summary>
-    /// Persists a channel to the database using the scoped Unit of Work
-    /// </summary>
-    private async Task PersistChannelAsync(ChannelModel channel)
-    {
-        try
-        {
-            // TODO: REVIEW FULL FLOW
-            // Check if the channel already exists
-            var existingChannel = await _unitOfWork.ChannelDbRepository.GetByIdAsync(channel.ChannelId);
-            if (existingChannel is not null)
-                throw new ChannelWarningException("Channel already exists", channel.ChannelId,
-                                                  "This channel is already in our database");
-
-            await _unitOfWork.ChannelDbRepository.AddAsync(channel);
-            await _unitOfWork.SaveChangesAsync();
-
-            _logger.LogDebug("Successfully persisted channel {ChannelId} to database", channel.ChannelId);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to persist channel {ChannelId} to database", channel.ChannelId);
-            throw;
-        }
     }
 }
