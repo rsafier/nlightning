@@ -474,9 +474,12 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         {
             if (entry is not null && IsAwaitingAbortEcho(entry))
             {
-                // The echo of our tx_abort: the peer has seen it, the negotiation is over on both sides
+                // The echo of our tx_abort: the peer has seen it, the negotiation is over on both sides. The
+                // quiescence ends here too when our tx_abort went out without one to finish (NL-509: a refused
+                // tx_init_rbf, or a negotiation-less tx_abort, sent it while the channel was quiescent)
                 entry.AbortSentAt = null;
                 _logger.LogDebug("tx_abort echoed by {Peer} on channel {ChannelId}", peerPubKey, channelId);
+                _quiescenceService?.Terminate(channelId, QuiescenceEndReason.TxAbort);
                 RemoveIfIdle(channelId, entry);
                 return [];
             }
@@ -921,6 +924,9 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
     {
         _logger.LogInformation("Rejecting the RBF on channel {ChannelId}: {Reason}", channelId, reason);
         MarkAbortSent(entry);
+        // NL-509: the refusal's tx_abort ends the quiescence here, not only through the host (which the splice's is,
+        // but any other RBF host runs behind a quiescence too and would stay quiescent until its timeout)
+        _quiescenceService?.Terminate(channelId, QuiescenceEndReason.TxAbort);
         return [CreateTxAbort(channelId, reason)];
     }
 

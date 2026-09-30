@@ -298,6 +298,54 @@ public class InteractiveTxDriverTests
     }
 
     [Fact]
+    public async Task Given_AQuiescentChannel_When_TheHostRejectsTheRbf_Then_TheQuiescenceEndsWithTheTxAbort()
+    {
+        // Arrange (NL-509: the driver's refusal ends the quiescence even when the host does not, like a non-splice
+        // RBF host; SpliceService ends it itself, but it cannot be relied on for every host)
+        var ct = TestContext.Current.CancellationToken;
+        var quiescence = new Mock<IQuiescenceService>();
+        var harness = new InteractiveTxHarness(InteractiveTxEngines.Reference, 100_000, 50_000);
+        harness.Alice.Fund(300_000);
+        harness.Bob.Fund(200_000);
+        harness.Bob.Configure(quiescence.Object);
+        await harness.PumpAsync(harness.Alice, await harness.StartAsync(1_000, ct), ct);
+
+        // Act
+        var replies = await harness.Bob.Driver.ReceiveAsync(
+                          new TxInitRbfMessage(new TxInitRbfPayload(s_channelId, 2_000, 0)), harness.Alice.NodeId,
+                          harness.Bob.UnitOfWork, ct);
+
+        // Assert
+        Assert.IsType<TxAbortMessage>(Assert.Single(replies));
+        quiescence.Verify(q => q.Terminate(s_channelId, QuiescenceEndReason.TxAbort), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_OurNegotiationLessTxAbort_When_ThePeerEchoesIt_Then_TheQuiescenceEnds()
+    {
+        // Arrange (NL-509: a tx_abort we sent without a negotiation, e.g. to a stale message, waits for its echo and
+        // the quiescence it ends must release when the echo arrives)
+        var ct = TestContext.Current.CancellationToken;
+        var quiescence = new Mock<IQuiescenceService>();
+        var node = CreateNode(quiescenceService: quiescence.Object);
+        var peer = CreateNode(0x22);
+
+        // Act
+        var abort = await node.Driver.ReceiveAsync(InteractiveTxMessages.Create(MessageTypes.TxComplete, s_channelId),
+                                                   peer.NodeId, node.UnitOfWork, ct);
+        Assert.IsType<TxAbortMessage>(Assert.Single(abort));
+        quiescence.Verify(q => q.Terminate(s_channelId, QuiescenceEndReason.TxAbort), Times.Never);
+
+        var echo = await node.Driver.ReceiveAsync(InteractiveTxMessages.Create(MessageTypes.TxAbort, s_channelId),
+                                                  peer.NodeId, node.UnitOfWork, ct);
+
+        // Assert
+        Assert.Empty(echo);
+        quiescence.Verify(q => q.Terminate(s_channelId, QuiescenceEndReason.TxAbort), Times.Once);
+        Assert.Null(node.Driver.GetInfo(s_channelId));
+    }
+
+    [Fact]
     public async Task Given_ACompletedNegotiation_When_ItsTxSignaturesIsRetransmitted_Then_Ignored()
     {
         // Arrange
