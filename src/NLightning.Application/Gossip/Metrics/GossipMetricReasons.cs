@@ -78,6 +78,12 @@ public static class GossipMetricReasons
     /// </summary>
     public const string PendingCandidatesFull = "pending_candidates_full";
 
+    /// <summary>
+    /// The candidates waiting for a short channel id made way for a fifth announcement because an orphaned
+    /// <c>channel_update</c> proves them all wrong (their signatures match none; NL-418).
+    /// </summary>
+    public const string PendingCandidatesEvicted = "pending_candidates_evicted";
+
     /// <summary>A reason that is none of the above.</summary>
     public const string Other = "other";
 }

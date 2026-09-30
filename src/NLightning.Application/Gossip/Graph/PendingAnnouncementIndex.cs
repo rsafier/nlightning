@@ -19,12 +19,14 @@ using Domain.Protocol.Payloads;
 /// for any short channel id with keys of its own. A short channel id therefore keeps up to
 /// <see cref="MaxCandidatesPerChannel"/> different announcements (candidates), at most one per sending peer (a peer's
 /// newer announcement replaces its own older one); a different announcement beyond that is refused. So a later forgery
-/// never displaces the real announcement, and the first update promotes the candidate whose node signed it. When the
-/// index is full, the peer holding the most entries loses its oldest one, so a peer flooding forged announcements
-/// evicts its own entries once it holds the largest share. Bounded by a capacity (all candidates counted) and a TTL
-/// from when the entry was added (an identical re-send does not renew it, so an announcement a peer keeps re-sending
-/// still leaves after the TTL and comes back as a new entry). Not persisted: after a restart peers send them again.
-/// Thread-safe.
+/// never displaces the real announcement, and the first update promotes the candidate whose node signed it. The
+/// ingress (which owns the orphan cache this index is checked against) may evict all candidates of a short channel id
+/// once an orphaned <c>channel_update</c> has proved every one of them wrong (NL-418), so forgeries cannot hold the id
+/// until their TTL ends. When the index is full, the peer holding the most entries loses its oldest one, so a peer
+/// flooding forged announcements evicts its own entries once it holds the largest share. Bounded by a capacity (all
+/// candidates counted) and a TTL from when the entry was added (an identical re-send does not renew it, so an
+/// announcement a peer keeps re-sending still leaves after the TTL and comes back as a new entry). Not persisted:
+/// after a restart peers send them again. Thread-safe.
 /// </remarks>
 public sealed class PendingAnnouncementIndex
 {
