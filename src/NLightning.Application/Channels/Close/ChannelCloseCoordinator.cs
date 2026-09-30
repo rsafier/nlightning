@@ -445,6 +445,19 @@ public sealed class ChannelCloseCoordinator
         }
 
         var state = entry.Negotiation ?? context.InitialState;
+        // NL-285 (B2-CLS-R09): when the peer's rangeless answer overshoots our funder limit, holding the limit means
+        // repeating a fee (about 19 rounds against LND's 10 % decay, and a strict peer fails the repeated fee). The
+        // peer's first offer becomes our limit once instead - the fee it asked first is the most it can expect, and
+        // the balance check above already bounded it - so the negotiation ends on the peer's own fee (B2-CLS-R08)
+        if (channel.IsInitiator && theirRange is null && state.LastReceivedFeeSat is null
+         && feeSat > state.Acceptable.MaxFeeSat)
+        {
+            state = state with { Acceptable = new ClosingFeeRange(state.Acceptable.MinFeeSat, feeSat) };
+            _logger.LogInformation(
+                "closing_signed for channel {ChannelId}: our funder fee limit rises to the peer's first offer of "
+              + "{Fee} sat", channelId, feeSat);
+        }
+
         var (decision, next) = LegacyClosingNegotiator.Receive(state, feeSat, theirRange, context.IdealFeeSat);
         entry.Negotiation = next;
         _logger.LogInformation(

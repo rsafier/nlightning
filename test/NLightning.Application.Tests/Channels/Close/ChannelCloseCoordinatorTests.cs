@@ -449,6 +449,31 @@ public class ChannelCloseCoordinatorTests
     }
 
     [Fact]
+    public async Task Given_FundersLimitOvershotByRangelessPeer_When_FirstClosingSigned_Then_PeerOfferAccepted()
+    {
+        // Arrange (NL-285, B2-CLS-R09): as the funder we proposed our estimate (the fixture's 1,000 sat/kw); the
+        // peer's first rangeless answer asks for more than 3x that, our funder limit - holding it used to repeat the
+        // fee (about 19 rounds against LND's decay, and a strict peer fails a repeated fee)
+        var channel = CreateFunderReadyToPropose();
+        var coordinator = CreateCoordinator();
+        var proposal = Assert.IsType<ClosingSignedMessage>(Assert.Single(await coordinator.AdvanceAsync(channel)));
+        var weight = ClosingFeeCalculator.EstimateWeight(s_localScript.Length, s_remoteScript.Length);
+        Assert.Equal(LightningMoney.Satoshis(ClosingFeeCalculator.FeeSat(1_000, weight)),
+                     proposal.Payload.FeeAmount);
+        Assert.True((ulong)proposal.Payload.FeeAmount.Satoshi * 3 < 5_000);
+
+        // Act
+        var replies = await coordinator.ReceiveClosingSignedAsync(channel, ClosingSigned(5_000));
+
+        // Assert: the negotiation ends on the peer's own first offer, persisted Closing before broadcast (I1)
+        var echo = Assert.IsType<ClosingSignedMessage>(Assert.Single(replies));
+        Assert.Equal(LightningMoney.Satoshis(5_000), echo.Payload.FeeAmount);
+        Assert.Null(echo.FeeRangeTlv);
+        Assert.Equal(ChannelState.Closing, channel.State);
+        Assert.Equal(["watch:6", "update:Closing", "save", "track", "publish"], _calls);
+    }
+
+    [Fact]
     public async Task Given_InvertedFeeRange_When_ClosingSigned_Then_WarningAndDisconnect()
     {
         // Arrange
