@@ -848,9 +848,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// shutdown scripts) that we did not record (the peer broadcast a proposal we signed and our connection or node
     /// went down before its <c>closing_signed</c> reached us, or it broadcast the other dust variant) becomes the
     /// channel's closing transaction: Closing and its watch (already seen in this block) in one save, so the watch's
-    /// depth makes the channel Closed as usual. Any other funding spend goes to <see cref="IOnchainChannelWatcher"/>
-    /// (classification, <c>OnchainResolving</c>), after this lock is released. Idempotent (a replayed block raises it
-    /// again).
+    /// depth makes the channel Closed as usual. A Failed channel that signed a closing tx before it failed is closed
+    /// by the same watch (NL-312): it stays Failed until the confirmation, then Closed. Any other funding spend goes to
+    /// <see cref="IOnchainChannelWatcher"/> (classification, <c>OnchainResolving</c>), after this lock is released.
+    /// Idempotent (a replayed block raises it again).
     /// </summary>
     private async Task HandleFundingSpentAsync(OutpointSpentEventArgs args)
     {
@@ -931,8 +932,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     }
 
     /// <summary>
-    /// Under the channel's lock: records an unrecorded mutual close of a closing channel (see
-    /// <see cref="HandleFundingSpentAsync"/>) and tells what else the spend needs.
+    /// Under the channel's lock: records an unrecorded mutual close of a closing channel, or of a Failed one that
+    /// signed a closing tx before it failed (NL-312; see <see cref="HandleFundingSpentAsync"/>) and tells what else
+    /// the spend needs.
     /// </summary>
     private async Task<SpendHandOver> RecordMutualCloseSpendAsync(OutpointSpentEventArgs args)
     {
@@ -965,7 +967,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
               || args.SpentOutputIndex != channel.FundingOutput.Index))
                 return SpendHandOver.ResolutionOutput;
 
-            if (channel.State is not (ChannelState.ShuttingDown or ChannelState.Negotiating or ChannelState.Closing)
+            // A Failed channel that signed a closing tx before it failed (Negotiating → Failed) is closed by it too
+            // (NL-312): Failed (35) stays until the confirmation, then Closed (40) is strictly increasing
+            if (channel.State is not (ChannelState.ShuttingDown or ChannelState.Negotiating or ChannelState.Closing
+                                   or ChannelState.Failed)
              || !IsMutualCloseOf(channel, spend))
                 return SpendHandOver.FundingSpend;
 
@@ -1864,12 +1869,13 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
     /// <summary>
     /// Retries the end of a close whose watch already completed (the completion raced a failure, or the watch completed
-    /// while the channel was not loaded): the channel becomes Closed through the same path as a confirmation.
+    /// while the channel was not loaded): the channel becomes Closed through the same path as a confirmation. A Failed
+    /// channel that signed a closing tx is retried too (NL-312).
     /// </summary>
     private void CompleteConfirmedCloses()
     {
-        var closingChannels = _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Closing
-                                                                      && c.ClosingTransaction is not null);
+        var closingChannels = _channelMemoryRepository.FindChannels(
+            c => c.State is ChannelState.Closing or ChannelState.Failed && c.ClosingTransaction is not null);
         if (closingChannels.Count == 0)
             return;
 
@@ -2145,8 +2151,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 _channelMemoryRepository.AddChannel(channel);
             }
 
-            // The agreed mutual close transaction reached its depth (N10)
-            if (channel.State == ChannelState.Closing && confirmedTxId is { } txId
+            // The agreed mutual close transaction reached its depth (N10); a Failed channel that signed it before it
+            // failed closes too (NL-312; Failed 35 → Closed 40 is strictly increasing)
+            if (channel.State is ChannelState.Closing or ChannelState.Failed && confirmedTxId is { } txId
              && channel.ClosingTransaction?.TxId == txId)
             {
                 await CompleteCloseAsync(scope, channel);

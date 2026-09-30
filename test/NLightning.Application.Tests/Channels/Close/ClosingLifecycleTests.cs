@@ -224,6 +224,64 @@ public class ClosingLifecycleTests
     }
 
     [Fact]
+    public async Task Given_FailedChannelThatSignedTheClose_When_FundingSpentByMutualClose_Then_ItBecomesTheClosingTxAndClosed()
+    {
+        // Arrange - NL-312: the channel failed after it signed a closing tx (Negotiating → Failed); when the peer
+        // broadcasts the close we signed, the channel must not stay Failed for good
+        var channel = CreateClosingChannel(ChannelState.Failed);
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        var added = new List<WatchedTransactionModel>();
+        _watchedDb.Setup(r => r.Add(It.IsAny<WatchedTransactionModel>()))
+                  .Callback((WatchedTransactionModel w) => added.Add(w));
+        CreateManager();
+        var spend = MutualClose(channel);
+
+        // Act
+        _monitor.Raise(m => m.OnWatchedOutpointSpent += null, _monitor.Object,
+                       new OutpointSpentEventArgs(channelId, spend, 700, 3));
+
+        // Assert: the close becomes the closing tx, the state stays Failed (never lowered), then its confirmation
+        // closes the channel (Failed 35 → Closed 40)
+        await WaitUntilAsync(() => channel.ClosingTransaction?.TxId == spend.TxId);
+        Assert.Equal(ChannelState.Failed, channel.State);
+        Assert.Equal([ChannelState.Failed], _persisted);
+        _unitOfWork.Verify(u => u.SaveChangesAsync(), Times.Once);
+        var watch = Assert.Single(added);
+        Assert.Equal(spend.TxId, watch.TransactionId);
+        Assert.Equal(700U, watch.FirstSeenAtHeight);
+        Assert.Equal(3U, watch.TransactionIndex);
+        _monitor.Verify(m => m.TrackWatchedTransaction(watch), Times.Once);
+
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, spend.TxId));
+        await WaitUntilAsync(() => channel.State == ChannelState.Closed);
+        Assert.Equal([ChannelState.Failed, ChannelState.Closed], _persisted);
+        _memory.Verify(m => m.TryRemoveChannel(channelId), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_FailedWithCompletedCloseWatch_When_NewBlock_Then_Closed()
+    {
+        // Arrange - NL-312: the close of a Failed channel reached its depth but the completion raced the failure
+        var channel = CreateClosingChannel(ChannelState.Failed);
+        channel.SetClosingTransaction(s_closingTx);
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        _memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+               .Returns((Func<ChannelModel, bool> predicate) => new[] { channel }.Where(predicate).ToList());
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(s_closingTx.TxId))
+                  .ReturnsAsync(Confirmed(channelId, s_closingTx.TxId).WatchedTransaction);
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnNewBlockDetected += null, _monitor.Object, new NewBlockEventArgs(610, new byte[32]));
+
+        // Assert
+        await WaitUntilAsync(() => channel.State == ChannelState.Closed);
+        Assert.Equal([ChannelState.Closed], _persisted);
+    }
+
+    [Fact]
     public async Task Given_Negotiating_When_FundingSpentByAnotherTransaction_Then_Unchanged()
     {
         // Arrange: a commitment transaction (BOLT 5, not handled here) is not a mutual close
