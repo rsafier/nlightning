@@ -1268,14 +1268,16 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
 
         public void PoisonQuerySlot() => _querySlotPoisoned = true;
 
-        private volatile bool _awaitingOutstandingReply;
+        // Ordered through Volatile.Read/Write (never read bare), so not `volatile`: a ref to a
+        // volatile field would warn CS0420
+        private bool _awaitingOutstandingReply;
 
         /// <summary>The collector of the abandoned range query, kept to recognize the end of its late reply stream.
         /// </summary>
         public RangeReplyCollector? OutstandingCollector { get; private set; }
 
         /// <summary>A query of ours was given up on (no reply in time), but may still be answered (NL-365).</summary>
-        public bool IsAwaitingOutstandingReply => _awaitingOutstandingReply;
+        public bool IsAwaitingOutstandingReply => Volatile.Read(ref _awaitingOutstandingReply);
 
         /// <summary>
         /// The reply wait was given up (NL-365): the expectation stays armed, and the late reply (or the rest of the
