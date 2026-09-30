@@ -13,6 +13,13 @@ internal class FakeTransportServiceFactory : ITransportServiceFactory, ITestTran
         return CreateTransportService(isInitiator, s.ToArray(), rs.ToArray(), tcpClient);
     }
 
+    public ITransportService CreateTransportService(bool isInitiator, ReadOnlySpan<byte> localStaticPublicKey,
+                                                    ReadOnlySpan<byte> rs, TcpClient tcpClient,
+                                                    ProtectedStaticEcdh protectedStaticEcdh)
+    {
+        return CreateTransportService(isInitiator, localStaticPublicKey.ToArray(), rs.ToArray(), tcpClient);
+    }
+
     public virtual ITransportService CreateTransportService(bool isInitiator, byte[] s, byte[] rs,
                                                             TcpClient tcpClient)
     {
