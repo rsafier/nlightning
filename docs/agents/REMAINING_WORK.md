@@ -1,6 +1,6 @@
 # Remaining work
 
-This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`), G-C (`4dc0f77`), G-D (`48a8951`), anchors waves O7 (`897f032`) and O7b (`f9fad19`), and the mainnet gossip probe (`fbb113b`), and wave M6 (onion messages and on-chain `withdraw`, `641a5fff`), and wave B12 (BOLT 12 offers, `a3445f3f`), and wave lh1 (close and wallet safety fixes, BOLT 12 closed, keysend, restore hardening, `a6c633f9`), and wave qit (quiescence and the interactive-tx layer, `b7d14056`), and lane nl559 (LDK's peer-storage size refusal answered with a fitting blob, NL-559), and lane nl330 (a preimage on a close a reorg replaced is reconciled with what was already told upstream, NL-330).
+This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`), G-C (`4dc0f77`), G-D (`48a8951`), anchors waves O7 (`897f032`) and O7b (`f9fad19`), and the mainnet gossip probe (`fbb113b`), and wave M6 (onion messages and on-chain `withdraw`, `641a5fff`), and wave B12 (BOLT 12 offers, `a3445f3f`), and wave lh1 (close and wallet safety fixes, BOLT 12 closed, keysend, restore hardening, `a6c633f9`), and wave qit (quiescence and the interactive-tx layer, `b7d14056`), and lane nl559 (LDK's peer-storage size refusal answered with a fitting blob, NL-559), and lane nl330 (a preimage on a close a reorg replaced is reconciled with what was already told upstream, NL-330), and the batch3 wave (32 open lows fixed across 11 parallel lanes).
 - Detailed status per item lives in [`ISSUES.md`](ISSUES.md) (NL IDs) and [`BOLT_COVERAGE.md`](BOLT_COVERAGE.md).
 - Designs live in the plan files linked below.
 - Update this file when a line item lands or a new one is found.
@@ -29,7 +29,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 
 ## Before real funds (mainnet gate)
 
-- ~~**Enable HTLCs on mainnet.**~~ **Done in gossip wave G-D** (BOLT5 plan O6-T4, NL-094 fixed): HTLCs are on for every network by default and `Node:EnableHtlcs=false` turns them off (6de56ad); NL-315 fixed on the way; the integrator kept the flip after on-chain 24/24, LND 58/58 incl. N9, CLN 22/22 and ABCD 3 x 10/10 (`BOLT5_ONCHAIN_PLAN.md` "O6-T4 decision"). Remaining BOLT 5 follow-ups (NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-335, NL-336) are not fund-safety blockers. NL-330 (the replaced-close upstream reconciliation, the one open gap of O6-T3) was fixed by lane nl330.
+- ~~**Enable HTLCs on mainnet.**~~ **Done in gossip wave G-D** (BOLT5 plan O6-T4, NL-094 fixed): HTLCs are on for every network by default and `Node:EnableHtlcs=false` turns them off (6de56ad); NL-315 fixed on the way; the integrator kept the flip after on-chain 24/24, LND 58/58 incl. N9, CLN 22/22 and ABCD 3 x 10/10 (`BOLT5_ONCHAIN_PLAN.md` "O6-T4 decision"). Remaining BOLT 5 follow-ups (NL-308, NL-309, NL-313, NL-318, NL-329) are not fund-safety blockers. Fixed since: NL-330 (lane nl330, the replaced-close upstream reconciliation) and NL-307, NL-312, NL-335, NL-336 (the batch3 wave).
 - **Anchor channels.**
   - Done in wave O7 (BOLT5 plan O7-T1..T3): wallet signing and persisted fee-input reservations (NL-067), CPFP of our commitment with RBF, anchors HTLC txs funded by wallet inputs, anchors penalties (NL-314); Docker anchors proofs 12/12 against LND.
   - ~~Left before `option_anchors` can be enabled (O7-T4).~~ **Done in wave O7b**: on-chain wallet reserve per anchors channel (NL-379), package relay with `submitpackage` (NL-380), bumping the peer's commitment through our anchor (NL-381); `option_anchors` is advertised Optional by default (d4cc3f8). Operators need confirmed on-chain funds of 10,000 sat per anchors channel (up to 100,000; `Node:Anchors`), or set `Node:Features:OptionAnchors=No`.
@@ -87,7 +87,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 
 - `ChannelModel` legacy HTLC collections and the remaining clean-architecture violations (Application → Infrastructure) (NL-032, NL-157).
 - The IPC surface: `disconnect` done in wave rf1 (ClientCommand 24, NL-152 fixed), `withdraw` in wave M6 (25), the BOLT 12 commands in wave B12 (26-30), `keysend` (31) and `listpeerstorage` (32) in wave lh1 (next free 33); richer channel and payment queries remain.
-- The binary naming: `nltg` in the usage text vs the `NLightning.Client` assembly (NL-185).
+- ~~The binary naming: `nltg` in the usage text vs the `NLightning.Client` assembly~~ resolved by convention (NL-185, batch3: the docs state usage texts say `nltg` on purpose; assemblies keep their names).
 
 ## Standard test cycle
 

@@ -62,6 +62,8 @@ Updated 2026-09-28 by lane bolt10 (branch `wip/fafo-bolt10` from `978ad275`, cod
 
 Updated 2026-09-29 by lane nl330 (branch `nl330` from `wip/fafo` at `ebd9659e`, merged into `wip/fafo` by fast-forward): NL-330 fixed at `07829936` (a preimage revealed on a close that a reorg replaced is checked against what was already told upstream; when that was a fail, a critical `[B5-GEN-06]` names the HTLC and both channels once, and the retirement alert names the outcome per resolved HTLC; the upstream outcome is derived from the switch's one-way state by the new `HtlcUpstreamOutcomeReader`, no schema change). No new IDs. Docker: the on-chain suite re-ran green (29, 2 Explicit not run, 226 s; no Docker test exercises a replaced close with HTLCs). Non-Docker on net10.0, Release: full suite green (Domain 3701, Application 3095, Integration 933, Serialization 613, Infrastructure 484, Infrastructure.Bitcoin 1414, Bolt11 327, Daemon 840).
 
+Updated 2026-09-29 by the batch3 integrator (branch `batch3` from `wip/fafo` at `492442e3`; 11 lanes run in parallel worktrees, cherry-picked in lane order — lane branches `batch3-*` hold the originals): 32 open lows fixed with the per-entry SHAs being the `batch3` commits: NL-005, NL-013, NL-014, NL-015, NL-118, NL-163, NL-185, NL-221, NL-222, NL-224, NL-267, NL-268, NL-282, NL-298, NL-306, NL-307, NL-312, NL-335, NL-336, NL-340, NL-362, NL-370, NL-372, NL-387, NL-436, NL-438, NL-458, NL-491, NL-514, NL-515, NL-154, NL-277. Deviations of note: NL-277 resolved by deleting the broken, unused `CreateClosingSignedMessage`; NL-005 ignores pings beyond 5 per 10 s instead of disconnecting; NL-298 is the minimal seam (`BitcoinNetwork.ToNBitcoinNetwork`, 13 sites; SecureKeyManager keeps NBitcoin spellings per NL-403, parse-only `Network.Main` sites left); NL-370 persists bans through the existing `GraphBannedNodes` table (no migration; only "gossip misbehaviour" reasons restore as peer bans); NL-514 learns the announcement address at inbound-save time (not a continuous announcement updater). Lane L (NL-012) was dropped by the owner before it ran. Gates on the integrated tree, net10.0 Release: build 0 errors; full non-Docker suite green (Serialization 622, Bolt11 337, Daemon 843, Infrastructure 460, Domain 3703, Infrastructure.Bitcoin 1420 +2 platform skips, Integration 939, Application 3125 with the one failure the NL-512-family `DualFundSafetyTests` load flake, 9/9 alone); `dotnet format` clean. The `listpeerstorage` CLI gained no new flags; `IPC` framing changed native-endian to big-endian length prefixes, so a pre-batch3 client against a batch3 daemon fails the frame check by design.
+
 Updated 2026-09-29 by lane nl559 (branch `nl559` from `wip/fafo` at `3044f55e`, merged into `wip/fafo` through PR #15): NL-559 fixed at `002b6acd` (a peer that refuses our `peer_storage` blob for its size — LDK's 1,024-byte limit — is answered at once with one padded to exactly the limit its warning names, the limit relearned per process, the refusals counted and listed by `listpeerstorage`; Docker Proof `LdkPeerStorageTests`). No new IDs. Docker from the host on net10.0, Release: the full LDK trait 14/14 (the new proof included, 205 s) and the CLN trait 77 green (+4 Explicit not run, 847 s; `ClnPeerStorageTests` included). Non-Docker on net10.0, Release: Domain 3701, Application 3092, Integration 933, Serialization 613, Infrastructure 484, Infrastructure.Bitcoin 1414, Bolt11 327, Daemon 840, all green.
 
 Updated 2026-09-28 by lane nl543 (branch `wip/fafo-nl543` from `wip/fafo` at `ef7ad335`, code at `d4eb9582`, since merged into `wip/fafo`): the bootstrap tops up from the gossip graph before the DNS seeds (owner decision, light testing). Fixed: NL-543. New: NL-547. Targeted tests only, net10.0 Release: Application `NLightning.Application.Tests.Node` 223, Domain `Node/Bootstrap` 158; no Docker, no full matrix, no live run.
@@ -106,9 +108,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 171 | 174 |
+| open | 0 | 0 | 3 | 139 | 142 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 154 | 136 | 366 |
+| fixed | 14 | 62 | 154 | 168 | 398 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **62** | **161** | **313** | **550** |
@@ -120,7 +122,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - NL-034: Channel close (shutdown / closing_signed / option_simple_close) (fixed, critical; legacy close in wave 3 W3-B, Docker proof against LND and CLN close in wave 4, option_simple_close NL-020 in wave 6 (default No); NL-279 and NL-045 fixed in wave lh1; remaining: NL-285, NL-286)
 - NL-035: channel_reestablish / option_data_loss_protect (fixed, critical; ABCD wave 2 W2-A; shutdown re-send is N10, Closing resumption NL-036)
 - NL-037: Dual funding / interactive-tx (v2 open) (fixed, medium; closed 2026-09-28: DF3, NL-521, NL-528, NL-530; wave d13: DF3 done, `option_dual_fund` Optional by default (D13); wave qit: the interactive-tx layer (engine, Bitcoin side, wire and `AddInteractiveTxSessions`, driver and handlers; NL-041, NL-219 fixed) is done and registered; wave sp1 lane SP1-F: the v2 open (DF1, DF2) behind experimental `OptionDualFund` with Proof DF green against CLN v26.06.8, which also proves the interactive-tx layer on the wire; tx_init_rbf bugs NL-475, NL-476 fixed; wave sp2: the v2 open's `next_funding` goes through the shared reestablish planner, backups hold every signed dual-funded RBF candidate, day-0 Docker proof of a dual-funded public open between two nodes; remaining: DF3 (out of experimental, not scheduled), follow-ups NL-473, NL-474; lane rbf: NL-521 fixed, a changed contribution in either RBF message followed, follow-up NL-527; lane dfrbf: NL-527 and NL-528 fixed, the channel follows whichever signed attempt of an RBF confirms, `Node:DualFund:AllowRbf` true by default, `bumpopen` (IPC 38); follow-up NL-529; lane accrbf: NL-530 fixed, the accepter may bump too (CLN v26.06.8 refuses it with `tx_abort`))
-- NL-021: Splicing (fixed, low; wave d13 at `f30f3be3`: D13 applied, `option_splice`/`option_quiesce` Optional by default, RBF recency by blocks NL-520; wave sp1 at `3660bff2`: wire, several-funding engine, per-funding signer, `AddSpliceFundings`, negotiation, `splicein`/`spliceout` (33/34), Proof SP1 green against CLN v26.06.8; wave sp2 at `31950b81`: reestablish across splices, full `splice_locked`, the 72-block retired SCID map, re-announcement, BOLT 5 across fundings, `listchannels` fundings, backups across splices, restart mid-splice (NL-484), Proof SP2 green against CLN v26.06.8 (11/11) and `OnchainSpliceTests` 5/5; NL-478, NL-479 fixed; `OptionSplice` experimental; wave spr at `a0800ac2`: splice RBF both ways (NL-489, NL-481 fixed), `bumpsplice` (37) and the optional auto-bump, Proof SPR 5/5 against CLN v26.06.8, day-0 hardening NL-490, NL-492, NL-494, NL-495, NL-497 fixed; wave d13 at `f30f3be3` (branch `wip/fafo-d13`): D13 applied, `OptionSplice`/`OptionQuiesce` Optional by default on every network, splice RBF recency by blocks (NL-520); follow-ups NL-477, NL-480, NL-483, NL-488, NL-493, NL-496, NL-502, NL-507..NL-511, NL-514, NL-515)
+- NL-021: Splicing (fixed, low; wave d13 at `f30f3be3`: D13 applied, `option_splice`/`option_quiesce` Optional by default, RBF recency by blocks NL-520; wave sp1 at `3660bff2`: wire, several-funding engine, per-funding signer, `AddSpliceFundings`, negotiation, `splicein`/`spliceout` (33/34), Proof SP1 green against CLN v26.06.8; wave sp2 at `31950b81`: reestablish across splices, full `splice_locked`, the 72-block retired SCID map, re-announcement, BOLT 5 across fundings, `listchannels` fundings, backups across splices, restart mid-splice (NL-484), Proof SP2 green against CLN v26.06.8 (11/11) and `OnchainSpliceTests` 5/5; NL-478, NL-479 fixed; `OptionSplice` experimental; wave spr at `a0800ac2`: splice RBF both ways (NL-489, NL-481 fixed), `bumpsplice` (37) and the optional auto-bump, Proof SPR 5/5 against CLN v26.06.8, day-0 hardening NL-490, NL-492, NL-494, NL-495, NL-497 fixed; wave d13 at `f30f3be3` (branch `wip/fafo-d13`): D13 applied, `OptionSplice`/`OptionQuiesce` Optional by default on every network, splice RBF recency by blocks (NL-520); follow-ups NL-477, NL-480, NL-483, NL-488, NL-493, NL-496, NL-502, NL-507..NL-511; NL-514 fixed (ca83deab), NL-515 fixed (af3eaf69))
 - NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 fixed: library done in wave 6, persisted and wired into the switch and send paths in wave 7 (NL-326); `OptionAttributionData` stays experimental (NL-332))
 - NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; wave 6: persistent replay set NL-078, basic_mpp receive NL-081, retries and MPP send NL-270; wave 7: HTLC-set commitment NL-323, attribution_data NL-326, block-driven replay pruning NL-327)
 - NL-079: Route blinding payload handling (ONION M5) (fixed, medium; wave rf1: send, receive and forward, advertised Optional, proven against LND 0.20; limits NL-440 fixed (MPP over blinded paths and own-introduction paths in wave B12, BOLT 11 blinded paths (bLIP 39) and dummy hops in wave nl440; message-path dummy hops NL-525); onion messages (M6) are NL-080, fixed in wave M6)
@@ -176,7 +178,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-005 No ping rate limiting
-- **Status:** open
+- **Status:** fixed (6b7b1051)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Node/Services/PeerCommunicationService.cs:221-224`
@@ -266,7 +268,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-013 TlvStream is a SortedDictionary that silently re-sorts records
-- **Status:** open
+- **Status:** fixed (e2e92f25)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Domain/Protocol/Models/TLVStream.cs:11`
@@ -276,7 +278,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-014 BigSize decode throws ArgumentException and needs a seekable stream
-- **Status:** open
+- **Status:** fixed (1868bfe7)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Serialization/ValueObjects/BigSizeTypeSerializer.cs`
@@ -286,7 +288,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** M1-T5 open item
 
 ### NL-015 EndianBitConverter trim/pad semantics are non-compliant
-- **Status:** open
+- **Status:** fixed (48025091)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure/Converters/EndianBitConverter.cs`
@@ -419,7 +421,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Update (wave sp1, `SPLICING_PLAN.md` "Wave SP1 record", integrated at `3660bff2`):** the splicing core is in, behind experimental `OptionSplice`/`OptionQuiesce` (default No). Wire 77/80/81/127, `channel_reestablish` TLV 5 and inbound `start_batch` grouping gated on negotiated `option_splice` (SP1-A: e9f17f6b, 15099a4c, acbab68b); several fundings in the commitment engine, batched `commitment_signed` with one `revoke_and_ack`, the splice commitment step, lock/discard, validation on every funding and the splicing simulator (500 seeds in CI, 10k `Category=Long`) (SP1-B: c2ff9279, d37427ae, b50bdfbc, 1cd7515d, 29b4ae25); per-funding signer keys `m/0'/i'`, the SP-I1 shared-input guard, per-funding S1, migration `AddSpliceFundings` on all three providers and the funding/policy repositories (SP1-C: be14108b, 01b70bf1, e33ae3d2, 48b0339f); `SpliceRules`, `SpliceService` with the `splice_init`/`splice_ack`/minimal `splice_locked` handlers, `SpliceDepthWatcher`, the splice harness on the real engine (SP-T-01/02) and the funding-spend routing of our own splice tx (SP1-D: 7410e221, 4577c997, c7badd17, a00b8cbe, 957c1519, 11eeced9, df9a869a, ccb98862, 9cbd7bac); `splicein` (33) / `spliceout` (34) and **Proof SP1 green against CLN v26.06.8** (`ClnSpliceTests` 5/5: CLN and we splice in and out, payments with batches while pending, the 2-of-2 spend and our fee; SP1-E: 03691f28, b22e204e, d7c77659); integration: registrations and startup catch-up (d778d100), the locked splice's SCID from the confirmation and anchors on the current funding keys, which CLN rejected as "Bad commit_sig" after a splice (2ba4fe09). Plan gaps: SG3, SG5, SG8 done; SG4 done in the engine, signer and persistence (gossip is SP2-B); SG6 partial (our own splice tx is left to the splice, 11eeced9; `FundingSpendClassifier` is SP2-C); SG9 partial (`listchannels` fundings is SP2-D); SG7 and SG10 open (SP2-A, SP2-B). Remaining: wave SP2 (reestablish SP-RE, lock/announcement/SCID map, BOLT 5 across fundings, Proof SP2), wave SPR, then D13; follow-ups NL-477..NL-481, NL-483.
 - **Update (wave sp2, `SPLICING_PLAN.md` "Wave SP2 record", integrated at `31950b81`):** splicing is complete except RBF, still behind experimental `OptionSplice`/`OptionQuiesce`. SP2-A (059383f4, a887c488, ff87bd93): `ReestablishPlanner` fills and answers `next_funding` and `my_current_funding_locked` (SP-RE-01..06), the splice `commitment_signed` and `tx_signatures` are retransmitted byte-identical (from the stored rows after a restart), `my_current_funding_locked` is processed as `splice_locked`, an unknown `next_funding` gets the driver's `tx_abort`; the dual-funded open's `next_funding` uses the same path; `SpliceConformanceTests` SP-T-03..11 on the real engine. SP2-B (64374dd0, 505a3b90): the full `splice_locked` rules (SP-LK-01..04 send side, D11), `RetiredScidMap` (the old SCID forwards for 72 blocks, D12; never for an alias-only channel), `ChannelUpdateService` follows the new SCID, a spliced public channel is re-announced at 6 confirmations with the current funding keys (NL-478), the announcement halves reset in the lock's own save. SP2-C (7bfeb108, 768f8642, 82b98af3, 2b6910ac, c8d4257d, ba5bb413, d5e13781): `FundingSpendClassifier.ClassifyAny` over every funding (a splice is never a close), force close with a pending splice on either funding (SP-I4, `ISpliceCommitmentBroadcaster`), resolvers and the revocation log per funding (NL-479), a close reorged out while its discarded splice confirms retired in one save, the locked-splice reorg alert (partial, NL-493); Docker `OnchainSpliceTests` 5/5 (b9bd0183). SP2-D (71df7272, d786e4f8, 1339ed01): `listchannels` lists the fundings (IPC key 23) and retired SCIDs (24); **Proof SP2 green against CLN v26.06.8** (`ClnSpliceReestablishTests` 11/11: four cut points x {reconnect, restart}, CLN restarted mid-splice, the lock over a disconnect, re-announcement and forwards over the new and the retired SCID, `WIRE_UNKNOWN_NEXT_PEER` after 72 blocks; LND learning the spliced channel not covered, NL-496). SP2-E (252063df, ba8ecfd6, 5f078964): static channel backups and peer storage follow splices and dual-funded opens (NL-478). SP2-F (c8d6ad6b, 3d0240ee, af6b1bcd): the day-0 Docker proofs between two NLightning nodes (`Day0FlowTests`, `Day0UpgradeInPlaceTests`) and `DAY0_RUNBOOK.md`. Integration: the retired map loaded before the peers start and pruned at the tip (a31c6c0d, NL-487), pending splices restored into the engine on reload and a splice negotiation resumed from its rows on `channel_reestablish` (990d3381, NL-484), Proof SP2 (c) gossip flush and CLTV margin (7abc96b2), day-0 step 5 (a) expectation (db276852). Remaining: wave SPR (NL-481, NL-489), D13 (`OptionSplice` + `OptionQuiesce` Optional by default; Proof SP2 is green, so only the decision is left), follow-ups NL-477, NL-480, NL-483, NL-488, NL-490, NL-492..NL-496.
 - **Update (wave spr, integrated at `a0800ac2`):** wave SPR is done (`SPLICING_PLAN.md` "Wave SPR record"): splice RBF in both directions under the BOLT 2 splice rules, RBF siblings in `FundingSet` with batches over every pending attempt, `bumpsplice` (IPC 37) and the optional auto-bump, Proof SPR 5/5 against CLN v26.06.8 and `Day0FlowTests` step 9 (NL-489, NL-481 fixed). Day-0 hardening: `SignedOnFundings` persisted and the current funding in the signing info (NL-494, NL-495), loopback inbound peers kept across restarts (NL-497), discarded splices' wallet inputs released at irrevocable depth (NL-492), a late half for a retired SCID ignored (NL-490), LND 0.20 observes a spliced channel (NL-496 partial). `OptionSplice`/`OptionQuiesce` stay No and experimental: D13 is the remaining decision. Follow-ups: NL-477, NL-480, NL-483, NL-488, NL-493, NL-496, NL-502, NL-507..NL-511, NL-515.
-- **Update (wave d13, owner decision D13 of 2026-09-28, `f30f3be3` on `wip/fafo-d13`):** D13 applied: `FeatureOptions.OptionSplice` and `OptionQuiesce` (with `DualFund`, NL-037) default to Optional on every network, mainnet included, and left `ExperimentalFeatures` (attribution_data is the only experimental feature left). BOLT 9 (09-features.md, checked 2026-09-28) lists no dependency for 34/35, 28/29 or 62/63, so `FeatureSet` gains none; D14 (`SpliceRules.IsNegotiated`: 35 and 63 both negotiated) still gates every splice. The receiver's "another RBF attempt has been created recently" is now block-based (NL-520). Tests that prove legacy behaviour pin the features off (`OptionSplice = No` in the v1 `next_funding` and unbatched `commitment_signed` rows and in `ReestablishFundingLockedTests`); the day-0 proofs run on the defaults without `AllowExperimentalFeatures` (`Day0Harness.EnableDay0Features`). The epic is closed; its follow-ups stay open as their own entries (NL-477, NL-480, NL-483, NL-488, NL-493, NL-496, NL-502, NL-507..NL-511, NL-514, NL-515).
+- **Update (wave d13, owner decision D13 of 2026-09-28, `f30f3be3` on `wip/fafo-d13`):** D13 applied: `FeatureOptions.OptionSplice` and `OptionQuiesce` (with `DualFund`, NL-037) default to Optional on every network, mainnet included, and left `ExperimentalFeatures` (attribution_data is the only experimental feature left). BOLT 9 (09-features.md, checked 2026-09-28) lists no dependency for 34/35, 28/29 or 62/63, so `FeatureSet` gains none; D14 (`SpliceRules.IsNegotiated`: 35 and 63 both negotiated) still gates every splice. The receiver's "another RBF attempt has been created recently" is now block-based (NL-520). Tests that prove legacy behaviour pin the features off (`OptionSplice = No` in the v1 `next_funding` and unbatched `commitment_signed` rows and in `ReestablishFundingLockedTests`); the day-0 proofs run on the defaults without `AllowExperimentalFeatures` (`Day0Harness.EnableDay0Features`). The epic is closed; its follow-ups stay open as their own entries (NL-477, NL-480, NL-483, NL-488, NL-493, NL-496, NL-502, NL-507..NL-511; NL-514 fixed (ca83deab), NL-515 fixed (af3eaf69)).
 - **Fix sketch:** Later; after NL-042 and NL-037. Wave qit landed the quiescence and interactive-tx layers splicing builds on; the shared-input TLVs (`shared_input_txid`, `shared_input_signature`) are serialized (940baca2), but the session checks `shared_input_signature` for presence only (its ECDSA validity and low-S, SP-SIG-01, are the splice host's job).
 - **Blocks/Blocked-by:** Blocked-by NL-042, NL-037
 - **Plan ref:** `SPLICING_PLAN.md` waves SP1, SP2, SPR (gaps SG3..SG10 in §2.2)
@@ -964,7 +966,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-221 A failed accept_channel leaves the channel registered with the signer
-- **Status:** open
+- **Status:** fixed (ad943717)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Handlers/AcceptChannel1MessageHandler.cs` (catch block), `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs`
@@ -1134,7 +1136,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N9-T2
 
 ### NL-277 MessageFactory.CreateClosingSignedMessage uses msat for fee_satoshis and always adds fee_range
-- **Status:** open
+- **Status:** fixed (c3782b39)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Protocol/Factories/MessageFactory.cs` (`CreateClosingSignedMessage`)
@@ -1164,7 +1166,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N10-T3, B2-SHUT-S08
 
 ### NL-282 ChannelCloseCoordinator mutates the in-memory ChannelModel before its save
-- **Status:** open
+- **Status:** fixed (05b02af0)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Close/ChannelCloseCoordinator.cs`
@@ -1512,7 +1514,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Node/Managers/PeerManager.cs:623` (`args.Host != "127.0.0.1"`)
 - **Evidence:** `PeerManager` stores an inbound peer only when its host is not loopback, and a restarted node loads its channels peer by peer from that table, so a channel whose peer connected from `127.0.0.1` (a local tunnel, Tor on the same host) is forgotten at the restart and the peer's `channel_reestablish` gets `error` "unknown channel" (found by `Day0UpgradeInPlaceTests`, lane SP2-F; the Day-0 proofs dial from both sides to avoid it and `DAY0_RUNBOOK.md` warns operators). An inbound peer from another address is saved with port 9735, not the port it dialed from.
-- **Update (wave spr, integrated at `a0800ac2`):** fixed by lane SPR-D: every inbound peer is saved; a loopback one (127/8, ::1, IPv4-mapped, localhost) as `Peers.IsInboundOnly` (migration `AddSpliceHardening`) with no address, never overwriting a saved dialable row; `StartAsync` registers every peer's channels but never dials an inbound-only peer, and `UnitOfWork.GetPeersForStartupAsync` also returns an inbound-only stub for a non-Closed/Stale channel with no peer row (84f5696c). Review (900810a8): inbound-only rows stay out of static channel backups and restores; a loopback session reconnects at its saved dialable row. The migration's rollback drops inbound-only peers (e0b8a7a9), so `Day0UpgradeInPlaceTests` counts only dialable rows (a0800ac2). Proof: `PeerManagerInboundRestartTests` (SQLite), `ChannelRestoreServiceInboundOnlyTests`. The non-loopback port-9735 residue is NL-514.
+- **Update (wave spr, integrated at `a0800ac2`):** fixed by lane SPR-D: every inbound peer is saved; a loopback one (127/8, ::1, IPv4-mapped, localhost) as `Peers.IsInboundOnly` (migration `AddSpliceHardening`) with no address, never overwriting a saved dialable row; `StartAsync` registers every peer's channels but never dials an inbound-only peer, and `UnitOfWork.GetPeersForStartupAsync` also returns an inbound-only stub for a non-Closed/Stale channel with no peer row (84f5696c). Review (900810a8): inbound-only rows stay out of static channel backups and restores; a loopback session reconnects at its saved dialable row. The migration's rollback drops inbound-only peers (e0b8a7a9), so `Day0UpgradeInPlaceTests` counts only dialable rows (a0800ac2). Proof: `PeerManagerInboundRestartTests` (SQLite), `ChannelRestoreServiceInboundOnlyTests`. The non-loopback port-9735 residue NL-514 is fixed (ca83deab).
 - **Fix sketch:** Done.
 - **Blocks/Blocked-by:** Related NL-201
 - **Plan ref:** —
@@ -2219,7 +2221,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ABCD W3-C
 
 ### NL-267 Forwarding checks before the first processed block answer temporary_node_failure
-- **Status:** open
+- **Status:** fixed (f650b127)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs`, `IBlockchainMonitor.LastProcessedBlockHeight`
@@ -2229,7 +2231,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M4-T4
 
 ### NL-268 The forward liquidity check ignores commitment fees
-- **Status:** open
+- **Status:** fixed (2848fdb8)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs` (usable-channel / `AvailableToSend` estimate)
@@ -2339,7 +2341,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M3b, M5
 
 ### NL-340 IOnionReplayStore doc remark says nothing prunes on blocks
-- **Status:** open
+- **Status:** fixed (5a123d22)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Domain/Protocol/Onion/Interfaces/IOnionReplayStore.cs:30`
@@ -2744,7 +2746,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `MUTINYNET.md` live smoke
 
 ### NL-307 OnchainChannelWatcher mutates the in-memory ChannelModel before its save
-- **Status:** open
+- **Status:** fixed (adba57a1)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Onchain/OnchainChannelWatcher.cs` (`PersistAsync`)
@@ -2785,7 +2787,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O2-T5, O6-T2
 
 ### NL-312 A Failed channel whose signed mutual close confirms stays Failed
-- **Status:** open
+- **Status:** fixed (43614232)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Onchain/OnchainChannelWatcher.cs` (Mutual left alone), `ChannelManager.RecordMutualCloseSpendAsync`
@@ -2896,7 +2898,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O6-T3, B5-GEN-06
 
 ### NL-335 The on-chain final-hop decision refuses an HTLC whose invoice expired after lock-in
-- **Status:** open
+- **Status:** fixed (066b3f3b)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs`, `FinalHop/FinalHopProcessor.cs`, `Onchain/Resolvers/FinalHopClaims.cs`
@@ -2906,7 +2908,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O4-T2
 
 ### NL-336 DustExposureHtlcSwitch can swallow the on-chain final-hop decision
-- **Status:** open
+- **Status:** fixed (eb617285)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Fees/DustExposureHtlcSwitch.cs` (decorator of `IHtlcSwitch`)
@@ -2988,7 +2990,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O7-T2
 
 ### NL-387 SweepScheduler still says anchors HTLC transactions are never bumped
-- **Status:** open
+- **Status:** fixed (1632c4f2)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Onchain/Fees/SweepScheduler.cs:42` (XML remark)
@@ -3253,7 +3255,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G3-T2, §3.7
 
 ### NL-362 After a reorg moves an announced SCID, our old announcement stays in our graph
-- **Status:** open
+- **Status:** fixed (3f622eda)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Onchain/Reorg/FundingReconfirmationHandler.cs`, `src/NLightning.Application/Gossip/Graph/GraphStore.cs`
@@ -3313,7 +3315,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G3-T3
 
 ### NL-370 The misbehaviour peer ban is kept in memory only
-- **Status:** open
+- **Status:** fixed (7d4399e6)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipMisbehaviourTracker.cs`, `GossipIngress.cs`
@@ -3333,7 +3335,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G5-T2, §3.8
 
 ### NL-372 Expired gossip bans are never pruned from GraphStore or GraphBannedNodes
-- **Status:** open
+- **Status:** fixed (d8b180fb)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Gossip/Graph/GraphStore.cs` (`_bans`), `src/NLightning.Domain/Gossip/Interfaces/IGraphDbRepository.cs`
@@ -3962,7 +3964,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-118 Fallback address field has no taproot (witness v1)
-- **Status:** open
+- **Status:** fixed (0d38f1be)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Bolt11/Models/TaggedFields/FallbackAddressTaggedField.cs`
@@ -4042,7 +4044,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-222 Non-minimal c/x/9 data_length accepted; `Invoice.Signature` stale after re-signing
-- **Status:** open
+- **Status:** fixed (c8669175)
 - **Severity:** low
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Bolt11/Models/TaggedFields/{MinFinalCltvExpiry,ExpiryTime,Features}TaggedField.cs`, `Invoice.cs` (`Signature`, `Encode(Key)`)
@@ -4216,7 +4218,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-458 Stale docs: root CLAUDE.md "Not implemented" line and the OptionAttributionData remark
-- **Status:** open (partial: a3445f3f)
+- **Status:** fixed (d64f2511; the CLAUDE.md half was current already, the remark rewritten)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `CLAUDE.md` (project-goal paragraph "**Not implemented:**" and "Missing entirely" in Status & known gaps), `src/NLightning.Domain/Node/Options/FeatureOptions.cs:148`
@@ -4358,7 +4360,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-514 An inbound peer from a non-loopback address is saved with port 9735 and overwrites its dialable address
-- **Status:** open
+- **Status:** fixed (ca83deab)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Node/Managers/PeerManager.cs` (`SaveInboundPeerAsync`)
@@ -4520,7 +4522,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-154 IPC framing implemented twice with a native-endian length prefix
-- **Status:** open
+- **Status:** fixed (b30c44dd)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Daemon/Services/Ipc/IpcFraming.cs`, `src/NLightning.Client/Ipc/NamedPipeIpcClient.cs`
@@ -4600,7 +4602,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-298 Network resolution is not unified: builders, signer and some Application code resolve per call
-- **Status:** open
+- **Status:** fixed (3bf76de4)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** Infrastructure.Bitcoin builders, `LocalLightningSigner`, `SecureKeyManager`, `ShutdownScriptProvider`, `FallbackAddressTaggedField` (`Network.GetNetwork(name)`); `ChannelFailureService` (falls back to `Network.RegTest`); `ChannelManager`, `ChannelCloseCoordinator` (`Network.Main` for parsing)
@@ -4630,7 +4632,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `MUTINYNET.md` live smoke
 
 ### NL-306 Relative database and log paths resolve against the daemon's working directory
-- **Status:** open (partial: 5f4e0df)
+- **Status:** fixed (935d447c; the config-file paths, not the env-var overrides)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Daemon/Extensions/NodeConfigurationExtensions.cs` (template `Data Source=nltg.db`, Serilog `logs/log-.txt`)
@@ -4662,7 +4664,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` SPR-T3
 
 ### NL-515 The daemon config template does not write the splice RBF settings
-- **Status:** open
+- **Status:** fixed (af3eaf69)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Daemon/Extensions/NodeConfigurationExtensions.cs` (`Splice` block)
@@ -4859,7 +4861,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** M1-T2 open items
 
 ### NL-163 Native provider mlock/munlock are no-ops off Windows
-- **Status:** open
+- **Status:** fixed (3548840e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Crypto/Providers/Native/NativeCryptoProvider.cs:92-106`
@@ -4919,7 +4921,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-224 Atomic key-file writes keep the mode but not owner, group or Windows ACL
-- **Status:** open
+- **Status:** fixed (5cbc672b)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs` (atomic write)
@@ -4961,7 +4963,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-436 The BOLT 8 handshake keeps an unwiped copy of the node private key per connection
-- **Status:** open
+- **Status:** fixed (2cd01587)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure/Node/Factories/PeerServiceFactory.cs`
@@ -4981,7 +4983,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-438 GossipProbe still creates v2 key files with the legacy constructor
-- **Status:** open
+- **Status:** fixed (28843ade)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `tools/NLightning.GossipProbe/ProbeNode.cs`
@@ -5557,7 +5559,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-491 InMemoryChannelRepository raises OnChannelUpdated with null arguments
-- **Status:** open
+- **Status:** fixed (371a3e67)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Channels/Harness/TwoNodeHarness.cs` (`InMemoryChannelRepository`)
@@ -5731,7 +5733,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-185 VERSIONING.md, CONTRIBUTING.md, Integration.Tests README and CLI help text are stale
-- **Status:** open
+- **Status:** fixed (2fde6ced)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `VERSIONING.md`, `CONTRIBUTING.md`, `test/NLightning.Integration.Tests/README.md`, `src/NLightning.Client/Utils/ClientUtils.cs`
