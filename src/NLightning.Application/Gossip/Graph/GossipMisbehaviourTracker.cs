@@ -3,10 +3,11 @@ namespace NLightning.Application.Gossip.Graph;
 using Domain.Crypto.ValueObjects;
 
 /// <summary>
-/// The per-peer misbehaviour score of the graph ingress (BOLT 7 plan §3.3, §3.8, G5-T2): each invalid signature, bad
-/// encoding or funding output that contradicts its announcement counts one; <see cref="Record"/> reports when a peer
-/// reached the threshold inside the sliding window, and then starts it over. Keyed by the peer's node id, so the score
-/// survives reconnections. Memory is bounded: at most the threshold entries per peer, and peers without a recent
+/// The per-peer misbehaviour score of the graph ingress (BOLT 7 plan §3.3, §3.8, G5-T2): each invalid signature or
+/// bad encoding counts one; a funding output that contradicts an announcement proves the announcement false but never
+/// scores anybody, since honest peers relay unchecked announcements too (NL-371). <see cref="Record"/> reports when a
+/// peer reached the threshold inside the sliding window, and then starts it over. Keyed by the peer's node id, so the
+/// score survives reconnections. Memory is bounded: at most the threshold entries per peer, and peers without a recent
 /// entry are forgotten by <see cref="Prune"/>. Thread-safe.
 /// </summary>
 public sealed class GossipMisbehaviourTracker

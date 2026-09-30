@@ -348,9 +348,10 @@ public class PendingAnnouncementTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_APendingAnnouncementTheChainContradicts_When_AnotherPeersUpdatePromotesIt_Then_OnlyTheAnnouncerIsScored()
+    public async Task Given_APendingAnnouncementTheChainContradicts_When_AnotherPeersUpdatePromotesIt_Then_ItIsRefusedAndNobodyIsScored()
     {
-        // Arrange: one contradiction bans; the announcer's connection is not the update's
+        // Arrange (NL-371: the contradiction proves the announcement false, not the peers liars — honest ones relay
+        // unchecked announcements too)
         var kit = CreateKit(configure: o => o.MisbehaviourThreshold = 1);
         kit.FundingFails(FundingOutputStatus.ScriptMismatch);
         var announcer = GraphTestKit.CreatePeer(0x55);
@@ -365,9 +366,13 @@ public class PendingAnnouncementTests : IDisposable
         Assert.Equal(GossipMetricReasons.ChainMismatch, result.LimitReason);
         Assert.False(kit.Ingress.IsPendingAnnouncement(s_scid));
         Assert.False(kit.Store.TryGetChannel(s_scid, out _));
-        Assert.True(kit.Ingress.IsBannedForMisbehaviour(announcer.Object.PeerPubKey));
+        Assert.False(kit.Ingress.IsBannedForMisbehaviour(announcer.Object.PeerPubKey));
         Assert.False(kit.Ingress.IsBannedForMisbehaviour(relayer.Object.PeerPubKey));
+        Assert.Equal(0, kit.Ingress.Misbehaviour.GetScore(announcer.Object.PeerPubKey));
         relayer.Verify(p => p.Disconnect(It.IsAny<Exception>()), Times.Never);
+        announcer.Verify(p => p.Disconnect(It.IsAny<Exception>()), Times.Never);
+        foreach (var peer in new[] { announcer, relayer })
+            peer.Verify(p => p.SendWarningAsync(It.IsAny<WarningException>()), Times.Never);
         Assert.Equal(1, _recorder.Sum("nlightning.gossip.messages.rejected",
                                       (GossipMetrics.TypeTag, "channel_announcement"),
                                       (GossipMetrics.ReasonTag, GossipMetricReasons.ChainMismatch)));
