@@ -75,22 +75,26 @@ public class RevokeAndAckMessageHandler : IChannelMessageHandler<RevokeAndAckMes
             _logger.LogDebug("Peer revoked commitment {Number} of channel {ChannelId}", revokedNumber,
                              payload.ChannelId);
 
-        var commitmentSigned = await SignFollowUpAsync(channel);
-        return commitmentSigned is null ? [] : [commitmentSigned];
+        var followUps = await SignFollowUpAsync(channel);
+        return followUps.Count == 0 ? [] : [.. followUps];
     }
 
-    /// <summary>Signs what is now pending for the peer; a failure is logged (the next trigger signs again).</summary>
-    private async Task<IChannelMessage?> SignFollowUpAsync(ChannelModel channel)
+    /// <summary>
+    /// Signs what is now pending for the peer: one commitment_signed, or with pending splices the whole batch
+    /// (start_batch and one per active funding, SP-OP-03), in wire order. A failure is logged (the next trigger signs
+    /// again).
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> SignFollowUpAsync(ChannelModel channel)
     {
         try
         {
-            return await _transitions.SignIfPendingAsync(channel);
+            return await _transitions.SignPendingAsync(channel);
         }
         catch (Exception e)
         {
             _logger.LogError(e, "Failed to sign the next remote commitment of channel {ChannelId}",
                              channel.ChannelId);
-            return null;
+            return [];
         }
     }
 }
