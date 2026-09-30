@@ -491,7 +491,8 @@ public class FeatureSet
     public override string ToString()
     {
         var sb = new StringBuilder();
-        for (var i = 1; i < FeatureFlags.Length; i += 2)
+        // i - 1 < Length: a set whose highest feature has only its optional (even) bit is one bit shorter (NL-567)
+        for (var i = 1; i - 1 < FeatureFlags.Length; i += 2)
         {
             if (IsFeatureSet(i))
                 sb.Append($"{(Feature)i}, ");

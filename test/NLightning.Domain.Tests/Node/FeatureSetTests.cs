@@ -563,5 +563,19 @@ public class FeatureSetTests
         Assert.False(shortSet.HasSameBits(FeatureSet.DeserializeFromBytes([0x30, 0x00])));
     }
 
+    [Fact]
+    public void Given_TheHighestFeatureWithOnlyItsOptionalBit_When_ToString_Then_ItIsListed()
+    {
+        // Arrange: option_splice optional (bit 62) as the highest bit, so the set is 63 bits long (NL-567)
+        var featureSet = FeatureSet.DeserializeFromBytes([0x00]);
+        featureSet.SetFeature(Feature.OptionSplice, false);
+
+        // Act
+        var text = featureSet.ToString();
+
+        // Assert
+        Assert.EndsWith(nameof(Feature.OptionSplice), text);
+    }
+
     #endregion
 }

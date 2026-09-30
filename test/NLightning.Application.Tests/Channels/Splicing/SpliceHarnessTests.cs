@@ -527,6 +527,26 @@ public class SpliceHarnessTests
         Assert.False(harness.Alice.Quiescence.GetState(TwoNodeHarness.ChannelId).BlocksNewLocalUpdates);
     }
 
+    [Fact]
+    public async Task Given_AChannelThatIsNotOpen_When_Started_Then_RefusedWithItsState()
+    {
+        // Arrange: a channel past Open (the peer stays connected), as a channel still waiting for its confirmations is
+        // before it; either way it has no usable link (NL-568)
+        using var harness = new SpliceHarness();
+        harness.Alice.Fund(500_000);
+        harness.Alice.Node.Channel.UpdateState(ChannelState.ShuttingDown);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.Alice.Service.StartAsync(
+                new SpliceRequest(TwoNodeHarness.ChannelId, 10_000, SpliceHarness.FeeratePerKw),
+                TestContext.Current.CancellationToken));
+
+        // Assert: the state is named, not a disconnection
+        Assert.Contains("ShuttingDown, not Open", exception.Message);
+        Assert.DoesNotContain("not connected", exception.Message);
+    }
+
     #endregion
 
     #region NL-470 quiescence seams

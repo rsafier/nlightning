@@ -165,6 +165,11 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
                 throw new InvalidOperationException(
                     $"[SP-S-01] A splice of channel {channelId} is already {Enum.GetName(existing.State)}");
 
+            // Before the link check: a channel that is not Open yet has no link, which is not a disconnection (NL-568)
+            if (channel.State != ChannelState.Open)
+                throw new InvalidOperationException(
+                    $"Channel {channelId} is {Enum.GetName(channel.State)}, not Open; it can be spliced once it is open");
+
             if (_serviceProvider.GetService<IPeerLivenessProbe>() is { } probe
              && !await probe.IsAliveAsync(channelId, channel.RemoteNodeId, cancellationToken))
                 throw new InvalidOperationException($"The peer of channel {channelId} is not connected");
