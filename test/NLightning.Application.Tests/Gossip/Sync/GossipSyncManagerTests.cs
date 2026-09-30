@@ -2,9 +2,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Application.Tests.Gossip.Sync;
 
+using Application.Gossip.Relay.Interfaces;
 using Application.Gossip.Sync;
 using Application.Gossip.Sync.Interfaces;
-using Application.Gossip.Relay.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Gossip.Enums;
