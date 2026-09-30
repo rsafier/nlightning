@@ -973,6 +973,15 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     {
         var height = CurrentHeight;
         var introduction = forward.Blinded?.IsIntroduction ?? false;
+
+        // NL-267: right after the start the monitor has not processed a block yet (the daemon connects the peers
+        // before it starts it); until it reports one, its stored tip is what it will resume from, so the forward
+        // checks read that instead of failing every HTLC received or replayed in the window with
+        // temporary_node_failure. Without a stored state (a fresh node before its first block) there is no height to
+        // wait for: the failure goes out and the payer retries
+        if (height == 0 && _blockchainMonitor is not null)
+            height = await StoredTipHeightAsync();
+
         if (height == 0)
         {
             await FailBackAsync(incomingChannelId, htlc, forward.SharedSecret, FailureMessage.TemporaryNodeFailure(),
@@ -1821,6 +1830,26 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     #region Helpers
 
     private uint CurrentHeight => _blockchainMonitor?.LastProcessedBlockHeight ?? 0;
+
+    /// <summary>
+    /// The tip the monitor persisted when it last stopped (NL-267): while it has not reported a height in this run,
+    /// that is the height it will resume from, so the forward checks use it. 0 without a stored state (a fresh node
+    /// before its first block).
+    /// </summary>
+    private async Task<uint> StoredTipHeightAsync()
+    {
+        try
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            return (await unitOfWork.BlockchainStateDbRepository.GetStateAsync())?.LastProcessedHeight ?? 0;
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Could not read the stored chain tip for the forward checks");
+            return 0;
+        }
+    }
 
     /// <summary>
     /// The channel can no longer carry an update: it failed (our commitment is being broadcast) or a commitment is on
