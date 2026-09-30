@@ -16,7 +16,7 @@ internal sealed class FakeGossipSender : IGossipPeerSender
 {
     private readonly Lock _lock = new();
     private readonly List<(GossipPeer Peer, IMessage Message)> _offers = [];
-    private readonly Queue<GossipEnqueueResult> _scripted = new();
+    private readonly List<(GossipEnqueueResult Result, int Count)> _scripted = [];
 
     /// <summary>Every message handed to <see cref="SendAsync"/>, refused ones included, in order.</summary>
     public IReadOnlyList<(GossipPeer Peer, IMessage Message)> Offers
@@ -42,18 +42,30 @@ internal sealed class FakeGossipSender : IGossipPeerSender
     /// outbox, NL-360); the offers are still recorded.</summary>
     public void ScriptNext(int count, GossipEnqueueResult result)
     {
-        for (var i = 0; i < count; i++)
-            _scripted.Enqueue(result);
+        lock (_lock)
+            _scripted.Add((result, count));
     }
 
     public async ValueTask<GossipEnqueueResult> SendAsync(GossipPeer peer, IMessage message, int size)
     {
         _ = size; // the sync sends without a known wire size (the outbox counts it by message only)
+        GossipEnqueueResult? scripted = null;
         lock (_lock)
+        {
             _offers.Add((peer, message));
+            if (_scripted.Count > 0)
+            {
+                var (result, count) = _scripted[0];
+                scripted = result;
+                if (count > 1)
+                    _scripted[0] = (result, count - 1);
+                else
+                    _scripted.RemoveAt(0);
+            }
+        }
 
-        if (_scripted.TryDequeue(out var scripted))
-            return scripted;
+        if (scripted is { } refused)
+            return refused;
 
         await peer.Service.SendGossipMessageAsync(message);
         return GossipEnqueueResult.Queued;

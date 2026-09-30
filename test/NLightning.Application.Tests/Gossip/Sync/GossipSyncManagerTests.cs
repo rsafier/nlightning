@@ -841,24 +841,46 @@ public class GossipSyncManagerTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_AConnectionGone_When_AQueryIsOffered_Then_ItFailsWithoutASecondOffer()
+    public async Task Given_AConnectionNotInstalledYet_When_TheSyncStartsAndThePeerQueries_Then_BothGoOutOnceItIs()
     {
-        // Arrange
+        // Arrange: NL-361, the peer service calls OnPeerInitialized (and hands over the peer's first query) before
+        // the peer manager installs the connection, whose outbox answers Gone until then
+        var sender = new FakeGossipSender();
+        var manager = CreateManager(peerSender: sender);
+        var peer = new FakeGossipPeer(1);
+        sender.ScriptNext(6, GossipEnqueueResult.Gone);
+
+        // Act
+        manager.OnPeerInitialized(peer);
+        manager.HandleMessage(peer, new QueryChannelRangeMessage(new QueryChannelRangePayload(s_chain, 0, 10)));
+
+        // Assert: our range query and our reply to the peer's query both went out once the connection was current
+        await WaitForAsync(() => peer.Sent.Count >= 2, TestContext.Current.CancellationToken);
+        var sent = peer.Sent;
+        Assert.Single(sent, m => m is QueryChannelRangeMessage);
+        Assert.Single(sent, m => m is ReplyChannelRangeMessage { Payload.SyncComplete: true });
+        Assert.True(sender.OfferedCount >= 8);
+    }
+
+    [Fact]
+    public async Task Given_AConnectionGone_When_ItDisconnects_Then_TheOfferedQueryFails()
+    {
+        // Arrange: a replaced (or never installed) connection is Gone and is disconnected by the peer manager
         var sender = new FakeGossipSender();
         var manager = CreateManager(o => o.SyncPeers = 0, peerSender: sender);
         var peer = new FakeGossipPeer(1);
         manager.OnPeerInitialized(peer);
         await peer.NextAsync<GossipTimestampFilterMessage>();
-        sender.ScriptNext(1, GossipEnqueueResult.Gone);
+        sender.ScriptNext(int.MaxValue / 2, GossipEnqueueResult.Gone);
+        var answered = manager.QueryScidAsync(new ShortChannelId(123, 4, 5), TestContext.Current.CancellationToken);
+        await WaitForAsync(() => sender.OfferedCount >= 2, TestContext.Current.CancellationToken);
 
         // Act
-        var answered = manager.QueryScidAsync(new ShortChannelId(123, 4, 5), TestContext.Current.CancellationToken);
+        peer.Disconnect();
 
-        // Assert: gone, so the query is given up (and offered exactly once)
+        // Assert: the query is given up and nothing reaches the peer
         Assert.False(await answered.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
-        Assert.Equal(2, sender.OfferedCount);
         Assert.True(await peer.NothingSentWithinAsync(s_quiet));
-        await manager.WhenIdleAsync(peer, TestContext.Current.CancellationToken);
     }
 
     public void Dispose()

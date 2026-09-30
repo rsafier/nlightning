@@ -1143,7 +1143,11 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     /// Sends one gossip message of ours (a query, a reply, a <c>gossip_timestamp_filter</c>) to the peer (NL-361):
     /// through the outbox port like the relay's (NL-351) when one is registered, so it is FIFO with everything else
     /// queued for the peer; else directly. A full outbox (NL-360) is waited out, not dropped around: a lost query or
-    /// reply would break BOLT 7's sync; a gone connection reports failure. Warnings keep their direct send.
+    /// reply would break BOLT 7's sync. <see cref="GossipEnqueueResult.Gone"/> is also waited out while the connection
+    /// is up (NL-361): the peer service calls <see cref="OnPeerInitialized"/> (and hands over the peer's first queries)
+    /// before the peer manager installs the connection, which is not the peer's current one until then; a connection
+    /// that is replaced or never installed is disconnected, which closes the session and ends the wait with failure.
+    /// Warnings keep their direct send.
     /// </summary>
     private async Task<bool> SendToPeerAsync(PeerSession session, IMessage message,
                                              CancellationToken cancellationToken)
@@ -1156,19 +1160,37 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         }
 
         var peer = session.GossipPeer;
+        var goneSince = (long?)null;
         while (true)
         {
-            switch (await sender.SendAsync(peer, message, 0))
+            var result = await sender.SendAsync(peer, message, 0);
+            if (result == GossipEnqueueResult.Queued)
+                return true;
+
+            if (result == GossipEnqueueResult.Gone)
             {
-                case GossipEnqueueResult.Queued:
-                    return true;
-                case GossipEnqueueResult.Gone:
+                goneSince ??= _timeProvider.GetTimestamp();
+                if (session.CancellationToken.IsCancellationRequested
+                 || _timeProvider.GetElapsedTime(goneSince.Value) >= _options.SyncReplyTimeout)
+                {
                     _logger.LogDebug("Not sending {MessageType} to peer {Peer}: the connection is gone",
                                      Enum.GetName(message.Type), session.Peer.PeerPubKey);
                     return false;
-                default:
-                    await Task.Delay(s_ingressPollInterval, _timeProvider, cancellationToken);
-                    break;
+                }
+            }
+            else
+            {
+                goneSince = null;
+            }
+
+            try
+            {
+                await Task.Delay(s_ingressPollInterval, _timeProvider, cancellationToken);
+            }
+            catch (OperationCanceledException) when (result == GossipEnqueueResult.Gone
+                                                     && session.CancellationToken.IsCancellationRequested)
+            {
+                return false;
             }
         }
     }
