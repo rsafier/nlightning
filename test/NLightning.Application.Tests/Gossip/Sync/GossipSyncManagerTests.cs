@@ -334,6 +334,49 @@ public class GossipSyncManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_AChannelPeerAtSyncPeerCapacity_When_ItConnects_Then_ItTakesTheStrangersSlot()
+    {
+        // Arrange (NL-363: sync peers are channel peers first): peer 2 is the only one we have a channel with
+        var stranger = new FakeGossipPeer(1);
+        var channelPeer = new FakeGossipPeer(2);
+        var manager = CreateManager(o => o.SyncPeers = 1, hasChannelWith: peer => peer == channelPeer.PeerPubKey);
+        manager.OnPeerInitialized(stranger);
+        await stranger.NextAsync<QueryChannelRangeMessage>();
+
+        // Act
+        manager.OnPeerInitialized(channelPeer);
+
+        // Assert: the channel peer runs the range query, the stranger keeps only its live filter
+        await channelPeer.NextAsync<QueryChannelRangeMessage>();
+        Assert.True(await stranger.NothingSentWithinAsync(s_quiet));
+    }
+
+    [Fact]
+    public async Task Given_ASyncPeerWhoseQueryTimedOut_When_ANewPeerConnects_Then_TheNewPeerTakesTheSlot()
+    {
+        // Arrange (NL-363: prefer peers that answer): the first sync peer never answered its range query
+        var manager = CreateManager(o =>
+        {
+            o.SyncPeers = 1;
+            o.SyncReplyTimeout = TimeSpan.FromMilliseconds(150);
+        });
+        var slow = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(slow);
+        await slow.NextAsync<QueryChannelRangeMessage>();
+        await Task.Delay(300, TestContext.Current.CancellationToken);
+        await manager.WhenIdleAsync(slow, TestContext.Current.CancellationToken);
+
+        // Act
+        var fresh = new FakeGossipPeer(2);
+        manager.OnPeerInitialized(fresh);
+
+        // Assert: the fresh peer (no failed queries) takes the sync slot and runs the range query
+        await fresh.NextAsync<QueryChannelRangeMessage>();
+        await slow.NextAsync<GossipTimestampFilterMessage>(); // the failed sync peer's live filter
+        Assert.True(await slow.NothingSentWithinAsync(s_quiet));
+    }
+
+    [Fact]
     public async Task Given_TheSyncIsOff_When_APeerConnects_Then_NothingIsSentButQueriesAreAnswered()
     {
         // Arrange: plan D12, the graph off (mainnet default)
@@ -382,7 +425,7 @@ public class GossipSyncManagerTests : IDisposable
         var manager = CreateManager(o =>
         {
             o.SyncReplyTimeout = TimeSpan.FromMilliseconds(150);
-            o.SyncPeers = 1;
+            o.SyncPeers = 2;
         });
         var slow = new FakeGossipPeer(1);
         manager.OnPeerInitialized(slow);
@@ -393,7 +436,10 @@ public class GossipSyncManagerTests : IDisposable
         await manager.WhenIdleAsync(slow, TestContext.Current.CancellationToken);
         var other = new FakeGossipPeer(2);
         manager.OnPeerInitialized(other);
+        await other.NextAsync<QueryChannelRangeMessage>();
+        manager.HandleMessage(other, RangeReplyCollectorTests.Reply(0, Tip + 1, true));
         await other.NextAsync<GossipTimestampFilterMessage>();
+        await manager.WhenIdleAsync(other, TestContext.Current.CancellationToken);
 
         // Act: a new query goes to the other peer, never to the slow one, and the slow one's late end completes
         // nothing
@@ -724,7 +770,8 @@ public class GossipSyncManagerTests : IDisposable
 
     private GossipSyncManager CreateManager(Action<GossipSyncOptions>? configure = null,
                                             Func<int>? getIngressQueueDepth = null, int ingressQueueCapacity = 0,
-                                            Func<CompactPubKey, int>? getPeerQueueDepth = null)
+                                            Func<CompactPubKey, int>? getPeerQueueDepth = null,
+                                            Func<CompactPubKey, bool>? hasChannelWith = null)
     {
         var options = new GossipSyncOptions();
         configure?.Invoke(options);
@@ -739,7 +786,7 @@ public class GossipSyncManagerTests : IDisposable
                                                 _missed = [];
                                                 return taken;
                                             }, () => Tip, getIngressQueueDepth, ingressQueueCapacity,
-                                            getPeerQueueDepth: getPeerQueueDepth);
+                                            getPeerQueueDepth: getPeerQueueDepth, hasChannelWith: hasChannelWith);
         _managers.Add(manager);
         return manager;
     }

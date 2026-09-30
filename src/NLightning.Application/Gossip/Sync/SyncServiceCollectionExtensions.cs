@@ -5,6 +5,9 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Gossip.Sync;
 
+using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Crypto.ValueObjects;
 using Domain.Gossip.Interfaces;
 using Domain.Node.Options;
 using Graph;
@@ -35,6 +38,14 @@ public static class SyncServiceCollectionExtensions
             var ingress = sp.GetService<GossipIngress>();
             var monitor = sp.GetService<IBlockchainMonitor>();
             var graphOptions = sp.GetService<IOptions<GossipGraphOptions>>()?.Value ?? new GossipGraphOptions();
+            var channels = sp.GetService<IChannelMemoryRepository>();
+
+            // NL-363: sync peers are channel peers first
+            Func<CompactPubKey, bool>? hasChannelWith = channels is null
+                ? null
+                : peer => channels.FindChannels(c => c.RemoteNodeId == peer
+                                                  && c.State is not (ChannelState.Closed or ChannelState.Failed))
+                                   .Count > 0;
             return new GossipSyncManager(sp.GetRequiredService<IGraphStore>(),
                                          sp.GetRequiredService<IOptions<GossipSyncOptions>>(),
                                          sp.GetRequiredService<IOptions<NodeOptions>>(),
@@ -49,7 +60,8 @@ public static class SyncServiceCollectionExtensions
                                              : Math.Min(graphOptions.MaxQueuedPerPeer, graphOptions.MaxQueued),
                                          sp.GetService<GossipMetrics>(),
                                          ingress is null ? null : ingress.QueuedCountOf,
-                                         GetPendingChannels(sp, ingress));
+                                         GetPendingChannels(sp, ingress),
+                                         hasChannelWith);
         });
         services.TryAddSingleton<IGossipSyncManager>(sp => sp.GetRequiredService<GossipSyncManager>());
         services.TryAddSingleton<IGossipSyncService>(sp => sp.GetRequiredService<GossipSyncManager>());
