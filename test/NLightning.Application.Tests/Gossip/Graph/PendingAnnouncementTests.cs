@@ -317,6 +317,49 @@ public class PendingAnnouncementTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_FourForgedCandidatesAnOrphanedUpdateProvesWrong_When_TheRealAnnouncementArrives_Then_TheyMakeWay()
+    {
+        // Arrange (NL-418: four sybil peers' forgeries of one scid must not hold it until their TTL ends once a
+        // waiting channel_update's signature fits none of them)
+        var kit = CreateKit();
+        var honest = GraphTestKit.CreatePeer(0x56);
+        for (var i = 0; i < 4; i++)
+        {
+            var forged = await ProcessAsync(kit, GraphTestKit.CreatePeer((byte)(0x61 + i)).Object,
+                                            GraphTestKit.SignedChannelAnnouncement(
+                                                s_scid, new TestGossipKey((byte)(0x41 + i)),
+                                                new TestGossipKey((byte)(0x45 + i)),
+                                                new TestGossipKey((byte)(0x49 + i)),
+                                                new TestGossipKey((byte)(0x4D + i))));
+            Assert.Equal(GossipIngressOutcome.Pending, forged.Outcome);
+        }
+
+        // Without a contradicting update, a fifth announcement is still refused
+        var fifth = await ProcessAsync(kit, GraphTestKit.CreatePeer(0x65).Object,
+                                       GraphTestKit.SignedChannelAnnouncement(s_scid, new TestGossipKey(0x51),
+                                                                              new TestGossipKey(0x52),
+                                                                              new TestGossipKey(0x53),
+                                                                              new TestGossipKey(0x54)));
+        Assert.Equal(GossipMetricReasons.PendingCandidatesFull, fifth.LimitReason);
+
+        // The real channel's update matches none of the forgeries and waits as an orphan
+        var update = await ProcessAsync(kit, honest.Object, AliceUpdate(s_now - 10));
+        Assert.Equal(GossipIngressOutcome.Orphaned, update.Outcome);
+
+        // Act
+        var real = await ProcessAsync(kit, honest.Object, Announcement());
+
+        // Assert: the proven-wrong candidates made way and the orphaned update promoted the real announcement
+        Assert.Equal(GossipIngressOutcome.Accepted, real.Outcome);
+        Assert.True(kit.Store.TryGetChannel(s_scid, out var channel));
+        Assert.Contains(s_alice.PubKey, new[] { channel.NodeId1, channel.NodeId2 });
+        Assert.Equal(0, kit.Ingress.PendingAnnouncementCount);
+        Assert.DoesNotContain(s_scid, kit.Ingress.TakeMissedShortChannelIds());
+        Assert.Equal(1, _recorder.Sum("nlightning.gossip.messages.dropped",
+                                      (GossipMetrics.ReasonTag, GossipMetricReasons.PendingCandidatesEvicted)));
+    }
+
+    [Fact]
     public async Task Given_APeerFillingThePendingIndex_When_AnotherPeersAnnouncementArrives_Then_TheFloodersOldestMakesRoom()
     {
         // Arrange: the honest announcement came first, then mallory fills the index with forgeries of her own

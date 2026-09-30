@@ -118,6 +118,21 @@ public sealed class OrphanUpdateCache
         }
     }
 
+    /// <summary>True when a live update is kept for <paramref name="shortChannelId"/>.</summary>
+    public bool HasUpdates(ShortChannelId shortChannelId)
+    {
+        lock (_lock)
+        {
+            for (byte direction = 0; direction <= 1; direction++)
+            {
+                if (_updates.TryGetValue((shortChannelId, direction), out var entry) && !IsExpired(entry))
+                    return true;
+            }
+
+            return false;
+        }
+    }
+
     /// <summary>Removes and returns the live updates kept for <paramref name="shortChannelId"/>.</summary>
     public IReadOnlyList<OrphanEntry<ChannelUpdateMessage>> TakeUpdates(ShortChannelId shortChannelId)
     {

@@ -659,6 +659,19 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                 return GossipIngressResult.Ignored("already known", GossipRejectReason.AlreadyKnown);
 
             added = _pending.Add(entry);
+            if (added == PendingAddOutcome.Refused && _orphans.HasUpdates(announcement.ShortChannelId))
+            {
+                // NL-418: a kept channel_update's signature matched none of the candidates (each was confronted with
+                // it when it was kept), so they are all forgeries: without this, as many forgers as the index keeps
+                // candidates would hold the short channel id until their entries expire, with the real announcement
+                // on its way (its update is what waits in the orphan cache)
+                if (_pending.Remove(announcement.ShortChannelId))
+                {
+                    _metrics?.RecordDropped(GossipMetricReasons.PendingCandidatesEvicted);
+                    added = _pending.Add(entry);
+                }
+            }
+
             waiting = added == PendingAddOutcome.Refused
                           ? []
                           : _orphans.TakeUpdates(announcement.ShortChannelId);
