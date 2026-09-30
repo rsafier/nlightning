@@ -110,12 +110,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 139 | 142 |
+| open | 0 | 0 | 3 | 140 | 143 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 62 | 155 | 168 | 399 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **62** | **162** | **313** | **551** |
+| **Total** | **14** | **62** | **162** | **314** | **552** |
 
 ### Epics
 
@@ -5669,6 +5669,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Failed once in lane SPR-D's full loaded Application run; the class passed alone twice and the full project rerun was green (reported by lane SPR-D).
 - **Fix sketch:** Capture the failure on the next occurrence; check for a wall-clock wait in the harness pump.
 - **Blocks/Blocked-by:** Related NL-496
+- **Plan ref:** —
+
+### NL-561 AnnouncementHarnessTests public update and node_announcement case failed once in a loaded run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Gossip/Announcements/AnnouncementHarnessTests.cs` (`Given_TheAnnouncementAssembled_When_HandedOn_Then_PublicUpdateAndNodeAnnouncementFollow`)
+- **Evidence:** Failed once in lane nl560's full loaded Application run on net10.0 Release (with the known NL-382 `GossipFloodTests` flake); the class passed alone on reruns (reported by lane nl560, 2026-09-30).
+- **Fix sketch:** Capture the failure on the next occurrence; check for a wall-clock wait in the harness.
+- **Blocks/Blocked-by:** —
 - **Plan ref:** —
 
 ### NL-553 No pinned official multi-arch Eclair image; the interop fixture builds its own
