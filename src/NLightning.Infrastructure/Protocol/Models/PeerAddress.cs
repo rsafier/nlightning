@@ -70,7 +70,7 @@ public sealed partial class PeerAddress : IEquatable<PeerAddress>
             throw new FormatException("Invalid address format, should be pubkey@host:port");
 
         PubKey = new CompactPubKey(Convert.FromHexString(parts[0]));
-        (Host, IpAddress, Port, Type) = parts[1].StartsWith("http") ? ParseHttp(parts[1]) : ParseHostPort(parts[1]);
+        (Host, IpAddress, Port, Type) = IsUrl(parts[1]) ? ParseHttp(parts[1]) : ParseHostPort(parts[1]);
     }
 
     public PeerAddress(PeerAddressInfo peerAddressInfo) : this(peerAddressInfo.Address)
@@ -88,7 +88,7 @@ public sealed partial class PeerAddress : IEquatable<PeerAddress>
     public PeerAddress(CompactPubKey pubKey, string address)
     {
         PubKey = pubKey;
-        (Host, IpAddress, Port, Type) = address.StartsWith("http") ? ParseHttp(address) : ParseHostPort(address);
+        (Host, IpAddress, Port, Type) = IsUrl(address) ? ParseHttp(address) : ParseHostPort(address);
     }
 
     /// <summary>
@@ -114,12 +114,20 @@ public sealed partial class PeerAddress : IEquatable<PeerAddress>
     }
 
     /// <summary>
+    /// True for an <c>http://</c> or <c>https://</c> URL (scheme case-insensitive); a host name that merely starts with
+    /// "http" (<c>httpnode.example.com:9735</c>) is not one (NL-586).
+    /// </summary>
+    private static bool IsUrl(string address) =>
+        address.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+     || address.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Parses <c>http://host:port/</c>: the scheme, a path and a trailing slash are dropped.
     /// </summary>
     private static (string, IPAddress?, int, AddressDescriptorType) ParseHttp(string address)
     {
-        // split on first // to get the address
-        var hostPort = address.Split("//")[1];
+        // Everything after the scheme's "//"
+        var hostPort = address[(address.IndexOf("//", StringComparison.Ordinal) + 2)..];
         var separator = hostPort.LastIndexOf(':');
         if (separator <= 0)
             throw new FormatException("Invalid address format, should be http://host:port");
@@ -196,8 +204,8 @@ public sealed partial class PeerAddress : IEquatable<PeerAddress>
 
     private static int ParsePort(string port)
     {
-        var value = int.Parse(port, CultureInfo.InvariantCulture);
-        if (value is < 1 or > ushort.MaxValue)
+        if (!int.TryParse(port, NumberStyles.None, CultureInfo.InvariantCulture, out var value)
+         || value is < 1 or > ushort.MaxValue)
             throw new FormatException($"Invalid port {port}");
 
         return value;

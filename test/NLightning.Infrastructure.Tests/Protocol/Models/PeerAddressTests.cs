@@ -208,4 +208,39 @@ public class PeerAddressTests
         Assert.Equal(lower, upper);
         Assert.Equal(lower.GetHashCode(), upper.GetHashCode());
     }
+
+    [Theory]
+    [InlineData("httpnode.example.com:9735", "httpnode.example.com", 9735)]
+    [InlineData("https-lnd.example.com:9736", "https-lnd.example.com", 9736)]
+    [InlineData("HTTP://node.example.com:9737/", "node.example.com", 9737)]
+    [InlineData("https://203.0.113.7:9738", "203.0.113.7", 9738)]
+    public void Given_AHostStartingWithHttp_When_ConstructingPeerAddress_Then_OnlyARealSchemeIsAUrl(
+        string hostPort, string expectedHost, int expectedPort)
+    {
+        // Arrange - NL-586: "httpnode..." used to be taken for a URL and threw IndexOutOfRangeException
+        var address = $"028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7@{hostPort}";
+
+        // Act
+        var peerAddress = new PeerAddress(address);
+
+        // Assert
+        Assert.Equal(expectedHost, peerAddress.Host);
+        Assert.Equal(expectedPort, peerAddress.Port);
+    }
+
+    [Theory]
+    [InlineData("http://")]
+    [InlineData("http://node.example.com")]
+    [InlineData("https://node.example.com:abc")]
+    [InlineData("http://node.example.com:99999999999")]
+    [InlineData("node.example.com:99999999999")]
+    [InlineData("node.example.com:-1")]
+    public void Given_AMalformedUrlOrPort_When_ConstructingPeerAddress_Then_ItThrowsFormatException(string hostPort)
+    {
+        // Arrange - NL-586
+        var address = $"028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7@{hostPort}";
+
+        // Act & Assert
+        Assert.Throws<FormatException>(() => new PeerAddress(address));
+    }
 }

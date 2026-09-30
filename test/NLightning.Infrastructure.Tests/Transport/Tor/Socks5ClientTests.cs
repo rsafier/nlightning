@@ -173,4 +173,33 @@ public sealed class Socks5ClientTests : IAsyncDisposable
         await client.ConnectAsync(IPEndPoint.Parse(proxy.EndPoint));
         return client;
     }
+
+    [Theory]
+    [InlineData(0x05)]
+    [InlineData(0x00)]
+    public async Task Given_ACredentialsReplyOfAnotherVersion_When_Connecting_Then_ItIsRefused(byte version)
+    {
+        // Arrange - NL-587: RFC 1929's reply starts with the subnegotiation version 0x01; the status alone is not
+        // enough to take the credentials as accepted
+        var ct = TestContext.Current.CancellationToken;
+        var proxy = new ScriptedDuplexStream([0x05, 0x02, version, 0x00]);
+
+        // Act
+        var e = await Assert.ThrowsAsync<Socks5Exception>(
+            () => Socks5Client.ConnectAsync(proxy, Onion, 9735, ("user1", "pass1"), ct));
+
+        // Assert
+        Assert.Contains("version", e.Message);
+    }
+
+    /// <summary>
+    /// A stream that reads a fixed script and swallows what is written.
+    /// </summary>
+    private sealed class ScriptedDuplexStream(byte[] script) : MemoryStream(script)
+    {
+        public override void Write(byte[] buffer, int offset, int count) { }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.CompletedTask;
+    }
 }

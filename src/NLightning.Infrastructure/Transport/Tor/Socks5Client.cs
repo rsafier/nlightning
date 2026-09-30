@@ -113,7 +113,10 @@ public static class Socks5Client
         pass.CopyTo(request, 3 + user.Length);
         await stream.WriteAsync(request, cancellationToken);
 
+        // RFC 1929: VER (0x01, the subnegotiation's version) and STATUS (NL-587)
         var reply = await ReadExactAsync(stream, 2, cancellationToken);
+        if (reply[0] != AuthVersion)
+            throw new Socks5Exception($"The proxy answered the SOCKS5 credentials with version {reply[0]}, not 1");
         if (reply[1] != 0x00)
             throw new Socks5Exception($"The proxy refused the SOCKS5 credentials (status {reply[1]})");
     }
