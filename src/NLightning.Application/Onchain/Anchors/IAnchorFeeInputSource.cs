@@ -1,5 +1,6 @@
 namespace NLightning.Application.Onchain.Anchors;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 
@@ -41,6 +42,16 @@ public interface IAnchorFeeInputSource
 
     /// <summary>Every input currently reserved for <paramref name="channelId"/> (empty when none).</summary>
     Task<IReadOnlyList<AnchorWalletInput>> GetReservedAsync(ChannelId channelId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Re-reserves exactly <paramref name="outpoints"/> for <paramref name="channelId"/> (NL-384): a reorg unconfirmed
+    /// one of the channel's pending children after the reservation it was built from had ended, and its wallet inputs
+    /// are spendable again. Returns the inputs actually re-reserved; an outpoint the wallet no longer holds or that
+    /// another spend claims is skipped.
+    /// </summary>
+    Task<IReadOnlyList<AnchorWalletInput>> ReserveInputsAsync(ChannelId channelId,
+                                                              IReadOnlyList<(TxId TxId, uint OutputIndex)> outpoints,
+                                                              CancellationToken cancellationToken);
 
     /// <summary>
     /// Releases every reservation of <paramref name="channelId"/> (idempotent). An output a confirmed child spent is

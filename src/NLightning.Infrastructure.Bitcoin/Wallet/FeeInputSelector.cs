@@ -218,6 +218,95 @@ public sealed class FeeInputSelector : IFeeInputSelector
         throw new InsufficientFundsException(LightningMoney.Satoshis(required), LightningMoney.Satoshis(total));
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<WalletInput>> ReserveInputsAsync(
+        IReadOnlyList<(TxId TxId, uint Index)> outpoints, string purpose,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(outpoints);
+        if (outpoints.Count == 0)
+            return [];
+        if (string.IsNullOrWhiteSpace(purpose) || purpose.Length > MaxPurposeLength)
+            throw new ArgumentException($"The purpose must be 1 to {MaxPurposeLength} characters", nameof(purpose));
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            // Only the outpoints the wallet still holds and nothing else claims (NL-384): a reorg restored them, and
+            // the reservation of the spend that first confirmed them ended before the rewind
+            var inputs = new List<WalletInput>();
+            foreach (var (txId, index) in outpoints)
+            {
+                if (_utxoMemoryRepository.TryGetFeeReservation(txId, index, out _))
+                    continue;
+
+                if (!_utxoMemoryRepository.TryGetUtxo(txId, index, out var utxo) || utxo.LockedToChannelId is not null
+                 || utxo.BlockHeight == 0 || utxo.WalletAddress is null
+                 || utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
+                    continue;
+
+                Script scriptPubKey;
+                try
+                {
+                    scriptPubKey = BitcoinAddress.Create(utxo.WalletAddress.Address, _network).ScriptPubKey;
+                }
+                catch (FormatException e)
+                {
+                    _logger.LogWarning(e, "Wallet output {TxId}:{Index} has an address of another network; not "
+                                       + "re-reserved", txId, index);
+                    continue;
+                }
+
+                inputs.Add(new WalletInput(utxo.TxId, utxo.Index, utxo.Amount, utxo.AddressType,
+                                           scriptPubKey.ToBytes(), WalletWeights.GetInputWeight(utxo.AddressType)));
+            }
+
+            if (inputs.Count == 0)
+                return [];
+
+            var reservationId = Guid.NewGuid();
+            if (!_utxoMemoryRepository.TryReserveForFee(inputs.Select(i => (i.TxId, i.Index)).ToList(), reservationId))
+            {
+                _logger.LogWarning("Fee inputs for {Purpose} were taken while re-reserving; none is reserved", purpose);
+                return [];
+            }
+
+            try
+            {
+                await PersistReReservationAsync(reservationId, purpose, inputs);
+            }
+            catch
+            {
+                _utxoMemoryRepository.ReleaseFeeReservation(reservationId);
+                throw;
+            }
+
+            return inputs;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// The re-reservation's row: no fee and no change is being sized (nothing is built from it yet), so the whole
+    /// value is recorded as what goes back to the wallet.
+    /// </summary>
+    private async Task PersistReReservationAsync(Guid reservationId, string purpose, List<WalletInput> inputs)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var reservation = new FeeInputReservation(reservationId, purpose, inputs, LightningMoney.Zero,
+                                                  LightningMoney.Satoshis(inputs.Sum(i => i.Amount.Satoshi)), null);
+        uow.FeeInputReservationDbRepository.Add(reservation, _timeProvider.GetUtcNow());
+        await uow.SaveChangesAsync();
+
+        _logger.LogInformation("Re-reserved {Count} fee input(s) worth {Total} sat for {Purpose} (reservation "
+                             + "{ReservationId}) after a reorg", inputs.Count, reservation.Total.Satoshi, purpose,
+                               reservationId);
+    }
+
     private async Task<HashSet<(TxId TxId, uint Index)>> GetOutpointsSpentByPendingBroadcastsAsync()
     {
         using var scope = _scopeFactory.CreateScope();

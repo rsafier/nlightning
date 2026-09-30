@@ -2,6 +2,7 @@ namespace NLightning.Domain.Bitcoin.Wallet.Interfaces;
 
 using Models;
 using Money;
+using ValueObjects;
 
 /// <summary>
 /// Picks confirmed wallet outputs to pay a fee and reserves them (BOLT 5 plan O7-T1): the fee inputs of a CPFP child
@@ -17,7 +18,8 @@ using Money;
 /// which signs that reservation's wallet inputs only; persist the spend as a broadcast row before publishing it. At
 /// startup the chain monitor deletes the reservations none of whose inputs is still in the wallet (their spend was
 /// processed in a block). A reorg that unconfirms a confirmed spend does not bring its reservation back: the pending
-/// broadcast row keeps the outputs out, and the caller reserves again if it builds another spend.
+/// broadcast row keeps the outputs out, and the caller reserves again if it builds another spend; the anchor CPFP
+/// re-reserves the inputs of its unconfirmed children after a rewind (<see cref="ReserveInputsAsync"/>).
 /// </remarks>
 public interface IFeeInputSelector
 {
@@ -59,4 +61,18 @@ public interface IFeeInputSelector
 
     /// <summary>Every stored reservation (to resume the spends after a restart).</summary>
     Task<IReadOnlyList<FeeInputReservation>> GetAllAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Re-reserves exactly <paramref name="outpoints"/> for <paramref name="purpose"/> (NL-384): a reorg put a pending
+    /// spend's wallet inputs back into the wallet after the reservation it was built from had ended, and they must not
+    /// go to another spend while the spend's broadcast row is pending again. Skips an outpoint the wallet no longer
+    /// holds, that is locked to a channel funding or that already carries a reservation; reserves none when none is
+    /// left (or another spend claims one between the check and the reservation). The reservation records no fee and no
+    /// change (nothing is being built from it); it ends like any other, through <see cref="ReleaseAsync"/> or
+    /// <see cref="ConfirmAsync"/>.
+    /// </summary>
+    /// <returns>The inputs actually reserved, in the order given.</returns>
+    Task<IReadOnlyList<WalletInput>> ReserveInputsAsync(IReadOnlyList<(TxId TxId, uint Index)> outpoints,
+                                                        string purpose,
+                                                        CancellationToken cancellationToken = default);
 }

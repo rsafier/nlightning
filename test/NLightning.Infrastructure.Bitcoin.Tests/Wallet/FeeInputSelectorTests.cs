@@ -321,6 +321,98 @@ public class FeeInputSelectorTests
                                          TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task Given_SpecificOutpoints_When_ReReserving_Then_ExactlyThoseAreReservedAndPersisted()
+    {
+        // Arrange: a reorg put the outputs of an ended reservation back into the wallet (NL-384)
+        var first = AddUtxo(50_000, seed: 1);
+        var second = AddUtxo(30_000, seed: 2);
+
+        // Act
+        var inputs = await _selector.ReserveInputsAsync([(first.TxId, first.Index), (second.TxId, second.Index)],
+                                                        "anchor-cpfp:test", TestContext.Current.CancellationToken);
+
+        // Assert: one reservation with both, no fee and no change sized
+        Assert.Equal([first.TxId, second.TxId], inputs.Select(i => i.TxId));
+        var row = Assert.Single(_added);
+        Assert.Equal("anchor-cpfp:test", row.Purpose);
+        Assert.Equal(80_000, row.Total.Satoshi);
+        Assert.Equal(0, row.Fee.Satoshi);
+        Assert.Equal(80_000, row.ChangeAmount.Satoshi);
+        Assert.Null(row.ChangeScript);
+        Assert.True(_utxos.TryGetFeeReservation(first.TxId, first.Index, out var id));
+        Assert.Equal(row.Id, id);
+        Assert.True(_utxos.TryGetFeeReservation(second.TxId, second.Index, out id));
+        Assert.Equal(row.Id, id);
+    }
+
+    [Fact]
+    public async Task Given_KnownAndUnknownOutpoints_When_ReReserving_Then_OnlyTheWalletsAreReserved()
+    {
+        // Arrange: one reserved by another spend, one locked to a funding, one unmined, one unknown, one good
+        var reserved = AddUtxo(50_000, seed: 1);
+        Assert.True(_utxos.TryReserveForFee([(reserved.TxId, reserved.Index)], Guid.NewGuid()));
+        var locked = AddUtxo(40_000, seed: 2);
+        locked.LockedToChannelId = ChannelId.Zero;
+        var unmined = new UtxoModel(CreateTxId(3), 0, LightningMoney.Satoshis(30_000), 0, CreateAddress(3));
+        _utxos.Add(unmined);
+        var good = AddUtxo(20_000, seed: 4);
+
+        // Act
+        var inputs = await _selector.ReserveInputsAsync(
+            [(reserved.TxId, reserved.Index), (locked.TxId, locked.Index), (unmined.TxId, unmined.Index),
+             (CreateTxId(9), 0), (good.TxId, good.Index)],
+            "anchor-cpfp:test", TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal([good.TxId], inputs.Select(i => i.TxId));
+        Assert.Equal(20_000, Assert.Single(_added).Total.Satoshi);
+    }
+
+    [Fact]
+    public async Task Given_AnOutpointTakenBetweenTheCheckAndTheReservation_When_ReReserving_Then_NoneIsReserved()
+    {
+        // Arrange: another spend claims the only outpoint between the filter and the atomic reservation
+        var utxo = AddUtxo(50_000);
+        var claims = 0;
+        _utxos.BeforeReserve = () =>
+        {
+            if (claims++ == 0)
+                _utxos.TryReserveForFee([(utxo.TxId, utxo.Index)], Guid.NewGuid());
+        };
+
+        // Act
+        var inputs = await _selector.ReserveInputsAsync([(utxo.TxId, utxo.Index)], "anchor-cpfp:test",
+                                                        TestContext.Current.CancellationToken);
+
+        // Assert: the atomic reservation failed, nothing was persisted or half-claimed
+        Assert.Empty(inputs);
+        Assert.Empty(_added);
+    }
+
+    [Fact]
+    public async Task Given_TheSaveFails_When_ReReserving_Then_TheOutputsAreFreeAgain()
+    {
+        // Arrange
+        var utxo = AddUtxo(50_000);
+        _unitOfWork.Setup(u => u.SaveChangesAsync()).ThrowsAsync(new InvalidOperationException("disk full"));
+
+        // Act / Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _selector.ReserveInputsAsync([(utxo.TxId, utxo.Index)], "anchor-cpfp:test",
+                                               TestContext.Current.CancellationToken));
+        Assert.False(_utxos.TryGetFeeReservation(utxo.TxId, utxo.Index, out _));
+    }
+
+    [Fact]
+    public async Task Given_NoOutpointsOrNoPurpose_When_ReReserving_Then_NothingAndThrow()
+    {
+        Assert.Empty(await _selector.ReserveInputsAsync([], "anchor-cpfp:test", TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => _selector.ReserveInputsAsync([(CreateTxId(1), 0)], " ", TestContext.Current.CancellationToken));
+        Assert.Empty(_added);
+    }
+
     private UtxoModel AddUtxo(long amountSat, byte seed = 1)
     {
         var utxo = new UtxoModel(CreateTxId(seed), 0, LightningMoney.Satoshis(amountSat), 100, CreateAddress(seed));
