@@ -3292,6 +3292,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Send them through `IGossipPeerSender` like the relay.
 - **Blocks/Blocked-by:** Part of NL-099; related NL-351
 - **Plan ref:** BOLT7 G3-T2, §3.7
+- **Note:** The fix regressed the Docker `GossipSyncFlowTests` (3 timeouts): `PeerService` calls `OnPeerInitialized` and queues the peer's first queries before `PeerManager` installs the connection, so the outbox port answered `Gone` and our range query, filter or reply was dropped. Fixed in c8fcd1f5: `Gone` is waited out while the session is up (a replaced or refused connection is disconnected, which ends the wait), bounded by `SyncReplyTimeout`.
 
 ### NL-362 After a reorg moves an announced SCID, our old announcement stays in our graph
 - **Status:** fixed (3f622eda)
