@@ -4,11 +4,9 @@ using NBitcoin;
 namespace NLightning.Bolt11Benchmark;
 
 using Bolt11.Models;
-using Bolt11.Models.TaggedFields;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Models;
-using Domain.Protocol.Constants;
 using Domain.Protocol.ValueObjects;
 
 /// <summary>
@@ -27,7 +25,7 @@ public static class Program
     private const int LatencyIterations = 2_000;
     private const int LatencyWarmup = 500;
 
-    private static long _sink;
+    private static long s_sink;
 
     public static int Main(string[] args)
     {
@@ -92,9 +90,9 @@ public static class Program
         for (var i = 0; i < samples.Length; i++)
         {
             var slot = i;
-            var decode = LatencyUs(() => _sink += Invoice.Decode(encoded[slot], network).Amount!.Satoshi,
+            var decode = LatencyUs(() => s_sink += Invoice.Decode(encoded[slot], network).Amount!.Satoshi,
                                    latencyIterations);
-            var generate = LatencyUs(() => _sink += samples[slot].Create().ToString(key).Length,
+            var generate = LatencyUs(() => s_sink += samples[slot].Create().ToString(key).Length,
                                      latencyIterations);
             Console.WriteLine($"  {samples[i].Name,-16} {Format(decode)}   {Format(generate)}");
         }
@@ -117,7 +115,7 @@ public static class Program
         }
 
         Console.WriteLine();
-        Console.WriteLine($"sink: {Interlocked.Read(ref _sink)} (kept so the JIT cannot remove the work)");
+        Console.WriteLine($"sink: {Interlocked.Read(ref s_sink)} (kept so the JIT cannot remove the work)");
         return 0;
     }
 
@@ -180,7 +178,7 @@ public static class Program
         foreach (var task in threadsOut)
             total += task.Result;
 
-        _sink += total;
+        s_sink += total;
         return (total / runSeconds, total);
     }
 
@@ -197,11 +195,11 @@ public static class Program
                 state = (state + i) % 31; // touch the data so no call can be folded away
                 if (operation == "decode")
                 {
-                    _sink += Invoice.Decode(encoded[i], network).Amount!.Satoshi;
+                    s_sink += Invoice.Decode(encoded[i], network).Amount!.Satoshi;
                 }
                 else
                 {
-                    _sink += samples[i].Create().ToString(key).Length & state;
+                    s_sink += samples[i].Create().ToString(key).Length & state;
                 }
 
                 count++;
