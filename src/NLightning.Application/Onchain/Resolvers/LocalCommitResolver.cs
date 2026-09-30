@@ -1010,7 +1010,8 @@ public sealed class LocalCommitResolver : IOutputResolver
                                                             SweepInput input, List<OutputResolverAction> actions,
                                                             CancellationToken cancellationToken)
     {
-        var destination = await _destinationProvider.GetDestinationScriptAsync(cancellationToken);
+        var destination = await _destinationProvider.GetDestinationScriptAsync(context.Channel.ChannelId,
+                                                                               cancellationToken);
         var weight = SweepWeights.EstimateTransactionWeight([input], [destination.Length]);
         var estimate = await Fees.FeeEstimates.GetForTargetAsync(_feeService,
                                                             _feePolicy.GetConfirmationTarget(context.Height, null),

@@ -31,9 +31,11 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// wallet without bound): the script of a fundee open is remembered with its temporary channel and handed to a later
 /// fundee open once that temporary channel is gone (expired, dropped with the connection, refused) without having
 /// reached <c>funding_created</c> (its model still <see cref="ChannelState.V1Opening"/>), so nothing was persisted
-/// with it. A channel that got past the open keeps its script (it is persisted with the channel). The reuse needs the
+/// with it. A channel that got past the open keeps its script (it is persisted with the channel). Our own opens (the
+/// IPC funder path) reuse an abandoned reservation the same way (NL-463). The reuse needs the
 /// <see cref="IChannelMemoryRepository"/> and lasts for the process; the caller must have added the temporary channel
-/// before the script is assigned. Our own opens (the IPC funder path) always reserve a fresh address.
+/// before the script is assigned, and a reservation is not carried across a restart (that needs the reservation
+/// persisted against the channel, a schema change).
 /// </remarks>
 public class UpfrontShutdownScriptSource
 {
@@ -41,7 +43,7 @@ public class UpfrontShutdownScriptSource
     private readonly IChannelMemoryRepository? _channelMemoryRepository;
     private readonly ILogger<UpfrontShutdownScriptSource>? _logger;
     private readonly Network _network;
-    private readonly List<FundeeReservation> _fundeeReservations = [];
+    private readonly List<OpenReservation> _fundeeReservations = [];
     private readonly Lock _fundeeReservationsLock = new();
     private readonly IServiceScopeFactory _scopeFactory;
 
@@ -59,8 +61,8 @@ public class UpfrontShutdownScriptSource
         _channelMemoryRepository = channelMemoryRepository;
     }
 
-    /// <summary>The fundee reservations remembered for reuse (tests).</summary>
-    internal int FundeeReservationCount
+    /// <summary>The open reservations remembered for reuse (tests).</summary>
+    internal int ReservationCount
     {
         get
         {
@@ -82,11 +84,11 @@ public class UpfrontShutdownScriptSource
     /// </summary>
     /// <param name="channel">The channel being opened.</param>
     /// <param name="negotiatedFeatures">The features negotiated with the peer.</param>
-    /// <param name="fundeePeer">For a peer's <c>open_channel</c> (we are the fundee): the peer, whose temporary channel
-    /// <paramref name="channel"/> already is. The script of an abandoned fundee open is then reused (see the class
-    /// remarks); null reserves a fresh address.</param>
+    /// <param name="peer">The counterparty, whose temporary channel <paramref name="channel"/> already is (the fundee
+    /// of a peer's <c>open_channel</c>, or the funder from the IPC handler). The script of an open abandoned before
+    /// <c>funding_created</c> is then reused (see the class remarks); null reserves a fresh address.</param>
     public async Task<BitcoinScript?> AssignIfNegotiatedAsync(ChannelModel channel, FeatureOptions negotiatedFeatures,
-                                                              CompactPubKey? fundeePeer = null)
+                                                              CompactPubKey? peer = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         if (!IsNegotiated(negotiatedFeatures))
@@ -94,8 +96,8 @@ public class UpfrontShutdownScriptSource
         if (channel.LocalUpfrontShutdownScript is { } existing)
             return existing;
 
-        var script = fundeePeer is { } peer && _channelMemoryRepository is not null
-                         ? await ReuseOrReserveForFundeeAsync(peer, channel)
+        var script = peer is { } p && _channelMemoryRepository is not null
+                         ? await ReuseOrReserveAsync(p, channel)
                          : await ReserveAsync();
         channel.SetLocalUpfrontShutdownScript(script);
         _logger?.LogInformation("Announcing upfront shutdown script {Script} for channel {ChannelId}", script,
@@ -103,7 +105,7 @@ public class UpfrontShutdownScriptSource
         return script;
     }
 
-    private async Task<BitcoinScript> ReuseOrReserveForFundeeAsync(CompactPubKey peer, ChannelModel channel)
+    private async Task<BitcoinScript> ReuseOrReserveAsync(CompactPubKey peer, ChannelModel channel)
     {
         lock (_fundeeReservationsLock)
         {
@@ -117,7 +119,7 @@ public class UpfrontShutdownScriptSource
                     continue;
 
                 // Abandoned before funding_created: nothing holds its script, so it goes to this open
-                _fundeeReservations[i] = new FundeeReservation(peer, channel.ChannelId, channel, reservation.Script);
+                _fundeeReservations[i] = new OpenReservation(peer, channel.ChannelId, channel, reservation.Script);
                 _logger?.LogDebug("Reusing the upfront shutdown script {Script} of an abandoned open for channel "
                                 + "{ChannelId}", reservation.Script, channel.ChannelId);
                 return reservation.Script;
@@ -126,7 +128,7 @@ public class UpfrontShutdownScriptSource
 
         var script = await ReserveAsync();
         lock (_fundeeReservationsLock)
-            _fundeeReservations.Add(new FundeeReservation(peer, channel.ChannelId, channel, script));
+            _fundeeReservations.Add(new OpenReservation(peer, channel.ChannelId, channel, script));
         return script;
     }
 
@@ -142,7 +144,7 @@ public class UpfrontShutdownScriptSource
         return BitcoinAddress.Create(address.Address, _network).ScriptPubKey.ToBytes();
     }
 
-    /// <summary>A script handed to a fundee open, with the temporary channel that holds it.</summary>
-    private sealed record FundeeReservation(CompactPubKey Peer, ChannelId TemporaryChannelId, ChannelModel Channel,
-                                            BitcoinScript Script);
+    /// <summary>A script handed to an open, with the temporary channel that holds it.</summary>
+    private sealed record OpenReservation(CompactPubKey Peer, ChannelId TemporaryChannelId, ChannelModel Channel,
+                                          BitcoinScript Script);
 }

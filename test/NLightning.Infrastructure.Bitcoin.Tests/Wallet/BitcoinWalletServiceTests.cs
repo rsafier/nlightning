@@ -24,6 +24,8 @@ public class BitcoinWalletServiceTests
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<IWalletAddressesDbRepository> _addresses = new();
     private readonly List<WalletAddressModel> _stored = [];
+    private readonly HashSet<uint> _funded = [];
+    private readonly HashSet<(AddressType Type, bool IsChange, uint Index)> _reserved = [];
 
     public BitcoinWalletServiceTests()
     {
@@ -34,9 +36,23 @@ public class BitcoinWalletServiceTests
                          .Returns((uint index, bool isChange) =>
                                       s_masterKey.Derive(isChange ? 3u : 2u).Derive(index).ToBytes());
 
-        // An in-memory table with the repository's semantics: no UTXO rows, highest index (0 when empty)
+        // The repository's semantics: the lowest stored address that is not reserved, holds no UTXO and lies above
+        // every reserved or funded one (NL-280); an empty table gives null
         _addresses.Setup(r => r.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>()))
-                  .ReturnsAsync((WalletAddressModel?)null);
+                  .ReturnsAsync((AddressType type, bool isChange) =>
+                  {
+                      var mine = _stored.Where(a => a.AddressType == type && a.IsChange == isChange).ToList();
+                      var highestUsed = mine.Where(a => _reserved.Contains((type, isChange, a.Index))
+                                                     || _funded.Contains(a.Index))
+                                            .Select(a => a.Index)
+                                            .DefaultIfEmpty(uint.MaxValue)
+                                            .Max();
+                      return mine.Where(a => !_reserved.Contains((type, isChange, a.Index))
+                                          && !_funded.Contains(a.Index) && a.Index > highestUsed)
+                                 .OrderBy(a => a.Index)
+                                 .Cast<WalletAddressModel?>()
+                                 .FirstOrDefault();
+                  });
         _addresses.Setup(r => r.GetLastUsedAddressIndex(It.IsAny<AddressType>(), It.IsAny<bool>()))
                   .ReturnsAsync((AddressType type, bool isChange) =>
                                     _stored.Where(a => a.AddressType == type && a.IsChange == isChange)
@@ -57,11 +73,21 @@ public class BitcoinWalletServiceTests
                            _stored.Add(address);
                        }
                    });
+        _addresses.Setup(r => r.ReserveAsync(It.IsAny<WalletAddressModel>()))
+                  .Callback((WalletAddressModel address) =>
+                   {
+                       var stored = _stored.FirstOrDefault(a => a.Index == address.Index
+                                                             && a.IsChange == address.IsChange
+                                                             && a.AddressType == address.AddressType)
+                                    ?? throw new InvalidOperationException(
+                                          $"Wallet address {address.Address} is not stored");
+                       _reserved.Add((address.AddressType, address.IsChange, address.Index));
+                   });
         _unitOfWork.Setup(u => u.WalletAddressesDbRepository).Returns(_addresses.Object);
     }
 
     [Fact]
-    public async Task Given_EmptyWallet_When_GettingAnAddress_Then_TheFirstBatchStartsAtIndexZero()
+    public async Task Given_EmptyWallet_When_GettingAnAddress_Then_TheFirstBatchStartsAtIndexZeroWithAWindow()
     {
         // Arrange
         var service = CreateService(BitcoinNetwork.Regtest);
@@ -69,33 +95,78 @@ public class BitcoinWalletServiceTests
         // Act
         var address = await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
 
-        // Assert
+        // Assert: the hand-out batch plus the discovery window (NL-463), all watched, only the hand-out reserved
         Assert.Equal(0u, address.Index);
-        Assert.Equal(Enumerable.Range(0, 10).Select(i => (uint)i), _stored.Select(a => a.Index));
+        Assert.Equal(Enumerable.Range(0, 10 + BitcoinWalletService.GapLimit).Select(i => (uint)i),
+                     _stored.Select(a => a.Index));
+        _blockchainMonitor.Verify(m => m.WatchBitcoinAddress(It.IsAny<WalletAddressModel>()),
+                                  Times.Exactly(10 + BitcoinWalletService.GapLimit));
+        Assert.Single(_reserved);
     }
 
     [Fact]
-    public async Task Given_TenAddressesUsed_When_GettingANewBatch_Then_ItStartsAfterTheHighestIndex()
+    public async Task Given_AFreshBatch_When_MoreAddressesAreNeeded_Then_TheStoredOnesAreUsedBeforeANewBatch()
     {
-        // Arrange: the first batch (0-9) is all used, so the repository finds no unused address (NL-283)
+        // Arrange
         var service = CreateService(BitcoinNetwork.Regtest);
         await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
 
         // Act
+        var addresses = new List<WalletAddressModel>();
+        for (var i = 0; i < 12; i++)
+            addresses.Add(await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false));
+
+        // Assert: indexes 1..12, all reserved, no second batch generated (30 stored in total)
+        Assert.Equal(Enumerable.Range(1, 12).Select(i => (uint)i), addresses.Select(a => a.Index));
+        Assert.Equal(10 + BitcoinWalletService.GapLimit, _stored.Count);
+    }
+
+    [Fact]
+    public async Task Given_TheWholeWindowUsed_When_GettingANewBatch_Then_ItContinuesWithAWindow()
+    {
+        // Arrange: indexes 0..29 are all handed out (reserved)
+        var service = CreateService(BitcoinNetwork.Regtest);
+        for (var i = 0; i < 10 + BitcoinWalletService.GapLimit; i++)
+            await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+
+        // Act
         var address = await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
 
-        // Assert: 10-19, no index 9 again (the duplicate key failed the save before the fix)
-        Assert.Equal(10u, address.Index);
-        Assert.Equal(20, _stored.Count);
-        Assert.Equal(Enumerable.Range(0, 20).Select(i => (uint)i), _stored.Select(a => a.Index));
-        Assert.Equal(20, _stored.Select(a => a.Address).Distinct().Count());
+        // Assert: the next batch runs 30..59, none of the old ones again (the duplicate key failed the save before
+        // the fix)
+        Assert.Equal(30u, address.Index);
+        Assert.Equal(2 * (10 + BitcoinWalletService.GapLimit), _stored.Count);
+        Assert.Equal(Enumerable.Range(0, 2 * (10 + BitcoinWalletService.GapLimit)).Select(i => (uint)i),
+                     _stored.Select(a => a.Index));
+        Assert.Equal(_stored.Count, _stored.Select(a => a.Address).Distinct().Count());
+    }
+
+    [Fact]
+    public async Task Given_AWindowAddressReceivedFunds_When_AnUnusedAddressIsAskedFor_Then_TheWalletMovesPastIt()
+    {
+        // Arrange: the batch 0..29 was generated and a deposit (restored funds, NL-463) landed on window address 25
+        var service = CreateService(BitcoinNetwork.Regtest);
+        await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        _funded.Add(25);
+
+        // Act
+        var addresses = new List<WalletAddressModel>();
+        for (var i = 0; i < 6; i++)
+            addresses.Add(await service.GetUnusedAddressAsync(AddressType.P2Wpkh, false));
+
+        // Assert: nothing below the funded address is handed out again (NL-280); hand-outs continue 26..29, then the
+        // pool is exhausted and the next batch keeps a window past it (30..59)
+        Assert.Equal([26u, 27u, 28u, 29u, 30u, 31u], addresses.Select(a => a.Index));
+        Assert.Equal(2 * (10 + BitcoinWalletService.GapLimit), _stored.Count);
     }
 
     [Fact]
     public async Task Given_OnlyIndexZeroStored_When_GettingANewBatch_Then_ItStartsAtIndexOne()
     {
-        // Arrange: the repository reports 0 for "only index 0" as for "empty"
+        // Arrange: the repository reports 0 for "only index 0" as for "empty" (the address is in use, so the unused
+        // lookup finds nothing)
         _stored.Add(new WalletAddressModel(AddressType.P2Wpkh, 0, false, "existing"));
+        _funded.Add(0);
         var service = CreateService(BitcoinNetwork.Regtest);
 
         // Act
@@ -103,7 +174,7 @@ public class BitcoinWalletServiceTests
 
         // Assert
         Assert.Equal(1u, address.Index);
-        Assert.Equal(11, _stored.Count);
+        Assert.Equal(1 + 10 + BitcoinWalletService.GapLimit, _stored.Count);
     }
 
     [Fact]
@@ -119,14 +190,21 @@ public class BitcoinWalletServiceTests
         // Assert
         Assert.Equal(0u, change.Index);
         Assert.True(change.IsChange);
+        Assert.Equal(10 + BitcoinWalletService.GapLimit,
+                     _stored.Count(a => a.AddressType == AddressType.P2Wpkh && a.IsChange));
     }
 
     [Fact]
     public async Task Given_TwoScopesWithoutUnusedAddresses_When_GettingAddressesConcurrently_Then_BatchesDoNotCollide()
     {
-        // Arrange: the first batch (0-9) is used; the index query yields, so both scopes would read 9 without the lock
+        // Arrange: the first batch is fully used, so the index query yields, and both scopes would read the same
+        // highest index without the lock
         var first = CreateService(BitcoinNetwork.Regtest);
-        await first.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        for (var i = 0; i < 10 + BitcoinWalletService.GapLimit; i++)
+            await first.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        // Both scopes find no unused address (the pool ran out between their lookups), and the index query yields
+        _addresses.Setup(r => r.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>()))
+                  .ReturnsAsync((WalletAddressModel?)null);
         _addresses.Setup(r => r.GetLastUsedAddressIndex(It.IsAny<AddressType>(), It.IsAny<bool>()))
                   .Returns(async (AddressType type, bool isChange) =>
                    {
@@ -144,9 +222,10 @@ public class BitcoinWalletServiceTests
         var addresses = await Task.WhenAll(second.GetUnusedAddressAsync(AddressType.P2Wpkh, false),
                                            third.GetUnusedAddressAsync(AddressType.P2Wpkh, false));
 
-        // Assert: 10-19 and 20-29, no duplicate key (NL-283)
-        Assert.Equal([10u, 20u], addresses.Select(a => a.Index).Order());
-        Assert.Equal(Enumerable.Range(0, 30).Select(i => (uint)i), _stored.Select(a => a.Index).Order());
+        // Assert: 30..59 and 60..89, no duplicate key (NL-283)
+        Assert.Equal([30u, 60u], addresses.Select(a => a.Index).Order());
+        Assert.Equal(Enumerable.Range(0, 3 * (10 + BitcoinWalletService.GapLimit)).Select(i => (uint)i),
+                     _stored.Select(a => a.Index).Order());
     }
 
     [Theory]

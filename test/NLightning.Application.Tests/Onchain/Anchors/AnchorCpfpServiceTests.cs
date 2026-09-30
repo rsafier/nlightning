@@ -105,6 +105,7 @@ public sealed class AnchorCpfpServiceTests : IDisposable
                    .ReturnsAsync(() => LightningMoney.Satoshis(_estimate));
         _destination = new Mock<ISweepDestinationProvider>();
         _destination.Setup(d => d.GetDestinationScriptAsync(It.IsAny<CancellationToken>())).ReturnsAsync(_walletScript);
+        _destination.Setup(d => d.GetDestinationScriptAsync(It.IsAny<Domain.Channels.ValueObjects.ChannelId>(), It.IsAny<CancellationToken>())).ReturnsAsync(_walletScript);
 
         _unitOfWork = new Mock<IUnitOfWork>();
         _unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(_store);

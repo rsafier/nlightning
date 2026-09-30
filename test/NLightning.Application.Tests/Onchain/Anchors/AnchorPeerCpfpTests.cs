@@ -562,6 +562,7 @@ public sealed class AnchorPeerCpfpTests : IDisposable
                   .ReturnsAsync(() => LightningMoney.Satoshis(_estimate));
         var destination = new Mock<ISweepDestinationProvider>();
         destination.Setup(d => d.GetDestinationScriptAsync(It.IsAny<CancellationToken>())).ReturnsAsync(_walletScript);
+        destination.Setup(d => d.GetDestinationScriptAsync(It.IsAny<Domain.Channels.ValueObjects.ChannelId>(), It.IsAny<CancellationToken>())).ReturnsAsync(_walletScript);
 
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));

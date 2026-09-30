@@ -150,6 +150,7 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
                                           : ((TxOut Output, uint Height)?)null);
         var destinations = new Mock<ISweepDestinationProvider>();
         destinations.Setup(d => d.GetDestinationScriptAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Destination);
+        destinations.Setup(d => d.GetDestinationScriptAsync(It.IsAny<Domain.Channels.ValueObjects.ChannelId>(), It.IsAny<CancellationToken>())).ReturnsAsync(Destination);
 
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));

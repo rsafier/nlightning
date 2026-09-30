@@ -211,9 +211,10 @@ public sealed class OpenChannelClientHandler
             var channelTypeTlv = new ChannelTypeTlv(channel.ChannelParams.ToChannelType());
 
             // NL-045: when option_upfront_shutdown_script is negotiated, a reserved wallet address becomes our upfront
-            // shutdown script (after the funds are locked, so a refused open reserves nothing)
+            // shutdown script (after the funds are locked, so a refused open reserves nothing); the peer makes an open
+            // that failed before funding_created reuse its script instead of reserving another one (NL-463)
             if (_upfrontShutdownScriptSource is not null)
-                await _upfrontShutdownScriptSource.AssignIfNegotiatedAsync(channel, peer.NegotiatedFeatures);
+                await _upfrontShutdownScriptSource.AssignIfNegotiatedAsync(channel, peer.NegotiatedFeatures, peerId);
 
             // Create UpfrontShutdownScriptTlv if needed
             var upfrontShutdownScriptTlv = channel.LocalUpfrontShutdownScript is not null
