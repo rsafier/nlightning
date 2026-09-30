@@ -174,7 +174,7 @@ public sealed class BootstrapProbe
                                       .ToDictionary(g => g.Key,
                                                     g => g.GroupBy(d => d.Outcome.ToString())
                                                           .ToDictionary(o => o.Key, o => o.Count())),
-            ["dials_by_family"] = status.Dials.GroupBy(d => d.Candidate.Address.AddressFamily.ToString())
+            ["dials_by_family"] = status.Dials.GroupBy(d => Family(d.Candidate))
                                         .ToDictionary(g => g.Key,
                                                       g => g.GroupBy(d => d.Outcome.ToString())
                                                             .ToDictionary(o => o.Key, o => o.Count())),
@@ -239,8 +239,8 @@ public sealed class BootstrapProbe
         var dials = new List<string> { "utc,run,seed,node_id,address,port,family,outcome,elapsed_s,error" };
         dials.AddRange(status.Dials.Select(d => string.Join(',', [
             d.At.UtcDateTime.ToString("O", CultureInfo.InvariantCulture), I(d.Run), d.Candidate.Seed,
-            d.Candidate.NodeId.ToString(), d.Candidate.Address.ToString(), I(d.Candidate.Port),
-            d.Candidate.Address.AddressFamily.ToString(), d.Outcome.ToString(), F(d.Elapsed.TotalSeconds),
+            d.Candidate.NodeId.ToString(), d.Candidate.Endpoint.Host, I(d.Candidate.Port),
+            Family(d.Candidate), d.Outcome.ToString(), F(d.Elapsed.TotalSeconds),
             Csv(d.Error)
         ])));
         var runs = new List<string> { "utc,run,skip_reason,collected,selected,attempted,connected,peers_after" };
@@ -262,6 +262,10 @@ public sealed class BootstrapProbe
     }
 
     private static string I(long value) => value.ToString(CultureInfo.InvariantCulture);
+
+    // An onion candidate (graph top-up with Node:Tor on) has no IP address
+    private static string Family(SeedPeerCandidate candidate) =>
+        candidate.OnionHost is null ? candidate.Address.AddressFamily.ToString() : "TorV3";
     private static string F(double value) => value.ToString("F2", CultureInfo.InvariantCulture);
 
     private static string Csv(string? value) =>
