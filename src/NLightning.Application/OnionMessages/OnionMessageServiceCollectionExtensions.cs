@@ -34,6 +34,8 @@ public static class OnionMessageServiceCollectionExtensions
     {
         services.AddOptions<OnionMessageOptions>();
         services.TryAddSingleton<OnionMessageMetrics>();
+        // NL-464: one drop counter set for the service and the message reader's malformed 513s (Infrastructure)
+        services.TryAddSingleton<IOnionMessageDropCounter>(sp => sp.GetRequiredService<OnionMessageMetrics>());
         // M6 OM2-T2: the per-peer and node-wide token buckets, from the OnionMessages section
         services.TryAddSingleton<IOnionMessageRateLimiter>(sp =>
         {

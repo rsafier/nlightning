@@ -8,6 +8,7 @@ using Domain.Exceptions;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.Payloads;
 using Domain.Serialization.Interfaces;
 using Domain.Transport;
@@ -27,8 +28,8 @@ internal sealed class MessageService : IMessageService
     /// </summary>
     internal const string MalformedOnionMessageDropReason = "malformed";
 
-    // The onion-message meter of the Application's OnionMessageMetrics (same meter and instrument names), so a
-    // listener or exporter sees the malformed drops, which never reach the onion-message service, with the others
+    // The fallback onion-message meter of a node without the Application's OnionMessageMetrics (its counter set, the
+    // registered IOnionMessageDropCounter, is preferred so every drop lands on the service's meter, NL-464)
     private static readonly Meter s_onionMessageMeter = new("NLightning.OnionMessages");
 
     private static readonly Counter<long> s_onionMessagesDropped =
@@ -37,6 +38,7 @@ internal sealed class MessageService : IMessageService
     private readonly ILogger<IMessageService> _logger;
     private readonly IMessageSerializer _messageSerializer;
     private readonly ITransportService? _transportService;
+    private readonly IOnionMessageDropCounter? _onionMessageDrops;
 
     private volatile bool _disposed;
     private readonly object _disposeLock = new();
@@ -89,11 +91,13 @@ internal sealed class MessageService : IMessageService
     /// <param name="messageSerializer">The message serializer.</param>
     /// <param name="transportService">The transport service.</param>
     public MessageService(ILogger<IMessageService> logger, IMessageSerializer messageSerializer,
-                          ITransportService transportService)
+                          ITransportService transportService,
+                          IOnionMessageDropCounter? onionMessageDrops = null)
     {
         _logger = logger;
         _messageSerializer = messageSerializer;
         _transportService = transportService;
+        _onionMessageDrops = onionMessageDrops;
 
         _transportService.ExceptionRaised += RaiseException;
     }
@@ -239,12 +243,19 @@ internal sealed class MessageService : IMessageService
     /// ignore every onion message it cannot use and never answer one, and 513 is odd (BOLT 1: odd types may be
     /// ignored), so the BOLT 1 option to warn and close is not taken: with onion messages advertised any peer could
     /// otherwise make us drop its connection. Counted on <c>nlightning.onion_messages.dropped</c> with
-    /// <c>reason</c> = <see cref="MalformedOnionMessageDropReason"/>; logged at Information on the first one of the
-    /// connection and every 1,000th, at Debug otherwise.
+    /// <c>reason</c> = <see cref="MalformedOnionMessageDropReason"/> through the registered
+    /// <see cref="IOnionMessageDropCounter"/> — the onion-message service's counter set, so one meter holds every drop
+    /// (NL-464); a node without it falls back to this class's own meter of the same name. Logged at Information on the
+    /// first one of the connection and every 1,000th, at Debug otherwise.
     /// </summary>
     private void HandleMalformedOnionMessage(Exception exception)
     {
-        s_onionMessagesDropped.Add(1, new KeyValuePair<string, object?>("reason", MalformedOnionMessageDropReason));
+        if (_onionMessageDrops is not null)
+            _onionMessageDrops.RecordDropped(MalformedOnionMessageDropReason);
+        else
+            s_onionMessagesDropped.Add(1,
+                new KeyValuePair<string, object?>("reason", MalformedOnionMessageDropReason));
+
         var count = Interlocked.Increment(ref _malformedOnionMessageCount);
         var reason = exception.InnerException?.InnerException?.Message ?? exception.InnerException?.Message
                   ?? exception.Message;

@@ -214,6 +214,49 @@ public class MessageServiceTests
     }
 
     [Fact]
+    public void Given_MalformedOnionMessageAndADropCounter_When_Received_Then_CountedOnTheCounterNotTheStaticMeter()
+    {
+        // Arrange: NL-464, a node with the onion-message counter set (the service's) counts the malformed 513s on it,
+        // so one meter and one in-memory count hold every drop; the class's own meter stays unused
+        var transportServiceMock = new Mock<ITransportService>();
+        transportServiceMock.Setup(t => t.IsConnected).Returns(true);
+        _messageSerializerMock.Setup(m => m.DeserializeMessageAsync(It.IsAny<Stream>()))
+                              .ThrowsAsync(new MessageSerializationException(
+                                               "Error deserializing message",
+                                               new PayloadSerializationException(
+                                                   "Error deserializing OnionMessagePayload",
+                                                   new System.Runtime.Serialization.SerializationException(
+                                                       "onion_message_packet len 10 is below 66"))));
+        var drops = new List<string>();
+        var counter = new Mock<Domain.Protocol.OnionMessages.Interfaces.IOnionMessageDropCounter>();
+        counter.Setup(c => c.RecordDropped(It.IsAny<string>()))
+               .Callback<string>(reason => drops.Add(reason));
+        var messageService = new MessageService(new Mock<ILogger<MessageService>>().Object,
+                                                _messageSerializerMock.Object, transportServiceMock.Object,
+                                                counter.Object);
+        messageService.OnMessageReceived += (_, _) => { };
+        long staticMeterDrops = 0;
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (instrument.Meter.Name == "NLightning.OnionMessages"
+             && instrument.Name == "nlightning.onion_messages.dropped")
+                l.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, tags, _) => Interlocked.Add(ref staticMeterDrops, value));
+        listener.Start();
+        var bytes = new byte[] { 0x02, 0x01, 0x00, 0x0a };
+
+        // Act
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream(bytes));
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream(bytes));
+
+        // Assert: the counter took both, the static fallback meter nothing
+        counter.Verify(c => c.RecordDropped(MessageService.MalformedOnionMessageDropReason), Times.Exactly(2));
+        Assert.Equal(0, Interlocked.Read(ref staticMeterDrops));
+    }
+
+    [Fact]
     public void Given_MalformedChannelMessage_When_Received_Then_StillWarnsAndCloses()
     {
         // Arrange: only the gossip broadcasts are ignored; a malformed update_add_htlc (128) still closes
