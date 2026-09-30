@@ -205,6 +205,76 @@ public class GossipIngressTests
     }
 
     [Fact]
+    public async Task Given_ANodeWithOnlyPendingChannels_When_ItsNodeAnnouncementIsOrphaned_Then_ItOutlivesTheOrphanTtl()
+    {
+        // Arrange (NL-425): the channel waits in the pending index (no channel_update yet), the node announces itself
+        var kit = new GraphTestKit(configure: o =>
+        {
+            o.OrphanTtl = TimeSpan.FromMinutes(1);
+            o.PendingAnnouncementTtl = TimeSpan.FromMinutes(5);
+        });
+        var peer = GraphTestKit.CreatePeer();
+        var ct = TestContext.Current.CancellationToken;
+        Assert.Equal(GossipIngressOutcome.Pending,
+                     (await kit.Ingress.ProcessAsync(peer.Object,
+                                                     GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob,
+                                                                                            s_aliceFunding,
+                                                                                            s_bobFunding), 0,
+                                                     ct)).Outcome);
+        Assert.Equal(GossipIngressOutcome.Orphaned,
+                     (await kit.Ingress.ProcessAsync(peer.Object, GraphTestKit.SignedNodeAnnouncement(s_alice, s_now),
+                                                     0, ct)).Outcome);
+        Assert.Equal(1, kit.Ingress.Orphans.Count);
+
+        // Act / Assert: past the orphan TTL the flush round still keeps it (its channel is pending); once the
+        // candidate expires, the same round drops it
+        kit.Clock.Now += TimeSpan.FromMinutes(2);
+        kit.Ingress.PrunePendingAnnouncements();
+        kit.Ingress.KeepOrphansOfPendingNodes();
+        Assert.Equal(0, kit.Ingress.Orphans.PruneExpired());
+        Assert.Equal(1, kit.Ingress.Orphans.Count);
+
+        kit.Clock.Now += TimeSpan.FromMinutes(4);
+        Assert.Equal(1, kit.Ingress.PrunePendingAnnouncements());
+        kit.Ingress.KeepOrphansOfPendingNodes();
+        Assert.Equal(1, kit.Ingress.Orphans.PruneExpired());
+        Assert.Equal(0, kit.Ingress.Orphans.Count);
+    }
+
+    [Fact]
+    public async Task Given_AHeldNodeAnnouncement_When_ItsPendingChannelIsPromoted_Then_ItIsReplayedIntoTheGraph()
+    {
+        // Arrange (NL-425): the announcement was held past the orphan TTL while the channel waited for its update
+        var kit = new GraphTestKit(configure: o => o.OrphanTtl = TimeSpan.FromMinutes(1));
+        var peer = GraphTestKit.CreatePeer();
+        var ct = TestContext.Current.CancellationToken;
+        Assert.Equal(GossipIngressOutcome.Pending,
+                     (await kit.Ingress.ProcessAsync(peer.Object,
+                                                     GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob,
+                                                                                            s_aliceFunding,
+                                                                                            s_bobFunding), 0,
+                                                     ct)).Outcome);
+        Assert.Equal(GossipIngressOutcome.Orphaned,
+                     (await kit.Ingress.ProcessAsync(peer.Object, GraphTestKit.SignedNodeAnnouncement(s_alice, s_now),
+                                                     0, ct)).Outcome);
+        kit.Clock.Now += TimeSpan.FromMinutes(2);
+        kit.Ingress.KeepOrphansOfPendingNodes();
+        Assert.Equal(0, kit.Ingress.Orphans.PruneExpired());
+        kit.FundingFound();
+
+        // Act: the first update promotes the pending announcement (and replays what waited for the channel)
+        var update = GraphTestKit.SignedChannelUpdate(s_scid, s_alice, 0,
+                                                      (uint)kit.Clock.GetUtcNow().ToUnixTimeSeconds());
+        var promoted = await kit.Ingress.ProcessAsync(peer.Object, update, 0, ct);
+
+        // Assert: the channel and the node are both in the graph, nothing waits anymore
+        Assert.Equal(GossipIngressOutcome.Accepted, promoted.Outcome);
+        Assert.Equal(0, kit.Ingress.Orphans.Count);
+        Assert.True(kit.Store.TryGetNode(s_alice.PubKey, out _));
+        Assert.True(kit.Store.TryGetChannel(s_scid, out _));
+    }
+
+    [Fact]
     public async Task Given_AcceptedUpdate_When_AnOlderOrEqualOneArrives_Then_ItIsIgnoredAndTheNewerStays()
     {
         // Arrange

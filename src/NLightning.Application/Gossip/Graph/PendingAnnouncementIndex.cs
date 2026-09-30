@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.InteropServices;
 
 namespace NLightning.Application.Gossip.Graph;
 
@@ -40,6 +41,12 @@ public sealed class PendingAnnouncementIndex
     private readonly Dictionary<ShortChannelId, List<Slot>> _entries = new();
     private readonly Dictionary<OriginKey, LinkedList<Slot>> _byOrigin = new();
     private readonly LinkedList<Slot> _byAge = new();
+
+    /// <summary>
+    /// How many kept candidates name a node as theirs (a candidate of two counted twice; NL-425): whether a node's
+    /// only channels are still waiting here, so its orphaned <c>node_announcement</c> is worth keeping.
+    /// </summary>
+    private readonly Dictionary<CompactPubKey, int> _nodeCandidates = new();
 
     public PendingAnnouncementIndex(int capacity, TimeSpan ttl, TimeProvider? timeProvider = null)
     {
@@ -169,6 +176,7 @@ public sealed class PendingAnnouncementIndex
             if (!_entries.TryGetValue(entry.ShortChannelId, out slots))
                 _entries[entry.ShortChannelId] = slots = new List<Slot>(1);
             slots.Add(added);
+            CountNodesLocked(added, 1);
             return evicted ? PendingAddOutcome.AddedWithEviction : PendingAddOutcome.Added;
         }
     }
@@ -207,6 +215,16 @@ public sealed class PendingAnnouncementIndex
                 RemoveLocked(slot);
             return true;
         }
+    }
+
+    /// <summary>
+    /// True while a live kept candidate names <paramref name="nodeId"/> as one of its nodes (NL-425): the node's only
+    /// channels are pending, so its orphaned <c>node_announcement</c> stays in the orphan cache.
+    /// </summary>
+    public bool HasChannelOf(CompactPubKey nodeId)
+    {
+        lock (_lock)
+            return _nodeCandidates.ContainsKey(nodeId);
     }
 
     /// <summary>Drops the expired entries; returns how many.</summary>
@@ -260,6 +278,26 @@ public sealed class PendingAnnouncementIndex
             if (slots.Count == 0)
                 _entries.Remove(slot.Entry.ShortChannelId);
         }
+
+        CountNodesLocked(slot, -1);
+    }
+
+    /// <summary>Counts a slot's two nodes in (or out of) the reverse index of NL-425.</summary>
+    private void CountNodesLocked(Slot slot, int by)
+    {
+        if (slot.NodeId1 is { } first)
+            CountNodeLocked(first, by);
+
+        if (slot.NodeId2 is { } second && second != slot.NodeId1)
+            CountNodeLocked(second, by);
+    }
+
+    private void CountNodeLocked(CompactPubKey nodeId, int by)
+    {
+        ref var count = ref CollectionsMarshal.GetValueRefOrAddDefault(_nodeCandidates, nodeId, out _);
+        count += by;
+        if (count <= 0)
+            _nodeCandidates.Remove(nodeId);
     }
 
     private bool IsExpired(PendingAnnouncement entry) => _timeProvider.GetUtcNow() - entry.AddedAt > _ttl;
@@ -271,8 +309,26 @@ public sealed class PendingAnnouncementIndex
     {
         public PendingAnnouncement Entry { get; } = entry;
         public OriginKey Origin { get; } = origin;
+
+        // The announcement's nodes (NL-425): parsed once here, so the reverse index needs no second parse on removal
+        public CompactPubKey? NodeId1 { get; } = ParseNodeId(entry, true);
+        public CompactPubKey? NodeId2 { get; } = ParseNodeId(entry, false);
         public LinkedListNode<Slot>? AgeNode { get; set; }
         public LinkedListNode<Slot>? OriginNode { get; set; }
+
+        private static CompactPubKey? ParseNodeId(PendingAnnouncement entry, bool first)
+        {
+            try
+            {
+                var announcement = entry.ParseAnnouncement();
+                return first ? announcement.NodeId1 : announcement.NodeId2;
+            }
+            catch (Exception)
+            {
+                // Never counted; the entry could not be parsed anywhere else either
+                return null;
+            }
+        }
     }
 }
 
@@ -294,7 +350,8 @@ public enum PendingAddOutcome
 
 /// <summary>
 /// A signed <c>channel_announcement</c> waiting for its first <c>channel_update</c>: its short channel id, its wire bytes
-/// (only these are kept, about 430 bytes; the payload is parsed again when an update arrives), the node id of the peer
+/// (only these are kept, about 430 bytes; the payload is parsed again when an update arrives, and once when it is added
+/// for the reverse index of the candidates' nodes, NL-425), the node id of the peer
 /// that sent it (not the connection, which may be long gone when the update arrives) and when it was kept.
 /// </summary>
 public sealed record PendingAnnouncement(ShortChannelId ShortChannelId, byte[] Raw, CompactPubKey? OriginNodeId,

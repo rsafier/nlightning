@@ -16,7 +16,9 @@ using Domain.Protocol.Messages;
 /// <remarks>
 /// Only the newest message per channel direction (per node) is kept; entries expire after the TTL, and the cache
 /// holds at most its capacity (a new entry is refused when it is full of live ones). Nothing here was verified: a
-/// replayed message goes through the whole pipeline. Thread-safe.
+/// replayed message goes through the whole pipeline. A <c>node_announcement</c> whose node's only channels are pending
+/// (NL-406) is re-dated by the ingress (<see cref="RefreshNodeAnnouncement"/>) while a pending candidate names the
+/// node (NL-425), so it waits for the promotion instead of expiring. Thread-safe.
 /// </remarks>
 public sealed class OrphanUpdateCache
 {
@@ -154,6 +156,32 @@ public sealed class OrphanUpdateCache
     {
         lock (_lock)
             return _nodes.Remove(nodeId, out var entry) && !IsExpired(entry) ? entry : null;
+    }
+
+    /// <summary>The node ids of the kept node announcements, expired ones included until the next prune.</summary>
+    public IReadOnlyList<CompactPubKey> NodeIds
+    {
+        get
+        {
+            lock (_lock)
+                return _nodes.Keys.ToList();
+        }
+    }
+
+    /// <summary>
+    /// Renews the wait of the announcement kept for <paramref name="nodeId"/> (NL-425): while the node's only channels
+    /// are pending, its orphaned announcement must not expire with the TTL. False when none is kept.
+    /// </summary>
+    public bool RefreshNodeAnnouncement(CompactPubKey nodeId)
+    {
+        lock (_lock)
+        {
+            if (!_nodes.TryGetValue(nodeId, out var existing))
+                return false;
+
+            _nodes[nodeId] = existing with { AddedAt = _timeProvider.GetUtcNow() };
+            return true;
+        }
     }
 
     /// <summary>Drops the expired entries; returns how many.</summary>
