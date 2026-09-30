@@ -38,7 +38,8 @@ public abstract class InteractiveTxMessageHandler<TMessage> : IChannelMessageHan
         ArgumentNullException.ThrowIfNull(message);
 
         // Resolved per message so a node built without the interactive-tx services (no driver registered) still
-        // answers: the handlers are registered by reflection, the driver by AddInteractiveTxServices
+        // answers: the handlers are on the explicit list in DependencyInjection (NL-055), the driver by
+        // AddInteractiveTxServices
         var driver = _serviceProvider.GetService<IInteractiveTxDriver>();
         if (driver is not null)
             return driver.ReceiveAsync(message, peerPubKey, _unitOfWork);
