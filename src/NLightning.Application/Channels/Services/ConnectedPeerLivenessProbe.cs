@@ -45,13 +45,20 @@ public sealed class ConnectedPeerLivenessProbe : IPeerLivenessProbe
     }
 
     /// <inheritdoc />
+    public event EventHandler<ChannelLinkUpEventArgs>? LinkUp;
+
+    /// <inheritdoc />
     public void MarkLinkUp(ChannelId channelId, CompactPubKey peerPubKey)
     {
         var current = CurrentConnection(peerPubKey);
         if (current is null)
+        {
             _links.TryRemove(channelId, out _);
-        else
-            _links[channelId] = current;
+            return;
+        }
+
+        _links[channelId] = current;
+        LinkUp?.Invoke(this, new ChannelLinkUpEventArgs(channelId, peerPubKey));
     }
 
     private object? CurrentConnection(CompactPubKey peerPubKey)

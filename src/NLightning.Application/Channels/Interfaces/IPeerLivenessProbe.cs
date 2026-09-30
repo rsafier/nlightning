@@ -38,4 +38,11 @@ public interface IPeerLivenessProbe
     /// Open on it; with N7, it was just reestablished on it). Replaces any earlier connection.
     /// </summary>
     void MarkLinkUp(ChannelId channelId, CompactPubKey peerPubKey);
+
+    /// <summary>
+    /// Raised when a channel's link was marked up on the peer's current connection (NL-364): the gossip layer
+    /// re-enables a channel it disabled for an offline peer on this, instead of waiting for its next link check.
+    /// Raised while the caller may hold the channel's lock: subscribers must only schedule work on it.
+    /// </summary>
+    event EventHandler<ChannelLinkUpEventArgs>? LinkUp;
 }

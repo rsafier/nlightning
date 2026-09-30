@@ -568,6 +568,8 @@ internal sealed class HarnessLinkProbe : IPeerLivenessProbe
 
     public void MarkLinkUp(ChannelId channelId, CompactPubKey peerPubKey) => _links[channelId] = 0;
 
+    public event EventHandler<ChannelLinkUpEventArgs>? LinkUp;
+
     public void Clear() => _links.Clear();
 }
 

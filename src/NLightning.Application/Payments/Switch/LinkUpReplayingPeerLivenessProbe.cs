@@ -34,6 +34,13 @@ public sealed class LinkUpReplayingPeerLivenessProbe : IPeerLivenessProbe
     public IPeerLivenessProbe Inner => _inner;
 
     /// <inheritdoc />
+    public event EventHandler<ChannelLinkUpEventArgs>? LinkUp
+    {
+        add => _inner.LinkUp += value;
+        remove => _inner.LinkUp -= value;
+    }
+
+    /// <inheritdoc />
     public Task<bool> IsAliveAsync(ChannelId channelId, CompactPubKey peerPubKey,
                                    CancellationToken cancellationToken = default) =>
         _inner.IsAliveAsync(channelId, peerPubKey, cancellationToken);
