@@ -112,12 +112,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 100 | 103 |
+| open | 0 | 0 | 3 | 102 | 105 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 62 | 157 | 211 | 444 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **62** | **164** | **317** | **557** |
+| **Total** | **14** | **62** | **164** | **319** | **559** |
 
 ### Epics
 
@@ -5733,6 +5733,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Live on Mutinynet, 2026-09-30 (keysend sweep of 80 graph nodes): `keysend <node> 1` to an unreachable node prints "No route to the payee: direct: no usable channel to <node>; " with nothing after the separator, while `getroute <node> 1000` for the same node says "…; the graph has no path for the whole amount within the limits." All 49 such targets were really unreachable (none has an enabled policy toward it), so only the message is wrong.
 - **Fix sketch:** Carry the graph step's reason into the keysend path's no-route message as `payinvoice`/`getroute` do.
 - **Blocks/Blocked-by:** Related NL-459
+- **Plan ref:** —
+
+### NL-567 FeatureSet.ToString() drops the highest feature when only its optional bit is set (listpeers never shows OptionSplice)
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Node/FeatureSet.cs` (`ToString`, the `i < FeatureFlags.Length` loop over odd bits; a set built bit by bit is sized to the highest set bit + 1 at line ~181)
+- **Evidence:** Live on Mutinynet, 2026-09-30: `listpeers` shows no `OptionSplice` for any peer, FAFO<->FAFO2 included (they splice), nor for cumulo-mutinynet / cdk-ldk-node, whose node_announcements carry bit 62/63. With splice optional (bit 62) as the highest feature the array length is 63, so the loop stops at i = 61 and never prints feature 63. Display only; negotiation is unaffected.
+- **Fix sketch:** Loop while `i - 1 < FeatureFlags.Length` (or `i <= FeatureFlags.Length`); add a test with only an even highest bit set.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-568 splicein on a channel not yet Open says "The peer of channel … is not connected"
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Ipc/Handlers/SpliceInIpcHandler.cs` / the splice service's link check
+- **Evidence:** Live on Mutinynet, 2026-09-30: right after FAFO2's v1 open to cln-swap-mutinynet (CLN) the channel was `ReadyForThem` (CLN's `channel_ready` received, our 3 confirmations pending) while the peer was connected (`listpeers`: Connected Yes); `splicein` was refused with "The peer of channel 69f7d4b5… is not connected". Once the channel turned Open the same splice worked. The refusal is right, the reason is wrong.
+- **Fix sketch:** Refuse with the channel state ("channel is not open yet (ReadyForThem)") before the liveness check, as the other channel commands do.
+- **Blocks/Blocked-by:** Related NL-021
 - **Plan ref:** —
 
 ### NL-553 No pinned official multi-arch Eclair image; the interop fixture builds its own
