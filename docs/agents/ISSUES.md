@@ -112,9 +112,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 102 | 105 |
+| open | 0 | 0 | 3 | 100 | 103 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 157 | 211 | 444 |
+| fixed | 14 | 62 | 157 | 213 | 446 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **62** | **164** | **319** | **559** |
@@ -5710,7 +5710,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Gossip/Announcements/AnnouncementHarnessTests.cs` (`Given_TheAnnouncementAssembled_When_HandedOn_Then_PublicUpdateAndNodeAnnouncementFollow`)
-- **Evidence:** Failed once in lane nl560's full loaded Application run on net10.0 Release (with the known NL-382 `GossipFloodTests` flake); the class passed alone on reruns (reported by lane nl560, 2026-09-30).
+- **Evidence:** Failed once in lane nl560's full loaded Application run on net10.0 Release (with the known NL-382 `GossipFloodTests` flake); the class passed alone on reruns (reported by lane nl560, 2026-09-30). Seen again twice on 2026-09-30 in full loaded Application runs (the batch4 integration and the NL-567/NL-568 check); the class passed alone each time (7/7).
 - **Fix sketch:** Capture the failure on the next occurrence; check for a wall-clock wait in the harness.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -5736,21 +5736,23 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-567 FeatureSet.ToString() drops the highest feature when only its optional bit is set (listpeers never shows OptionSplice)
-- **Status:** open
+- **Status:** fixed (0467e086)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Node/FeatureSet.cs` (`ToString`, the `i < FeatureFlags.Length` loop over odd bits; a set built bit by bit is sized to the highest set bit + 1 at line ~181)
 - **Evidence:** Live on Mutinynet, 2026-09-30: `listpeers` shows no `OptionSplice` for any peer, FAFO<->FAFO2 included (they splice), nor for cumulo-mutinynet / cdk-ldk-node, whose node_announcements carry bit 62/63. With splice optional (bit 62) as the highest feature the array length is 63, so the loop stops at i = 61 and never prints feature 63. Display only; negotiation is unaffected.
+- **Fixed:** `ToString` loops while `i - 1 < FeatureFlags.Length`, so the last odd bit is reached when only its even partner is set; `FeatureSetTests.Given_TheHighestFeatureWithOnlyItsOptionalBit_When_ToString_Then_ItIsListed`.
 - **Fix sketch:** Loop while `i - 1 < FeatureFlags.Length` (or `i <= FeatureFlags.Length`); add a test with only an even highest bit set.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
 
 ### NL-568 splicein on a channel not yet Open says "The peer of channel … is not connected"
-- **Status:** open
+- **Status:** fixed (0467e086)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Daemon/Ipc/Handlers/SpliceInIpcHandler.cs` / the splice service's link check
 - **Evidence:** Live on Mutinynet, 2026-09-30: right after FAFO2's v1 open to cln-swap-mutinynet (CLN) the channel was `ReadyForThem` (CLN's `channel_ready` received, our 3 confirmations pending) while the peer was connected (`listpeers`: Connected Yes); `splicein` was refused with "The peer of channel 69f7d4b5… is not connected". Once the channel turned Open the same splice worked. The refusal is right, the reason is wrong.
+- **Fixed:** `SpliceService.StartAsync` refuses a channel that is not Open with "Channel … is <State>, not Open" before the link check; `SpliceHarnessTests.Given_AChannelThatIsNotOpen_When_Started_Then_RefusedWithItsState`.
 - **Fix sketch:** Refuse with the channel state ("channel is not open yet (ReadyForThem)") before the liveness check, as the other channel commands do.
 - **Blocks/Blocked-by:** Related NL-021
 - **Plan ref:** —
