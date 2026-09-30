@@ -52,7 +52,13 @@ using Interfaces;
 /// <para>
 /// Receiving: the peer's update must be for our chain, a channel we have with it (real scid or an alias), its own
 /// direction, carry its node signature, be newer than the last one kept and no more than
-/// <see cref="MaxFutureTimestamp"/> ahead of our clock, and have <c>htlc_maximum_msat</c> within the capacity.
+/// <see cref="MaxFutureTimestamp"/> ahead of our clock, and have <c>htlc_maximum_msat</c> within the capacity. A
+/// valid update of an announced channel is our channel's gossip too (NL-498): like our own update it goes to the
+/// graph and the relay (<see cref="OwnGossipPublisher"/>), so our other peers learn the peer's policy with our own
+/// announcements at the next flush — independent of the relay switch and the peers'
+/// <c>gossip_timestamp_filter</c>s, and never before the channel's <c>channel_announcement</c> (the flush ranks
+/// 256 before 258). A <c>dont_forward</c> update (a private channel's, or one the peer holds back) and every
+/// ignored update stay between us and the peer.
 /// </para>
 /// <para>
 /// Resending: each new connection to a peer (after init) gets our update for every <c>Open</c> channel with it
@@ -487,6 +493,12 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
             "Stored channel_update of peer {Peer} for channel {ChannelId}: base {FeeBase} msat, {FeePpm} ppm, "
           + "cltv delta {CltvDelta}{Disabled}", peerPubKey, channel.ChannelId, update.FeeBaseMsat,
             update.FeeProportionalMillionths, update.CltvExpiryDelta, update.IsDisabled ? ", disabled" : "");
+
+        // NL-498: the peer's half of an announced channel of ours is our channel's gossip: hand it to our other peers
+        // like our own update (the own-gossip flush sends it to every connected peer on our chain, independent of the
+        // relay switch and their filters, after the channel's announcement). Only enqueues (never blocks).
+        if (IsPublic(channel) && !update.DontForward)
+            _ownGossipPublisher?.PublishChannelUpdate(update);
         return true;
     }
 
