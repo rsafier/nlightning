@@ -163,7 +163,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             throw new InvalidOperationException("The peer doesn't support large channels");
 
         var fundingFeerate = request.FundingFeeratePerKw ?? await EstimateFeerateAsync(cancellationToken);
-        var commitmentFeerate = request.CommitmentFeeratePerKw ?? await EstimateFeerateAsync(cancellationToken);
+        // The commitment feerate from our estimate is at least Node:MinCommitmentFeeRatePerKw (NL-564)
+        var commitmentFeerate = request.CommitmentFeeratePerKw
+                             ?? _nodeOptions.GetCommitmentFeeRatePerKw(await EstimateFeerateAsync(cancellationToken));
         fundingFeerate = Math.Max(fundingFeerate, (uint)ChannelOpenValidator.MinAcceptableFeeRatePerKw.Satoshi);
         commitmentFeerate = Math.Max(commitmentFeerate,
                                      (uint)ChannelOpenValidator.MinAcceptableFeeRatePerKw.Satoshi);

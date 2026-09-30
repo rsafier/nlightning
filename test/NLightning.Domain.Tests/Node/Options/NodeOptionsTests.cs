@@ -33,7 +33,66 @@ public class NodeOptionsTests
         // Assert
         Assert.Equal((ushort)2016, options.MaxAcceptedToSelfDelay);
         Assert.Equal(1U, options.MinAcceptedMaxHtlcValueInFlightPercent);
+        Assert.Equal(10U, options.MaxAcceptedChannelReservePercent);
+        Assert.Equal(275U, options.MinCommitmentFeeRatePerKw);
         Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_AReserveCapAbove100Percent_When_Validated_Then_ItIsAnError()
+    {
+        // Arrange (NL-562)
+        var options = new NodeOptions { MaxAcceptedChannelReservePercent = 101 };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains(nameof(NodeOptions.MaxAcceptedChannelReservePercent)));
+    }
+
+    [Fact]
+    public void Given_ACommitmentFeerateFloorBelow253_When_Validated_Then_ItIsAnError()
+    {
+        // Arrange (NL-564: BOLT 3's floor stays the lowest)
+        var options = new NodeOptions { MinCommitmentFeeRatePerKw = 252 };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains(nameof(NodeOptions.MinCommitmentFeeRatePerKw)));
+    }
+
+    [Theory]
+    [InlineData(250, 275)] // 1 sat/vB, floored at 253 by the fee service, raised to our floor (NL-564)
+    [InlineData(253, 275)]
+    [InlineData(275, 275)]
+    [InlineData(2_500, 2_500)] // an estimate above the floor is used as is
+    public void Given_AnEstimate_When_GettingTheCommitmentFeerate_Then_ItIsAtLeastTheFloor(long estimate,
+        uint expected)
+    {
+        // Arrange
+        var options = new NodeOptions();
+
+        // Act
+        var feerate = options.GetCommitmentFeeRatePerKw(estimate);
+
+        // Assert
+        Assert.Equal(expected, feerate);
+    }
+
+    [Fact]
+    public void Given_TheFloorSetTo253_When_GettingTheCommitmentFeerate_Then_TheEstimateIsUsed()
+    {
+        // Arrange
+        var options = new NodeOptions { MinCommitmentFeeRatePerKw = 253 };
+
+        // Act
+        var feerate = options.GetCommitmentFeeRatePerKw(253);
+
+        // Assert
+        Assert.Equal(253U, feerate);
     }
 
     [Fact]

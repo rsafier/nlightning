@@ -106,6 +106,47 @@ public class NodeOptions
     /// <remarks>Configuration key <c>Node:MinAcceptedMaxHtlcValueInFlightPercent</c>; 0 to 100.</remarks>
     public uint MinAcceptedMaxHtlcValueInFlightPercent { get; set; } = DefaultMinAcceptedMaxHtlcValueInFlightPercent;
 
+    /// <summary>
+    /// The default of <see cref="MaxAcceptedChannelReservePercent"/>: 10 %.
+    /// </summary>
+    public const uint DefaultMaxAcceptedChannelReservePercent = 10;
+
+    /// <summary>
+    /// The largest <c>channel_reserve_satoshis</c> we accept from a peer in <c>open_channel</c> and
+    /// <c>accept_channel</c>, as a percentage of the channel; a reserve up to 1,000 sat is always accepted (LDK's
+    /// minimum). BOLT 2 lets the receiver fail a reserve it considers unreasonably large; the peer's reserve is what we
+    /// must keep on our side. NL-562: the old 1.2 x our own 1 % refused LDK's 1,000 sat on channels under ~84k sat;
+    /// LND refuses above 20 %.
+    /// </summary>
+    /// <remarks>Configuration key <c>Node:MaxAcceptedChannelReservePercent</c>; 0 to 100.</remarks>
+    public uint MaxAcceptedChannelReservePercent { get; set; } = DefaultMaxAcceptedChannelReservePercent;
+
+    /// <summary>
+    /// The default of <see cref="MinCommitmentFeeRatePerKw"/>: 275 sat/kw (1.1 sat/vB).
+    /// </summary>
+    public const uint DefaultMinCommitmentFeeRatePerKw = 275;
+
+    /// <summary>
+    /// The lowest commitment feerate we offer when we pick it from the fee estimate for a channel we fund: the
+    /// <c>feerate_per_kw</c> of <c>open_channel</c>, the <c>commitment_feerate_perkw</c> of <c>open_channel2</c> and
+    /// the <c>update_fee</c> we send. It keeps a margin above BOLT 3's 253 sat/kw floor, because LDK refuses a
+    /// feerate below its own low estimate (its 1,008-block estimate, e.g. 254 sat/kw: "Peer's feerate much too low",
+    /// NL-564). A feerate the operator names explicitly is used as given. What we accept from peers is unchanged:
+    /// anything from 253 sat/kw (NL-289).
+    /// </summary>
+    /// <remarks>Configuration key <c>Node:MinCommitmentFeeRatePerKw</c>; at least 253.</remarks>
+    public uint MinCommitmentFeeRatePerKw { get; set; } = DefaultMinCommitmentFeeRatePerKw;
+
+    /// <summary>
+    /// The commitment feerate we offer for a fee estimate on a channel we fund: the estimate, at least
+    /// <see cref="MinCommitmentFeeRatePerKw"/> (and never below 253 sat/kw; NL-564).
+    /// </summary>
+    public uint GetCommitmentFeeRatePerKw(long estimatePerKw)
+    {
+        var floor = Math.Max(MinCommitmentFeeRatePerKw, FeeUpdateOptions.FeeratePerKwFloor);
+        return (uint)Math.Clamp(estimatePerKw, floor, uint.MaxValue);
+    }
+
     public uint MinimumDepth { get; set; } = 3;
     public LightningMoney MinimumChannelSize { get; set; } = LightningMoney.Satoshis(20_000);
 
@@ -237,6 +278,10 @@ public class NodeOptions
             errors.Add($"{nameof(MaxAcceptedToSelfDelay)} must be positive.");
         if (MinAcceptedMaxHtlcValueInFlightPercent > 100)
             errors.Add($"{nameof(MinAcceptedMaxHtlcValueInFlightPercent)} must be at most 100.");
+        if (MaxAcceptedChannelReservePercent > 100)
+            errors.Add($"{nameof(MaxAcceptedChannelReservePercent)} must be at most 100.");
+        if (MinCommitmentFeeRatePerKw < FeeUpdateOptions.FeeratePerKwFloor)
+            errors.Add($"{nameof(MinCommitmentFeeRatePerKw)} must be at least {FeeUpdateOptions.FeeratePerKwFloor} sat/kw.");
 
         if (Encoding.UTF8.GetByteCount(Alias ?? string.Empty) > AliasMaxBytes)
             errors.Add($"{nameof(Alias)} must be at most {AliasMaxBytes} UTF-8 bytes.");

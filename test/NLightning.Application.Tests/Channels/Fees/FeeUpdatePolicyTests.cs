@@ -72,6 +72,32 @@ public class FeeUpdatePolicyTests
     }
 
     [Fact]
+    public void Given_ACommitmentFloor_When_TheEstimateIsBelowIt_Then_TheFloorIsTheTarget()
+    {
+        // Arrange (NL-564: Node:MinCommitmentFeeRatePerKw)
+        var commitments = Create(800_000, 200_000, 1_000);
+
+        // Act
+        var decision = FeeUpdatePolicy.Decide(commitments, 253, s_options, null, 275);
+
+        // Assert
+        Assert.Equal(275U, decision.FeeratePerKw);
+    }
+
+    [Fact]
+    public void Given_AChannelAt253AndACommitmentFloor_When_Deciding_Then_TheFeerateIsRaisedToTheFloor()
+    {
+        // Arrange: 253 -> 275 is within the 20 % threshold, but a feerate below the minimum is always raised
+        var commitments = Create(800_000, 200_000, 253);
+
+        // Act
+        var decision = FeeUpdatePolicy.Decide(commitments, 253, s_options, null, 275);
+
+        // Assert
+        Assert.Equal(275U, decision.FeeratePerKw);
+    }
+
+    [Fact]
     public void Given_ConfiguredMinimumBelowFloor_When_Targeting_Then_FloorStillApplies()
     {
         // Arrange

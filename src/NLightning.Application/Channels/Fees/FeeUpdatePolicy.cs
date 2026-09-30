@@ -29,10 +29,16 @@ public static class FeeUpdatePolicy
     /// <see cref="FeeUpdateOptions.NonAnchorFeerateMarginPercent"/> (the BOLT 2 "significant margin"), then clamped to
     /// the configured bounds and the 253 sat/kw floor.
     /// </summary>
-    public static uint TargetFeeratePerKw(uint estimatePerKw, bool optionAnchors, FeeUpdateOptions options)
+    /// <param name="estimatePerKw">The node's fee estimate (sat/kw).</param>
+    /// <param name="optionAnchors">Whether the channel has <c>option_anchors</c>.</param>
+    /// <param name="options">The fee update options.</param>
+    /// <param name="minCommitmentFeeratePerKw"><see cref="NodeOptions.MinCommitmentFeeRatePerKw"/>, a second lower
+    /// bound next to <see cref="FeeUpdateOptions.MinFeeratePerKw"/> (NL-564).</param>
+    public static uint TargetFeeratePerKw(uint estimatePerKw, bool optionAnchors, FeeUpdateOptions options,
+                                          uint minCommitmentFeeratePerKw = FeeUpdateOptions.FeeratePerKwFloor)
     {
         ArgumentNullException.ThrowIfNull(options);
-        var min = Math.Max(options.MinFeeratePerKw, FeeUpdateOptions.FeeratePerKwFloor);
+        var min = MinFeeratePerKw(options, minCommitmentFeeratePerKw);
         var max = Math.Max(min, optionAnchors ? options.MaxAnchorFeeratePerKw : options.MaxFeeratePerKw);
         var withMargin = optionAnchors
                              ? estimatePerKw
@@ -45,13 +51,13 @@ public static class FeeUpdatePolicy
     /// least <see cref="FeeUpdateOptions.ThresholdPercent"/> of the current feerate, or raises a feerate that is below
     /// the minimum.
     /// </summary>
-    public static bool ShouldAdjust(uint currentPerKw, uint targetPerKw, FeeUpdateOptions options)
+    public static bool ShouldAdjust(uint currentPerKw, uint targetPerKw, FeeUpdateOptions options,
+                                    uint minCommitmentFeeratePerKw = FeeUpdateOptions.FeeratePerKwFloor)
     {
         ArgumentNullException.ThrowIfNull(options);
         if (targetPerKw == currentPerKw)
             return false;
-        if (targetPerKw > currentPerKw
-         && currentPerKw < Math.Max(options.MinFeeratePerKw, FeeUpdateOptions.FeeratePerKwFloor))
+        if (targetPerKw > currentPerKw && currentPerKw < MinFeeratePerKw(options, minCommitmentFeeratePerKw))
             return true;
 
         var delta = (ulong)(targetPerKw > currentPerKw ? targetPerKw - currentPerKw : currentPerKw - targetPerKw);
@@ -66,8 +72,10 @@ public static class FeeUpdatePolicy
     /// <param name="options">The fee update options.</param>
     /// <param name="maxDustMsat">The channel's dust exposure limit (<see cref="DustExposurePolicy.Resolve"/>), or
     /// null for none.</param>
+    /// <param name="minCommitmentFeeratePerKw"><see cref="NodeOptions.MinCommitmentFeeRatePerKw"/> (NL-564).</param>
     public static FeeUpdateDecision Decide(ChannelCommitments commitments, uint estimatePerKw,
-                                           FeeUpdateOptions options, ulong? maxDustMsat)
+                                           FeeUpdateOptions options, ulong? maxDustMsat,
+                                           uint minCommitmentFeeratePerKw = FeeUpdateOptions.FeeratePerKwFloor)
     {
         ArgumentNullException.ThrowIfNull(commitments);
         ArgumentNullException.ThrowIfNull(options);
@@ -78,8 +86,9 @@ public static class FeeUpdatePolicy
         if (estimatePerKw == 0)
             return FeeUpdateDecision.None(current, current, "no fee estimate");
 
-        var target = TargetFeeratePerKw(estimatePerKw, commitments.Params.OptionAnchors, options);
-        if (!ShouldAdjust(current, target, options))
+        var target = TargetFeeratePerKw(estimatePerKw, commitments.Params.OptionAnchors, options,
+                                        minCommitmentFeeratePerKw);
+        if (!ShouldAdjust(current, target, options, minCommitmentFeeratePerKw))
             return FeeUpdateDecision.None(current, target, "within the threshold");
 
         if (target < current || CanSend(commitments, target, maxDustMsat, out _))
@@ -101,6 +110,9 @@ public static class FeeUpdatePolicy
                    ? FeeUpdateDecision.Send(current, target, low, $"capped: {reason}")
                    : FeeUpdateDecision.None(current, target, $"cannot raise the feerate: {reason}");
     }
+
+    private static uint MinFeeratePerKw(FeeUpdateOptions options, uint minCommitmentFeeratePerKw) =>
+        Math.Max(Math.Max(options.MinFeeratePerKw, minCommitmentFeeratePerKw), FeeUpdateOptions.FeeratePerKwFloor);
 
     /// <summary>
     /// True when we may send <c>update_fee</c> with <paramref name="feeratePerKw"/>: the engine's sender rules accept

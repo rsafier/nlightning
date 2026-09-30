@@ -489,7 +489,45 @@ public class ChannelFactoryTests
         };
     }
 
-    private static ChannelFactory CreateNonInitiatorChannelFactory(NodeOptions? nodeOptions = null)
+    [Theory]
+    [InlineData(253, 275)] // 1 sat/vB floored at BOLT 3's 253: an LDK peer asked for 254 (NL-564)
+    [InlineData(275, 275)]
+    [InlineData(2_500, 2_500)]
+    public async Task Given_AnEstimate_When_CreatingChannelAsInitiatorWithoutAFeerate_Then_TheFloorApplies(
+        long estimate, long expected)
+    {
+        // Arrange
+        var channelFactory = CreateNonInitiatorChannelFactory(estimatePerKw: LightningMoney.Satoshis(estimate));
+        var request = CreateRequest(LightningMoney.Satoshis(100_000));
+        request.FeeRatePerKw = null;
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsInitiatorAsync(request, new FeatureOptions(),
+                                                                           s_remoteNodeId);
+
+        // Assert
+        Assert.Equal(LightningMoney.Satoshis(expected), channel.ChannelParams.FeeRateAmountPerKw);
+    }
+
+    [Fact]
+    public async Task Given_ARequestFeerate_When_CreatingChannelAsInitiator_Then_ItIsUsedAsGiven()
+    {
+        // Arrange (an explicit feerate is the operator's choice, at least ChannelConstants.MinFeePerKw; only the
+        // estimate is floored)
+        var channelFactory = CreateNonInitiatorChannelFactory(estimatePerKw: LightningMoney.Satoshis(5_000));
+        var request = CreateRequest(LightningMoney.Satoshis(100_000));
+        request.FeeRatePerKw = LightningMoney.Satoshis(1_000);
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsInitiatorAsync(request, new FeatureOptions(),
+                                                                           s_remoteNodeId);
+
+        // Assert
+        Assert.Equal(LightningMoney.Satoshis(1_000), channel.ChannelParams.FeeRateAmountPerKw);
+    }
+
+    private static ChannelFactory CreateNonInitiatorChannelFactory(NodeOptions? nodeOptions = null,
+                                                                   LightningMoney? estimatePerKw = null)
     {
         var signerMock = new Mock<ILightningSigner>();
         var basepoints = new ChannelBasepoints(s_remoteNodeId, s_remoteNodeId, s_remoteNodeId, s_remoteNodeId,
@@ -499,7 +537,7 @@ public class ChannelFactoryTests
 
         var feeServiceMock = new Mock<IFeeService>();
         feeServiceMock.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
-                      .ReturnsAsync(LightningMoney.Satoshis(1_000));
+                      .ReturnsAsync(estimatePerKw ?? LightningMoney.Satoshis(1_000));
 
         return new ChannelFactory(new Mock<IChannelIdFactory>().Object, new Mock<IChannelOpenValidator>().Object,
                                   feeServiceMock.Object, signerMock.Object,

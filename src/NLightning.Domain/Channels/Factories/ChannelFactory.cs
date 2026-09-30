@@ -54,9 +54,8 @@ public class ChannelFactory : IChannelFactory
             throw new ChannelErrorException("We can only accept dual fund channels", payload.ChannelId);
 
         // Perform optional checks for the channel
-        var ourChannelReserveAmount = GetOurChannelReserveFromFundingAmount(payload.FundingAmount);
         _channelOpenValidator.PerformOptionalChecks(
-            ChannelOpenOptionalValidationParameters.FromOpenChannel1Payload(payload, ourChannelReserveAmount));
+            ChannelOpenOptionalValidationParameters.FromOpenChannel1Payload(payload));
 
         // Perform mandatory checks for the channel
         var currentFee = await _feeService.GetFeeRatePerKwAsync();
@@ -186,7 +185,10 @@ public class ChannelFactory : IChannelFactory
             channelReserveAmount = dustLimitAmount;
 
         // Check if there are enough funds to pay for fees
-        var currentFeeRatePerKw = request.FeeRatePerKw ?? await _feeService.GetFeeRatePerKwAsync();
+        // Our estimate, at least Node:MinCommitmentFeeRatePerKw (NL-564); a feerate the request names is used as given
+        var currentFeeRatePerKw = request.FeeRatePerKw
+                               ?? LightningMoney.Satoshis(_nodeOptions.GetCommitmentFeeRatePerKw(
+                                                              (await _feeService.GetFeeRatePerKwAsync()).Satoshi));
         var hasAnchors = negotiatedFeatures.OptionAnchors > FeatureSupport.No;
         var expectedFee = CommitmentFeeCalculator.FunderCost((ulong)currentFeeRatePerKw.Satoshi, hasAnchors, 0);
         if (request.FundingAmount < expectedFee + channelReserveAmount)

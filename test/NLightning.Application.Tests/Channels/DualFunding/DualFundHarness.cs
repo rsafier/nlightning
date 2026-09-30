@@ -112,6 +112,9 @@ internal sealed class DualFundHarness : IAsyncDisposable
         Bob = new DualFundNode(this, "Bob", 0xB0, Path.Combine(directory, "bob.db"), bobContributionSat);
     }
 
+    /// <summary>The nodes' fee estimate in sat/kw (default 2,500), read on every call.</summary>
+    public long FeeEstimatePerKw { get; set; } = 2_500;
+
     /// <summary>The nodes' open timeout unless a test sets one.</summary>
     public static readonly TimeSpan DefaultOpenTimeout = TimeSpan.FromSeconds(60);
 
@@ -459,7 +462,7 @@ internal sealed class DualFundNode
 
         var feeService = new Mock<IFeeService>();
         feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
-                  .ReturnsAsync(LightningMoney.Satoshis(2_500));
+                  .ReturnsAsync(() => LightningMoney.Satoshis(_harness.FeeEstimatePerKw));
 
         var services = new ServiceCollection();
         services.AddLogging();

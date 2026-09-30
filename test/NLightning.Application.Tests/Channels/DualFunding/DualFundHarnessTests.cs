@@ -5,6 +5,7 @@ namespace NLightning.Application.Tests.Channels.DualFunding;
 using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
 using Domain.Money;
+using Domain.Node.Options;
 using Domain.Onchain.Enums;
 using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.Messages;
@@ -249,6 +250,26 @@ public class DualFundHarnessTests
         await harness.ConfirmFundingAsync(channelId, harness.Bob.Published[0].TransactionId);
         Assert.Equal(ChannelState.Open, harness.Alice.Channel(channelId).State);
         Assert.Equal(ChannelState.Open, harness.Bob.Channel(channelId).State);
+    }
+
+    [Fact]
+    public async Task Given_AnEstimateAtTheRelayFloor_When_AliceOpensDualFunded_Then_TheCommitmentFeerateIsOurFloor()
+    {
+        // Arrange (NL-564: open_channel2's commitment feerate from a 253 sat/kw estimate is raised to 275)
+        await using var harness = await DualFundHarness.CreateAsync(BobShareSat);
+        harness.FeeEstimatePerKw = 253;
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Bob.Wallet.Utxos.Add(WalletUtxo.Create(700_000));
+
+        // Act
+        var result = await OpenAsync(harness);
+
+        // Assert
+        Assert.True(result.FailureReason is null, $"{result.FailureReason}\n{harness.Describe()}");
+        Assert.Equal(LightningMoney.Satoshis(NodeOptions.DefaultMinCommitmentFeeRatePerKw),
+                     harness.Alice.Channel(result.ChannelId).ChannelParams.FeeRateAmountPerKw);
+        Assert.Equal(LightningMoney.Satoshis(NodeOptions.DefaultMinCommitmentFeeRatePerKw),
+                     harness.Bob.Channel(result.ChannelId).ChannelParams.FeeRateAmountPerKw);
     }
 
     private static async Task<DualFundedOpenResult> OpenAsync(DualFundHarness harness, uint feeratePerKw = 2_500)

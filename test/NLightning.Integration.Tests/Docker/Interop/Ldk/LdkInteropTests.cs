@@ -221,6 +221,28 @@ public sealed class LdkInteropTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// NL-562: a small (50k sat) channel we fund. LDK asks for its minimum reserve of 1,000 sat (2 % of the channel),
+    /// which our old rule (1.2 x our own 1 % reserve, 600 sat) refused with "Channel reserve amount is too large"; it
+    /// is accepted now and the channel carries a payment.
+    /// </summary>
+    [Fact(Timeout = TestTimeoutMs)]
+    public async Task Given_ASmallChannelWeFund_When_LdkAsksForItsMinimumReserve_Then_WeAcceptAndPay()
+    {
+        // Arrange + Act
+        var ct = TestContext.Current.CancellationToken;
+        var session = await OwnAsync(LdkChannelSession.BuildOurFundedAsync(
+                                         _fixture, "nltg-small", LightningMoney.Satoshis(50_000), null, ct));
+
+        // Assert
+        var model = Channel(session);
+        LogChannelParams(model);
+        Assert.True(model.IsInitiator);
+        Assert.Equal(LightningMoney.Satoshis(50_000), model.FundingOutput!.Amount);
+        Assert.Equal(LightningMoney.Satoshis(1_000), model.ChannelParams.Remote.ChannelReserveAmount);
+        await session.AssertWePayLdkAsync(LightningMoney.Satoshis(5_000), ct);
+    }
+
+    /// <summary>
     /// 2 (and 4 from LDK's side): LDK funds a 1M sat private anchors channel to us (v1 <c>open_channel</c>; we hold
     /// the anchors reserve first, NL-379). Payments both ways, then LDK closes it (<c>close-channel</c>; legacy
     /// <c>closing_signed</c>).

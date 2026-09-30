@@ -12,11 +12,12 @@ public interface IChannelOpenValidator
     /// <remarks>
     /// This method verifies that optional configuration parameters meet recommended safety and usability thresholds:
     /// - Validates that the funding amount meets the minimum channel size threshold.
-    /// - Checks that the HTLC minimum amount is not excessively large relative to the node's configured minimum value.
+    /// - Checks that the HTLC minimum amount is below the channel amount (as LDK does, NL-562).
     /// - Validates that the maximum HTLC value in flight is enough relative to the channel funds
     ///   (<see cref="CheckMaxHtlcValueInFlight"/>).
-    /// - Ensures the channel reserve amount is not excessively high relative to the node's channel reserve configuration.
-    /// - Verifies that the maximum number of accepted HTLCs meets a minimum threshold.
+    /// - Ensures the channel reserve amount is at most the larger of <c>Node:MaxAcceptedChannelReservePercent</c> of the
+    ///   channel and 1,000 sat (NL-562).
+    /// - Verifies that the maximum number of accepted HTLCs meets a constant minimum (independent of ours, NL-562).
     /// - Confirms that the dust limit is not excessively large relative to the node's configured dust limit.
     /// </remarks>
     /// <param name="parameters">The parameters containing the channel's configuration parameters, including funding amount, HTLC limits, and related settings.</param>

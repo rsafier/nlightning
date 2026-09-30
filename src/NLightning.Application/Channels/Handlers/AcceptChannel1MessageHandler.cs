@@ -124,13 +124,12 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
                 $"Our channel reserve ({localParams.ChannelReserveAmount}) is below the dust limit ({payload.DustLimitAmount})",
                 payload.ChannelId, "dust_limit_satoshis is above our channel_reserve_satoshis");
 
-        // Perform optional checks for the channel
+        // Perform optional checks for the channel (the reserve and htlc_minimum limits are relative to it, NL-562)
+        var channelAmount = tempChannel.LocalBalance + tempChannel.RemoteBalance;
         _channelOpenValidator.PerformOptionalChecks(
-            ChannelOpenOptionalValidationParameters.FromAcceptChannel1Payload(
-                payload, localParams.ChannelReserveAmount));
+            ChannelOpenOptionalValidationParameters.FromAcceptChannel1Payload(payload, channelAmount));
         // NL-552: the same in-flight floor as for a peer's open (the payload's optional parameters leave it out)
-        _channelOpenValidator.CheckMaxHtlcValueInFlight(tempChannel.LocalBalance + tempChannel.RemoteBalance,
-                                                        payload.MaxHtlcValueInFlightAmount);
+        _channelOpenValidator.CheckMaxHtlcValueInFlight(channelAmount, payload.MaxHtlcValueInFlightAmount);
 
         // Perform mandatory checks for the channel
         _channelOpenValidator.PerformMandatoryChecks(ChannelOpenMandatoryValidationParameters.FromAcceptChannel1Payload(

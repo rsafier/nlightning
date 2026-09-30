@@ -181,7 +181,8 @@ public sealed class FeeUpdateScheduler : IFeeUpdateScheduler, IAsyncDisposable, 
     {
         var commitments = channel.Commitments!;
         var maxDust = DustExposurePolicy.Resolve(commitments, options.MaxDustHtlcExposureMsat);
-        var decision = FeeUpdatePolicy.Decide(commitments, estimate, options.FeeUpdates, maxDust);
+        var decision = FeeUpdatePolicy.Decide(commitments, estimate, options.FeeUpdates, maxDust,
+                                              options.MinCommitmentFeeRatePerKw);
         if (decision.FeeratePerKw is not { } feerate)
         {
             if (_logger.IsEnabled(LogLevel.Debug))

@@ -433,6 +433,8 @@ public static class NodeConfigurationExtensions
                    "EnableHtlcs": {{ENABLE_HTLCS}},
                    "MaxAcceptedToSelfDelay": 2016,
                    "MinAcceptedMaxHtlcValueInFlightPercent": 1,
+                   "MaxAcceptedChannelReservePercent": 10,
+                   "MinCommitmentFeeRatePerKw": 275,
                    "Routing": {
                      "FeeBaseMsat": {{FEE_BASE_MSAT}},
                      "FeeProportionalMillionths": {{FEE_PPM}},

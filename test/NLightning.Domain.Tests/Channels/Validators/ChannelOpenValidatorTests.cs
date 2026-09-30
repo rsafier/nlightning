@@ -537,18 +537,178 @@ public class ChannelOpenValidatorTests
         Assert.Null(atTheFloor);
     }
 
+    [Theory]
+    [InlineData(50_000, 1_000)] // LDK's minimum reserve on a small channel (NL-562: the live Mutinynet refusal)
+    [InlineData(20_000, 1_000)] // the 1,000 sat cap on our smallest channel
+    [InlineData(100_000, 10_000)] // 10 % of the channel
+    [InlineData(1_000_000, 10_000)] // LND's and CLN's 1 %
+    [InlineData(1_000_000, 100_000)] // 10 % of a larger channel
+    public void Given_APeerReserveAtOrBelowTheCap_When_PerformingOptionalChecks_Then_DoesNotThrow(
+        long channelSat, long reserveSat)
+    {
+        // Arrange
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(channelSat),
+                                                  LightningMoney.Satoshis(channelSat),
+                                                  channelReserve: LightningMoney.Satoshis(reserveSat));
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Theory]
+    [InlineData(50_000, 5_001)] // above 10 % and above 1,000 sat
+    [InlineData(20_000, 2_001)]
+    [InlineData(1_000_000, 100_001)]
+    public void Given_APeerReserveAboveTheCap_When_PerformingOptionalChecks_Then_ThrowsInSatoshis(long channelSat,
+        long reserveSat)
+    {
+        // Arrange
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(channelSat),
+                                                  LightningMoney.Satoshis(channelSat),
+                                                  channelReserve: LightningMoney.Satoshis(reserveSat));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Contains($"Channel reserve amount is too large: {reserveSat} sat", exception.Message);
+    }
+
+    [Fact]
+    public void Given_APercentOfZero_When_APeerAsksForTheMinimumReserveCap_Then_OnlyTheCapIsAccepted()
+    {
+        // Arrange: with 0 % only the 1,000 sat cap remains
+        var validator = new ChannelOpenValidator(new NodeOptions { MaxAcceptedChannelReservePercent = 0 });
+        var atCap = CreateOptionalParameters(LightningMoney.Satoshis(1_000_000), LightningMoney.Satoshis(1_000_000),
+                                             channelReserve: LightningMoney.Satoshis(1_000));
+        var aboveCap = CreateOptionalParameters(LightningMoney.Satoshis(1_000_000),
+                                                LightningMoney.Satoshis(1_000_000),
+                                                channelReserve: LightningMoney.Satoshis(1_001));
+
+        // Act
+        var atCapException = Record.Exception(() => validator.PerformOptionalChecks(atCap));
+        var aboveCapException = Record.Exception(() => validator.PerformOptionalChecks(aboveCap));
+
+        // Assert
+        Assert.Null(atCapException);
+        Assert.IsType<ChannelErrorException>(aboveCapException);
+    }
+
+    [Theory]
+    [InlineData(0UL)] // CLN's default
+    [InlineData(1UL)] // LDK's and Eclair's default
+    [InlineData(1_000UL)] // LND's default
+    [InlineData(1_000_000UL)] // 1,000 sat, what some routing nodes ask
+    [InlineData(49_999_999UL)] // just below the channel
+    public void Given_APeerHtlcMinimumBelowTheChannel_When_PerformingOptionalChecks_Then_DoesNotThrow(
+        ulong htlcMinimumMsat)
+    {
+        // Arrange (NL-562: no longer 1.2 x our own minimum)
+        var validator = new ChannelOpenValidator(new NodeOptions { HtlcMinimumAmount = LightningMoney.MilliSatoshis(1) });
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(50_000), LightningMoney.Satoshis(50_000),
+                                                  htlcMinimum: LightningMoney.MilliSatoshis(htlcMinimumMsat));
+
+        // Act
+        var exception = Record.Exception(() => validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_APeerHtlcMinimumOfTheWholeChannel_When_PerformingOptionalChecks_Then_Throws()
+    {
+        // Arrange (LDK's rule: a minimum of the channel or more leaves it unusable)
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(50_000), LightningMoney.Satoshis(50_000),
+                                                  htlcMinimum: LightningMoney.Satoshis(50_000));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Contains("Htlc minimum amount is too large: 50000000 msat", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(483)] // LND's and CLN's default
+    [InlineData(50)] // LDK's default
+    [InlineData(30)] // Eclair's default
+    [InlineData(ChannelOpenValidator.MinAcceptedMaxAcceptedHtlcs)]
+    public void Given_OurMaxAcceptedHtlcsRaisedToLnds_When_APeerOffersItsDefault_Then_DoesNotThrow(int peerMax)
+    {
+        // Arrange (NL-562: 0.8 x our 483 refused Eclair's 30 and LDK's 50)
+        var validator = new ChannelOpenValidator(new NodeOptions { MaxAcceptedHtlcs = 483 });
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(500_000), LightningMoney.Satoshis(500_000),
+                                                  maxAcceptedHtlcs: (ushort)peerMax);
+
+        // Act
+        var exception = Record.Exception(() => validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_APeerMaxAcceptedHtlcsBelowTheFloor_When_PerformingOptionalChecks_Then_Throws()
+    {
+        // Arrange
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(500_000), LightningMoney.Satoshis(500_000),
+                                                  maxAcceptedHtlcs: ChannelOpenValidator.MinAcceptedMaxAcceptedHtlcs - 1);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Contains("Max accepted htlcs is too small: 3 < 4", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(354)] // LND's and LDK's default
+    [InlineData(546)] // CLN's and Eclair's default
+    public void Given_APeerDustLimitOfAnImplementationsDefault_When_PerformingOptionalChecks_Then_DoesNotThrow(
+        long dustSat)
+    {
+        // Arrange
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(500_000), LightningMoney.Satoshis(500_000),
+                                                  dustLimit: LightningMoney.Satoshis(dustSat));
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_APeerDustLimitAboveOurRule_When_PerformingOptionalChecks_Then_ThrowsInSatoshis()
+    {
+        // Arrange: 1.75 x our 354 sat is 619.5 sat
+        var parameters = CreateOptionalParameters(LightningMoney.Satoshis(500_000), LightningMoney.Satoshis(500_000),
+                                                  dustLimit: LightningMoney.Satoshis(620));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformOptionalChecks(parameters));
+
+        // Assert
+        Assert.Contains("Dust limit amount is too large: 620 sat", exception.Message);
+    }
+
     private static ChannelOpenOptionalValidationParameters CreateOptionalParameters(
-        LightningMoney fundingAmount, LightningMoney maxHtlcValueInFlight)
+        LightningMoney fundingAmount, LightningMoney maxHtlcValueInFlight, LightningMoney? channelReserve = null,
+        LightningMoney? htlcMinimum = null, ushort maxAcceptedHtlcs = 30, LightningMoney? dustLimit = null)
     {
         return new ChannelOpenOptionalValidationParameters
         {
             FundingAmount = fundingAmount,
             MaxHtlcValueInFlight = maxHtlcValueInFlight,
-            HtlcMinimumAmount = LightningMoney.Satoshis(1),
-            ChannelReserveAmount = LightningMoney.Satoshis(5_000),
-            OurChannelReserveAmount = LightningMoney.Satoshis(5_000),
-            MaxAcceptedHtlcs = 30,
-            DustLimitAmount = LightningMoney.Satoshis(354),
+            HtlcMinimumAmount = htlcMinimum ?? LightningMoney.Satoshis(1),
+            ChannelReserveAmount = channelReserve ?? LightningMoney.Satoshis(5_000),
+            ChannelAmount = fundingAmount,
+            MaxAcceptedHtlcs = maxAcceptedHtlcs,
+            DustLimitAmount = dustLimit ?? LightningMoney.Satoshis(354),
             ToSelfDelay = 144
         };
     }

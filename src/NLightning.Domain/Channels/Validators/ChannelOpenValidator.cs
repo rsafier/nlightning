@@ -29,6 +29,18 @@ public class ChannelOpenValidator : IChannelOpenValidator
     public static readonly LightningMoney MinAcceptableFeeRatePerKw =
         LightningMoney.Satoshis(FeeUpdateOptions.FeeratePerKwFloor);
 
+    /// <summary>
+    /// The peer's <c>channel_reserve_satoshis</c> we always accept, whatever the channel size (with
+    /// <see cref="NodeOptions.MaxAcceptedChannelReservePercent"/>): LDK's minimum reserve (NL-562).
+    /// </summary>
+    public static readonly LightningMoney MinAcceptedChannelReserveCap = LightningMoney.Satoshis(1_000);
+
+    /// <summary>
+    /// The smallest <c>max_accepted_htlcs</c> we accept from a peer (the old rule's value with our default of 5;
+    /// LND and CLN offer 483, LDK 50, Eclair 30).
+    /// </summary>
+    public const ushort MinAcceptedMaxAcceptedHtlcs = 4;
+
     private readonly NodeOptions _nodeOptions;
 
     public ChannelOpenValidator(NodeOptions nodeOptions)
@@ -43,31 +55,54 @@ public class ChannelOpenValidator : IChannelOpenValidator
         if (parameters.FundingAmount is not null && parameters.FundingAmount < _nodeOptions.MinimumChannelSize)
             throw new ChannelErrorException($"Funding amount is too small: {parameters.FundingAmount}");
 
-        // Check if we consider htlc_minimum_msat too large. IE. 20% bigger than our htlc minimum amount
-        if (parameters.HtlcMinimumAmount is not null
-         && parameters.HtlcMinimumAmount > _nodeOptions.HtlcMinimumAmount * 1.2M)
-            throw new ChannelErrorException($"Htlc minimum amount is too large: {parameters.HtlcMinimumAmount}");
+        // Check if we consider htlc_minimum_msat too large. The peer's minimum only bounds the smallest HTLC we can
+        // offer it, so, like LDK, we refuse only a minimum that leaves the channel unusable: the whole channel or more
+        // (NL-562; the old 1.2 x our own minimum refused LND's 1,000 msat as soon as ours was set below 834 msat)
+        if (parameters.HtlcMinimumAmount >= parameters.ChannelAmount)
+            throw new ChannelErrorException(
+                $"Htlc minimum amount is too large: {parameters.HtlcMinimumAmount.MilliSatoshi} msat "
+              + $">= the channel's {parameters.ChannelAmount.Satoshi} sat");
 
         // Check if we consider max_htlc_value_in_flight_msat too small (Node:MinAcceptedMaxHtlcValueInFlightPercent)
         if (parameters.FundingAmount is not null && parameters.MaxHtlcValueInFlight is not null)
             CheckMaxHtlcValueInFlight(parameters.FundingAmount, parameters.MaxHtlcValueInFlight);
 
-        // If the channel amount is too small, we can have the channelReserve smaller than our dust
-        var ourChannelReserveAmount = parameters.OurChannelReserveAmount;
-        if (ourChannelReserveAmount < parameters.DustLimitAmount)
-            ourChannelReserveAmount = parameters.DustLimitAmount;
+        // Check if we consider channel_reserve_satoshis too large (Node:MaxAcceptedChannelReservePercent, NL-562)
+        CheckChannelReserve(parameters.ChannelAmount, parameters.ChannelReserveAmount);
 
-        // Check if we consider channel_reserve_satoshis too large. IE. 20% bigger than our 1% channel reserve
-        if (parameters.ChannelReserveAmount > ourChannelReserveAmount * 1.2M)
-            throw new ChannelErrorException($"Channel reserve amount is too large: {parameters.ChannelReserveAmount}");
+        // Check if we consider max_accepted_htlcs too small. The peer's limit only bounds how many HTLCs we can offer
+        // it at once and is independent of ours (NL-562: 0.8 x ours refused Eclair's 30 and LDK's 50 as soon as ours
+        // was raised to LND's 483), so the floor is a constant
+        if (parameters.MaxAcceptedHtlcs < MinAcceptedMaxAcceptedHtlcs)
+            throw new ChannelErrorException(
+                $"Max accepted htlcs is too small: {parameters.MaxAcceptedHtlcs} < {MinAcceptedMaxAcceptedHtlcs}");
 
-        // Check if we consider max_accepted_htlcs too small. IE. 20% smaller than our max-accepted htlcs
-        if (parameters.MaxAcceptedHtlcs < (ushort)(_nodeOptions.MaxAcceptedHtlcs * 0.8M))
-            throw new ChannelErrorException($"Max accepted htlcs is too small: {parameters.MaxAcceptedHtlcs}");
-
-        // Check if we consider dust_limit_satoshis too large. IE. 75% bigger than our dust limit
+        // Check if we consider dust_limit_satoshis too large. IE. 75% bigger than our dust limit (619 sat with our
+        // default 354; every implementation's default is 354 or 546)
         if (parameters.DustLimitAmount > _nodeOptions.DustLimitAmount * 1.75M)
-            throw new ChannelErrorException($"Dust limit amount is too large: {parameters.DustLimitAmount}");
+            throw new ChannelErrorException(
+                $"Dust limit amount is too large: {parameters.DustLimitAmount.Satoshi} sat "
+              + $"> 1.75 x our {_nodeOptions.DustLimitAmount.Satoshi} sat");
+    }
+
+    /// <summary>
+    /// Fails the open when the peer's <c>channel_reserve_satoshis</c> is above the larger of
+    /// <see cref="NodeOptions.MaxAcceptedChannelReservePercent"/> of the channel and
+    /// <see cref="MinAcceptedChannelReserveCap"/>. Only v1 opens carry it (open_channel2 and accept_channel2 have no
+    /// reserve field: it is 1 % of the channel there).
+    /// </summary>
+    private void CheckChannelReserve(LightningMoney channelAmount, LightningMoney channelReserve)
+    {
+        // A cap relative to the channel, not to our own 1 % reserve (NL-562): LDK asks for at least 1,000 sat
+        // (MIN_THEIR_CHAN_RESERVE_SATOSHIS), 2 % of a 50k channel; LND refuses above 20 %
+        var percentCap = LightningMoney.Satoshis(channelAmount.Satoshi
+                                               * (long)_nodeOptions.MaxAcceptedChannelReservePercent / 100);
+        var cap = percentCap > MinAcceptedChannelReserveCap ? percentCap : MinAcceptedChannelReserveCap;
+        if (channelReserve > cap)
+            throw new ChannelErrorException(
+                $"Channel reserve amount is too large: {channelReserve.Satoshi} sat > {cap.Satoshi} sat "
+              + $"(max of {_nodeOptions.MaxAcceptedChannelReservePercent} % of {channelAmount.Satoshi} sat and "
+              + $"{MinAcceptedChannelReserveCap.Satoshi} sat)");
     }
 
     /// <inheritdoc/>

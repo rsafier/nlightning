@@ -410,6 +410,24 @@ public class AcceptChannel1MessageHandlerTests
     }
 
     [Fact]
+    public async Task Given_AcceptChannel_When_HandleAsync_Then_ThePeersReserveIsCheckedAgainstTheChannel()
+    {
+        // Arrange (NL-562: the reserve cap is relative to the channel, not to our own reserve)
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+        var channelAmount = _tempChannel.LocalBalance + _tempChannel.RemoteBalance;
+
+        // Act
+        await _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey);
+
+        // Assert
+        _mockValidator.Verify(v => v.PerformOptionalChecks(
+                                  It.Is<ChannelOpenOptionalValidationParameters>(p =>
+                                      p.ChannelAmount == channelAmount
+                                   && p.ChannelReserveAmount == message.Payload.ChannelReserveAmount)),
+                              Times.Once);
+    }
+
+    [Fact]
     public async Task Given_ChannelTypeDifferentFromOpenChannel_When_HandleAsync_Then_ChannelIsRejected()
     {
         // Arrange: BOLT 2: the receiver MUST fail the channel if channel_type does not match open_channel (NL-218)

@@ -50,6 +50,26 @@ public class FeeUpdateSchedulerTests
     }
 
     [Fact]
+    public async Task Given_AnEstimateAtTheRelayFloor_When_RoundRuns_Then_UpdateFeeNeverGoesBelowOurCommitmentFloor()
+    {
+        // Arrange (NL-564: 1 sat/vB is 250 sat/kw, floored at 253 by the fee service; an LDK peer refuses 253)
+        var context = new NormalOperationTestContext();
+        SetupChannels(context.Channel);
+        SetupEstimate(253);
+
+        // Act
+        var outcomes = await CreateScheduler().RunOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var outcome = Assert.Single(outcomes);
+        Assert.True(outcome.Sent);
+        Assert.Equal(NodeOptions.DefaultMinCommitmentFeeRatePerKw, outcome.Decision.FeeratePerKw);
+        _operations.Verify(o => o.UpdateFeeAsync(NormalOperationTestContext.TestChannelId,
+                                                 NodeOptions.DefaultMinCommitmentFeeRatePerKw,
+                                                 It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task Given_EstimateWithinThreshold_When_RoundRuns_Then_NothingSent()
     {
         // Arrange
