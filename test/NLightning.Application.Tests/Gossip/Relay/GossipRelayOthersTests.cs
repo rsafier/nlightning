@@ -126,6 +126,52 @@ public class GossipRelayOthersTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_AnAnnouncementSkippedAtTheFilterBoundary_When_ALaterUpdateIsInside_Then_ItBringsTheAnnouncement()
+    {
+        // Arrange (NL-368): the channel's only update is below the peer's filter at its first flush, so the 256 is
+        // dropped for that connection and counts as seen (the collect never offers it again)
+        var peer = AddPeer(0x41, new GossipTimestampFilter(1_500, 1_000));
+        await BaselineAsync();
+        _graph.AddSignedChannel(s_scid1, SyncTestGraph.NodeA, SyncTestGraph.NodeB, 1_000, null);
+        await FlushAllAsync();
+        Assert.Empty(peer.Sent);
+        var (node1, _) = SyncTestGraph.Ordered(SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+
+        // Act: an update inside the filter (and newer) is collected; the flush must not send it alone
+        ApplyUpdate(s_scid1, node1, 0, 2_000);
+        await FlushAllAsync();
+
+        // Assert
+        Assert.Equal([MessageTypes.ChannelAnnouncement, MessageTypes.ChannelUpdate], peer.Sent.Select(m => m.Type));
+        var announcement = Assert.IsType<ChannelAnnouncementMessage>(peer.Sent[0]);
+        Assert.Equal(s_scid1, announcement.Payload.ShortChannelId);
+    }
+
+    [Fact]
+    public async Task Given_TheBacklogSentAnAnnouncement_When_ALaterUpdateIsFlushed_Then_TheAnnouncementIsNotRepeated()
+    {
+        // Arrange (NL-368): the backlog of a new filter announced the channel on this connection
+        using var paced = new GossipRelayOthersTests(new GossipRelayOptions { BacklogMessagesPerSecond = 100 });
+        paced._graph.AddSignedChannel(s_scid1, SyncTestGraph.NodeA, SyncTestGraph.NodeB, 1_700_000_000,
+                                      1_700_000_001);
+        var peer = paced.AddPeer(0x41, new GossipTimestampFilter(0, uint.MaxValue));
+        await paced.BaselineAsync();
+        paced.RaiseFilter(peer);
+        await paced.TickAfterAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(3, peer.Sent.Count);
+        var (node1, _) = SyncTestGraph.Ordered(SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+
+        // Act
+        paced.ApplyUpdate(s_scid1, node1, 0, 1_700_000_050);
+        await paced.FlushAllAsync();
+
+        // Assert: only the new update goes; the announcement was already sent on this connection
+        Assert.Equal(4, peer.Sent.Count);
+        Assert.Equal(1, peer.Sent.Count(m => m.Type == MessageTypes.ChannelAnnouncement));
+        Assert.Equal(3, peer.Sent.Count(m => m.Type == MessageTypes.ChannelUpdate));
+    }
+
+    [Fact]
     public async Task Given_APeerWhoseSendStalls_When_TheRelayTicks_Then_TheOtherPeersStillGetTheirGossip()
     {
         // Arrange (review of G3-T3: a peer that stops reading its socket must not stop the relay to every peer)
@@ -228,8 +274,9 @@ public class GossipRelayOthersTests : IDisposable
         // Act
         await FlushAllAsync();
 
-        // Assert
-        var update = Assert.IsType<ChannelUpdateMessage>(Assert.Single(peer.Sent));
+        // Assert: the newer version goes out, with the announcement this connection never sent (NL-368)
+        Assert.Equal([MessageTypes.ChannelAnnouncement, MessageTypes.ChannelUpdate], peer.Sent.Select(m => m.Type));
+        var update = Assert.IsType<ChannelUpdateMessage>(peer.Sent[1]);
         Assert.Equal(1_700_000_010u, update.Payload.Timestamp);
     }
 
@@ -248,9 +295,11 @@ public class GossipRelayOthersTests : IDisposable
         ApplyUpdate(s_scid1, node1, 0, 1_700_000_020);
         await FlushAllAsync();
 
-        // Assert (the peer's phase is past the first collect, so its first flush comes after both)
+        // Assert (the peer's phase is past the first collect, so its first flush comes after both; the announcement
+        // this connection never sent goes along, NL-368)
         Assert.True(_relay.GetRelayPhase(peer.PeerPubKey) > TimeSpan.FromSeconds(20));
-        var update = Assert.IsType<ChannelUpdateMessage>(Assert.Single(peer.Sent));
+        Assert.Equal([MessageTypes.ChannelAnnouncement, MessageTypes.ChannelUpdate], peer.Sent.Select(m => m.Type));
+        var update = Assert.IsType<ChannelUpdateMessage>(peer.Sent[1]);
         Assert.Equal(1_700_000_020u, update.Payload.Timestamp);
     }
 

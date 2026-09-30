@@ -42,7 +42,9 @@ using Sync.Interfaces;
 /// <c>channel_announcement</c> takes the timestamps of its updates and goes out only when one of them is inside), all
 /// <c>channel_announcement</c>s first, then the <c>channel_update</c>s, then the <c>node_announcement</c>s (of nodes
 /// that still have a channel), never to a peer that sent us that version (origin suppression) and never to a peer
-/// whose <c>init</c> networks exclude our chain. A peer that sent no filter gets nothing (B7-RL-01).
+/// whose <c>init</c> networks exclude our chain. A peer that sent no filter gets nothing (B7-RL-01). An update of a
+/// channel whose announcement this connection never got (its only update was outside the filter at an earlier flush)
+/// brings the announcement with it (NL-368).
 /// </para>
 /// <para>
 /// <b>Runs:</b> each connection's share of a tick runs on its own task; the tick waits at most
@@ -332,6 +334,31 @@ public sealed partial class GossipRelayScheduler
         var pending = state.TakePending(AnnouncementToResend);
         if (state.TruncatedAt is { } cut)
             pending = CompleteAfterTruncatedBacklog(state, pending, cut);
+
+        // NL-368: a 258 never goes out before its 256 on this connection. A 256 whose only update fell outside the
+        // filter at an earlier flush was dropped here and counts as seen (never collected again), so the first
+        // in-filter 258 of that channel brings the 256 with it
+        var inBatch = new HashSet<Domain.Channels.ValueObjects.ShortChannelId>();
+        foreach (var item in pending)
+            if (item.Type == MessageTypes.ChannelAnnouncement)
+                inBatch.Add(item.ShortChannelId);
+
+        foreach (var shortChannelId in pending
+                                         .Where(i => i.Type == MessageTypes.ChannelUpdate)
+                                         .Select(i => i.ShortChannelId)
+                                         .Distinct()
+                                         .ToList())
+        {
+            if (inBatch.Contains(shortChannelId) || state.WasAnnounced(shortChannelId))
+                continue;
+
+            if (AnnouncementToResend(shortChannelId) is not { } announcement)
+                continue;
+
+            pending.Add(announcement);
+            inBatch.Add(shortChannelId);
+        }
+
         var items = pending
                          .OrderBy(i => i.Rank)
                          .ThenBy(i => QueryResponder.ToUInt64(i.ShortChannelId))
@@ -352,7 +379,11 @@ public sealed partial class GossipRelayScheduler
                 case SendResult.Sent:
                     sent++;
                     if (item.Type == MessageTypes.ChannelAnnouncement)
+                    {
+                        state.RememberAnnounced(item.ShortChannelId);
                         state.RememberAnnouncedAfterCut(item.ShortChannelId);
+                    }
+
                     break;
                 case SendResult.Full:
                     // NL-360: the refused message and the rest go back, ahead of what was collected since
@@ -400,6 +431,9 @@ public sealed partial class GossipRelayScheduler
                 case SendResult.Sent:
                     sent++;
                     state.AdvanceBacklogPosition(item);
+                    if (item.Type == MessageTypes.ChannelAnnouncement)
+                        state.RememberAnnounced(item.ShortChannelId);
+
                     break;
                 case SendResult.Full:
                     state.HeldBacklogItem = item;
@@ -673,11 +707,20 @@ public sealed partial class GossipRelayScheduler
         return items;
     }
 
-    /// <summary>The stored announcement of a channel still relayable (null when it is not).</summary>
-    private RelayItem? AnnouncementToResend(Domain.Channels.ValueObjects.ShortChannelId shortChannelId) =>
-        _graphStore!.TryGetChannel(shortChannelId, out var channel) && IsRelayable(channel)
-            ? new RelayItem(MessageTypes.ChannelAnnouncement, shortChannelId, 0, null, 0, channel.RawAnnouncement)
-            : null;
+    /// <summary>
+    /// The stored announcement of a channel still relayable (null when it is not, or when the channel is ours: its
+    /// announcement reaches every peer through the own path, regardless of filters, NL-368).
+    /// </summary>
+    private RelayItem? AnnouncementToResend(Domain.Channels.ValueObjects.ShortChannelId shortChannelId)
+    {
+        if (!_graphStore!.TryGetChannel(shortChannelId, out var channel)
+         || !IsRelayable(channel)
+         || IsOurs(channel.NodeId1)
+         || IsOurs(channel.NodeId2))
+            return null;
+
+        return new RelayItem(MessageTypes.ChannelAnnouncement, shortChannelId, 0, null, 0, channel.RawAnnouncement);
+    }
 
     private RelayPeerState GetRelayState(GossipPeer peer, DateTimeOffset now) =>
         _relayPeers.GetValue(peer.Service, _ => new RelayPeerState(now + GetRelayPhase(peer.NodeId),
@@ -909,6 +952,29 @@ public sealed partial class GossipRelayScheduler
 
         public bool WasAnnouncedAfterCut(Domain.Channels.ValueObjects.ShortChannelId shortChannelId) =>
             _announcedAfterCut.Contains(shortChannelId);
+
+        private readonly HashSet<Domain.Channels.ValueObjects.ShortChannelId> _announced = [];
+        private readonly Queue<Domain.Channels.ValueObjects.ShortChannelId> _announcedOrder = [];
+
+        /// <summary>
+        /// Remembers that this connection was sent the channel's <c>channel_announcement</c> (NL-368), so a later
+        /// <c>channel_update</c> never brings it again. Bounded like <see cref="RememberAnnouncedAfterCut"/>: a
+        /// forgotten one costs a repeated announcement, never an update without one.
+        /// </summary>
+        public void RememberAnnounced(Domain.Channels.ValueObjects.ShortChannelId shortChannelId)
+        {
+            if (_announced.Add(shortChannelId))
+                _announcedOrder.Enqueue(shortChannelId);
+
+            if (_announced.Count >= 4 * Math.Max(maxPending, 16))
+            {
+                _announced.Clear();
+                _announcedOrder.Clear();
+            }
+        }
+
+        public bool WasAnnounced(Domain.Channels.ValueObjects.ShortChannelId shortChannelId) =>
+            _announced.Contains(shortChannelId);
 
         public void RequestBacklog() => Interlocked.Exchange(ref _backlogRequested, 1);
 
