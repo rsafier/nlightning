@@ -83,7 +83,7 @@ Implement `IChannelMessageHandler<TMessage>.HandleAsync(msg, currentState, negot
 
 ### Add an EF migration (all 3 providers)
 Edit the entity (`src/NLightning.Infrastructure.Persistence/Entities/…`, `internal` parameterless ctor), its `EntityConfiguration/…/Configure<Name>Entity`, and the DbSet/`OnModelCreating` in `Contexts/NLightningDbContext.cs`. Then:
-Prerequisite: `dotnet-ef` is not installed by the repo (no `.config/dotnet-tools.json`); run `dotnet tool install --global dotnet-ef --version 10.0.12` (matches the EF packages; the migration scripts pass `--framework net10.0`, override with `EF_FRAMEWORK`). `dotnet ef` loads the provider assemblies from the shared `src/NLightning.Infrastructure.Persistence/bin/Debug`, so build the three `NLightning.Infrastructure.Persistence.{Postgres,Sqlite,SqlServer}` projects in Debug first or it generates against stale models (NL-233).
+Prerequisite: `dotnet-ef` is not installed by the repo (no `.config/dotnet-tools.json`); run `dotnet tool install --global dotnet-ef --version 10.0.12` (matches the EF packages; the migration scripts pass `--framework net10.0`, override with `EF_FRAMEWORK`). Every `dotnet ef` call passes the provider as both `--project` and `--startup-project` (as the scripts do, NL-233): the tool then builds and runs that provider's own fresh Debug output, instead of loading a provider assembly left stale in a shared bin folder.
 ```bash
 cd src/NLightning.Infrastructure.Persistence
 ./scripts/start_postgres.sh && ./scripts/start_sql.sh      # Docker: postgres :15432, mssql :1433
