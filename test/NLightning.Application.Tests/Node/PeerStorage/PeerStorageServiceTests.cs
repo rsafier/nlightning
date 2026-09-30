@@ -315,6 +315,25 @@ public class PeerStorageServiceTests
     }
 
     [Fact]
+    public async Task Given_WeDoNotOfferStorage_When_APeerThatOffersConnects_Then_OurBackupIsSentToIt()
+    {
+        // Arrange: BOLT 1 lets a node send peer_storage to any peer that offers the feature, whether or not it
+        // stores blobs itself (NL-433), so our advertisement must not hold our backups back
+        using var context = new PeerStorageTestContext(offerStorage: FeatureSupport.No);
+        var peer = new FakeGossipPeer(59);
+        var channel = context.AddChannel(peer.PeerPubKey);
+
+        // Act
+        context.Service.OnPeerInitialized(peer);
+
+        // Assert
+        var sent = await peer.NextAsync<PeerStorageMessage>();
+        var contents = await context.BlobProvider.TryReadBlobAsync(sent.Payload.Blob,
+                                                                   TestContext.Current.CancellationToken);
+        Assert.Equal(channel.ChannelId, Assert.Single(contents!.Channels).ChannelId);
+    }
+
+    [Fact]
     public async Task Given_SendBackupsOff_When_APeerThatOffersStorageConnects_Then_NothingIsSent()
     {
         // Arrange

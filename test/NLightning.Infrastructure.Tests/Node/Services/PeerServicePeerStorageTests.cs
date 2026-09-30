@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace NLightning.Infrastructure.Tests.Node.Services;
 
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Node.PeerStorage;
@@ -108,6 +109,32 @@ public class PeerServicePeerStorageTests
 
         // Assert
         Assert.Equal(["our init sent", "storage"], events);
+    }
+
+    [Fact]
+    public void Given_ThePeerOffersStorageAndWeDoNot_When_ItsInitIsAccepted_Then_ItsAdvertisementIsKept()
+    {
+        // Arrange: our configuration advertises option_provide_storage No, the peer's init offers it (NL-433)
+        var ours = new FeatureOptions
+        {
+            ChainHashes = [ChainConstants.Regtest],
+            OptionProvideStorage = FeatureSupport.No
+        };
+        var peerService = new PeerService(_communication.Object, ours, NullLogger<PeerService>.Instance,
+                                          TimeSpan.FromSeconds(1));
+        var theirs = new FeatureOptions
+        {
+            ChainHashes = [ChainConstants.Regtest],
+            OptionProvideStorage = FeatureSupport.Optional
+        };
+
+        // Act
+        RaiseMessage(new InitMessage(new InitPayload(theirs.GetNodeFeatures()),
+                                     new NetworksTlv([ChainConstants.Regtest])));
+
+        // Assert: the peer's own advertisement is kept next to the negotiated set, which folds ours in
+        Assert.Equal(FeatureSupport.Optional, peerService.PeerFeatures.OptionProvideStorage);
+        Assert.Equal(FeatureSupport.No, peerService.Features.OptionProvideStorage);
     }
 
     [Fact]

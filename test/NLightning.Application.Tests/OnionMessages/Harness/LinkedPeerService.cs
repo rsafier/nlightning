@@ -85,6 +85,10 @@ internal sealed class LinkedPeerService : IPeerService
 
     public CompactPubKey PeerPubKey => Remote.NodeId;
     public FeatureOptions Features { get; }
+
+    /// <summary>The same options as <see cref="Features"/>: the fake does not model the negotiation separately.</summary>
+    public FeatureOptions PeerFeatures => Features;
+
     public DateTimeOffset? LastMessageReceivedAt => null;
     public AddressDescriptor? ObservedAddress => null;
 

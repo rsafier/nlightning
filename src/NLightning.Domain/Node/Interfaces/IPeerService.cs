@@ -19,9 +19,18 @@ public interface IPeerService : IDisposable
     CompactPubKey PeerPubKey { get; }
 
     /// <summary>
-    /// Gets the feature options for the peer.
+    /// Gets the feature options negotiated between us and the peer (a feature is set only when both sides support
+    /// it). Before the peer's <c>init</c> was accepted this is the default.
     /// </summary>
     FeatureOptions Features { get; }
+
+    /// <summary>
+    /// Gets the feature options the peer advertised in its <c>init</c>, before they were negotiated with ours, so a
+    /// consumer can react to what the peer offers regardless of our own advertisement (e.g. BOLT 1 lets a node send
+    /// <c>peer_storage</c> to any peer that offers <c>option_provide_storage</c>, whether or not it stores blobs
+    /// itself, NL-433). Before the peer's <c>init</c> was accepted this is the default.
+    /// </summary>
+    FeatureOptions PeerFeatures { get; }
 
     /// <summary>
     /// When the last message of any type was received from the peer (UTC), or null before the first one.
