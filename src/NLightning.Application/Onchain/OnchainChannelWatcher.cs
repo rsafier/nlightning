@@ -46,7 +46,8 @@ using Interfaces;
 /// commitment resolver then treats it like a commitment it cannot rebuild (every output watched, a <c>to_remote</c> of
 /// ours swept, our offered HTLCs failed upstream once expired and reasonably deep, NL-320), and the channel closes once
 /// those outputs are irrevocable or ignored. A mutual close is left to the channel manager (it only
-/// arrives for a channel in its close negotiation).</para>
+/// arrives for a channel in its close negotiation, or a Failed one that signed a closing tx before it failed,
+/// NL-312).</para>
 /// <para>Idempotent: the chain monitor raises a spend again for a replayed block; a spend already recorded changes
 /// nothing. A different spend recorded before (a reorg) is recorded over it in one save that also ignores the old
 /// close's output rows and abandons the channel's other pending transactions (NL-292, O6-T3).</para>
