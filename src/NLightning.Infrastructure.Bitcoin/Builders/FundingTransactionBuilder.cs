@@ -11,6 +11,7 @@ using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
 using Interfaces;
+using Networks;
 using Outputs;
 
 public class FundingTransactionBuilder : IFundingTransactionBuilder
@@ -24,8 +25,7 @@ public class FundingTransactionBuilder : IFundingTransactionBuilder
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ??
-                   throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
+        _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
     }
 
     public FundingTransactionBuildResult Build(FundingTransactionModel transaction)

@@ -10,6 +10,7 @@ using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Node.Options;
 using Interfaces;
+using Networks;
 using Outputs;
 
 public class CommitmentTransactionBuilder : ICommitmentTransactionBuilder
@@ -18,8 +19,7 @@ public class CommitmentTransactionBuilder : ICommitmentTransactionBuilder
 
     public CommitmentTransactionBuilder(IOptions<NodeOptions> nodeOptions)
     {
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ??
-                   throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
+        _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
     }
 
     /// <inheritdoc />

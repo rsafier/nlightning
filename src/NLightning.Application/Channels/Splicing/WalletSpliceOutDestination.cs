@@ -7,6 +7,7 @@ namespace NLightning.Application.Channels.Splicing;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Node.Options;
+using Infrastructure.Bitcoin.Networks;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
@@ -25,8 +26,7 @@ public sealed class WalletSpliceOutDestination : ISpliceOutDestination
                                       IBlockchainMonitor? blockchainMonitor = null)
     {
         ArgumentNullException.ThrowIfNull(nodeOptions);
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork)
-                ?? throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
+        _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
         _scopeFactory = scopeFactory;
         _blockchainMonitor = blockchainMonitor;
     }

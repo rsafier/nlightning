@@ -10,6 +10,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Node.Options;
 using Interfaces;
+using Networks;
 using Outputs;
 
 /// <summary>
@@ -28,8 +29,7 @@ public class ClosingTransactionBuilder : IClosingTransactionBuilder
 
     public ClosingTransactionBuilder(IOptions<NodeOptions> nodeOptions)
     {
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ??
-                   throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
+        _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
     }
 
     /// <inheritdoc />

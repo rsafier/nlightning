@@ -133,4 +133,16 @@ public class CommitmentTransactionBuilderTests
         // Then
         Assert.Empty(result.HtlcOutputsInTxOrder);
     }
+
+    [Fact]
+    public void Given_AnUnknownBitcoinNetwork_When_TheBuilderIsConstructed_Then_ItFailsInsteadOfUsingMainnet()
+    {
+        // Arrange: NL-298, every NBitcoin network resolves through ToNBitcoinNetwork(), which refuses unknown names
+        var nodeOptions = new NodeOptions { BitcoinNetwork = "unknown-net" };
+
+        // Act / Assert
+        Assert.Throws<ArgumentException>(() =>
+                                             new CommitmentTransactionBuilder(
+                                                 new OptionsWrapper<NodeOptions>(nodeOptions)));
+    }
 }

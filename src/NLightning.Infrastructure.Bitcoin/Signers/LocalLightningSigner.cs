@@ -26,6 +26,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Models;
 using Domain.Protocol.ValueObjects;
 using Gossip;
+using Networks;
 
 public partial class LocalLightningSigner : ILightningSigner
 {
@@ -75,8 +76,7 @@ public partial class LocalLightningSigner : ILightningSigner
         _secureKeyManager = secureKeyManager;
         _utxoMemoryRepository = utxoMemoryRepository;
 
-        _network = Network.GetNetwork(nodeOptions.BitcoinNetwork) ??
-                   throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
+        _network = nodeOptions.BitcoinNetwork.ToNBitcoinNetwork();
         _chainHash = nodeOptions.BitcoinNetwork.ChainHash;
         _signingInfoSource = signingInfoSource;
     }

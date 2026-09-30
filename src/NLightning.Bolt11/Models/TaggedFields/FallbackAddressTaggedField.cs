@@ -5,6 +5,7 @@ namespace NLightning.Bolt11.Models.TaggedFields;
 using Domain.Protocol.ValueObjects;
 using Domain.Utils;
 using Enums;
+using Infrastructure.Bitcoin.Networks;
 using Interfaces;
 
 /// <summary>
@@ -109,8 +110,7 @@ internal sealed class FallbackAddressTaggedField : ITaggedField
         if (newLength * 5 % 8 != 0 && data[^1] == 0)
             data = data[..^1];
 
-        var network = Network.GetNetwork(bitcoinNetwork) ??
-                      throw new ArgumentException("Network is unknown or invalid.", nameof(bitcoinNetwork));
+        var network = bitcoinNetwork.ToNBitcoinNetwork();
 
         // Per BOLT 11: "MUST skip over `f` fields that use an unknown `version`"
         // Supported versions: 0 (P2WPKH/P2WSH), 1 (P2TR), 17 (P2PKH), 18 (P2SH)

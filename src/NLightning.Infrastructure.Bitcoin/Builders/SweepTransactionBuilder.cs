@@ -15,6 +15,7 @@ using Domain.Onchain.Enums;
 using Domain.Onchain.Fees;
 using Domain.Onchain.Models;
 using Interfaces;
+using Networks;
 
 /// <summary>
 /// Builds sweep and claim transactions from <see cref="SweepInput"/>s (BOLT 5 plan O3-T1): version 2, one output,
@@ -39,8 +40,7 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
 
     public SweepTransactionBuilder(IOptions<NodeOptions> nodeOptions)
     {
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ??
-                   throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
+        _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
     }
 
     /// <inheritdoc />
