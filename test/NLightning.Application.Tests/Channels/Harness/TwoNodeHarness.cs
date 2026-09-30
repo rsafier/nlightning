@@ -679,6 +679,8 @@ internal sealed class HarnessNode : IDisposable
             Task.FromResult(node.PeerAlive && _links.ContainsKey(channelId));
 
         public void MarkLinkUp(ChannelId channelId, CompactPubKey peerPubKey) => _links[channelId] = 0;
+
+        public event EventHandler<ChannelLinkUpEventArgs>? LinkUp;
     }
 
     /// <summary>Records every event, then hands it to the production switch when there is one.</summary>

@@ -27,6 +27,13 @@ public sealed class ReestablishGatedLivenessProbe : IPeerLivenessProbe
     }
 
     /// <inheritdoc />
+    public event EventHandler<ChannelLinkUpEventArgs>? LinkUp
+    {
+        add => _inner.LinkUp += value;
+        remove => _inner.LinkUp -= value;
+    }
+
+    /// <inheritdoc />
     public async Task<bool> IsAliveAsync(ChannelId channelId, CompactPubKey peerPubKey,
                                          CancellationToken cancellationToken = default) =>
         _tracker.IsReestablished(channelId) && await _inner.IsAliveAsync(channelId, peerPubKey, cancellationToken);

@@ -28,7 +28,10 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
+using Domain.Node.Interfaces;
+using Domain.Node.Models;
 using Domain.Node.Options;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -814,6 +817,102 @@ public class ChannelUpdateServiceTests
         Assert.Same(disabled, latest!.Payload);
     }
 
+    [Fact]
+    public async Task Given_APeerAwayLongerThanDisableAfterInThePersistedRow_When_TheFirstCheckRuns_Then_ItIsDisabledAtOnce()
+    {
+        // Arrange (NL-364): the row's last-seen time is 30 minutes ago, so the absence began long before this start
+        var relay = new RecordingRelayScheduler();
+        var (provider, _) = CreateProbeWithPeer(() => false, s_now - TimeSpan.FromMinutes(30));
+        await using var providerScope = provider;
+        using var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay),
+                                          new GossipOptions(), provider);
+        AddAnnouncedChannel();
+
+        // Act
+        await service.CheckOfflinePeersAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the persisted offline time counts, no DisableAfter from the start
+        var disabled = Assert.IsType<ChannelUpdatePayload>(Assert.Single(relay.Queued));
+        Assert.True(disabled.IsDisabled);
+    }
+
+    [Fact]
+    public async Task Given_APeerLastSeenRecently_When_TheChecksRun_Then_TheCountStartsAtThePersistedTime()
+    {
+        // Arrange (NL-364): the row says the peer was seen 5 minutes ago
+        var relay = new RecordingRelayScheduler();
+        var (provider, _) = CreateProbeWithPeer(() => false, s_now - TimeSpan.FromMinutes(5));
+        await using var providerScope = provider;
+        using var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay),
+                                          new GossipOptions(), provider);
+        AddAnnouncedChannel();
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act: 10 minutes after its last-seen time nothing is disabled yet, at 20 minutes it is
+        await service.CheckOfflinePeersAsync(ct);
+        Assert.Empty(relay.Queued);
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(15);
+        await service.CheckOfflinePeersAsync(ct);
+
+        // Assert
+        var disabled = Assert.IsType<ChannelUpdatePayload>(Assert.Single(relay.Queued));
+        Assert.True(disabled.IsDisabled);
+    }
+
+    [Fact]
+    public async Task Given_ADisabledOfflineChannel_When_TheProbeRaisesItsLinkUp_Then_ItIsEnabledAtOnce()
+    {
+        // Arrange (NL-364): disabled while the peer was away, then the channel is reestablished (MarkLinkUp)
+        var relay = new RecordingRelayScheduler();
+        var alive = false;
+        var (provider, probe) = CreateProbeWithPeer(() => alive, s_now - TimeSpan.FromMinutes(30));
+        await using var providerScope = provider;
+        using var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay),
+                                          new GossipOptions(), provider);
+        var channel = AddAnnouncedChannel();
+        var ct = TestContext.Current.CancellationToken;
+        await service.CheckOfflinePeersAsync(ct);
+        var disabled = Assert.IsType<ChannelUpdatePayload>(Assert.Single(relay.Queued));
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act: the link-up hook, before any further check runs
+        alive = true;
+        probe.Raise(p => p.LinkUp += null, new ChannelLinkUpEventArgs(channel.ChannelId, PeerNodeId));
+        await WaitForAsync(() => raised.Count > 0, ct);
+
+        // Assert: the enabled update went to the peer and the relay at once, newer than the disabled one
+        var enabled = Assert.Single(raised).Message.Payload;
+        Assert.False(enabled.IsDisabled);
+        Assert.True(enabled.Timestamp > disabled.Timestamp);
+        Assert.Equal([disabled, enabled], relay.Queued);
+
+        // A second link-up of the same channel enables nothing again
+        probe.Raise(p => p.LinkUp += null, new ChannelLinkUpEventArgs(channel.ChannelId, PeerNodeId));
+        await Task.Delay(50, ct);
+        Assert.Single(raised);
+    }
+
+    [Fact]
+    public void Given_AChannelThatWasNotDisabled_When_TheProbeRaisesItsLinkUp_Then_NothingIsSent()
+    {
+        // Arrange
+        var relay = new RecordingRelayScheduler();
+        var (provider, probe) = CreateProbeWithPeer(() => true, null);
+        using var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay),
+                                          new GossipOptions(), provider);
+        var channel = AddAnnouncedChannel();
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act
+        probe.Raise(p => p.LinkUp += null, new ChannelLinkUpEventArgs(channel.ChannelId, PeerNodeId));
+
+        // Assert
+        Assert.Empty(raised);
+        Assert.Empty(relay.Queued);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -1203,6 +1302,44 @@ public class ChannelUpdateServiceTests
         var services = new ServiceCollection();
         services.AddSingleton(probe.Object);
         return services.BuildServiceProvider();
+    }
+
+    /// <summary>
+    /// A probe provider whose mock is returned (tests raise its link-up hook, NL-364) with, when
+    /// <paramref name="lastSeenAt"/> is set, a unit of work whose peer row reports that time (the persisted offline
+    /// start, NL-364).
+    /// </summary>
+    private (ServiceProvider Provider, Mock<IPeerLivenessProbe> Probe) CreateProbeWithPeer(
+        Func<bool> isAlive, DateTimeOffset? lastSeenAt)
+    {
+        var probe = new Mock<IPeerLivenessProbe>();
+        probe.Setup(p => p.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
+                                        It.IsAny<CancellationToken>()))
+             .ReturnsAsync(() => isAlive());
+        var services = new ServiceCollection();
+        services.AddSingleton(probe.Object);
+        if (lastSeenAt is { } seen)
+        {
+            var peers = new Mock<IPeerDbRepository>();
+            peers.Setup(r => r.GetByNodeIdAsync(PeerNodeId))
+                 .ReturnsAsync(new PeerModel(PeerNodeId, "10.0.0.1", 9735, "IPv4") { LastSeenAt = seen.UtcDateTime });
+            var unitOfWork = new Mock<IUnitOfWork>();
+            unitOfWork.SetupGet(u => u.PeerDbRepository).Returns(peers.Object);
+            services.AddSingleton(unitOfWork.Object);
+        }
+
+        return (services.BuildServiceProvider(), probe);
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition, CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException("condition not met");
+            await Task.Delay(10, ct);
+        }
     }
 
     /// <summary>
