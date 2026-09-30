@@ -16,7 +16,9 @@ using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Node.Models;
 using Domain.Node.Options;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
@@ -70,12 +72,15 @@ using Interfaces;
 /// provider) and a positive <see cref="GossipOptions.DisableAfter"/>, a timer checks every
 /// <see cref="GetOfflineCheckInterval"/> whether the link of each open announced channel is up. A channel whose link
 /// stayed down for <c>DisableAfter</c> (20 min) gets one <c>disable</c>d update, handed to the relay only (the peer is
-/// away). It is enabled again with a newer update, to the peer and the relay, only when a check finds the link up again
-/// (after <c>channel_reestablish</c>): the peer's next connection (<see cref="SendChannelUpdatesToPeerAsync"/>) gets
-/// the disabled update as is and restarts the offline time, so a reestablish that fails keeps the channel disabled.
-/// The disable itself is decided again under the channel's lock (same offline start, link still down), so a
-/// reconnection racing a check never relays a disabled update for a link that is back.
-/// The offline time is counted from the first check that finds the link down, in memory: a restart starts it again.
+/// away). It is enabled again with a newer update, to the peer and the relay, when the probe raises its link-up hook
+/// (<c>MarkLinkUp</c>: the channel turned Open or was reestablished on the peer's current connection; NL-364) — no
+/// longer only at the next check, which could be a minute away. The peer's next connection
+/// (<see cref="SendChannelUpdatesToPeerAsync"/>) gets the disabled update as is, so a reestablish that fails keeps
+/// the channel disabled. The disable itself is decided again under the channel's lock (same offline start, link still
+/// down), so a reconnection racing a check never relays a disabled update for a link that is back.
+/// The offline time is counted from the first check that finds the link down — seeded, through the peers' table, from
+/// the peer's persisted last-seen time (its row moves while its pongs come), so a restart does not count a peer's
+/// absence from zero (NL-364).
 /// </para>
 /// <para>
 /// Short channel id switch (splicing plan D12, SP2-B-T2): the service remembers the short channel id of each open
@@ -116,6 +121,7 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     private readonly TimeSpan _disableAfter;
     private readonly ITimer? _offlineCheckTimer;
     private int _offlineCheckRunning;
+    private IPeerLivenessProbe? _probe;
 
     /// <inheritdoc/>
     public event EventHandler<ChannelUpdateReadyEventArgs>? OnChannelUpdateReady;
@@ -155,6 +161,27 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
 
     /// <summary>The last offline check the timer started (tests).</summary>
     internal Task LastOfflineCheck { get; private set; } = Task.CompletedTask;
+
+    /// <summary>
+    /// The liveness probe, resolved once from the service provider (never present in the in-process tests without
+    /// one); its link-up hook (NL-364) is subscribed at the same time, so nothing is missed that could matter: before
+    /// the first check no channel is disabled, so there is nothing to re-enable.
+    /// </summary>
+    private IPeerLivenessProbe? Probe
+    {
+        get
+        {
+            if (_probe is not null)
+                return _probe;
+
+            if (_serviceProvider?.GetService<IPeerLivenessProbe>() is not { } probe)
+                return null;
+
+            _probe = probe;
+            probe.LinkUp += HandleLinkUp;
+            return probe;
+        }
+    }
 
     /// <summary>
     /// How often the links of announced channels are checked: a quarter of <paramref name="disableAfter"/>, between 1 s
@@ -312,7 +339,7 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     /// </summary>
     internal async Task CheckOfflinePeersAsync(CancellationToken cancellationToken = default)
     {
-        if (_disableAfter <= TimeSpan.Zero || _serviceProvider?.GetService<IPeerLivenessProbe>() is not { } probe)
+        if (_disableAfter <= TimeSpan.Zero || Probe is not { } probe)
             return;
 
         var channels = _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open && IsPublic(c))
@@ -323,6 +350,7 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
         foreach (var channelId in _disabledOffline.Keys.Where(id => !checkedIds.Contains(id)))
             _disabledOffline.TryRemove(channelId, out _);
 
+        var now = _timeProvider.GetUtcNow();
         foreach (var channel in channels)
         {
             var channelId = channel.ChannelId;
@@ -339,10 +367,72 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
                 continue;
             }
 
-            var now = _timeProvider.GetUtcNow();
-            var since = _offlineSince.GetOrAdd(channelId, now);
+            // NL-364: without a start in memory, the peer's persisted last-seen time is where its absence began
+            var since = _offlineSince.TryGetValue(channelId, out var stored)
+                            ? stored
+                            : _offlineSince.GetOrAdd(channelId,
+                                                     await GetPersistedOfflineStartAsync(channel.RemoteNodeId, now,
+                                                         cancellationToken));
             if (now - since >= _disableAfter && !_disabledOffline.ContainsKey(channelId))
                 await DisableOfflineChannelAsync(channelId, probe, since, now - since, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// The link-up hook of the probe (NL-364): the channel turned Open or was reestablished on the peer's current
+    /// connection, so a channel disabled while its peer was away is enabled again at once (a newer update, to the
+    /// peer and the relay). Raised while the channel's lock may be held, so only the offline state is touched here and
+    /// the send is scheduled. A channel that was not disabled only has its offline time reset.
+    /// </summary>
+    private void HandleLinkUp(object? sender, ChannelLinkUpEventArgs args)
+    {
+        _offlineSince.TryRemove(args.ChannelId, out _);
+        if (!_disabledOffline.TryRemove(args.ChannelId, out _))
+            return;
+
+        _logger.LogInformation("The link of announced channel {ChannelId} is up again: enabling it", args.ChannelId);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await SendChannelUpdateAsync(args.ChannelId, reuseUnchanged: true, CancellationToken.None);
+            }
+            catch (Exception e)
+            {
+                _logger.LogWarning(e, "Could not re-enable announced channel {ChannelId} after its link came up",
+                                   args.ChannelId);
+            }
+        });
+    }
+
+    /// <summary>
+    /// The peer's last-seen time from its row (NL-364) as the start of its absence, or <paramref name="now"/> when
+    /// there is no row (or no unit of work, or its clock is behind the row). The row's time moves while the peer's
+    /// pongs come, so it is where its absence began; a failing read only restarts the count from now, as before.
+    /// </summary>
+    private async Task<DateTimeOffset> GetPersistedOfflineStartAsync(CompactPubKey peerPubKey, DateTimeOffset now,
+                                                                     CancellationToken cancellationToken)
+    {
+        if (_serviceProvider is null)
+            return now;
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            if (scope.ServiceProvider.GetService<IUnitOfWork>() is not { } unitOfWork)
+                return now;
+
+            var peer = await unitOfWork.PeerDbRepository.GetByNodeIdAsync(peerPubKey).WaitAsync(cancellationToken);
+            if (peer is null || peer.LastSeenAt == default)
+                return now;
+
+            var lastSeen = new DateTimeOffset(DateTime.SpecifyKind(peer.LastSeenAt, DateTimeKind.Utc), TimeSpan.Zero);
+            return lastSeen < now ? lastSeen : now;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogDebug(e, "Could not read the last-seen time of peer {Peer} for its offline start", peerPubKey);
+            return now;
         }
     }
 
@@ -416,6 +506,8 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     public void Dispose()
     {
         _offlineCheckTimer?.Dispose();
+        if (_probe is not null)
+            _probe.LinkUp -= HandleLinkUp;
         _channelMemoryRepository.OnChannelUpdated -= HandleChannelUpdated;
     }
 
