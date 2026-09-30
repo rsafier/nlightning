@@ -110,12 +110,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 140 | 143 |
+| open | 0 | 0 | 4 | 141 | 145 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 62 | 155 | 168 | 399 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
-| **Total** | **14** | **62** | **162** | **314** | **552** |
+| **Total** | **14** | **62** | **163** | **315** | **554** |
 
 ### Epics
 
@@ -390,6 +390,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Send a smaller blob to peers that refuse the large one (e.g. drop to an unpadded or 1,024-byte-padded channel list for that peer after its warning, or pad to the smallest of a few size classes), and count the refusal in `listpeerstorage`.
 - **Fixed:** `PeerService` hands a peer's `warning` text to the peer storage service (never an `error`); a warning about peer storage is parsed for the limit it names ("(\d+) bytes"; default 1,024, `PeerStorageService.DefaultRefusalLimit`) and recorded per peer (only ever lowered by later refusals), and the backup is resent at once padded to exactly that length when what it holds fits (otherwise nothing is sent and the operator is warned: the peer keeps nothing either way). The round and every later send build one blob per peer through the new sized `IPeerBackupBlobProvider.CreateBlobAsync(int maxBlobLength, ...)` (the plaintext padded to `maxBlobLength` minus the cipher overhead, naming the first channels that fit, so the length still says nothing about the backup; the fingerprint stays content-only, so an unchanged backup is not resent). The limit lives in memory only (a restart offers the full-size blob again and relearns it from the next refusal). Refusals are counted per peer and listed by `GetRefusals()`/`listpeerstorage` (count, the accepted limit, the last refused length; NL-559 wording in `ListPeerStoragePrinter`). Tests: `PeerStorageServiceTests` (refusals region), `ChannelListPeerBackupBlobProviderTests` (sized blobs), `PeerServicePeerStorageTests` (the warning routed, no disconnect), the `ListPeerStorageIpcRoundTripTests` extension; Docker Proof `Docker/Interop/Ldk/LdkPeerStorageTests`: over a channel we fund, LDK's refusal is counted with the limit its warning names, our 1,024-byte backup goes out, and after `RestartLdkAsync` LDK hands it back (`peer_storage_retrieval`: ours, names the channel, matches the last sent, at most 1,024 bytes). The full LDK trait (14) and the CLN trait re-ran green.
 - **Blocks/Blocked-by:** Related NL-010, NL-556
+- **Plan ref:** —
+
+### NL-563 A peer-storage refusal for another reason is read as a size refusal
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs` (the NL-559 warning handling)
+- **Evidence:** Live on Mutinynet, 2026-09-30: cumulo-mutinynet (LDK-like) answered our `peer_storage` before any channel existed with the warning "Ignoring peer_storage message, as peer storage is currently supported only for peers with an active funded channel." Our service logged "refused our peer_storage backup (65531 bytes): it takes at most 1024" (the default limit, since the text names no byte count), resent 1,024 bytes, and logged a second refusal. Harmless (LDK keeps nothing until a channel is funded), but the refusal count and the learned limit for that peer are wrong.
+- **Fix sketch:** Treat only warnings that name a byte limit (or a size) as size refusals; for "only for peers with an active funded channel" resend after our first channel with that peer is funded and do not count it as a size refusal.
+- **Blocks/Blocked-by:** Related NL-559
 - **Plan ref:** —
 
 ## BOLT 2: Wire layer
@@ -1684,6 +1694,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** The rule requires the opener's `max_htlc_value_in_flight_msat` to be at least 0.8 x our `AllowUpToPercentageOfChannelFundsInFlight` (80 %) of the funding, i.e. 64 %. Eclair 0.14.3 offers 45 % by default (`max-htlc-value-in-flight-percent`), so its v1 `open_channel` to a node with `DualFund = No` is refused: "Max htlc value in flight is too small: 0.00225" for a 500,000 sat channel (`EclairInteropTests.Given_OurDefaultInFlightRule_When_EclairOpensV1_Then_WeRefuseItsInFlightLimit`, a regular test that asserts the refusal). The v2 accepter (`DualFundedOpenService`) does not apply the rule, so with default features Eclair's (v2) open passes; any v1 opener with a low limit is refused. LDK (lane NL-180/NL-556) offers 100 % on unannounced channels, so its v1 opens to us pass; its announced-channel default of 10 % would be refused but is untested, because the LDK fixture keeps its channels unannounced (NL-556). `Given_OurNodeWithoutDualFund_When_EclairOpens_Then_V1ChannelWorks` sets the node's percentage to 50 to get past it. BOLT 2 lets the receiver fail a limit it considers too small; the value is policy. Docker proof: `EclairInteropTests.Given_OurDefaultOpenPolicy_When_EclairOpensV1WithItsDefaults_Then_WeAcceptAndPaymentsWork` (Eclair's v1 open with 45 %, 225,000,000 msat of 500,000 sat, accepted with our defaults; the 50 % override is gone).
 - **Fix sketch:** Drop the check or make it a small floor (e.g. a few percent, or an absolute minimum), and apply the same rule to v1 and v2. Owner decision.
 - **Blocks/Blocked-by:** Related NL-180
+- **Plan ref:** —
+
+### NL-562 Our open checks refuse an LDK peer's 1,000 sat channel reserve on channels under ~84k sat
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Validators/ChannelOpenValidator.cs` (`PerformOptionalChecks`)
+- **Evidence:** Live on Mutinynet, 2026-09-30: FAFO's 50k sat public `openchannel` to cumulo-mutinynet (`03fd9a37…`, LDK-like features: no `option_dual_fund`, `option_provide_storage`) failed with `[PeerManager] Error handling channel message (AcceptChannel) … Channel reserve amount is too large: 0.00001` and a disconnect. The rule refuses a peer's `channel_reserve_satoshis` above 1.2 x our own 1 % reserve (floored at the dust limit): 600 sat on 50k, while LDK always asks for at least 1,000 sat (`MIN_THEIR_CHAN_RESERVE_SATOSHIS`), so every LDK channel below about 84k sat is refused (an 85k open to the same peer then worked). The message also prints the amount in BTC (`LightningMoney` default formatting). The sibling rules in the same method compare the peer to our own settings the same way (htlc_minimum_msat > 1.2 x ours, max_accepted_htlcs < 0.8 x ours, dust_limit > 1.75 x ours) and may refuse other implementations' defaults too. BOLT 2 lets the receiver fail values it considers unreasonable; these limits are policy (same family as NL-550, NL-552).
+- **Fix sketch:** Accept a reserve up to max(a percentage of the channel (e.g. 2-5 %, `Node:MaxAcceptedChannelReservePercent`), a small absolute floor such as 1,000 sat); review the sibling rules against LND/CLN/Eclair/LDK defaults; print amounts in sat. Owner decision on the defaults.
+- **Blocks/Blocked-by:** Related NL-550, NL-552, NL-556
 - **Plan ref:** —
 
 ### NL-557 Eclair refuses any v1 open from us once option_dual_fund is negotiated (push opens, --v1)
