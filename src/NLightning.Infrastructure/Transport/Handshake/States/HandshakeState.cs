@@ -32,7 +32,7 @@ internal sealed class HandshakeState : IHandshakeState
     private byte[]? _re;
     private byte[] _rs;
     private bool _turnToWrite;
-    private bool _disposed;
+    private int _disposed;
 
     public CompactPubKey? RemoteStaticPublicKey => new(_rs);
 
@@ -63,17 +63,26 @@ internal sealed class HandshakeState : IHandshakeState
         _dh = dh;
 
         _state = new SymmetricState(ProtocolConstants.Name);
-        _state.MixHash(ProtocolConstants.Prologue);
+        try
+        {
+            _state.MixHash(ProtocolConstants.Prologue);
 
-        _role = initiator ? Role.Alice : Role.Bob;
-        _initiator = Role.Alice;
-        _turnToWrite = initiator;
-        _s = _dh.GenerateKeyPair(s);
-        _sPubKey = _s.Value.CompactPubKey;
-        _rs = rs.ToArray();
+            _role = initiator ? Role.Alice : Role.Bob;
+            _initiator = Role.Alice;
+            _turnToWrite = initiator;
+            _s = _dh.GenerateKeyPair(s);
+            _sPubKey = _s.Value.CompactPubKey;
+            _rs = rs.ToArray();
 
-        ProcessPreMessages();
-        EnqueueMessages();
+            ProcessPreMessages();
+            EnqueueMessages();
+        }
+        catch
+        {
+            // Nobody gets a reference to a state whose constructor threw, so free its native memory here
+            _state.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -106,16 +115,25 @@ internal sealed class HandshakeState : IHandshakeState
         _protectedStaticEcdh = protectedStaticEcdh;
 
         _state = new SymmetricState(ProtocolConstants.Name);
-        _state.MixHash(ProtocolConstants.Prologue);
+        try
+        {
+            _state.MixHash(ProtocolConstants.Prologue);
 
-        _role = initiator ? Role.Alice : Role.Bob;
-        _initiator = Role.Alice;
-        _turnToWrite = initiator;
-        _sPubKey = staticPublicKey;
-        _rs = rs.ToArray();
+            _role = initiator ? Role.Alice : Role.Bob;
+            _initiator = Role.Alice;
+            _turnToWrite = initiator;
+            _sPubKey = staticPublicKey;
+            _rs = rs.ToArray();
 
-        ProcessPreMessages();
-        EnqueueMessages();
+            ProcessPreMessages();
+            EnqueueMessages();
+        }
+        catch
+        {
+            // Nobody gets a reference to a state whose constructor threw, so free its native memory here
+            _state.Dispose();
+            throw;
+        }
     }
 
     /// <inheritdoc/>
@@ -124,7 +142,7 @@ internal sealed class HandshakeState : IHandshakeState
     /// <exception cref="ArgumentException">Thrown if the output was greater than <see cref="ProtocolConstants.MaxMessageLength"/> bytes in length, or if the output buffer did not have enough space to hold the ciphertext.</exception>
     public (int, byte[]?, Encryption.Transport?) WriteMessage(ReadOnlySpan<byte> payload, Span<byte> messageBuffer)
     {
-        ExceptionUtils.ThrowIfDisposed(_disposed, nameof(HandshakeState));
+        ExceptionUtils.ThrowIfDisposed(Volatile.Read(ref _disposed) != 0, nameof(HandshakeState));
 
         if (_messagePatterns.Count == 0)
             throw new InvalidOperationException(
@@ -184,7 +202,7 @@ internal sealed class HandshakeState : IHandshakeState
     /// <exception cref="System.Security.Cryptography.CryptographicException">Thrown if the decryption of the message has failed.</exception>
     public (int, byte[]?, Encryption.Transport?) ReadMessage(ReadOnlySpan<byte> message, Span<byte> payloadBuffer)
     {
-        ExceptionUtils.ThrowIfDisposed(_disposed, nameof(HandshakeState));
+        ExceptionUtils.ThrowIfDisposed(Volatile.Read(ref _disposed) != 0, nameof(HandshakeState));
 
         if (_messagePatterns.Count == 0)
             throw new InvalidOperationException(
@@ -392,26 +410,20 @@ internal sealed class HandshakeState : IHandshakeState
 
     private void Clear()
     {
-        // The state is null when a constructor refused its arguments: the finalizer still runs on the
-        // half-initialized object
-        _state?.Dispose();
+        _state.Dispose();
     }
 
+    /// <remarks>
+    /// Idempotent and safe to call from several threads. There is no finalizer (NL-560): the state holds no native
+    /// memory itself, and the <c>SecureMemory</c> and <c>Sha256</c> objects under it free theirs in
+    /// their own finalizers. A finalizer here would dispose those objects from the finalizer thread after their own
+    /// finalizers may already have freed the memory, a double free that crashed the process.
+    /// </remarks>
     public void Dispose()
     {
-        if (_disposed)
-        {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
-        }
 
         Clear();
-        GC.SuppressFinalize(this);
-
-        _disposed = true;
-    }
-
-    ~HandshakeState()
-    {
-        Dispose();
     }
 }

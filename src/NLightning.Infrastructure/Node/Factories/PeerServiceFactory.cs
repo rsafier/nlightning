@@ -122,6 +122,7 @@ public class PeerServiceFactory : IPeerServiceFactory
 
         if (transportService.RemoteStaticPublicKey is null)
         {
+            transportService.Dispose();
             throw new ErrorException("Failed to get remote static public key");
         }
 
