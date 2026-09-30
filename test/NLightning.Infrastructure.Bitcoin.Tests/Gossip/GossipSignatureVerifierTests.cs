@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using NBitcoin.Crypto;
 using NBitcoin.Secp256k1;
+using NLightning.Tests.Utils.Vectors;
 using SHA256 = System.Security.Cryptography.SHA256;
 
 namespace NLightning.Infrastructure.Bitcoin.Tests.Gossip;
@@ -301,6 +302,64 @@ public class GossipSignatureVerifierTests
         Assert.False(GossipSignedRanges.TryGetAnnouncementSignaturesChecks(payload[..167], hash,
                                                                            PubKey(s_node2Secret),
                                                                            PubKey(s_bitcoin2Secret), out _));
+    }
+
+    #endregion
+
+    #region captured vectors (G0-T5: the cross-signed bytes of LND and CLN)
+
+    public static TheoryData<byte[]> CapturedChannelAnnouncements =>
+        new(Bolt7Vectors.All.Where(v => v.Type == 256).Select(v => v.Payload));
+
+    public static TheoryData<byte[]> CapturedNodeAnnouncements =>
+        new(Bolt7Vectors.All.Where(v => v.Type == 257).Select(v => v.Payload));
+
+    [Theory]
+    [MemberData(nameof(CapturedChannelAnnouncements))]
+    public void Given_CapturedCrossSignedChannelAnnouncement_When_Verified_Then_TrueAndTheOtherPartysKeyRefuses(
+        byte[] payload)
+    {
+        // Arrange: two real parties signed the halves (LND's, CLN's own channel), so the bytes only verify over the
+        // real signed range and with each signature paired to the key that made it (NL-345: not self-signed)
+        // Act
+        Assert.True(GossipSignedRanges.TryGetChannelAnnouncementChecks(payload, out var checks));
+
+        // Assert: each signature verifies under its own key and is refused under the other party's
+        Assert.True(_verifier.VerifyAll(checks));
+        Assert.False(_verifier.Verify(checks[0].MessageHash, checks[0].Signature, checks[1].PublicKey));
+        Assert.False(_verifier.Verify(checks[1].MessageHash, checks[1].Signature, checks[0].PublicKey));
+        Assert.False(_verifier.Verify(checks[2].MessageHash, checks[2].Signature, checks[3].PublicKey));
+        Assert.False(_verifier.Verify(checks[3].MessageHash, checks[3].Signature, checks[2].PublicKey));
+    }
+
+    [Theory]
+    [MemberData(nameof(CapturedNodeAnnouncements))]
+    public void Given_CapturedNodeAnnouncement_When_VerifiedThroughTheSignedRange_Then_True(byte[] payload)
+    {
+        // Act
+        Assert.True(GossipSignedRanges.TryGetNodeAnnouncementCheck(payload, out var check));
+
+        // Assert
+        Assert.True(_verifier.Verify(check.MessageHash, check.Signature, check.PublicKey));
+    }
+
+    [Fact]
+    public void Given_CapturedAnnouncementWithABrokenSignature_When_Verified_Then_Refused()
+    {
+        // Arrange: a byte inside the LND channel_announcement's node_signature_1 and inside the CLN
+        // node_announcement's signature
+        var announcement = Bolt7Vectors.Lnd.First(v => v.Type == 256).Payload;
+        announcement[10] ^= 0x01;
+        var nodeAnnouncement = Bolt7Vectors.Cln.First(v => v.Type == 257).Payload;
+        nodeAnnouncement[20] ^= 0x01;
+
+        // Act
+        Assert.True(GossipSignedRanges.TryGetChannelAnnouncementChecks(announcement, out var checks));
+        Assert.True(GossipSignedRanges.TryGetNodeAnnouncementCheck(nodeAnnouncement, out var check));
+
+        // Assert
+        Assert.False(_verifier.VerifyAll(checks));
+        Assert.False(_verifier.Verify(check.MessageHash, check.Signature, check.PublicKey));
     }
 
     #endregion
