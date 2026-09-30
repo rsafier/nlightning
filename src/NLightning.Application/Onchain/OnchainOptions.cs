@@ -43,6 +43,15 @@ public sealed class OnchainOptions
     public uint FundingReconfirmGraceBlocks { get; set; } = 12;
 
     /// <summary>
+    /// How far below bitcoind's tip the resolution catch-up scans may start (<c>Node:Onchain:CatchUpScanMaxBlocks</c>,
+    /// NL-313): a watch whose lower bound (its parent's confirmation, else the commitment's height) is further back is
+    /// scanned only from the bound, with a warning, so one fallback cannot mean thousands of block fetches on mainnet.
+    /// A spend mined deeper than the bound is still found when the chain monitor sees it from a block on. 0 removes
+    /// the bound.
+    /// </summary>
+    public uint CatchUpScanMaxBlocks { get; set; } = 1_008;
+
+    /// <summary>
     /// The reaction to unconfirmed spends of our channels' outputs (<c>Node:Onchain:Mempool</c>, BOLT 5 plan O8,
     /// NL-098).
     /// </summary>
