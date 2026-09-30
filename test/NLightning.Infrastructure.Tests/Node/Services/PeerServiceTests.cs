@@ -219,6 +219,31 @@ public class PeerServiceTests
             () => peerService.SendGossipMessageAsync(new WarningMessage(new ErrorPayload("not gossip"))));
     }
 
+    [Fact]
+    public async Task Given_AnErrorMessage_When_Sent_Then_ItIsSentToThePeerAndTheConnectionStays()
+    {
+        // Arrange: the error without a disconnect path (NL-200); BOLT 1 leaves the connection open after it
+        var peerService = CreatePeerService();
+        var error = new ErrorMessage(new ErrorPayload("something failed"));
+
+        // Act
+        await peerService.SendErrorAsync(error);
+
+        // Assert
+        _peerCommunicationServiceMock.Verify(x => x.SendMessageAsync(error, It.IsAny<CancellationToken>()), Times.Once);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ANullMessage_When_SentAsError_Then_Throws()
+    {
+        // Arrange
+        var peerService = CreatePeerService();
+
+        // Act & Assert
+        await Assert.ThrowsAsync<ArgumentNullException>(() => peerService.SendErrorAsync(null!));
+    }
+
     private static ChannelUpdateMessage CreateChannelUpdate(uint timestamp)
     {
         return new ChannelUpdateMessage(
