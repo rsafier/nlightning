@@ -160,12 +160,15 @@ public sealed class ChannelCloseCoordinator
     private async Task<ShutdownMessage> SendShutdownAsync(ChannelModel channel)
     {
         var script = await _shutdownScriptProvider.GetLocalScriptAsync(channel);
-        channel.SetLocalShutdownScript(script);
         // NL-279 (B2-SHUT-S08): every add the peer sends from now on (it may not have our shutdown yet) is failed back
-        channel.SetFirstRemoteHtlcIdAfterLocalShutdown(channel.Commitments?.RemoteNextHtlcId ?? channel.RemoteNextHtlcId);
-        if (channel.State < ChannelState.ShuttingDown)
-            channel.UpdateState(ChannelState.ShuttingDown);
-        await PersistAsync(channel);
+        var firstRemoteHtlcId = channel.Commitments?.RemoteNextHtlcId ?? channel.RemoteNextHtlcId;
+        await PersistAsync(channel, m =>
+        {
+            m.SetLocalShutdownScript(script);
+            m.SetFirstRemoteHtlcIdAfterLocalShutdown(firstRemoteHtlcId);
+            if (m.State < ChannelState.ShuttingDown)
+                m.UpdateState(ChannelState.ShuttingDown);
+        });
         WatchFundingSpend(channel);
 
         _registry.Get(channel.ChannelId).ShutdownSentOnConnection = true;
@@ -247,17 +250,18 @@ public sealed class ChannelCloseCoordinator
         _ = _feeEstimator.StartFetchIfDue();
         if (changedScript)
         {
-            channel.ReplaceRemoteShutdownScript(script);
-            await PersistAsync(channel);
+            await PersistAsync(channel, m => m.ReplaceRemoteShutdownScript(script));
             _logger.LogInformation("Peer {Peer} changed the shutdown script of channel {ChannelId} to {Script}",
                                    channel.RemoteNodeId, channelId, script);
         }
         else if (channel.RemoteShutdownScript is null)
         {
-            channel.SetRemoteShutdownScript(script);
-            if (channel.State < ChannelState.ShuttingDown)
-                channel.UpdateState(ChannelState.ShuttingDown);
-            await PersistAsync(channel);
+            await PersistAsync(channel, m =>
+            {
+                m.SetRemoteShutdownScript(script);
+                if (m.State < ChannelState.ShuttingDown)
+                    m.UpdateState(ChannelState.ShuttingDown);
+            });
             WatchFundingSpend(channel);
             _logger.LogInformation("Peer {Peer} sent shutdown for channel {ChannelId} to {Script}",
                                    channel.RemoteNodeId, channelId, script);
@@ -492,12 +496,14 @@ public sealed class ChannelCloseCoordinator
         var closingTransaction = _closingTransactionBuilder.AddWitness(signed.Transaction, context.Funding,
                                                                        ourSignature, peerSignature);
 
-        channel.SetClosingTransaction(closingTransaction);
-        channel.UpdateState(ChannelState.Closing);
-
         // The watch is saved in the same save as Closing, so no crash leaves a Closing channel without it
         var watch = StageClosingWatch(channel, closingTransaction.TxId);
-        await PersistAsync(channel);
+        await PersistAsync(channel, m =>
+        {
+            m.SetClosingTransaction(closingTransaction);
+            if (m.State < ChannelState.Closing)
+                m.UpdateState(ChannelState.Closing);
+        });
         if (watch is not null)
             _blockchainMonitor?.TrackWatchedTransaction(watch);
         var entry = _registry.Get(channel.ChannelId);
@@ -556,8 +562,11 @@ public sealed class ChannelCloseCoordinator
          || channel.Commitments is { IsCleared: false })
             return;
 
-        channel.UpdateState(ChannelState.Negotiating);
-        await PersistAsync(channel);
+        await PersistAsync(channel, m =>
+        {
+            if (m.State < ChannelState.Negotiating)
+                m.UpdateState(ChannelState.Negotiating);
+        });
         _logger.LogInformation("Channel {ChannelId} has no HTLC left; negotiating the closing fee", channel.ChannelId);
     }
 
@@ -831,10 +840,20 @@ public sealed class ChannelCloseCoordinator
             _blockchainMonitor?.WatchOutpointSpend(channel.ChannelId, fundingTxId, fundingIndex);
     }
 
-    private async Task PersistAsync(ChannelModel channel)
+    /// <summary>
+    /// Saves the close state before it is applied to the shared model (invariant I1, as the commitment engine does):
+    /// the changes are staged on the row's copy read from the database and only a committed save moves the shared
+    /// model, so a failed save leaves the memory where it was and the next message (or a reconnect) retries.
+    /// </summary>
+    private async Task PersistAsync(ChannelModel channel, Action<ChannelModel> apply)
     {
-        await _unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+        var stored = await _unitOfWork.ChannelDbRepository.GetByIdAsync(channel.ChannelId)
+                  ?? throw new InvalidOperationException(
+                         $"Channel {channel.ChannelId} is closing but is not in the database");
+        apply(stored);
+        await _unitOfWork.ChannelDbRepository.UpdateAsync(stored);
         await _unitOfWork.SaveChangesAsync();
+        apply(channel);
         _channelMemoryRepository.UpdateChannel(channel);
     }
 }
