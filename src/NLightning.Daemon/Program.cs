@@ -57,6 +57,11 @@ try
 
     SensitiveLoggingUtils.WarnIfSensitiveQueryLoggingEnabled(initialConfig, Log.Logger);
 
+    // The database may sit outside the configuration directory (a Database:ConnectionString with a path), whose
+    // warning does not cover it (NL-439)
+    FilePermissionUtils.WarnIfDatabaseAccessibleByOthers(initialConfig["Database:Provider"],
+                                                         initialConfig["Database:ConnectionString"], Log.Logger);
+
     // Get the password from --password-file, --password-stdin, --password or NLTG_PASSWORD, or prompt for it
     var password = PasswordUtils.ResolvePassword(args, PasswordUtils.OpenStdinReader(), Log.Logger);
 

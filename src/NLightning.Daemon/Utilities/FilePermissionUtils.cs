@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Serilog;
 
 namespace NLightning.Daemon.Utilities;
@@ -84,6 +85,45 @@ public static class FilePermissionUtils
                        Directory.Exists(path) ? "700" : "600");
         return true;
     }
+
+    /// <summary>
+    /// The SQLite database file's path when the configuration names one on this machine: 'Database:Provider' Sqlite
+    /// with a 'Database:ConnectionString' whose Data Source is a plain path (not <c>:memory:</c> or a <c>file:</c>
+    /// URI), else null. Internal for the tests.
+    /// </summary>
+    internal static string? GetSqliteDatabaseFilePath(string? provider, string? connectionString)
+    {
+        if (!string.Equals(provider, "Sqlite", StringComparison.OrdinalIgnoreCase)
+         || string.IsNullOrWhiteSpace(connectionString))
+            return null;
+
+        string dataSource;
+        try
+        {
+            dataSource = new SqliteConnectionStringBuilder(connectionString).DataSource;
+        }
+        catch (ArgumentException)
+        {
+            // A malformed connection string fails later, when the database context is built
+            return null;
+        }
+
+        return dataSource.Length > 0
+            && !dataSource.Equals(":memory:", StringComparison.OrdinalIgnoreCase)
+            && !dataSource.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
+               ? dataSource
+               : null;
+    }
+
+    /// <summary>
+    /// Logs a warning when the SQLite database file is accessible by other users (NL-439): it holds preimages and
+    /// per-commitment secrets, and it may sit outside the configuration directory, whose warning does not reach it.
+    /// Never changes the mode.
+    /// </summary>
+    /// <returns>True when it warned.</returns>
+    public static bool WarnIfDatabaseAccessibleByOthers(string? provider, string? connectionString, ILogger logger)
+        => GetSqliteDatabaseFilePath(provider, connectionString) is { } databasePath
+           && WarnIfAccessibleByOthers(databasePath, "The database file", logger);
 
     private static string FormatMode(UnixFileMode mode) => Convert.ToString((int)mode, 8).PadLeft(3, '0');
 }
