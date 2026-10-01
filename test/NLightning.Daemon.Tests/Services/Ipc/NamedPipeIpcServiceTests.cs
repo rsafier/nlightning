@@ -371,6 +371,7 @@ public class NamedPipeIpcServiceTests : IDisposable
               .Returns(async (IpcEnvelope request, CancellationToken _) =>
               {
                   var connection = accessor.Current;
+                  Assert.NotNull(connection);
                   entered.TrySetResult();
                   var disconnected =
                       new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
