@@ -514,6 +514,31 @@ public sealed class SecureKeyManagerTests : IDisposable
     }
 
     [Fact]
+    public void Given_PlatformAndArchitecture_When_GettingStatUidGidOffsets_Then_TheyMatchTheDocumentedLayouts()
+    {
+        // NL-570: Linux x64's struct stat has an 8-byte st_nlink before st_mode, so its ids sit 4 bytes later than
+        // on the other 64-bit platforms (reading the generic offsets there returns st_mode as the uid)
+        Assert.Equal((16, 20), SecureKeyManager.GetStatUidGidOffsets(true, false, Architecture.Arm64));
+        Assert.Equal((28, 32), SecureKeyManager.GetStatUidGidOffsets(false, true, Architecture.X64));
+        Assert.Equal((24, 28), SecureKeyManager.GetStatUidGidOffsets(false, true, Architecture.Arm64));
+        Assert.Null(SecureKeyManager.GetStatUidGidOffsets(false, false, Architecture.X64));
+    }
+
+    [Fact]
+    public void Given_TheHostPlatform_When_GettingTheRuntimeStatUidGidOffsets_Then_TheyMatchTheTable()
+    {
+        // The macOS and Linux entries are checked against the same table; the Linux x64 entry lands in CI (NL-570)
+        var offsets = SecureKeyManager.GetStatUidGidOffsets();
+        if (OperatingSystem.IsMacOS())
+            Assert.Equal((16, 20), offsets);
+        else if (OperatingSystem.IsLinux())
+            Assert.Equal(
+                RuntimeInformation.ProcessArchitecture == Architecture.X64 ? (28, 32) : (24, 28), offsets);
+        else
+            Assert.Null(offsets);
+    }
+
+    [Fact]
     public void Given_SymlinkedKeyFile_When_SaveToFile_Then_KeepsTheLinkAndUpdatesTheTarget()
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "symlinks need privileges on Windows");
