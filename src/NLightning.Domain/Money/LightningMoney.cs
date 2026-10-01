@@ -4,52 +4,32 @@ namespace NLightning.Domain.Money;
 
 using Enums;
 
-public class LightningMoney
+public sealed class LightningMoney
 {
     // For decimal.TryParse. None of the NumberStyles' composed values is useful for bitcoin style
     private const NumberStyles BitcoinStyle = NumberStyles.AllowLeadingWhite | NumberStyles.AllowTrailingWhite
                                                                              | NumberStyles.AllowDecimalPoint;
 
-    private ulong _milliSatoshi;
+    private readonly ulong _milliSatoshi;
 
     public const ulong Coin = 100 * 1000 * 1000 * 1000UL;
     public const ulong Cent = Coin / 100;
     public const ulong Nano = Cent / 100;
     public const ulong Bit = Coin / 1_000_000;
 
-    public ulong MilliSatoshi
-    {
-        get => _milliSatoshi;
-        set
-        {
-            _milliSatoshi = value;
-        }
-    }
+    public ulong MilliSatoshi => _milliSatoshi;
 
-    public long Satoshi
-    {
-        // Should round up to the nearest Satoshi
-        get => checked((long)Math.Round(_milliSatoshi / 1_000D, MidpointRounding.ToNegativeInfinity));
-        set
-        {
-            if (value < 0)
-                throw new ArgumentOutOfRangeException(nameof(value), "Satoshi value cannot be negative");
+    // Should round up to the nearest Satoshi
+    public long Satoshi => checked((long)Math.Round(_milliSatoshi / 1_000D, MidpointRounding.ToNegativeInfinity));
 
-            checked
-            {
-                _milliSatoshi = (ulong)(value * 1000);
-            }
-        }
-    }
-
-    public static LightningMoney Zero => 0UL;
+    public static readonly LightningMoney Zero = new LightningMoney(0UL);
     public bool IsZero => _milliSatoshi == 0;
 
     #region Constructors
 
     public LightningMoney(ulong milliSatoshi)
     {
-        MilliSatoshi = milliSatoshi;
+        _milliSatoshi = milliSatoshi;
     }
 
     public LightningMoney(decimal amount, LightningMoneyUnit unit)
@@ -59,7 +39,7 @@ public class LightningMoney
         checked
         {
             var milliSats = amount * (long)unit;
-            MilliSatoshi = (ulong)milliSats;
+            _milliSatoshi = (ulong)milliSats;
         }
     }
 
@@ -67,10 +47,12 @@ public class LightningMoney
     {
         // Sanity check. Only valid units are allowed
         CheckLightningMoneyUnit(unit, nameof(unit));
+        // A negative long would wrap into a huge msat value in the ulong cast below
+        ArgumentOutOfRangeException.ThrowIfNegative(amount);
         checked
         {
             var milliSats = amount * (long)unit;
-            MilliSatoshi = (ulong)milliSats;
+            _milliSatoshi = (ulong)milliSats;
         }
     }
 
@@ -81,7 +63,7 @@ public class LightningMoney
         checked
         {
             var milliSats = amount * (ulong)unit;
-            MilliSatoshi = milliSats;
+            _milliSatoshi = milliSats;
         }
     }
 
@@ -221,6 +203,8 @@ public class LightningMoney
 
     public static LightningMoney Satoshis(long sats)
     {
+        // A negative long would wrap into a huge msat value in the ulong cast below
+        ArgumentOutOfRangeException.ThrowIfNegative(sats);
         return new LightningMoney((ulong)sats, LightningMoneyUnit.Satoshi);
     }
 
@@ -231,6 +215,8 @@ public class LightningMoney
 
     public static LightningMoney MilliSatoshis(long sats)
     {
+        // A negative long would wrap into a huge msat value in the ulong cast below
+        ArgumentOutOfRangeException.ThrowIfNegative(sats);
         return new LightningMoney((ulong)sats);
     }
 
@@ -412,7 +398,6 @@ public class LightningMoney
 
     public override int GetHashCode()
     {
-        // ReSharper disable once NonReadonlyMemberInGetHashCode
         return _milliSatoshi.GetHashCode();
     }
 

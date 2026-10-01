@@ -397,7 +397,7 @@ public class FeeServiceSourceTests
     }
 
     [Fact]
-    public void Given_CachedRate_When_TheReturnedValueIsChanged_Then_TheCacheIsNot()
+    public void Given_CachedRate_When_ReadRepeatedly_Then_ItStaysTheFallback()
     {
         // Arrange
         var service = CreateService(new FeeEstimationOptions
@@ -407,10 +407,11 @@ public class FeeServiceSourceTests
         }, new Mock<HttpMessageHandler>().Object);
 
         // Act
-        var copy = service.GetCachedFeeRatePerKw();
-        copy.Satoshi = 99_999;
+        var cached = service.GetCachedFeeRatePerKw();
 
-        // Assert: still the fallback (never refreshed), untouched by the change
+        // Assert: still the fallback (never refreshed); LightningMoney is immutable (NL-202),
+        // so a caller cannot touch the cached rate through the returned instance
+        Assert.Equal(2_500, cached.Satoshi);
         Assert.Equal(2_500, service.GetCachedFeeRatePerKw().Satoshi);
     }
 
