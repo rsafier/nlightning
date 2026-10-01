@@ -661,6 +661,24 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Lists our forwarded payments, newest first (ClientCommand 40, NL-597), with the refused-HTLC counters in the
+    /// summary (NL-598); every filter is optional.
+    /// </summary>
+    public Task<ListForwardsIpcResponse> ListForwardsAsync(int skip, int take, long? sinceUnixSeconds = null,
+                                                           long? untilUnixSeconds = null, byte? status = null,
+                                                           string? channel = null, CancellationToken ct = default) =>
+        SendRequestAsync<ListForwardsIpcRequest, ListForwardsIpcResponse>(ClientCommand.ListForwards,
+                                                                          new ListForwardsIpcRequest
+                                                                          {
+                                                                              Skip = skip,
+                                                                              Take = take,
+                                                                              SinceUnixSeconds = sinceUnixSeconds,
+                                                                              UntilUnixSeconds = untilUnixSeconds,
+                                                                              Status = status,
+                                                                              Channel = channel
+                                                                          }, ct);
+
+    /// <summary>
     /// Parses the `getaddress` argument. With no argument, the <see cref="GetAddressIpcRequest"/> default is used.
     /// </summary>
     internal static AddressType ParseAddressType(string? addressTypeString)

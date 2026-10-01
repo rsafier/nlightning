@@ -322,6 +322,14 @@ internal static class ClientApp
                     var payments = await client.ListPaymentsAsync(paymentSkip, paymentTake, cancellationToken);
                     new ListPaymentsPrinter().Print(payments);
                     break;
+                case "listforwards":
+                case "list-forwards":
+                    var forwards = ParseListForwardsOptions(commandArgs);
+                    var forwardPage = await client.ListForwardsAsync(forwards.Skip, forwards.Take, forwards.Since,
+                                                                     forwards.Until, forwards.Status,
+                                                                     forwards.Channel, cancellationToken);
+                    new ListForwardsPrinter().Print(forwardPage);
+                    break;
             }
         }
         catch (Exception ex)
@@ -527,6 +535,9 @@ internal static class ClientApp
                                                             CultureInfo.InvariantCulture, out _))
                     return $"Invalid skip '{commandArgs[1]}': expected a number.";
                 return null;
+            case "listforwards":
+            case "list-forwards":
+                return ValidateListForwardsOptions(commandArgs);
             default:
                 return $"Unknown command: {cmd}";
         }
@@ -1514,6 +1525,148 @@ internal static class ClientApp
                        : 0;
         return (take, skip);
     }
+
+    /// <summary>
+    /// Validates <c>listforwards</c>'s arguments: an optional page like the other list commands, then the filter
+    /// options in any order (NL-597).
+    /// </summary>
+    internal static string? ValidateListForwardsOptions(string[] commandArgs) =>
+        ParseListForwardsOptions(commandArgs, out var error) is null ? error : null;
+
+    /// <summary>
+    /// Parses <c>[count] [skip] [--since &lt;time&gt;] [--until &lt;time&gt;] [--status &lt;status&gt;]
+    /// [--channel &lt;channel&gt;]</c> of listforwards; a time is Unix seconds or an ISO date, the status is
+    /// pending/offered/fulfilled/failed, the channel a 64-hex channel id or a short_channel_id.
+    /// </summary>
+    /// <returns>The parsed arguments, or null with <paramref name="error"/> set when out only.</returns>
+    internal static ListForwardsArguments? ParseListForwardsOptions(string[] commandArgs, out string? error)
+    {
+        error = null;
+        var positional = new List<string>();
+        long? since = null;
+        long? until = null;
+        byte? status = null;
+        string? channel = null;
+        for (var i = 0; i < commandArgs.Length; i++)
+        {
+            var argument = commandArgs[i];
+            string? value;
+            if (argument.StartsWith("--", StringComparison.Ordinal))
+            {
+                var nameAndValue = argument.Split('=', 2);
+                var name = nameAndValue[0].ToLowerInvariant();
+                if (name is not ("--since" or "--until" or "--status" or "--channel"))
+                {
+                    error = $"Unknown option '{argument}'.";
+                    return null;
+                }
+
+                if (nameAndValue.Length == 2)
+                {
+                    value = nameAndValue[1];
+                }
+                else if (i + 1 < commandArgs.Length)
+                {
+                    value = commandArgs[++i];
+                }
+                else
+                {
+                    error = $"Missing value for {name}.";
+                    return null;
+                }
+
+                switch (name)
+                {
+                    case "--since":
+                        error = ValidateTime(value, name) ?? error;
+                        since = ParseTime(value);
+                        if (error is not null)
+                            return null;
+                        continue;
+                    case "--until":
+                        error = ValidateTime(value, name) ?? error;
+                        until = ParseTime(value);
+                        if (error is not null)
+                            return null;
+                        continue;
+                    case "--status":
+                        if (TryParseForwardStatus(value, out var parsed))
+                        {
+                            status = parsed;
+                            continue;
+                        }
+
+                        error = $"Invalid status '{value}': expected pending, offered, fulfilled or failed.";
+                        return null;
+                    case "--channel":
+                        if (value.Length == 0)
+                        {
+                            error = "Missing value for --channel.";
+                            return null;
+                        }
+
+                        channel = value;
+                        continue;
+                }
+            }
+
+            positional.Add(argument);
+        }
+
+        if (positional.Count > 2)
+        {
+            error = $"Unexpected argument '{positional[2]}'.";
+            return null;
+        }
+
+        var take = 100;
+        if (positional.Count > 0
+         && !(TryParsePositiveInt(positional[0], out take) && take <= MaxListCount))
+        {
+            error = $"Invalid count '{positional[0]}': expected a number from 1 to {MaxListCount}.";
+            return null;
+        }
+
+        var skip = 0;
+        if (positional.Count > 1
+         && !int.TryParse(positional[1], NumberStyles.None, CultureInfo.InvariantCulture, out skip))
+        {
+            error = $"Invalid skip '{positional[1]}': expected a number.";
+            return null;
+        }
+
+        return new ListForwardsArguments(skip, take, since, until, status, channel);
+    }
+
+    /// <summary>Dispatch form of <see cref="ParseListForwardsOptions"/> (validated already).</summary>
+    private static ListForwardsArguments ParseListForwardsOptions(string[] commandArgs) =>
+        ParseListForwardsOptions(commandArgs, out _)!;
+
+    private static long? ParseTime(string value) =>
+        long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds)
+            ? seconds
+            : DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal
+                                                                  | DateTimeStyles.AssumeUniversal,
+                                      out var time)
+                ? time.ToUnixTimeSeconds()
+                : null;
+
+    private static string? ValidateTime(string value, string name) =>
+        ParseTime(value) is null ? $"Invalid {name.TrimStart('-')} '{value}': expected Unix seconds or an ISO date."
+                                 : null;
+
+    private static bool TryParseForwardStatus(string value, out byte status)
+    {
+        status = value.Trim().ToLowerInvariant() switch
+        {
+            "pending" => (byte)ForwardCircuitStatus.Pending,
+            "offered" => (byte)ForwardCircuitStatus.Offered,
+            "fulfilled" => (byte)ForwardCircuitStatus.Fulfilled,
+            "failed" => (byte)ForwardCircuitStatus.Failed,
+            _ => byte.MaxValue
+        };
+        return status != byte.MaxValue;
+    }
 }
 
 /// <summary>
@@ -1525,6 +1678,12 @@ internal sealed record ExportChanBackupArguments(ChannelId? ChannelId, string? O
 /// The parsed arguments of describegraph.
 /// </summary>
 internal sealed record DescribeGraphArguments(bool IncludeChannels, bool IncludeNodes, int Offset, int Limit);
+
+/// <summary>
+/// The parsed arguments of listforwards (NL-597); a null filter is off.
+/// </summary>
+internal sealed record ListForwardsArguments(int Skip, int Take, long? Since, long? Until, byte? Status,
+                                             string? Channel);
 
 /// <summary>
 /// The parsed arguments of getroute.

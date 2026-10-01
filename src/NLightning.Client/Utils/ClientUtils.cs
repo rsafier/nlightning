@@ -153,6 +153,14 @@ public static class ClientUtils
         Console.WriteLine("  listinvoices [count] [skip]  List invoices, newest first [count 1-1000, default 100]");
         Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [count 1-1000,");
         Console.WriteLine("                               default 100]");
+        Console.WriteLine("  listforwards [count] [skip] [--since <time>] [--until <time>]");
+        Console.WriteLine("             [--status pending|offered|fulfilled|failed] [--channel <channel>]");
+        Console.WriteLine("                               List payments we forwarded, newest first, with the fee");
+        Console.WriteLine("                               earned, the totals over the filtered set and the HTLCs");
+        Console.WriteLine("                               refused before forwarding since start [count 1-1000,");
+        Console.WriteLine("                               default 100; time is Unix seconds or an ISO date; channel");
+        Console.WriteLine("                               is a channel id or short_channel_id] (alias:");
+        Console.WriteLine("                               list-forwards)");
         Console.WriteLine();
         Console.WriteLine("Environment Variables:");
         Console.WriteLine("  NLTG_NETWORK               Network to use");
