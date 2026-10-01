@@ -10,6 +10,7 @@ using Domain.Client.Responses;
 using Handlers;
 using Interfaces;
 using Services;
+using Services.Ipc;
 
 /// <summary>
 /// The operator IPC commands: <c>disconnect</c> (ClientCommand 24, wave rf1, NL-152 remainder) and <c>shutdown</c>
@@ -30,6 +31,7 @@ public static class OperatorIpcServiceExtensions
         services.AddSingleton<IIpcCommandHandler, DisconnectPeerIpcHandler>();
 
         services.AddSingleton(sp => new NodeShutdownTrigger(sp.GetService<IHostApplicationLifetime>()));
+        services.AddSingleton<IpcClientConnectionAccessor>();
         services.AddScoped<IClientCommandHandler<ShutdownClientRequest, ShutdownClientResponse>,
             ShutdownClientHandler>();
         services.AddSingleton<IIpcCommandHandler, ShutdownIpcHandler>();

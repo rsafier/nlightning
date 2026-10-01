@@ -49,6 +49,11 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
     /// </summary>
     internal NodeShutdownTrigger? ShutdownTrigger { get; init; }
 
+    /// <summary>
+    /// Hands the connection a request is served on to the handlers (NL-592); null without one.
+    /// </summary>
+    internal IpcClientConnectionAccessor? ConnectionAccessor { get; init; }
+
     public NamedPipeIpcService(IIpcAuthenticator authenticator, string configPath, IIpcFraming framing,
                                ILogger<NamedPipeIpcService> logger, IIpcRequestRouter router)
     {
@@ -161,8 +166,21 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
             }
 
             authenticated = true;
-            var response = await _router.RouteAsync(request, ct);
-            await _framing.WriteAsync(stream, response, ct);
+
+            // Watch for the client's disappearance, so a long handler (shutdown --wait, NL-592) can give up when
+            // Ctrl-C closed it; short handlers never read the token
+            using var connection = new IpcClientConnection(stream, ct);
+            connection.WatchForDisconnect();
+            ConnectionAccessor?.Current = connection;
+            try
+            {
+                var response = await _router.RouteAsync(request, ct);
+                await _framing.WriteAsync(stream, response, ct);
+            }
+            finally
+            {
+                ConnectionAccessor?.Current = null;
+            }
         }
         catch (Exception ex)
         {

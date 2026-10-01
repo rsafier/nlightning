@@ -96,7 +96,8 @@ public static class NodeServiceExtensions
                 var ipcRequestRouter = sp.GetRequiredService<IIpcRequestRouter>();
                 return new NamedPipeIpcService(ipcAuthenticator, configPath, ipcFraming, logger, ipcRequestRouter)
                 {
-                    ShutdownTrigger = sp.GetService<NodeShutdownTrigger>()
+                    ShutdownTrigger = sp.GetService<NodeShutdownTrigger>(),
+                    ConnectionAccessor = sp.GetService<IpcClientConnectionAccessor>()
                 };
             });
             services.AddSingleton<IIpcAuthenticator>(sp =>
