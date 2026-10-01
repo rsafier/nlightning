@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using NBitcoin.Secp256k1;
 
@@ -13,13 +14,49 @@ using Infrastructure.Crypto.Hashes;
 /// ephemeral-key blinding factors.
 /// </summary>
 /// <remarks>
+/// <para>
 /// An instance owns one <see cref="HmacSha256"/> and one <see cref="Sha256"/> so that a whole packet operation reuses
 /// the same hash state. It is not thread-safe; create one per operation.
+/// </para>
+/// <para>
+/// Creating an instance costs two native hash states, so the hot path rents instances from the pool with
+/// <see cref="Rent"/>: a rented instance goes back to the pool on <see cref="Dispose"/> instead of being destroyed
+/// (NL-083). Between two calls a generator never carries state — every method finishes its hash round trip or throws
+/// before touching it — so a returned instance is immediately reusable. Direct construction (a generator disposed
+/// for real) stays available for callers outside the hot path.
+/// </para>
 /// </remarks>
 internal sealed class SphinxKeyGenerator : IDisposable
 {
+    // Naturally bounded by the peak number of concurrent onion operations, each of which rents one generator.
+    private static readonly ConcurrentBag<SphinxKeyGenerator> s_pool = [];
+
     private readonly HmacSha256 _hmacSha256 = new();
     private readonly Sha256 _sha256 = new();
+
+    private readonly bool _pooled;
+
+    /// <summary>
+    /// Creates a generator the caller owns and disposes. The hot path uses <see cref="Rent"/> instead.
+    /// </summary>
+    public SphinxKeyGenerator()
+        : this(pooled: false)
+    {
+    }
+
+    private SphinxKeyGenerator(bool pooled)
+    {
+        _pooled = pooled;
+    }
+
+    /// <summary>
+    /// Rents a generator for one packet operation: <see cref="Dispose"/> returns it to the pool. The result is not
+    /// thread-safe and must not cross operations.
+    /// </summary>
+    public static SphinxKeyGenerator Rent()
+    {
+        return s_pool.TryTake(out var generator) ? generator : new SphinxKeyGenerator(pooled: true);
+    }
 
     /// <summary>
     /// Derives a key as <c>HMAC-SHA256(key = label, msg = secret)</c>.
@@ -174,6 +211,12 @@ internal sealed class SphinxKeyGenerator : IDisposable
 
     public void Dispose()
     {
+        if (_pooled)
+        {
+            s_pool.Add(this);
+            return;
+        }
+
         _hmacSha256.Dispose();
         _sha256.Dispose();
     }

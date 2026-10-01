@@ -46,6 +46,9 @@ public class KeyDerivationServiceTests
         public CompactPubKey MultiplyPubKey(CompactPubKey pubKey, ReadOnlySpan<byte> scalar) =>
             _inner.MultiplyPubKey(pubKey, scalar);
 
+        public CompactPubKey MultiplyPubKey(ReadOnlySpan<byte> pubKey, ReadOnlySpan<byte> scalar) =>
+            _inner.MultiplyPubKey(pubKey, scalar);
+
         public PrivKey MultiplyPrivKey(PrivKey privKey, ReadOnlySpan<byte> scalar)
         {
             var result = _inner.MultiplyPrivKey(privKey, scalar);

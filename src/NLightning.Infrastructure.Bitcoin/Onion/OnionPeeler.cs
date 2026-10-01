@@ -49,7 +49,7 @@ internal sealed class OnionPeeler
 
         // Parse the node key once per peel and hash with the peel's own generator (no per-ECDH allocations)
         using var ecNodeKey = SphinxKeyGenerator.CreatePrivateKey(nodeKey.Value, nameof(nodeKey));
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         return Peel(keyGenerator, packet, associatedData,
                     (publicKey, sharedSecret) => keyGenerator.ComputeSharedSecret(ecNodeKey, publicKey, sharedSecret),
                     pathKey, minPayloadLength, reportAsBlinding);
@@ -70,7 +70,7 @@ internal sealed class OnionPeeler
         ArgumentNullException.ThrowIfNull(nodeEcdh);
         ArgumentOutOfRangeException.ThrowIfNegative(minPayloadLength);
 
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         return Peel(keyGenerator, packet, associatedData, nodeEcdh, pathKey, minPayloadLength, reportAsBlinding);
     }
 
@@ -206,7 +206,7 @@ internal sealed class OnionPeeler
         try
         {
             keyGenerator.DeriveKey(OnionConstants.BlindedNodeId, blindingSharedSecret, tweak);
-            return _secp256K1Math.MultiplyPubKey(new CompactPubKey(ephemeralPubKey.ToArray()), tweak);
+            return _secp256K1Math.MultiplyPubKey(ephemeralPubKey, tweak);
         }
         catch (Exception e) when (e is ArgumentException or InvalidOperationException)
         {
@@ -227,7 +227,7 @@ internal sealed class OnionPeeler
         try
         {
             keyGenerator.ComputeBlindingFactor(ephemeralPubKey, sharedSecret, blindingFactor);
-            return _secp256K1Math.MultiplyPubKey(new CompactPubKey(ephemeralPubKey.ToArray()), blindingFactor);
+            return _secp256K1Math.MultiplyPubKey(ephemeralPubKey, blindingFactor);
         }
         catch (Exception e) when (e is ArgumentException or InvalidOperationException)
         {

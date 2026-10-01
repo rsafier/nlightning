@@ -61,7 +61,7 @@ internal sealed class RouteBlindingService : IRouteBlindingService
 
         var (pathKeys, sharedSecrets) = OnionBuilder.ComputeHopKeys(nodeIds, sessionKey);
         var hops = new List<BlindedPathHopTrace>(nodeIds.Count);
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         try
         {
             for (var i = 0; i < nodeIds.Count; i++)
@@ -128,7 +128,7 @@ internal sealed class RouteBlindingService : IRouteBlindingService
         using var ecNodeKey = SphinxKeyGenerator.CreatePrivateKey(nodeKey.Value, nameof(nodeKey));
         var sharedSecret = new byte[CryptoConstants.SecretLen];
         SphinxKeyGenerator.ComputeEcdhSharedSecret(ecNodeKey, pathKey, sharedSecret);
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         var tweak = keyGenerator.DeriveKey(OnionConstants.BlindedNodeId, sharedSecret);
         return _secp256K1Math.MultiplyPrivKey(nodeKey, tweak);
     }
@@ -138,7 +138,7 @@ internal sealed class RouteBlindingService : IRouteBlindingService
     /// </summary>
     internal CompactPubKey DeriveNextPathKey(CompactPubKey pathKey, Secret sharedSecret)
     {
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         return ComputeNextPathKey(keyGenerator, pathKey, sharedSecret);
     }
 
@@ -170,7 +170,7 @@ internal sealed class RouteBlindingService : IRouteBlindingService
         if (encryptedRecipientData.Length < TagLength)
             throw Fail("encrypted_recipient_data is shorter than its authentication tag.");
 
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         var rho = keyGenerator.DeriveKey(OnionConstants.Rho, sharedSecret);
         var plaintext = new byte[encryptedRecipientData.Length - TagLength];
         try

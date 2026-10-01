@@ -65,10 +65,11 @@ internal sealed class OnionBuilder
         for (var i = 0; i < hops.Count; i++)
             nodeIds[i] = hops[i].NodeId;
 
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         using var chaCha20 = new ChaCha20Stream();
 
-        var (ephemeralPubKeys, sharedSecrets) = ComputeHopKeys(keyGenerator, nodeIds, sessionKey);
+        var (ephemeralPubKeys, sharedSecrets) = ComputeHopKeys(keyGenerator, nodeIds, sessionKey,
+                                                               collectEphemeralPubKeys: false);
 
         var mixHeader = new byte[hopPayloadsLength];
         var filler = Array.Empty<byte>();
@@ -137,12 +138,13 @@ internal sealed class OnionBuilder
     public static (byte[][] EphemeralPubKeys, byte[][] SharedSecrets) ComputeHopKeys(
         IReadOnlyList<CompactPubKey> nodeIds, PrivKey sessionKey)
     {
-        using var keyGenerator = new SphinxKeyGenerator();
-        return ComputeHopKeys(keyGenerator, nodeIds, sessionKey);
+        using var keyGenerator = SphinxKeyGenerator.Rent();
+        return ComputeHopKeys(keyGenerator, nodeIds, sessionKey, collectEphemeralPubKeys: true);
     }
 
     private static (byte[][] EphemeralPubKeys, byte[][] SharedSecrets) ComputeHopKeys(
-        SphinxKeyGenerator keyGenerator, IReadOnlyList<CompactPubKey> nodeIds, PrivKey sessionKey)
+        SphinxKeyGenerator keyGenerator, IReadOnlyList<CompactPubKey> nodeIds, PrivKey sessionKey,
+        bool collectEphemeralPubKeys)
     {
         ArgumentNullException.ThrowIfNull(nodeIds);
         if (nodeIds.Count == 0)
@@ -152,6 +154,7 @@ internal sealed class OnionBuilder
         var sharedSecrets = new byte[nodeIds.Count][];
 
         Span<byte> blindingFactor = stackalloc byte[CryptoConstants.Sha256HashLen];
+        Span<byte> ephemeralPubKey = stackalloc byte[CryptoConstants.CompactPubkeyLen];
 
         var ephemeralKey = SphinxKeyGenerator.CreatePrivateKey(sessionKey.Value, nameof(sessionKey));
         var succeeded = false;
@@ -163,14 +166,19 @@ internal sealed class OnionBuilder
                 if (!SphinxKeyGenerator.IsValidPublicKey(nodeId))
                     throw new ArgumentException($"Invalid public key for hop {i}.", nameof(nodeIds));
 
-                ephemeralPubKeys[i] = ephemeralKey.CreatePubKey().ToBytes(true);
+                // The packet needs hop 0's key; the callers that return every ephemeral key need the rest, so the
+                // intermediate keys stay on the stack otherwise (NL-083)
+                ephemeralKey.CreatePubKey().WriteToSpan(true, ephemeralPubKey, out _);
+                if (collectEphemeralPubKeys || i == 0)
+                    ephemeralPubKeys[i] = ephemeralPubKey.ToArray();
+
                 sharedSecrets[i] = new byte[CryptoConstants.SecretLen];
                 keyGenerator.ComputeSharedSecret(ephemeralKey, nodeId, sharedSecrets[i]);
 
                 if (i == nodeIds.Count - 1)
                     break;
 
-                keyGenerator.ComputeBlindingFactor(ephemeralPubKeys[i], sharedSecrets[i], blindingFactor);
+                keyGenerator.ComputeBlindingFactor(ephemeralPubKey, sharedSecrets[i], blindingFactor);
                 ECPrivKey nextEphemeralKey;
                 try
                 {

@@ -13,9 +13,10 @@ using Domain.Protocol.Onion.ValueObjects;
 /// BOLT 4 Sphinx facade over <see cref="OnionBuilder"/> and <see cref="OnionPeeler"/>.
 /// </summary>
 /// <remarks>
-/// Stateless and thread-safe: every call allocates its own hash and stream state. <see cref="PeelAsLocalNode"/> does
-/// its node-key ECDH through <see cref="ISecureKeyManager.ComputeNodeSharedSecret"/>; the key manager is optional so the
-/// service can be resolved where none is registered.
+/// Stateless and thread-safe: every call rents its hash state from the pool (<see cref="SphinxKeyGenerator.Rent"/>,
+/// NL-083). <see cref="PeelAsLocalNode"/> does its node-key ECDH through
+/// <see cref="ISecureKeyManager.ComputeNodeSharedSecret"/>; the key manager is optional so the service can be resolved
+/// where none is registered.
 /// </remarks>
 internal sealed class SphinxService : ISphinxService
 {
