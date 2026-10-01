@@ -41,7 +41,7 @@ public class MessageServiceTests
     }
 
     [Fact]
-    public void Given_ReceivedMessage_When_ReceiveMessageAsync_IsInvoked_Then_MessageReceivedEventIsRaised()
+    public async Task Given_ReceivedMessage_When_ReceiveMessageAsync_IsInvoked_Then_MessageReceivedEventIsRaised()
     {
         // Given
         var loggerMock = new Mock<ILogger<MessageService>>();
@@ -54,22 +54,19 @@ public class MessageServiceTests
             new MessageService(loggerMock.Object, _messageSerializerMock.Object, transportServiceMock.Object);
         var stream = new MemoryStream();
 
-        // When & Then
-        var receivedMessage = Assert.RaisesAny<IMessage?>(
-            h => messageService.OnMessageReceived += h,
-            h => messageService.OnMessageReceived -= h,
-            () =>
-            {
-                // Simulate transport service receiving a message
-                transportServiceMock.Raise(t => t.MessageReceived += null, messageService, stream);
-            });
+        // When: the transport's raw frame is queued and deserialized by the per-peer consumer (NL-108), so the
+        // event arrives shortly after the raise
+        var received = new TaskCompletionSource<IMessage?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        messageService.OnMessageReceived += (_, m) => received.TrySetResult(m);
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService, stream);
 
-        Assert.NotNull(receivedMessage.Arguments);
-        Assert.Same(messageMock.Object, receivedMessage.Arguments);
+        // Then
+        var message = await received.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Same(messageMock.Object, message);
     }
 
     [Fact]
-    public void Given_MalformedMessage_When_ReceiveMessageAsync_IsInvoked_Then_SendsWarningInsteadOfAllZeroError()
+    public async Task Given_MalformedMessage_When_ReceiveMessageAsync_IsInvoked_Then_SendsWarningInsteadOfAllZeroError()
     {
         // Arrange
         var loggerMock = new Mock<ILogger<MessageService>>();
@@ -91,14 +88,15 @@ public class MessageServiceTests
         transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream());
 
         // Assert
+        await WaitUntilAsync(() => sentMessage is not null && raisedException is not null,
+                             "the warning and the exception", TestContext.Current.CancellationToken);
         var warning = Assert.IsType<WarningMessage>(sentMessage);
         Assert.Equal(MessageTypes.Warning, warning.Type);
         Assert.Equal(ChannelId.Zero, warning.Payload.ChannelId);
-        Assert.NotNull(raisedException);
     }
 
     [Fact]
-    public void Given_UnknownEvenMessageType_When_Received_Then_SendsWarningAndRaisesConnectionException()
+    public async Task Given_UnknownEvenMessageType_When_Received_Then_SendsWarningAndRaisesConnectionException()
     {
         // Arrange (BOLT 1: an unknown even message closes the connection; we send a warning first)
         var transportServiceMock = new Mock<ITransportService>();
@@ -119,6 +117,8 @@ public class MessageServiceTests
         transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream());
 
         // Assert
+        await WaitUntilAsync(() => sentMessage is not null && raisedException is not null,
+                             "the warning and the exception", TestContext.Current.CancellationToken);
         var warning = Assert.IsType<WarningMessage>(sentMessage);
         Assert.Equal(ChannelId.Zero, warning.Payload.ChannelId);
         Assert.Equal("Unknown message type 100", System.Text.Encoding.UTF8.GetString(warning.Payload.Data!));
@@ -129,26 +129,42 @@ public class MessageServiceTests
     [InlineData(MessageTypes.ChannelAnnouncement)]
     [InlineData(MessageTypes.NodeAnnouncement)]
     [InlineData(MessageTypes.ChannelUpdate)]
-    public void Given_MalformedGossipBroadcast_When_Received_Then_IgnoredWithOneWarningAndConnectionKept(
+    public async Task Given_MalformedGossipBroadcast_When_Received_Then_IgnoredWithOneWarningAndConnectionKept(
         MessageTypes type)
     {
         // Arrange (mainnet gossip probe: LND relays pre-2022 channel_updates without htlc_maximum_msat, 128 bytes)
         var transportServiceMock = new Mock<ITransportService>();
         transportServiceMock.Setup(t => t.IsConnected).Returns(true);
-        _messageSerializerMock.Setup(m => m.DeserializeMessageAsync(It.IsAny<Stream>()))
-                              .ThrowsAsync(new MessageSerializationException(
-                                               "Error deserializing message",
-                                               new PayloadSerializationException(
-                                                   "Error deserializing ChannelUpdatePayload",
-                                                   new InvalidOperationException(
-                                                       "A channel_update payload is at least 136 bytes, got 128"))));
+        var validMessage = new Mock<IMessage>();
+        var deserializeCalls = 0;
+        _messageSerializerMock
+            .Setup(m => m.DeserializeMessageAsync(It.IsAny<Stream>()))
+            .Returns((Stream _) =>
+            {
+                // The first two frames are the malformed gossip broadcasts, the third a valid message: the consumer
+                // is strictly in order, so its dispatch proves both malformed frames were fully handled
+                var call = Interlocked.Increment(ref deserializeCalls);
+                return call <= 2
+                    ? Task.FromException<IMessage?>(new MessageSerializationException(
+                          "Error deserializing message",
+                          new PayloadSerializationException(
+                              "Error deserializing ChannelUpdatePayload",
+                              new InvalidOperationException(
+                                  "A channel_update payload is at least 136 bytes, got 128"))))
+                    : Task.FromResult<IMessage?>(validMessage.Object);
+            });
         var sentMessages = new List<IMessage>();
         transportServiceMock.Setup(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()))
                             .Callback<IMessage, CancellationToken>((m, _) => sentMessages.Add(m))
                             .Returns(Task.CompletedTask);
         var messageService = new MessageService(new Mock<ILogger<MessageService>>().Object,
                                                 _messageSerializerMock.Object, transportServiceMock.Object);
-        messageService.OnMessageReceived += (_, _) => { };
+        var validDispatched = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        messageService.OnMessageReceived += (_, m) =>
+        {
+            if (m == validMessage.Object)
+                validDispatched.TrySetResult();
+        };
         Exception? raisedException = null;
         messageService.OnExceptionRaised += (_, e) => raisedException = e;
         var bytes = new byte[2 + 128];
@@ -158,8 +174,10 @@ public class MessageServiceTests
         // Act
         transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream(bytes));
         transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream(bytes));
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream([0x00, 0x00]));
 
         // Assert: one connection-level warning for the first, nothing for the second, and the connection stays
+        await validDispatched.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         var warning = Assert.IsType<WarningMessage>(Assert.Single(sentMessages));
         Assert.Equal(ChannelId.Zero, warning.Payload.ChannelId);
         Assert.Contains("136 bytes, got 128", System.Text.Encoding.UTF8.GetString(warning.Payload.Data!));
@@ -167,7 +185,7 @@ public class MessageServiceTests
     }
 
     [Fact]
-    public void Given_MalformedOnionMessage_When_Received_Then_IgnoredWithoutWarningCountedAndConnectionKept()
+    public async Task Given_MalformedOnionMessage_When_Received_Then_IgnoredWithoutWarningCountedAndConnectionKept()
     {
         // Arrange: NL-444, a 513 whose len is below 66 fails in the payload serializer; BOLT 4 ignores an unusable
         // onion message and 513 is odd, so no warning and no close, only the dropped{reason=malformed} count
@@ -207,14 +225,15 @@ public class MessageServiceTests
         transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream(bytes));
 
         // Assert
+        await WaitUntilAsync(() => Interlocked.Read(ref malformedDrops) >= 2, "both drops to be counted",
+                             TestContext.Current.CancellationToken);
         transportServiceMock.Verify(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()),
                                     Times.Never());
         Assert.Null(raisedException);
-        Assert.True(Interlocked.Read(ref malformedDrops) >= 2);
     }
 
     [Fact]
-    public void Given_MalformedOnionMessageAndADropCounter_When_Received_Then_CountedOnTheCounterNotTheStaticMeter()
+    public async Task Given_MalformedOnionMessageAndADropCounter_When_Received_Then_CountedOnTheCounterNotTheStaticMeter()
     {
         // Arrange: NL-464, a node with the onion-message counter set (the service's) counts the malformed 513s on it,
         // so one meter and one in-memory count hold every drop; the class's own meter stays unused
@@ -252,12 +271,13 @@ public class MessageServiceTests
         transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream(bytes));
 
         // Assert: the counter took both, the static fallback meter nothing
+        await WaitUntilAsync(() => drops.Count >= 2, "both drops to be counted", TestContext.Current.CancellationToken);
         counter.Verify(c => c.RecordDropped(MessageService.MalformedOnionMessageDropReason), Times.Exactly(2));
         Assert.Equal(0, Interlocked.Read(ref staticMeterDrops));
     }
 
     [Fact]
-    public void Given_MalformedChannelMessage_When_Received_Then_StillWarnsAndCloses()
+    public async Task Given_MalformedChannelMessage_When_Received_Then_StillWarnsAndCloses()
     {
         // Arrange: only the gossip broadcasts are ignored; a malformed update_add_htlc (128) still closes
         var transportServiceMock = new Mock<ITransportService>();
@@ -277,11 +297,13 @@ public class MessageServiceTests
                                    new MemoryStream([0x00, (byte)MessageTypes.UpdateAddHtlc, 0x01]));
 
         // Assert
+        await WaitUntilAsync(() => raisedException is not null, "the connection exception",
+                             TestContext.Current.CancellationToken);
         Assert.IsType<ConnectionException>(raisedException);
     }
 
     [Fact]
-    public void Given_SubscriberThrows_When_MessageReceived_Then_NoWarningIsSent()
+    public async Task Given_SubscriberThrows_When_MessageReceived_Then_NoWarningIsSent()
     {
         // Arrange (only deserialization failures are the peer's fault)
         var transportServiceMock = new Mock<ITransportService>();
@@ -297,6 +319,8 @@ public class MessageServiceTests
         transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream());
 
         // Assert
+        await WaitUntilAsync(() => raisedException is not null, "the connection exception",
+                             TestContext.Current.CancellationToken);
         transportServiceMock.Verify(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()),
                                     Times.Never);
         Assert.IsType<ConnectionException>(raisedException);
@@ -372,5 +396,80 @@ public class MessageServiceTests
                                                                           messageMock.Object, true,
                                                                           TestContext.Current.CancellationToken));
         Assert.IsType<ObjectDisposedException>(exception.InnerException);
+    }
+
+    [Fact]
+    public async Task Given_SlowSubscriber_When_TransportRaisesMoreFrames_Then_TheRaiseNeverWaitsAndOrderIsKept()
+    {
+        // Arrange - NL-108: the read loop (here the transport raise) only queues, so a slow handler grows the queue
+        // instead of stalling the reads, and the frames are dispatched in arrival order afterwards
+        var transportServiceMock = new Mock<ITransportService>();
+        var messages = Enumerable.Range(0, 64).Select(_ => new Mock<IMessage>().Object).ToList();
+        var next = 0;
+        _messageSerializerMock.Setup(m => m.DeserializeMessageAsync(It.IsAny<Stream>()))
+                              .ReturnsAsync((Stream _) => messages[next++]);
+        var messageService = new MessageService(new Mock<ILogger<MessageService>>().Object,
+                                                _messageSerializerMock.Object, transportServiceMock.Object);
+        var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivered = new List<IMessage>();
+        var handled = 0;
+        messageService.OnMessageReceived += (_, m) =>
+        {
+            lock (delivered)
+                delivered.Add(m!);
+
+            // The first "handler" is the slow one: it parks the consumer until the test releases it
+            if (Interlocked.Increment(ref handled) == 1)
+            {
+                firstEntered.TrySetResult();
+                releaseHandler.Task.Wait(TestContext.Current.CancellationToken);
+            }
+        };
+
+        // Act: the "read loop" raises every frame while the handler of the first one is still stuck
+        var readLoop = Task.Run(() =>
+        {
+            foreach (var _ in messages)
+                transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream());
+        }, TestContext.Current.CancellationToken);
+
+        await firstEntered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        var raiseTask = await Task.WhenAny(readLoop,
+                                           Task.Delay(TimeSpan.FromSeconds(10),
+                                                      TestContext.Current.CancellationToken));
+
+        // Assert: the raises all returned while the slow handler had only delivered the first message (the queue
+        // holds the rest), and once released everything arrives, in order
+        Assert.Same(readLoop, raiseTask);
+        Assert.False(readLoop.IsFaulted);
+        Assert.False(releaseHandler.Task.IsCompleted);
+        lock (delivered)
+            Assert.Single(delivered);
+
+        releaseHandler.TrySetResult();
+        await readLoop.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await WaitUntilAsync(() =>
+        {
+            lock (delivered)
+                return delivered.Count == messages.Count;
+        }, "every message to be delivered", TestContext.Current.CancellationToken);
+        lock (delivered)
+            Assert.Equal(messages, delivered);
+    }
+
+    /// <summary>
+    /// Waits for a condition the per-peer consumer reaches asynchronously (a warning being sent, a counter moving).
+    /// </summary>
+    private static async Task WaitUntilAsync(Func<bool> condition, string what, CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException($"Timed out waiting for {what}");
+
+            await Task.Delay(10, cancellationToken);
+        }
     }
 }
