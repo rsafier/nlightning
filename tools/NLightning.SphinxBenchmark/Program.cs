@@ -6,7 +6,6 @@ namespace NLightning.SphinxBenchmark;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
-using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Crypto.Functions;
 using Infrastructure.Bitcoin.Onion;
 
