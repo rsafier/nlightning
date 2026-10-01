@@ -88,6 +88,7 @@ Updated 2026-09-30 by lane tor (branch `wip/tor` from `wip/fafo` at `59a62d37`, 
 Updated 2026-09-30 by the batch7 integrator (branch `batch7` from `wip/fafo` at `19ec9493`; 5 lanes run in parallel worktrees, cherry-picked in lane order with no conflicts — lane branches `batch7-*` hold the originals): 11 open issues resolved (1 medium, 10 low), with the per-entry SHAs being the `batch7` commits: NL-570, NL-439, NL-374, NL-366, NL-416, NL-423, NL-493, NL-508, NL-462, NL-295, NL-457. Notes: NL-570 — st_uid/st_gid offsets now come from a platform/architecture table (macOS 16/20, Linux x64 28/32, other 64-bit Linux 24/28), pinned by a platform-independent test, linux-x64 verification in CI; NL-439 — the Windows pipe ACL review found no gap (`CurrentUserOnly` gives a single-ACE DACL, cookie-gated answers), and the daemon warns at start when the database file is group/world readable (warn-only); NL-374 — `GraphStore.GetSnapshot` copies the graph references under the writer lock and builds the snapshot's indexes outside it, so ingress writers stall for ~ms instead of the 69-105 ms index build; NL-366 — the relay's collect drains a bounded accepted-gossip feed the ingress fills (one newest-wins slot per message direction, cap 8,192, overflow falls back to the old full pass), O(changes) instead of O(graph) per collect; NL-416 — `getblock <hash> 1` answers are stream-parsed with a `JsonTextReader` off the response (no JToken tree on the LOH; the pruned-block error still surfaces as `RPCException`); NL-423 — Esplora funding-txid lookups batch per block through `/block/{hash}/txids`, proven by computing the list's merkle root against our header (CVE-2012-2459-mutated lists refused, length checked against nTx, per-position proof kept as fallback on mismatch or 404) — a 40-50k-channel sync drops from ~80k requests (>12 h at 2 req/s) to about one request per distinct funding block; NL-493 — the CRITICAL `[SP2-C-T4]` reorg alert fires only for a reorg the process saw and is derived from persisted watch state after a restart (no schema change), and `SpliceDepthWatcher` moves a pending splice reorged out before its lock back to waiting (`OnSpliceReorgedOutAsync` under the channel lock, `splice_locked` kept, idempotent); NL-508 — `SpliceHarness.RestartAsync` registers the saved fundings with the signer the way production loads them and the `bumpsplice` refusals (no pending splice, splice not negotiated) are proven on the real `SpliceService`; NL-462 — at startup a V1FundingSigned funder's channel locks are rebuilt from its pending funding broadcast's inputs (no schema change; the NL-259 release paths release restored locks unchanged); NL-295 — the open-channel subscription answers right after subscribing from a channel already at V1FundingSigned (an NL-535 test asserting the old wait-for-update contract was rewritten to the fixed contract); NL-457 — migration `AddForwardCircuitFailureReasons` (Sqlite 20261001011637, Postgres 20261001011629, SqlServer 20261001011644) adds nullable `FailureCode`/`FailureSource` to ForwardCircuits, written by the saves that mark a circuit Failed (`FailureCode` stays null for relayed `update_fail_htlc` failures — the failure onion is encrypted for the upstream hop); the optional `listforwards` IPC was left out for now. Gates on the integrated tree, net10.0 Release: build 0 errors/0 warnings; `dotnet format` clean; `scripts/check-sln-configs.py` OK; full non-Docker suite green per project (Domain 3838 +4 platform skips, Application 3255, Daemon 868, Infrastructure.Bitcoin 1489 +2 platform skips, Integration 953, Serialization 622, Bolt11 337, Infrastructure 613) — two single-test failures in the first full run were the documented loaded-run flakes (`AnnouncementHarnessTests`, NL-561 family; `GossipFloodTests`, NL-382 family), each green alone and the suite green on re-run. Integration finding: NL-295's fix (ee7e8fac) was reverted at integration (it made the older-client open subscription answer at once on every call, which spun the Docker open helper and broke the on-chain reorg/splice proofs and the ABCD build; NL-295 is now a duplicate of NL-535), so batch7 resolves 10 issues and closes one as a duplicate.
 Updated 2026-09-30 by the tor integrator (branch `tor-int`, rebased onto `wip/fafo` at `649eea3d`): the Tor review's findings fixed (owner decision: all of them), NL-575..NL-590 (NL-574 is reserved for another lane): M1 control-port authentication NL-575, M2 startup dials NL-576, M3 Tor-only listener NL-577, M4 fee estimates over HTTP NL-578, M5 onion-service peers dialed back NL-579, L1..L11 NL-580..NL-590 (the SOCKS5 credentials version NL-587 is a spec-violation, the rest bugs). Non-Docker only (Docker was busy with another lane).
 
+Updated 2026-10-01 by the batch8 integrator (branch `wip/batch8` from `wip/fafo` at `54dc63be`; 4 lanes run in parallel worktrees, cherry-picked in lane order with no conflicts — lane branches `batch8-*` hold the originals): 5 open lows resolved, with the per-entry SHAs being the `wip/batch8` commits: NL-510 (b1639658, tests 5ef73d65), NL-321 (b73de764), NL-460 (de64b480), NL-470 (217deff6, 36f7974e, 4e2db398), NL-452 (1df12c38, 9eb7439f). Notes: NL-510 — a splice RBF can now fund a positive contribution with freshly reserved wallet inputs (an initial-splice reservation riding the new attempt's session, so NL-492's sibling release covers it; the MaxRbfFeeShareSatoshis and half-cap rules still bound the new total, and a positive bump over a previous splice-out replaces its output); NL-321 — migration `AddPaymentParts` (Sqlite 20261001200355, Postgres 20261001200347, SqlServer 20261001200402) adds PaymentParts + PaymentPartHops, `PaymentService` persists every offered part with its route and shared secrets, settles the row on its resolution, and the startup reconcile marks HTLC-dead parts failed (a payment whose parts are all dead fails without a code, as before); NL-460 — migration `AddPaymentCustomRecords` (Sqlite 20261001200504, Postgres 20261001200457, SqlServer 20261001200511) gives keysend custom records their own nullable columns on Invoices and Payments with a data step moving the borrowed `Bolt12InvoiceBytes` values back; both migrations were applied to live Postgres and SQL Server containers and `HasPendingModelChanges` is false on all three providers (PersistenceConfigurationTests); NL-470 — the test pair's `stfu` is delivered through the real ChannelManager (the reflection bypass is gone) and the link-drop tests prove the wired Q-R-04 hook; the once-dead items were already fixed by sp1's 940da49c, and a channel reaching Closed now deletes its stored interactive-tx negotiations in the same save (mutual close and the on-chain irrevocable stage; the dual-funded open is excluded — its rows are persisted Aborted first, pinned by DualFundSafetyTests); NL-452 — BOLT 12 receive paths are introduced by an announced channel when one can carry the payment (private channels are the fallback, so a private-only node keeps working with its own peers), and `createoffer` answers with a reachability warning when only channel-less peers could introduce its paths (appended response key); D2 (blinded issuer ids) stays deferred. Gates on the integrated tree, net10.0 Release: build 0 errors/0 warnings (`--no-incremental`); `dotnet format` clean; full non-Docker suite green per project (Domain 3840 +4 skips, Application 3290, Daemon 934, Infrastructure.Bitcoin 1489 +2 skips, Integration 957, Serialization 622, Bolt11 337, Infrastructure 613) — one single-test failure in the first full run was the documented loaded-run flake `AnnouncementHarnessTests` (NL-561 family), green alone and on the full re-run. Integration finding: PaymentSendIpcTests needed a no-op `IPaymentPartDbRepository` registration once `PaymentService` resolves it from the scope (fixed in the batch branch). The lane worktrees (`nlightning-b8-*`) are kept.
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -122,9 +123,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 65 | 68 |
+| open | 0 | 0 | 3 | 60 | 63 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 164 | 269 | 509 |
+| fixed | 14 | 62 | 164 | 274 | 514 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
 | **Total** | **14** | **62** | **171** | **341** | **588** |
@@ -1363,7 +1364,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` Proof Q (a), §7
 
 ### NL-470 Quiescence and interactive-tx seams left open by wave qit
-- **Status:** open (partial: 940da49c, df9a869a, d778d100)
+- **Status:** fixed (217deff6, 36f7974e, 4e2db398)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Channels/Quiescence/QuiescenceService.cs` (`OnPeerDisconnected`), `test/NLightning.Application.Tests/Channels/Quiescence/QuiescenceTestPair.cs:43`, `src/NLightning.Infrastructure.Repositories/Database/Channel/InteractiveTxSessionDbRepository.cs:112` (`DeleteByChannelIdAsync`)
@@ -1659,7 +1660,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `DAY0_RUNBOOK.md` §5
 
 ### NL-510 Splice RBF cannot add fresh wallet inputs to our contribution
-- **Status:** open
+- **Status:** fixed (b1639658; tests 5ef73d65)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Splicing/SpliceService.Rbf.cs` (`PlanRbfContribution`, `GetRbfFeeShareRefusal`)
@@ -2298,7 +2299,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M4-T6
 
 ### NL-321 MPP send parts added while others are in flight are not persisted
-- **Status:** open (partial: 74c9014)
+- **Status:** fixed (b73de764)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`PaymentSession`), `Payments`/`PaymentHops` tables
@@ -2501,7 +2502,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT12_PLAN.md` B0-T3
 
 ### NL-452 BOLT 12 reachability: private-channel payment paths, fragile offer paths, blinded issuer not wired
-- **Status:** open
+- **Status:** fixed (1df12c38, 9eb7439f)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Offers/Receive/{OfferService,BlindedPaymentPathFactory}.cs`
@@ -4408,7 +4409,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ---
 
 ### NL-460 Keysend custom records are stored in the BOLT 12 invoice bytes column
-- **Status:** open
+- **Status:** fixed (de64b480)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Repositories/Database/Payment/{InvoiceDbRepository,PaymentDbRepository}.cs`
