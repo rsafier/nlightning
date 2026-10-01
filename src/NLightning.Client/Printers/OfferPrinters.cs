@@ -52,6 +52,8 @@ public sealed class CreateOfferPrinter : IPrinter<CreateOfferIpcResponse>
     {
         _output.WriteLine("Offer:");
         OfferPrintFormat.WriteOffer(_output, item.Offer);
+        if (!string.IsNullOrEmpty(item.Warning))
+            _output.WriteLine("  Warning: {0}", item.Warning);
     }
 }
 

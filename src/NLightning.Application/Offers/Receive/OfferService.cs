@@ -36,7 +36,7 @@ using OnionMessages;
 /// <c>offer_description</c>, <c>offer_absolute_expiry</c>, <c>offer_issuer</c>, <c>offer_quantity_max</c>,
 /// <c>offer_issuer_id</c> = our node id (plan D2), and <c>offer_paths</c> when we have no announced open channel or
 /// the request forces them: one message path per connected onion-message peer with an open channel (only when
-/// none has one, other connected peers, with a warning; <see cref="SelectIntroductionNodes"/>,
+/// none has one, other connected peers, and <see cref="CreatedOffer.Warning"/> names the risk; <see cref="SelectIntroductionNodes"/>,
 /// <see cref="OfferOptions.MaxOfferPaths"/>), the peer as introduction node and our hop's <c>path_id</c> from
 /// <see cref="OfferPathIds"/>, ended by our dummy hops (<see cref="OnionMessageOptions.BlindedPathDummyHops"/>,
 /// NL-525). Our <c>offer_id</c> is SHA256 of the offer bytes; the string is <c>lno1...</c>.</para>
@@ -103,8 +103,8 @@ public sealed class OfferService : IOfferService
     }
 
     /// <inheritdoc />
-    public async Task<OfferModel> CreateOfferAsync(CreateOfferRequest request,
-                                                   CancellationToken cancellationToken = default)
+    public async Task<CreatedOffer> CreateOfferAsync(CreateOfferRequest request,
+                                                     CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         var now = _timeProvider.GetUtcNow();
@@ -113,7 +113,9 @@ public sealed class OfferService : IOfferService
             throw new InvalidOperationException("Offers need option_onion_messages and option_route_blinding.");
 
         var metadata = RandomNumberGenerator.GetBytes(Bolt12Constants.OurOfferMetadataLength);
-        var paths = request.ForcePaths || !HasAnnouncedChannel() ? CreateOfferPaths(metadata) : [];
+        var (paths, warning) = request.ForcePaths || !HasAnnouncedChannel()
+                                   ? CreateOfferPaths(metadata)
+                                   : ([], null);
         var nodeOptions = _nodeOptions.Value;
         var records = BuildRecords(request, nodeOptions.BitcoinNetwork, metadata, paths,
                                    _secureKeyManager.GetNodePubKey());
@@ -140,7 +142,7 @@ public sealed class OfferService : IOfferService
                                    offer.Amount is null ? "any amount" : $"{offer.Amount.MilliSatoshi} msat",
                                    paths.Count);
 
-        return offer;
+        return new CreatedOffer(offer, warning);
     }
 
     /// <inheritdoc />
@@ -245,9 +247,10 @@ public sealed class OfferService : IOfferService
 
     /// <summary>
     /// Message paths to us, introduced by connected onion-message peers (<see cref="SelectIntroductionNodes"/>),
-    /// ended by our dummy hops (<see cref="OnionMessageOptions.BlindedPathDummyHops"/>, NL-525).
+    /// ended by our dummy hops (<see cref="OnionMessageOptions.BlindedPathDummyHops"/>, NL-525); with the
+    /// reachability warning when only peers without an open channel could introduce one (NL-452).
     /// </summary>
-    private List<WireBlindedPath> CreateOfferPaths(byte[] metadata)
+    private (List<WireBlindedPath> Paths, string? Warning) CreateOfferPaths(byte[] metadata)
     {
         var ourNodeId = _secureKeyManager.GetNodePubKey();
         var pathFinder = new OnionMessagePathFinder(_peerManager, _channelMemoryRepository, ourNodeId, 0,
@@ -259,17 +262,24 @@ public sealed class OfferService : IOfferService
 
         var introductionNodes = SelectIntroductionNodes(peers, pathFinder.HasOpenChannelWith,
                                                         _offerOptions.MaxOfferPaths, out var withoutChannel);
-        if (withoutChannel && _logger.IsEnabled(LogLevel.Warning))
+        var pathId = _pathIds.Compute(metadata);
+        var paths = introductionNodes.Select(peer => WireBlindedPath.FromBlindedPath(
+                                                   _pathBuilder.CreateMessagePath([peer, ourNodeId], pathId,
+                                                                                 dummyHops: _pathDummyHops)))
+                                     .ToList();
+        if (!withoutChannel)
+            return (paths, null);
+
+        var warning = "No connected onion-message peer has an open channel with us: the offer's paths are introduced "
+                    + $"by {introductionNodes.Count} peer(s) without one, and they stop working for good once those "
+                    + "peers disconnect (we do not reconnect to peers without channels).";
+        if (_logger.IsEnabled(LogLevel.Warning))
             _logger.LogWarning("No connected onion-message peer has an open channel with us: the offer's paths are "
                              + "introduced by {Count} peer(s) without one, and they stop working for good once those "
                              + "peers disconnect (we do not reconnect to peers without channels)",
                                introductionNodes.Count);
 
-        var pathId = _pathIds.Compute(metadata);
-        return introductionNodes.Select(peer => WireBlindedPath.FromBlindedPath(
-                                            _pathBuilder.CreateMessagePath([peer, ourNodeId], pathId,
-                                                                          dummyHops: _pathDummyHops)))
-                                .ToList();
+        return (paths, warning);
     }
 
     /// <summary>

@@ -76,10 +76,18 @@ public sealed class CreateOfferIpcResponse
 {
     [Key(0)] public required OfferInfoIpcResponse Offer { get; init; }
 
+    /// <summary>Why payers may not reach the offer (its paths introduced by peers without an open channel with us,
+    /// which we never reconnect to, NL-452), or null.</summary>
+    [Key(1)] public string? Warning { get; init; }
+
     public static CreateOfferIpcResponse FromClientResponse(CreateOfferClientResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
-        return new CreateOfferIpcResponse { Offer = OfferInfoIpcResponse.FromClientResponse(response.Offer) };
+        return new CreateOfferIpcResponse
+        {
+            Offer = OfferInfoIpcResponse.FromClientResponse(response.Offer),
+            Warning = response.Warning
+        };
     }
 }
 

@@ -7,8 +7,10 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Tests.Offers.Receive;
 
 using Application.Offers.Receive;
+using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
@@ -45,6 +47,7 @@ public sealed class OfferServiceTests : IDisposable
     private readonly Mock<IPeerManager> _peerManager = new();
     private readonly Mock<IPeerOnionMessageOutbox> _outbox = new();
     private readonly Mock<IChannelMemoryRepository> _channels = new();
+    private readonly List<ChannelModel> _open = [];
     private readonly NodeOptions _nodeOptions = new() { BitcoinNetwork = BitcoinNetwork.Regtest };
     private readonly ManualClock _clock = new(s_now);
     private readonly ServiceProvider _services;
@@ -64,7 +67,8 @@ public sealed class OfferServiceTests : IDisposable
 
         _peerManager.Setup(p => p.ListPeers()).Returns([new PeerModel(_peer, "127.0.0.1", 9735, "IPv4")]);
         _outbox.Setup(o => o.CanSendOnionMessage(_peer)).Returns(true);
-        _channels.Setup(c => c.FindChannels(It.IsAny<Func<ChannelModel, bool>>())).Returns([]);
+        _channels.Setup(c => c.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+                 .Returns((Func<ChannelModel, bool> predicate) => _open.Where(predicate).ToList());
     }
 
     public void Dispose()
@@ -78,6 +82,40 @@ public sealed class OfferServiceTests : IDisposable
             _services.GetRequiredService<IBlindedMessagePathBuilder>(), _peerManager.Object, _channels.Object, _services,
             NullLogger<OfferService>.Instance, Options.Create(new OfferOptions()), null, _clock);
 
+    /// <summary>
+    /// An open channel with <paramref name="peer"/> (the onion-message peer): enough for
+    /// <see cref="OfferService.SelectIntroductionNodes"/> and
+    /// <see cref="Application.OnionMessages.OnionMessagePathFinder.HasOpenChannelWith"/>; announced makes
+    /// <see cref="Application.Gossip.Announcements.ChannelAnnouncementService.IsAnnounced"/> true.
+    /// </summary>
+    private void AddOpenChannel(CompactPubKey peer, bool announced = false)
+    {
+        var key = TestPaths.Point(0x10);
+        var party = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(20_000),
+                                     LightningMoney.MilliSatoshis(1_000), 30, LightningMoney.Satoshis(2_000_000),
+                                     144);
+        var channelParams = new ChannelParams(party, party, LightningMoney.Satoshis(2_500), 3, false,
+                                              FeatureSupport.No)
+        {
+            AnnounceChannel = announced
+        };
+        var keySet = new ChannelKeySetModel(1, key, key, key, key, key, key);
+        var channel = new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat((byte)0x0a, 32).ToArray()),
+                                       null, null, true, null, null, LightningMoney.Satoshis(1_000_000), keySet,
+                                       0, 0, LightningMoney.Satoshis(1_000_000), keySet, 0, peer, 0,
+                                       ChannelState.Open, ChannelVersion.V1)
+        {
+            ShortChannelId = new ShortChannelId(800, 1, 1)
+        };
+        if (announced)
+        {
+            channel.SetRemoteAnnouncementSignatures(new ChannelAnnouncementSignatures(new byte[64], new byte[64]));
+            channel.MarkAnnouncementSignaturesSent(DateTimeOffset.UnixEpoch);
+        }
+
+        _open.Add(channel);
+    }
+
     [Fact]
     public async Task Given_APrivateNodeWithAPeer_When_CreatingAnOffer_Then_ItHasPathsTheIssuerIdAndIsStored()
     {
@@ -86,10 +124,10 @@ public sealed class OfferServiceTests : IDisposable
         var savesBefore = _store.Saves;
 
         // Act
-        var offer = await service.CreateOfferAsync(
+        var offer = (await service.CreateOfferAsync(
                         new CreateOfferRequest(LightningMoney.Satoshis(10_000), "nltg coffee", "nltg", 0,
                                                s_now.AddDays(1)),
-                        TestContext.Current.CancellationToken);
+                        TestContext.Current.CancellationToken)).Offer;
 
         // Assert
         Assert.Equal(savesBefore + 1, _store.Saves);
@@ -123,13 +161,63 @@ public sealed class OfferServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_NoOnionMessagePeerWithAChannel_When_CreatingAnOffer_Then_TheOfferCarriesTheWarning()
+    {
+        // Arrange: the only onion-message peer has no channel with us, so it introduces the paths and we never
+        // reconnect to it (NL-452)
+        var service = CreateService();
+
+        // Act
+        var created = await service.CreateOfferAsync(new CreateOfferRequest(null, "fragile"),
+                                                     TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(created.Offer.HasPaths);
+        Assert.Contains("No connected onion-message peer has an open channel with us", created.Warning);
+        Assert.Contains("1 peer(s) without one", created.Warning);
+        Assert.Contains("we do not reconnect to peers without channels", created.Warning);
+    }
+
+    [Fact]
+    public async Task Given_AnOnionMessagePeerWithAnOpenChannel_When_CreatingAnOffer_Then_NoWarning()
+    {
+        // Arrange: a private channel with the peer is enough for it to introduce the paths
+        AddOpenChannel(_peer);
+        var service = CreateService();
+
+        // Act
+        var created = await service.CreateOfferAsync(new CreateOfferRequest(null, "fine"),
+                                                     TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(created.Offer.HasPaths);
+        Assert.Null(created.Warning);
+    }
+
+    [Fact]
+    public async Task Given_AnAnnouncedChannel_When_CreatingAnOffer_Then_NoPathsAndNoWarning()
+    {
+        // Arrange: payers find us through the graph, so the offer needs no paths
+        AddOpenChannel(_peer, announced: true);
+        var service = CreateService();
+
+        // Act
+        var created = await service.CreateOfferAsync(new CreateOfferRequest(null, "public"),
+                                                     TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(created.Offer.HasPaths);
+        Assert.Null(created.Warning);
+    }
+
+    [Fact]
     public async Task Given_OurOfferPath_When_OurHopIsUnblinded_Then_ItCarriesTheOffersPathId()
     {
         // Arrange
         var service = CreateService();
         var routeBlinding = _services.GetRequiredService<IRouteBlindingService>();
-        var offer = await service.CreateOfferAsync(new CreateOfferRequest(null, null),
-                                                   TestContext.Current.CancellationToken);
+        var offer = (await service.CreateOfferAsync(new CreateOfferRequest(null, null),
+                                                    TestContext.Current.CancellationToken)).Offer;
         Assert.True(Bolt12TlvStream.TryParse(offer.OfferBytes, out var stream));
         Assert.True(stream!.TryGetValue(Bolt12TlvTypes.OfferPaths, out var pathBytes));
         Assert.True(BlindedPathCodec.TryReadList(pathBytes.Span, out var paths, out _));
@@ -215,8 +303,8 @@ public sealed class OfferServiceTests : IDisposable
         _nodeOptions.BitcoinNetwork = BitcoinNetwork.Mainnet;
 
         // Act
-        var offer = await CreateService().CreateOfferAsync(new CreateOfferRequest(null, null),
-                                                           TestContext.Current.CancellationToken);
+        var offer = (await CreateService().CreateOfferAsync(new CreateOfferRequest(null, null),
+                                                            TestContext.Current.CancellationToken)).Offer;
 
         // Assert
         Assert.True(Bolt12TlvStream.TryParse(offer.OfferBytes, out var stream));
@@ -233,8 +321,8 @@ public sealed class OfferServiceTests : IDisposable
     {
         // Arrange
         var service = CreateService();
-        var offer = await service.CreateOfferAsync(new CreateOfferRequest(null, "x"),
-                                                   TestContext.Current.CancellationToken);
+        var offer = (await service.CreateOfferAsync(new CreateOfferRequest(null, "x"),
+                                                    TestContext.Current.CancellationToken)).Offer;
         var saves = _store.Saves;
 
         // Act
@@ -255,10 +343,10 @@ public sealed class OfferServiceTests : IDisposable
     {
         // Arrange
         var service = CreateService();
-        var active = await service.CreateOfferAsync(new CreateOfferRequest(null, "a"),
-                                                    TestContext.Current.CancellationToken);
-        var disabled = await service.CreateOfferAsync(new CreateOfferRequest(null, "b"),
-                                                      TestContext.Current.CancellationToken);
+        var active = (await service.CreateOfferAsync(new CreateOfferRequest(null, "a"),
+                                                     TestContext.Current.CancellationToken)).Offer;
+        var disabled = (await service.CreateOfferAsync(new CreateOfferRequest(null, "b"),
+                                                       TestContext.Current.CancellationToken)).Offer;
         await service.CreateOfferAsync(new CreateOfferRequest(null, "c", AbsoluteExpiry: s_now.AddMinutes(1)),
                                        TestContext.Current.CancellationToken);
         await service.DisableOfferAsync(disabled.OfferId, TestContext.Current.CancellationToken);

@@ -30,7 +30,9 @@ public interface IOfferService
     /// a zero amount, an expiry in the past). Nothing is stored.</exception>
     /// <exception cref="InvalidOperationException">Offers are not available, or paths are needed and no peer can
     /// introduce one. Nothing is stored.</exception>
-    Task<OfferModel> CreateOfferAsync(CreateOfferRequest request, CancellationToken cancellationToken = default);
+    /// <returns>The stored offer, and <see cref="CreatedOffer.Warning"/> when it is reachability-fragile: its paths
+    /// are introduced by peers without an open channel with us, which we never reconnect to (NL-452).</returns>
+    Task<CreatedOffer> CreateOfferAsync(CreateOfferRequest request, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The offer with <paramref name="offerId"/>, or null.

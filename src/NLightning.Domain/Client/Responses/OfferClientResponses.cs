@@ -3,9 +3,14 @@ namespace NLightning.Domain.Client.Responses;
 /// <summary>
 /// The offer <c>createoffer</c> stored.
 /// </summary>
-public sealed class CreateOfferClientResponse(OfferInfoClientResponse offer)
+/// <param name="offer">The offer as stored.</param>
+/// <param name="warning">Why payers may not reach the offer (its paths introduced by peers without an open channel
+/// with us, which we never reconnect to, NL-452), or null.</param>
+public sealed class CreateOfferClientResponse(OfferInfoClientResponse offer, string? warning = null)
 {
     public OfferInfoClientResponse Offer { get; } = offer;
+
+    public string? Warning { get; } = warning;
 }
 
 /// <summary>
