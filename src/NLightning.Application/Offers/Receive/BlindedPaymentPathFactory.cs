@@ -27,10 +27,11 @@ public interface IBlindedPaymentPathSource
 
 /// <summary>
 /// <see cref="IBlindedPaymentPathSource"/> over M5's <see cref="BlindedPathBuilder"/>: one two-hop path per usable
-/// channel (announced or not: the payer usually reaches the introduction node, our peer, through the graph or is that
-/// peer itself), its peer's <c>channel_update</c> policy as <c>payment_relay</c>, <c>payment_constraints</c> for the
-/// invoice's lifetime, and <c>blinded_payinfo</c> aggregated with BOLT 4's rounding plus our final CLTV delta
-/// (<see cref="RoutingOptions.InvoiceMinFinalCltvExpiry"/>, which the final hop checks).
+/// channel, introduced through an announced channel when one can carry the payment (NL-452: any payer reaches it
+/// through the graph; a private channel only introduces the paths when no announced one can, so a private-only node
+/// stays payable by its own peers), its peer's <c>channel_update</c> policy as <c>payment_relay</c>,
+/// <c>payment_constraints</c> for the invoice's lifetime, and <c>blinded_payinfo</c> aggregated with BOLT 4's rounding
+/// plus our final CLTV delta (<see cref="RoutingOptions.InvoiceMinFinalCltvExpiry"/>, which the final hop checks).
 /// </summary>
 /// <remarks>
 /// Lifetime in blocks: the relative expiry at one block per 10 minutes, rounded up, plus
@@ -66,10 +67,15 @@ public sealed class BlindedPaymentPathFactory : IBlindedPaymentPathSource
 
         var lifetime = checked((relativeExpirySeconds + SecondsPerBlock - 1) / SecondsPerBlock
                              + _offerOptions.PathLifetimeMarginBlocks);
+        // NL-452: an unannounced channel only works as the introduction when the payer is that channel's peer (nobody
+        // else can route to it), so announce-capable channels come first and a private one only when none qualifies
         var request = new BlindedPathRequest(preimage, amount,
                                              _nodeOptions.Value.Routing.InvoiceMinFinalCltvExpiry, height,
-                                             Math.Max(lifetime, 1), _offerOptions.MaxPaymentPaths,
-                                             IncludePrivateChannels: true);
-        return await _builder.BuildAsync(request, cancellationToken);
+                                             Math.Max(lifetime, 1), _offerOptions.MaxPaymentPaths);
+        var paths = await _builder.BuildAsync(request, cancellationToken);
+        if (paths.Count > 0)
+            return paths;
+
+        return await _builder.BuildAsync(request with { IncludePrivateChannels = true }, cancellationToken);
     }
 }
