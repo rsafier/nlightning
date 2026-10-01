@@ -324,6 +324,56 @@ public class GraphStoreTests
         Assert.Equal(2, kit.Store.ChannelCount);
     }
 
+    [Fact]
+    public async Task Given_WritersChangingTheGraphWhileASnapshotIsBuilt_Then_EverySnapshotIsAConsistentView()
+    {
+        // Arrange (NL-374): the snapshot build runs outside the writer lock, so writers go on while it runs
+        var kit = await CreateGraphAsync();
+        var ct = TestContext.Current.CancellationToken;
+        var last = new ShortChannelId(599, 1, 0);
+
+        // Act: a writer churns channels while the reader rebuilds the snapshot over and over
+        var writer = Task.Run(async () =>
+        {
+            for (var i = 0; i < 400; i++)
+            {
+                var scid = new ShortChannelId((uint)(200 + i), 1, 0);
+                Assert.True(kit.Store.TryAddChannel(new GraphChannel(scid, s_alice.PubKey, s_bob.PubKey,
+                                                                     new TestGossipKey(11).PubKey,
+                                                                     new TestGossipKey(12).PubKey, 1_000)));
+                Assert.True(kit.Store.TryApplyNode(ToNode(GraphTestKit.SignedNodeAnnouncement(
+                    s_bob, s_now + (uint)i, $"bob{i}"))));
+                if (i > 0)
+                    Assert.True(kit.Store.RemoveChannel(new ShortChannelId((uint)(199 + i), 1, 0)));
+            }
+        }, ct);
+
+        for (var round = 0; round < 200; round++)
+        {
+            var snapshot = kit.Store.GetSnapshot();
+
+            // Assert: one graph version, indexes and contents in agreement (NodeCount also counts the
+            // unannounced ends of channels, Nodes only the announced ones)
+            Assert.Equal(snapshot.Channels.Count(), snapshot.ChannelCount);
+            Assert.True(snapshot.NodeCount >= snapshot.Nodes.Count());
+            foreach (var channel in snapshot.Channels)
+                Assert.True(snapshot.TryGetChannel(channel.ShortChannelId, out _));
+            foreach (var node in snapshot.Nodes)
+            {
+                Assert.True(snapshot.TryGetNodeIndex(node.NodeId, out var index));
+                Assert.Same(node, snapshot.GetNode(index));
+                foreach (var adjacency in snapshot.GetAdjacency(index))
+                    Assert.True(snapshot.TryGetChannel(adjacency.Channel.ShortChannelId, out _));
+            }
+        }
+
+        await writer;
+
+        // Assert: after the writers ended the next snapshot is up to date
+        Assert.Equal(kit.Store.ChannelCount, kit.Store.GetSnapshot().ChannelCount);
+        Assert.True(kit.Store.GetSnapshot().TryGetChannel(last, out _));
+    }
+
     private static GraphPolicy Policy(uint timestamp, uint feeBase = 1_000)
     {
         var direction = GraphTestKit.DirectionOf(s_alice, s_bob);

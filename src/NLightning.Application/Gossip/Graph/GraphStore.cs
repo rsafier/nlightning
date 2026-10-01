@@ -42,6 +42,11 @@ using StoredVerification = Domain.Gossip.Persistence.GraphChannelVerification;
 /// that still last, and marks the expired rows of the table for the first flush after it, so bans never outlive
 /// their end anywhere.
 /// </para>
+/// <para>
+/// NL-374: a <see cref="GetSnapshot"/> rebuild copies the graph's references under the writer lock and builds the
+/// <see cref="GraphSnapshot"/> indexes outside it, so a rebuild never stalls the ingress writers. The copy is an
+/// atomic view of one graph version; a change racing the build makes it stale (the next call rebuilds), never mixed.
+/// </para>
 /// </remarks>
 public sealed class GraphStore : IGraphStore
 {
@@ -311,13 +316,38 @@ public sealed class GraphStore : IGraphStore
     {
         lock (_lock)
         {
-            if (_snapshotVersion != _version)
+            if (_snapshotVersion == _version)
+                return _snapshot;
+        }
+
+        // NL-374: the writer lock only copies the channel and node references (a few ms at the 200k-channel cap); the
+        // index build over them, O(graph) at 69-105 ms there, runs outside it, so ingress writers are never stalled
+        // by a rebuild. The copy is an atomic point-in-time view of one version, and the built snapshot is published
+        // for exactly the version it captured, so a change racing the build cannot pass an older snapshot off as the
+        // newest one: it is returned stale, and the next caller rebuilds
+        List<GraphChannel> channels;
+        List<GraphNode> nodes;
+        long version;
+        lock (_lock)
+        {
+            if (_snapshotVersion == _version)
+                return _snapshot;
+
+            version = _version;
+            channels = _channels.Values.ToList();
+            nodes = _nodes.Values.ToList();
+        }
+
+        var snapshot = new GraphSnapshot(channels, nodes);
+        lock (_lock)
+        {
+            if (version > _snapshotVersion)
             {
-                _snapshot = new GraphSnapshot(_channels.Values.ToList(), _nodes.Values.ToList());
-                _snapshotVersion = _version;
+                _snapshot = snapshot;
+                _snapshotVersion = version;
             }
 
-            return _snapshot;
+            return snapshot;
         }
     }
 
