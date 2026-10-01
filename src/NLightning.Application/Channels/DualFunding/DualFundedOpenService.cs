@@ -1021,6 +1021,11 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     internal async Task<InteractiveTxRbfDecision> DecideRbfAsync(DualFundNegotiation negotiation,
                                                                  TxInitRbfMessage message)
     {
+        // NL-592: a node draining for its shutdown accepts no RBF of a dual-funded open either (BOLT 2: MAY answer
+        // tx_abort for any reason); our own bumpopen is refused at the IPC router
+        if (IsDraining())
+            return InteractiveTxRbfDecision.Reject(NodeDrain.Refusal("tx_init_rbf"));
+
         if (await GetRbfRefusalAsync(negotiation) is { } refusal)
             return InteractiveTxRbfDecision.Reject(refusal);
 

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -92,6 +93,9 @@ public static class DependencyInjection
         services.AddSingleton<IChannelLockProvider, ChannelLockProvider>();
         // The graceful shutdown's drain flag (NL-591), read by every gate that refuses new activity while it is set
         services.AddSingleton<INodeDrainState, NodeDrainState>();
+        // What a `shutdown --wait` waits for (NL-592): HTLCs in flight and mid-flight negotiations
+        services.TryAddSingleton<NodeBusyStateMonitor>();
+        services.TryAddSingleton<INodeBusyStateMonitor>(sp => sp.GetRequiredService<NodeBusyStateMonitor>());
         services.AddSingleton(sp =>
         {
             var blockchainMonitor = sp.GetRequiredService<IBlockchainMonitor>();
