@@ -248,7 +248,10 @@ public class OperatorIpcHandlerTests
         var error = MessagePackSerializer.Deserialize<IpcError>(response.Payload, s_options,
                                                                 TestContext.Current.CancellationToken);
         Assert.Equal(ErrorCodes.InvalidOperation, error.Code);
-        Assert.Contains("2 HTLC(s) are in flight", error.Message);
+        // NL-595: the message names the channels that carry the HTLCs (one here), not the node's total
+        Assert.Contains("2 HTLC(s) are in flight on 1 channel(s)", error.Message);
+        Assert.Contains($"{CreateChannelId(1)} (2)", error.Message);
+        Assert.DoesNotContain("7 channel", error.Message);
         Assert.False(provider.GetRequiredService<INodeDrainState>().IsDraining);
         Assert.False(provider.GetRequiredService<NodeShutdownTrigger>().IsStopRequested);
     }

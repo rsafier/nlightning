@@ -11,12 +11,18 @@ using Domain.Crypto.ValueObjects;
 /// </summary>
 internal readonly record struct PeerChannelSummary(int ChannelCount, int HtlcsInFlight)
 {
+    /// <summary>How many of the counted channels carry HTLCs (NL-595); 0 when none does.</summary>
+    public int ChannelsWithHtlcs { get; init; }
+
     public static PeerChannelSummary For(IChannelMemoryRepository channelMemoryRepository, CompactPubKey peerId)
     {
         ArgumentNullException.ThrowIfNull(channelMemoryRepository);
 
         var channels = channelMemoryRepository.FindChannels(c => c.RemoteNodeId == peerId && IsActive(c));
-        return new PeerChannelSummary(channels.Count, channels.Sum(CountHtlcsInFlight));
+        return new PeerChannelSummary(channels.Count, channels.Sum(CountHtlcsInFlight))
+        {
+            ChannelsWithHtlcs = channels.Count(c => CountHtlcsInFlight(c) > 0)
+        };
     }
 
     /// <summary>Every channel of the node that is not Closed or Stale, with their HTLCs in flight (<c>shutdown</c>).</summary>
@@ -25,7 +31,10 @@ internal readonly record struct PeerChannelSummary(int ChannelCount, int HtlcsIn
         ArgumentNullException.ThrowIfNull(channelMemoryRepository);
 
         var channels = channelMemoryRepository.FindChannels(IsActive);
-        return new PeerChannelSummary(channels.Count, channels.Sum(CountHtlcsInFlight));
+        return new PeerChannelSummary(channels.Count, channels.Sum(CountHtlcsInFlight))
+        {
+            ChannelsWithHtlcs = channels.Count(c => CountHtlcsInFlight(c) > 0)
+        };
     }
 
     private static bool IsActive(ChannelModel channel) =>

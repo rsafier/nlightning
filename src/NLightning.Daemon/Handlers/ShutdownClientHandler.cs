@@ -88,10 +88,15 @@ internal sealed class ShutdownClientHandler : IClientCommandHandler<ShutdownClie
         var summary = PeerChannelSummary.ForAll(_channelMemoryRepository);
         if (summary.HtlcsInFlight > 0 && !request.Force)
         {
+            // NL-595: name the channels that carry the HTLCs (the node's total channel count is noise) and list them
+            var busyList = string.Join(", ", _channelMemoryRepository
+                                                 .FindChannels(c => PeerChannelSummary.CountHtlcsInFlight(c) > 0)
+                                                 .Select(c => $"{c.ChannelId} "
+                                                            + $"({PeerChannelSummary.CountHtlcsInFlight(c)})"));
             throw new ClientException(ErrorCodes.InvalidOperation,
-                                      $"{summary.HtlcsInFlight} HTLC(s) are in flight on {summary.ChannelCount} "
-                                    + "channel(s); not shutting down. Use --wait to drain, or --force to stop anyway "
-                                    + "(listchannels shows them).");
+                                      $"{summary.HtlcsInFlight} HTLC(s) are in flight on {summary.ChannelsWithHtlcs} "
+                                    + $"channel(s): {busyList}; not shutting down. Use --wait to drain, or --force to "
+                                    + "stop anyway.");
         }
 
         if (!request.Force)

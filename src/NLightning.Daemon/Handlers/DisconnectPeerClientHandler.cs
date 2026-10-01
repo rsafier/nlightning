@@ -53,7 +53,7 @@ public sealed class DisconnectPeerClientHandler
         if (summary.HtlcsInFlight > 0 && !request.Force)
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       $"Peer {request.NodeId} has {summary.HtlcsInFlight} HTLC(s) in flight on "
-                                    + $"{summary.ChannelCount} channel(s); disconnecting it can force a channel on "
+                                    + $"{summary.ChannelsWithHtlcs} channel(s); disconnecting it can force a channel on "
                                     + "chain if it does not come back before an HTLC times out. Use --force to "
                                     + "disconnect anyway.");
 
