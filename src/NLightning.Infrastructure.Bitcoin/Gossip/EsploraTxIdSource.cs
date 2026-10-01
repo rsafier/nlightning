@@ -12,11 +12,15 @@ using Wallet.Interfaces;
 
 /// <summary>
 /// The funding txid at a short channel id's position from an Esplora HTTP API (BOLT 7 plan D12, for nodes without an
-/// unpruned bitcoind). The index is trusted for nothing: the block hash comes from our node (<c>getblockhash</c>), the
-/// index's txid at <c>GET /block/{hash}/txid/{index}</c> must come with a merkle proof
-/// (<c>GET /tx/{txid}/merkle-proof</c>) that reaches the merkle root of our node's header (<c>getblockheader</c>, kept
-/// by a pruned node) at that very position, and <see cref="FundingOutputLookup"/> then reads the output's script,
-/// amount, height and spentness from our node's <c>gettxout</c>.
+/// unpruned bitcoind). The index is trusted for nothing: the block hash comes from our node (<c>getblockhash</c>) and
+/// the index's answer must reach the merkle root of our node's header (<c>getblockheader</c>, kept by a pruned node).
+/// In one request (<c>GET /block/{hash}/txids</c>, NL-423) the block's whole txid list is read and proven by
+/// computing its merkle root against that header, so a verified sync costs about one request per block instead of two
+/// per channel and every later channel of the block is answered from the cache; when the index serves no such list,
+/// or one our header does not prove, the lookup falls back to the per-position answer
+/// (<c>GET /block/{hash}/txid/{index}</c> with its <c>GET /tx/{txid}/merkle-proof</c>). <see
+/// cref="FundingOutputLookup"/> then reads the output's script, amount, height and spentness from our node's
+/// <c>gettxout</c>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -31,10 +35,11 @@ using Wallet.Interfaces;
 /// </para>
 /// <para>
 /// Out of range is answered only from our node's transaction count (<c>nTx</c>), never from the index. Anything the
-/// index gets wrong or cannot answer (a 404 for a block it has not indexed yet, a 5xx, a proof that misses our header)
-/// throws <see cref="EsploraUnavailableException"/>, which the lookup reports as <c>ChainUnavailable</c>: transient and
-/// never held against the peer that sent the announcement. Proven answers are cached by (block hash, index), so a
-/// reorg never serves one for another block.
+/// index gets wrong or cannot answer (a 404 for a block it has not indexed yet, a 5xx, a list or a proof that misses
+/// our header) throws <see cref="EsploraUnavailableException"/>, which the lookup reports as <c>ChainUnavailable</c>:
+/// transient and never held against the peer that sent the announcement — except that a txid list the index serves
+/// but our header does not prove is not an error: it is not used, and the lookup falls back to the per-position
+/// proofs. Proven answers are cached by (block hash, index), so a reorg never serves one for another block.
 /// </para>
 /// <para>
 /// A wrong-network index would otherwise show up only as a graph that never fills (NL-424): the first failed lookup
@@ -157,6 +162,10 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
         if (index >= txCount)
             return FundingTxIdAtPosition.IndexOutOfRange;
 
+        var batched = await TryGetBatchedTxIdAsync(blockHash, index, merkleRoot, txCount, cancellationToken);
+        if (batched is not null)
+            return batched.Value;
+
         var txIdText = await GetStringAsync($"block/{blockHash}/txid/{index}", cancellationToken)
                     ?? throw new EsploraUnavailableException(
                            $"the index has no transaction {index} in block {blockHash} ({height}); not indexed yet?");
@@ -180,6 +189,114 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
 
         Store(blockHash, index, txId);
         return FundingTxIdAtPosition.Found(blockHash, txId);
+    }
+
+    /// <summary>
+    /// The block's whole txid list in one request (<c>GET block/{hash}/txids</c>, NL-423), used only when it is
+    /// complete (its length is our header's <c>nTx</c>) and its merkle root is our header's: every position of the
+    /// block then lands in the cache, so the other channels of the same block cost no further index requests. A list
+    /// our header does not prove is not an error and never used: the lookup falls back to the per-position merkle
+    /// proofs. A 404 (the endpoint not served, or the block not indexed yet) is not an error either. The answer of a
+    /// request the index refused or could not answer propagates as transient, like every other request's.
+    /// </summary>
+    private async Task<FundingTxIdAtPosition?> TryGetBatchedTxIdAsync(uint256 blockHash, uint index,
+                                                                      uint256 merkleRoot, int txCount,
+                                                                      CancellationToken cancellationToken)
+    {
+        var txIds = await GetBlockTxIdListAsync(blockHash, cancellationToken);
+        if (txIds is null)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("The Esplora index at {EsploraUrl} has no txid list for block {BlockHash}; funding "
+                               + "lookups of that block use per-position merkle proofs", _baseUri, blockHash);
+            return null;
+        }
+
+        var root = ComputeMerkleRoot(txIds);
+        if (txIds.Count != txCount || root is null || root != merkleRoot)
+        {
+            if (_logger.IsEnabled(LogLevel.Warning))
+                _logger.LogWarning(
+                    "The Esplora index at {EsploraUrl} answered a txid list for block {BlockHash} that our bitcoind's "
+                  + "header does not prove ({Count} transactions against our header's {TxCount}, the computed merkle "
+                  + "root differs or the list is a mutated one); not used, the lookup falls back to per-position "
+                  + "merkle proofs (index misbehaving?)", _baseUri, blockHash, txIds.Count, txCount);
+            return null;
+        }
+
+        // Proven: cache the whole block (the asked position last, so the eviction keeps it)
+        for (var position = 0; position < txIds.Count; position++)
+            if (position != index)
+                Store(blockHash, (uint)position, txIds[position]);
+        Store(blockHash, index, txIds[(int)index]);
+        return FundingTxIdAtPosition.Found(blockHash, txIds[(int)index]);
+    }
+
+    /// <summary>
+    /// GET <c>block/{hash}/txids</c> parsed streaming (a block's list is tens to hundreds of KB): the txids, null when
+    /// the endpoint answered 404, and an empty list when the body is no array of txids (the caller's count check then
+    /// refuses it).
+    /// </summary>
+    private async Task<IReadOnlyList<uint256>?> GetBlockTxIdListAsync(uint256 blockHash,
+                                                                       CancellationToken cancellationToken)
+    {
+        using var response = await SendAsync($"block/{blockHash}/txids", cancellationToken);
+        if (response is null)
+            return null;
+
+        try
+        {
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+                return [];
+
+            var entries = document.RootElement;
+            var txIds = new List<uint256>(entries.GetArrayLength());
+            foreach (var entry in entries.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.String || !uint256.TryParse(entry.GetString(), out var txId))
+                    return [];
+                txIds.Add(txId);
+            }
+
+            return txIds;
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// The merkle root of a block's txid list, Bitcoin's tree (an odd level's last node paired with itself), or null
+    /// when the list is a mutated one: a pair of equal nodes in the tree (CVE-2012-2459, e.g. the last transaction
+    /// duplicated; the equal pair can also sit above the leaves) makes the root also the root of a shorter list, so
+    /// it proves nothing — bitcoind refuses such a block, so the list cannot be the block's even if the root matches.
+    /// </summary>
+    internal static uint256? ComputeMerkleRoot(IReadOnlyList<uint256> leaves)
+    {
+        if (leaves.Count == 0)
+            return null;
+
+        var level = new List<uint256>(leaves);
+        var mutated = false;
+        while (level.Count > 1)
+        {
+            for (var position = 0; position + 1 < level.Count; position += 2)
+                mutated |= level[position] == level[position + 1];
+
+            if (level.Count % 2 == 1)
+                level.Add(level[^1]);
+
+            var parents = new List<uint256>(level.Count / 2);
+            for (var position = 0; position < level.Count; position += 2)
+                parents.Add(Hashes.DoubleSHA256(level[position].ToBytes().Concat(level[position + 1].ToBytes())
+                                                .ToArray()));
+            level = parents;
+        }
+
+        return mutated ? null : level[0];
     }
 
     /// <summary>
@@ -306,14 +423,14 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
     }
 
     /// <summary>
-    /// GET <paramref name="path"/> under the base URL: the body of a 2xx, null for a 404, a retry after the pause for a
-    /// 429, and <see cref="EsploraUnavailableException"/> for anything else. With
-    /// <paramref name="skipInitialPause"/> (the chain check, NL-424), a pause the real lookups' 429s started is not
-    /// waited out before the first attempt — the check never holds a lookup for the index's sake; a 429 of its own
-    /// still starts (and waits out) the usual pause.
+    /// GET <paramref name="path"/> under the base URL: the response of a 2xx (the caller consumes and disposes it),
+    /// null for a 404, a retry after the pause for a 429, and <see cref="EsploraUnavailableException"/> for anything
+    /// else. With <paramref name="skipInitialPause"/> (the chain check, NL-424), a pause the real lookups' 429s
+    /// started is not waited out before the first attempt — the check never holds a lookup for the index's sake; a
+    /// 429 of its own still starts (and waits out) the usual pause.
     /// </summary>
-    private async Task<string?> GetStringAsync(string path, CancellationToken cancellationToken,
-                                               bool skipInitialPause = false)
+    private async Task<HttpResponseMessage?> SendAsync(string path, CancellationToken cancellationToken,
+                                                       bool skipInitialPause = false)
     {
         var uri = new Uri(_baseUri, path);
         for (var attempt = 0; ; attempt++)
@@ -325,7 +442,8 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
             HttpResponseMessage response;
             try
             {
-                response = await _httpClient.GetAsync(uri, HttpCompletionOption.ResponseContentRead, cancellationToken);
+                // ResponseHeadersRead: the big answers (a whole block's txid list) are parsed streaming
+                response = await _httpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             }
             catch (Exception ex) when (ex is HttpRequestException
                                     || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
@@ -333,32 +451,46 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
                 throw new EsploraUnavailableException($"GET {uri} failed: {ex.Message}", ex);
             }
 
-            using (response)
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
             {
-                if (response.StatusCode == HttpStatusCode.TooManyRequests)
-                {
-                    var pause = StartPause(response);
-                    if (attempt >= _maxRetries)
-                        throw new EsploraUnavailableException(
-                            $"GET {uri} was rate limited {attempt + 1} times in a row (429)");
+                TimeSpan pause;
+                using (response)
+                    pause = StartPause(response);
 
-                    if (_logger.IsEnabled(LogLevel.Debug))
-                        _logger.LogDebug("GET {Uri} rate limited (429), retrying after {Pause}", uri, pause);
-                    continue;
-                }
-
-                if (response.StatusCode == HttpStatusCode.NotFound)
-                    return null;
-
-                if (!response.IsSuccessStatusCode)
+                if (attempt >= _maxRetries)
                     throw new EsploraUnavailableException(
-                        $"GET {uri} answered {(int)response.StatusCode} {response.ReasonPhrase}");
+                        $"GET {uri} was rate limited {attempt + 1} times in a row (429)");
 
-                lock (_gate)
-                    _rateLimitedInARow = 0;
-                return await response.Content.ReadAsStringAsync(cancellationToken);
+                if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug("GET {Uri} rate limited (429), retrying after {Pause}", uri, pause);
+                continue;
             }
+
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                response.Dispose();
+                return null;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var message = $"GET {uri} answered {(int)response.StatusCode} {response.ReasonPhrase}";
+                response.Dispose();
+                throw new EsploraUnavailableException(message);
+            }
+
+            lock (_gate)
+                _rateLimitedInARow = 0;
+            return response;
         }
+    }
+
+    /// <summary>The body of a 2xx GET, null for a 404 (small answers only; the txid list is read streaming).</summary>
+    private async Task<string?> GetStringAsync(string path, CancellationToken cancellationToken,
+                                               bool skipInitialPause = false)
+    {
+        using var response = await SendAsync(path, cancellationToken, skipInitialPause);
+        return response is null ? null : await response.Content.ReadAsStringAsync(cancellationToken);
     }
 
     /// <summary>Starts (or extends) the pause every request waits for after a 429 and returns its length.</summary>

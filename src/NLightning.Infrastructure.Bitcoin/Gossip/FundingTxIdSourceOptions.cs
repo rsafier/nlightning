@@ -34,10 +34,11 @@ public sealed class FundingTxIdSourceOptions
 
     /// <summary>
     /// <c>Gossip:EsploraRequestsPerSecond</c>: HTTP requests started per second (burst the same), default 2, polite for
-    /// public servers; raise it for a self-hosted index. Each uncached lookup costs two requests, so the default verifies
-    /// about one new channel per second: an initial mainnet sync of some 45,000-50,000 channel announcements takes
-    /// over 12 hours against a public server (the ingress defers what waits and the sync re-queries what it dropped).
-    /// Use a self-hosted esplora/electrs with a higher rate for a faster sync.
+    /// public servers. An uncached block costs one request (its whole txid list, verified against our header's merkle
+    /// root, NL-423) and answers every channel of that block afterwards, so an initial mainnet sync of some
+    /// 45,000-50,000 channel announcements takes hours at the default rate against a public server; the per-position
+    /// fallback (an index that serves no txid lists, or lists our header does not prove) costs two requests per
+    /// uncached channel again. Use a self-hosted esplora/electrs with a higher rate for a faster sync.
     /// </summary>
     public int EsploraRequestsPerSecond { get; set; } = 2;
 
