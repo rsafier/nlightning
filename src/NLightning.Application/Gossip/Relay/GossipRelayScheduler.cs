@@ -69,13 +69,16 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
     /// <param name="relayOptions">The relay settings.</param>
     /// <param name="secureKeyManager">Our node id: our own messages are left to the own path.</param>
     /// <param name="metrics">Where relayed and dropped messages are counted (null: nowhere).</param>
+    /// <param name="acceptedFeed">What the ingress accepted since the last collect (null: every collect diffs the
+    /// whole graph snapshot, NL-366's fallback).</param>
     public GossipRelayScheduler(IGossipPeerDirectory peerDirectory, ILogger<GossipRelayScheduler> logger,
                                 IOptions<NodeOptions> nodeOptions, IOptions<GossipOptions>? gossipOptions = null,
                                 TimeProvider? timeProvider = null, IGossipPeerSender? sender = null,
                                 IGraphStore? graphStore = null, IGossipSyncManager? syncManager = null,
                                 GossipOriginTracker? originTracker = null,
                                 IOptions<GossipRelayOptions>? relayOptions = null,
-                                ISecureKeyManager? secureKeyManager = null, GossipMetrics? metrics = null)
+                                ISecureKeyManager? secureKeyManager = null, GossipMetrics? metrics = null,
+                                IGossipAcceptedFeed? acceptedFeed = null)
     {
         _peerDirectory = peerDirectory;
         _logger = logger;
@@ -89,6 +92,7 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
         _relayOptions = relayOptions?.Value ?? new GossipRelayOptions();
         _ourNodeId = secureKeyManager?.GetNodePubKey();
         _metrics = metrics;
+        _acceptedFeed = acceptedFeed;
         metrics?.RegisterQueue("relay_pending", () => _relayPeers.Sum(p => (long)p.Value.PendingCount));
         metrics?.RegisterRelayPausedConnections(() => _relayPeers.Count(p => p.Value.IsPaused));
 
