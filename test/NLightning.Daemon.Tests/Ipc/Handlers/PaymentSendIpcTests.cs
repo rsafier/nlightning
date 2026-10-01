@@ -11,6 +11,7 @@ using Application.Payments.Send;
 using Bolt11.Models;
 using Daemon.Extensions;
 using Daemon.Ipc.Handlers;
+using Domain.Channels.ValueObjects;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
 using Domain.Crypto.ValueObjects;
@@ -63,6 +64,14 @@ public class PaymentSendIpcTests : IDisposable
                 .ReturnsAsync((int skip, int take) => _stored.Skip(skip).Take(take).ToList());
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(Task.CompletedTask);
+        // NL-321: PaymentService stores every offered part; a no-op store keeps this test on the database-free path
+        var parts = new Mock<IPaymentPartDbRepository>();
+        parts.Setup(p => p.AddAsync(It.IsAny<PaymentPartModel>())).Returns(Task.CompletedTask);
+        parts.Setup(p => p.UpdateAsync(It.IsAny<PaymentPartModel>())).Returns(Task.CompletedTask);
+        parts.Setup(p => p.GetForPaymentAsync(It.IsAny<Hash>())).ReturnsAsync([]);
+        parts.Setup(p => p.GetByHtlcAsync(It.IsAny<Hash>(), It.IsAny<ChannelId>(), It.IsAny<ulong>()))
+             .ReturnsAsync((Hash _, ChannelId _, ulong _) => null);
+        parts.Setup(p => p.DeleteForPaymentAsync(It.IsAny<Hash>())).Returns(Task.CompletedTask);
 
         var services = new ServiceCollection();
         services.AddNltgNodeServices(configuration, keyManager.Object);
@@ -71,6 +80,7 @@ public class PaymentSendIpcTests : IDisposable
         services.AddSingleton(blockchainMonitor.Object);
         services.AddScoped(_ => unitOfWork.Object);
         services.AddScoped(_ => payments.Object);
+        services.AddSingleton(parts.Object);
         _provider = services.BuildServiceProvider(new ServiceProviderOptions
         {
             ValidateScopes = true,
