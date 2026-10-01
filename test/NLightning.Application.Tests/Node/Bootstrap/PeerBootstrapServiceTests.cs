@@ -1136,7 +1136,9 @@ public class PeerBootstrapServiceTests
         // Arrange - NL-571: the seeds go through Node:Bootstrap:TorNameServer over Tor's SOCKS port
         _nodeOptions.Tor.Mode = TorMode.TorOnly;
         _nodeOptions.Bootstrap.MinPeers = 1;
+        // Both mainnet seeds answer: the service shuffles them, so an unanswered SeedB first failed the run
         SetupSeed(SeedA, Ok(SeedA, Candidate(SeedA)));
+        SetupSeed(SeedB, Ok(SeedB));
         DialsSucceed();
         var torLookup = new Mock<ITorDnsRecordLookup>();
         torLookup.SetupGet(l => l.IsAvailable).Returns(true);
