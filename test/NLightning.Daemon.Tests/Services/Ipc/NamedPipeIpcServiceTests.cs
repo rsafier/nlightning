@@ -374,7 +374,7 @@ public class NamedPipeIpcServiceTests : IDisposable
                       Version = request.Version,
                       Command = request.Command,
                       CorrelationId = request.CorrelationId,
-                      Payload = MessagePackSerializer.Serialize(new ShutdownIpcResponse { ChannelCount = 3 },
+                      Payload = MessagePackSerializer.Serialize(new ShutdownIpcResponse { ChannelCount = 3, BusyChannels = [] },
                                                                 cancellationToken:
                                                                 TestContext.Current.CancellationToken),
                       Kind = IpcEnvelopeKind.Response

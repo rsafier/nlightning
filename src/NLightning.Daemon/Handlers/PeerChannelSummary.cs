@@ -1,6 +1,5 @@
 namespace NLightning.Daemon.Handlers;
 
-using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -34,13 +33,8 @@ internal readonly record struct PeerChannelSummary(int ChannelCount, int HtlcsIn
 
     /// <summary>
     /// HTLCs offered or received and not yet removed from both commitments irrevocably (the engine snapshot), or the
-    /// legacy in-memory collections of a channel without one.
+    /// legacy in-memory collections of a channel without one (<see cref="ChannelHtlcs.InFlight"/>, shared with the
+    /// shutdown drain, NL-592).
     /// </summary>
-    internal static int CountHtlcsInFlight(ChannelModel channel)
-    {
-        if (channel.Commitments is { } commitments)
-            return commitments.Htlcs.Values.Count(h => !HtlcStateTable.IsFinal(h.State));
-
-        return (channel.LocalOfferedHtlcs?.Count ?? 0) + (channel.RemoteOfferedHtlcs?.Count ?? 0);
-    }
+    internal static int CountHtlcsInFlight(ChannelModel channel) => ChannelHtlcs.InFlight(channel);
 }

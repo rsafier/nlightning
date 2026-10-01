@@ -126,7 +126,7 @@ public class FormatterTests
     public void GivenShutdownRequestAndResponse_WhenRoundTripped_ThenValuesArePreserved()
     {
         // Arrange (NL-591: ClientCommand 39)
-        var response = new ShutdownIpcResponse { ChannelCount = 13 };
+        var response = new ShutdownIpcResponse { ChannelCount = 13, BusyChannels = [] };
 
         // Act
         var request = MessagePackSerializer.Deserialize<ShutdownIpcRequest>(
