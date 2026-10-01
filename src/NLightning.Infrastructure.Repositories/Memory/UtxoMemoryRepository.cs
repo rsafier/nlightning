@@ -192,6 +192,27 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
             _utxoSet.TryRemove((utxo.TxId, utxo.Index), out _);
     }
 
+    public int RestoreLocksForChannel(ChannelId channelId, IReadOnlyCollection<(TxId TxId, uint Index)> outpoints)
+    {
+        ArgumentNullException.ThrowIfNull(outpoints);
+
+        lock (_reservationLock)
+        {
+            var locked = 0;
+            foreach (var outpoint in outpoints)
+            {
+                if (!_utxoSet.TryGetValue(outpoint, out var utxo) || utxo.LockedToChannelId is not null)
+                    continue;
+
+                utxo.LockedToChannelId = channelId;
+                _utxoSet[(utxo.TxId, utxo.Index)] = utxo;
+                locked++;
+            }
+
+            return locked;
+        }
+    }
+
     public void UpgradeChannelIdOnLockedUtxos(ChannelId oldChannelId, ChannelId newChannelId)
     {
         var utxos = _utxoSet.Values

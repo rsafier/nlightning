@@ -175,6 +175,11 @@ public class BlockchainMonitorService : IBlockchainMonitor
             LoadBitcoinAddresses(uow);
             await LoadUtxoSetAsync(uow);
 
+            // Read once: the channel locks are restored from the funding ones (NL-462), and every still pending one is
+            // sent again after the start
+            var pendingBroadcasts = await uow.BroadcastTransactionDbRepository.GetPendingAsync();
+            await RestoreChannelUtxoLocksAsync(uow, pendingBroadcasts);
+
             // Every channel past funding_created that is not closed gets its funding output watched (backfill for
             // channels stored before the watch existed, or whose watch was never saved)
             var backfilled = await uow.WatchedOutpointDbRepository.AddMissingFundingOutpointsAsync();
@@ -210,7 +215,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
             foreach (var header in await uow.BlockHeaderDbRepository.GetAllAsync())
                 _headers[header.Height] = header;
 
-            foreach (var broadcast in await uow.BroadcastTransactionDbRepository.GetPendingAsync())
+            foreach (var broadcast in pendingBroadcasts)
                 _pendingBroadcasts[new uint256(broadcast.TransactionId)] = broadcast;
         }
 
@@ -1773,6 +1778,50 @@ public class BlockchainMonitorService : IBlockchainMonitor
         IUtxoMemoryRepository GetUtxoMemoryRepository() =>
             _serviceProvider.GetService<IUtxoMemoryRepository>()
          ?? throw new InvalidOperationException($"Error getting required service {nameof(IUtxoMemoryRepository)}");
+    }
+
+    /// <summary>
+    /// Gives a funder channel that waits for its funding confirmation its wallet outputs back (NL-462): the locks were
+    /// taken when the funding was created, live in memory only and were lost with the process, so they are rebuilt from
+    /// the pending funding broadcast's inputs. Until the funding confirms (or its abandonment releases them, NL-294)
+    /// nothing else may select or lock these outputs.
+    /// </summary>
+    private async Task RestoreChannelUtxoLocksAsync(IUnitOfWork uow,
+                                                    IReadOnlyList<BroadcastTransactionModel> pendingBroadcasts)
+    {
+        var utxoMemoryRepository = _serviceProvider.GetService<IUtxoMemoryRepository>();
+        if (utxoMemoryRepository is null)
+            return;
+
+        foreach (var broadcast in pendingBroadcasts)
+        {
+            if (!BroadcastRefusalRules.IsFunding(broadcast.Purpose) || broadcast.ChannelId is not { } channelId)
+                continue;
+
+            var channel = await uow.ChannelDbRepository.GetByIdAsync(channelId);
+            if (channel is not { State: ChannelState.V1FundingSigned })
+                continue;
+
+            Transaction fundingTransaction;
+            try
+            {
+                fundingTransaction = Transaction.Load(broadcast.RawTransaction, _network);
+            }
+            catch (Exception e) when (e is FormatException or ArgumentException or EndOfStreamException)
+            {
+                _logger.LogWarning(e, "The funding transaction {TxId} of channel {ChannelId} does not parse; its "
+                                   + "inputs are not locked again", broadcast.TransactionId, channelId);
+                continue;
+            }
+
+            var outpoints = fundingTransaction.Inputs
+                                             .Select(i => (new TxId(i.PrevOut.Hash.ToBytes()), i.PrevOut.N))
+                                             .ToList();
+            var locked = utxoMemoryRepository.RestoreLocksForChannel(channelId, outpoints);
+            if (locked > 0 && _logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation("Locked {Count} wallet output(s) of channel {ChannelId} to its pending funding "
+                                     + "{TxId} again", locked, channelId, broadcast.TransactionId);
+        }
     }
 
     /// <summary>What one block changes, staged before the save and applied (and raised) after it.</summary>

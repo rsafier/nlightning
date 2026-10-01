@@ -53,6 +53,14 @@ public interface IUtxoMemoryRepository
     void UpgradeChannelIdOnLockedUtxos(ChannelId oldChannelId, ChannelId newChannelId);
 
     /// <summary>
+    /// Re-locks every outpoint of <paramref name="outpoints"/> that is still a free wallet output to
+    /// <paramref name="channelId"/>, at startup (NL-462: the channel locks of a funder are memory only, so the pending
+    /// funding of a V1FundingSigned channel gets them back). Outpoints that are spent, or locked to another channel,
+    /// are skipped. Returns how many were locked.
+    /// </summary>
+    int RestoreLocksForChannel(ChannelId channelId, IReadOnlyCollection<(TxId TxId, uint Index)> outpoints);
+
+    /// <summary>
     /// The wallet outputs neither locked to a channel funding nor reserved for a fee (BOLT 5 plan O7-T1).
     /// </summary>
     List<UtxoModel> GetUnreservedUtxos();

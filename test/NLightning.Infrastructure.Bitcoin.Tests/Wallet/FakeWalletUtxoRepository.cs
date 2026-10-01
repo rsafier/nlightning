@@ -64,6 +64,9 @@ internal sealed class FakeWalletUtxoRepository : IUtxoMemoryRepository
     public void UpgradeChannelIdOnLockedUtxos(ChannelId oldChannelId, ChannelId newChannelId) =>
         throw new NotSupportedException();
 
+    public int RestoreLocksForChannel(ChannelId channelId, IReadOnlyCollection<(TxId TxId, uint Index)> outpoints) =>
+        throw new NotSupportedException();
+
     public List<UtxoModel> GetUnreservedUtxos()
     {
         lock (_lock)
