@@ -8,7 +8,9 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Money;
 using Domain.Payments.Enums;
+using Domain.Payments.Models;
 using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
 using Harness;
@@ -111,6 +113,31 @@ public class PaymentHarnessTests : IDisposable
                      _harness.Carol.Channel(_harness.BobCarol).LocalBalance.MilliSatoshi);
         Assert.Equal(carolCd - s_amount, _harness.Carol.Channel(_harness.CarolDavid).LocalBalance);
         Assert.Equal(davidCd + s_amount, _harness.David.Channel(_harness.CarolDavid).LocalBalance);
+        AssertNoPendingHtlcs();
+    }
+
+    [Fact]
+    public async Task Given_ThePayeeFailsWithTemporaryNodeFailure_When_BobPays_Then_ItFailsAfterOneAttempt()
+    {
+        // Arrange - NL-593: a payee's NODE-bit failure ends the payment (no route can avoid the payee); before, the
+        // sender re-offered the same HTLC in a tight loop until the budget ran out (a drain's
+        // temporary_node_failure did exactly that)
+        var ct = TestContext.Current.CancellationToken;
+        var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "draining", null, ct);
+        _harness.Carol.Switch.FinalHopInterceptor = (_, _) => FailureMessage.TemporaryNodeFailure();
+
+        // Act
+        var result = await _harness.RunAsync(
+            _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null,
+                                                        new PayInvoiceOptions { Timeout = s_timeout }, ct));
+        var payment = result.Payment;
+
+        // Assert: failed after one attempt, with the payee's failure stored
+        Assert.Equal(PaymentStatus.Failed, payment.Status);
+        Assert.Equal(FailureCode.TemporaryNodeFailure, payment.FailureCode);
+        Assert.Equal(0, payment.FailureSourceIndex); // a one-hop route: the payee is the only hop
+        Assert.Equal(1, result.Attempts);
+        Assert.Null(payment.Preimage);
         AssertNoPendingHtlcs();
     }
 

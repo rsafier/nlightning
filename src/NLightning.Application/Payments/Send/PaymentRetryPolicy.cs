@@ -20,7 +20,8 @@ using Routing;
 /// </summary>
 /// <remarks>
 /// <list type="bullet">
-///   <item>The payee: <c>mpp_timeout</c> is retried as is; a PERM failure or one this node does not understand stops
+///   <item>The payee: <c>mpp_timeout</c> is retried as is; a PERM failure, one this node does not understand, or a
+///   NODE-bit failure (e.g. the payee's <c>temporary_node_failure</c>, NL-593: no route can avoid the payee) stops
 ///   the payment; any other (e.g. <c>final_incorrect_cltv_expiry</c>) is retried, with more CLTV for the CLTV one.</item>
 ///   <item>An intermediate hop with the NODE bit: its node is avoided.</item>
 ///   <item>An intermediate hop's channel failure (its outgoing channel, the next hop's incoming one):
@@ -141,7 +142,9 @@ internal sealed class PaymentRetryPolicy
             if (interpretation.Code == FailureCode.MppTimeout)
                 return (true, "the payee timed the parts out");
             if (!interpretation.ShouldRetry)
-                return (false, "permanent failure from the payee");
+                return (false, interpretation.IsNodeFailure
+                                   ? "the payee refused the payment (node-level failure)"
+                                   : "permanent failure from the payee");
             if (interpretation.Code == FailureCode.FinalIncorrectCltvExpiry)
                 constraints.ExtraCltvDelta += _expiryTooSoonExtraBlocks;
             return (true, "the payee may accept a new attempt");

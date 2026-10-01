@@ -66,6 +66,12 @@ internal sealed class HarnessForwardingSwitch(
     /// </summary>
     public Func<HtlcRecord, IncomingOnionForward, FailureMessage?>? ForwardInterceptor { get; set; }
 
+    /// <summary>
+    /// When set, called for every final-hop HTLC (a stand-in for the switch's final-hop acceptance, e.g. a drain's
+    /// <c>temporary_node_failure</c>); a non-null failure fails the HTLC back with it (NL-593).
+    /// </summary>
+    public Func<HtlcRecord, IncomingOnionFinal, FailureMessage?>? FinalHopInterceptor { get; set; }
+
     /// <summary>The forwards this node made or refused, in order: (incoming amount, forward instruction).</summary>
     public ConcurrentQueue<(ulong IncomingAmountMsat, IncomingOnionForward Forward)> Forwards { get; } = new();
 
@@ -163,6 +169,12 @@ internal sealed class HarnessForwardingSwitch(
 
             case IncomingOnionFinal final:
                 Received.Enqueue((htlc.AmountMsat, final.Payload.PaymentData?.TotalMsat.MilliSatoshi ?? 0));
+                if (FinalHopInterceptor?.Invoke(htlc, final) is { } interceptedFinal)
+                {
+                    await FailAsync(channelId, htlc.Id, final.SharedSecret, interceptedFinal, cancellationToken);
+                    return;
+                }
+
                 if (final.Payload.PaymentData is { } paymentData
                  && paymentData.TotalMsat.MilliSatoshi != htlc.AmountMsat)
                 {

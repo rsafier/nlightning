@@ -17,7 +17,10 @@ public static class FailureInterpreter
     /// <para>BOLT 4 rules:</para>
     /// <list type="bullet">
     /// <item>Final node: PERM → fail the payment; otherwise, if the code is understood and valid, the origin MAY
-    /// retry. A final-node failure this node cannot parse is treated as not understood (fail the payment).</item>
+    /// retry (BOLT 4's MAY): this node retries every code but one, the NODE bit (e.g. the payee's
+    /// <c>temporary_node_failure</c>): no route can avoid the payee, so the payment ends (NL-593, like LND's
+    /// mission control). A final-node failure this node cannot parse is treated as not understood (fail the
+    /// payment).</item>
     /// <item>Intermediate hop, NODE set: remove all channels of the erring node from consideration.</item>
     /// <item>Intermediate hop, NODE not set: the failure is about its outgoing channel (for BADONION codes, converted
     /// from <c>update_fail_malformed_htlc</c>, the onion it forwarded on that channel was rejected downstream).</item>
@@ -53,6 +56,11 @@ public static class FailureInterpreter
         if (isFinalNode)
         {
             var isUnderstood = message is { IsKnownCode: true };
+            // BOLT 4 leaves a non-permanent, understood final-node failure to the origin's MAY. A NODE-bit failure
+            // at the payee cannot be routed around (every route ends at that node): retrying it re-sends the same
+            // HTLC to the same node in a tight loop (NL-593, a drain's temporary_node_failure did), so it ends the
+            // payment. The channel-level final codes (final_expiry_too_soon, final_incorrect_cltv_expiry,
+            // final_incorrect_htlc_amount) and mpp_timeout carry no NODE bit and stay retryable.
             return new FailureInterpretation
             {
                 ErringHopIndex = erringHop,
@@ -61,7 +69,7 @@ public static class FailureInterpreter
                 Message = message,
                 IsPermanent = isPermanent,
                 IsNodeFailure = code?.IsNode() ?? false,
-                ShouldRetry = !isPermanent && isUnderstood
+                ShouldRetry = !isPermanent && isUnderstood && !(code?.IsNode() ?? false)
             };
         }
 

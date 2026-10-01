@@ -59,16 +59,17 @@ public class FailureInterpreterTests
 
     [Theory]
     [InlineData(FailureCode.MppTimeout)]
-    [InlineData(FailureCode.TemporaryNodeFailure)]
     [InlineData(FailureCode.FinalIncorrectCltvExpiry)]
+    [InlineData(FailureCode.FinalIncorrectHtlcAmount)]
     public void Given_FinalNodeTransientKnownFailure_When_Interpreting_Then_MayRetry(FailureCode code)
     {
-        // Arrange
+        // Arrange - NL-593: none of these carries the NODE bit, so the payee can be retried (the channel-level final
+        // codes and the MPP timeout stay retryable)
         var message = code switch
         {
             FailureCode.MppTimeout => FailureMessage.MppTimeout(),
-            FailureCode.TemporaryNodeFailure => FailureMessage.TemporaryNodeFailure(),
-            _ => FailureMessage.FinalIncorrectCltvExpiry(144)
+            FailureCode.FinalIncorrectCltvExpiry => FailureMessage.FinalIncorrectCltvExpiry(144),
+            _ => FailureMessage.FinalIncorrectHtlcAmount(1_000L)
         };
 
         // Act
@@ -77,6 +78,38 @@ public class FailureInterpreterTests
         // Assert
         Assert.True(result.IsFinalNode);
         Assert.False(result.IsPermanent);
+        Assert.False(result.IsNodeFailure);
+        Assert.True(result.ShouldRetry);
+    }
+
+    [Fact]
+    public void Given_PayeeTemporaryNodeFailure_When_Interpreting_Then_ThePaymentEnds()
+    {
+        // Arrange - NL-593: every route ends at the payee, so its NODE-bit failure cannot be routed around; retrying
+        // it re-sent the same HTLC in a tight loop during a drain (BOLT 4 leaves the final-node retry to the
+        // origin's MAY)
+        var result = FailureInterpreter.Interpret(Decrypted(RouteLength - 1, FailureMessage.TemporaryNodeFailure()),
+                                                  RouteLength);
+
+        // Assert
+        Assert.True(result.IsFinalNode);
+        Assert.False(result.IsPermanent);
+        Assert.True(result.IsNodeFailure);
+        Assert.False(result.ShouldRetry);
+    }
+
+    [Fact]
+    public void Given_PayeeChannelLevelTemporaryFailure_When_Interpreting_Then_MayRetryPerSpec()
+    {
+        // Arrange: the payee's channel-level temporary failure (no NODE bit) is not the node refusing; the origin MAY
+        // retry (e.g. final_expiry_too_soon after a block height change)
+        var result = FailureInterpreter.Interpret(Decrypted(RouteLength - 1, FailureMessage.FinalExpiryTooSoon()),
+                                                  RouteLength);
+
+        // Assert
+        Assert.True(result.IsFinalNode);
+        Assert.False(result.IsPermanent);
+        Assert.False(result.IsNodeFailure);
         Assert.True(result.ShouldRetry);
     }
 
