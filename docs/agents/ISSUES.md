@@ -122,9 +122,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 67 | 70 |
+| open | 0 | 0 | 3 | 65 | 68 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 164 | 267 | 507 |
+| fixed | 14 | 62 | 164 | 269 | 509 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
 | **Total** | **14** | **62** | **171** | **341** | **588** |
