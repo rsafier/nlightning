@@ -70,8 +70,9 @@ using Services;
 public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMessageOutbox
 {
     /// <summary>
-    /// Channel messages waiting for the inbound loop of one peer. When full, the transport read loop waits, which
-    /// pushes back on a peer that sends faster than we process.
+    /// Channel messages waiting for the inbound loop of one peer. When full, the peer's receive path (the message
+    /// service's consumer, and behind it the transport read loop) waits, which pushes back on a peer that sends
+    /// faster than we process.
     /// </summary>
     private const int InboundQueueCapacity = 1024;
 
@@ -1109,8 +1110,9 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     }
 
     /// <summary>
-    /// Queues a channel message for the session's inbound loop. Runs on the transport read loop, so it never
-    /// processes the message itself; it only waits when the queue is full.
+    /// Queues a channel message for the session's inbound loop. Runs on the peer's receive path (the message
+    /// service's per-peer consumer, NL-108), so it never processes the message itself; it only waits when the queue
+    /// is full.
     /// </summary>
     private void QueueInboundMessage(PeerSession session, ChannelMessageEventArgs args)
     {
@@ -1502,7 +1504,8 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     }
 
     /// <summary>
-    /// Hands a <c>channel_update</c> from the peer to the channel update service. Runs on the transport read loop.
+    /// Hands a <c>channel_update</c> from the peer to the channel update service. Runs on the peer's receive path
+    /// (the message service's per-peer consumer).
     /// </summary>
     private void HandleRemoteChannelUpdate(PeerSession session, ChannelUpdateMessage message)
     {
@@ -1747,7 +1750,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
 
             try
             {
-                // Full: make the transport read loop wait (backpressure) instead of dropping or reordering
+                // Full: make the receive path wait (backpressure) instead of dropping or reordering
                 _inbound.Writer.WriteAsync(message, _closeCts.Token).AsTask().GetAwaiter().GetResult();
                 return true;
             }
