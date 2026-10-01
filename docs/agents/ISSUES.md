@@ -127,7 +127,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 | fixed | 14 | 62 | 164 | 263 | 503 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **171** | **334** | **581** |
+| **Total** | **14** | **62** | **171** | **335** | **582** |
 
 ### Epics
 
