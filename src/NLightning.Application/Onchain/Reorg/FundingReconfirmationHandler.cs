@@ -159,6 +159,12 @@ public sealed class FundingReconfirmationHandler
             channel.ShortChannelId = moved;
             channel.FundingCreatedAtBlockHeight = height;
             channel.ResetAnnouncementSignatures();
+
+            // NL-138: the channel update service learns of the new short channel id (and switches its channel_update)
+            // and the backup monitor refreshes its SCB entry only through OnChannelUpdated; the announcement service
+            // and the graph sink below cover the announcement half alone
+            _channelMemoryRepository.UpdateChannel(channel);
+
             _logger.LogWarning("The funding transaction {TxId} of channel {ChannelId} confirmed again at {Scid} "
                              + "after a reorg (was {Previous}); short channel id updated{Announcement}",
                                new uint256(fundingTxId), watch.ChannelId, moved, previous,
