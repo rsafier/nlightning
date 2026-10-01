@@ -57,13 +57,15 @@ public sealed class ShutdownDrainWaiter
         {
             var deadline = DateTimeOffset.UtcNow + timeout;
             var idleSince = default(DateTimeOffset?);
-            var last = _busyStateMonitor.Snapshot();
+            var current = _busyStateMonitor.Snapshot();
+            var lastBusy = current;
 
             while (true)
             {
-                if (last.IsBusy)
+                if (current.IsBusy)
                 {
                     idleSince = null;
+                    lastBusy = current;
                 }
                 else
                 {
@@ -73,7 +75,7 @@ public sealed class ShutdownDrainWaiter
                         _logger.LogInformation("The node is drained: nothing was in flight for {Seconds}s",
                                                Settle.TotalSeconds);
                         drained = true;
-                        return new Result(true, last);
+                        return new Result(true, current);
                     }
                 }
 
@@ -81,16 +83,14 @@ public sealed class ShutdownDrainWaiter
                 {
                     _logger.LogWarning("The shutdown drain ran out of time with {Htlcs} HTLC(s) in flight on "
                                      + "{Channels} channel(s) and {Negotiations} negotiation(s) mid-flight; the drain "
-                                     + "is over and the node goes on", last.HtlcsInFlight, last.Channels.Count,
-                                       last.NegotiationCount);
-                    return new Result(false, last);
+                                     + "is over and the node goes on", lastBusy.HtlcsInFlight, lastBusy.Channels.Count,
+                                       lastBusy.NegotiationCount);
+                    return new Result(false, lastBusy);
                 }
 
                 await Task.Delay(Poll, cancellationToken);
 
-                var snapshot = _busyStateMonitor.Snapshot();
-                if (snapshot.IsBusy)
-                    last = snapshot;
+                current = _busyStateMonitor.Snapshot();
             }
         }
         finally

@@ -1,5 +1,6 @@
 using MessagePack;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -12,6 +13,7 @@ using Daemon.Interfaces;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
 using Daemon.Services;
+using Daemon.Tests.Services;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
@@ -43,6 +45,7 @@ public class OperatorIpcHandlerTests
     private readonly Mock<IPeerManager> _peerManagerMock = new();
     private readonly Mock<IChannelMemoryRepository> _channelMemoryRepositoryMock = new();
     private readonly List<ChannelModel> _channels = [];
+    private readonly ShutdownDrainWaiterTests.FakeBusyMonitor _busyStateMonitor = new();
 
     public OperatorIpcHandlerTests()
     {
@@ -300,6 +303,111 @@ public class OperatorIpcHandlerTests
         Assert.Contains("already shutting down", error.Message);
     }
 
+    [Fact]
+    public async Task Given_HtlcsStillInFlight_When_ShutdownWithWaitAndShortTimeout_Then_TimedOutAndTheGateReopens()
+    {
+        // Arrange: the monitor stays busy; the request's smallest timeout (1 s) runs out
+        _channels.Add(CreateChannelWithHtlcs(CreateChannelId(1), s_alice));
+        _busyStateMonitor.Default = ShutdownDrainWaiterTests.FakeBusyMonitor.Busy(1, 2);
+        var provider = BuildServices().BuildServiceProvider();
+        var handler = GetHandler(provider, ClientCommand.Shutdown);
+
+        // Act
+        var response = await handler.HandleAsync(
+            CreateEnvelope(ClientCommand.Shutdown, new ShutdownIpcRequest { Wait = true, TimeoutSeconds = 1 }),
+            TestContext.Current.CancellationToken);
+
+        // Assert: timed out, the busy state is reported, the node goes on
+        Assert.Equal(IpcEnvelopeKind.Response, response.Kind);
+        var payload = MessagePackSerializer.Deserialize<ShutdownIpcResponse>(
+            response.Payload, s_options, TestContext.Current.CancellationToken);
+        Assert.Equal(ShutdownOutcome.TimedOut, payload.Outcome);
+        Assert.Equal(2, payload.HtlcsInFlight);
+        Assert.Equal(1, payload.NegotiationCount);
+        Assert.Single(payload.BusyChannels);
+        Assert.True(provider.GetRequiredService<INodeDrainState>().IsDraining is false);
+        Assert.False(provider.GetRequiredService<NodeShutdownTrigger>().IsStopRequested);
+    }
+
+    [Fact]
+    public async Task Given_HtlcsInFlight_When_ShutdownWithForce_Then_ForcedWithTheNearestExpiry()
+    {
+        // Arrange
+        _channels.Add(CreateChannelWithHtlcs(CreateChannelId(1), s_alice));
+        _busyStateMonitor.Default = ShutdownDrainWaiterTests.FakeBusyMonitor.Busy(0, 2);
+        var lifetime = new Mock<IHostApplicationLifetime>();
+        var services = BuildServices();
+        services.AddSingleton(lifetime.Object);
+        var provider = services.BuildServiceProvider();
+        var handler = GetHandler(provider, ClientCommand.Shutdown);
+
+        // Act
+        var response = await handler.HandleAsync(
+            CreateEnvelope(ClientCommand.Shutdown, new ShutdownIpcRequest { Force = true }),
+            TestContext.Current.CancellationToken);
+
+        // Assert: the node stops (nothing broadcast) and the answer reports the HTLCs and the deadline
+        Assert.Equal(IpcEnvelopeKind.Response, response.Kind);
+        var payload = MessagePackSerializer.Deserialize<ShutdownIpcResponse>(
+            response.Payload, s_options, TestContext.Current.CancellationToken);
+        Assert.Equal(ShutdownOutcome.Forced, payload.Outcome);
+        Assert.Equal(2, payload.HtlcsInFlight);
+        Assert.Equal(500u, payload.NearestCltvExpiry);
+        Assert.Equal(40, payload.BlocksUntilDeadline);
+        Assert.True(provider.GetRequiredService<NodeShutdownTrigger>().IsStopRequested);
+    }
+
+    [Fact]
+    public async Task Given_WaitRunsOutWithForce_When_Shutdown_Then_ForcedOnTheTimeout()
+    {
+        // Arrange: --force rides on --wait: the drain times out, then the stop happens anyway
+        _channels.Add(CreateChannelWithHtlcs(CreateChannelId(1), s_alice));
+        _busyStateMonitor.Default = ShutdownDrainWaiterTests.FakeBusyMonitor.Busy(1, 2);
+        var provider = BuildServices().BuildServiceProvider();
+        var handler = GetHandler(provider, ClientCommand.Shutdown);
+
+        // Act
+        var response = await handler.HandleAsync(
+            CreateEnvelope(ClientCommand.Shutdown,
+                           new ShutdownIpcRequest { Wait = true, TimeoutSeconds = 1, Force = true }),
+            TestContext.Current.CancellationToken);
+
+        // Assert
+        var payload = MessagePackSerializer.Deserialize<ShutdownIpcResponse>(
+            response.Payload, s_options, TestContext.Current.CancellationToken);
+        Assert.Equal(ShutdownOutcome.Forced, payload.Outcome);
+        Assert.Equal(2, payload.HtlcsInFlight);
+        Assert.Equal(1, payload.NegotiationCount);
+        Assert.True(provider.GetRequiredService<NodeShutdownTrigger>().IsStopRequested);
+    }
+
+    [Fact]
+    public async Task Given_ANodeThatDrainsToIdle_When_ShutdownWithWait_Then_Stopped()
+    {
+        // Arrange: nothing busy from the start; the settle period holds and the node stops
+        _channels.Add(CreateChannel(CreateChannelId(1), s_alice, ChannelState.Open));
+        _busyStateMonitor.Default = ShutdownDrainWaiterTests.FakeBusyMonitor.Idle(1);
+        var lifetime = new Mock<IHostApplicationLifetime>();
+        var services = BuildServices();
+        services.AddSingleton(lifetime.Object);
+        var provider = services.BuildServiceProvider();
+        var handler = GetHandler(provider, ClientCommand.Shutdown);
+
+        // Act
+        var response = await handler.HandleAsync(
+            CreateEnvelope(ClientCommand.Shutdown, new ShutdownIpcRequest { Wait = true, TimeoutSeconds = 5 }),
+            TestContext.Current.CancellationToken);
+
+        // Assert
+        var payload = MessagePackSerializer.Deserialize<ShutdownIpcResponse>(
+            response.Payload, s_options, TestContext.Current.CancellationToken);
+        Assert.Equal(ShutdownOutcome.Stopped, payload.Outcome);
+        Assert.Equal(1, payload.ChannelCount);
+        Assert.Equal(0, payload.HtlcsInFlight);
+        Assert.True(provider.GetRequiredService<NodeShutdownTrigger>().IsStopRequested);
+        Assert.True(provider.GetRequiredService<INodeDrainState>().IsDraining);
+    }
+
     private static IIpcCommandHandler GetHandler(IServiceProvider provider, ClientCommand command) =>
         provider.GetServices<IIpcCommandHandler>().Single(h => h.Command == command);
 
@@ -316,6 +424,13 @@ public class OperatorIpcHandlerTests
         services.AddSingleton(_peerManagerMock.Object);
         services.AddSingleton(_channelMemoryRepositoryMock.Object);
         services.AddSingleton<INodeDrainState, NodeDrainState>();
+        services.AddSingleton<INodeBusyStateMonitor>(_busyStateMonitor);
+        services.AddSingleton(new ShutdownDrainWaiter(_busyStateMonitor,
+                                                      NullLogger<ShutdownDrainWaiter>.Instance)
+        {
+            Settle = TimeSpan.FromMilliseconds(30),
+            Poll = TimeSpan.FromMilliseconds(5)
+        });
         services.AddOperatorIpcServices();
         return services;
     }

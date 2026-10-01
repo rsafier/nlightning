@@ -16,6 +16,7 @@ using Domain.Crypto.ValueObjects;
 using TestCollections;
 using Transport.Ipc;
 using Transport.Ipc.MessagePack;
+using Transport.Ipc.Requests;
 using Transport.Ipc.Responses;
 
 [Collection(SerialTestCollection.Name)]
@@ -350,6 +351,85 @@ public class NamedPipeIpcServiceTests : IDisposable
             Assert.Equal(response.PubKey, info.PubKey);
             Assert.Equal(response.ListeningTo, info.ListeningTo);
             Assert.Equal("NLightning", info.Implementation);
+        }
+        finally
+        {
+            await service.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Given_AWaitingHandler_When_TheClientDisconnects_Then_ItsWaitEnds()
+    {
+        // Arrange - NL-592: shutdown --wait links the client's connection into its wait; Ctrl-C on the client
+        // (the connection drops) ends the wait, so the gate reopens and the node goes on
+        var accessor = new IpcClientConnectionAccessor();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var watched = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var router = new Mock<IIpcRequestRouter>();
+        router.Setup(r => r.RouteAsync(It.IsAny<IpcEnvelope>(), It.IsAny<CancellationToken>()))
+              .Returns(async (IpcEnvelope request, CancellationToken _) =>
+              {
+                  var connection = accessor.Current;
+                  entered.TrySetResult();
+                  var disconnected =
+                      new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                  using (connection.Disconnected.Register(() => disconnected.TrySetResult(true)))
+                  {
+                      var done = await Task.WhenAny(disconnected.Task,
+                                                    Task.Delay(TimeSpan.FromSeconds(5),
+                                                               TestContext.Current.CancellationToken));
+                      watched.TrySetResult(done == disconnected.Task);
+                  }
+
+                  return new IpcEnvelope
+                  {
+                      Version = request.Version,
+                      Command = request.Command,
+                      CorrelationId = request.CorrelationId,
+                      Kind = IpcEnvelopeKind.Error,
+                      Payload = MessagePackSerializer.Serialize(
+                          new IpcError { Code = ErrorCodes.InvalidOperation, Message = "the client went away" },
+                          MessagePackSerializer.DefaultOptions, TestContext.Current.CancellationToken)
+                  };
+              });
+        var authenticator = new Mock<IIpcAuthenticator>();
+        authenticator.Setup(a => a.ValidateAsync(It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                     .ReturnsAsync(true);
+        var service = new NamedPipeIpcService(authenticator.Object, _configPath, new IpcFraming(),
+                                              NullLogger<NamedPipeIpcService>.Instance, router.Object)
+        {
+            ConnectionAccessor = accessor
+        };
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            // Act: a client sends its request and is killed before the answer (Ctrl-C closes the socket)
+            var pipePath = NodeUtils.GetNamedPipeFilePath(_configPath);
+            using var client = new NamedPipeClientStream(".", pipePath, PipeDirection.InOut,
+                                                         PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            await client.ConnectAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+            var envelope = new IpcEnvelope
+            {
+                Version = 1,
+                Command = ClientCommand.Shutdown,
+                CorrelationId = Guid.NewGuid(),
+                AuthToken = await File.ReadAllTextAsync(NodeUtils.GetCookieFilePath(_configPath),
+                                                        TestContext.Current.CancellationToken),
+                Payload = MessagePackSerializer.Serialize(new ShutdownIpcRequest(),
+                                                          MessagePackSerializer.DefaultOptions,
+                                                          TestContext.Current.CancellationToken),
+                Kind = IpcEnvelopeKind.Request
+            };
+            await new IpcFraming().WriteAsync(client, envelope, TestContext.Current.CancellationToken);
+            var enteredInTime = await Task.WhenAny(entered.Task, Task.Delay(TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken)) == entered.Task;
+            client.Dispose();
+
+            // Assert: the handler saw the connection and its Disconnected token cancelled
+            Assert.True(enteredInTime);
+            Assert.True(await watched.Task);
         }
         finally
         {

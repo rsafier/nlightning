@@ -5,6 +5,7 @@ namespace NLightning.Daemon.Tests.Ipc.Formatters;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
+using Domain.Client.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.ValueObjects;
 using Transport.Ipc.MessagePack;
@@ -125,20 +126,64 @@ public class FormatterTests
     [Fact]
     public void GivenShutdownRequestAndResponse_WhenRoundTripped_ThenValuesArePreserved()
     {
-        // Arrange (NL-591: ClientCommand 39)
-        var response = new ShutdownIpcResponse { ChannelCount = 13, BusyChannels = [] };
+        // Arrange (NL-591: ClientCommand 39; NL-592: the --wait/--force keys)
+        var response = new ShutdownIpcResponse
+        {
+            ChannelCount = 13,
+            Outcome = ShutdownOutcome.Forced,
+            HtlcsInFlight = 2,
+            NegotiationCount = 1,
+            BusyChannels = [new ShutdownBusyChannelIpc { ChannelId = new string('c', 64), HtlcsInFlight = 2 }],
+            NearestCltvExpiry = 500,
+            BlocksUntilDeadline = 40
+        };
 
         // Act
         var request = MessagePackSerializer.Deserialize<ShutdownIpcRequest>(
-            MessagePackSerializer.Serialize(new ShutdownIpcRequest(), s_options, TestContext.Current.CancellationToken),
-            s_options, TestContext.Current.CancellationToken);
+            MessagePackSerializer.Serialize(new ShutdownIpcRequest
+            {
+                Wait = true,
+                TimeoutSeconds = 42,
+                Force = true
+            }, s_options, TestContext.Current.CancellationToken), s_options, TestContext.Current.CancellationToken);
         var result = MessagePackSerializer.Deserialize<ShutdownIpcResponse>(
             MessagePackSerializer.Serialize(response, s_options, TestContext.Current.CancellationToken), s_options,
             TestContext.Current.CancellationToken);
 
         // Assert
-        Assert.NotNull(request.ToClientRequest());
+        var clientRequest = request.ToClientRequest();
+        Assert.True(clientRequest.Wait);
+        Assert.Equal(42, clientRequest.TimeoutSeconds);
+        Assert.True(clientRequest.Force);
         Assert.Equal(13, result.ChannelCount);
+        Assert.Equal(ShutdownOutcome.Forced, result.Outcome);
+        Assert.Equal(2, result.HtlcsInFlight);
+        Assert.Equal(1, result.NegotiationCount);
+        Assert.Equal(500u, result.NearestCltvExpiry);
+        Assert.Equal(40, result.BlocksUntilDeadline);
+        var busy = Assert.Single(result.BusyChannels);
+        Assert.Equal(new string('c', 64), busy.ChannelId);
+        Assert.Equal(2, busy.HtlcsInFlight);
+        var clientBusy = busy.ToClient();
+        Assert.Equal(new string('c', 64), clientBusy.ChannelId);
+    }
+
+    [Fact]
+    public void GivenAnOldClientShutdownRequest_WhenRoundTripped_ThenTheFirstPassBehaviorIsKept()
+    {
+        // Arrange (NL-592): an older client sends no keys; the mapped request carries the first-pass defaults
+        // (no wait, the server's default timeout, no force)
+
+        // Act
+        var request = MessagePackSerializer.Deserialize<ShutdownIpcRequest>(
+            MessagePackSerializer.Serialize(new ShutdownIpcRequest(), s_options, TestContext.Current.CancellationToken),
+            s_options, TestContext.Current.CancellationToken);
+        var clientRequest = request.ToClientRequest();
+
+        // Assert
+        Assert.False(clientRequest.Wait);
+        Assert.Equal(0, clientRequest.TimeoutSeconds);
+        Assert.False(clientRequest.Force);
     }
 
     [Fact]

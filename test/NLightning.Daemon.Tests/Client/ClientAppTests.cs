@@ -183,14 +183,92 @@ public class ClientAppTests
         Assert.Null(error);
     }
 
+    [Theory]
+    [InlineData("shutdown", "--wait")]
+    [InlineData("shutdown", "--wait", "--timeout", "30")]
+    [InlineData("shutdown", "--timeout=30", "--wait")]
+    [InlineData("shutdown", "--force")]
+    [InlineData("shutdown", "--wait", "--timeout", "30", "--force")]
+    [InlineData("stop", "--wait", "--force")]
+    public void GivenShutdownWithOptions_WhenValidateArguments_ThenIsValid(string command,
+        params string[] commandArgs)
+    {
+        // Act - NL-592
+        var error = ClientApp.ValidateArguments(command, commandArgs);
+
+        // Assert
+        Assert.Null(error);
+    }
+
     [Fact]
     public void GivenShutdownWithAnArgument_WhenValidateArguments_ThenUsageError()
     {
-        // Act - NL-591: shutdown takes no argument
+        // Act - NL-591: shutdown takes no positional argument
         var error = ClientApp.ValidateArguments("shutdown", ["--force"]);
 
+        // Assert: --force is an option, not an argument; an unknown word is
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void GivenShutdownWithAnUnknownWord_WhenValidateArguments_ThenUsageError()
+    {
+        // Act
+        var error = ClientApp.ValidateArguments("shutdown", ["extra"]);
+
         // Assert
-        Assert.Equal("Unexpected argument '--force'. Usage: shutdown", error);
+        Assert.Contains("Unknown option 'extra'", error);
+        Assert.Contains("Usage: shutdown", error);
+    }
+
+    [Fact]
+    public void GivenTimeoutWithoutWait_WhenValidateArguments_ThenUsageError()
+    {
+        // Act - NL-592: --timeout only tunes --wait
+        var error = ClientApp.ValidateArguments("shutdown", ["--timeout", "30"]);
+
+        // Assert
+        Assert.Contains("--timeout needs --wait", error);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-5")]
+    [InlineData("90000")]
+    [InlineData("abc")]
+    public void GivenAnInvalidTimeout_WhenValidateArguments_ThenUsageError(string value)
+    {
+        // Act - NL-592: the wait is always bounded (1 s to a day)
+        var error = ClientApp.ValidateArguments("shutdown", ["--wait", "--timeout", value]);
+
+        // Assert
+        Assert.Contains("Invalid timeout", error);
+    }
+
+    [Fact]
+    public void GivenShutdownOptions_WhenParsed_ThenTheFlagsAreRead()
+    {
+        // Act
+        var parsed = ClientApp.ParseShutdownOptions(["--wait", "--timeout", "30", "--force"], out var error);
+
+        // Assert
+        Assert.Null(error);
+        Assert.True(parsed!.Value.Wait);
+        Assert.Equal(30, parsed.Value.TimeoutSeconds);
+        Assert.True(parsed.Value.Force);
+    }
+
+    [Fact]
+    public void GivenNoShutdownOptions_WhenParsed_ThenTheFirstPassDefaultsHold()
+    {
+        // Act - NL-592: an older client's bare `shutdown` keeps the first-pass behavior
+        var parsed = ClientApp.ParseShutdownOptions([], out var error);
+
+        // Assert
+        Assert.Null(error);
+        Assert.False(parsed!.Value.Wait);
+        Assert.Equal(0, parsed.Value.TimeoutSeconds);
+        Assert.False(parsed.Value.Force);
     }
 
     [Fact]
