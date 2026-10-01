@@ -85,7 +85,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 ## Tech debt worth scheduling
 
 - `ChannelModel` legacy HTLC collections and the remaining clean-architecture violations (Application → Infrastructure) (NL-032, NL-157).
-- The IPC surface: `disconnect` done in wave rf1 (ClientCommand 24, NL-152 fixed), `withdraw` in wave M6 (25), the BOLT 12 commands in wave B12 (26-30), `keysend` (31) and `listpeerstorage` (32) in wave lh1 (next free 33); richer channel and payment queries remain.
+- The IPC surface: `disconnect` done in wave rf1 (ClientCommand 24, NL-152 fixed), `withdraw` in wave M6 (25), the BOLT 12 commands in wave B12 (26-30), `keysend` (31) and `listpeerstorage` (32) in wave lh1, the splice/policy/bump commands (33-38) in the splicing waves, and `shutdown` (39) in NL-591/NL-592 (next free 40); richer channel and payment queries remain.
 - ~~The binary naming: `nltg` in the usage text vs the `NLightning.Client` assembly~~ resolved by convention (NL-185, batch3: the docs state usage texts say `nltg` on purpose; assemblies keep their names).
 
 ## Standard test cycle
