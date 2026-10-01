@@ -1065,7 +1065,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
             await UpdateCircuitAsync(incomingChannelId, htlc.Id,
                                      c => c.Status == ForwardCircuitStatus.Pending,
-                                     c => c.MarkFailed(_timeProvider.GetUtcNow()));
+                                     c => c.MarkFailed(_timeProvider.GetUtcNow(),
+                                                       failureSource: outgoingChannel.ChannelId));
             await FailBackAsync(incomingChannelId, htlc, forward.SharedSecret,
                                 FailureMessage.TemporaryChannelFailure(UpdateFor(outgoingChannel, requestedScid)),
                                 cancellationToken, introduction);
@@ -1428,9 +1429,15 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             }
         }
 
+        // The failure code is only recorded when it was sent in the clear (a fail_malformed): an opaque failure
+        // onion's code is readable by the node that created it, and an on-chain timeout has none
+        var failureCode = failed.Removal.Kind == HtlcRemovalKind.FailMalformed
+                              ? (ushort?)failed.Removal.FailureCode
+                              : null;
         await UpdateCircuitAsync(incomingChannelId, incomingHtlcId,
                                  c => c.Status is ForwardCircuitStatus.Pending or ForwardCircuitStatus.Offered,
-                                 c => c.MarkFailed(failed.ChannelId, failed.HtlcId, _timeProvider.GetUtcNow()));
+                                 c => c.MarkFailed(failed.ChannelId, failed.HtlcId, _timeProvider.GetUtcNow(),
+                                                   failureCode));
     }
 
     private async Task HandleOutgoingSettledAsync(OutgoingHtlcSettled settled, CancellationToken cancellationToken)

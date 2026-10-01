@@ -1258,6 +1258,12 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<long>("CreatedAt")
                         .HasColumnType("INTEGER");
 
+                    b.Property<ushort?>("FailureCode")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("FailureSource")
+                        .HasColumnType("BLOB");
+
                     b.Property<long>("IncomingAmountMsat")
                         .HasColumnType("INTEGER");
 

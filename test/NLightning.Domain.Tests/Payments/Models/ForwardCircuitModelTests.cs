@@ -59,6 +59,25 @@ public class ForwardCircuitModelTests
 
         // Assert
         Assert.Equal(ForwardCircuitStatus.Failed, circuit.Status);
+        Assert.Null(circuit.FailureCode);
+        Assert.Null(circuit.FailureSource);
+    }
+
+    [Fact]
+    public void Given_RefusedOffer_When_FailedWithItsSource_Then_TheSourceIsKeptWithoutAnOutgoingHtlc()
+    {
+        // Arrange (NL-457): the offer was refused by our own policy on the outgoing channel
+        var circuit = CreateCircuit();
+
+        // Act
+        circuit.MarkFailed(s_createdAt, failureSource: s_outgoing);
+
+        // Assert
+        Assert.Equal(ForwardCircuitStatus.Failed, circuit.Status);
+        Assert.Null(circuit.OutgoingHtlcId);
+        Assert.Null(circuit.OutgoingChannelId);
+        Assert.Null(circuit.FailureCode);
+        Assert.Equal(s_outgoing, circuit.FailureSource);
     }
 
     [Fact]
@@ -99,6 +118,23 @@ public class ForwardCircuitModelTests
         // Assert
         Assert.Equal(ForwardCircuitStatus.Failed, circuit.Status);
         Assert.Equal(3UL, circuit.OutgoingHtlcId);
+        Assert.Null(circuit.FailureCode);
+        Assert.Equal(s_outgoing, circuit.FailureSource);
+    }
+
+    [Fact]
+    public void Given_DownstreamFailMalformed_When_FailedWithTheCode_Then_CodeAndSourceAreKept()
+    {
+        // Arrange (NL-457): the code was sent in the clear (a fail_malformed of the outgoing HTLC)
+        var circuit = CreateCircuit();
+
+        // Act
+        circuit.MarkFailed(s_outgoing, 3, s_createdAt, 0x2002);
+
+        // Assert
+        Assert.Equal(ForwardCircuitStatus.Failed, circuit.Status);
+        Assert.Equal((ushort)0x2002, circuit.FailureCode);
+        Assert.Equal(s_outgoing, circuit.FailureSource);
     }
 
     [Fact]
@@ -202,5 +238,34 @@ public class ForwardCircuitModelTests
                                                                            LightningMoney.MilliSatoshis(1_000UL), 100,
                                                                            s_createdAt, ForwardCircuitStatus.Offered,
                                                                            null, null, null));
+    }
+
+    [Fact]
+    public void Given_AFailureReasonOnANonFailedCircuit_When_Restored_Then_Throws()
+    {
+        // Act & Assert (NL-457): only a Failed circuit carries a reason
+        Assert.Throws<ArgumentException>(() => ForwardCircuitModel.Restore(s_incoming, 7,
+                                                                           LightningMoney.MilliSatoshis(2_000UL), 140,
+                                                                           new Hash(new byte[32]),
+                                                                           new Secret(new byte[32]), s_outgoingScid,
+                                                                           LightningMoney.MilliSatoshis(1_000UL), 100,
+                                                                           s_createdAt, ForwardCircuitStatus.Offered,
+                                                                           s_outgoing, 9, null, 0x2002, s_outgoing));
+    }
+
+    [Fact]
+    public void Given_StoredFailedCircuit_When_Restored_Then_TheReasonIsKept()
+    {
+        // Act
+        var circuit = ForwardCircuitModel.Restore(s_incoming, 7, LightningMoney.MilliSatoshis(2_000UL), 140,
+                                                  new Hash(new byte[32]), new Secret(new byte[32]), s_outgoingScid,
+                                                  LightningMoney.MilliSatoshis(1_000UL), 100, s_createdAt,
+                                                  ForwardCircuitStatus.Failed, s_outgoing, 9, s_createdAt, 0x2002,
+                                                  s_outgoing);
+
+        // Assert
+        Assert.Equal(ForwardCircuitStatus.Failed, circuit.Status);
+        Assert.Equal((ushort)0x2002, circuit.FailureCode);
+        Assert.Equal(s_outgoing, circuit.FailureSource);
     }
 }

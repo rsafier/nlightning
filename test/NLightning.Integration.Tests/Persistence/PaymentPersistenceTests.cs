@@ -288,6 +288,29 @@ public class PaymentPersistenceTests
     }
 
     [Fact]
+    public async Task Given_ARefusedOffer_When_TheCircuitIsFailedWithItsSource_Then_TheReasonIsStored()
+    {
+        // Arrange (NL-457): a policy refusal records the channel it is about, without an outgoing HTLC
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var circuit = CreateCircuit(5);
+        await SaveAsync(db, c => new ForwardCircuitDbRepository(c).AddAsync(circuit));
+        var outgoing = new ChannelId(Enumerable.Repeat((byte)0x0C, 32).ToArray());
+
+        // Act
+        circuit.MarkFailed(s_now.AddSeconds(4), failureSource: outgoing);
+        await SaveAsync(db, c => new ForwardCircuitDbRepository(c).UpdateAsync(circuit));
+
+        // Assert
+        await using var context = db.CreateDbContext();
+        var stored = await new ForwardCircuitDbRepository(context)
+                        .GetByIncomingAsync(circuit.IncomingChannelId, circuit.IncomingHtlcId);
+        AssertCircuit(circuit, stored);
+        Assert.Null(stored!.OutgoingChannelId);
+        Assert.Equal(outgoing, stored.FailureSource);
+        Assert.Null(stored.FailureCode);
+    }
+
+    [Fact]
     public async Task Given_CircuitOfferedInThisUnitOfWork_When_FoundByItsOutgoingHtlc_Then_TheStagedCircuitIsReturned()
     {
         // Arrange (the downstream resolution can be handled in the same unit of work as the Offered update)

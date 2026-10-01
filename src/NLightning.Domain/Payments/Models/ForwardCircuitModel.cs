@@ -63,6 +63,19 @@ public sealed class ForwardCircuitModel
     public DateTimeOffset? ResolvedAt { get; private set; }
 
     /// <summary>
+    /// Why the forward failed, once <see cref="ForwardCircuitStatus.Failed"/>: the BOLT 4 failure code when it was
+    /// sent in the clear (the <c>fail_malformed</c> of the outgoing HTLC). An opaque failure onion's code is readable
+    /// only by the node that created it, and a local refusal carries none.
+    /// </summary>
+    public ushort? FailureCode { get; private set; }
+
+    /// <summary>
+    /// The channel the failure is about, once <see cref="ForwardCircuitStatus.Failed"/>: the outgoing channel whose
+    /// HTLC failed (or timed out on chain), or that refused the offer. Null when the offer never went out.
+    /// </summary>
+    public ChannelId? FailureSource { get; private set; }
+
+    /// <summary>
     /// The fee we earn: incoming amount - outgoing amount.
     /// </summary>
     public LightningMoney Fee => IncomingAmount - OutgoingAmount;
@@ -103,7 +116,8 @@ public sealed class ForwardCircuitModel
                                               ShortChannelId outgoingShortChannelId, LightningMoney outgoingAmount,
                                               uint outgoingCltvExpiry, DateTimeOffset createdAt,
                                               ForwardCircuitStatus status, ChannelId? outgoingChannelId,
-                                              ulong? outgoingHtlcId, DateTimeOffset? resolvedAt)
+                                              ulong? outgoingHtlcId, DateTimeOffset? resolvedAt,
+                                              ushort? failureCode = null, ChannelId? failureSource = null)
     {
         if (!Enum.IsDefined(status))
             throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown circuit status.");
@@ -115,6 +129,8 @@ public sealed class ForwardCircuitModel
             throw new ArgumentException("A pending circuit has no outgoing HTLC yet.", nameof(outgoingHtlcId));
         if (status is ForwardCircuitStatus.Fulfilled or ForwardCircuitStatus.Failed && resolvedAt is null)
             throw new ArgumentException("A resolved circuit needs its resolution time.", nameof(resolvedAt));
+        if ((failureCode is not null || failureSource is not null) && status != ForwardCircuitStatus.Failed)
+            throw new ArgumentException("Only a failed circuit carries a failure reason.", nameof(failureCode));
 
         return new ForwardCircuitModel(incomingChannelId, incomingHtlcId, incomingAmount, incomingCltvExpiry,
                                        paymentHash, incomingSharedSecret, outgoingShortChannelId, outgoingAmount,
@@ -123,7 +139,9 @@ public sealed class ForwardCircuitModel
             Status = status,
             OutgoingChannelId = outgoingChannelId,
             OutgoingHtlcId = outgoingHtlcId,
-            ResolvedAt = resolvedAt
+            ResolvedAt = resolvedAt,
+            FailureCode = failureCode,
+            FailureSource = failureSource
         };
     }
 
@@ -174,14 +192,21 @@ public sealed class ForwardCircuitModel
     /// Fail a <see cref="ForwardCircuitStatus.Pending"/> circuit this way only once no channel HTLC carries
     /// <c>HtlcOrigin.Forwarded(IncomingChannelId, IncomingHtlcId)</c> (the offer threw, or a startup replay checked
     /// every channel): a Pending circuit can have a live downstream HTLC. When the failed outgoing HTLC is known, use
-    /// <see cref="MarkFailed(ChannelId, ulong, DateTimeOffset)"/>.
+    /// <see cref="MarkFailed(ChannelId, ulong, DateTimeOffset, ushort?)"/>.
     /// </remarks>
-    public void MarkFailed(DateTimeOffset resolvedAt)
+    /// <param name="resolvedAt">When the failure became irrevocable.</param>
+    /// <param name="failureCode">The BOLT 4 failure code, when one is known (usually null: a local refusal has
+    /// none).</param>
+    /// <param name="failureSource">The channel the failure is about, when known (the channel whose offer was
+    /// refused).</param>
+    public void MarkFailed(DateTimeOffset resolvedAt, ushort? failureCode = null, ChannelId? failureSource = null)
     {
         if (Status is not (ForwardCircuitStatus.Pending or ForwardCircuitStatus.Offered))
             throw new InvalidOperationException($"Cannot fail a circuit that is {Status}.");
 
         ResolvedAt = resolvedAt;
+        FailureCode = failureCode;
+        FailureSource = failureSource;
         Status = ForwardCircuitStatus.Failed;
     }
 
@@ -190,10 +215,15 @@ public sealed class ForwardCircuitModel
     /// Valid from <see cref="ForwardCircuitStatus.Pending"/> (records the HTLC) or
     /// <see cref="ForwardCircuitStatus.Offered"/> (it must be the recorded HTLC).
     /// </summary>
-    public void MarkFailed(ChannelId outgoingChannelId, ulong outgoingHtlcId, DateTimeOffset resolvedAt)
+    /// <param name="failureCode">The BOLT 4 failure code of the removal, when it was sent in the clear (a
+    /// <c>fail_malformed</c>); an opaque failure onion's code is readable by the origin node alone.</param>
+    public void MarkFailed(ChannelId outgoingChannelId, ulong outgoingHtlcId, DateTimeOffset resolvedAt,
+                           ushort? failureCode = null)
     {
         RecordOutgoingForResolution(outgoingChannelId, outgoingHtlcId, "fail");
         ResolvedAt = resolvedAt;
+        FailureCode = failureCode;
+        FailureSource = outgoingChannelId;
         Status = ForwardCircuitStatus.Failed;
     }
 

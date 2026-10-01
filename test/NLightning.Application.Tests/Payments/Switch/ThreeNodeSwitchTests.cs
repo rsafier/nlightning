@@ -202,6 +202,12 @@ public class ThreeNodeSwitchTests
                      decrypted.Message!.Sha256OfOnion!.Value.ToArray());
         AssertNoHtlcs(harness);
         AssertNeverTwoLocks(harness);
+
+        // The circuit keeps why the forward failed: the fail_malformed code and the channel it is about (NL-457)
+        var circuit = await GetCircuitAsync(harness, 0);
+        Assert.Equal(ForwardCircuitStatus.Failed, circuit!.Status);
+        Assert.Equal((ushort)FailureCode.InvalidOnionHmac, circuit.FailureCode);
+        Assert.Equal(ThreeNodeHarness.BobCarolChannelId, circuit.FailureSource);
     }
 
     [Fact]
