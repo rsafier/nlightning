@@ -12,10 +12,13 @@ using Domain.Gossip.Addresses;
 using Domain.Node;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
+using Domain.Transport;
 using Infrastructure.Node.Services;
 using Infrastructure.Protocol.Services;
 
@@ -582,5 +585,109 @@ public class PeerCommunicationServiceTests
         Assert.InRange(Volatile.Read(ref pings), 1, 2);
 
         service.Disconnect();
+    }
+
+    [Fact]
+    public async Task Given_SlowChannelConsumer_When_PingArrives_Then_ThePongIsAnsweredWhileTheHandlerIsStuck()
+    {
+        // Arrange - NL-108: a channel handler runs on the peer's inbound loop, behind the queues, so a ping is
+        // deserialized and answered even while that loop is stuck on an earlier message. The stack here is the real
+        // MessageService (its per-peer consumer) under a real PeerCommunicationService; the subscriber below mimics
+        // the peer manager: it only queues, never handles inline.
+        var transportServiceMock = new Mock<ITransportService>();
+        transportServiceMock.SetupGet(t => t.IsConnected).Returns(true);
+        var pongSent = new TaskCompletionSource<IMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        transportServiceMock
+           .Setup(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()))
+           .Callback<IMessage, CancellationToken>((m, _) =>
+            {
+                if (m.Type == MessageTypes.Pong)
+                    pongSent.TrySetResult(m);
+            })
+           .Returns(Task.CompletedTask);
+
+        var initMessage = new InitMessage(new InitPayload(new FeatureSet()));
+        _messageFactoryMock.Setup(x => x.CreateInitMessage(null)).Returns(initMessage);
+        var channelMessageMock = new Mock<IMessage>();
+        channelMessageMock.SetupGet(m => m.Type).Returns(MessageTypes.UpdateAddHtlc);
+        var ping = CreatePing(0);
+        var byType = new Dictionary<ushort, IMessage>
+        {
+            [(ushort)MessageTypes.Init] = initMessage,
+            [(ushort)MessageTypes.UpdateAddHtlc] = channelMessageMock.Object,
+            [(ushort)MessageTypes.Ping] = ping
+        };
+        var serializerMock = new Mock<IMessageSerializer>();
+        serializerMock
+           .Setup(m => m.DeserializeMessageAsync(It.IsAny<Stream>()))
+           .ReturnsAsync((Stream stream) =>
+            {
+                var position = stream.Position;
+                Span<byte> header = stackalloc byte[2];
+                stream.ReadExactly(header);
+                stream.Position = position;
+                return byType[System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(header)];
+            });
+
+        using var messageService = new MessageService(NullLogger<MessageService>.Instance, serializerMock.Object,
+                                                      transportServiceMock.Object);
+        var service = new PeerCommunicationService(NullLogger<PeerCommunicationService>.Instance, messageService,
+                                                   _messageFactoryMock.Object, _peerPubKey,
+                                                   _pingPongServiceMock.Object, _serviceProviderMock.Object);
+
+        // The "peer manager": channel messages are queued for a slow inbound loop, never handled inline
+        var inbound = System.Threading.Channels.Channel.CreateUnbounded<IMessage>();
+        var initHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerStuck = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseHandler = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.MessageReceived += (_, m) =>
+        {
+            if (m is null)
+                return;
+
+            if (m.Type == MessageTypes.Init)
+                initHandled.TrySetResult();
+            else
+                inbound.Writer.TryWrite(m);
+        };
+        var slowLoop = Task.Run(async () =>
+        {
+            await foreach (var _ in inbound.Reader.ReadAllAsync(TestContext.Current.CancellationToken))
+            {
+                // The slow channel handler: stuck until the test releases it
+                handlerStuck.TrySetResult();
+                await releaseHandler.Task.WaitAsync(TestContext.Current.CancellationToken);
+            }
+        }, TestContext.Current.CancellationToken);
+
+        // Act: init, then a channel message whose handler stalls, then a ping
+        await service.InitializeAsync(TimeSpan.FromSeconds(30));
+        RaiseRaw(transportServiceMock, messageService, (ushort)MessageTypes.Init);
+        await initHandled.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        RaiseRaw(transportServiceMock, messageService, (ushort)MessageTypes.UpdateAddHtlc);
+        await handlerStuck.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        RaiseRaw(transportServiceMock, messageService, (ushort)MessageTypes.Ping);
+        var pong = await pongSent.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        // Assert: the pong went out while the channel handler is still stuck on the earlier message
+        Assert.False(releaseHandler.Task.IsCompleted);
+        Assert.Equal(MessageTypes.Pong, pong.Type);
+
+        releaseHandler.TrySetResult();
+        inbound.Writer.TryComplete();
+        await slowLoop.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        service.Dispose();
+    }
+
+    /// <summary>
+    /// Feeds a raw frame (its two type bytes, enough for the serializer stub) into the message service the way the
+    /// transport read loop does.
+    /// </summary>
+    private static void RaiseRaw(Mock<ITransportService> transportServiceMock, MessageService messageService,
+                                 ushort type)
+    {
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService,
+                                   new MemoryStream([(byte)(type >> 8), (byte)type]));
     }
 }
