@@ -40,6 +40,8 @@ public static class DependencyInjection
         // IUnitOfWork.SaveChangesAsync commits what they staged
         services.AddScoped<IInvoiceDbRepository>(sp => sp.GetRequiredService<IUnitOfWork>().InvoiceDbRepository);
         services.AddScoped<IPaymentDbRepository>(sp => sp.GetRequiredService<IUnitOfWork>().PaymentDbRepository);
+        services.AddScoped<IPaymentPartDbRepository>(sp =>
+            sp.GetRequiredService<IUnitOfWork>().PaymentPartDbRepository);
         services.AddScoped<IForwardCircuitDbRepository>(sp =>
             sp.GetRequiredService<IUnitOfWork>().ForwardCircuitDbRepository);
 

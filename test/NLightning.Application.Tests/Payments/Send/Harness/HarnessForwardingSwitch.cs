@@ -93,6 +93,13 @@ internal sealed class HarnessForwardingSwitch(
     /// <summary>The hold times this node reported, in order: (incoming channel, HTLC id, hold time).</summary>
     public ConcurrentQueue<(ChannelId ChannelId, ulong HtlcId, uint HoldTime)> ReportedHoldTimes { get; } = new();
 
+    /// <summary>
+    /// When set, called for every outcome of one of our own HTLCs before it reaches the payment outcome handler
+    /// (NL-321 proofs); true means the test consumed the event (a restart simulation delivers it to a restarted
+    /// service itself), so the handler here is not called.
+    /// </summary>
+    public Func<IChannelDomainEvent, bool>? OwnOutcomeInterceptor { get; set; }
+
     public async Task HandleAsync(IChannelDomainEvent channelEvent, CancellationToken cancellationToken)
     {
         Events.Enqueue(channelEvent);
@@ -107,6 +114,10 @@ internal sealed class HarnessForwardingSwitch(
                     if (_resolvedOutgoing.TryAdd((fulfilled.ChannelId, fulfilled.HtlcId), 0))
                         await FulfillUpstreamAsync(fulfilledCircuit, fulfilled, cancellationToken);
                 }
+                else if (OwnOutcomeInterceptor?.Invoke(fulfilled) == true)
+                {
+                    PaymentOutcomes.Enqueue((fulfilled, true));
+                }
                 else
                 {
                     PaymentOutcomes.Enqueue((fulfilled,
@@ -120,6 +131,10 @@ internal sealed class HarnessForwardingSwitch(
                 {
                     if (_resolvedOutgoing.TryAdd((failed.ChannelId, failed.HtlcId), 0))
                         await FailUpstreamAsync(failedCircuit, failed.Removal, cancellationToken);
+                }
+                else if (OwnOutcomeInterceptor?.Invoke(failed) == true)
+                {
+                    PaymentOutcomes.Enqueue((failed, true));
                 }
                 else
                 {

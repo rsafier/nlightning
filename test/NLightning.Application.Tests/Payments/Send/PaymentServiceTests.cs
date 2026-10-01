@@ -48,6 +48,7 @@ public class PaymentServiceTests : IDisposable
     private readonly TestNodeKeyManager _us = new(0x0b);
     private readonly TestNodeKeyManager _payee = new(0x0c);
     private readonly InMemoryPaymentDbRepository _payments = new();
+    private readonly InMemoryPaymentPartDbRepository _parts = new();
     private readonly Mock<IChannelStateDbRepository> _channelState = new();
     private readonly Mock<IChannelOperations> _channelOperations = new();
     private readonly Mock<IChannelMemoryRepository> _channels = new();
@@ -80,6 +81,7 @@ public class PaymentServiceTests : IDisposable
         services.AddSingleton<TimeProvider>(_time);
         services.AddScoped(_ => unitOfWork.Object);
         services.AddScoped<IPaymentDbRepository>(_ => _payments);
+        services.AddScoped<IPaymentPartDbRepository>(_ => _parts);
         services.AddPaymentsServices();
         services.AddPaymentSendServices();
         _provider = services.BuildServiceProvider();

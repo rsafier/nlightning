@@ -22,7 +22,8 @@ using Infrastructure.Repositories.Database.Payment;
 /// Provider-agnostic proof for migration <c>AddInvoicesPaymentsAndCircuits</c> (ABCD W1-C: BOLT2 N8, ONION M4-T7,
 /// NL-137, NL-242), shared by the SQLite test and the Docker Postgres/SQL Server tests: a commitment snapshot written
 /// with the schema before the migration loads after it (no origin, no dust policy), an origin can be stored on the
-/// migrated HTLC row, and invoices, payments (with their route) and forward circuits round-trip.
+/// migrated HTLC row, and invoices, payments (with their route), their offered parts (NL-321, keysend records in their
+/// own column, NL-460) and forward circuits round-trip.
 /// </summary>
 internal static class PaymentSchemaRoundTrip
 {
@@ -141,6 +142,47 @@ internal static class PaymentSchemaRoundTrip
         await SaveAsync(contextFactory, c => new PaymentDbRepository(c).AddAsync(payment), cancellationToken);
         await AssertPaymentAsync(contextFactory, payment);
 
+        // The offered parts of the payment (NL-321): stored when offered, resolved with their hold times, replaced
+        // with the attempt
+        var part = new PaymentPartModel(payment.PaymentHash, 0, s_channelId, 7, PaymentPartState.InFlight,
+                                        payment.Route);
+        await SaveAsync(contextFactory, c => new PaymentPartDbRepository(c).AddAsync(part), cancellationToken);
+        await using (var context = contextFactory())
+        {
+            var repository = new PaymentPartDbRepository(context);
+            var stored = await repository.GetByHtlcAsync(payment.PaymentHash, s_channelId, 7);
+            AssertPart(part, stored);
+
+            stored!.RecordHoldTimes([TimeSpan.FromMilliseconds(2_500)]);
+            stored.State = PaymentPartState.Failed;
+            await repository.UpdateAsync(stored);
+            await context.SaveChangesAsync(cancellationToken);
+        }
+
+        var failedPart = new PaymentPartModel(payment.PaymentHash, 0, s_channelId, 7, PaymentPartState.Failed,
+                                              payment.Route.Select((h, i) => i == 0
+                                                  ? h with { HoldTime = TimeSpan.FromMilliseconds(2_500) }
+                                                  : h).ToList());
+        await using (var context = contextFactory())
+        {
+            var repository = new PaymentPartDbRepository(context);
+            AssertPart(failedPart, await repository.GetByHtlcAsync(payment.PaymentHash, s_channelId, 7));
+            await repository.AddAsync(new PaymentPartModel(payment.PaymentHash, 1, s_channelId, 9,
+                                                           PaymentPartState.InFlight, payment.Route));
+            await context.SaveChangesAsync(cancellationToken);
+        }
+
+        await using (var context = contextFactory())
+        {
+            var repository = new PaymentPartDbRepository(context);
+            Assert.Equal(2, (await repository.GetForPaymentAsync(payment.PaymentHash)).Count);
+            await repository.DeleteForPaymentAsync(payment.PaymentHash);
+            await context.SaveChangesAsync(cancellationToken);
+        }
+
+        await using (var context = contextFactory())
+            Assert.Empty(await new PaymentPartDbRepository(context).GetForPaymentAsync(payment.PaymentHash));
+
         payment.AddOutgoingHtlc(s_channelId, 7);
         await SaveAsync(contextFactory, c => new PaymentDbRepository(c).UpdateAsync(payment), cancellationToken);
         await AssertPaymentAsync(contextFactory, payment);
@@ -252,6 +294,17 @@ internal static class PaymentSchemaRoundTrip
         Assert.Equal(expected.CompletedAt, actual.CompletedAt);
         Assert.Equal(expected.Route, actual.Route);
         Assert.Equal(expected.HopSharedSecrets, actual.HopSharedSecrets);
+    }
+
+    internal static void AssertPart(PaymentPartModel expected, PaymentPartModel? actual)
+    {
+        Assert.NotNull(actual);
+        Assert.Equal(expected.PaymentHash, actual.PaymentHash);
+        Assert.Equal(expected.PartIndex, actual.PartIndex);
+        Assert.Equal(expected.ChannelId, actual.ChannelId);
+        Assert.Equal(expected.HtlcId, actual.HtlcId);
+        Assert.Equal(expected.State, actual.State);
+        Assert.Equal(expected.Hops, actual.Hops);
     }
 
     internal static void AssertCircuit(ForwardCircuitModel expected, ForwardCircuitModel? actual)

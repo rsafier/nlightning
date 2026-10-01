@@ -75,6 +75,7 @@ public class UnitOfWork : IUnitOfWork
     // Payment repositories
     private InvoiceDbRepository? _invoiceDbRepository;
     private PaymentDbRepository? _paymentDbRepository;
+    private PaymentPartDbRepository? _paymentPartDbRepository;
     private ForwardCircuitDbRepository? _forwardCircuitDbRepository;
 
     // Onion replay set
@@ -144,6 +145,9 @@ public class UnitOfWork : IUnitOfWork
     public IInvoiceDbRepository InvoiceDbRepository => _invoiceDbRepository ??= new InvoiceDbRepository(_context);
 
     public IPaymentDbRepository PaymentDbRepository => _paymentDbRepository ??= new PaymentDbRepository(_context);
+
+    public IPaymentPartDbRepository PaymentPartDbRepository =>
+        _paymentPartDbRepository ??= new PaymentPartDbRepository(_context);
 
     public IForwardCircuitDbRepository ForwardCircuitDbRepository =>
         _forwardCircuitDbRepository ??= new ForwardCircuitDbRepository(_context);
