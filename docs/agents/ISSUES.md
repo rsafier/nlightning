@@ -91,6 +91,7 @@ Updated 2026-09-30 by the tor integrator (branch `tor-int`, rebased onto `wip/fa
 Updated 2026-10-01 by the batch8 integrator (branch `wip/batch8` from `wip/fafo` at `54dc63be`; 4 lanes run in parallel worktrees, cherry-picked in lane order with no conflicts — lane branches `batch8-*` hold the originals): 5 open lows resolved, with the per-entry SHAs being the `wip/batch8` commits: NL-510 (b1639658, tests 5ef73d65), NL-321 (b73de764), NL-460 (de64b480), NL-470 (217deff6, 36f7974e, 4e2db398), NL-452 (1df12c38, 9eb7439f). Notes: NL-510 — a splice RBF can now fund a positive contribution with freshly reserved wallet inputs (an initial-splice reservation riding the new attempt's session, so NL-492's sibling release covers it; the MaxRbfFeeShareSatoshis and half-cap rules still bound the new total, and a positive bump over a previous splice-out replaces its output); NL-321 — migration `AddPaymentParts` (Sqlite 20261001200355, Postgres 20261001200347, SqlServer 20261001200402) adds PaymentParts + PaymentPartHops, `PaymentService` persists every offered part with its route and shared secrets, settles the row on its resolution, and the startup reconcile marks HTLC-dead parts failed (a payment whose parts are all dead fails without a code, as before); NL-460 — migration `AddPaymentCustomRecords` (Sqlite 20261001200504, Postgres 20261001200457, SqlServer 20261001200511) gives keysend custom records their own nullable columns on Invoices and Payments with a data step moving the borrowed `Bolt12InvoiceBytes` values back; both migrations were applied to live Postgres and SQL Server containers and `HasPendingModelChanges` is false on all three providers (PersistenceConfigurationTests); NL-470 — the test pair's `stfu` is delivered through the real ChannelManager (the reflection bypass is gone) and the link-drop tests prove the wired Q-R-04 hook; the once-dead items were already fixed by sp1's 940da49c, and a channel reaching Closed now deletes its stored interactive-tx negotiations in the same save (mutual close and the on-chain irrevocable stage; the dual-funded open is excluded — its rows are persisted Aborted first, pinned by DualFundSafetyTests); NL-452 — BOLT 12 receive paths are introduced by an announced channel when one can carry the payment (private channels are the fallback, so a private-only node keeps working with its own peers), and `createoffer` answers with a reachability warning when only channel-less peers could introduce its paths (appended response key); D2 (blinded issuer ids) stays deferred. Gates on the integrated tree, net10.0 Release: build 0 errors/0 warnings (`--no-incremental`); `dotnet format` clean; full non-Docker suite green per project (Domain 3840 +4 skips, Application 3290, Daemon 934, Infrastructure.Bitcoin 1489 +2 skips, Integration 957, Serialization 622, Bolt11 337, Infrastructure 613) — one single-test failure in the first full run was the documented loaded-run flake `AnnouncementHarnessTests` (NL-561 family), green alone and on the full re-run. Integration finding: PaymentSendIpcTests needed a no-op `IPaymentPartDbRepository` registration once `PaymentService` resolves it from the scope (fixed in the batch branch). The lane worktrees (`nlightning-b8-*`) are kept.
 ## How to use this file
 
+Updated 2026-10-01 by the batch9 integrator (branch `wip/batch9` from `wip/fafo` at `54dc63be` after batch8 merged; 4 lanes run in parallel worktrees, cherry-picked in lane order with no conflicts — lane branches `batch9-*` hold the originals): 6 open lows resolved, with the per-entry SHAs being the `wip/batch9` commits: NL-083 (c3022223, 5efe0384, e1bd0357), NL-108 (176ac2e8, c3643c05), NL-134 (1a50bda8, 6fc690f9), NL-138 (839a3cc2), NL-107 (ab336519), NL-544 (b12be69a). Notes: NL-083 — `SphinxKeyGenerator.Rent()` pools generators across the onion build/peel/blinding/failure services and `ISecp256K1Math` gained a span-based `MultiplyPubKey`, so the hot path no longer copies keys per hop or contends on per-op native hash-state mallocs: concurrent peel throughput went 13.5k to ~80k ops/s at 28 threads and 5-hop peel allocations 26,160 to 24,944 B/op, pinned by `SphinxHotPathTests` and the new `tools/NLightning.SphinxBenchmark` harness; NL-108 — the transport read loop now only enqueues decrypted frames into a bounded per-peer channel (capacity 1,024) that a consumer task deserializes and dispatches in order, so slow handlers no longer stall reads or pings (a slow channel consumer test proves the pong goes out while the handler is stuck); NL-134 — migration `RemoveShadowForeignKeyColumns` (Sqlite 20261001223444, Postgres 20261001223432, SqlServer 20261001223451) drops the convention-invented `Channels` shadow columns and wires the change-address relationship explicitly; the SQLite body rebuilds the table by hand because EF's generic rebuild drops the column defaults earlier migrations added (IsDualFunded, DataLossDetected, the balances and commitment numbers) — the raw-SQL seeds of the chain-monitor persistence harnesses caught it; applied to live Postgres and SQL Server containers, `HasPendingModelChanges` false on all three providers; NL-138 — the caller survey found `TryGetChannel` used by 115 methods in ~60 files, so copies were unaffordable: the live model stays, 3 mutation-without-publish bugs were fixed (ChannelRestoreService's splice move, FundingReconfirmationHandler's reorg SCID move, DualFundedOpenService's first-attempt transition), and an opt-in `DetectUnpublishedMutations` guard lets tests police unpublished state changes; NL-107 — `TcpService` parses `[::]:port`, specific IPv6 and bare addresses (`[::]` binds dual-stack), hostnames and port 0 are refused, and the IPv4-only template default is unchanged; NL-544 — a weekly scheduled `bolt10-live-seeds` workflow runs the `Category=Live` DNS-seed smoke (`xUnit.Explicit=only`), never the PR gate, uploading the log on failure. Gates on the integrated tree, net10.0 Release: build 0 errors/0 warnings (`--no-incremental`); `dotnet format` clean; full non-Docker suite green per project (Domain 3844 +4 skips, Application 3297, Daemon 934, Infrastructure.Bitcoin 1495 +2 skips, Integration 957, Serialization 622, Bolt11 337, Infrastructure 635). The lane worktrees (`nlightning-b9-*`) are kept.
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
 - **Finding something new:** append a new entry in the right area with the next free ID (`NL-###`, one higher than the current maximum anywhere in the file). Never renumber. Never reuse an ID.
 - **Never delete an entry.** Mark it `wontfix` (say why) or `duplicate of NL-###`.
@@ -123,9 +124,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 60 | 63 |
+| open | 0 | 0 | 3 | 54 | 57 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 164 | 274 | 514 |
+| fixed | 14 | 62 | 164 | 280 | 520 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
 | **Total** | **14** | **62** | **171** | **341** | **588** |
@@ -2109,7 +2110,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** M2 review issue 16 (partial)
 
 ### NL-083 Sphinx hot path allocates per hop (SphinxKeyGenerator / Sha256)
-- **Status:** open
+- **Status:** fixed (c3022223, 5efe0384, e1bd0357)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Onion/SphinxKeyGenerator.cs`, `src/NLightning.Infrastructure/Crypto/Hashes/Sha256.cs:21`
@@ -3761,7 +3762,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-107 IPv6 listen addresses unsupported
-- **Status:** open
+- **Status:** fixed (ab336519)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Transport/Services/TcpService.cs`
@@ -3771,7 +3772,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-108 MessageService deserializes and runs handlers synchronously under a lock on the read loop
-- **Status:** open (partial: d60a891)
+- **Status:** fixed (176ac2e8, c3643c05; on top of the partial d60a891)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure/Protocol/Services/MessageService.cs`
@@ -3939,7 +3940,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-544 The live BOLT 10 smoke test is not run in CI
-- **Status:** open
+- **Status:** fixed (b12be69a)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Infrastructure.Bitcoin.Tests/Bootstrap/DnsSeedLiveTests.cs`
@@ -4227,7 +4228,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-134 Convention-based shadow FKs in the schema
-- **Status:** open
+- **Status:** fixed (1a50bda8, 6fc690f9)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Persistence/EntityConfiguration/`
@@ -4287,7 +4288,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-138 ChannelMemoryRepository.TryGetChannel returns the shared mutable model
-- **Status:** open
+- **Status:** fixed (839a3cc2)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Repositories/Memory/ChannelMemoryRepository.cs`
