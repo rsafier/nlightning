@@ -71,7 +71,7 @@ internal sealed class FailureOnionService : IFailureOnionService
         var packet = new byte[HmacLength + errorPayload.Length];
         errorPayload.CopyTo(packet.AsSpan(HmacLength));
 
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         using var chaCha20 = new ChaCha20Stream();
         Span<byte> key = stackalloc byte[CryptoConstants.Sha256HashLen];
         try
@@ -100,7 +100,7 @@ internal sealed class FailureOnionService : IFailureOnionService
 
         var wrapped = errorPacket.ToArray();
 
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         using var chaCha20 = new ChaCha20Stream();
         Span<byte> ammagKey = stackalloc byte[CryptoConstants.Sha256HashLen];
         try
@@ -136,7 +136,7 @@ internal sealed class FailureOnionService : IFailureOnionService
         byte[]? erringPayload = null;
         var erringHopIndex = -1;
 
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         using var chaCha20 = new ChaCha20Stream();
         Span<byte> ammagKey = stackalloc byte[CryptoConstants.Sha256HashLen];
         Span<byte> umKey = stackalloc byte[CryptoConstants.Sha256HashLen];

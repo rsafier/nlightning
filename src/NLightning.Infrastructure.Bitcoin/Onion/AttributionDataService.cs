@@ -143,7 +143,7 @@ internal sealed class AttributionDataService : IAttributionDataService
         EnsureFulfillmentPayloadLength(fulfillmentPayload, nameof(fulfillmentPayload));
 
         var wrapped = fulfillmentPayload.ToArray();
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         using var chaCha20 = new ChaCha20Stream();
         DeriveAndXor(keyGenerator, chaCha20, OnionConstants.Ammag, sharedSecret, wrapped);
         return wrapped;
@@ -222,7 +222,7 @@ internal sealed class AttributionDataService : IAttributionDataService
 
         BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(0, HoldTimeLength), holdTime);
 
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         using var chaCha20 = new ChaCha20Stream();
         Span<byte> umKey = stackalloc byte[CryptoConstants.Sha256HashLen];
         try
@@ -264,7 +264,7 @@ internal sealed class AttributionDataService : IAttributionDataService
         var holdTimes = new List<uint>(hopsToVerify);
         int? invalidHopIndex = null;
 
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         using var chaCha20 = new ChaCha20Stream();
         Span<byte> umKey = stackalloc byte[CryptoConstants.Sha256HashLen];
         Span<byte> hmac = stackalloc byte[CryptoConstants.Sha256HashLen];
@@ -402,7 +402,7 @@ internal sealed class AttributionDataService : IAttributionDataService
         var plaintext = SerializeFulfillmentPayloadTlvs(fulfillmentRecords);
 
         var payload = new byte[plaintext.Length + TagLength];
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         using var aead = new ChaCha20Poly1305();
         Span<byte> key = stackalloc byte[CryptoConstants.Sha256HashLen];
         try
@@ -491,7 +491,7 @@ internal sealed class AttributionDataService : IAttributionDataService
             return false;
 
         var plaintext = new byte[payload.Length - TagLength];
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         using var aead = new ChaCha20Poly1305();
         Span<byte> key = stackalloc byte[CryptoConstants.Sha256HashLen];
         try
@@ -550,7 +550,7 @@ internal sealed class AttributionDataService : IAttributionDataService
 
     private static void PeelPayload(IReadOnlyList<Secret> hopSharedSecrets, byte[] payload, int fromHop, int toHop)
     {
-        using var keyGenerator = new SphinxKeyGenerator();
+        using var keyGenerator = SphinxKeyGenerator.Rent();
         using var chaCha20 = new ChaCha20Stream();
         for (var i = fromHop; i < toHop; i++)
             DeriveAndXor(keyGenerator, chaCha20, OnionConstants.Ammag, hopSharedSecrets[i], payload);

@@ -18,6 +18,12 @@ public interface ISecp256K1Math
     CompactPubKey MultiplyPubKey(CompactPubKey pubKey, ReadOnlySpan<byte> scalar);
 
     /// <summary>
+    /// Computes <c>scalar * pubKey</c> (EC point multiplication) for a 33-byte compressed public key, without
+    /// copying it into a <see cref="CompactPubKey"/> first (NL-083).
+    /// </summary>
+    CompactPubKey MultiplyPubKey(ReadOnlySpan<byte> pubKey, ReadOnlySpan<byte> scalar);
+
+    /// <summary>
     /// Computes <c>privKey * scalar mod n</c>.
     /// </summary>
     PrivKey MultiplyPrivKey(PrivKey privKey, ReadOnlySpan<byte> scalar);

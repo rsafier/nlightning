@@ -15,6 +15,13 @@ internal sealed class Secp256K1Math : ISecp256K1Math
     /// <inheritdoc/>
     public CompactPubKey MultiplyPubKey(CompactPubKey pubKey, ReadOnlySpan<byte> scalar)
     {
+        ReadOnlySpan<byte> bytes = pubKey;
+        return MultiplyPubKey(bytes, scalar);
+    }
+
+    /// <inheritdoc/>
+    public CompactPubKey MultiplyPubKey(ReadOnlySpan<byte> pubKey, ReadOnlySpan<byte> scalar)
+    {
         EnsureValidScalar(scalar, nameof(scalar));
         var ecPubKey = CreateEcPubKey(pubKey, nameof(pubKey));
 
@@ -101,11 +108,10 @@ internal sealed class Secp256K1Math : ISecp256K1Math
             throw new ArgumentException("Scalar must be in the range [1, n-1]", paramName);
     }
 
-    private static ECPubKey CreateEcPubKey(CompactPubKey pubKey, string paramName)
+    private static ECPubKey CreateEcPubKey(ReadOnlySpan<byte> pubKey, string paramName)
     {
-        ReadOnlySpan<byte> bytes = pubKey;
-        if (bytes.Length != CryptoConstants.CompactPubkeyLen
-         || !ECPubKey.TryCreate(bytes, NLightningCryptoContext.Instance, out _, out var ecPubKey)
+        if (pubKey.Length != CryptoConstants.CompactPubkeyLen
+         || !ECPubKey.TryCreate(pubKey, NLightningCryptoContext.Instance, out _, out var ecPubKey)
          || ecPubKey is null)
             throw new ArgumentException("Invalid public key", paramName);
 
