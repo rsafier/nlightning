@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Tests.Channels.Splicing;
 
@@ -12,8 +13,10 @@ using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Node.Options;
 using Domain.Onchain.Interfaces;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
@@ -288,9 +291,8 @@ public class SpliceRbfHarnessTests
         var first = (await harness.SpliceAsync(harness.Alice, SpliceIn)).SpliceTxId!.Value;
         var second = (await BumpAsync(harness, harness.Alice, 2_000)).SpliceTxId!.Value;
 
-        // Act: restart and reconnect
+        // Act: restart and reconnect (the harness registers the saved fundings as production loads them, NL-508)
         await harness.RestartAsync(harness.Alice);
-        RegisterPendingFundings(harness.Alice);
         await harness.Harness.ReconnectAsync();
         await harness.PumpAsync();
 
@@ -332,9 +334,97 @@ public class SpliceRbfHarnessTests
         }
     }
 
+    /// <summary>
+    /// NL-508: a node restarted with a signed but unlocked splice attempt signs batches again without a
+    /// re-registration (the harness registered the saved fundings as production loads them,
+    /// <c>ChannelSigningInfoDbRepository</c>), a payment moves both ways, and the attempt itself locks.
+    /// </summary>
+    [Fact]
+    public async Task Given_ARestartWithASignedUnlockedSplice_When_TheChannelIsUsed_Then_TheRestartedNodeSignsAndItLocks()
+    {
+        // Arrange
+        using var harness = CreateHarness();
+        harness.Alice.Fund(SpliceIn + 200_000);
+        var first = (await harness.SpliceAsync(harness.Alice, SpliceIn)).SpliceTxId!.Value;
+
+        // Act: restart and reconnect
+        await harness.RestartAsync(harness.Alice);
+        await harness.Harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert: the attempt is active on both sides and the restarted node signs its batches (one commitment_signed
+        // per active funding) for a payment
+        Assert.Empty(harness.Failures);
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+            Assert.Equal([first], node.Node.State.PendingFundings.Select(f => f.FundingTxId));
+
+        var mark = harness.Transcript.Count;
+        var (id, preimage) = await OfferAsync(harness, harness.Alice, 5_000_000, 1);
+        await FulfillAsync(harness, harness.Bob, id, preimage);
+        Assert.All(harness.Transcript.Skip(mark).Select(t => t.Message).OfType<StartBatchMessage>().ToList(),
+                   b => Assert.Equal(2, b.Payload.BatchSize));
+        Assert.Empty(harness.Failures);
+
+        // Act: the attempt itself locks
+        await harness.ConfirmAsync(first, TwoNodeHarness.BlockHeight + 3, harness.Alice, harness.Bob);
+
+        // Assert
+        Assert.Empty(harness.Failures);
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+        {
+            Assert.Empty(node.Node.State.PendingFundings);
+            Assert.Equal(first, node.Node.State.Params.Funding!.FundingTxId);
+            Assert.Equal(ChannelFundingStatus.Current, node.FundingRows.Committed[first].Status);
+        }
+    }
+
     #endregion
 
     #region Refusals
+
+    /// <summary>
+    /// NL-508: a bump of a channel with nothing pending is refused by the real service before anything is sent
+    /// (SPR-T1; the <c>bumpsplice</c> IPC error mapping quotes this reason).
+    /// </summary>
+    [Fact]
+    public async Task Given_NoPendingSplice_When_Bumping_Then_Refused()
+    {
+        // Arrange
+        using var harness = CreateHarness();
+        var mark = harness.Transcript.Count;
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => ((ISpliceService)harness.Alice.Service).BumpAsync(TwoNodeHarness.ChannelId, 2_000,
+                                                                    TestContext.Current.CancellationToken));
+        Assert.Contains("no pending splice", exception.Message);
+        Assert.Equal(mark, harness.Transcript.Count);
+    }
+
+    /// <summary>
+    /// NL-508: with <c>option_quiesce</c>/<c>option_splice</c> not negotiated with the peer, the bump is refused (D14)
+    /// before quiescence is asked and nothing is sent.
+    /// </summary>
+    [Fact]
+    public async Task Given_SpliceNotNegotiatedWithThePeer_When_Bumping_Then_Refused()
+    {
+        // Arrange: a pending splice, then the features the service reads (no peer manager: the node's own) lose
+        // option_splice
+        using var harness = CreateHarness();
+        harness.Alice.Fund(SpliceIn + 200_000);
+        await harness.SpliceAsync(harness.Alice, SpliceIn);
+        harness.Alice.Node.Services.GetRequiredService<IOptions<NodeOptions>>().Value.Features.OptionSplice =
+            FeatureSupport.No;
+        var mark = harness.Transcript.Count;
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => ((ISpliceService)harness.Alice.Service).BumpAsync(TwoNodeHarness.ChannelId, 2_000,
+                                                                    TestContext.Current.CancellationToken));
+        Assert.Contains("D14", exception.Message);
+        Assert.Contains("not both negotiated", exception.Message);
+        Assert.Equal(mark, harness.Transcript.Count);
+    }
 
     /// <summary>
     /// SP-LK-04: we do not bump a splice after sending <c>splice_locked</c> for it, and the bump starts no quiescence.
@@ -724,13 +814,6 @@ public class SpliceRbfHarnessTests
     /// from <c>ChannelSigningInfoDbRepository</c>): the harness registers channels by hand without their pending
     /// fundings, so they are registered here.
     /// </summary>
-    private static void RegisterPendingFundings(SpliceNode node)
-    {
-        var signer = node.Node.Services.GetRequiredService<Domain.Bitcoin.Interfaces.ILightningSigner>();
-        foreach (var funding in node.Node.State.PendingFundings)
-            signer.RegisterFunding(TwoNodeHarness.ChannelId, funding);
-    }
-
     private static NBitcoin.Transaction Parse(byte[] raw) =>
         NBitcoin.Transaction.Parse(Convert.ToHexString(raw), NBitcoin.Network.RegTest);
 

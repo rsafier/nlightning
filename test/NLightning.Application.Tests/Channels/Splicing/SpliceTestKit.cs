@@ -110,6 +110,35 @@ internal sealed class SpliceHarness : IDisposable
         node.FundingRows.DiscardStaged();
         var restarted = await Harness.RestartNodeAsync(node.Node);
         AttachNode(node, restarted);
+        RegisterSavedFundings(node);
+    }
+
+    /// <summary>
+    /// NL-508: registers the fundings the restarted node saved the way production loads them at the first signature
+    /// through <c>ChannelSigningInfoDbRepository</c> (the restart registered the channel through
+    /// <c>channel.GetSigningInfo</c>, which carries none): every saved funding row except the current one, and, while
+    /// the restored local commitment carries the peer's signatures, every pending funding's number as its SP-I1 mark.
+    /// <c>ILightningSigner.RegisterChannel</c> takes both (<c>RestoreSpliceState</c>).
+    /// </summary>
+    private static void RegisterSavedFundings(SpliceNode node)
+    {
+        var channel = node.Node.Channel;
+        var current = channel.Commitments?.Params.Funding?.FundingTxId ?? channel.FundingOutput!.TransactionId!.Value;
+        var others = node.FundingRows.Committed.Values.Where(f => f.FundingTxId != current).ToList();
+        if (others.Count == 0)
+            return;
+
+        Dictionary<TxId, ulong>? persisted = null;
+        var commitments = channel.Commitments;
+        if (commitments is { LocalCommit.RemoteSignatures: not null, PendingFundings.Count: > 0 })
+            persisted = commitments.PendingFundings.ToDictionary(f => f.FundingTxId,
+                                                                 _ => commitments.LocalCommit.Number);
+
+        node.Node.Signer.RegisterChannel(channel.ChannelId, channel.GetSigningInfo() with
+        {
+            Fundings = others,
+            PersistedSpliceCommitments = persisted
+        });
     }
 
     private void AttachNode(SpliceNode spliceNode, HarnessNode node)
