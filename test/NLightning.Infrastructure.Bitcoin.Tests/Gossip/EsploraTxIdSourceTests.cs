@@ -16,10 +16,11 @@ using Domain.Gossip.Interfaces;
 using Domain.Money;
 
 /// <summary>
-/// The Esplora funding txid source (BOLT 7 plan D12, pruned nodes): the index's txid at a SCID position is used only
-/// with a merkle proof that reaches our node's header at that position, the output still comes from our node's
-/// <c>gettxout</c>, a lying or unavailable index is transient (never the peer's fault), 429s pause every request, and
-/// a bitcoind that cannot serve a block logs the one-time hint to configure Esplora.
+/// The Esplora funding txid source (BOLT 7 plan D12, pruned nodes): the index's answer is used only when it reaches
+/// our node's header's merkle root — the whole block's txid list in one request (NL-423), else the per-position
+/// merkle proof — the output still comes from our node's <c>gettxout</c>, a lying or unavailable index is transient
+/// (never the peer's fault), 429s pause every request, and a bitcoind that cannot serve a block logs the one-time
+/// hint to configure Esplora.
 /// </summary>
 public class EsploraTxIdSourceTests
 {
@@ -52,7 +53,7 @@ public class EsploraTxIdSourceTests
     private static ShortChannelId FundingScid => new(FundingHeight, FundingIndex, 1);
 
     [Fact]
-    public async Task Given_IndexWithValidProof_When_Verify_Then_FoundWithOutputFromOurNode()
+    public async Task Given_IndexWithValidTxidList_When_Verify_Then_FoundWithOutputFromOurNode()
     {
         // Arrange: bitcoind cannot serve the block (pruned); only the index knows the txid list
         _chain.PrunedHeights.Add(FundingHeight);
@@ -64,8 +65,8 @@ public class EsploraTxIdSourceTests
         var result = await lookup.VerifyAsync(FundingScid, Compact(s_bitcoinKey1.PubKey), Compact(s_bitcoinKey2.PubKey),
                                               LightningMoney.Satoshis(FundingSatoshis), ct);
 
-        // Assert: the txid is the funding tx, amount/script/depth from our gettxout; one txid and one proof request,
-        // the merkle root and nTx from our node's header (the pruned block itself is never read)
+        // Assert: the txid is the funding tx, amount/script/depth from our gettxout; one request answers the whole
+        // block (the list verified against our node's header's merkle root, the pruned block itself is never read)
         Assert.Equal(FundingOutputStatus.Found, result.Status);
         Assert.Equal(1, _chain.HeaderSummaryCalls);
         Assert.Null(await _chain.GetBlockAsync(_chain.Inner[FundingHeight].GetHash()));
@@ -75,9 +76,7 @@ public class EsploraTxIdSourceTests
         Assert.Equal(6u, result.Confirmations);
         Assert.Equal(0, _chain.BlockTxIdCalls);
         Assert.Equal(1, _chain.UnspentOutputCalls);
-        Assert.Equal(
-            [$"block/{_chain.Inner[FundingHeight].GetHash()}/txid/{FundingIndex}", $"tx/{_fundingTx.GetHash()}/merkle-proof"],
-            _esplora.Requests);
+        Assert.Equal([$"block/{_chain.Inner[FundingHeight].GetHash()}/txids"], _esplora.Requests);
     }
 
     [Fact]
@@ -92,10 +91,78 @@ public class EsploraTxIdSourceTests
         // Act
         var again = await lookup.LookupAsync(FundingScid, ct);
 
-        // Assert: still two requests, gettxout asked again (the output can be spent since)
+        // Assert: still one request (the whole block was proven), gettxout asked again (the output can be spent since)
         Assert.Equal(FundingOutputStatus.Found, again.Status);
-        Assert.Equal(2, _esplora.Requests.Count);
+        Assert.Single(_esplora.Requests, $"block/{_chain.Inner[FundingHeight].GetHash()}/txids");
         Assert.Equal(2, _chain.UnspentOutputCalls);
+    }
+
+    [Fact]
+    public async Task Given_ChannelsOfOneBlock_When_LookedUp_Then_OneRequestAnswersEveryPosition()
+    {
+        // Arrange: block 101 has 5 transactions; a sync asks several of its channels (NL-423)
+        using var source = CreateSource();
+        var ct = TestContext.Current.CancellationToken;
+        var blockHash = _chain.Inner[FundingHeight].GetHash();
+
+        // Act
+        var funding = await source.GetTxIdAsync(FundingHeight, FundingIndex, ct);
+        var other = await source.GetTxIdAsync(FundingHeight, 2, ct);
+        var filler = await source.GetTxIdAsync(FundingHeight, 1, ct);
+        var above = await source.GetTxIdAsync(FundingHeight, 5, ct);
+
+        // Assert: the list was requested, proven against our header and cached once; every position of the block came
+        // from it, and an index our header proves out of range is refused without asking the index
+        Assert.Equal(FundingTxIdStatus.Found, funding.Status);
+        Assert.Equal(_fundingTx.GetHash(), funding.TxId);
+        Assert.Equal(_otherTx.GetHash(), other.TxId);
+        Assert.Equal(_chain.Inner[FundingHeight].Transactions[1].GetHash(), filler.TxId);
+        Assert.Equal(FundingTxIdStatus.IndexOutOfRange, above.Status);
+        Assert.Equal([$"block/{blockHash}/txids"], _esplora.Requests);
+    }
+
+    [Fact]
+    public async Task Given_ACorruptedTxidList_When_Lookup_Then_RootMismatchFallsBackToThePerPositionProof()
+    {
+        // Arrange: the list is complete (5 txids) but one is not the block's, so it cannot reach our header's root
+        var block = _chain.Inner[FundingHeight];
+        var entries = block.Transactions.Select(t => $"\"{t.GetHash()}\"").ToList();
+        entries[^1] = $"\"{RandomUtils.GetUInt256()}\"";
+        _esplora.Scripted.Enqueue(() => FakeEsploraHandler.Json($"[{string.Join(",", entries)}]"));
+        var logger = new CapturingLogger<EsploraTxIdSource>();
+        using var source = CreateSource(logger: logger);
+        using var lookup = CreateLookup(source);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var result = await lookup.LookupAsync(FundingScid, ct);
+
+        // Assert: the lie is not used and not held against the peer; the per-position proof proves the real txid
+        Assert.Equal(FundingOutputStatus.Found, result.Status);
+        Assert.Equal(
+            [$"block/{block.GetHash()}/txids", $"block/{block.GetHash()}/txid/{FundingIndex}",
+             $"tx/{_fundingTx.GetHash()}/merkle-proof"], _esplora.Requests);
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("does not prove"));
+    }
+
+    [Fact]
+    public async Task Given_AnIndexWithoutTxidLists_When_Lookup_Then_ThePerPositionProofAnswers()
+    {
+        // Arrange: an index that does not serve GET block/{hash}/txids
+        _esplora.BlockTxIdsUnsupported = true;
+        using var source = CreateSource();
+        using var lookup = CreateLookup(source);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var result = await lookup.LookupAsync(FundingScid, ct);
+
+        // Assert: the 404 of the batched endpoint is not an error; the per-position requests prove the txid
+        Assert.Equal(FundingOutputStatus.Found, result.Status);
+        Assert.Equal(
+            [$"block/{_chain.Inner[FundingHeight].GetHash()}/txids",
+             $"block/{_chain.Inner[FundingHeight].GetHash()}/txid/{FundingIndex}",
+             $"tx/{_fundingTx.GetHash()}/merkle-proof"], _esplora.Requests);
     }
 
     [Fact]
@@ -131,7 +198,9 @@ public class EsploraTxIdSourceTests
     [Fact]
     public async Task Given_IndexNamingAnotherTxOfTheBlock_When_Lookup_Then_ProofPositionMismatchIsTransient()
     {
-        // Arrange: the index answers the other 2-of-2 (index 2) for index 3, with that tx's honest proof (pos 2)
+        // Arrange: the index answers the other 2-of-2 (index 2) for index 3, with that tx's honest proof (pos 2);
+        // no batched endpoint, so the per-position proof is all the index can show
+        _esplora.BlockTxIdsUnsupported = true;
         _esplora.TxIdOverride = (txId, index) => index == FundingIndex ? _otherTx.GetHash() : txId;
         var logger = new CapturingLogger<EsploraTxIdSource>();
         using var source = CreateSource(logger: logger);
@@ -152,6 +221,7 @@ public class EsploraTxIdSourceTests
     public async Task Given_IndexForgingProofPosition_When_Lookup_Then_MerkleRootMismatchIsTransient()
     {
         // Arrange: the other tx at index 3 with its own branch but the claimed position 3
+        _esplora.BlockTxIdsUnsupported = true;
         _esplora.TxIdOverride = (txId, index) => index == FundingIndex ? _otherTx.GetHash() : txId;
         _esplora.ProofOverride = (txId, proof) => txId == _otherTx.GetHash() && proof is { } p
                                                       ? (p.Branch, (int)FundingIndex)
@@ -171,6 +241,7 @@ public class EsploraTxIdSourceTests
     public async Task Given_IndexAnsweringUnknownTxId_When_Lookup_Then_NoProofIsTransient()
     {
         // Arrange: a txid that is in no block, so the index has no proof for it
+        _esplora.BlockTxIdsUnsupported = true;
         _esplora.TxIdOverride = (_, _) => RandomUtils.GetUInt256();
         using var source = CreateSource();
         using var lookup = CreateLookup(source);
@@ -186,7 +257,9 @@ public class EsploraTxIdSourceTests
     [Fact]
     public async Task Given_IndexOnAnotherChain_When_Lookup_Then_UnknownBlockIsTransient()
     {
-        // Arrange: the index does not know our block hash (another network or not indexed yet): 404
+        // Arrange: the index does not know our block hash (another network or not indexed yet): 404, and no batched
+        // endpoint either
+        _esplora.BlockTxIdsUnsupported = true;
         _esplora.Scripted.Enqueue(() => new HttpResponseMessage(HttpStatusCode.NotFound));
         using var source = CreateSource();
         using var lookup = CreateLookup(source);
@@ -194,10 +267,11 @@ public class EsploraTxIdSourceTests
         // Act
         var result = await lookup.LookupAsync(FundingScid, TestContext.Current.CancellationToken);
 
-        // Assert: asked with our own node's block hash; the one-time chain check (NL-424) then found our genesis,
-        // so the index is not refused
+        // Assert: asked with our own node's block hash (the batched endpoint first, then the position); the one-time
+        // chain check (NL-424) then found our genesis, so the index is not refused
         Assert.Equal(FundingOutputStatus.ChainUnavailable, result.Status);
-        Assert.Equal([$"block/{_chain.Inner[FundingHeight].GetHash()}/txid/{FundingIndex}", "block-height/0"],
+        Assert.Equal([$"block/{_chain.Inner[FundingHeight].GetHash()}/txids",
+                      $"block/{_chain.Inner[FundingHeight].GetHash()}/txid/{FundingIndex}", "block-height/0"],
                      _esplora.Requests);
         Assert.False(source.Refused);
     }
@@ -240,6 +314,7 @@ public class EsploraTxIdSourceTests
     public async Task Given_AnIndexOnAnotherChain_When_ALookupFails_Then_TheMismatchIsAnErrorAndTheSourceIsRefused()
     {
         // Arrange (NL-424): the index does not know our block (404) and serves another chain's genesis
+        _esplora.BlockTxIdsUnsupported = true;
         _esplora.Scripted.Enqueue(() => new HttpResponseMessage(HttpStatusCode.NotFound));
         _esplora.BlockHeightOverride = _ => RandomUtils.GetUInt256();
         var logger = new CapturingLogger<EsploraTxIdSource>();
@@ -257,14 +332,17 @@ public class EsploraTxIdSourceTests
         Assert.Equal(FundingOutputStatus.ChainUnavailable, second.Status);
         Assert.True(source.Refused);
         Assert.Contains(logger.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("another chain"));
-        Assert.Equal([$"block/{_chain.Inner[FundingHeight].GetHash()}/txid/{FundingIndex}", "block-height/0"],
+        Assert.Equal([$"block/{_chain.Inner[FundingHeight].GetHash()}/txids",
+                      $"block/{_chain.Inner[FundingHeight].GetHash()}/txid/{FundingIndex}", "block-height/0"],
                      _esplora.Requests);
     }
 
     [Fact]
     public async Task Given_AnIndexOnOurChain_When_ALookupFailsOnce_Then_TheCheckConfirmsItAndLookupsGoOn()
     {
-        // Arrange: the index serves our genesis; the one block is just not indexed (yet)
+        // Arrange: the index serves our genesis; the one block is just not indexed (yet), and it serves no batched
+        // txid lists
+        _esplora.BlockTxIdsUnsupported = true;
         _esplora.Scripted.Enqueue(() => new HttpResponseMessage(HttpStatusCode.NotFound));
         var logger = new CapturingLogger<EsploraTxIdSource>();
         using var source = CreateSource(logger: logger);
@@ -280,13 +358,13 @@ public class EsploraTxIdSourceTests
         Assert.DoesNotContain(logger.Entries, e => e.Level == LogLevel.Error);
         Assert.Contains(logger.Entries, e => e.Level == LogLevel.Information && e.Message.Contains("serves our chain"));
         Assert.Equal(FundingOutputStatus.Found, (await lookup.LookupAsync(FundingScid, ct)).Status);
-        Assert.Equal(4, _esplora.Requests.Count);
+        Assert.Equal(6, _esplora.Requests.Count);
     }
 
     [Fact]
     public async Task Given_AnIndexThatCannotBeAsked_When_ALookupFails_Then_TheCheckWarnsInsteadOfRefusing()
     {
-        // Arrange: both the position and the chain check run into a server error
+        // Arrange: both the txid list and the chain check run into a server error
         _esplora.Scripted.Enqueue(() => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
         _esplora.Scripted.Enqueue(() => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
         var logger = new CapturingLogger<EsploraTxIdSource>();
@@ -325,11 +403,11 @@ public class EsploraTxIdSourceTests
         clock.Advance(TimeSpan.FromMilliseconds(1));
         var result = await pending.WaitAsync(TimeSpan.FromSeconds(10), ct);
 
-        // Assert: nothing sent during the pause, then the same request again and the proof
+        // Assert: nothing sent during the pause, then the same txid-list request again (its answer proves the block)
         Assert.Equal(1, requestsDuringPause);
         Assert.True(waitedAt2999Ms);
         Assert.Equal(FundingOutputStatus.Found, result.Status);
-        Assert.Equal(3, _esplora.Requests.Count);
+        Assert.Equal(2, _esplora.Requests.Count);
         Assert.Equal(_esplora.Requests[0], _esplora.Requests[1]);
         Assert.Equal(1, source.RateLimitedResponses);
         Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("429"));
@@ -385,13 +463,13 @@ public class EsploraTxIdSourceTests
         var after = await lookup.LookupAsync(FundingScid, ct).WaitAsync(TimeSpan.FromSeconds(10), ct);
 
         // Assert: the refused request and the pause-skipping chain check (NL-424), nothing else during the pause,
-        // then the index again
+        // then the index again (the lookup after the pause is answered by one txid-list request)
         Assert.Equal(FundingOutputStatus.ChainUnavailable, first.Status);
         Assert.Equal(FundingOutputStatus.ChainUnavailable, duringPause.Status);
         Assert.Equal(2, requestsDuringPause);
         Assert.Equal(0, clock.PendingTimers);
         Assert.Equal(FundingOutputStatus.Found, after.Status);
-        Assert.Equal(4, _esplora.Requests.Count);
+        Assert.Equal(3, _esplora.Requests.Count);
     }
 
     [Fact]
@@ -432,11 +510,12 @@ public class EsploraTxIdSourceTests
     }
 
     [Fact]
-    public async Task Given_PoliteRate_When_TwoLookups_Then_ThirdRequestWaitsForItsToken()
+    public async Task Given_PoliteRate_When_ThreeUncachedBlocks_Then_TheThirdRequestWaitsForItsToken()
     {
-        // Arrange: 2 requests per second, burst 2; each lookup costs two requests
+        // Arrange: 2 requests per second, burst 2; a lookup costs one request per uncached block (NL-423)
         var clock = new ManualTimeProvider();
         _chain.Inner.Mine(CreateFundingTx(s_bitcoinKey1.PubKey, s_otherKey.PubKey, FundingSatoshis));
+        _chain.Inner.Mine(CreateFundingTx(s_otherKey.PubKey, s_bitcoinKey2.PubKey, FundingSatoshis));
         using var source = CreateSource(clock, new FundingTxIdSourceOptions
         {
             FundingTxIdSource = FundingTxIdSourceKind.Esplora,
@@ -445,20 +524,23 @@ public class EsploraTxIdSourceTests
         using var lookup = CreateLookup(source);
         var ct = TestContext.Current.CancellationToken;
         Assert.Equal(FundingOutputStatus.Found, (await lookup.LookupAsync(FundingScid, ct)).Status);
+        Assert.Equal(FundingOutputStatus.Found,
+                     (await lookup.LookupAsync(new ShortChannelId(_chain.Inner.TipHeight - 1, 1, 1), ct)).Status);
 
-        // Act
-        var second = lookup.LookupAsync(new ShortChannelId(_chain.Inner.TipHeight, 1, 1), ct);
+        // Act: the burst is spent, the third block's request waits half a second for its token
+        var third = lookup.LookupAsync(new ShortChannelId(_chain.Inner.TipHeight, 1, 1), ct);
         await WaitForAsync(() => clock.PendingTimers == 1, ct);
         var requestsBeforeToken = _esplora.Requests.Count;
-        clock.Advance(TimeSpan.FromMilliseconds(500));
-        await WaitForAsync(() => _esplora.Requests.Count == 3 && clock.PendingTimers == 1, ct);
-        clock.Advance(TimeSpan.FromMilliseconds(500));
-        var result = await second.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        clock.Advance(TimeSpan.FromMilliseconds(499));
+        var waitedAt499Ms = _esplora.Requests.Count == 2 && !third.IsCompleted;
+        clock.Advance(TimeSpan.FromMilliseconds(1));
+        var result = await third.WaitAsync(TimeSpan.FromSeconds(10), ct);
 
         // Assert
         Assert.Equal(2, requestsBeforeToken);
+        Assert.True(waitedAt499Ms);
         Assert.Equal(FundingOutputStatus.Found, result.Status);
-        Assert.Equal(4, _esplora.Requests.Count);
+        Assert.Equal(3, _esplora.Requests.Count);
     }
 
     [Fact]
@@ -552,6 +634,58 @@ public class EsploraTxIdSourceTests
         Assert.Equal(1u, position);
         Assert.True(valid);
         Assert.False(otherPosition);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(6)]
+    [InlineData(7)]
+    [InlineData(8)]
+    [InlineData(9)]
+    public void Given_ABlocksTxidList_When_ComputeMerkleRoot_Then_TheHeadersRoot(int txCount)
+    {
+        // Arrange: the batched list of NL-423 is proven by recomputing the root the header commits to
+        var block = CreateBlock(txCount);
+        var leaves = block.Transactions.Select(t => t.GetHash()).ToList();
+
+        // Act / Assert
+        Assert.Equal(block.GetMerkleRoot().Hash, EsploraTxIdSource.ComputeMerkleRoot(leaves));
+    }
+
+    [Fact]
+    public void Given_AListWithDuplicatedLastTransactions_When_ComputeMerkleRoot_Then_Refused()
+    {
+        // Arrange: CVE-2012-2459 — the lists [1..6] and [1..6,5,6] share a merkle root (the eight-entry tree's equal
+        // pair sits one level above the leaves), so a matching root alone proves nothing about the list
+        var block = CreateBlock(6);
+        var leaves = block.Transactions.Select(t => t.GetHash()).ToList();
+        var padded = leaves.Concat(leaves.TakeLast(2)).ToList();
+        Assert.Equal(block.GetMerkleRoot().Hash, RootWithoutMutationGuard(padded));
+
+        // Act / Assert: the mutated lists are refused although the first one's root matches the block's
+        Assert.Null(EsploraTxIdSource.ComputeMerkleRoot(padded));
+        Assert.Null(EsploraTxIdSource.ComputeMerkleRoot([leaves[0], leaves[1], leaves[1], leaves[1]]));
+    }
+
+    /// <summary>The merkle root the way bitcoind computed it before the CVE-2012-2459 fix, without the equal-pair check.</summary>
+    private static uint256 RootWithoutMutationGuard(IReadOnlyList<uint256> leaves)
+    {
+        var level = leaves.ToList();
+        while (level.Count > 1)
+        {
+            if (level.Count % 2 == 1)
+                level.Add(level[^1]);
+            level = level.Chunk(2)
+                         .Select(pair => NBitcoin.Crypto.Hashes.DoubleSHA256(
+                                     pair[0].ToBytes().Concat(pair[1].ToBytes()).ToArray()))
+                         .ToList();
+        }
+
+        return level[0];
     }
 
     [Theory]
@@ -658,7 +792,7 @@ public class EsploraTxIdSourceTests
 
         // Assert
         Assert.Equal(FundingOutputStatus.Found, result.Status);
-        Assert.Equal(2, _esplora.Requests.Count);
+        Assert.Single(_esplora.Requests, $"block/{_chain.Inner[FundingHeight].GetHash()}/txids");
     }
 
     [Fact]

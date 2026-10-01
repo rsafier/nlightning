@@ -9,9 +9,9 @@ using NLightning.Tests.Utils.Mocks;
 namespace NLightning.Infrastructure.Bitcoin.Tests.Gossip;
 
 /// <summary>
-/// An Esplora HTTP API over a <see cref="FakeBitcoinChain"/>: <c>GET block/{hash}/txid/{index}</c>,
-/// <c>GET tx/{txid}/merkle-proof</c> and <c>GET block-height/{height}</c>, with hooks to answer something else
-/// (429, 5xx, a lie).
+/// An Esplora HTTP API over a <see cref="FakeBitcoinChain"/>: <c>GET block/{hash}/txids</c>,
+/// <c>GET block/{hash}/txid/{index}</c>, <c>GET tx/{txid}/merkle-proof</c> and <c>GET block-height/{height}</c>, with
+/// hooks to answer something else (429, 5xx, a lie).
 /// </summary>
 [ExcludeFromCodeCoverage]
 internal sealed class FakeEsploraHandler(FakeBitcoinChain chain) : HttpMessageHandler
@@ -43,6 +43,9 @@ internal sealed class FakeEsploraHandler(FakeBitcoinChain chain) : HttpMessageHa
     /// <summary>When set, the block hash answered for a height (an index on another chain, NL-424).</summary>
     public Func<uint, uint256>? BlockHeightOverride { get; set; }
 
+    /// <summary>When set, <c>GET block/{hash}/txids</c> answers 404 (an index without the batched endpoint).</summary>
+    public bool BlockTxIdsUnsupported { get; set; }
+
     /// <summary>Set when a request arrives.</summary>
     public TaskCompletionSource RequestSeen { get; private set; } = NewSignal();
 
@@ -55,6 +58,9 @@ internal sealed class FakeEsploraHandler(FakeBitcoinChain chain) : HttpMessageHa
             response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(delay);
         return response;
     }
+
+    public static HttpResponseMessage Json(string body) =>
+        new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
 
     /// <summary>Bitcoin's merkle branch of <paramref name="index"/> (an odd level's last node paired with itself).</summary>
     public static List<uint256> Branch(IReadOnlyList<uint256> leaves, int index)
@@ -91,6 +97,11 @@ internal sealed class FakeEsploraHandler(FakeBitcoinChain chain) : HttpMessageHa
             _requests.Add(path);
         RequestSeen.TrySetResult();
 
+        // An endpoint the index does not have is answered before the scripted queue: those tests script the answer
+        // of the per-position request, which only happens when the batched one is gone
+        if (BlockTxIdsUnsupported && path.EndsWith("/txids", StringComparison.Ordinal))
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+
         if (Scripted.TryDequeue(out var scripted))
             return Task.FromResult(scripted());
 
@@ -102,6 +113,19 @@ internal sealed class FakeEsploraHandler(FakeBitcoinChain chain) : HttpMessageHa
             return Task.FromResult(blockHeight <= chain.TipHeight
                                        ? Text(chain[blockHeight].GetHash().ToString())
                                        : new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+
+        if (parts is ["block", var listHash, "txids"] && uint256.TryParse(listHash, out var listBlockHash))
+        {
+            if (BlockTxIdsUnsupported)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+
+            var listed = FindBlock(listBlockHash);
+            if (listed is null)
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+
+            return Task.FromResult(Json(
+                $"[{string.Join(",", listed.Transactions.Select(t => $"\"{t.GetHash()}\""))}]"));
         }
 
         if (parts is ["block", var hash, "txid", var indexText]
