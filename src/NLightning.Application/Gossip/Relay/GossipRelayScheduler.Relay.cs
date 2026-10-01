@@ -24,14 +24,16 @@ using Sync.Interfaces;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Collect:</b> every <see cref="GossipRelayOptions.RelayCollectInterval"/> the graph snapshot is compared with what
-/// the relay saw before (per channel, update direction and node: the timestamp; a <c>channel_announcement</c> counts
-/// as seen only once the channel has a relayable update, so it is queued with that update). What the ingress accepted
-/// since goes
-/// into the pending set of every connection that sent a <c>gossip_timestamp_filter</c>, the newest version per key
-/// (a newer update replaces an older one). The first scan only records the graph as it is (a restart does not relay
-/// the stored graph; each peer's filter asks for its backlog). Left out: spent channels (B7-Q-05 SHOULD NOT), channels
-/// kept <see cref="GraphChannelVerification.Unverified"/> or <see cref="GraphChannelVerification.Assumed"/> (never
+/// <b>Collect:</b> every <see cref="GossipRelayOptions.RelayCollectInterval"/> what the ingress accepted since the
+/// last collect (its <see cref="IGossipAcceptedFeed"/>, one slot per channel, update direction and node: the newest
+/// accepted version wins) is looked up in the graph and compared with what the relay saw before (the timestamp; a
+/// <c>channel_announcement</c> counts as seen only once the channel has a relayable update, so it is queued with that
+/// update). What changed goes into the pending set of every connection that sent a <c>gossip_timestamp_filter</c>,
+/// the newest version per key (a newer update replaces an older one). Gossip the graph holds without the ingress
+/// having accepted it (the startup load) is never collected: a restart does not relay the stored graph; each peer's
+/// filter asks for its backlog. When the ingress gives no feed or it had to drop slots, one full pass over the graph
+/// snapshot finds everything instead. Left out: spent channels (B7-Q-05 SHOULD NOT), channels kept
+/// <see cref="GraphChannelVerification.Unverified"/> or <see cref="GraphChannelVerification.Assumed"/> (never
 /// relayed, plan §3.4), <c>dont_forward</c> updates and
 /// our own messages (the own path sends them to every peer regardless of filters).
 /// </para>
@@ -90,6 +92,7 @@ public sealed partial class GossipRelayScheduler
     private readonly IGraphStore? _graphStore;
     private readonly IGossipSyncManager? _syncManager;
     private readonly GossipOriginTracker? _originTracker;
+    private readonly IGossipAcceptedFeed? _acceptedFeed;
     private readonly GossipRelayOptions _relayOptions;
     private readonly CompactPubKey? _ourNodeId;
 
@@ -245,15 +248,111 @@ public sealed partial class GossipRelayScheduler
     }
 
     /// <summary>
-    /// Compares the graph with what the relay saw before and queues what changed for every connected peer with a
-    /// filter (tests call it through <see cref="RelayTickAsync"/>).
+    /// Finds what changed for the relay since the last collect and queues it for every connected peer with a filter
+    /// (tests call it through <see cref="RelayTickAsync"/>).
     /// </summary>
     /// <returns>How many changed messages were found.</returns>
     private int Collect(IReadOnlyList<GossipPeer> peers)
     {
+        var changed = new List<RelayItem>();
+
+        // NL-366: what the ingress accepted since the last collect; one full pass over the snapshot instead when
+        // there is no feed, or it had to drop slots (the drained ones are re-found by the pass, nothing is lost)
+        var accepted = _acceptedFeed?.Take() ?? new GossipAcceptedBatch([], true);
+        if (accepted.Overflowed)
+            CollectFromSnapshot(changed);
+        else
+            CollectAccepted(accepted.Slots, changed);
+
+        if (!_baselined)
+        {
+            _baselined = true;
+            return 0;
+        }
+
+        if (changed.Count == 0)
+            return 0;
+
+        foreach (var peer in peers)
+        {
+            if (!IsOnOurChain(peer) || !_syncManager!.TryGetPeerFilter(peer.Service, out _))
+                continue;
+
+            RecordBacklogDrops(peer, GetRelayState(peer, _timeProvider.GetUtcNow()).AddPending(changed));
+        }
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("{Count} gossip messages to relay at the next flushes", changed.Count);
+
+        return changed.Count;
+    }
+
+    /// <summary>
+    /// The version in the graph of every slot the ingress accepted since the last collect (NL-366), compared with what
+    /// the relay saw before. The graph is read per slot, so the collect costs O(changes), not O(graph); a change that
+    /// left the graph again (a channel removed after a spend or a ban) finds nothing, and a slot whose version is the
+    /// known one (the same announcement stored again) is left out.
+    /// </summary>
+    private void CollectAccepted(IReadOnlyList<GossipAcceptedKey> slots, List<RelayItem> changed)
+    {
+        foreach (var slot in slots)
+        {
+            switch (slot.Type)
+            {
+                case MessageTypes.ChannelAnnouncement:
+                    // A 256 counts as seen only once the channel has a relayable update: a 256 flushed alone is
+                    // dropped (it never goes out without an update), so marking it seen earlier would send its later
+                    // 258 without it. A promotion is fed twice (the add and the accepted update); should the collect
+                    // run between the two, the flush brings the 256 with the 258 (NL-368)
+                    if (!_graphStore!.TryGetChannel(slot.ShortChannelId, out var announced) || !IsRelayable(announced))
+                        break;
+
+                    if (!IsOurs(announced.NodeId1) && !IsOurs(announced.NodeId2) && HasRelayablePolicy(announced))
+                        See(GossipMessageKey.ChannelAnnouncement(announced.ShortChannelId), 1,
+                            new RelayItem(MessageTypes.ChannelAnnouncement, announced.ShortChannelId, 0, null, 0,
+                                          announced.RawAnnouncement));
+                    break;
+                case MessageTypes.ChannelUpdate:
+                    if (!_graphStore!.TryGetChannel(slot.ShortChannelId, out var updated))
+                        break;
+
+                    if (GetRelayablePolicy(updated, slot.Direction) is { } policy)
+                        See(GossipMessageKey.ChannelUpdate(updated.ShortChannelId, slot.Direction, 0),
+                            policy.Timestamp,
+                            new RelayItem(MessageTypes.ChannelUpdate, updated.ShortChannelId, slot.Direction, null,
+                                          policy.Timestamp, policy.RawUpdate));
+                    break;
+                case MessageTypes.NodeAnnouncement:
+                    if (!_graphStore!.TryGetNode(slot.NodeId, out var node) || node.RawAnnouncement.IsEmpty
+                     || IsOurs(node.NodeId))
+                        break;
+
+                    See(GossipMessageKey.NodeAnnouncement(node.NodeId, 0), node.Timestamp,
+                        new RelayItem(MessageTypes.NodeAnnouncement, s_noChannel, 0, node.NodeId, node.Timestamp,
+                                      node.RawAnnouncement));
+                    break;
+            }
+        }
+
+        void See(GossipMessageKey key, uint version, RelayItem item)
+        {
+            if (_known.TryGetValue(key, out var known) && known.Version == version)
+                return;
+
+            _known[key] = new KnownVersion(version, _generation);
+            changed.Add(item);
+        }
+    }
+
+    /// <summary>
+    /// The full diff the feed replaces (NL-366): the whole snapshot against what the relay saw before. Also forgets
+    /// what left the graph, so it counts as new if it comes back — the feed path leaves it known instead, since the
+    /// peers it reached keep it and the rest get it with the next update (NL-368).
+    /// </summary>
+    private void CollectFromSnapshot(List<RelayItem> changed)
+    {
         var snapshot = _graphStore!.GetSnapshot();
         var generation = ++_generation;
-        var changed = new List<RelayItem>();
 
         foreach (var channel in snapshot.Channels)
         {
@@ -293,28 +392,6 @@ public sealed partial class GossipRelayScheduler
         if (_known.Count > 0)
             foreach (var gone in _known.Where(k => k.Value.Generation != generation).Select(k => k.Key).ToList())
                 _known.Remove(gone);
-
-        if (!_baselined)
-        {
-            _baselined = true;
-            return 0;
-        }
-
-        if (changed.Count == 0)
-            return 0;
-
-        foreach (var peer in peers)
-        {
-            if (!IsOnOurChain(peer) || !_syncManager!.TryGetPeerFilter(peer.Service, out _))
-                continue;
-
-            RecordBacklogDrops(peer, GetRelayState(peer, _timeProvider.GetUtcNow()).AddPending(changed));
-        }
-
-        if (_logger.IsEnabled(LogLevel.Debug))
-            _logger.LogDebug("{Count} gossip messages to relay at the next flushes", changed.Count);
-
-        return changed.Count;
 
         void See(GossipMessageKey slot, uint version, RelayItem item)
         {

@@ -90,11 +90,17 @@ using Metrics;
 /// waits in the <see cref="PendingAnnouncementIndex"/> — such a channel's answer would only be downloaded twice.
 /// </para>
 /// <para>
+/// NL-366: what a worker accepts is remembered in the bounded <see cref="IGossipAcceptedFeed"/> (one slot per message
+/// kind, the newest version winning), which the relay's collect drains instead of diffing the whole graph snapshot.
+/// Our own gossip (the own-gossip loop) is never fed: it reaches every peer through the own path.
+/// </para>
+/// <para>
 /// The workers and the store's write-behind loop start with <see cref="StartAsync"/>, or on the first queued message.
 /// <see cref="StopAsync"/> stops them and writes what is pending.
 /// </para>
 /// </remarks>
-public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendingChannels, IAsyncDisposable, IDisposable
+public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendingChannels,
+                                     IGossipAcceptedFeed, IAsyncDisposable, IDisposable
 {
     private readonly IGraphStore _store;
     private readonly IGossipSignatureVerifier _signatureVerifier;
@@ -112,6 +118,9 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
     private readonly PendingAnnouncementIndex _pending;
     private readonly Lock _orphanGate = new();
     private readonly Lock _startLock = new();
+    private readonly Lock _acceptedGate = new();
+    private readonly Dictionary<GossipAcceptedKey, byte> _accepted = [];
+    private readonly Queue<GossipAcceptedKey> _acceptedOrder = [];
     private readonly CancellationTokenSource _stopCts = new();
     private readonly List<Task> _loops = [];
     private readonly Channel<OwnGossipItem> _ownQueue = Channel.CreateUnbounded<OwnGossipItem>(
@@ -128,6 +137,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
     private readonly Lock _banGate = new();
     private readonly ConcurrentDictionary<(ShortChannelId, byte), IngressItem> _limitedUpdates = new();
     private readonly ConcurrentDictionary<CompactPubKey, IngressItem> _limitedNodes = new();
+    private bool _acceptedOverflowed;
 
     private Task? _startTask;
     private int _queuedTotal;
@@ -179,6 +189,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
             metrics.RegisterQueue("pending_announcements", () => _pending.Count);
             metrics.RegisterQueue("retries", () => Volatile.Read(ref _pendingRetries));
             metrics.RegisterQueue("rate_limited", () => _limitedUpdates.Count + _limitedNodes.Count);
+            metrics.RegisterQueue("relay_feed", () => AcceptedCount);
         }
     }
 
@@ -238,6 +249,63 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
 
     /// <summary>The rate-limited messages kept for later (for tests).</summary>
     internal int RateLimitedCount => _limitedUpdates.Count + _limitedNodes.Count;
+
+    /// <summary>The default bound of the accepted-gossip feed (NL-366).</summary>
+    public const int DefaultAcceptedCapacity = 8_192;
+
+    /// <summary>
+    /// The most changed slots the accepted-gossip feed (NL-366) keeps between drains; beyond it the oldest is dropped
+    /// and the next drain reports an overflow, so the relay falls back to one full pass over the snapshot.
+    /// </summary>
+    internal int AcceptedCapacity { get; set; } = DefaultAcceptedCapacity;
+
+    /// <summary>The slots waiting in the accepted-gossip feed (for the metrics).</summary>
+    public int AcceptedCount
+    {
+        get
+        {
+            lock (_acceptedGate)
+                return _accepted.Count;
+        }
+    }
+
+    /// <inheritdoc />
+    public GossipAcceptedBatch Take()
+    {
+        lock (_acceptedGate)
+        {
+            var overflowed = _acceptedOverflowed;
+            _acceptedOverflowed = false;
+            var slots = new List<GossipAcceptedKey>(_accepted.Count);
+            while (_acceptedOrder.TryDequeue(out var key))
+                if (_accepted.Remove(key))
+                    slots.Add(key);
+
+            _accepted.Clear();
+            return new GossipAcceptedBatch(slots, overflowed);
+        }
+    }
+
+    /// <summary>
+    /// NL-366: remembers that a slot changed, so the relay's collect finds it without diffing the graph. The newest
+    /// accepted version of a slot replaces the older (the drain reads the graph for it); the oldest slot is dropped
+    /// beyond <see cref="AcceptedCapacity"/> and the overflow flagged.
+    /// </summary>
+    private void RecordAccepted(GossipAcceptedKey key)
+    {
+        lock (_acceptedGate)
+        {
+            if (!_accepted.TryAdd(key, 0))
+                return;
+
+            _acceptedOrder.Enqueue(key);
+            while (_accepted.Count > AcceptedCapacity && _acceptedOrder.TryDequeue(out var oldest))
+            {
+                if (_accepted.Remove(oldest))
+                    _acceptedOverflowed = true;
+            }
+        }
+    }
 
     /// <summary>True while <paramref name="peer"/> is banned for misbehaviour (for tests).</summary>
     internal bool IsBannedForMisbehaviour(CompactPubKey peer) => IsPeerBanned(peer);
@@ -855,7 +923,12 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
 
         Remember(MessageTypes.ChannelAnnouncement, pending.Raw);
         if (await AddChannelAndReplayAsync(check.Channel!, check.FundingTxId, cancellationToken))
+        {
+            // NL-366: the channel entered the graph, so the relay's collect is told (the promoting update tells it
+            // about its own slot below)
+            RecordAccepted(GossipAcceptedKey.ChannelAnnouncement(update.ShortChannelId));
             _metrics?.RecordAccepted(MessageTypes.ChannelAnnouncement);
+        }
 
         // The channel is in the graph now (unless a ban forgot it meanwhile): apply the update as for any channel
         return await ProcessChannelUpdateAsync(origin, message, attempt, cancellationToken);
@@ -998,9 +1071,12 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
         };
 
         Remember(MessageTypes.NodeAnnouncement, raw);
-        return _store.TryApplyNode(node)
-                   ? GossipIngressResult.Accepted(validation.Forwardable ? "forwardable" : "not forwardable")
-                   : GossipIngressResult.Ignored("not newer", GossipRejectReason.NotNewer);
+        if (!_store.TryApplyNode(node))
+            return GossipIngressResult.Ignored("not newer", GossipRejectReason.NotNewer);
+
+        // NL-366: the relay's collect is fed from what was accepted, not from a diff of the whole graph
+        RecordAccepted(GossipAcceptedKey.NodeAnnouncement(announcement.NodeId));
+        return GossipIngressResult.Accepted(validation.Forwardable ? "forwardable" : "not forwardable");
     }
 
     private async Task<GossipIngressResult> ProcessChannelUpdateAsync(
@@ -1086,9 +1162,12 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
 
         Remember(MessageTypes.ChannelUpdate, raw);
         var policy = GraphPolicy.FromChannelUpdate(update) with { RawUpdate = raw };
-        return _store.TryApplyPolicy(update.ShortChannelId, policy)
-                   ? GossipIngressResult.Accepted(validation.Routable ? "routable" : "not routable")
-                   : GossipIngressResult.Ignored("not newer", GossipRejectReason.OutdatedUpdate);
+        if (!_store.TryApplyPolicy(update.ShortChannelId, policy))
+            return GossipIngressResult.Ignored("not newer", GossipRejectReason.OutdatedUpdate);
+
+        // NL-366: the relay's collect is fed from what was accepted, not from a diff of the whole graph
+        RecordAccepted(GossipAcceptedKey.ChannelUpdate(update.ShortChannelId, direction));
+        return GossipIngressResult.Accepted(validation.Routable ? "routable" : "not routable");
     }
 
     /// <summary>

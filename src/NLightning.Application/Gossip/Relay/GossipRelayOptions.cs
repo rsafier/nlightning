@@ -26,7 +26,8 @@ public sealed class GossipRelayOptions
     public TimeSpan RelayFlushInterval { get; set; } = TimeSpan.FromSeconds(60);
 
     /// <summary>
-    /// How often the relay looks for newly accepted gossip in the graph (a scan of the graph snapshot).
+    /// How often the relay collects the gossip accepted since the last collect (NL-366: drained from the ingress's
+    /// accepted-gossip feed; one full pass over the graph snapshot only when the feed overflowed or is missing).
     /// </summary>
     public TimeSpan RelayCollectInterval { get; set; } = TimeSpan.FromSeconds(10);
 
