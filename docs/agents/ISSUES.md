@@ -4927,22 +4927,24 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-597 No `listforwards`: the forwarding history is stored but cannot be read over IPC or the CLI
-- **Status:** open
+- **Status:** fixed (912e57db, 737ebb1d, 5be63791, f29a9b9d; tests 8c10c962, 11e023b5, 77303ad4)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Client/Enums/ClientCommand.cs` (no command), `src/NLightning.Domain/Payments/Interfaces/IForwardCircuitDbRepository.cs` (no list query), `src/NLightning.Daemon/Handlers/`
 - **Evidence:** Operator question on 2026-10-01 ("did we forward anything we did not initiate overnight?") could only be answered by reading `ForwardCircuits` from the SQLite file by hand. `listpayments` (12) and `listinvoices` (11) cover sent and received payments; nothing lists forwards, their fees or failure reasons, although every circuit row is kept with amounts, CLTVs, times, status and (since NL-457) `FailureCode`/`FailureSource`.
 - **Fix sketch:** A `listforwards` IPC command (next free ClientCommand) and CLI: newest first, paged, filters by time range, status and channel; per forward the in/out channels (scid), amounts, fee earned, times, status and failure reason; a totals line (count per status, fees earned). A paged query on the repository; no schema change expected (add an index only if a filter needs one, on all three providers).
+- **Fix:** `listforwards` (ClientCommand 40, alias `list-forwards`): newest first, `count`/`skip` paging, `--since`/`--until`/`--status`/`--channel` filtered in the query (no migration: the Status index, the outgoing index and the PK suffice; a `CreatedAt` index is deferred until a real table needs it); per forward the times, status, in/out scid, amounts, fee, CLTVs, payment hash and failure code/source; a totals line over the whole filtered set from an aggregate query. Proven by the SQLite and Postgres repository tests and the ABCD assertion that bob lists the happy-path forward fulfilled for his fee.
 - **Blocks/Blocked-by:** Follows NL-457; related NL-598
 - **Plan ref:** —
 
 ### NL-598 HTLCs refused before a forward circuit exists leave no count
-- **Status:** open
+- **Status:** fixed (bb21f907)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs`, `src/NLightning.Application/Payments/Onion/IncomingOnionProcessor.cs`
 - **Evidence:** An incoming HTLC failed back before a circuit is written (forwarding policy refusal, unknown next channel, drain or chain-halt refusal, final-hop refusal such as an unknown payment hash from a probe) appears only in the logs, so neither `listforwards` (NL-597) nor any metric shows how often the node is probed or refuses forwards.
 - **Fix sketch:** In-memory counters by reason (and a `Meter` like the gossip/onion-message ones), reported by `info` or a `listforwards` summary; no persistence needed.
+- **Fix:** `RefusedHtlcMetrics` (`Meter("NLightning.Payments")`, counter `nlightning.payments.htlcs.refused` tagged by reason, plus a snapshot) counted at the switch choke points (policy, unknown next channel, drain, chain halt, unknown payment hash, other final-hop refusals, malformed onion, added after shutdown) once per HTLC, on its first onion processing only (startup replays do not count again); shown in the `listforwards` summary on appended response keys.
 - **Blocks/Blocked-by:** Related NL-597
 - **Plan ref:** —
 
