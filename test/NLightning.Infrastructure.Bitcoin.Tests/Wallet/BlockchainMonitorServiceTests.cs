@@ -1220,6 +1220,84 @@ public class BlockchainMonitorServiceTests
         Assert.Equal(112u, service.LastProcessedBlockHeight);
     }
 
+    [Fact]
+    public async Task Given_APendingFundingOfASignedFunder_When_Starting_Then_ItsInputsAreLockedAgain()
+    {
+        // Arrange (NL-462): the channel locks of a funder are memory only, so a restart rebuilds them from the
+        // pending funding broadcast's inputs
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x4e, 32).ToArray());
+        var inputA = new TxId(Enumerable.Repeat((byte)0x4f, 32).ToArray());
+        var inputB = new TxId(Enumerable.Repeat((byte)0x50, 32).ToArray());
+        var funding = Network.RegTest.CreateTransaction();
+        funding.Inputs.Add(new OutPoint(new uint256((byte[])inputA), 0));
+        funding.Inputs.Add(new OutPoint(new uint256((byte[])inputB), 1));
+        funding.Outputs.Add(Money.Satoshis(90_000), new Key().PubKey.WitHash.ScriptPubKey);
+        _mockBroadcastRepository
+           .Setup(x => x.GetPendingAsync())
+           .ReturnsAsync([new BroadcastTransactionModel(ToSigned(funding), BroadcastPurpose.Funding, channelId, 110)]);
+        _mockChannelRepository.Setup(x => x.GetByIdAsync(channelId))
+                              .ReturnsAsync(CreateChannel(channelId, ChannelState.V1FundingSigned));
+        var utxos = new Mock<IUtxoMemoryRepository>();
+        IReadOnlyCollection<(TxId, uint)>? restored = null;
+        utxos.Setup(x => x.RestoreLocksForChannel(channelId, It.IsAny<IReadOnlyCollection<(TxId, uint)>>()))
+             .Callback<ChannelId, IReadOnlyCollection<(TxId, uint)>>((_, o) => restored = o)
+             .Returns(2);
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), utxos.Object);
+
+        // Act
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        await _service.StopAsync();
+
+        // Assert: both inputs of the signed funding are locked again
+        Assert.Equal([(inputA, 0u), (inputB, 1u)], restored);
+    }
+
+    [Fact]
+    public async Task Given_AChannelNotWaitingForItsFunding_When_Starting_Then_NothingIsLockedAgain()
+    {
+        // Arrange: a splice's funding broadcast is a Funding row too, of a channel that no longer waits for a funding;
+        // its wallet inputs were never channel-locked
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x51, 32).ToArray());
+        _mockBroadcastRepository
+           .Setup(x => x.GetPendingAsync())
+           .ReturnsAsync([new BroadcastTransactionModel(ToSigned(CreateTransaction(0x52)), BroadcastPurpose.Funding,
+                                                        channelId, 110)]);
+        _mockChannelRepository.Setup(x => x.GetByIdAsync(channelId))
+                              .ReturnsAsync(CreateChannel(channelId, ChannelState.Open));
+        var utxos = new Mock<IUtxoMemoryRepository>();
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), utxos.Object);
+
+        // Act
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        await _service.StopAsync();
+
+        // Assert
+        utxos.Verify(x => x.RestoreLocksForChannel(It.IsAny<ChannelId>(), It.IsAny<IReadOnlyCollection<(TxId, uint)>>()),
+                     Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_NoChannelStoredForAPendingFunding_When_Starting_Then_NothingIsLockedAgain()
+    {
+        // Arrange: the channel was forgotten while its broadcast row is still pending (abandoned fundings get their
+        // rows abandoned in the same save, NL-294, so a leftover alone must not lock anything)
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x53, 32).ToArray());
+        _mockBroadcastRepository
+           .Setup(x => x.GetPendingAsync())
+           .ReturnsAsync([new BroadcastTransactionModel(ToSigned(CreateTransaction(0x54)), BroadcastPurpose.Funding,
+                                                        channelId, 110)]);
+        var utxos = new Mock<IUtxoMemoryRepository>();
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), utxos.Object);
+
+        // Act
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        await _service.StopAsync();
+
+        // Assert
+        utxos.Verify(x => x.RestoreLocksForChannel(It.IsAny<ChannelId>(), It.IsAny<IReadOnlyCollection<(TxId, uint)>>()),
+                     Times.Never);
+    }
+
     private BlockchainMonitorService CreateService(FakeBitcoinChain chain, string network = "regtest",
                                                    ILogger<BlockchainMonitorService>? logger = null)
     {
