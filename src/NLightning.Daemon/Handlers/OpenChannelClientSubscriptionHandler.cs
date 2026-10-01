@@ -32,8 +32,10 @@ using Interfaces;
 /// channel, still waiting for its funding (<see cref="ChannelState.V1FundingSigned"/>), runs on a published funding
 /// transaction other than the one the client printed last: at once for a dual-funded open whose first attempt was
 /// published before the call, and on every RBF attempt of either side (a dual-funded attempt counts once its
-/// <c>BroadcastTransactions</c> row exists, so an attempt still being signed is never reported). A peer that disconnects
-/// once the funding is signed no longer fails the wait: the open continues and the channel reestablishes.
+/// <c>BroadcastTransactions</c> row exists, so an attempt still being signed is never reported). A channel that
+/// reached <see cref="ChannelState.V1FundingSigned"/> before the call answers at once too (NL-295), for every client.
+/// A peer that disconnects once the funding is signed no longer fails the wait: the open continues and the channel
+/// reestablishes.
 /// </remarks>
 public class OpenChannelClientSubscriptionHandler :
     IClientCommandHandler<OpenChannelClientSubscriptionRequest, OpenChannelClientSubscriptionResponse>
@@ -110,9 +112,11 @@ public class OpenChannelClientSubscriptionHandler :
 
             _channelMemoryRepository.OnChannelUpdated += ChannelUpdatedHandlerEnvelope;
 
-            // Subscribed first, so an update between the read and the subscription is not lost
-            if (request.ReportFundingChanges && _channelMemoryRepository.TryGetChannel(_channelId, out var current)
-                                             && await TryAnswerAsync(current, request, true) is { } immediate)
+            // Subscribed first, so an update between the read and the subscription is not lost; a channel that
+            // already qualifies answers from its state (NL-295: the signing may predate this call), without waiting
+            // for the next update
+            if (_channelMemoryRepository.TryGetChannel(_channelId, out var current)
+             && await TryAnswerAsync(current, request) is { } immediate)
                 return immediate;
 
             while (true)
@@ -122,7 +126,7 @@ public class OpenChannelClientSubscriptionHandler :
                 if (completed == failure.Task)
                     return await failure.Task;
 
-                if (await TryAnswerAsync(await next, request, false) is { } answer)
+                if (await TryAnswerAsync(await next, request) is { } answer)
                     return answer;
             }
         }
@@ -168,12 +172,10 @@ public class OpenChannelClientSubscriptionHandler :
     }
 
     /// <summary>
-    /// The answer for the channel as it is now, or null to keep waiting. <paramref name="beforeAnyUpdate"/> is the
-    /// check at the start of the call, which only a <see cref="OpenChannelClientSubscriptionRequest.ReportFundingChanges"/>
-    /// request makes.
+    /// The answer for the channel as it is now, or null to keep waiting.
     /// </summary>
     private async Task<OpenChannelClientSubscriptionResponse?> TryAnswerAsync(
-        ChannelModel channel, OpenChannelClientSubscriptionRequest request, bool beforeAnyUpdate)
+        ChannelModel channel, OpenChannelClientSubscriptionRequest request)
     {
         if (IsReady(channel))
             return CreateResponse(channel, ChannelState.ReadyForUs);
@@ -181,9 +183,10 @@ public class OpenChannelClientSubscriptionHandler :
         if (channel.State != ChannelState.V1FundingSigned)
             return null;
 
-        // An older client: every update of a channel waiting for its funding is an answer
+        // An older client: a channel waiting for its funding is an answer — from its current state (NL-295) or from
+        // an update
         if (!request.ReportFundingChanges)
-            return beforeAnyUpdate ? null : CreateResponse(channel, ChannelState.V1FundingSigned);
+            return CreateResponse(channel, ChannelState.V1FundingSigned);
 
         if (channel.FundingOutput?.TransactionId is not { } txId || txId == request.KnownFundingTxId)
             return null;
