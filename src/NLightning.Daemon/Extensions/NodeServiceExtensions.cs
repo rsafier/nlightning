@@ -25,6 +25,7 @@ using Application.Onchain.Resolvers.Local;
 using Application.Onchain.Resolvers.Remote;
 using Application.Onchain.Resolvers.Revoked;
 using Application.OnionMessages;
+using Application.Payments;
 using Application.Payments.Invoices;
 using Application.Payments.Routing.Interfaces;
 using Application.Payments.Send;
@@ -32,6 +33,7 @@ using Application.Payments.Switch;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
+using Domain.Channels.Interfaces;
 using Domain.Client.Constants;
 using Domain.Client.Exceptions;
 using Domain.Client.Interfaces;
@@ -159,6 +161,11 @@ public static class NodeServiceExtensions
                                           sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<ListPaymentsClientRequest, ListPaymentsClientResponse>>(sp =>
             new ListPaymentsClientHandler(GetPaymentLayerService<IPaymentService>(sp)));
+        services.AddScoped<IClientCommandHandler<ListForwardsClientRequest, ListForwardsClientResponse>>(sp =>
+            new ListForwardsClientHandler(GetPaymentLayerService<IForwardCircuitDbRepository>(sp),
+                                          sp.GetRequiredService<ILogger<ListForwardsClientHandler>>(),
+                                          sp.GetService<IChannelMemoryRepository>(),
+                                          sp.GetService<IRefusedHtlcCounter>()));
         services.TryAddSingleton(TimeProvider.System);
 
         // Cooperative close (ClientCommand 13, BOLT2 plan N10); IChannelCloseService comes from AddApplicationServices
@@ -208,6 +215,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, PayInvoiceIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListInvoicesIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListPaymentsIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, ListForwardsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, CloseChannelIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ForceCloseChannelIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, PendingSweepsIpcHandler>();

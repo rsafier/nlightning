@@ -1,0 +1,107 @@
+using Microsoft.Extensions.Logging;
+
+namespace NLightning.Daemon.Handlers;
+
+using Application.Payments;
+using Domain.Channels.Interfaces;
+using Domain.Channels.ValueObjects;
+using Domain.Client.Enums;
+using Domain.Client.Exceptions;
+using Domain.Client.Requests;
+using Domain.Client.Responses;
+using Domain.Payments.Interfaces;
+using Domain.Payments.Models;
+using Interfaces;
+
+/// <summary>
+/// Lists a page of our forwarded payments, newest first, with the totals over the whole filtered set
+/// (<c>ClientCommand 40</c>, NL-597) and the HTLCs refused before a forward circuit since the process started
+/// (NL-598).
+/// </summary>
+/// <remarks>
+/// A <c>short_channel_id</c> given as the channel filter also matches the incoming side, through the channel it
+/// names in <see cref="IChannelMemoryRepository"/>. Every channel of a forward is shown by its scid when the channel
+/// is loaded and has one, falling back to the channel id (<c>ForwardInfoClientResponse.*Scid</c> is null then).
+/// </remarks>
+public sealed class ListForwardsClientHandler
+    : IClientCommandHandler<ListForwardsClientRequest, ListForwardsClientResponse>
+{
+    private readonly IChannelMemoryRepository? _channelMemoryRepository;
+    private readonly IForwardCircuitDbRepository _forwardCircuitRepository;
+    private readonly IRefusedHtlcCounter? _refusedHtlcCounter;
+
+    /// <inheritdoc/>
+    public ClientCommand Command => ClientCommand.ListForwards;
+
+    public ListForwardsClientHandler(IForwardCircuitDbRepository forwardCircuitRepository,
+                                     ILogger<ListForwardsClientHandler> logger,
+                                     IChannelMemoryRepository? channelMemoryRepository = null,
+                                     IRefusedHtlcCounter? refusedHtlcCounter = null)
+    {
+        _ = logger;
+        _forwardCircuitRepository = forwardCircuitRepository;
+        _channelMemoryRepository = channelMemoryRepository;
+        _refusedHtlcCounter = refusedHtlcCounter;
+    }
+
+    /// <inheritdoc/>
+    /// <exception cref="ClientException">The page is invalid (negative skip, take outside 1 to
+    /// <see cref="ClientRequestGuards.MaxPageSize"/>).</exception>
+    public async Task<ListForwardsClientResponse> HandleAsync(ListForwardsClientRequest request,
+                                                              CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ClientRequestGuards.ThrowIfInvalidPage(request.Skip, request.Take);
+
+        // A scid given as --channel also matches the incoming side through the channel it names
+        var channelId = request.ChannelId ?? ScidToChannelId(request.ChannelScid);
+        var query = new ForwardCircuitListQuery(request.Skip, request.Take, request.Since, request.Until,
+                                                request.Status, channelId, request.ChannelScid);
+
+        var forwards = await _forwardCircuitRepository.ListAsync(query, ct);
+        var totals = await _forwardCircuitRepository.SummarizeAsync(query, ct);
+
+        var refused = _refusedHtlcCounter?.Snapshot() ?? new Dictionary<RefusedHtlcReason, long>();
+        var summary = new ForwardSummaryClientResponse
+        {
+            Pending = totals.Pending,
+            Offered = totals.Offered,
+            Fulfilled = totals.Fulfilled,
+            Failed = totals.Failed,
+            FulfilledFeesMsat = totals.FulfilledFeesMsat,
+            RefusedTotal = refused.Values.Sum(),
+            RefusedByReason = refused
+                              .OrderBy(kvp => (int)kvp.Key)
+                              .Select(kvp => new RefusedReasonCount(kvp.Key.ToString(), kvp.Value))
+                              .ToList()
+        };
+
+        return new ListForwardsClientResponse(
+            forwards.Select(c => ForwardInfoClientResponse.FromModel(c, ScidOf(c.IncomingChannelId),
+                                             ScidOf(c.OutgoingChannelId), ScidOf(c.FailureSource)))
+                    .ToList(), summary);
+    }
+
+    /// <summary>
+    /// The channel of a <c>short_channel_id</c> filter, when it names one of our open channels; the repository's own
+    /// scid match covers the outgoing side either way.
+    /// </summary>
+    private ChannelId? ScidToChannelId(ShortChannelId? scid)
+    {
+        if (scid is not { } value || _channelMemoryRepository is null)
+            return null;
+
+        return _channelMemoryRepository
+              .FindChannels(c => c.State == Domain.Channels.Enums.ChannelState.Open
+                              && c.ShortChannelId != default && c.ShortChannelId == value)
+              .FirstOrDefault()?.ChannelId;
+    }
+
+    /// <summary>The channel's <c>short_channel_id</c> as text, when the channel is loaded and announced one.</summary>
+    private string? ScidOf(ChannelId? channelId) =>
+        channelId is { } id
+        && _channelMemoryRepository?.TryGetChannel(id, out var channel) is true
+        && channel.ShortChannelId != default
+            ? channel.ShortChannelId.ToString()
+            : null;
+}
