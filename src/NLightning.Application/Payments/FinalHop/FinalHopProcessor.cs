@@ -272,7 +272,9 @@ public sealed class FinalHopProcessor
         if (result.IsAccepted)
         {
             if (_logger.IsEnabled(LogLevel.Information))
-                _logger.LogInformation("Final hop accepts the HTLC for payment hash {PaymentHash} ({AmountMsat} msat)",
+                // The switch may still refuse the accepted HTLC after this (a drain or a chain halt, NL-596), so the
+                // line says the checks passed, not that the HTLC is accepted
+                _logger.LogInformation("Final-hop checks passed for payment hash {PaymentHash} ({AmountMsat} msat)",
                                        paymentHash, result.AmountReceived!.MilliSatoshi);
         }
         else if (_logger.IsEnabled(LogLevel.Information))
