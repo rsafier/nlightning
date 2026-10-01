@@ -88,6 +88,18 @@ public class ForwardCircuitEntity
     /// </summary>
     public DateTimeOffset? ResolvedAt { get; set; }
 
+    /// <summary>
+    /// The BOLT 4 failure code of the failure that resolved a Failed circuit, when it was sent in the clear (the
+    /// <c>fail_malformed</c> of the outgoing HTLC); otherwise null.
+    /// </summary>
+    public ushort? FailureCode { get; set; }
+
+    /// <summary>
+    /// The channel a Failed circuit's failure is about: the outgoing channel whose HTLC failed (or timed out on
+    /// chain), or that refused the offer; null when the offer never went out.
+    /// </summary>
+    public ChannelId? FailureSource { get; set; }
+
     // Default constructor for EF Core
     internal ForwardCircuitEntity()
     {

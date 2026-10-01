@@ -45,6 +45,10 @@ public static class ForwardCircuitEntityConfiguration
             entity.Property(e => e.ResolvedAt)
                   .HasConversion<UtcTicksConverter>()
                   .IsRequired(false);
+            entity.Property(e => e.FailureCode).IsRequired(false);
+            entity.Property(e => e.FailureSource)
+                  .HasConversion<ChannelIdConverter>()
+                  .IsRequired(false);
 
             // Startup replay reads the unresolved circuits; a downstream resolution finds its circuit by the outgoing
             // HTLC
@@ -63,5 +67,6 @@ public static class ForwardCircuitEntityConfiguration
         entity.Property(e => e.IncomingSharedSecret).HasColumnType($"varbinary({CryptoConstants.SecretLen})");
         entity.Property(e => e.OutgoingShortChannelId).HasColumnType($"varbinary({ShortChannelId.Length})");
         entity.Property(e => e.OutgoingChannelId).HasColumnType($"varbinary({ChannelConstants.ChannelIdLength})");
+        entity.Property(e => e.FailureSource).HasColumnType($"varbinary({ChannelConstants.ChannelIdLength})");
     }
 }

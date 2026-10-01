@@ -117,7 +117,8 @@ public class ForwardCircuitDbRepository : BaseDbRepository<ForwardCircuitEntity>
                                            entity.OutgoingShortChannelId, ToMoney(entity.OutgoingAmountMsat),
                                            entity.OutgoingCltvExpiry, entity.CreatedAt,
                                            (ForwardCircuitStatus)entity.Status, entity.OutgoingChannelId,
-                                           entity.OutgoingHtlcId, entity.ResolvedAt);
+                                           entity.OutgoingHtlcId, entity.ResolvedAt, entity.FailureCode,
+                                           entity.FailureSource);
     }
 
     private static void MapMutableFields(ForwardCircuitModel circuit, ForwardCircuitEntity entity)
@@ -126,6 +127,8 @@ public class ForwardCircuitDbRepository : BaseDbRepository<ForwardCircuitEntity>
         entity.OutgoingChannelId = circuit.OutgoingChannelId;
         entity.OutgoingHtlcId = circuit.OutgoingHtlcId;
         entity.ResolvedAt = circuit.ResolvedAt;
+        entity.FailureCode = circuit.FailureCode;
+        entity.FailureSource = circuit.FailureSource;
     }
 
     private static long ToMsat(LightningMoney amount) => checked((long)amount.MilliSatoshi);

@@ -179,6 +179,19 @@ internal static class PaymentSchemaRoundTrip
         await AssertCircuitAsync(contextFactory, circuit);
         await using (var context = contextFactory())
             Assert.Empty(await new ForwardCircuitDbRepository(context).GetUnresolvedAsync());
+
+        // Forward circuit: pending -> failed with the downstream reason (NL-457): the fail_malformed code and the
+        // channel it is about
+        var failedCircuit = new ForwardCircuitModel(s_channelId, 4, LightningMoney.MilliSatoshis(50_030_000), 700,
+                                                    new Hash(Enumerable.Repeat((byte)0x61, 32).ToArray()),
+                                                    SecretOf(0x62), new ShortChannelId(812_345, 678, 3),
+                                                    LightningMoney.MilliSatoshis(50_000_000), 660,
+                                                    s_createdAt.AddSeconds(4));
+        failedCircuit.MarkFailed(outgoingChannel, 9, s_createdAt.AddSeconds(6),
+                                 (ushort)FailureCode.InvalidOnionHmac);
+        await SaveAsync(contextFactory, c => new ForwardCircuitDbRepository(c).AddAsync(failedCircuit), cancellationToken);
+        await SaveAsync(contextFactory, c => new ForwardCircuitDbRepository(c).UpdateAsync(failedCircuit), cancellationToken);
+        await AssertCircuitAsync(contextFactory, failedCircuit);
     }
 
     internal static Secret SecretOf(byte fill) => new(Enumerable.Repeat(fill, 32).ToArray());
@@ -258,6 +271,8 @@ internal static class PaymentSchemaRoundTrip
         Assert.Equal(expected.OutgoingChannelId, actual.OutgoingChannelId);
         Assert.Equal(expected.OutgoingHtlcId, actual.OutgoingHtlcId);
         Assert.Equal(expected.ResolvedAt, actual.ResolvedAt);
+        Assert.Equal(expected.FailureCode, actual.FailureCode);
+        Assert.Equal(expected.FailureSource, actual.FailureSource);
         Assert.Equal(expected.Fee, actual.Fee);
     }
 
