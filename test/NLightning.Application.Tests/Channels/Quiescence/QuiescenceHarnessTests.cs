@@ -158,14 +158,42 @@ public class QuiescenceHarnessTests
         await pair.Harness.ReconnectAsync();
         await pair.PumpAsync();
 
-        // Assert: Q-R-04 on both sides, and an HTLC goes through after the reestablish
+        // Assert: Q-R-04 on both sides — through the managers' OnPeerDisconnectedAsync (NL-470) — and an HTLC goes
+        // through after the reestablish
         Assert.Equal(QuiescenceState.None, pair.State(pair.Alice));
         Assert.Equal(QuiescenceState.None, pair.State(pair.Bob));
+        Assert.Equal([("Alice", pair.Bob.NodeId, QuiescenceEndReason.Disconnected),
+                      ("Bob", pair.Alice.NodeId, QuiescenceEndReason.Disconnected)],
+                     pair.Ends.Select(e => (e.Node, e.Peer, e.Reason)).ToList());
         await pair.OfferAsync(pair.Alice, 25_000_000, 9);
         await pair.PumpAsync();
         Assert.Empty(pair.Alice.State.Htlcs);
         Assert.Single(pair.Alice.Events.OfType<OutgoingHtlcFulfilled>());
         AssertAgreement(pair);
+    }
+
+    [Fact]
+    public async Task Given_AStfuBeforeTheReestablish_When_TheManagerDeliversIt_Then_AWarningClosesTheConnection()
+    {
+        // Arrange: quiescent, then the link drops: the channel's connection binding is gone (B2-RE-07)
+        using var pair = new QuiescenceTestPair();
+        var ct = TestContext.Current.CancellationToken;
+        var request = pair.Quiescence(pair.Alice).RequestAsync(TwoNodeHarness.ChannelId, QuiescencePurpose.Probe, ct);
+        await pair.PumpAsync();
+        await request.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        await pair.DisconnectAsync();
+
+        // Act: the peer's stfu arrives on the new connection before any channel_reestablish
+        pair.Alice.PeerAlive = true;
+        pair.Alice.ChannelManager.Publish(pair.Bob.NodeId, [new StfuMessage(new(TwoNodeHarness.ChannelId, true))]);
+        await pair.PumpAsync();
+
+        // Assert: the manager refuses it with a warning that closes the connection
+        var (node, warning) = Assert.Single(pair.StfuWarnings);
+        Assert.Equal("Bob", node);
+        Assert.True(warning.CloseConnection);
+        Assert.Contains("B2-RE-07", warning.Message);
+        Assert.Equal(QuiescenceState.None, pair.State(pair.Bob));
     }
 
     [Fact]

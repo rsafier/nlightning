@@ -1,11 +1,12 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
-using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Tests.Channels.Quiescence;
 
+using Application.Channels.Handlers;
+using Application.Channels.Handlers.Interfaces;
 using Application.Channels.Quiescence;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
@@ -31,18 +32,14 @@ using Harness;
 /// does).
 /// </summary>
 /// <remarks>
-/// <c>stfu</c> is routed by this kit, in wire order, straight to the receiver's <see cref="IQuiescenceService"/> under its
-/// channel lock, as lane Q-A's <c>StfuMessageHandler</c> does (the <c>ChannelManager</c> case is Q-A's; until it lands
-/// the manager answers <c>stfu</c> with a warning). Every other message goes through the receiver's channel manager.
+/// Every message is delivered in wire order through the receiver's <see cref="ChannelManager"/>, whose <c>stfu</c> case
+/// takes the channel's lock and dispatches it to the production <see cref="StfuMessageHandler"/>, as the peer manager
+/// does (NL-470).
 /// </remarks>
 [ExcludeFromCodeCoverage]
 internal sealed class QuiescenceTestPair : IDisposable
 {
     public const uint CltvExpiry = 700;
-
-    private static readonly FieldInfo s_outbox =
-        typeof(HarnessNode).GetField("_outbox", BindingFlags.Instance | BindingFlags.NonPublic)
-     ?? throw new InvalidOperationException("HarnessNode has no _outbox");
 
     private static readonly OnionPacket s_onion = new(TwoNodeHarness.Onion);
 
@@ -68,6 +65,10 @@ internal sealed class QuiescenceTestPair : IDisposable
     /// <summary>Per node, whether its switch should hold (not fulfill) the HTLCs it gets.</summary>
     public ConcurrentDictionary<string, bool> HoldFulfills { get; } = new();
 
+    /// <summary>Quiescence ends the services raised: (node, its peer, channel, reason).</summary>
+    public ConcurrentQueue<(string Node, CompactPubKey Peer, ChannelId ChannelId, QuiescenceEndReason Reason)> Ends
+    { get; } = new();
+
     /// <summary>Refusals the switches got when they tried to fulfill: (node, htlc id, exception).</summary>
     public ConcurrentQueue<(string Node, ulong HtlcId, CommitmentRefusedException Refusal)> FulfillRefusals { get; } =
         new();
@@ -90,6 +91,8 @@ internal sealed class QuiescenceTestPair : IDisposable
                     StfuSent.Enqueue((name, stfu.Payload.Initiator,
                                       QuiescenceRules.HasPendingLocalUpdates(nodeRef.State)));
             };
+            Quiescence(nodeRef).QuiescenceEnded += (_, args) =>
+                Ends.Enqueue((name, args.PeerPubKey, args.ChannelId, args.Reason));
         }
     }
 
@@ -144,37 +147,24 @@ internal sealed class QuiescenceTestPair : IDisposable
     }
 
     /// <summary>
-    /// Hands the oldest message <paramref name="from"/> queued to its peer; a <c>stfu</c> goes to the peer's
-    /// quiescence service under its channel lock.
+    /// Hands the oldest message <paramref name="from"/> queued to the peer's channel manager, stfu included: the
+    /// manager's case locks the channel and dispatches it to the receiver's <see cref="StfuMessageHandler"/>, as the
+    /// peer manager does.
     /// </summary>
     public async Task<bool> DeliverNextAsync(HarnessNode from)
     {
-        var outbox = (ConcurrentQueue<IChannelMessage>)s_outbox.GetValue(from)!;
-        if (!outbox.TryPeek(out var next))
-            return false;
-
-        if (next is not StfuMessage stfu)
-            return await from.DeliverNextAsync();
-
-        outbox.TryDequeue(out _);
-        var to = from.Peer;
-        to.Received.Add(stfu);
-        var lockProvider = to.Services.GetRequiredService<IChannelLockProvider>();
-        using (await lockProvider.AcquireAsync(stfu.Payload.ChannelId, TestContext.Current.CancellationToken))
+        var isStfu = from.PeekNext() is StfuMessage;
+        try
         {
-            try
-            {
-                var reply = Quiescence(to).OnStfuReceived(to.Channel, stfu.Payload, QuiesceFeatures);
-                if (reply is not null)
-                    to.ChannelManager.Publish(from.NodeId, [reply]);
-            }
-            catch (ChannelWarningException warning)
-            {
-                StfuWarnings.Add((to.Name, warning));
-            }
+            return await from.DeliverNextAsync();
         }
-
-        return true;
+        catch (ChannelWarningException warning) when (isStfu)
+        {
+            // The production peer manager turns the stfu handler's warning into a warning message and closes the
+            // connection; the tests record it
+            StfuWarnings.Add((from.Peer.Name, warning));
+            return true;
+        }
     }
 
     /// <summary>Ends the quiescence on both nodes, under each channel lock (the dependent protocol's end).</summary>
@@ -188,13 +178,11 @@ internal sealed class QuiescenceTestPair : IDisposable
         }
     }
 
-    /// <summary>The link drops (as <see cref="TwoNodeHarness.DisconnectAsync"/>) and both services hear of it.</summary>
-    public async Task DisconnectAsync()
-    {
-        await Harness.DisconnectAsync();
-        Quiescence(Alice).OnPeerDisconnected(Bob.NodeId);
-        Quiescence(Bob).OnPeerDisconnected(Alice.NodeId);
-    }
+    /// <summary>
+    /// The link drops, as <see cref="TwoNodeHarness.DisconnectAsync"/> does: both channel managers tell their
+    /// quiescence service (Q-R-04 through <c>ChannelManager.OnPeerDisconnectedAsync</c>, NL-470).
+    /// </summary>
+    public async Task DisconnectAsync() => await Harness.DisconnectAsync();
 
     public async Task WhenIdleAsync()
     {
@@ -216,6 +204,7 @@ internal sealed class QuiescenceTestPair : IDisposable
         services.AddSingleton(Options.Create(options));
         services.AddSingleton<TimeProvider>(Clock);
         services.AddQuiescenceServices();
+        services.AddScoped<IChannelMessageHandler<StfuMessage>, StfuMessageHandler>();
         services.AddSingleton<IQuiescencePeerDisconnector>(new RecordingDisconnector(node.Name, Disconnects));
         services.AddSingleton<IHtlcSwitch>(sp => new FulfillingSwitch(node, sp, this));
         _configureNode?.Invoke(node, services);
