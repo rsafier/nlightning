@@ -686,6 +686,10 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                 if (to.ShortChannelId is { } shortChannelId)
                     live.ShortChannelId = shortChannelId;
                 live.FundingCreatedAtBlockHeight = to.FundingHeight;
+
+                // NL-138: the backup monitor (a new SCB entry for the splice) and the channel update service (its
+                // channel_update follows the new short channel id) only learn of the move through OnChannelUpdated
+                _channelMemoryRepository.UpdateChannel(live);
             }
         }
         catch (Exception e) when (e is not OperationCanceledException)

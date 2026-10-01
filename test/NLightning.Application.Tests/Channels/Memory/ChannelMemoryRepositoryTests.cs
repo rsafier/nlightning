@@ -195,6 +195,81 @@ public class ChannelMemoryRepositoryTests
         Assert.False(raised);
     }
 
+    [Fact]
+    public void Given_AMutatedChannelWithoutUpdateChannel_When_TheGuardIsOff_Then_LookupsStayQuiet()
+    {
+        // Arrange - the shared mutable model is the repository's design (NL-138): callers may forget UpdateChannel
+        // and the repository does not police it in production
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddChannel(channel);
+
+        // Act
+        channel.UpdateState(ChannelState.Open);
+
+        // Assert
+        Assert.True(repository.TryGetChannel(channel.ChannelId, out var found));
+        Assert.Equal(ChannelState.Open, found.State);
+    }
+
+    [Fact]
+    public void Given_AMutatedChannelWithoutUpdateChannel_When_TheGuardIsOn_Then_TheNextLookupThrows()
+    {
+        // Arrange - NL-138: a mutation that skips UpdateChannel never raises OnChannelUpdated
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance)
+        {
+            DetectUnpublishedMutations = true
+        };
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddChannel(channel);
+        channel.UpdateState(ChannelState.Open);
+
+        // Act
+        var caught = Assert.Throws<InvalidOperationException>(() => repository.TryGetChannel(channel.ChannelId, out _));
+
+        // Assert
+        Assert.Contains("UpdateChannel", caught.Message);
+        Assert.Contains("OnChannelUpdated", caught.Message);
+    }
+
+    [Fact]
+    public void Given_AMutatedChannelPublishedWithUpdateChannel_When_TheGuardIsOn_Then_LookupsStayQuiet()
+    {
+        // Arrange
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance)
+        {
+            DetectUnpublishedMutations = true
+        };
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddChannel(channel);
+        channel.UpdateState(ChannelState.Open);
+
+        // Act
+        repository.UpdateChannel(channel);
+
+        // Assert
+        Assert.True(repository.TryGetChannel(channel.ChannelId, out var found));
+        Assert.Equal(ChannelState.Open, found.State);
+    }
+
+    [Fact]
+    public void Given_AMutationOnATemporaryChannel_When_TheGuardIsOn_Then_TryGetChannelStillThrows()
+    {
+        // Arrange - the guard watches the registered channels only: temporary channels have no published state
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance)
+        {
+            DetectUnpublishedMutations = true
+        };
+        var channel = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddTemporaryChannel(s_peerA, channel);
+
+        // Act
+        Assert.True(repository.TryGetTemporaryChannel(s_peerA, channel.ChannelId, out _));
+
+        // Assert: the registered-channel lookup of an unknown id stays a plain miss
+        Assert.False(repository.TryGetChannel(channel.ChannelId, out _));
+    }
+
     private static ChannelModel CreateTemporaryChannel(CompactPubKey peer, byte seed)
     {
         var channelId = new ChannelId(Enumerable.Repeat(seed, 32).ToArray());

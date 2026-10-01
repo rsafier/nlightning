@@ -53,6 +53,15 @@ public class ChannelMemoryRepository : IChannelMemoryRepository
     /// <summary>The longest a temporary channel is kept (<see cref="DefaultTemporaryChannelTimeout"/>).</summary>
     public TimeSpan TemporaryChannelTimeout { get; init; } = DefaultTemporaryChannelTimeout;
 
+    /// <summary>
+    /// CI guard for NL-138: when a test enables it, <see cref="TryGetChannel"/> throws when the shared model's state
+    /// drifted from the last one published with <see cref="UpdateChannel"/> — someone mutated the model handed out by
+    /// <see cref="TryGetChannel"/> without calling <see cref="UpdateChannel"/>, so <see cref="OnChannelUpdated"/> and
+    /// <see cref="OnChannelOpened"/> never fired. Off by default (the models are shared by design, and a close that
+    /// mutates before removing the channel may race a lookup); tests opt in per repository instance.
+    /// </summary>
+    public bool DetectUnpublishedMutations { get; init; }
+
     public ChannelMemoryRepository(ILogger<ChannelMemoryRepository> logger, TimeProvider? timeProvider = null)
     {
         _logger = logger;
@@ -62,7 +71,17 @@ public class ChannelMemoryRepository : IChannelMemoryRepository
     /// <inheritdoc/>
     public bool TryGetChannel(ChannelId channelId, [MaybeNullWhen(false)] out ChannelModel channel)
     {
-        return _channels.TryGetValue(channelId, out channel);
+        if (!_channels.TryGetValue(channelId, out channel))
+            return false;
+
+        // NL-138: the published state (AddChannel/UpdateChannel) is the only one subscribers were told about
+        if (DetectUnpublishedMutations && _channelStates.TryGetValue(channelId, out var published)
+         && published != channel.State)
+            throw new InvalidOperationException(
+                $"Channel {channelId} was mutated without UpdateChannel: its state is {channel.State} but the last " +
+                $"published one is {published} (NL-138), so OnChannelUpdated never fired for the change.");
+
+        return true;
     }
 
     /// <inheritdoc/>
