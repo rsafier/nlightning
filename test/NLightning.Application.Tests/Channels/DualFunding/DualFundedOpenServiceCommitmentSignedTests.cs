@@ -90,7 +90,7 @@ public sealed class DualFundedOpenServiceCommitmentSignedTests
         unitOfWork.SetupGet(u => u.WatchedOutpointDbRepository).Returns(new Mock<IWatchedOutpointDbRepository>().Object);
 
         var signer = new Mock<ILightningSigner>();
-        signer.Setup(s => s.SignChannelTransaction(channelId, txId, It.IsAny<SignedTransaction?>()))
+        signer.Setup(s => s.SignChannelTransaction(channelId, txId, It.IsAny<SignedTransaction>()))
               .Returns(new CompactSignature(new byte[64]));
 
         var service = CreateService(memory, unitOfWork.Object, signer.Object);

@@ -166,16 +166,25 @@ public class PersistenceConfigurationTests
         IRelationalModel? previousModel = null;
         var mismatches = new List<string>();
 
+        // A migration with a provider-specific hand-written body (raw SQL) implements its designer diff through
+        // operations the differ cannot see, and the structured branch never runs for that provider. Today that is
+        // RemoveShadowForeignKeyColumns' sqlite body: a hand rebuild that keeps the Channels column defaults EF's
+        // generic rebuild would lose (NL-134); the same model transition is still verified against structured
+        // operations on the other two providers, and the snapshot check below covers every provider.
+        var providerSpecificBodies = new HashSet<(string Migration, string Provider)>
+            { ("20261001223444_RemoveShadowForeignKeyColumns", "sqlite") };
+
         // Act
         foreach (var (id, type) in migrationsAssembly.Migrations)
         {
             var migration = migrationsAssembly.CreateMigration(type, activeProvider);
             var targetModel = FinalizeModel(modelInitializer, migration.TargetModel!).GetRelationalModel();
+            var isProviderSpecific = providerSpecificBodies.Contains((id, provider));
 
             // Hand-written SQL is invisible to the model differ
             var expected = migration.UpOperations.Where(o => o is not SqlOperation).Select(Describe).Order().ToList();
             var actual = differ.GetDifferences(previousModel, targetModel).Select(Describe).Order().ToList();
-            if (!expected.SequenceEqual(actual))
+            if (!isProviderSpecific && !expected.SequenceEqual(actual))
                 mismatches.Add($"{id}: migration [{string.Join(", ", expected)}] vs designer diff " +
                                $"[{string.Join(", ", actual)}]");
 
