@@ -20,7 +20,6 @@ using Domain.Money;
 using Domain.Node;
 using Domain.Node.Options;
 using Domain.Payments.ValueObjects;
-using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.ValueObjects;
 using Harness;
