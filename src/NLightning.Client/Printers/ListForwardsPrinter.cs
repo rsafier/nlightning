@@ -47,10 +47,22 @@ public sealed class ListForwardsPrinter : IPrinter<ListForwardsIpcResponse>
             : forward.OutgoingShortChannelId;
         _output.WriteLine("  Out:         {0}  {1} msat  cltv {2}",
                           outgoingName, forward.OutgoingAmountMsat, forward.OutgoingCltvExpiry);
-        _output.WriteLine("  Fee:         {0} msat   Hash: {1}", forward.FeeMsat, ShortHash(forward.PaymentHash));
+        _output.WriteLine("  Fee:         {0}   Hash: {1}", FeeText(forward), ShortHash(forward.PaymentHash));
         if (forward.FailureSource is { } source)
-            _output.WriteLine("  Failed at:   {0}", ChannelName(forward.FailureSourceScid, source));
+            _output.WriteLine("  Failed:      {0} {1}",
+                              // Offered: the failure came back from downstream (or timed out on chain); a forwarding
+                              // node cannot read the failure onion's code. Not offered: our offer was refused here.
+                              forward.OutgoingChannelId is null ? "not offered on" : "downstream of",
+                              ChannelName(forward.FailureSourceScid, source));
     }
+
+    // A failed forward earns nothing; pending and offered ones earn their fee only once fulfilled
+    private static string FeeText(ForwardInfoIpcResponse forward) => forward.Status switch
+    {
+        2 => $"{forward.FeeMsat} msat",
+        3 => "none (failed)",
+        _ => $"{forward.FeeMsat} msat once fulfilled"
+    };
 
     private void WriteSummary(ForwardSummaryIpcResponse summary)
     {

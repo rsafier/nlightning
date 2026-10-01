@@ -155,4 +155,57 @@ public class ListForwardsPrinterTests
         Assert.Contains("  Out:         " + new string('d', 64) + "  100000 msat  cltv 480", lines);
         Assert.Contains("  Refused before forwarding since start: 0", lines);
     }
+
+    [Theory]
+    [InlineData("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "  Failed:      downstream of 900000x1x0")]
+    [InlineData(null, "  Failed:      not offered on 900000x1x0")]
+    public void Given_AFailedForward_When_Printed_Then_ItEarnsNoFeeAndSaysWhereItFailed(string? outgoingChannelId,
+                                                                                        string expectedFailedLine)
+    {
+        // Arrange: offered and failed downstream, or refused before the offer went out
+        using var output = new StringWriter();
+        var response = new ListForwardsIpcResponse
+        {
+            Forwards =
+            [
+                new ForwardInfoIpcResponse
+                {
+                    IncomingChannelId = new string('c', 64),
+                    IncomingChannelScid = "800000x1x0",
+                    IncomingHtlcId = 1,
+                    IncomingAmountMsat = 2_000,
+                    IncomingCltvExpiry = 500,
+                    OutgoingShortChannelId = "900000x1x0",
+                    OutgoingChannelId = outgoingChannelId,
+                    OutgoingChannelScid = outgoingChannelId is null ? null : "900000x1x0",
+                    OutgoingAmountMsat = 1_000,
+                    OutgoingCltvExpiry = 460,
+                    FeeMsat = 1_000,
+                    PaymentHash = new string('a', 64),
+                    CreatedAtUnixSeconds = 1_790_812_800,
+                    Status = 3,
+                    FailureSource = new string('d', 64),
+                    FailureSourceScid = "900000x1x0"
+                }
+            ],
+            Summary = new ForwardSummaryIpcResponse
+            {
+                Pending = 0,
+                Offered = 0,
+                Fulfilled = 0,
+                Failed = 1,
+                FulfilledFeesMsat = 0,
+                RefusedTotal = 0,
+                RefusedByReason = []
+            }
+        };
+
+        // Act
+        new ListForwardsPrinter(output).Print(response);
+
+        // Assert
+        var lines = output.ToString().ReplaceLineEndings("\n").Split('\n');
+        Assert.Contains("  Fee:         none (failed)   Hash: " + new string('a', 16) + "…", lines);
+        Assert.Contains(expectedFailedLine, lines);
+    }
 }
