@@ -16,6 +16,7 @@ using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.InteractiveTx.Interfaces;
 
 /// <summary>
 /// An in-memory database for the BOLT 5 wiring tests: the on-chain resolution, watched outpoint, broadcast, channel and
@@ -35,6 +36,7 @@ internal sealed class OnchainTestStore
     public Dictionary<TxId, WatchedTransactionModel> TransactionWatches { get; } = [];
     public List<ChannelState> PersistedChannelStates { get; } = [];
     public List<ChannelId> DeletedRevocationLogs { get; } = [];
+    public List<ChannelId> DeletedInteractiveTxSessions { get; } = [];
     public Dictionary<(ChannelId, ulong), RevokedCommitmentModel> RevocationLog { get; } = [];
 
     /// <summary>The origins stored per outgoing HTLC (<c>ChannelStateDbRepository.GetHtlcOriginAsync</c>).</summary>
@@ -71,6 +73,7 @@ internal sealed class OnchainTestStore
         unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(CreateBroadcasts().Object);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(CreateChannels().Object);
         unitOfWork.SetupGet(u => u.RevokedCommitmentDbRepository).Returns(CreateRevocationLog().Object);
+        unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(CreateInteractiveTxSessions().Object);
         unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(CreateChannelState().Object);
         unitOfWork.SetupGet(u => u.ForwardCircuitDbRepository).Returns(CreateCircuits().Object);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
@@ -204,6 +207,20 @@ internal sealed class OnchainTestStore
                        _pending.Add("revocation log deleted");
                    })
                   .Returns(Task.CompletedTask);
+        return repository;
+    }
+
+    private Mock<IInteractiveTxSessionDbRepository> CreateInteractiveTxSessions()
+    {
+        var repository = new Mock<IInteractiveTxSessionDbRepository>();
+        repository.Setup(r => r.DeleteByChannelIdAsync(It.IsAny<ChannelId>()))
+                  .Callback<ChannelId>(id =>
+                   {
+                       DeletedInteractiveTxSessions.Add(id);
+                       _undo.Add(() => DeletedInteractiveTxSessions.Remove(id));
+                       _pending.Add("interactive-tx sessions deleted");
+                   })
+                  .ReturnsAsync((ChannelId _) => 0);
         return repository;
     }
 

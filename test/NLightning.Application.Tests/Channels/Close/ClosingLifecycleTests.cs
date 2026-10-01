@@ -38,6 +38,7 @@ public class ClosingLifecycleTests
     private readonly Mock<IChannelDbRepository> _channelDb = new();
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<IWatchedTransactionDbRepository> _watchedDb = new();
+    private readonly Mock<Domain.Protocol.InteractiveTx.Interfaces.IInteractiveTxSessionDbRepository> _sessionsDb = new();
     private readonly Mock<IBitcoinChainService> _chain = new();
     private readonly ClosingNegotiationRegistry _registry = new();
     private readonly List<ChannelState> _persisted = [];
@@ -46,6 +47,7 @@ public class ClosingLifecycleTests
     {
         _unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(_channelDb.Object);
         _unitOfWork.SetupGet(u => u.WatchedTransactionDbRepository).Returns(_watchedDb.Object);
+        _unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(_sessionsDb.Object);
         _channelDb.Setup(r => r.UpdateAsync(It.IsAny<ChannelModel>()))
                   .Callback((ChannelModel c) => _persisted.Add(c.State))
                   .Returns(Task.CompletedTask);
@@ -72,6 +74,9 @@ public class ClosingLifecycleTests
         _unitOfWork.Verify(u => u.SaveChangesAsync(), Times.Once);
         _memory.Verify(m => m.TryRemoveChannel(channelId), Times.Once);
         Assert.False(_registry.TryGet(channelId, out _));
+
+        // NL-470: the closed channel's stored negotiations go in the same save (the table has no FK to Channels)
+        _sessionsDb.Verify(r => r.DeleteByChannelIdAsync(channelId), Times.Once);
     }
 
     [Fact]

@@ -690,6 +690,10 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                         stored.UpdateState(ChannelState.Closed);
                     await unitOfWork.ChannelDbRepository.UpdateAsync(stored);
                     await unitOfWork.RevokedCommitmentDbRepository.DeleteByChannelIdAsync(channelId);
+
+                    // BOLT 2 interactive-tx (NL-470): the closed channel's negotiations can never finish, and the
+                    // table has no FK to Channels, so its rows go in the same save as the Closed state
+                    await unitOfWork.InteractiveTxSessionDbRepository.DeleteByChannelIdAsync(channelId);
                 });
             }
 

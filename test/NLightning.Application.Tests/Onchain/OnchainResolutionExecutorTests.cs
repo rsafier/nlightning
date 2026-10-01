@@ -229,11 +229,14 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
         // Act: 100 deep (the funding spend is 101 deep)
         await executor.RunRoundAsync(SpentAt + 100, TestContext.Current.CancellationToken);
 
-        // Assert: irrevocable, Closed and the revocation log dropped, all in one save; forgotten in memory
+        // Assert: irrevocable, Closed, the revocation log and the interactive-tx sessions dropped, all in one save;
+        // forgotten in memory
         Assert.Equal(OutputResolutionState.Irrevocable, _store.Outputs[(s_commitmentTxId, 0)].State);
         Assert.Equal(ChannelState.Closed, _channel.State);
         var save = Assert.Single(_store.Saves);
-        Assert.Equal(["output 0 Irrevocable", "channel Closed", "revocation log deleted"], save);
+        Assert.Equal(["output 0 Irrevocable", "channel Closed", "revocation log deleted",
+                      "interactive-tx sessions deleted"], save);
+        Assert.Equal([_channel.ChannelId], _store.DeletedInteractiveTxSessions);
         _memory.Verify(m => m.TryRemoveChannel(_channel.ChannelId), Times.Once);
     }
 
@@ -334,7 +337,9 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
 
         // Assert: closed now, in one save
         Assert.Equal(ChannelState.Closed, _channel.State);
-        Assert.Equal(["output 0 Irrevocable", "channel Closed", "revocation log deleted"], Assert.Single(_store.Saves));
+        Assert.Equal(["output 0 Irrevocable", "channel Closed", "revocation log deleted",
+                      "interactive-tx sessions deleted"], Assert.Single(_store.Saves));
+        Assert.Equal([_channel.ChannelId], _store.DeletedInteractiveTxSessions);
         _memory.Verify(m => m.TryRemoveChannel(_channel.ChannelId), Times.Once);
     }
 
