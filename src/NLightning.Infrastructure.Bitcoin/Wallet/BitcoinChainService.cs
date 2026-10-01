@@ -1,8 +1,11 @@
 using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBitcoin.RPC;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace NLightning.Infrastructure.Bitcoin.Wallet;
@@ -25,6 +28,7 @@ public class BitcoinChainService : IBitcoinChainService
 
     private readonly RPCClient _rpcClient;
     private readonly ILogger<BitcoinChainService> _logger;
+    private readonly string _rpcAuthorization;
     private int _packageRelayUnsupported;
 
     public BitcoinChainService(IOptions<BitcoinOptions> bitcoinOptions, ILogger<BitcoinChainService> logger,
@@ -42,6 +46,8 @@ public class BitcoinChainService : IBitcoinChainService
         // No RPC here: the service must be constructible without a live bitcoind (NL-153; a new key's birth height is
         // the one caller that needs it, and it asks async). Every call fails on its own until bitcoind is reachable.
         _rpcClient = new RPCClient(rpcCredentials, bitcoinOptions.Value.RpcEndpoint, network);
+        _rpcAuthorization = Convert.ToBase64String(Encoding.UTF8.GetBytes(
+            $"{bitcoinOptions.Value.RpcUser}:{bitcoinOptions.Value.RpcPassword}"));
     }
 
     public async Task<uint256> SendTransactionAsync(Transaction transaction)
@@ -245,16 +251,10 @@ public class BitcoinChainService : IBitcoinChainService
 
         try
         {
-            // Verbosity 1: the header fields plus the txids (about 64 hex characters per transaction)
-            var response = await _rpcClient.SendCommandAsync(RPCOperations.getblock, blockHash.ToString(), 1);
-            if (response.Result?["tx"] is not JArray txs)
-                throw new InvalidOperationException($"getblock {blockHash} 1 returned no tx array");
-
-            var txIds = new List<uint256>(txs.Count);
-            foreach (var tx in txs)
-                txIds.Add(uint256.Parse(tx.Value<string>()
-                                     ?? throw new InvalidOperationException($"getblock {blockHash} 1: null txid")));
-
+            // Verbosity 1: the header fields plus the txids (about 64 hex characters per transaction). The answer is
+            // read with a streaming parser: a 100-400 KB answer parsed as a JToken tree lands on the large object
+            // heap, which peaked a verified sync at 630 MB RSS (NL-416)
+            var txIds = await GetBlockTxIdsStreamingAsync(blockHash);
             return (blockHash, txIds);
         }
         catch (RPCException ex) when (IsPrunedBlockError(ex.RPCCode, ex.Message))
@@ -269,6 +269,163 @@ public class BitcoinChainService : IBitcoinChainService
         {
             _logger.LogError(ex, "Failed to get the transaction ids of block {Height}", height);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// The <c>getblock &lt;hash&gt; 1</c> request, sent through the shared <see cref="RPCClient"/>'s HTTP client with
+    /// its URL and credentials, but read with <c>ResponseHeadersRead</c> so the answer is parsed streaming and never
+    /// buffered whole.
+    /// </summary>
+    private async Task<IReadOnlyList<uint256>> GetBlockTxIdsStreamingAsync(uint256 blockHash)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, _rpcClient.Address)
+        {
+            Content = new StringContent(CreateGetBlockRequest(blockHash), Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Basic", _rpcAuthorization);
+
+        using var response = await _rpcClient.HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var reader = new StreamReader(stream);
+        return ParseGetBlockAnswer(reader, blockHash, response.StatusCode);
+    }
+
+    /// <summary>The <c>getblock &lt;hash&gt; 1</c> request body (JSON-RPC 1.0, like NBitcoin's own requests).</summary>
+    internal static string CreateGetBlockRequest(uint256 blockHash) =>
+        $$"""{"jsonrpc":"1.0","id":1,"method":"getblock","params":["{{blockHash}}",1]}""";
+
+    /// <summary>
+    /// Reads a <c>getblock &lt;hash&gt; 1</c> JSON-RPC answer streaming: of the answer only the entries of the
+    /// result's <c>tx</c> array are materialized (NL-416). A JSON-RPC error is thrown as <see cref="RPCException"/>
+    /// (bitcoind answers a pruned block with <c>RPC_MISC_ERROR</c>, read as <c>BlockUnavailable</c> by the caller); a
+    /// result without a <c>tx</c> array, or a body that is no JSON object, fails.
+    /// </summary>
+    internal static IReadOnlyList<uint256> ParseGetBlockAnswer(TextReader body, uint256 blockHash,
+                                                               HttpStatusCode statusCode)
+    {
+        using var reader = new JsonTextReader(body);
+        if (!reader.Read() || reader.TokenType != JsonToken.StartObject)
+            throw new InvalidOperationException($"getblock {blockHash} answered no JSON object (HTTP {(int)statusCode})");
+
+        List<uint256>? txIds = null;
+        RPCException? error = null;
+        while (reader.Read() && reader.TokenType == JsonToken.PropertyName)
+        {
+            switch ((string)reader.Value!)
+            {
+                case "result":
+                    txIds ??= ReadResultTxIds(reader, blockHash, statusCode);
+                    break;
+                case "error":
+                    error = ReadRpcError(reader, blockHash, statusCode);
+                    break;
+                default:
+                    reader.Read();
+                    SkipJsonValue(reader);
+                    break;
+            }
+        }
+
+        if (error is not null)
+            throw error;
+        return txIds ?? throw new InvalidOperationException($"getblock {blockHash} returned no tx array");
+    }
+
+    /// <summary>
+    /// Reads the <c>result</c> value of the envelope: the <c>tx</c> array of a verbose block, with every other field
+    /// skipped. The reader is on the <c>result</c> property name.
+    /// </summary>
+    private static List<uint256>? ReadResultTxIds(JsonTextReader reader, uint256 blockHash, HttpStatusCode statusCode)
+    {
+        if (!reader.Read())
+            throw new InvalidOperationException($"getblock {blockHash} answered no result (HTTP {(int)statusCode})");
+        if (reader.TokenType != JsonToken.StartObject)
+        {
+            SkipJsonValue(reader); // an error answer carries result null
+            return null;
+        }
+
+        var txIds = new List<uint256>();
+        var sawTx = false;
+        while (reader.Read() && reader.TokenType == JsonToken.PropertyName)
+        {
+            if ((string)reader.Value! != "tx")
+            {
+                reader.Read();
+                SkipJsonValue(reader);
+                continue;
+            }
+
+            if (!reader.Read() || reader.TokenType != JsonToken.StartArray)
+                throw new InvalidOperationException($"getblock {blockHash} 1 returned no tx array");
+
+            sawTx = true;
+            while (reader.Read() && reader.TokenType != JsonToken.EndArray)
+            {
+                if (reader.TokenType != JsonToken.String || reader.Value is not string txId)
+                    throw new InvalidOperationException($"getblock {blockHash} 1: a tx entry is not a txid string");
+                txIds.Add(uint256.Parse(txId));
+            }
+        }
+
+        return sawTx ? txIds
+                     : throw new InvalidOperationException($"getblock {blockHash} 1 returned no tx array");
+    }
+
+    /// <summary>
+    /// Reads the <c>error</c> value of the envelope (the reader is on its property name): null when the answer has no
+    /// error, otherwise the <see cref="RPCException"/> to throw.
+    /// </summary>
+    private static RPCException? ReadRpcError(JsonTextReader reader, uint256 blockHash, HttpStatusCode statusCode)
+    {
+        if (!reader.Read() || reader.TokenType == JsonToken.Null)
+            return null;
+        if (reader.TokenType != JsonToken.StartObject)
+            throw new InvalidOperationException(
+                $"getblock {blockHash} answered an unexpected error value (HTTP {(int)statusCode})");
+
+        var code = RPCErrorCode.RPC_MISC_ERROR;
+        string? message = null;
+        while (reader.Read() && reader.TokenType == JsonToken.PropertyName)
+        {
+            switch ((string)reader.Value!)
+            {
+                case "code":
+                    if (reader.Read() && reader.TokenType == JsonToken.Integer)
+                        code = (RPCErrorCode)Convert.ToInt32(reader.Value);
+                    else
+                        SkipJsonValue(reader);
+                    break;
+                case "message":
+                    if (reader.Read() && reader.TokenType == JsonToken.String)
+                        message = (string)reader.Value!;
+                    else
+                        SkipJsonValue(reader);
+                    break;
+                default:
+                    reader.Read();
+                    SkipJsonValue(reader);
+                    break;
+            }
+        }
+
+        return new RPCException(code, message ?? $"getblock {blockHash} failed (HTTP {(int)statusCode})", null);
+    }
+
+    /// <summary>Consumes the value the reader is on (a scalar is already read; a container is read through).</summary>
+    private static void SkipJsonValue(JsonTextReader reader)
+    {
+        if (reader.TokenType is not (JsonToken.StartObject or JsonToken.StartArray))
+            return;
+
+        var depth = 1;
+        while (depth > 0 && reader.Read())
+        {
+            if (reader.TokenType is JsonToken.StartObject or JsonToken.StartArray)
+                depth++;
+            else if (reader.TokenType is JsonToken.EndObject or JsonToken.EndArray)
+                depth--;
         }
     }
 
