@@ -10,6 +10,8 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.Node.Constants;
+using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -25,6 +27,7 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ILogger<OpenChannel1MessageHandler> _logger;
     private readonly IMessageFactory _messageFactory;
+    private readonly INodeDrainState? _nodeDrainState;
     private readonly GossipOptions _gossipOptions;
     private readonly NodeOptions _nodeOptions;
     private readonly UpfrontShutdownScriptSource? _upfrontShutdownScriptSource;
@@ -43,8 +46,10 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
                                       IOptions<GossipOptions>? gossipOptions = null,
                                       IOptions<NodeOptions>? nodeOptions = null,
                                       IAnchorReserveService? anchorReserveService = null,
-                                      UpfrontShutdownScriptSource? upfrontShutdownScriptSource = null)
+                                      UpfrontShutdownScriptSource? upfrontShutdownScriptSource = null,
+                                      INodeDrainState? nodeDrainState = null)
     {
+        _nodeDrainState = nodeDrainState;
         _upfrontShutdownScriptSource = upfrontShutdownScriptSource;
         _anchorReserveService = anchorReserveService;
         _blockchainMonitor = blockchainMonitor;
@@ -71,6 +76,11 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         // NL-216: a node that does not follow the chain could not see the funding confirm or be cheated on it
         if (_blockchainMonitor is { IsChainProcessingHalted: true })
             throw new ChannelErrorException(ChainProcessingHalt.Refusal("open_channel"), payload.ChannelId,
+                                            "Not accepting channels right now, try again later");
+
+        // NL-591: a node draining for its shutdown opens nothing new
+        if (_nodeDrainState is { IsDraining: true })
+            throw new ChannelErrorException(NodeDrain.Refusal("open_channel"), payload.ChannelId,
                                             "Not accepting channels right now, try again later");
 
         // BOLT 2: the receiver MAY fail a channel whose announce_channel it does not want (NL-341). The flag is stored

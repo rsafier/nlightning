@@ -6,6 +6,7 @@ namespace NLightning.Application.Tests.Channels.Services;
 
 using Application.Channels.Interfaces;
 using Application.Channels.Services;
+using Application.Node.Services;
 using Domain.Bitcoin.Constants;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
@@ -13,6 +14,8 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Node.Constants;
+using Domain.Node.Interfaces;
 using Domain.Payments.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -412,7 +415,49 @@ public class ChannelOperationsServiceTests
         Assert.IsType<UpdateFailHtlcMessage>(_published[1]);
     }
 
-    private ChannelOperationsService CreateService(IBlockchainMonitor? blockchainMonitor = null)
+    [Fact]
+    public async Task Given_TheNodeDraining_When_Offering_Then_RefusedWithNothingPersistedOrSent()
+    {
+        // Arrange - NL-591: a node draining for its shutdown takes no new HTLC
+        var drain = new NodeDrainState();
+        drain.TryBeginDrain();
+        var service = CreateService(nodeDrainState: drain);
+        var hash = HashOf(SecretOf(1));
+
+        // Act
+        var offer = service.OfferHtlcAsync(TestChannelId, LightningMoney.MilliSatoshis(40_000_000), hash, 600,
+                                           s_onion, null, HtlcOrigin.Local(hash),
+                                           TestContext.Current.CancellationToken);
+
+        // Assert
+        var refused = await Assert.ThrowsAsync<CommitmentRefusedException>(() => offer);
+        Assert.Equal(NodeDrain.RequirementId, refused.RequirementId);
+        Assert.Empty(_context.Calls);
+        Assert.Empty(_published);
+    }
+
+    [Fact]
+    public async Task Given_TheNodeDraining_When_FulfillingOrFailing_Then_StillSent()
+    {
+        // Arrange - NL-591: the drain resolves what is in flight
+        var drain = new NodeDrainState();
+        drain.TryBeginDrain();
+        var preimage = SecretOf(9);
+        var fulfilled = _context.LockIn(HtlcDirection.Incoming, 30_000_000, preimage);
+        var failed = _context.LockIn(HtlcDirection.Incoming, 20_000_000, SecretOf(10));
+        var service = CreateService(nodeDrainState: drain);
+
+        // Act
+        await service.FulfillHtlcAsync(TestChannelId, fulfilled.Id, preimage, TestContext.Current.CancellationToken);
+        await service.FailHtlcAsync(TestChannelId, failed.Id, new byte[292], TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.IsType<UpdateFulfillHtlcMessage>(_published[0]);
+        Assert.IsType<UpdateFailHtlcMessage>(_published[1]);
+    }
+
+    private ChannelOperationsService CreateService(IBlockchainMonitor? blockchainMonitor = null,
+                                                   INodeDrainState? nodeDrainState = null)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => _context.UnitOfWork.Object);
@@ -425,6 +470,6 @@ public class ChannelOperationsServiceTests
                                             NullLogger<ChannelOperationsService>.Instance,
                                             Options.Create(_context.NodeOptions), _probe.Object,
                                             provider.GetRequiredService<IServiceScopeFactory>(),
-                                            blockchainMonitor);
+                                            blockchainMonitor, nodeDrainState: nodeDrainState);
     }
 }

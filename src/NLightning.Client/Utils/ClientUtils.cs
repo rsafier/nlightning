@@ -22,6 +22,9 @@ public static class ClientUtils
         Console.WriteLine("                               Disconnect a peer (alias: disconnect-peer); refused while");
         Console.WriteLine("                               its channels have HTLCs in flight unless --force; the node");
         Console.WriteLine("                               does not reconnect it until the next connect or restart");
+        Console.WriteLine("  shutdown                     Stop the node gracefully (alias: stop); refused while HTLCs");
+        Console.WriteLine("                               are in flight; otherwise new payments, channels and splices");
+        Console.WriteLine("                               are refused and the node stops once it answered");
         Console.WriteLine("  listchannels [peer_id]       List channels, optionally only those with one peer");
         Console.WriteLine("  getaddress [p2tr|p2wpkh|all] Gets an unused address of the requested type [default: p2tr]");
         Console.WriteLine("  walletbalance                Gets the wallet balance");

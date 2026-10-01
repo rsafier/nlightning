@@ -171,6 +171,8 @@ public class ClientAppTests
     [InlineData("openchannel", "peer@host", "50000", "--public")]
     [InlineData("openchannel", "--public", "peer@host", "50000", "20000")]
     [InlineData("open-channel", "peer@host", "50000", "20000", "--PUBLIC")]
+    [InlineData("shutdown")]
+    [InlineData("stop")]
     public void GivenCommandWithOptionalArguments_WhenValidateArguments_ThenIsValid(string command,
         params string[] commandArgs)
     {
@@ -179,6 +181,16 @@ public class ClientAppTests
 
         // Assert
         Assert.Null(error);
+    }
+
+    [Fact]
+    public void GivenShutdownWithAnArgument_WhenValidateArguments_ThenUsageError()
+    {
+        // Act - NL-591: shutdown takes no argument
+        var error = ClientApp.ValidateArguments("shutdown", ["--force"]);
+
+        // Assert
+        Assert.Equal("Unexpected argument '--force'. Usage: shutdown", error);
     }
 
     [Fact]

@@ -35,6 +35,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 using InteractiveTx;
 using Node.Bootstrap;
 using Node.Managers;
+using Node.Services;
 using Offers;
 using Offers.Send;
 using Onchain;
@@ -89,6 +90,8 @@ public static class DependencyInjection
 
         // Singleton services (one instance throughout the application)
         services.AddSingleton<IChannelLockProvider, ChannelLockProvider>();
+        // The graceful shutdown's drain flag (NL-591), read by every gate that refuses new activity while it is set
+        services.AddSingleton<INodeDrainState, NodeDrainState>();
         services.AddSingleton(sp =>
         {
             var blockchainMonitor = sp.GetRequiredService<IBlockchainMonitor>();

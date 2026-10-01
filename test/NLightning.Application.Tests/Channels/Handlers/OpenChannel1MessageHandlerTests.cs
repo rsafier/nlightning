@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NLightning.Application.Channels.Close;
 using NLightning.Application.Channels.Handlers;
+using NLightning.Application.Node.Services;
 using NLightning.Domain.Bitcoin.Transactions.Outputs;
 using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Channels.Enums;
@@ -379,6 +380,28 @@ public class OpenChannel1MessageHandlerTests
         _mockChannelFactory.Verify(x => x.CreateChannelV1AsNonInitiatorAsync(It.IsAny<OpenChannel1Message>(),
                                                                              It.IsAny<FeatureOptions>(),
                                                                              It.IsAny<CompactPubKey>()), Times.Never);
+        _mockChannelMemoryRepository.Verify(x => x.AddTemporaryChannel(It.IsAny<CompactPubKey>(),
+                                                                        It.IsAny<ChannelModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_TheNodeDraining_When_OpenChannelReceived_Then_RefusedWithoutAChannel()
+    {
+        // Arrange - NL-591: a node draining for its shutdown opens nothing new
+        var drain = new NodeDrainState();
+        drain.TryBeginDrain();
+        var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object, nodeDrainState: drain);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures,
+                                                      _peerPubKey));
+
+        // Assert
+        Assert.Contains("shutting down", exception.Message);
+        Assert.Equal(_validMessage.Payload.ChannelId, exception.ChannelId);
         _mockChannelMemoryRepository.Verify(x => x.AddTemporaryChannel(It.IsAny<CompactPubKey>(),
                                                                         It.IsAny<ChannelModel>()), Times.Never);
     }

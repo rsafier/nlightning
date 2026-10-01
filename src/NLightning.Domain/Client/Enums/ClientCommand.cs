@@ -68,5 +68,11 @@ public enum ClientCommand
     /// RBF our unconfirmed dual-funded open at a higher feerate (<c>bumpopen</c>, BOLT 2 "Fee bumping", lane dfrbf);
     /// answered with <c>BumpOpenIpcResponse</c>.
     /// </summary>
-    BumpOpen = 38
+    BumpOpen = 38,
+
+    /// <summary>
+    /// Stop the node gracefully (<c>shutdown</c>, NL-591): refused while HTLCs are in flight; otherwise new activity is
+    /// refused from then on and the daemon stops once the answer is sent.
+    /// </summary>
+    Shutdown = 39
 }

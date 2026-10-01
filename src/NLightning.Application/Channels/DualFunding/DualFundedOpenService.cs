@@ -30,6 +30,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Node.Constants;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -151,6 +152,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             throw new InvalidOperationException($"option_dual_fund is not negotiated with {request.PeerNodeId}");
         if (GetMonitor() is { IsChainProcessingHalted: true })
             throw new InvalidOperationException("Chain processing is halted: no new channel (NL-216)");
+        if (IsDraining())
+            throw new InvalidOperationException(NodeDrain.Refusal("openchannel"));
         if (request.IsPublic && !_gossipOptions.ArePublicChannelsAllowed(_nodeOptions.BitcoinNetwork))
             throw new InvalidOperationException("Public channels are not enabled on this network");
         if (request.LocalFundingAmount.IsZero)
@@ -527,6 +530,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                             "option_dual_fund is not negotiated");
         if (GetMonitor() is { IsChainProcessingHalted: true })
             throw new ChannelErrorException("Chain processing is halted (NL-216)", temporaryId,
+                                            "Not accepting channels right now, try again later");
+        if (IsDraining())
+            throw new ChannelErrorException(NodeDrain.Refusal("open_channel2"), temporaryId,
                                             "Not accepting channels right now, try again later");
         if (payload.ChannelFlags.AnnounceChannel && (!_gossipOptions.AcceptPublicChannels
                                                   || !_gossipOptions.ArePublicChannelsAllowed(
@@ -1522,6 +1528,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
      ?? throw new InvalidOperationException("No interactive-tx driver is registered");
 
     private IBlockchainMonitor? GetMonitor() => _serviceProvider.GetService<IBlockchainMonitor>();
+
+    /// <summary>NL-591: a node draining for its shutdown opens nothing new.</summary>
+    private bool IsDraining() => _serviceProvider.GetService<INodeDrainState>() is { IsDraining: true };
 
     private uint GetLocktime() => GetMonitor()?.LastProcessedBlockHeight ?? 0;
 

@@ -1,5 +1,6 @@
 using System.IO.Pipes;
 using MessagePack;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using NLightning.Client.Ipc;
 
@@ -7,6 +8,7 @@ namespace NLightning.Daemon.Tests.Services.Ipc;
 
 using Daemon.Contracts.Utilities;
 using Daemon.Ipc.Interfaces;
+using Daemon.Services;
 using Daemon.Services.Ipc;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
@@ -348,6 +350,59 @@ public class NamedPipeIpcServiceTests : IDisposable
             Assert.Equal(response.PubKey, info.PubKey);
             Assert.Equal(response.ListeningTo, info.ListeningTo);
             Assert.Equal("NLightning", info.Implementation);
+        }
+        finally
+        {
+            await service.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Given_AnAcceptedShutdown_When_TheAnswerIsWritten_Then_TheHostStopsAfterTheClientHasIt()
+    {
+        // Arrange - NL-591: the handler only requests the stop; the server stops the host after its answer
+        var lifetime = new Mock<IHostApplicationLifetime>();
+        var trigger = new NodeShutdownTrigger(lifetime.Object);
+        var router = new Mock<IIpcRequestRouter>();
+        router.Setup(r => r.RouteAsync(It.IsAny<IpcEnvelope>(), It.IsAny<CancellationToken>()))
+              .ReturnsAsync((IpcEnvelope request, CancellationToken _) =>
+              {
+                  trigger.RequestStop();
+                  lifetime.Verify(x => x.StopApplication(), Times.Never);
+                  return new IpcEnvelope
+                  {
+                      Version = request.Version,
+                      Command = request.Command,
+                      CorrelationId = request.CorrelationId,
+                      Payload = MessagePackSerializer.Serialize(new ShutdownIpcResponse { ChannelCount = 3 },
+                                                                cancellationToken:
+                                                                TestContext.Current.CancellationToken),
+                      Kind = IpcEnvelopeKind.Response
+                  };
+              });
+        var authenticator = new Mock<IIpcAuthenticator>();
+        authenticator.Setup(a => a.ValidateAsync(It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+                     .ReturnsAsync(true);
+        var service = new NamedPipeIpcService(authenticator.Object, _configPath, new IpcFraming(),
+                                              NullLogger<NamedPipeIpcService>.Instance, router.Object)
+        {
+            ShutdownTrigger = trigger
+        };
+        await service.StartAsync(CancellationToken.None);
+
+        try
+        {
+            // Act
+            await using var client = new NamedPipeIpcClient(NodeUtils.GetNamedPipeFilePath(_configPath),
+                                                            NodeUtils.GetCookieFilePath(_configPath));
+            var answer = await client.ShutdownAsync(TestContext.Current.CancellationToken);
+
+            // Assert
+            Assert.Equal(3, answer.ChannelCount);
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (lifetime.Invocations.Count == 0 && DateTime.UtcNow < deadline)
+                await Task.Delay(20, TestContext.Current.CancellationToken);
+            lifetime.Verify(x => x.StopApplication(), Times.Once);
         }
         finally
         {

@@ -7,8 +7,8 @@ using Domain.Channels.Models;
 using Domain.Crypto.ValueObjects;
 
 /// <summary>
-/// A peer's channels as the operator commands see them (<c>listpeers</c>, <c>disconnect</c>): the ones that are not
-/// Closed or Stale, and the HTLCs in flight on them.
+/// A peer's channels as the operator commands see them (<c>listpeers</c>, <c>disconnect</c>, <c>shutdown</c>): the
+/// ones that are not Closed or Stale, and the HTLCs in flight on them.
 /// </summary>
 internal readonly record struct PeerChannelSummary(int ChannelCount, int HtlcsInFlight)
 {
@@ -17,6 +17,15 @@ internal readonly record struct PeerChannelSummary(int ChannelCount, int HtlcsIn
         ArgumentNullException.ThrowIfNull(channelMemoryRepository);
 
         var channels = channelMemoryRepository.FindChannels(c => c.RemoteNodeId == peerId && IsActive(c));
+        return new PeerChannelSummary(channels.Count, channels.Sum(CountHtlcsInFlight));
+    }
+
+    /// <summary>Every channel of the node that is not Closed or Stale, with their HTLCs in flight (<c>shutdown</c>).</summary>
+    public static PeerChannelSummary ForAll(IChannelMemoryRepository channelMemoryRepository)
+    {
+        ArgumentNullException.ThrowIfNull(channelMemoryRepository);
+
+        var channels = channelMemoryRepository.FindChannels(IsActive);
         return new PeerChannelSummary(channels.Count, channels.Sum(CountHtlcsInFlight));
     }
 

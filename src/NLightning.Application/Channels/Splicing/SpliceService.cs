@@ -22,6 +22,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Node.Constants;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Onchain.Enums;
@@ -122,6 +123,8 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         ArgumentNullException.ThrowIfNull(request);
         if (request.ContributionSatoshis == 0)
             throw new ArgumentOutOfRangeException(nameof(request), "A splice adds or removes a non-zero amount");
+        if (IsDraining())
+            throw new InvalidOperationException(NodeDrain.Refusal("splice"));
 
         var channelId = request.ChannelId;
         var quiescence = _serviceProvider.GetService<IQuiescenceService>()
@@ -289,6 +292,10 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             await EndBeforeNegotiationAsync(existing, "the peer is the quiescence initiator");
             existing = null;
         }
+
+        // NL-591: a node draining for its shutdown starts no splice (BOLT 2: MAY send tx_abort for any reason)
+        if (IsDraining())
+            return EndQuiescenceWithTxAbort(channelId, peerPubKey, NodeDrain.Refusal("splice_init"));
 
         var fundings = _statePort.GetFundings(channel);
         var conditions = GetConditions(channel, negotiatedFeatures, quiescenceState, fundings) with
@@ -1469,6 +1476,9 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         _serviceProvider.GetService<IQuiescenceService>()?.Terminate(channelId, QuiescenceEndReason.TxAbort);
         return [InteractiveTxDriver.CreateTxAbort(channelId, reason)];
     }
+
+    /// <summary>NL-591: a node draining for its shutdown starts no splice and no RBF of one.</summary>
+    private bool IsDraining() => _serviceProvider.GetService<INodeDrainState>() is { IsDraining: true };
 
     private IInteractiveTxDriver GetDriver() =>
         _serviceProvider.GetService<IInteractiveTxDriver>()

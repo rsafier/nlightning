@@ -14,6 +14,8 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Node.Constants;
+using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
@@ -43,7 +45,8 @@ using Interfaces;
 /// with a commitment snapshot, not failed, no data loss, plus the engine's BOLT 2 sender rules, and the channel's link
 /// is up (<see cref="IPeerLivenessProbe"/>: the peer is connected on the connection the channel was opened or
 /// reestablished on). An add is also refused while the chain monitor's processing is halted (NL-216,
-/// <see cref="ChainProcessingHalt"/>); removals and fee updates are not, they only lower the risk. Every operation
+/// <see cref="ChainProcessingHalt"/>) and while the node drains for a graceful shutdown (NL-591, <see cref="NodeDrain"/>);
+/// removals and fee updates are not, they only lower the risk. Every operation
 /// needs the link, removals and fee updates too: a message raised for a peer that
 /// is not connected is dropped, and there is no retransmission until channel_reestablish (N7), so an update persisted
 /// for an away peer would later be covered by a <c>commitment_signed</c> the peer can't verify. A refused removal is
@@ -81,6 +84,7 @@ public sealed class ChannelOperationsService : IChannelOperations
     private readonly IChannelMessagePublisher _channelMessagePublisher;
     private readonly ICommitScheduler _commitScheduler;
     private readonly ILogger<ChannelOperationsService> _logger;
+    private readonly INodeDrainState? _nodeDrainState;
     private readonly NodeOptions _nodeOptions;
     private readonly IPeerLivenessProbe _peerLivenessProbe;
     private readonly IQuiescenceService? _quiescenceService;
@@ -93,8 +97,10 @@ public sealed class ChannelOperationsService : IChannelOperations
                                     ILogger<ChannelOperationsService> logger, IOptions<NodeOptions> nodeOptions,
                                     IPeerLivenessProbe peerLivenessProbe, IServiceScopeFactory serviceScopeFactory,
                                     IBlockchainMonitor? blockchainMonitor = null, TimeProvider? timeProvider = null,
-                                    IQuiescenceService? quiescenceService = null)
+                                    IQuiescenceService? quiescenceService = null,
+                                    INodeDrainState? nodeDrainState = null)
     {
+        _nodeDrainState = nodeDrainState;
         _quiescenceService = quiescenceService;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _blockchainMonitor = blockchainMonitor;
@@ -123,6 +129,10 @@ public sealed class ChannelOperationsService : IChannelOperations
         if (_blockchainMonitor is { IsChainProcessingHalted: true })
             throw new CommitmentRefusedException(ChainProcessingHalt.RequirementId,
                                                  ChainProcessingHalt.Refusal(AddOperation));
+
+        // NL-591: a node draining for its shutdown takes no new HTLC (forwards fail back upstream)
+        if (_nodeDrainState is { IsDraining: true })
+            throw new CommitmentRefusedException(NodeDrain.RequirementId, NodeDrain.Refusal(AddOperation));
 
         var height = _blockchainMonitor?.LastProcessedBlockHeight;
         var result = await RunAsync(channelId, AddOperation,

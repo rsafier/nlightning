@@ -210,6 +210,11 @@ internal static class ClientApp
                     if (chainStatus.IsChainProcessingHalted)
                         return Failure;
                     break;
+                case "shutdown":
+                case "stop":
+                    var shutdown = await client.ShutdownAsync(cancellationToken);
+                    new ShutdownPrinter().Print(shutdown);
+                    break;
                 case "listnodes":
                 case "list-nodes":
                     var nodes = await client.ListNodesAsync(
@@ -344,6 +349,9 @@ internal static class ClientApp
             case "chainstatus":
             case "chain-status":
                 return null;
+            case "shutdown":
+            case "stop":
+                return commandArgs.Length > 0 ? $"Unexpected argument '{commandArgs[0]}'. Usage: {cmd}" : null;
             case "connect":
             case "connect-peer":
                 return commandArgs.Length < 1 ? $"Missing argument. Usage: {cmd} <node>" : null;

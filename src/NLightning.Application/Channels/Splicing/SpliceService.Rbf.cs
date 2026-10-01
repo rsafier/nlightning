@@ -16,6 +16,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
+using Domain.Node.Constants;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.InteractiveTx;
@@ -58,6 +59,8 @@ public sealed partial class SpliceService
     public async Task<SpliceResult> BumpAsync(SpliceBumpRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (IsDraining())
+            throw new InvalidOperationException(NodeDrain.Refusal("bumpsplice"));
         var channelId = request.ChannelId;
         var quiescence = _serviceProvider.GetService<IQuiescenceService>()
                       ?? throw new InvalidOperationException("Splicing needs quiescence, which is not available");
@@ -242,6 +245,10 @@ public sealed partial class SpliceService
             await EndBeforeNegotiationAsync(existing, "the peer is the quiescence initiator");
             existing = null;
         }
+
+        // NL-591: a node draining for its shutdown starts no RBF either
+        if (IsDraining())
+            return EndQuiescenceWithTxAbort(channelId, peerPubKey, NodeDrain.Refusal("tx_init_rbf"));
 
         var fundings = _statePort.GetFundings(channel);
         var previous = await GetLatestAttemptSessionAsync(channel, fundings, cancellationToken, unitOfWork);

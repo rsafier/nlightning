@@ -21,6 +21,8 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Node.Constants;
+using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Onchain.Models;
 using Domain.Payments.Enums;
@@ -126,6 +128,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private readonly IForwardingPolicy _forwardingPolicy;
     private readonly IReadOnlyList<ILocalPaymentHtlcHandler> _localPaymentHandlers;
     private readonly ILogger<HtlcSwitch> _logger;
+    private readonly INodeDrainState? _nodeDrainState;
     private readonly uint _reasonableDepth;
     private readonly KeysendReceiver _keysendReceiver;
     private readonly IncomingOnionProcessor _onionProcessor;
@@ -168,8 +171,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                       IEnumerable<ILocalPaymentHtlcHandler>? localPaymentHandlers = null,
                       IOptions<NodeOptions>? nodeOptions = null, IOptions<HtlcSwitchOptions>? switchOptions = null,
                       IAttributionDataService? attributionDataService = null,
-                      IOptions<OnchainOptions>? onchainOptions = null, IRetiredScidMap? retiredScidMap = null)
+                      IOptions<OnchainOptions>? onchainOptions = null, IRetiredScidMap? retiredScidMap = null,
+                      INodeDrainState? nodeDrainState = null)
     {
+        _nodeDrainState = nodeDrainState;
         _attributionDataService = attributionDataService;
         _blockchainMonitor = blockchainMonitor;
         _channelLockProvider = channelLockProvider;
@@ -490,6 +495,17 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             if (height != 0 && _logger.IsEnabled(LogLevel.Warning))
                 _logger.LogWarning("Failing back incoming HTLC {HtlcId} of channel {ChannelId}: {Reason}", htlc.Id,
                                    channelId, ChainProcessingHalt.Refusal("final-hop acceptance"));
+            if (!onchain)
+                await FailBackAsync(channelId, htlc, final.SharedSecret, FailureMessage.TemporaryNodeFailure(),
+                                    cancellationToken, blindedIntroduction: false);
+            return;
+        }
+
+        // NL-591: a node draining for its shutdown accepts no new payment (a committed set is fulfilled above)
+        if (_nodeDrainState is { IsDraining: true })
+        {
+            _logger.LogInformation("Failing back incoming HTLC {HtlcId} of channel {ChannelId}: {Reason}", htlc.Id,
+                                   channelId, NodeDrain.Refusal("final-hop acceptance"));
             if (!onchain)
                 await FailBackAsync(channelId, htlc, final.SharedSecret, FailureMessage.TemporaryNodeFailure(),
                                     cancellationToken, blindedIntroduction: false);

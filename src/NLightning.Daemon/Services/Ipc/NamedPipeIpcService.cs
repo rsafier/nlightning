@@ -44,6 +44,11 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
     /// </summary>
     internal TimeSpan RequestReadTimeout { get; init; } = DefaultRequestReadTimeout;
 
+    /// <summary>
+    /// Stops the host after the answer to an accepted <c>shutdown</c> was written (NL-591); null without one.
+    /// </summary>
+    internal NodeShutdownTrigger? ShutdownTrigger { get; init; }
+
     public NamedPipeIpcService(IIpcAuthenticator authenticator, string configPath, IIpcFraming framing,
                                ILogger<NamedPipeIpcService> logger, IIpcRequestRouter router)
     {
@@ -183,6 +188,9 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
             {
                 //ignore
             }
+
+            // After the answer: an accepted shutdown stops the host now (NL-591)
+            ShutdownTrigger?.StopIfRequested();
         }
     }
 

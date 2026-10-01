@@ -1,14 +1,17 @@
 using MessagePack;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Daemon.Tests.Ipc.Handlers;
 
+using Application.Node.Services;
 using Daemon.Contracts.Control;
 using Daemon.Extensions;
 using Daemon.Interfaces;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
+using Daemon.Services;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
@@ -29,7 +32,7 @@ using Transport.Ipc.Responses;
 
 /// <summary>
 /// The operator commands of NL-152 over IPC: <c>disconnect</c> (refused with HTLCs in flight unless forced),
-/// <c>listpeers</c> and <c>info</c> with the channel counts.
+/// <c>listpeers</c> and <c>info</c> with the channel counts; and <c>shutdown</c> (NL-591).
 /// </summary>
 public class OperatorIpcHandlerTests
 {
@@ -143,7 +146,7 @@ public class OperatorIpcHandlerTests
     }
 
     [Fact]
-    public void Given_OperatorServices_When_Registered_Then_TheRouterHasOneDisconnectHandler()
+    public void Given_OperatorServices_When_Registered_Then_TheRouterHasOneDisconnectAndOneShutdownHandler()
     {
         // Arrange
         var services = BuildServices();
@@ -152,8 +155,8 @@ public class OperatorIpcHandlerTests
         using var provider = services.BuildServiceProvider();
 
         // Assert
-        var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).ToList();
-        Assert.Equal(ClientCommand.DisconnectPeer, Assert.Single(commands));
+        var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).Order().ToList();
+        Assert.Equal([ClientCommand.DisconnectPeer, ClientCommand.Shutdown], commands);
     }
 
     [Fact]
@@ -225,6 +228,81 @@ public class OperatorIpcHandlerTests
         Assert.Equal(2, payload.ClosingChannelCount);
     }
 
+    [Fact]
+    public async Task Given_HtlcsInFlight_When_Shutdown_Then_RefusedAndTheNodeGoesOn()
+    {
+        // Arrange - NL-591: the first pass refuses rather than waiting for the HTLCs
+        _channels.Add(CreateChannelWithHtlcs(CreateChannelId(1), s_alice));
+        var provider = BuildServices().BuildServiceProvider();
+        var handler = GetHandler(provider, ClientCommand.Shutdown);
+
+        // Act
+        var response = await handler.HandleAsync(CreateEnvelope(ClientCommand.Shutdown, new ShutdownIpcRequest()),
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(IpcEnvelopeKind.Error, response.Kind);
+        var error = MessagePackSerializer.Deserialize<IpcError>(response.Payload, s_options,
+                                                                TestContext.Current.CancellationToken);
+        Assert.Equal(ErrorCodes.InvalidOperation, error.Code);
+        Assert.Contains("2 HTLC(s) are in flight", error.Message);
+        Assert.False(provider.GetRequiredService<INodeDrainState>().IsDraining);
+        Assert.False(provider.GetRequiredService<NodeShutdownTrigger>().IsStopRequested);
+    }
+
+    [Fact]
+    public async Task Given_NoHtlcsInFlight_When_Shutdown_Then_DrainingAndTheHostStopsAfterTheAnswer()
+    {
+        // Arrange
+        _channels.Add(CreateChannel(CreateChannelId(1), s_alice, ChannelState.Open));
+        _channels.Add(CreateChannel(CreateChannelId(2), s_bob, ChannelState.Closed));
+        var lifetime = new Mock<IHostApplicationLifetime>();
+        var services = BuildServices();
+        services.AddSingleton(lifetime.Object);
+        var provider = services.BuildServiceProvider();
+        var handler = GetHandler(provider, ClientCommand.Shutdown);
+
+        // Act
+        var response = await handler.HandleAsync(CreateEnvelope(ClientCommand.Shutdown, new ShutdownIpcRequest()),
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert: the drain holds, and the host stops only once the IPC server wrote the answer
+        Assert.Equal(IpcEnvelopeKind.Response, response.Kind);
+        var payload = MessagePackSerializer.Deserialize<ShutdownIpcResponse>(
+            response.Payload, s_options, TestContext.Current.CancellationToken);
+        Assert.Equal(1, payload.ChannelCount);
+        Assert.True(provider.GetRequiredService<INodeDrainState>().IsDraining);
+        var trigger = provider.GetRequiredService<NodeShutdownTrigger>();
+        Assert.True(trigger.IsStopRequested);
+        lifetime.Verify(x => x.StopApplication(), Times.Never);
+        trigger.StopIfRequested();
+        trigger.StopIfRequested();
+        lifetime.Verify(x => x.StopApplication(), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_AShutdownRunning_When_ShutdownAgain_Then_Refused()
+    {
+        // Arrange
+        var provider = BuildServices().BuildServiceProvider();
+        var handler = GetHandler(provider, ClientCommand.Shutdown);
+        await handler.HandleAsync(CreateEnvelope(ClientCommand.Shutdown, new ShutdownIpcRequest()),
+                                  TestContext.Current.CancellationToken);
+
+        // Act
+        var response = await handler.HandleAsync(CreateEnvelope(ClientCommand.Shutdown, new ShutdownIpcRequest()),
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(IpcEnvelopeKind.Error, response.Kind);
+        var error = MessagePackSerializer.Deserialize<IpcError>(response.Payload, s_options,
+                                                                TestContext.Current.CancellationToken);
+        Assert.Contains("already shutting down", error.Message);
+    }
+
+    private static IIpcCommandHandler GetHandler(IServiceProvider provider, ClientCommand command) =>
+        provider.GetServices<IIpcCommandHandler>().Single(h => h.Command == command);
+
     private IIpcCommandHandler GetDisconnectHandler()
     {
         var provider = BuildServices().BuildServiceProvider();
@@ -237,6 +315,7 @@ public class OperatorIpcHandlerTests
         services.AddLogging();
         services.AddSingleton(_peerManagerMock.Object);
         services.AddSingleton(_channelMemoryRepositoryMock.Object);
+        services.AddSingleton<INodeDrainState, NodeDrainState>();
         services.AddOperatorIpcServices();
         return services;
     }
