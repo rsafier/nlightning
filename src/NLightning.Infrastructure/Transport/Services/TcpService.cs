@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Infrastructure.Transport.Services;
 
 using Domain.Exceptions;
+using Domain.Node.Constants;
 using Domain.Node.Options;
 using Events;
 using Interfaces;
@@ -43,20 +44,27 @@ public class TcpService : ITcpService
 
         foreach (var address in _nodeOptions.ListenAddresses)
         {
-            var parts = address.Split(':');
-            if (parts.Length != 2 || !int.TryParse(parts[1], out var port))
+            if (!TryParseListenAddress(address, out var endPoint))
             {
                 _logger.LogWarning("Invalid listen address: {Address}", address);
                 continue;
             }
 
-            var ipAddress = IPAddress.Parse(parts[0]);
-            var listener = new TcpListener(ipAddress, port);
+            var listener = new TcpListener(endPoint.Address, endPoint.Port);
+            if (endPoint.Address.AddressFamily == AddressFamily.InterNetworkV6
+             && endPoint.Address.Equals(IPAddress.IPv6Any))
+            {
+                // The wildcard :: is bound dual-stack (IPV6_V6ONLY off), so IPv4 peers reach us on it too; a specific
+                // IPv6 address (e.g. ::1) keeps an IPv6-only socket, where dual mode is not allowed (NL-107).
+                listener.Server.DualMode = true;
+            }
+
             listener.Start();
             _listeners.Add(listener);
 
             if (_logger.IsEnabled(LogLevel.Information))
-                _logger.LogInformation("Listening for connections on {Address}:{Port}", ipAddress, port);
+                _logger.LogInformation("Listening for connections on {Address}:{Port}", endPoint.Address,
+                                       endPoint.Port);
         }
 
         _listeningTask = ListenForConnectionsAsync(_cts.Token);
@@ -167,6 +175,45 @@ public class TcpService : ITcpService
             throw new ConnectionException($"Failed to connect to peer {peerAddress.Host}:{peerAddress.Port} through Tor",
                                           e);
         }
+    }
+
+    /// <summary>
+    /// Reads a <c>Node:ListenAddresses</c> entry: <c>[ipv6]:port</c> for IPv6 (e.g. <c>[::]:9735</c>,
+    /// <c>[2001:db8::1]:9735</c>), <c>ip:port</c> for IPv4, or a bare IP address, which takes the BOLT 7 default port
+    /// (NL-107). A host name is not a listen address: the listener binds an IP endpoint only.
+    /// </summary>
+    internal static bool TryParseListenAddress(string? address, out IPEndPoint endPoint)
+    {
+        var text = address?.Trim();
+        if (!string.IsNullOrEmpty(text))
+        {
+            // A leading bracket decides the form: a port is required. IPAddress.TryParse accepts bracketed forms too
+            // (.NET 10) and silently drops the port, so the bracket is checked before any bare-address handling.
+            if (text.StartsWith('['))
+            {
+                if (IPEndPoint.TryParse(text, out var bracketed) && bracketed.Port != 0)
+                {
+                    endPoint = bracketed;
+                    return true;
+                }
+            }
+            else if (IPAddress.TryParse(text, out var ipAddress))
+            {
+                // A bare address ("::", "0.0.0.0", "2001:db8::1", also an unbracketed IPv6 address such as
+                // "::1:9735", which is the IPv6 address ::0.1.151.53) takes the default port.
+                endPoint = new IPEndPoint(ipAddress, (int)NodeConstants.DefaultPort);
+                return true;
+            }
+            else if (IPEndPoint.TryParse(text, out var parsed) && parsed.Port != 0)
+            {
+                // Unbracketed "ip:port" (IPv4); port 0 (an ephemeral port nobody could dial us on) is rejected.
+                endPoint = parsed;
+                return true;
+            }
+        }
+
+        endPoint = new IPEndPoint(IPAddress.None, 0);
+        return false;
     }
 
     private async Task ListenForConnectionsAsync(CancellationToken cancellationToken)
