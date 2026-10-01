@@ -16,7 +16,8 @@ using NLightning.Tests.Utils;
 /// <summary>
 /// NL-178: <c>TcpService</c> over real loopback sockets: the listener accepts a connection and raises its event, a
 /// connect to a listener works end to end (bytes both ways), a refused connect becomes a <c>ConnectionException</c>,
-/// a bad listen address is skipped, and stop closes the listeners.
+/// a bad listen address is skipped, and stop closes the listeners. NL-107: IPv6 listen addresses
+/// (<c>[ipv6]:port</c>, a bare address on the default port) parse and bind, the wildcard <c>[::]</c> dual-stack.
 /// </summary>
 public class TcpServiceTests
 {
@@ -119,8 +120,8 @@ public class TcpServiceTests
     [Fact]
     public async Task Given_AnInvalidListenAddress_When_TheServiceStarts_Then_ItIsSkippedAndNothingIsListening()
     {
-        // Arrange
-        var service = CreateService(["127.0.0.1"]);
+        // Arrange: a host name is not a listen address, ":::9735" is no IPv6 endpoint and port 0 gives nobody a port
+        var service = CreateService(["localhost:9735", ":::9735", "[::1]:0"]);
 
         try
         {
@@ -129,6 +130,116 @@ public class TcpServiceTests
 
             // Assert
             Assert.Empty(service.ListeningTo);
+        }
+        finally
+        {
+            await service.StopListeningAsync();
+        }
+    }
+
+    [Theory]
+    [InlineData("[::]:9735", "::", 9735)]
+    [InlineData("[2001:db8::1]:9735", "2001:db8::1", 9735)]
+    [InlineData("[::1]:19735", "::1", 19735)]
+    [InlineData("::", "::", 9735)]
+    [InlineData(" ::1 ", "::1", 9735)]
+    [InlineData("0.0.0.0", "0.0.0.0", 9735)]
+    [InlineData("2001:db8::1", "2001:db8::1", 9735)]
+    [InlineData("127.0.0.1:9735", "127.0.0.1", 9735)]
+    public void Given_AValidListenAddress_When_Parsed_Then_TheEndPointIsRead(string config, string expectedAddress,
+                                                                            int expectedPort)
+    {
+        // Act
+        var parsed = TcpService.TryParseListenAddress(config, out var endPoint);
+
+        // Assert: a bare address takes the BOLT 7 default port (NL-107)
+        Assert.True(parsed);
+        Assert.Equal(expectedAddress, endPoint.Address.ToString());
+        Assert.Equal(expectedPort, endPoint.Port);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    [InlineData(":9735")]
+    [InlineData("[::1]")]
+    [InlineData("[::]:0")]
+    [InlineData("[::1]:99999")]
+    [InlineData(":::9735")]
+    [InlineData("localhost:9735")]
+    [InlineData("2001:db8::1:9735:extra")]
+    public void Given_AnInvalidListenAddress_When_Parsed_Then_ItIsRefused(string? config)
+    {
+        Assert.False(TcpService.TryParseListenAddress(config, out var endPoint));
+        Assert.Equal(IPAddress.None, endPoint.Address);
+    }
+
+    [Fact]
+    public async Task Given_AnIPv6LoopbackListenAddress_When_AClientConnectsOverV6_Then_TheEventCarriesThePeer()
+    {
+        // Arrange
+        var port = await PortPoolUtil.GetAvailablePortAsync();
+        var service = CreateService([$"[::1]:{port}"]);
+        var connected = new TaskCompletionSource<NewPeerConnectedEventArgs>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        service.OnNewPeerConnected += (_, e) => connected.TrySetResult(e);
+
+        try
+        {
+            await service.StartListeningAsync(TestContext.Current.CancellationToken);
+            Assert.Equal($"[::1]:{port}", service.ListeningTo.Single().ToString());
+            using var client = new TcpClient();
+
+            // Act
+            await client.ConnectAsync(IPAddress.IPv6Loopback, port, TestContext.Current.CancellationToken);
+            var eventArgs = await connected.Task.WaitAsync(TimeSpan.FromSeconds(5),
+                                                          TestContext.Current.CancellationToken);
+
+            // Assert
+            Assert.Equal("::1", eventArgs.Host);
+            Assert.True(eventArgs.TcpClient.Connected);
+        }
+        finally
+        {
+            await service.StopListeningAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Given_AWildcardV6ListenAddress_When_ClientsConnectOverBothFamilies_Then_BothAreAccepted()
+    {
+        // Arrange: [::] is bound dual-stack, so an IPv4 peer (loopback here) reaches it as a mapped address too
+        var port = await PortPoolUtil.GetAvailablePortAsync();
+        var service = CreateService([$"[::]:{port}"]);
+        var events = new List<NewPeerConnectedEventArgs>();
+        var bothReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.OnNewPeerConnected += (_, e) =>
+        {
+            lock (events)
+            {
+                events.Add(e);
+                if (events.Count == 2)
+                    bothReceived.TrySetResult();
+            }
+        };
+
+        try
+        {
+            await service.StartListeningAsync(TestContext.Current.CancellationToken);
+            using var clientV6 = new TcpClient(AddressFamily.InterNetworkV6);
+            using var clientV4 = new TcpClient(AddressFamily.InterNetwork);
+
+            // Act
+            await clientV6.ConnectAsync(IPAddress.IPv6Loopback, port, TestContext.Current.CancellationToken);
+            await clientV4.ConnectAsync(IPAddress.Loopback, port, TestContext.Current.CancellationToken);
+            await bothReceived.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+            // Assert: one peer per family, the IPv4 one through its mapped form
+            Assert.Equal(2, events.Count);
+            Assert.Contains("::1", events.Select(e => e.Host));
+            Assert.Contains(events.Select(e => e.Host), h => h.EndsWith("127.0.0.1", StringComparison.Ordinal));
+            Assert.All(events, e => Assert.True(e.TcpClient.Connected));
         }
         finally
         {

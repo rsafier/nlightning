@@ -54,7 +54,8 @@ public class NodeOptions
     /// Addresses/Interfaces to listen on for incoming connections
     /// </summary>
     /// <remarks>
-    /// Addresses should be in the format "ip:port" or "hostname:port"
+    /// <c>ip:port</c> for IPv4, <c>[ipv6]:port</c> for IPv6 (e.g. <c>[::]:9735</c>), or a bare IP address, which takes
+    /// the default port 9735 (NL-107); the wildcard <c>::</c> listens dual-stack.
     /// </remarks>
     public List<string> ListenAddresses { get; set; } = ["127.0.0.1:9735"];
 
