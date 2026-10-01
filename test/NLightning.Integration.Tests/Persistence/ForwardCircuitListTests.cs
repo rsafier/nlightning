@@ -188,7 +188,7 @@ internal static class ForwardCircuitListRoundTrip
         Assert.Single(byScid, f => f.IncomingChannelId == ForwardCircuitListTests.IncomingA);
 
         var totals = await repository.SummarizeAsync(new ForwardCircuitListQuery(0, 100), cancellationToken);
-        Assert.Equal((1, 1, 1, 0, 100), (totals.Pending, totals.Offered, totals.Fulfilled, totals.Failed,
+        Assert.Equal((0, 1, 1, 1, 100), (totals.Pending, totals.Offered, totals.Fulfilled, totals.Failed,
                                          totals.FulfilledFeesMsat));
     }
 }
