@@ -193,9 +193,10 @@ public class OfferHarnessTests
         ShareBobsChannelUpdateWithCarol(harness);
         var offers = harness.Carol.Services.GetRequiredService<IOfferService>();
         Assert.True(offers.IsAvailable);
-        var offer = await offers.CreateOfferAsync(new CreateOfferRequest(amount, "harness offer",
-                                                                         QuantityMax: quantityMax),
-                                                  TestContext.Current.CancellationToken);
+        // Bob has an open channel with Carol, so the reachability warning (NL-452) stays off
+        var offer = (await offers.CreateOfferAsync(new CreateOfferRequest(amount, "harness offer",
+                                                                          QuantityMax: quantityMax),
+                                                   TestContext.Current.CancellationToken)).Offer;
         Assert.True(offer.HasPaths);
         return offer;
     }

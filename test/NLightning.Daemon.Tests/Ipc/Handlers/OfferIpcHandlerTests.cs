@@ -36,7 +36,9 @@ public class OfferIpcHandlerTests
         _offers.SetupGet(o => o.IsAvailable).Returns(true);
         _offers.Setup(o => o.CreateOfferAsync(It.IsAny<CreateOfferRequest>(), It.IsAny<CancellationToken>()))
                .Callback<CreateOfferRequest, CancellationToken>((r, _) => _created = r)
-               .ReturnsAsync((CreateOfferRequest r, CancellationToken _) => Offer(r.Amount, r.Description));
+               .ReturnsAsync((CreateOfferRequest r, CancellationToken _) => new CreatedOffer(Offer(r.Amount,
+                                                                                                  r.Description),
+                                                                                             "fragile"));
         _offers.Setup(o => o.GetInvoiceCountsAsync(It.IsAny<Hash>(), It.IsAny<CancellationToken>()))
                .ReturnsAsync(new OfferInvoiceCounts(2, 3));
     }
@@ -72,6 +74,7 @@ public class OfferIpcHandlerTests
         Assert.Equal(LightningMoney.Satoshis(10_000), payload.Offer.Amount);
         Assert.Equal(OfferStatus.Active, payload.Offer.Status);
         Assert.True(payload.Offer.HasPaths);
+        Assert.Equal("fragile", payload.Warning);
         Assert.Equal(0, payload.Offer.PaidInvoices);
         Assert.NotNull(_created);
         Assert.Equal("nltg", _created.Issuer);

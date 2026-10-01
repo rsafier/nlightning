@@ -12,7 +12,9 @@ using Interfaces;
 
 /// <summary>
 /// Creates and stores one of our BOLT 12 offers through <see cref="IOfferService"/> (<c>createoffer</c>,
-/// ClientCommand 26). The returned <c>lno1...</c> string is answerable as soon as this returns.
+/// ClientCommand 26). The returned <c>lno1...</c> string is answerable as soon as this returns; when its paths are
+/// introduced by peers without an open channel with us (which we never reconnect to), the response's
+/// <c>Warning</c> says so (NL-452).
 /// </summary>
 /// <remarks>
 /// Errors (<see cref="ErrorCodes.InvalidOperation"/>): offers unavailable (onion messages or route blinding off, no
@@ -59,9 +61,11 @@ public sealed class CreateOfferClientHandler : IClientCommandHandler<CreateOffer
                                                   request.ForcePaths);
         try
         {
-            var offer = await _offerService.CreateOfferAsync(offerRequest, ct);
+            var created = await _offerService.CreateOfferAsync(offerRequest, ct);
             return new CreateOfferClientResponse(
-                OfferInfoClientResponse.FromModel(offer, _timeProvider.GetUtcNow(), new OfferInvoiceCounts(0, 0)));
+                OfferInfoClientResponse.FromModel(created.Offer, _timeProvider.GetUtcNow(),
+                                                  new OfferInvoiceCounts(0, 0)),
+                created.Warning);
         }
         catch (ArgumentException e)
         {
