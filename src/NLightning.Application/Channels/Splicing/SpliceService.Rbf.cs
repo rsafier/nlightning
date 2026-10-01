@@ -15,12 +15,14 @@ using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Constants;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.InteractiveTx;
 using Domain.Protocol.InteractiveTx.Enums;
+using Domain.Protocol.InteractiveTx.Interfaces;
 using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -44,7 +46,13 @@ using Interfaces;
 /// the same wallet inputs under the same reservation (a splice-in keeps its amount and pays the new fee from its
 /// change), or the same splice-out output with our fee share taken from our channel balance (a negative
 /// <c>funding_output_contribution</c>, NL-481); as initiator without either we still pay the common fields and the
-/// shared input and output from our balance.</para>
+/// shared input and output from our balance. When the rebuild cannot fund the attempt (a splice-in whose inputs cannot
+/// pay the fee at the new feerate) or a bump asks for a positive contribution without earlier inputs, fresh wallet
+/// inputs are reserved for the attempt the way an initial splice-in reserves them (NL-510,
+/// <see cref="PlanFreshInputRbfContributionAsync"/>): the new attempt's own reservation, so it comes back with the
+/// losing siblings (NL-492) and is released at once when nothing was built from it. A bump refuses when the wallet
+/// cannot fund the fresh inputs or their fee share breaks the caps (<see cref="GetRbfFeeShareRefusal"/>); in a peer's
+/// RBF we then contribute 0 as before.</para>
 /// <para>Fund safety: the attempt is checked against the pending ones before our <c>commitment_signed</c>
 /// (<see cref="CheckRbfAttempt"/>), its funding row and commitments are saved before anything is sent (as a splice),
 /// commitments on every sibling share the commitment numbers (one revocation revokes them all), and the lock of any
@@ -93,33 +101,63 @@ public sealed partial class SpliceService
             var latest = fundings.LatestAttempt
                       ?? throw new InvalidOperationException($"[SPR-T1] Channel {channelId} has no pending splice");
             var previous = await GetLatestAttemptSessionAsync(channel, fundings, cancellationToken);
-            var plan = PlanRbfContribution(previous?.LocalContribution ?? InteractiveTxContribution.Empty,
-                                           latest.LocalBalanceDeltaMsat / 1_000, true, request.FeeratePerKw,
-                                           request.ContributionSatoshis, newSpliceOutScript)
-                    ?? throw new InvalidOperationException(
-                           $"[SPR-T1] Our contribution to the splice of channel {channelId} cannot be rebuilt at "
-                         + $"{request.FeeratePerKw} sat/kw (the pending attempt's wallet inputs cannot pay it, or the "
-                         + "requested contribution needs new wallet inputs)");
-
-            // The rules that do not depend on the quiescence itself, now; the rest once quiescent
-            var conditions = GetRbfConditions(channel, GetNegotiatedFeatures(channel.RemoteNodeId),
-                                              QuiescenceState.None, fundings, false, quickFeerate);
-            conditions = conditions with
+            var previousContribution = previous?.LocalContribution ?? InteractiveTxContribution.Empty;
+            var plan = PlanRbfContribution(previousContribution, latest.LocalBalanceDeltaMsat / 1_000, true,
+                                           request.FeeratePerKw, request.ContributionSatoshis, newSpliceOutScript);
+            InteractiveTxContribution? fresh = null;
+            try
             {
-                Channel = conditions.Channel with { IsQuiescent = true, LocalIsQuiescenceInitiator = true }
-            };
-            if (SpliceRules.CheckSendRbf(conditions, request.FeeratePerKw, plan.SignedContributionSatoshis) is
-                { } violation)
-                throw new InvalidOperationException($"[{violation.RequirementId}] {violation.Reason}");
-            if (request.MaxFeeSatoshis is { } maxFee && plan.FeeSatoshis > maxFee)
-                throw new InvalidOperationException(
-                    $"[SPR-T1] Our share of the bumped splice's fee, {plan.FeeSatoshis} sat, is above the limit of "
-                  + $"{maxFee} sat");
+                if (plan is null)
+                {
+                    // NL-510: the attempt cannot be rebuilt from the latest one's inputs, or a positive contribution
+                    // is asked without earlier inputs: fresh wallet inputs fund it (theirs is the attempt's own
+                    // reservation, released with the losing siblings, NL-492)
+                    plan = await PlanFreshInputRbfContributionAsync(channelId, latest.LocalBalanceDeltaMsat / 1_000,
+                                                                    true, request.FeeratePerKw,
+                                                                    request.ContributionSatoshis, cancellationToken);
+                    fresh = plan?.Contribution;
+                }
 
-            negotiation = CreateRbfNegotiation(channel, fundings, latest, previous, plan, true,
-                                               null, request.FeeratePerKw, 0, false,
-                                               SpliceNegotiationState.AwaitingQuiescence);
-            _negotiations[channelId] = negotiation;
+                if (plan is null)
+                    throw new InvalidOperationException(
+                        $"[SPR-T1] Our contribution to the splice of channel {channelId} cannot be rebuilt at "
+                      + $"{request.FeeratePerKw} sat/kw, and the wallet cannot fund new inputs for it (the "
+                      + "pending attempt's wallet inputs cannot pay it, or the wallet has nothing to spend)");
+
+                if (fresh is not null && GetRbfFeeShareRefusal(plan) is { } refusal)
+                    throw new InvalidOperationException(
+                        $"[SPR-T1] Our fresh contribution of {plan.SignedContributionSatoshis} sat to the splice of "
+                      + $"channel {channelId} at {request.FeeratePerKw} sat/kw has a fee share {refusal}");
+
+                // The rules that do not depend on the quiescence itself, now; the rest once quiescent
+                var conditions = GetRbfConditions(channel, GetNegotiatedFeatures(channel.RemoteNodeId),
+                                                  QuiescenceState.None, fundings, false, quickFeerate);
+                conditions = conditions with
+                {
+                    Channel = conditions.Channel with { IsQuiescent = true, LocalIsQuiescenceInitiator = true }
+                };
+                if (SpliceRules.CheckSendRbf(conditions, request.FeeratePerKw, plan.SignedContributionSatoshis) is
+                    { } violation)
+                    throw new InvalidOperationException($"[{violation.RequirementId}] {violation.Reason}");
+                if (request.MaxFeeSatoshis is { } maxFee && plan.FeeSatoshis > maxFee)
+                    throw new InvalidOperationException(
+                        $"[SPR-T1] Our share of the bumped splice's fee, {plan.FeeSatoshis} sat, is above the limit "
+                      + $"of {maxFee} sat");
+
+                negotiation = CreateRbfNegotiation(channel, fundings, latest, previous, plan, true,
+                                                   null, request.FeeratePerKw, 0, false,
+                                                   SpliceNegotiationState.AwaitingQuiescence);
+                // NL-510: a fresh reservation is ours until the driver takes it (this negotiation's end releases it);
+                // a rebuilt one stays the pending attempt's and is never released here
+                negotiation.WalletContribution = fresh;
+                _negotiations[channelId] = negotiation;
+                fresh = null;
+            }
+            finally
+            {
+                if (fresh is not null)
+                    await ReleaseAsync(fresh);
+            }
         }
 
         QuiescenceInitiator initiator;
@@ -276,23 +314,31 @@ public sealed partial class SpliceService
         }
 
         var latest = fundings.LatestAttempt!;
+        var previousContribution = previous?.LocalContribution ?? InteractiveTxContribution.Empty;
 
-        // Our side of the new attempt: the latest one's rebuilt at the new feerate as non-initiator, or nothing when
-        // that cannot be paid or costs more than we accept (BOLT 2: a peer may stop contributing rather than fail the
-        // RBF: it "sets their sats to zero")
-        var plan = PlanRbfContribution(previous?.LocalContribution ?? InteractiveTxContribution.Empty,
-                                       latest.LocalBalanceDeltaMsat / 1_000, false, payload.Feerate, null, null);
+        // Our side of the new attempt: the latest one's rebuilt at the new feerate as non-initiator, or — when that
+        // cannot be paid (a splice-in whose inputs cannot pay the higher fee) — fresh wallet inputs for the same
+        // amount (NL-510); nothing when even they cannot be funded or our share costs more than we accept (BOLT 2: a
+        // peer may stop contributing rather than fail the RBF: it "sets their sats to zero")
+        var plan = PlanRbfContribution(previousContribution, latest.LocalBalanceDeltaMsat / 1_000, false,
+                                       payload.Feerate, null, null)
+                ?? await PlanFreshInputRbfContributionAsync(channelId, latest.LocalBalanceDeltaMsat / 1_000, false,
+                                                            payload.Feerate, null, cancellationToken);
         if (plan is not null && GetRbfFeeShareRefusal(plan) is { } refusal)
         {
             _logger.LogWarning("Our share of the fee of the peer's RBF attempt on channel {ChannelId} at {Feerate} "
                              + "sat/kw, {Fee} sat, is too high ({Refusal}); not contributing to it", channelId,
                                payload.Feerate, plan.FeeSatoshis, refusal);
+            if (plan.Contribution.ReservationId != previousContribution.ReservationId)
+                await ReleaseAsync(plan.Contribution); // NL-510: a fresh reservation the attempt will not use
+
             plan = null;
         }
         else if (plan is null)
         {
             _logger.LogWarning("Our contribution to the splice of channel {ChannelId} cannot be rebuilt at {Feerate} "
-                             + "sat/kw; not contributing to the peer's RBF attempt", channelId, payload.Feerate);
+                             + "sat/kw and no fresh inputs could be reserved; not contributing to the peer's RBF "
+                             + "attempt", channelId, payload.Feerate);
         }
 
         plan ??= PlanRbfContribution(InteractiveTxContribution.Empty, 0, false, payload.Feerate, null, null)!;
@@ -301,10 +347,16 @@ public sealed partial class SpliceService
                                                payload.Feerate, payload.Locktime,
                                                message.RequireConfirmedInputsTlv is not null,
                                                SpliceNegotiationState.Negotiating);
+        // NL-510: a fresh reservation is ours until the driver takes it; a rebuilt one stays the pending attempt's
+        negotiation.WalletContribution =
+            plan.Contribution.ReservationId is { } reservation && reservation != previousContribution.ReservationId
+                ? plan.Contribution
+                : null;
         if (!TryPrepareSharedFunding(negotiation, out var reason))
-            return EndQuiescenceWithTxAbort(channelId, peerPubKey, reason);
+            return await EndRbfBeforeTheAttemptAsync(negotiation, channelId, peerPubKey, reason);
         if (!await PrepareDriverForRbfAsync(channel, negotiation, fundings, cancellationToken, unitOfWork))
-            return EndQuiescenceWithTxAbort(channelId, peerPubKey, "the signed splice attempts are not stored");
+            return await EndRbfBeforeTheAttemptAsync(negotiation, channelId, peerPubKey,
+                                                     "the signed splice attempts are not stored");
 
         _negotiations[channelId] = negotiation;
         IReadOnlyList<IChannelMessage> messages;
@@ -316,16 +368,27 @@ public sealed partial class SpliceService
         catch (Exception e) when (e is InvalidOperationException or ArgumentException)
         {
             End(negotiation, e.Message);
-            return EndQuiescenceWithTxAbort(channelId, peerPubKey, "cannot start the rbf negotiation");
+            return await EndRbfBeforeTheAttemptAsync(negotiation, channelId, peerPubKey,
+                                                     "cannot start the rbf negotiation");
         }
 
         if (messages.Any(m => m is TxAbortMessage))
         {
             // The driver rejected the attempt: its tx_abort ends the quiescence (SP-Q-01)
             End(negotiation, "the rbf attempt was rejected");
+            if (negotiation.WalletContribution is { } unfunded)
+            {
+                // The driver released it with the rejected attempt, or never took it
+                negotiation.WalletContribution = null;
+                await ReleaseAsync(unfunded);
+            }
+
             _serviceProvider.GetService<IQuiescenceService>()?.Terminate(channelId, QuiescenceEndReason.TxAbort);
             return messages;
         }
+
+        // The attempt owns our contribution from here on (its end releases it, NL-492 when it is discarded)
+        negotiation.WalletContribution = null;
 
         _logger.LogInformation("Accepting the RBF of splice {TxId} on channel {ChannelId} by {Peer}: its contribution "
                              + "{Contribution} sat, ours {Ours} sat at {Feerate} sat/kw", latest.FundingTxId, channelId,
@@ -638,7 +701,7 @@ public sealed partial class SpliceService
     /// balance, so the contribution is -(outputs + fee) (D16, NL-481); a negative <paramref name="requestedSatoshis"/>
     /// is the new signed contribution (the output is what is left after the fee, to the previous splice-out script or
     /// <paramref name="newSpliceOutScript"/>), 0 drops our outputs; a positive one needs new wallet inputs and gives
-    /// null.</item>
+    /// null (the service reserves them fresh for the attempt, NL-510).</item>
     /// </list>
     /// </remarks>
     internal static RbfContributionPlan? PlanRbfContribution(InteractiveTxContribution previous,
@@ -722,6 +785,70 @@ public sealed partial class SpliceService
         return new RbfContributionPlan(outputs.Count == 0 ? InteractiveTxContribution.Empty
                                                           : new InteractiveTxContribution([], outputs, null),
                                        signed, checked((ulong)ownFee), outputs.FirstOrDefault()?.ScriptPubKey);
+    }
+
+    /// <summary>
+    /// NL-510: our contribution to an RBF attempt funded by fresh wallet inputs, for an attempt the latest one's
+    /// stored contribution cannot be rebuilt for (<see cref="PlanRbfContribution"/> returned null: a splice-in whose
+    /// inputs cannot pay the fee at <paramref name="feeratePerKw"/>) or that a positive
+    /// <paramref name="requestedSatoshis"/> asks new money for (the requested amount replaces what we contributed
+    /// before). The wallet reserves inputs for the target amount and our fee the way an initial splice-in does
+    /// (<c>WalletInteractiveTxContributor</c>, a splice-in keeps its amount and pays the fee from its change): the
+    /// reservation belongs to this attempt alone, so it comes back when the attempt is discarded for a sibling that
+    /// locked (NL-492), and the caller releases it when nothing was built from it. Null (nothing reserved) when the
+    /// target is not positive, no wallet contributor is available, or the wallet cannot fund it.
+    /// </summary>
+    private async Task<RbfContributionPlan?> PlanFreshInputRbfContributionAsync(ChannelId channelId,
+                                                                                long previousSignedSatoshis,
+                                                                                bool isInitiator, uint feeratePerKw,
+                                                                                long? requestedSatoshis,
+                                                                                CancellationToken cancellationToken)
+    {
+        var target = requestedSatoshis ?? previousSignedSatoshis;
+        if (target <= 0 || _serviceProvider.GetService<IInteractiveTxContributor>() is not { } contributor)
+            return null;
+
+        try
+        {
+            var contribution = await contributor.ContributeAsync(
+                new InteractiveTxContributionRequest(channelId, InteractiveTxPurpose.Splice,
+                                                     LightningMoney.Satoshis(target), [], feeratePerKw,
+                                                     isInitiator ? (int)GetInitiatorSharedWeight() : 0, true),
+                cancellationToken);
+            var inputTotal = contribution.Inputs.Sum(i => i.Amount.Satoshi);
+            var change = contribution.Outputs.Where(o => o.IsChange).Sum(o => o.Amount.Satoshi);
+            var fee = checked((ulong)(inputTotal - target - change));
+            _logger.LogInformation("Reserved {Count} fresh wallet input(s) worth {Total} sat for the RBF of channel "
+                                 + "{ChannelId} at {Feerate} sat/kw: our contribution {Contribution} sat, our fee "
+                                 + "{Fee} sat (reservation {ReservationId})", contribution.Inputs.Count, inputTotal,
+                                   channelId, feeratePerKw, target, fee, contribution.ReservationId);
+            return new RbfContributionPlan(contribution, target, fee, null);
+        }
+        catch (Exception e) when (e is InsufficientFundsException or InvalidOperationException)
+        {
+            _logger.LogWarning("The wallet cannot fund fresh inputs for the RBF of channel {ChannelId} at {Feerate} "
+                             + "sat/kw: {Reason}", channelId, feeratePerKw, e.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// An RBF we had accepted in principle ended before the driver took our contribution (a shared-funding or driver
+    /// preparation failure): our tx_abort ends the quiescence (SP-Q-01) and a fresh reservation of ours (NL-510) is
+    /// released, since the driver never got it.
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> EndRbfBeforeTheAttemptAsync(SpliceNegotiation negotiation,
+                                                                                   ChannelId channelId,
+                                                                                   CompactPubKey peerPubKey,
+                                                                                   string reason)
+    {
+        if (negotiation.WalletContribution is { } fresh)
+        {
+            negotiation.WalletContribution = null;
+            await ReleaseAsync(fresh);
+        }
+
+        return EndQuiescenceWithTxAbort(channelId, peerPubKey, reason);
     }
 
     /// <summary>
