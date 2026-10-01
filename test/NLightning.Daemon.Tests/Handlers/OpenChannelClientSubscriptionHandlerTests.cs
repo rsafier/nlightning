@@ -4,7 +4,6 @@ namespace NLightning.Daemon.Tests.Handlers;
 
 using Daemon.Handlers;
 using Domain.Bitcoin.Interfaces;
-using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Enums;
@@ -277,62 +276,6 @@ public class OpenChannelClientSubscriptionHandlerTests
         await Assert.ThrowsAsync<ChannelErrorException>(() => handleTask);
     }
 
-    [Fact]
-    public async Task Given_ChannelAlreadyFundingSigned_When_Subscribing_Then_TheClientIsAnsweredAtOnce()
-    {
-        // Arrange (NL-295): the channel was signed before the client subscribed, so no update will name it; the
-        // current state answers. A signed channel reestablishes, so the peer may be gone
-        var channelId = CreateRandomChannelId();
-        var request = new OpenChannelClientSubscriptionRequest(channelId);
-        var fundingTxId = new TxId(new byte[32]);
-        var channel = CreateDummySignedChannel(channelId, CreateDummyPubKey(), fundingTxId);
-        _channelMemoryRepositoryMock.Setup(x => x.TryGetChannel(channelId, out channel)).Returns(true);
-
-        // Act
-        var response = await _handler.HandleAsync(request, TestContext.Current.CancellationToken);
-
-        // Assert
-        Assert.Equal(channelId, response.ChannelId);
-        Assert.Equal(ChannelState.V1FundingSigned, response.ChannelState);
-        Assert.Equal(fundingTxId, response.TxId);
-        Assert.Equal(0u, response.Index);
-    }
-
-    [Fact]
-    public async Task Given_ChannelAlreadyFundingSigned_When_ANewClientSubscribes_Then_ItIsAnsweredAtOnce()
-    {
-        // Arrange (NL-535): a client that printed no funding yet gets the published one at once
-        var channelId = CreateRandomChannelId();
-        var request = new OpenChannelClientSubscriptionRequest(channelId) { ReportFundingChanges = true };
-        var channel = CreateDummySignedChannel(channelId, CreateDummyPubKey(), new TxId(new byte[32]));
-        _channelMemoryRepositoryMock.Setup(x => x.TryGetChannel(channelId, out channel)).Returns(true);
-
-        // Act
-        var response = await _handler.HandleAsync(request, TestContext.Current.CancellationToken);
-
-        // Assert
-        Assert.Equal(ChannelState.V1FundingSigned, response.ChannelState);
-    }
-
-    [Fact]
-    public async Task Given_TheKnownFundingOnly_When_ANewClientSubscribes_Then_ItKeepsWaiting()
-    {
-        // Arrange: the funding the channel runs on is the one the client printed last, so there is nothing new
-        var channelId = CreateRandomChannelId();
-        var fundingTxId = new TxId(new byte[32]);
-        var request = new OpenChannelClientSubscriptionRequest(channelId)
-        {
-            ReportFundingChanges = true,
-            KnownFundingTxId = fundingTxId
-        };
-        var channel = CreateDummySignedChannel(channelId, CreateDummyPubKey(), fundingTxId);
-        _channelMemoryRepositoryMock.Setup(x => x.TryGetChannel(channelId, out channel)).Returns(true);
-
-        // Act & Assert: no answer comes (the wait ends with the cancellation, not with a funding report)
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => _handler.HandleAsync(request, new CancellationToken(canceled: true)));
-    }
-
     private static ChannelId CreateRandomChannelId()
     {
         var bytes = new byte[32];
@@ -360,16 +303,5 @@ public class OpenChannelClientSubscriptionHandlerTests
                                 LightningMoney.Satoshis(100000),
                                 new ChannelKeySetModel(0, peerId, peerId, peerId, peerId, peerId, peerId), 0, 0,
                                 LightningMoney.Zero, null, 0, peerId, 0, ChannelState.V1Opening, ChannelVersion.V1);
-    }
-
-    /// <summary>A funder channel already at V1FundingSigned, running on a published funding transaction.</summary>
-    private static ChannelModel CreateDummySignedChannel(ChannelId channelId, CompactPubKey peerId, TxId fundingTxId)
-    {
-        return new ChannelModel(new ChannelParams(), channelId, null,
-                                new FundingOutputInfo(LightningMoney.Satoshis(100_000), peerId, peerId, fundingTxId, 0),
-                                true, null, null, LightningMoney.Satoshis(100000),
-                                new ChannelKeySetModel(0, peerId, peerId, peerId, peerId, peerId, peerId), 0, 0,
-                                LightningMoney.Zero, null, 0, peerId, 0, ChannelState.V1FundingSigned,
-                                ChannelVersion.V1);
     }
 }

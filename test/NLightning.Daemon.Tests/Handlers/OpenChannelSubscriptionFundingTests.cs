@@ -216,18 +216,21 @@ public sealed class OpenChannelSubscriptionFundingTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_AnOlderClient_When_TheFundingWasSignedBeforeSubscribing_Then_AnsweredAtOnce()
+    public async Task Given_AnOlderClient_When_TheChannelIsUpdated_Then_AnsweredAsBefore()
     {
-        // Arrange (NL-295): no ReportFundingChanges, and the funding was already signed and published before the
-        // call: the current state answers, without waiting for the channel's next update
+        // Arrange: no ReportFundingChanges, the funding already signed: the old wait for the next update
         Publish(s_first);
+        var handle = _handler.HandleAsync(new OpenChannelClientSubscriptionRequest(_channel.ChannelId),
+                                          TestContext.Current.CancellationToken);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        var answeredAtOnce = handle.IsCompleted;
 
         // Act
-        var response = await _handler.HandleAsync(new OpenChannelClientSubscriptionRequest(_channel.ChannelId),
-                                                  TestContext.Current.CancellationToken)
-                                     .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        RaiseUpdated();
+        var response = await handle.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         // Assert
+        Assert.False(answeredAtOnce);
         Assert.Equal(ChannelState.V1FundingSigned, response.ChannelState);
         Assert.Equal(s_first, response.TxId);
     }
