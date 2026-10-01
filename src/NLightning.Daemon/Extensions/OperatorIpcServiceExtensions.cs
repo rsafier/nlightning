@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 namespace NLightning.Daemon.Extensions;
@@ -32,6 +33,8 @@ public static class OperatorIpcServiceExtensions
 
         services.AddSingleton(sp => new NodeShutdownTrigger(sp.GetService<IHostApplicationLifetime>()));
         services.AddSingleton<IpcClientConnectionAccessor>();
+        // Drains a `shutdown --wait` (and the signal drain) to an idle node (NL-592)
+        services.TryAddSingleton<ShutdownDrainWaiter>();
         services.AddScoped<IClientCommandHandler<ShutdownClientRequest, ShutdownClientResponse>,
             ShutdownClientHandler>();
         services.AddSingleton<IIpcCommandHandler, ShutdownIpcHandler>();

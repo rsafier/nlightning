@@ -11,6 +11,7 @@ using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
 using Application.Channels.Splicing;
 using Application.InteractiveTx;
+using Application.Node.Services;
 using Application.Onchain.Fees;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
@@ -58,6 +59,9 @@ public class NltgDaemonService : BackgroundService
     private readonly ITorOnionService? _torOnionService;
     private readonly GossipOptions? _gossipOptions;
     private readonly FeeEstimationOptions? _feeEstimationOptions;
+    private readonly INodeBusyStateMonitor? _busyStateMonitor;
+    private readonly INodeDrainState? _nodeDrainState;
+    private readonly ShutdownDrainWaiter? _drainWaiter;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
                              IConfiguration configuration, IFeeService feeService,
@@ -76,9 +80,15 @@ public class NltgDaemonService : BackgroundService
                              IPeerBootstrapService? peerBootstrapService = null,
                              ITorOnionService? torOnionService = null,
                              IOptions<GossipOptions>? gossipOptions = null,
-                             IOptions<FeeEstimationOptions>? feeEstimationOptions = null)
+                             IOptions<FeeEstimationOptions>? feeEstimationOptions = null,
+                             INodeBusyStateMonitor? busyStateMonitor = null,
+                             INodeDrainState? nodeDrainState = null,
+                             ShutdownDrainWaiter? drainWaiter = null)
     {
         _feeEstimationOptions = feeEstimationOptions?.Value;
+        _busyStateMonitor = busyStateMonitor;
+        _nodeDrainState = nodeDrainState;
+        _drainWaiter = drainWaiter;
         _torOnionService = torOnionService;
         _gossipOptions = gossipOptions?.Value;
         _peerBootstrapService = peerBootstrapService;
@@ -233,6 +243,11 @@ public class NltgDaemonService : BackgroundService
     {
         _logger.LogInformation("NLTG shutdown requested");
 
+        // The bounded signal drain (NL-592): refuse new activity and give the HTLCs and negotiations in flight a
+        // short, bounded chance to resolve before the services stop. An IPC `shutdown --wait` holds the gate
+        // already; then its wait ran (or still runs) and this does nothing.
+        await DrainOnSignalAsync();
+
         // The safety services and the fee rounds stop before the chain monitor and the peers they use
         await Task.WhenAll(_htlcExpiryMonitor.StopAsync(), _feeUpdateScheduler.StopAsync());
         _channelFailureService.Stop();
@@ -257,6 +272,36 @@ public class NltgDaemonService : BackgroundService
             await _peerStorageService.StopAsync();
 
         _logger.LogInformation("NLTG daemon service stopped");
+    }
+
+    /// <summary>
+    /// The signal drain (<c>Node:Shutdown:DrainOnSignalSeconds</c>, default 0 = off, NL-592): the drain gate closes
+    /// and the node waits at most that long to go idle; whatever the outcome, the stop then proceeds as before.
+    /// Nothing is forced, closed or broadcast here, and an <c>shutdown --wait</c> already holding the gate makes
+    /// this a no-op.
+    /// </summary>
+    private async Task DrainOnSignalAsync()
+    {
+        var seconds = _nodeOptions.Shutdown.DrainOnSignalSeconds;
+        if (seconds <= 0 || _busyStateMonitor is null || _nodeDrainState is null || _drainWaiter is null)
+            return;
+
+        if (!_nodeDrainState.TryBeginDrain())
+            return;
+
+        _logger.LogInformation("Draining on signal for up to {Seconds}s before the node stops", seconds);
+        var result = await _drainWaiter.WaitUntilIdleAsync(TimeSpan.FromSeconds(seconds), CancellationToken.None);
+        if (result.Drained)
+        {
+            _logger.LogInformation("The signal drain reached an idle node");
+            return;
+        }
+
+        _nodeDrainState.EndDrain();
+        _logger.LogWarning("The signal drain ran out of time with {Htlcs} HTLC(s) in flight and {Negotiations} "
+                         + "negotiation(s) mid-flight; stopping anyway (nothing is broadcast; the HTLC expiry "
+                         + "monitor and the resolvers run at the next start)", result.Snapshot.HtlcsInFlight,
+                           result.Snapshot.NegotiationCount);
     }
 
     /// <summary>

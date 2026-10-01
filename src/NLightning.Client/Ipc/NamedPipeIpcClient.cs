@@ -583,10 +583,19 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
                                                                          new ChainStatusIpcRequest(), ct);
 
     /// <summary>
-    /// Stops the node gracefully (ClientCommand 39, NL-591); refused while HTLCs are in flight.
+    /// Stops the node gracefully (ClientCommand 39, NL-591/NL-592): plain (refused while HTLCs are in flight),
+    /// <c>wait</c> (drain until idle, at most <paramref name="timeoutSeconds"/>; 0 means the node's default) and/or
+    /// <c>force</c> (stop although something is in flight).
     /// </summary>
-    public Task<ShutdownIpcResponse> ShutdownAsync(CancellationToken ct = default) =>
-        SendRequestAsync<ShutdownIpcRequest, ShutdownIpcResponse>(ClientCommand.Shutdown, new ShutdownIpcRequest(), ct);
+    public Task<ShutdownIpcResponse> ShutdownAsync(bool wait = false, int timeoutSeconds = 0, bool force = false,
+                                                   CancellationToken ct = default) =>
+        SendRequestAsync<ShutdownIpcRequest, ShutdownIpcResponse>(ClientCommand.Shutdown,
+                                                                   new ShutdownIpcRequest
+                                                                   {
+                                                                       Wait = wait,
+                                                                       TimeoutSeconds = timeoutSeconds,
+                                                                       Force = force
+                                                                   }, ct);
 
     /// <summary>
     /// Lists the announced nodes of the gossip graph, or only <paramref name="nodeId"/> (ClientCommand 17).

@@ -505,6 +505,9 @@ public static class NodeConfigurationExtensions
                    "AutoBumpMaxFeeSat": 100000,
                    "AutoBumpMaxWait": "00:02:00"
                  },
+                 "Shutdown": {
+                   "DrainOnSignalSeconds": 0
+                 },
                  "Gossip": {
                    "Enabled": {{GOSSIP_ON}},
                    "SyncEnabled": {{GOSSIP_ON}},

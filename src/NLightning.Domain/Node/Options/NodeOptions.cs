@@ -196,6 +196,9 @@ public class NodeOptions
     /// <see cref="FeeUpdateOptions"/>
     public FeeUpdateOptions FeeUpdates { get; set; } = new();
 
+    /// <summary>The shutdown behavior beyond the IPC command (NL-592).</summary>
+    public ShutdownOptions Shutdown { get; set; } = new();
+
     /// <summary>
     /// The on-chain wallet reserve kept for <c>option_anchors</c> channels (NL-379), from <c>Node:Anchors</c>.
     /// </summary>

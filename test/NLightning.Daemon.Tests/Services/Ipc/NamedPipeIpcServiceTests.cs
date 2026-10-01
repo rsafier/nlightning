@@ -395,7 +395,7 @@ public class NamedPipeIpcServiceTests : IDisposable
             // Act
             await using var client = new NamedPipeIpcClient(NodeUtils.GetNamedPipeFilePath(_configPath),
                                                             NodeUtils.GetCookieFilePath(_configPath));
-            var answer = await client.ShutdownAsync(TestContext.Current.CancellationToken);
+            var answer = await client.ShutdownAsync(ct: TestContext.Current.CancellationToken);
 
             // Assert
             Assert.Equal(3, answer.ChannelCount);

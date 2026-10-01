@@ -5,6 +5,7 @@ namespace NLightning.Client;
 using Daemon.Contracts.Helpers;
 using Daemon.Contracts.Utilities;
 using Domain.Channels.ValueObjects;
+using Domain.Client.Constants;
 using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -212,7 +213,8 @@ internal static class ClientApp
                     break;
                 case "shutdown":
                 case "stop":
-                    var shutdown = await client.ShutdownAsync(cancellationToken);
+                    var (waitMode, waitTimeout, forceMode) = ParseShutdownOptions(commandArgs, out _)!.Value;
+                    var shutdown = await client.ShutdownAsync(waitMode, waitTimeout, forceMode, cancellationToken);
                     new ShutdownPrinter().Print(shutdown);
                     break;
                 case "listnodes":
@@ -351,7 +353,9 @@ internal static class ClientApp
                 return null;
             case "shutdown":
             case "stop":
-                return commandArgs.Length > 0 ? $"Unexpected argument '{commandArgs[0]}'. Usage: {cmd}" : null;
+                return ParseShutdownOptions(commandArgs, out var shutdownError) is null
+                           ? $"{shutdownError} Usage: {cmd} [--wait [--timeout <seconds>]] [--force]"
+                           : null;
             case "connect":
             case "connect-peer":
                 return commandArgs.Length < 1 ? $"Missing argument. Usage: {cmd} <node>" : null;
@@ -615,6 +619,72 @@ internal static class ClientApp
         }
 
         return (nodeId.Value, force);
+    }
+
+    /// <summary>
+    /// <c>[--wait [--timeout &lt;seconds&gt;]] [--force]</c> of shutdown, in any order.
+    /// </summary>
+    /// <returns>The parsed options, or null with <paramref name="error"/> set.</returns>
+    internal static (bool Wait, int TimeoutSeconds, bool Force)? ParseShutdownOptions(string[] commandArgs,
+                                                                                      out string? error)
+    {
+        error = null;
+        var wait = false;
+        var force = false;
+        int? timeoutSeconds = null;
+        for (var i = 0; i < commandArgs.Length; i++)
+        {
+            var argument = commandArgs[i];
+            if (string.Equals(argument, "--wait", StringComparison.OrdinalIgnoreCase))
+            {
+                wait = true;
+                continue;
+            }
+
+            if (string.Equals(argument, "--force", StringComparison.OrdinalIgnoreCase))
+            {
+                force = true;
+                continue;
+            }
+
+            string? value;
+            if (string.Equals(argument, "--timeout", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= commandArgs.Length)
+                {
+                    error = "Missing value for --timeout.";
+                    return null;
+                }
+
+                value = commandArgs[++i];
+            }
+            else if (argument.StartsWith("--timeout=", StringComparison.OrdinalIgnoreCase))
+            {
+                value = argument["--timeout=".Length..];
+            }
+            else
+            {
+                error = $"Unknown option '{argument}'.";
+                return null;
+            }
+
+            if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds)
+             || seconds == 0 || seconds > ShutdownDefaults.MaxWaitTimeoutSeconds)
+            {
+                error = $"Invalid timeout '{value}': expected 1 to {ShutdownDefaults.MaxWaitTimeoutSeconds} seconds.";
+                return null;
+            }
+
+            timeoutSeconds = seconds;
+        }
+
+        if (timeoutSeconds.HasValue && !wait)
+        {
+            error = "--timeout needs --wait.";
+            return null;
+        }
+
+        return (wait, timeoutSeconds ?? 0, force);
     }
 
     /// <summary>The arguments of withdraw.</summary>
