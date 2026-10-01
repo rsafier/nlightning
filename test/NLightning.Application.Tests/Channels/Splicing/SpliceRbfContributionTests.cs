@@ -171,7 +171,8 @@ public class SpliceRbfContributionTests
     [Fact]
     public void Given_NoWalletInputs_When_ASpliceInIsRequested_Then_Null()
     {
-        // Act & Assert: a new splice-in needs new wallet inputs, which an RBF does not reserve
+        // Act & Assert: a new splice-in needs new wallet inputs, which the rebuild does not reserve; the service
+        // reserves fresh ones for the attempt instead (NL-510)
         Assert.Null(SpliceService.PlanRbfContribution(InteractiveTxContribution.Empty, 0, true, 2_000, 10_000, null));
     }
 

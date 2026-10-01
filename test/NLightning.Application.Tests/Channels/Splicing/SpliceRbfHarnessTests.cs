@@ -763,6 +763,115 @@ public class SpliceRbfHarnessTests
 
     #endregion
 
+    #region Fresh wallet inputs (NL-510)
+
+    /// <summary>
+    /// NL-510: a bump of an attempt with no wallet inputs of ours (Alice's splice-out) with a positive contribution
+    /// works: fresh wallet inputs are reserved for it the way an initial splice-in reserves them, the attempt signs
+    /// with the positive <c>funding_output_contribution</c> and the new input, and the splice-out output of the attempt
+    /// it replaces is gone (the request replaces our contribution). The fresh reservation is held by the signed attempt
+    /// (IT-ABT-01), released only when it is discarded for a sibling that locked (NL-492).
+    /// </summary>
+    [Fact]
+    public async Task Given_ASpliceOut_When_BumpedWithAPositiveContribution_Then_FreshWalletInputsFundIt()
+    {
+        // Arrange
+        using var harness = CreateHarness();
+        var first = (await harness.SpliceAsync(harness.Alice, -80_000)).SpliceTxId!.Value;
+        var utxo = harness.Alice.Fund(150_000);
+        var mark = harness.Transcript.Count;
+
+        // Act
+        var result = await BumpAsync(harness, harness.Alice,
+                                     new SpliceBumpRequest(TwoNodeHarness.ChannelId, 2_000,
+                                                           ContributionSatoshis: 50_000));
+
+        // Assert
+        Assert.True(result.State == SpliceNegotiationState.Signed, $"{result.State}: {result.FailureReason}");
+        Assert.Empty(harness.Failures);
+        var second = result.SpliceTxId!.Value;
+        Assert.Equal(50_000, RbfContribution(harness, mark, "Alice"));
+        Assert.Equal(0, RbfContribution(harness, mark, "Bob"));
+        AssertDoubleSpend(harness.Alice, first, second);
+
+        var attempt = harness.Alice.Node.State.PendingFundings[1];
+        Assert.Equal(ChannelFundingKind.SpliceRbf, attempt.Kind);
+        Assert.Equal(first, attempt.RbfOf);
+        Assert.Equal(50_000_000, attempt.LocalBalanceDeltaMsat);
+        Assert.Equal(TwoNodeHarness.FundingSatoshis + 50_000, attempt.CapacitySatoshis);
+        Assert.Equal(50_000_000, harness.Bob.Node.State.PendingFundings[1].RemoteBalanceDeltaMsat);
+
+        var tx = Parse(harness.Alice.Broadcasts.Single(b => b.TransactionId == second).RawTransaction);
+        Assert.Contains(tx.Inputs, i => i.PrevOut.Hash.ToBytes().SequenceEqual((byte[])utxo.TxId)
+                                     && i.PrevOut.N == utxo.Vout);
+        Assert.DoesNotContain(tx.Outputs,
+                              o => o.ScriptPubKey.ToBytes().SequenceEqual((byte[])harness.Alice.Destination.Script));
+        Assert.Single(harness.Alice.Contributor.ActiveReservations);
+    }
+
+    /// <summary>
+    /// NL-510: a peer's RBF our contribution cannot be rebuilt for no longer drops our splice-in: Alice's first
+    /// attempt leaves her input 1,000 sat of change, so at Bob's 10,000 sat/kw it cannot pay the fee; fresh wallet
+    /// inputs fund the same 100,000 sat within the fee-share caps instead, from a different output.
+    /// </summary>
+    [Fact]
+    public async Task Given_AnUnpayableSpliceIn_When_ThePeerBumps_Then_FreshWalletInputsKeepOurContribution()
+    {
+        // Arrange
+        using var harness = CreateHarness();
+        var spent = harness.Alice.Fund(102_109);
+        var first = (await harness.SpliceAsync(harness.Alice, SpliceIn)).SpliceTxId!.Value;
+        var fresh = harness.Alice.Fund(150_000);
+        var mark = harness.Transcript.Count;
+
+        // Act
+        var result = await BumpAsync(harness, harness.Bob, 10_000);
+
+        // Assert
+        Assert.True(result.State == SpliceNegotiationState.Signed, $"{result.State}: {result.FailureReason}");
+        Assert.Empty(harness.Failures);
+        var second = result.SpliceTxId!.Value;
+        Assert.Equal(SpliceIn, RbfContribution(harness, mark, "Alice"));
+        Assert.Equal(SpliceIn * 1_000, harness.Alice.Node.State.PendingFundings[1].LocalBalanceDeltaMsat);
+        var tx = Parse(harness.Alice.Broadcasts.Single(b => b.TransactionId == second).RawTransaction);
+        Assert.Contains(tx.Inputs, i => i.PrevOut.Hash.ToBytes().SequenceEqual((byte[])fresh.TxId)
+                                     && i.PrevOut.N == fresh.Vout);
+        Assert.DoesNotContain(tx.Inputs,
+                              i => i.PrevOut.Hash.ToBytes().SequenceEqual((byte[])spent.TxId));
+        AssertDoubleSpend(harness.Alice, first, second);
+    }
+
+    /// <summary>
+    /// NL-510 keeps the caps for a fresh contribution: with <c>Splice:MaxRbfFeeShareSatoshis</c> 1, a bump with a
+    /// positive contribution is refused before anything is sent, and the reservation it made is released at once.
+    /// </summary>
+    [Fact]
+    public async Task Given_APositiveContributionOverTheFeeShareCap_When_Bumping_Then_RefusedAndTheReservationReleased()
+    {
+        // Arrange
+        using var harness = new SpliceHarness((name, o) =>
+                                              {
+                                                  o.MinRbfInterval = TimeSpan.Zero;
+                                                  if (name == "Alice")
+                                                      o.MaxRbfFeeShareSatoshis = 1;
+                                              }, realEngine: true);
+        await harness.SpliceAsync(harness.Alice, -80_000);
+        harness.Alice.Fund(150_000);
+        var mark = harness.Transcript.Count;
+
+        // Act & Assert
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.Alice.Service.BumpAsync(new SpliceBumpRequest(TwoNodeHarness.ChannelId, 2_000,
+                                                                        ContributionSatoshis: 50_000),
+                                                  TestContext.Current.CancellationToken));
+        Assert.Contains("fee share", exception.Message);
+        Assert.Contains("above the limit of 1 sat", exception.Message);
+        Assert.Equal(mark, harness.Transcript.Count);
+        Assert.Empty(harness.Alice.Contributor.ActiveReservations);
+    }
+
+    #endregion
+
     #region Helpers
 
     private static Mock<IBroadcastTransactionDbRepository> GetBroadcastRepository(SpliceNode node)
@@ -784,8 +893,13 @@ public class SpliceRbfHarnessTests
 
     private static async Task<SpliceResult> BumpAsync(SpliceHarness harness, SpliceNode node, uint feerate)
     {
-        var bump = ((ISpliceService)node.Service).BumpAsync(TwoNodeHarness.ChannelId, feerate,
-                                                            TestContext.Current.CancellationToken);
+        return await BumpAsync(harness, node, new SpliceBumpRequest(TwoNodeHarness.ChannelId, feerate));
+    }
+
+    private static async Task<SpliceResult> BumpAsync(SpliceHarness harness, SpliceNode node,
+                                                      SpliceBumpRequest request)
+    {
+        var bump = node.Service.BumpAsync(request, TestContext.Current.CancellationToken);
         await harness.PumpAsync(bump);
         return await bump;
     }
