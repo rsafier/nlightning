@@ -123,9 +123,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 60 | 63 |
+| open | 0 | 0 | 3 | 59 | 62 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 164 | 274 | 514 |
+| fixed | 14 | 62 | 164 | 275 | 515 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
 | **Total** | **14** | **62** | **171** | **341** | **588** |
@@ -1935,12 +1935,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N2-T1
 
 ### NL-202 LightningMoney is a mutable reference type
-- **Status:** open (partial: c1f215f, 0edfa14)
+- **Status:** fixed (a02fa359)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Domain/Money/LightningMoney.cs:7,19-25`
-- **Evidence:** A class with a public `MilliSatoshi` setter; shared instances in commitment math can be changed through aliasing. Update: the N4 engine does its arithmetic in checked `ulong` msat and never uses `LightningMoney`; the type itself is still mutable.
-- **Fix sketch:** Keep commitment-engine arithmetic in `ulong` msat with `checked`; consider making `LightningMoney` immutable.
+- **Evidence:** A class with a public `MilliSatoshi` setter; shared instances in commitment math can be changed through aliasing. Update: the N4 engine does its arithmetic in checked `ulong` msat and never uses `LightningMoney`. Fixed: the class is `sealed` with a `readonly` msat field and get-only `MilliSatoshi`/`Satoshi` (a repo-wide sweep found the only setter uses in two tests, rewritten; no subclass, no reflective setter), `Zero` is a single `static readonly` instance instead of a per-access allocation, and the negative-`long` input hole was closed as a rider: `MilliSatoshis(long)` silently wrapped `-1` to ~1.8e19 msat while `Satoshis(long)` and the `(long, unit)` ctor only threw a late `OverflowException` from the checked math — all three now throw `ArgumentOutOfRangeException` before the cast (tests assert the `ParamName` so the wrap cannot return as an incidental overflow). Behavior change: `Satoshis(-1)`-style calls went from wrap/late-throw to a clean argument exception; no in-repo caller passes negatives.
+- **Fix sketch:** Done.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** BOLT2 N4-T1
 
