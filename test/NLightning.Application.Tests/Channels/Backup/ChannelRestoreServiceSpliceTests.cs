@@ -189,6 +189,12 @@ public partial class ChannelRestoreServiceTests
         var spend = Assert.Single(handed);
         Assert.Equal(kit.SpliceTxId, spend.SpentTransactionId);
 
+        // NL-138: the memory model was published through UpdateChannel, so the backup monitor and the channel update
+        // service (its channel_update follows the new short channel id) learn of the move
+        memory.Verify(m => m.UpdateChannel(It.Is<ChannelModel>(c => c.ChannelId == channel.ChannelId
+                                                                    && c.FundingOutput!.TransactionId == kit.SpliceTxId)),
+                      Times.Once);
+
         // ...and a third run with the same (older) backup moves nothing again
         var third = await service.RestoreAsync(backup, ct);
         Assert.Equal(ChannelRestoreAction.AlreadyExists, Assert.Single(third.Channels).Action);
