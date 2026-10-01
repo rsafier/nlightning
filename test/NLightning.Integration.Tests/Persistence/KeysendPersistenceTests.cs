@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 namespace NLightning.Integration.Tests.Persistence;
@@ -8,12 +9,15 @@ using Domain.Payments.Enums;
 using Domain.Payments.Keysend;
 using Domain.Payments.Models;
 using Infrastructure.Persistence.Contexts;
+using Infrastructure.Persistence.Enums;
+using Infrastructure.Persistence.Providers;
 using Infrastructure.Repositories.Database.Payment;
 
 /// <summary>
-/// Keysend rows on SQLite (lane lh1-l3): the custom records live in the overloaded <c>Bolt12InvoiceBytes</c> column
-/// until a dedicated one exists, and a row whose bytes are not a custom record stream never breaks a payment hash
-/// lookup (the switch reads invoices under its hash lock, the payment service reads payments to reconcile).
+/// Keysend rows on SQLite (lane lh1-l3): the custom records live in the <c>CustomRecords</c> column
+/// (migration <c>AddPaymentCustomRecords</c>, NL-460), a row whose bytes are not a custom record stream never breaks a
+/// payment hash lookup (the switch reads invoices under its hash lock, the payment service reads payments to
+/// reconcile), and the rows written before the migration move out of the borrowed <c>Bolt12InvoiceBytes</c> column.
 /// </summary>
 public class KeysendPersistenceTests
 {
@@ -21,6 +25,22 @@ public class KeysendPersistenceTests
 
     private static readonly CompactPubKey s_payee =
         new(Convert.FromHexString("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c"));
+
+    [Fact]
+    public async Task Given_KeysendRowsFromBeforeAddPaymentCustomRecords_When_Migrated_Then_TheRecordsMoveIntoTheirColumn()
+    {
+        // Arrange
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        var options = new DbContextOptionsBuilder<NLightningDbContext>()
+                     .UseSqlite(connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"))
+                     .Options;
+
+        // Act & Assert (the same rows and assertions as the Docker Postgres/SQL Server tests)
+        await KeysendSchemaRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)), DatabaseType.Sqlite,
+            TestContext.Current.CancellationToken);
+    }
 
     [Fact]
     public async Task Given_KeysendPaymentAndRecord_When_SavedAndReloaded_Then_TheCustomRecordsRoundTrip()
@@ -62,8 +82,8 @@ public class KeysendPersistenceTests
         byte[] garbage = [0xfe, 0x00, 0x01];
         await using (var context = db.CreateDbContext())
         {
-            (await context.Payments.SingleAsync(TestContext.Current.CancellationToken)).Bolt12InvoiceBytes = garbage;
-            (await context.Invoices.SingleAsync(TestContext.Current.CancellationToken)).Bolt12InvoiceBytes = garbage;
+            (await context.Payments.SingleAsync(TestContext.Current.CancellationToken)).CustomRecords = garbage;
+            (await context.Invoices.SingleAsync(TestContext.Current.CancellationToken)).CustomRecords = garbage;
             await context.SaveChangesAsync(TestContext.Current.CancellationToken);
         }
 
