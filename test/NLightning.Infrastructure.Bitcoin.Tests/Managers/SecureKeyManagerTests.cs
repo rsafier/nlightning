@@ -130,7 +130,8 @@ public sealed class SecureKeyManagerTests : IDisposable
         var perCall = (GC.GetAllocatedBytesForCurrentThread() - before) / iterations;
 
         // Assert: the private key copy and the parsed ECPrivKey, but no hash object or NBitcoin Key/PubKey wrappers
-        Assert.True(perCall <= 512, $"Allocated {perCall} bytes per call.");
+        // (measured 376 bytes per call on the hot path; the bound leaves headroom for runtime internals)
+        Assert.True(perCall <= 448, $"Allocated {perCall} bytes per call.");
     }
 
     [Fact]
