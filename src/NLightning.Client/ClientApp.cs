@@ -6,6 +6,7 @@ using Daemon.Contracts.Helpers;
 using Daemon.Contracts.Utilities;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Constants;
+using Domain.Client.Enums;
 using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -216,7 +217,9 @@ internal static class ClientApp
                     var (waitMode, waitTimeout, forceMode) = ParseShutdownOptions(commandArgs, out _)!.Value;
                     var shutdown = await client.ShutdownAsync(waitMode, waitTimeout, forceMode, cancellationToken);
                     new ShutdownPrinter().Print(shutdown);
-                    break;
+                    // NL-594: exit 1 when the node is not stopping, so a script can tell an accepted shutdown
+                    // (including a forced one) from a wait that timed out; a refusal throws above and exits 1 too
+                    return ExitCodeFor(shutdown.Outcome);
                 case "listnodes":
                 case "list-nodes":
                     var nodes = await client.ListNodesAsync(
@@ -620,6 +623,14 @@ internal static class ClientApp
 
         return (nodeId.Value, force);
     }
+
+    /// <summary>
+    /// The exit code of a <c>shutdown</c> that got an answer: 0 only when the node is stopping (an accepted plain or
+    /// waited shutdown, or a forced one); a timed-out wait is 1, and a refusal never gets here (its error envelope
+    /// throws and exits 1) (NL-594).
+    /// </summary>
+    internal static int ExitCodeFor(ShutdownOutcome outcome) =>
+        outcome == ShutdownOutcome.TimedOut ? Failure : Success;
 
     /// <summary>
     /// <c>[--wait [--timeout &lt;seconds&gt;]] [--force]</c> of shutdown, in any order.

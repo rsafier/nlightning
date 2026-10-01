@@ -1,5 +1,6 @@
 namespace NLightning.Daemon.Tests.Client;
 
+using Domain.Client.Enums;
 using NLightning.Client;
 using NLightning.Client.Handlers;
 using NLightning.Client.Ipc;
@@ -243,6 +244,21 @@ public class ClientAppTests
 
         // Assert
         Assert.Contains("Invalid timeout", error);
+    }
+
+    [Theory]
+    [InlineData(ShutdownOutcome.Stopped, 0)]
+    [InlineData(ShutdownOutcome.Forced, 0)]
+    [InlineData(ShutdownOutcome.TimedOut, 1)]
+    public void GivenAnShutdownOutcome_WhenMappedToAnExitCode_ThenOnlyStoppingExitsZero(ShutdownOutcome outcome,
+        int expected)
+    {
+        // Act - NL-594: a script must tell an accepted shutdown from a timed-out wait; a refusal throws in
+        // RunAsync and exits 1 before this mapping
+        var exitCode = ClientApp.ExitCodeFor(outcome);
+
+        // Assert
+        Assert.Equal(expected, exitCode);
     }
 
     [Fact]

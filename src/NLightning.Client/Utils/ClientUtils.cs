@@ -28,7 +28,9 @@ public static class ClientUtils
         Console.WriteLine("                               most --timeout seconds [default: 300], Ctrl-C stops waiting),");
         Console.WriteLine("                               --force stops anyway (nothing is broadcast or force-closed,");
         Console.WriteLine("                               but the node must be back before the HTLC deadlines); while");
-        Console.WriteLine("                               draining, new payments, channels and splices are refused");
+        Console.WriteLine("                               draining, new payments, channels and splices are refused;");
+        Console.WriteLine("                               exits 0 when the node is stopping, 1 on a refusal or when");
+        Console.WriteLine("                               the wait timed out");
         Console.WriteLine("  listchannels [peer_id]       List channels, optionally only those with one peer");
         Console.WriteLine("  getaddress [p2tr|p2wpkh|all] Gets an unused address of the requested type [default: p2tr]");
         Console.WriteLine("  walletbalance                Gets the wallet balance");
