@@ -87,6 +87,18 @@ public static class ChannelEntityConfiguration
             entity.Property(e => e.LocalFundingContributionSatoshis).IsRequired(false);
             entity.Property(e => e.RemoteFundingContributionSatoshis).IsRequired(false);
 
+            // Configure the relationship with the funding change address (optional, many-to-one from the wallet
+            // address keyed by (Index, IsChange, AddressType)). Configured explicitly (NL-134): the IsChange and
+            // AddressType foreign key legs used to be created by convention as shadow properties.
+            entity.HasOne(e => e.ChangeAddress)
+                  .WithMany()
+                  .HasForeignKey(e => new
+                  {
+                      e.ChangeAddressIndex,
+                      e.ChangeAddressIsChange,
+                      e.ChangeAddressAddressType
+                  });
+
             // Configure the relationship with ChannelConfig (1:1)
             entity.HasOne(e => e.Config)
                   .WithOne()
