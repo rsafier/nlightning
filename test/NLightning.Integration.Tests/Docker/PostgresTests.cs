@@ -70,6 +70,22 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresForwardCircuits_When_ListedWithTheListForwardsQuery_Then_FiltersAndAggregatesRunOnTheServer()
+    {
+        // Arrange - NL-597: the listforwards query runs against a real Postgres too
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_forward_list");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+        await using (var context = new NLightningDbContext(options, databaseTypeProvider))
+        {
+            await context.Database.MigrateAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Act & Assert
+        await ForwardCircuitListRoundTrip.AssertListOnServerAsync(
+            () => new NLightningDbContext(options, databaseTypeProvider), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresChannelsFromBeforeAddSpliceFundings_When_Migrated_Then_RowsMoveUnderTheirFundingTxIdAndDownRefusesALockedSplice()
     {
         // Arrange (splicing plan SP1-C-T4: the provider's own hand-written data step and Down guard run on a real

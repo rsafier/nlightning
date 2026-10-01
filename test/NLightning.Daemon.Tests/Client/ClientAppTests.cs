@@ -1,6 +1,7 @@
 namespace NLightning.Daemon.Tests.Client;
 
 using Domain.Client.Enums;
+using Domain.Payments.Enums;
 using NLightning.Client;
 using NLightning.Client.Handlers;
 using NLightning.Client.Ipc;
@@ -500,5 +501,134 @@ public class ClientAppTests
         Assert.Null(ClientApp.ValidateArguments("describegraph", ["--channels", "--nodes", "--limit", "5"]));
         Assert.Null(ClientApp.ValidateArguments("describegraph", ["--nodes", "--offset", "5"]));
         Assert.NotNull(ClientApp.ValidateArguments("describegraph", ["--channels", "--nodes", "--offset", "5"]));
+    }
+
+    [Fact]
+    public void Given_NoListForwardsArguments_When_Parsed_Then_TheDefaultsHold()
+    {
+        // Act - NL-597: a plain listforwards shows the newest page
+        var parsed = ClientApp.ParseListForwardsOptions([], out var error);
+
+        // Assert
+        Assert.Null(error);
+        Assert.Equal(new ListForwardsArguments(0, 100, null, null, null, null), parsed);
+    }
+
+    [Fact]
+    public void Given_ACountAndSkip_When_Parsed_Then_ThePageIsRead()
+    {
+        // Act - NL-597
+        var count = ClientApp.ParseListForwardsOptions(["20"], out _);
+        var countAndSkip = ClientApp.ParseListForwardsOptions(["20", "5"], out _);
+
+        // Assert
+        Assert.Equal((0, 20), (count!.Skip, count.Take));
+        Assert.Equal((5, 20), (countAndSkip!.Skip, countAndSkip.Take));
+    }
+
+    [Fact]
+    public void Given_AStatusOption_When_Parsed_Then_TheStatusIsRead()
+    {
+        // Act - NL-597
+        var parsed = ClientApp.ParseListForwardsOptions(["--status", "fulfilled"], out var error);
+
+        // Assert
+        Assert.Null(error);
+        Assert.Equal((byte)ForwardCircuitStatus.Fulfilled, parsed!.Status);
+    }
+
+    [Fact]
+    public void Given_ASinceOption_When_Parsed_Then_TheUnixSecondsAreRead()
+    {
+        // Act - NL-597
+        var parsed = ClientApp.ParseListForwardsOptions(["--since", "1760000000"], out var error);
+
+        // Assert
+        Assert.Null(error);
+        Assert.Equal(1_760_000_000, parsed!.Since);
+    }
+
+    [Fact]
+    public void Given_AnIsoSinceOption_When_Parsed_Then_TheInstantBecomesUnixSeconds()
+    {
+        // Act - NL-597
+        var parsed = ClientApp.ParseListForwardsOptions(["--since=2026-10-01T12:00:00Z"], out var error);
+        var expected = new DateTimeOffset(2026, 10, 1, 12, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
+
+        // Assert
+        Assert.Null(error);
+        Assert.Equal(expected, parsed!.Since);
+    }
+
+    [Fact]
+    public void Given_AChannelOption_When_Parsed_Then_TheChannelIsCarried()
+    {
+        // Arrange
+        const string hexChannelId = "2121212121212121212121212121212121212121212121212121212121212121";
+
+        // Act - NL-597: a short_channel_id or a 64-hex channel id, with = or a following value
+        var scid = ClientApp.ParseListForwardsOptions(["--channel", "800000x12x0"], out _);
+        var hex = ClientApp.ParseListForwardsOptions(["--channel=" + hexChannelId], out _);
+
+        // Assert
+        Assert.Equal("800000x12x0", scid!.Channel);
+        Assert.Equal(hexChannelId, hex!.Channel);
+    }
+
+    [Fact]
+    public void Given_CombinedListForwardsOptions_When_Parsed_Then_AllAreReadInAnyOrder()
+    {
+        // Act - NL-597
+        var parsed = ClientApp.ParseListForwardsOptions(
+            ["--status=failed", "10", "--channel", "800000x12x0", "--since", "100"], out var error);
+
+        // Assert
+        Assert.Null(error);
+        Assert.Equal(new ListForwardsArguments(0, 10, 100, null, (byte)ForwardCircuitStatus.Failed,
+                                               "800000x12x0"), parsed);
+    }
+
+    [Fact]
+    public void Given_BadListForwardsArguments_When_Validated_Then_UsageErrors()
+    {
+        // Act - NL-597
+        var countError = ClientApp.ValidateArguments("listforwards", ["0"]);
+        var countWordError = ClientApp.ValidateArguments("listforwards", ["abc"]);
+        var statusError = ClientApp.ValidateArguments("listforwards", ["--status", "bogus"]);
+        var missingChannelError = ClientApp.ValidateArguments("listforwards", ["--channel"]);
+        var unknownOptionError = ClientApp.ValidateArguments("listforwards", ["--bogus=1"]);
+        var sinceError = ClientApp.ValidateArguments("listforwards", ["--since", "abc"]);
+
+        // Assert
+        Assert.Contains("Invalid count", countError);
+        Assert.Contains("Invalid count", countWordError);
+        Assert.NotNull(statusError);
+        Assert.Contains("bogus", statusError);
+        Assert.Contains("Missing value for --channel", missingChannelError);
+        Assert.Contains("Unknown option '--bogus", unknownOptionError);
+        Assert.NotNull(sinceError);
+        Assert.Contains("abc", sinceError);
+    }
+
+    [Fact]
+    public void Given_ValidListForwardsArguments_When_Validated_Then_NoError()
+    {
+        // Act - NL-597
+        var none = ClientApp.ValidateArguments("listforwards", []);
+        var page = ClientApp.ValidateArguments("listforwards", ["20"]);
+        var pageAndSkip = ClientApp.ValidateArguments("listforwards", ["20", "5"]);
+        var status = ClientApp.ValidateArguments("listforwards", ["--status=fulfilled"]);
+        var filters = ClientApp.ValidateArguments("listforwards", ["--since=1760000000", "--channel=800000x12x0"]);
+        var mixed = ClientApp.ValidateArguments("listforwards", ["10", "--channel", "800000x12x0"]);
+        var alias = ClientApp.ValidateArguments("list-forwards", ["--status=fulfilled"]);
+
+        // Assert
+        Assert.Null(none);
+        Assert.Null(page);
+        Assert.Null(pageAndSkip);
+        Assert.Null(status);
+        Assert.Null(filters);
+        Assert.Null(mixed);
+        Assert.Null(alias);
     }
 }

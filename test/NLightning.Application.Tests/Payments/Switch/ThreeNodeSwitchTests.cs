@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Application.Tests.Payments.Switch;
 
+using Application.Payments;
 using Application.Payments.Routing;
 using Channels.Harness;
 using Domain.Bitcoin.Interfaces;
@@ -802,6 +803,49 @@ public class ThreeNodeSwitchTests
          harness.Bob.Channel(ThreeNodeHarness.AliceBobChannelId).Commitments!.LocalBalanceMsat,
          harness.Bob.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!.LocalBalanceMsat,
          harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!.LocalBalanceMsat);
+
+    [Fact]
+    public async Task Given_AForwardThroughBob_When_Resolved_Then_ListForwardsShowsItWithItsFeeAndTheRefusalsAreCounted()
+    {
+        // Arrange - NL-597/NL-598: a real forward lands in ForwardCircuits and the summary's counters see the HTLC
+        // that never got a circuit
+        await using var harness = await ThreeNodeHarness.CreateAsync();
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "forwarded", null,
+                                                                      TestContext.Current.CancellationToken);
+        var fee = ThreeNodeHarness.ForwardingFeeOf(ThreeNodeHarness.BobRouting, s_amount);
+
+        // Act 1: the refused one — Bob's onion names a channel he does not know
+        var refusedRoute = harness.RouteToCarol(s_amount, ThreeNodeHarness.Sha256Of("refused"u8), invoice.PaymentSecret,
+                                                bobCarolScid: new ShortChannelId(999_999, 9, 9));
+        await harness.AlicePaysAsync(refusedRoute);
+        await harness.PumpAsync();
+
+        // Act 2: the real one — paid end to end through Bob
+        var route = harness.RouteToCarol(s_amount, invoice.PaymentHash, invoice.PaymentSecret);
+        await harness.AlicePaysAsync(route);
+        await harness.PumpAsync();
+
+        // Assert: the counter counted the refusal once, and listforwards shows the fulfilled forward with its fee
+        var counter = harness.Bob.Services.GetRequiredService<IRefusedHtlcCounter>();
+        var snapshot = counter.Snapshot();
+        Assert.Equal(1, snapshot.GetValueOrDefault(RefusedHtlcReason.UnknownNextChannel));
+        Assert.Equal(1, counter.Total());
+
+        var (forwards, totals) = await harness.Bob.InScopeAsync(async u =>
+        {
+            var forwards = await u.ForwardCircuitDbRepository.ListAsync(
+                new ForwardCircuitListQuery(0, 100), TestContext.Current.CancellationToken);
+            var totals = await u.ForwardCircuitDbRepository.SummarizeAsync(
+                new ForwardCircuitListQuery(0, 100), TestContext.Current.CancellationToken);
+            return (forwards, totals);
+        });
+        var forward = Assert.Single(forwards);
+        Assert.Equal(ForwardCircuitStatus.Fulfilled, forward.Status);
+        Assert.Equal(fee.MilliSatoshi, forward.Fee.MilliSatoshi);
+        Assert.Equal(1, totals.Fulfilled);
+        Assert.Equal((long)fee.MilliSatoshi, totals.FulfilledFeesMsat);
+        AssertNoHtlcs(harness);
+    }
 
     private static void AssertNoHtlcs(ThreeNodeHarness harness)
     {
