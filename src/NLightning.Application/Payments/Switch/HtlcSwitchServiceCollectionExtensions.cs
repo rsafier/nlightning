@@ -32,6 +32,8 @@ public static class HtlcSwitchServiceCollectionExtensions
     public static IServiceCollection AddHtlcSwitchServices(this IServiceCollection services)
     {
         services.TryAddSingleton(TimeProvider.System);
+        // HTLCs refused before a forward circuit, counted by reason (NL-598); the listforwards summary reads it
+        services.TryAddSingleton<IRefusedHtlcCounter, RefusedHtlcMetrics>();
         // The switch is the container's own singleton, so the container disposes it (its mpp_timeout timers) also when
         // a decorator (DustExposureHtlcSwitch) wraps the IHtlcSwitch registration
         services.TryAddSingleton<HtlcSwitch>();

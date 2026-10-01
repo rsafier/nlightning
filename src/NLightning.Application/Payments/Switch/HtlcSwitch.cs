@@ -129,6 +129,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private readonly IReadOnlyList<ILocalPaymentHtlcHandler> _localPaymentHandlers;
     private readonly ILogger<HtlcSwitch> _logger;
     private readonly INodeDrainState? _nodeDrainState;
+    private readonly IRefusedHtlcCounter? _refusedHtlcCounter;
     private readonly uint _reasonableDepth;
     private readonly KeysendReceiver _keysendReceiver;
     private readonly IncomingOnionProcessor _onionProcessor;
@@ -172,8 +173,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                       IOptions<NodeOptions>? nodeOptions = null, IOptions<HtlcSwitchOptions>? switchOptions = null,
                       IAttributionDataService? attributionDataService = null,
                       IOptions<OnchainOptions>? onchainOptions = null, IRetiredScidMap? retiredScidMap = null,
-                      INodeDrainState? nodeDrainState = null)
+                      INodeDrainState? nodeDrainState = null,
+                      IRefusedHtlcCounter? refusedHtlcCounter = null)
     {
+        _refusedHtlcCounter = refusedHtlcCounter;
         _nodeDrainState = nodeDrainState;
         _attributionDataService = attributionDataService;
         _blockchainMonitor = blockchainMonitor;
@@ -320,6 +323,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             return;
         }
 
+        // NL-598: refusals are counted once per HTLC. A stored secret means we processed this onion before (a
+        // restart's replay carries one), so only a first handling counts
+        var firstHandling = storedSecret is null;
+
         // A stored secret means we processed this onion before (restart, reestablish). Otherwise the HMAC is recorded
         // for this HTLC until its cltv_expiry (NL-078): a restart between that and the secret's save is not a replay
         OnionReplayOwner? replayOwner =
@@ -353,6 +360,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         if (routable is var (sharedSecret, introduction) && !IsOnchain(channelId)
          && IsAddedAfterOurShutdown(channelId, htlcId))
         {
+            if (firstHandling)
+                _refusedHtlcCounter?.Count(RefusedHtlcReason.AddedAfterShutdown);
             await RecordSecretAsync(channelId, htlcId, sharedSecret, storedSecret, cancellationToken);
             await FailBackAsync(channelId, htlc, sharedSecret, FailureMessage.TemporaryNodeFailure(), cancellationToken,
                                 introduction);
@@ -364,6 +373,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         switch (result)
         {
             case IncomingOnionMalformed malformed:
+                if (firstHandling)
+                    _refusedHtlcCounter?.Count(RefusedHtlcReason.MalformedOnion);
                 await _channelOperations.FailMalformedHtlcAsync(channelId, htlcId, malformed.FailureCode,
                                                                 new Hash(malformed.Sha256OfOnion.ToArray()),
                                                                 cancellationToken);
@@ -378,12 +389,12 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
             case IncomingOnionFinal final:
                 await RecordSecretAsync(channelId, htlcId, final.SharedSecret, storedSecret, cancellationToken);
-                await ReceiveAsync(channelId, htlc, final, cancellationToken);
+                await ReceiveAsync(channelId, htlc, final, firstHandling, cancellationToken);
                 return;
 
             case IncomingOnionForward forward:
                 await RecordSecretAsync(channelId, htlcId, forward.SharedSecret, storedSecret, cancellationToken);
-                await ForwardAsync(channelId, htlc, forward, cancellationToken);
+                await ForwardAsync(channelId, htlc, forward, firstHandling, cancellationToken);
                 return;
         }
     }
@@ -405,7 +416,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     /// never failed off chain.
     /// </summary>
     private async Task ReceiveAsync(ChannelId channelId, HtlcRecord htlc, IncomingOnionFinal final,
-                                    CancellationToken cancellationToken)
+                                    bool firstHandling, CancellationToken cancellationToken)
     {
         var amount = LightningMoney.MilliSatoshis(htlc.AmountMsat);
         using var paymentHashLock = await _paymentHashLocks.AcquireAsync(htlc.PaymentHash, cancellationToken);
@@ -492,6 +503,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         // preimage for a new payment (a set already committed to is fulfilled above: that money is owed to us)
         if (height == 0 || _blockchainMonitor is { IsChainProcessingHalted: true })
         {
+            if (firstHandling)
+                _refusedHtlcCounter?.Count(RefusedHtlcReason.ChainHalt);
             if (height != 0 && _logger.IsEnabled(LogLevel.Warning))
                 _logger.LogWarning("Failing back incoming HTLC {HtlcId} of channel {ChannelId}: {Reason}", htlc.Id,
                                    channelId, ChainProcessingHalt.Refusal("final-hop acceptance"));
@@ -504,6 +517,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         // NL-591: a node draining for its shutdown accepts no new payment (a committed set is fulfilled above)
         if (_nodeDrainState is { IsDraining: true })
         {
+            if (firstHandling)
+                _refusedHtlcCounter?.Count(RefusedHtlcReason.ShutdownDrain);
             _logger.LogInformation("Failing back incoming HTLC {HtlcId} of channel {ChannelId}: {Reason}", htlc.Id,
                                    channelId, NodeDrain.Refusal("final-hop acceptance"));
             if (!onchain)
@@ -514,6 +529,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
         if (!decision.IsAccepted)
         {
+            if (firstHandling)
+                _refusedHtlcCounter?.Count(decision.Failure?.Code == FailureCode.IncorrectOrUnknownPaymentDetails
+                                               ? RefusedHtlcReason.UnknownPaymentHash
+                                               : RefusedHtlcReason.FinalHop);
             if (onchain)
                 _logger.LogInformation("Incoming HTLC {HtlcId} of channel {ChannelId}, which is closing on chain, is not "
                                      + "accepted as our final hop: leaving it to time out on chain", htlc.Id,
@@ -989,7 +1008,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     /// Forward (M4-T4): resolve, check the policy, persist the circuit, offer, record the offer.
     /// </summary>
     private async Task ForwardAsync(ChannelId incomingChannelId, HtlcRecord htlc, IncomingOnionForward forward,
-                                    CancellationToken cancellationToken)
+                                    bool firstHandling, CancellationToken cancellationToken)
     {
         var height = CurrentHeight;
         var introduction = forward.Blinded?.IsIntroduction ?? false;
@@ -1004,6 +1023,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
         if (height == 0)
         {
+            if (firstHandling)
+                _refusedHtlcCounter?.Count(RefusedHtlcReason.ChainHalt);
             await FailBackAsync(incomingChannelId, htlc, forward.SharedSecret, FailureMessage.TemporaryNodeFailure(),
                                 cancellationToken, introduction);
             return;
@@ -1034,6 +1055,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                                                         forward.Blinded?.RecipientData.PaymentRelay));
         if (!decision.IsForward)
         {
+            if (firstHandling)
+                _refusedHtlcCounter?.Count(decision.FailureCode == FailureCode.UnknownNextPeer
+                                               ? RefusedHtlcReason.UnknownNextChannel
+                                               : RefusedHtlcReason.ForwardPolicy);
             await FailBackAsync(incomingChannelId, htlc, forward.SharedSecret,
                                 ToFailureMessage(decision, outgoing, requestedScid), cancellationToken, introduction);
             return;
