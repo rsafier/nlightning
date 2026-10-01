@@ -349,10 +349,18 @@ internal sealed class PaymentHarnessNode : IDisposable
     public ICommitScheduler Scheduler { get; }
     public HarnessStateStore Store { get; } = new();
     public InMemoryPaymentDbRepository Payments { get; } = new();
+    public InMemoryPaymentPartDbRepository Parts { get; } = new();
     public InMemoryInvoiceDbRepository Invoices { get; } = new();
     public HarnessForwardingSwitch Switch { get; }
     public IPaymentService PaymentService => _provider.GetRequiredService<IPaymentService>();
     public IInvoiceService InvoiceService => _provider.GetRequiredService<IInvoiceService>();
+
+    /// <summary>
+    /// A second <see cref="PaymentService"/> over the same channels and stores (NL-321 proofs): a restart simulation,
+    /// with no sending session for any hash, so outcomes are matched through the stored rows only.
+    /// </summary>
+    public IPaymentOutcomeHandler RestartedPaymentOutcomeHandler() =>
+        ActivatorUtilities.CreateInstance<PaymentService>(_provider);
     public MissionControl MissionControl => _provider.GetRequiredService<MissionControl>();
     public IRouteQueryService RouteQuery => _provider.GetRequiredService<IRouteQueryService>();
 
@@ -419,6 +427,7 @@ internal sealed class PaymentHarnessNode : IDisposable
         services.AddSingleton<IHtlcSwitch>(sp => sp.GetRequiredService<HarnessForwardingSwitch>());
         services.AddScoped(_ => CreateUnitOfWork());
         services.AddScoped<IPaymentDbRepository>(_ => Payments);
+        services.AddScoped<IPaymentPartDbRepository>(_ => Parts);
         services.AddScoped<IInvoiceDbRepository>(_ => Invoices);
         services.AddScoped<IChannelMessageHandler<UpdateAddHtlcMessage>, UpdateAddHtlcMessageHandler>();
         services.AddScoped<IChannelMessageHandler<UpdateFulfillHtlcMessage>, UpdateFulfillHtlcMessageHandler>();
@@ -536,6 +545,7 @@ internal sealed class PaymentHarnessNode : IDisposable
         unitOfWork.SetupGet(u => u.RemoteShachainDbRepository).Returns(staged);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(new Mock<IChannelDbRepository>().Object);
         unitOfWork.SetupGet(u => u.PaymentDbRepository).Returns(Payments);
+        unitOfWork.SetupGet(u => u.PaymentPartDbRepository).Returns(Parts);
         unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(Invoices);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {

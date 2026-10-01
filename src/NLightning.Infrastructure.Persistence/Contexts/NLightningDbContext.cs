@@ -65,6 +65,8 @@ public class NLightningDbContext : DbContext
     public DbSet<InvoiceEntity> Invoices { get; set; }
     public DbSet<PaymentEntity> Payments { get; set; }
     public DbSet<PaymentHopEntity> PaymentHops { get; set; }
+    public DbSet<PaymentPartEntity> PaymentParts { get; set; }
+    public DbSet<PaymentPartHopEntity> PaymentPartHops { get; set; }
     public DbSet<ForwardCircuitEntity> ForwardCircuits { get; set; }
     public DbSet<OnionReplayEntryEntity> OnionReplayEntries { get; set; }
     public DbSet<OfferEntity> Offers { get; set; }
@@ -115,6 +117,7 @@ public class NLightningDbContext : DbContext
         // Payment entities
         modelBuilder.ConfigureInvoiceEntity(_databaseType);
         modelBuilder.ConfigurePaymentEntity(_databaseType);
+        modelBuilder.ConfigurePaymentPartEntity(_databaseType);
         modelBuilder.ConfigureForwardCircuitEntity(_databaseType);
         modelBuilder.ConfigureOnionReplayEntryEntity(_databaseType);
         modelBuilder.ConfigureOfferEntity(_databaseType);

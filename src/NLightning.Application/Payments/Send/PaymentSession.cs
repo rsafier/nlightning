@@ -113,6 +113,11 @@ internal sealed class PaymentSession
     /// <summary>True once the stored row exists (created by the first round).</summary>
     public bool RowCreated { get; set; }
 
+    /// <summary>
+    /// The index the next stored part row gets (NL-321); reset when a retry replaces the attempt's rows.
+    /// </summary>
+    public int NextPartIndex { get; set; }
+
     public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public bool IsCompleted => Completion.Task.IsCompleted;

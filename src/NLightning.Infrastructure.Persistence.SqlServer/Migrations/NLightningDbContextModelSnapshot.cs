@@ -1566,6 +1566,66 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.ToTable("PaymentHops");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartEntity", b =>
+                {
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte>("PartIndex")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<decimal>("HtlcId")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte>("State")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("PaymentHash", "PartIndex");
+
+                    b.ToTable("PaymentParts");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartHopEntity", b =>
+                {
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte>("PartIndex")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte>("HopIndex")
+                        .HasColumnType("tinyint");
+
+                    b.Property<long>("AmountMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CltvExpiry")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("HoldTimeMs")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("NodeId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("SharedSecret")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("ShortChannelId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(8)");
+
+                    b.HasKey("PaymentHash", "PartIndex", "HopIndex");
+
+                    b.ToTable("PaymentPartHops");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.FeeInputReservationInputEntity", b =>
                 {
                     b.HasOne("NLightning.Infrastructure.Persistence.Entities.Bitcoin.FeeInputReservationEntity", null)
@@ -1733,6 +1793,24 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity", null)
+                        .WithMany()
+                        .HasForeignKey("PaymentHash")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartHopEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartEntity", null)
+                        .WithMany("Hops")
+                        .HasForeignKey("PaymentHash", "PartIndex")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.FeeInputReservationEntity", b =>
                 {
                     b.Navigation("Inputs");
@@ -1762,6 +1840,11 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity", b =>
+                {
+                    b.Navigation("Hops");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartEntity", b =>
                 {
                     b.Navigation("Hops");
                 });

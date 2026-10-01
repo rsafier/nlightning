@@ -61,6 +61,12 @@ public interface IUnitOfWork : IDisposable
     // Payment repositories
     IInvoiceDbRepository InvoiceDbRepository { get; }
     IPaymentDbRepository PaymentDbRepository { get; }
+
+    // The offered parts of in-flight payments (NL-321, migration AddPaymentParts); the default is for test doubles
+    // that store no part rows
+    IPaymentPartDbRepository PaymentPartDbRepository =>
+        throw new NotSupportedException("This unit of work does not store payment parts.");
+
     IForwardCircuitDbRepository ForwardCircuitDbRepository { get; }
 
     // Onion replay set (NL-078)

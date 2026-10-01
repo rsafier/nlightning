@@ -88,13 +88,14 @@ using Routing.Interfaces;
 /// <para>Persistence: one row per payment hash (<see cref="IPaymentDbRepository"/>) holding the amount, one route with
 /// its shared secrets and one HTLC id. Whenever no part is in flight after a failure, the row is saved <c>Failed</c>
 /// before a retry round replaces it (<c>AddAsync</c> over a failed row), so a crash never leaves it <c>InFlight</c>
-/// without an HTLC. Parts added while others are in flight are not persisted (their HTLCs carry
-/// <c>HtlcOrigin.Local(hash)</c>, so their outcomes still reach the payment after a restart, but their errors can then
-/// no longer be decrypted). The row always records a part that was offered: when the recorded part is refused by the
-/// engine or fails while other parts are in flight, the row is rewritten to one of those (route, shared secrets, HTLC
-/// id, the fees in flight). On success the row holds the fulfilled part's route and HTLC and, as its fee, the fees of
-/// the parts in flight at the fulfill (the ones the payee settles; failed parts cost nothing). The route and fee
-/// change only by replacing the row (<c>AddAsync</c> over the row failed in the same save).</para>
+/// without an HTLC. Every offered part is additionally stored as a row of its own (<see cref="IPaymentPartDbRepository"/>,
+/// NL-321: route, shared secrets, HTLC id, state), so a part that is not the one the row records can still be resolved
+/// and its error onion decrypted after a restart; a retry that replaces the row clears the attempt's part rows. The row
+/// always records a part that was offered: when the recorded part is refused by the engine or fails while other parts
+/// are in flight, the row is rewritten to one of those (route, shared secrets, HTLC id, the fees in flight). On success
+/// the row holds the fulfilled part's route and HTLC and, as its fee, the fees of the parts in flight at the fulfill
+/// (the ones the payee settles; failed parts cost nothing). The route and fee change only by replacing the row
+/// (<c>AddAsync</c> over the row failed in the same save).</para>
 /// <para>Outcome without a session (after a restart, or a hash this process never paid): by the recorded
 /// (channel, HTLC id); when no id is recorded, the HTLC must not carry another origin
 /// (<c>IChannelStateDbRepository.GetHtlcOriginAsync</c>), its record in channel memory (when still there) must match
@@ -104,10 +105,13 @@ using Routing.Interfaces;
 /// part) then fails the payment without a code. A fulfill whose preimage is right but that matches no in-flight
 /// attempt is logged at Error and still recorded: the preimage proves the payment.</para>
 /// <para>Reconciliation (<see cref="ReconcileInFlightPaymentsAsync"/> at startup, after the channels are registered in
-/// memory, and lazily when a hash is paid again): an <c>InFlight</c> payment without an HTLC id is attached to its HTLC
-/// when exactly one non-final outgoing HTLC in channel memory matches its first hop (or carries its stored
-/// <c>HtlcOrigin.Local</c>), failed without a code when none does and no HTLC with its origin sits on a channel that
-/// is not in memory, and left alone otherwise.</para>
+/// memory, and lazily when a hash is paid again): the stored parts of an <c>InFlight</c> payment are settled first
+/// (NL-321) — a part whose HTLC is gone from its channel while the node was down is marked <c>Failed</c> with an
+/// unknown outcome, and a payment whose parts all died that way (and whose recorded HTLC is gone too, with no part on
+/// a channel that is not in memory) is failed without a code. An <c>InFlight</c> payment without an HTLC id is then
+/// attached to its HTLC when exactly one non-final outgoing HTLC in channel memory matches its first hop (or carries
+/// its stored <c>HtlcOrigin.Local</c>), failed without a code when none does and no HTLC with its origin sits on a
+/// channel that is not in memory, and left alone otherwise.</para>
 /// <para>Singleton; thread-safe. The lock is per payment hash (refcounted), so a slow payment never delays the outcome
 /// of another hash. Persistence goes through a fresh DI scope per step (scoped <see cref="IPaymentDbRepository"/>
 /// sharing the scope's <see cref="IUnitOfWork"/>).</para>
@@ -520,13 +524,16 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                 return false;
 
             var now = _timeProvider.GetUtcNow();
+            AttributionVerification? verification;
             if (match == OutcomeMatch.Match)
             {
                 payment.Succeed(fulfilled.PaymentPreimage, now);
-                RecordFulfillHoldTimes(payment, fulfilled, payment.Route);
+                verification = RecordFulfillHoldTimes(payment, fulfilled, payment.Route);
             }
             else
             {
+                verification = null;
+
                 // The preimage proves the payment: record it rather than lose it (as LND does)
                 _logger.LogError("HTLC {HtlcId} on channel {ChannelId} was fulfilled for payment {PaymentHash}, which is "
                                + "{Status} with HTLC {RecordedHtlcId} on channel {RecordedChannelId}; recording the "
@@ -537,6 +544,9 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             }
 
             await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
+            await UpdateStoredPartAsync(scope, payment.PaymentHash, fulfilled.ChannelId, fulfilled.HtlcId,
+                                        PaymentPartState.Succeeded,
+                                        verification is { } verified ? ToDurations(verified) : null);
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
             LogSucceeded(payment);
         }
@@ -563,6 +573,20 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                 _logger.LogInformation("HTLC {HtlcId} on channel {ChannelId} of payment {PaymentHash} failed; another "
                                      + "HTLC of the payment is still in flight", failed.HtlcId, failed.ChannelId,
                                        failed.PaymentHash);
+                // The part is resolved even though the payment is not (its row is settled for the reconciliation)
+                try
+                {
+                    await UpdateStoredPartAsync(scope, failed.PaymentHash, failed.ChannelId, failed.HtlcId,
+                                                PaymentPartState.Failed);
+                    await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
+                }
+                catch (Exception e)
+                {
+                    _logger.LogError(e, "Could not store the resolution of the part of payment {PaymentHash} offered "
+                                      + "as HTLC {HtlcId} on channel {ChannelId}", failed.PaymentHash, failed.HtlcId,
+                                      failed.ChannelId);
+                }
+
                 return true;
             }
 
@@ -581,16 +605,45 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             FailureCode? code = null;
             int? sourceIndex = null;
             string reason;
+            var attribution = AttributionVerification.Absent;
             if (payment.OutgoingChannelId == failed.ChannelId && payment.OutgoingHtlcId == failed.HtlcId)
             {
-                (code, sourceIndex, reason, _, var attribution) = DescribeFailure(payment.Route, failed.Removal);
+                (code, sourceIndex, reason, _, attribution) = DescribeFailure(payment.Route, failed.Removal);
                 reason += "; not retried.";
                 payment.RecordHoldTimes(ToDurations(attribution));
             }
             else
             {
-                reason = $"HTLC {failed.HtlcId} on channel {failed.ChannelId}, one part of the payment, failed; its "
-                       + "route was not stored, so its error cannot be read; not retried.";
+                // NL-321: the part's route is stored with its part row, so its error onion can be read even when it is
+                // not the part the payment row records
+                try
+                {
+                    var repository = scope.ServiceProvider.GetRequiredService<IPaymentPartDbRepository>();
+                    var storedPart = await repository.GetByHtlcAsync(payment.PaymentHash, failed.ChannelId,
+                                                                     failed.HtlcId);
+                    if (storedPart is not null)
+                    {
+                        (code, sourceIndex, reason, _, attribution) = DescribeFailure(storedPart.Hops,
+                                                                                      failed.Removal);
+                        reason += "; not retried.";
+                        storedPart.State = PaymentPartState.Failed;
+                        storedPart.RecordHoldTimes(ToDurations(attribution));
+                        await repository.UpdateAsync(storedPart);
+                    }
+                    else
+                    {
+                        reason = $"HTLC {failed.HtlcId} on channel {failed.ChannelId}, one part of the payment, "
+                               + "failed; its route was not stored, so its error cannot be read; not retried.";
+                    }
+                }
+                catch (Exception e)
+                {
+                    _logger.LogError(e, "Could not read the stored part of payment {PaymentHash} offered as HTLC "
+                                      + "{HtlcId} on channel {ChannelId}; its error cannot be read",
+                                      payment.PaymentHash, failed.HtlcId, failed.ChannelId);
+                    reason = $"HTLC {failed.HtlcId} on channel {failed.ChannelId}, one part of the payment, failed; "
+                           + "its route was not stored, so its error cannot be read; not retried.";
+                }
             }
 
             payment.Fail(code, sourceIndex, reason, _timeProvider.GetUtcNow());
@@ -610,13 +663,25 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             inFlight = await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().GetInFlightAsync();
 
         var reconciled = 0;
-        foreach (var candidate in inFlight.Where(p => p.OutgoingHtlcId is null))
+        foreach (var candidate in inFlight)
         {
             using (await AcquireHashLockAsync(candidate.PaymentHash, cancellationToken))
             {
                 // Re-read under the lock: an outcome may have completed it meanwhile
                 var payment = await GetPaymentAsync(candidate.PaymentHash, CancellationToken.None);
-                if (payment is not { Status: PaymentStatus.InFlight, OutgoingHtlcId: null })
+                if (payment is not { Status: PaymentStatus.InFlight })
+                    continue;
+
+                // The stored parts first (NL-321): parts whose HTLC died while the node was down are settled, and a
+                // payment with no live part left is failed without a code
+                payment = await ReconcileStoredPartsAsync(payment);
+                if (payment.Status != PaymentStatus.InFlight)
+                {
+                    reconciled++;
+                    continue;
+                }
+
+                if (payment.OutgoingHtlcId is not null)
                     continue;
 
                 payment = await ReconcileUnrecordedAsync(
@@ -627,6 +692,84 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         }
 
         return reconciled;
+    }
+
+    /// <summary>
+    /// Settles the stored parts of an <c>InFlight</c> payment against channel memory (NL-321), under its hash's lock:
+    /// a part that is still <c>InFlight</c> in the table but whose HTLC is gone from (or final on) its channel died
+    /// while the node was down and is marked <c>Failed</c> with an unknown outcome. When every part died that way, the
+    /// recorded HTLC is gone too and no HTLC of the payment sits on a channel that is not in memory, the payment is
+    /// failed without a code; a part on a channel that is not in memory may still resolve (its outcome is replayed
+    /// when the channel comes back), so the payment is then left alone.
+    /// </summary>
+    /// <returns>The payment as stored.</returns>
+    private async Task<PaymentModel> ReconcileStoredPartsAsync(PaymentModel payment)
+    {
+        using var scope = _serviceScopeFactory.CreateScope();
+        var repository = scope.ServiceProvider.GetRequiredService<IPaymentPartDbRepository>();
+        var parts = await repository.GetForPaymentAsync(payment.PaymentHash);
+        var open = parts.Where(p => p.State == PaymentPartState.InFlight).ToList();
+        if (open.Count == 0)
+            return payment;
+
+        var byOrigin = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().ChannelStateDbRepository
+                                  .FindHtlcsByOriginAsync(HtlcOrigin.Local(payment.PaymentHash))
+                      ?? [];
+        var ambiguous = byOrigin.Any(o => !_channelMemoryRepository.TryGetChannel(o.ChannelId, out _));
+        var livePart = false;
+        foreach (var part in open)
+        {
+            if (!_channelMemoryRepository.TryGetChannel(part.ChannelId, out var channel)
+             || channel.Commitments is not { } commitments)
+            {
+                ambiguous = true;
+                continue;
+            }
+
+            var htlc = commitments.GetHtlc(HtlcDirection.Outgoing, part.HtlcId);
+            if (htlc is { } record && !HtlcStateTable.IsFinal(record.State))
+            {
+                livePart = true;
+                continue;
+            }
+
+            // The part's HTLC is gone: its outcome is unknown (no error onion arrives for a dead HTLC)
+            part.State = PaymentPartState.Failed;
+            await repository.UpdateAsync(part);
+            _logger.LogWarning("Part {PartIndex} of payment {PaymentHash} (HTLC {HtlcId} on channel {ChannelId}) is "
+                             + "gone after the restart; its outcome is unknown", part.PartIndex, payment.PaymentHash,
+                               part.HtlcId, part.ChannelId);
+        }
+
+        if (open.Any(p => p.State == PaymentPartState.Failed))
+            await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
+
+        if (livePart || ambiguous)
+            return payment;
+
+        // Nothing is live for the payment any more. When the recorded HTLC is not one of the part rows (an older
+        // attempt's, or its row's save failed), it must be gone too; a channel that is not in memory stays ambiguous
+        if (payment.OutgoingHtlcId is { } recordedId && payment.OutgoingChannelId is { } recordedChannel
+         && parts.All(p => p.ChannelId != recordedChannel || p.HtlcId != recordedId))
+        {
+            if (!_channelMemoryRepository.TryGetChannel(recordedChannel, out var recorded)
+             || recorded.Commitments is not { } recordedCommitments)
+                return payment;
+
+            var recordedHtlc = recordedCommitments.GetHtlc(HtlcDirection.Outgoing, recordedId);
+            if (recordedHtlc is { } live && !HtlcStateTable.IsFinal(live.State))
+                return payment;
+        }
+
+        payment.Fail(null, null, "No part of the payment was still in flight after the restart; its stored parts' "
+                               + "HTLCs are gone and their outcomes are unknown.", _timeProvider.GetUtcNow());
+        await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
+        await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
+        LogFailed(payment);
+        if (_sessions.TryGetValue(payment.PaymentHash, out var session) && !session.HasPartsInFlight)
+            CompleteSession(session);
+
+        return payment;
     }
 
     /// <summary>
@@ -1096,7 +1239,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
 
     /// <summary>
     /// Stores the round before its offers: the first round creates the row; a round after every part failed replaces
-    /// the (failed) row; a round while parts are in flight keeps it (its parts live in memory only).
+    /// the (failed) row and its part rows; a round while parts are in flight keeps them (the row and parts live on).
     /// </summary>
     private async Task PersistRoundAsync(PaymentSession session, IReadOnlyList<PaymentPart> round)
     {
@@ -1120,9 +1263,13 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             await repository.UpdateAsync(stale);
         }
 
+        // The part rows of the replaced attempt (this one, or the failed one a new session retries) are not kept
+        await scope.ServiceProvider.GetRequiredService<IPaymentPartDbRepository>()
+                   .DeleteForPaymentAsync(session.PaymentHash);
         await repository.AddAsync(row);
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
         session.RowCreated = true;
+        session.NextPartIndex = 0;
         session.PrimaryPart = first;
     }
 
@@ -1176,6 +1323,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         }
 
         part.HtlcId = htlcId;
+        await PersistPartAsync(session, part);
         if (ReferenceEquals(part, session.PrimaryPart))
             await RecordPrimaryHtlcAsync(session, part);
 
@@ -1208,6 +1356,67 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             _logger.LogError(e, "Could not record HTLC {HtlcId} on channel {ChannelId} for payment {PaymentHash}; its "
                               + "outcome will be matched through the channel state", part.HtlcId,
                              part.Channel.ChannelId, session.PaymentHash);
+        }
+    }
+
+    /// <summary>
+    /// Stores a part that was just offered with its route, shared secrets and HTLC id (NL-321), so its error can be
+    /// decrypted even when it is not the part the payment row records. A failed save is logged: the HTLC is live and
+    /// its outcome still reaches the payment, but the part's error would be unreadable after a restart (as before).
+    /// </summary>
+    private async Task PersistPartAsync(PaymentSession session, PaymentPart part)
+    {
+        if (session.NextPartIndex > byte.MaxValue)
+        {
+            _logger.LogWarning("Payment {PaymentHash}: part {HtlcId} on channel {ChannelId} is beyond the {Limit} part "
+                              + "rows of an attempt; it is not stored", session.PaymentHash, part.HtlcId,
+                               part.Channel.ChannelId, byte.MaxValue + 1);
+            return;
+        }
+
+        try
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<IPaymentPartDbRepository>();
+            await repository.AddAsync(new PaymentPartModel(session.PaymentHash, (byte)session.NextPartIndex++,
+                                                           part.Channel.ChannelId, part.HtlcId!.Value,
+                                                           PaymentPartState.InFlight, part.Hops));
+            await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not store the part of payment {PaymentHash} offered as HTLC {HtlcId} on channel "
+                              + "{ChannelId}; its error cannot be read after a restart", session.PaymentHash,
+                             part.HtlcId, part.Channel.ChannelId);
+        }
+    }
+
+    /// <summary>
+    /// Stages the resolution of a stored part (NL-321): its state, and the hold times its hops reported in a verified
+    /// <c>attribution_data</c>, when the verification was over this part's route. A missing row (a save around the
+    /// offer failed) is skipped; a failed save is logged.
+    /// </summary>
+    private async Task UpdateStoredPartAsync(IServiceScope scope, Hash paymentHash, ChannelId channelId,
+                                             ulong htlcId, PaymentPartState state,
+                                             IReadOnlyList<TimeSpan>? holdTimes = null)
+    {
+        try
+        {
+            var repository = scope.ServiceProvider.GetRequiredService<IPaymentPartDbRepository>();
+            var part = await repository.GetByHtlcAsync(paymentHash, channelId, htlcId);
+            if (part is null)
+                return;
+
+            part.State = state;
+            if (holdTimes is { Count: > 0 })
+                part.RecordHoldTimes(holdTimes);
+
+            await repository.UpdateAsync(part);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not store the resolution of the part of payment {PaymentHash} offered as HTLC "
+                              + "{HtlcId} on channel {ChannelId}", paymentHash, htlcId, channelId);
         }
     }
 
@@ -1354,6 +1563,15 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                 await repository.UpdateAsync(payment);
             }
 
+            // No outcome of the payment's remaining parts is waited for any more; their rows are settled here (NL-321)
+            var partRepository = scope.ServiceProvider.GetRequiredService<IPaymentPartDbRepository>();
+            foreach (var open in await partRepository.GetForPaymentAsync(session.PaymentHash))
+            {
+                if (open.State == PaymentPartState.InFlight)
+                    await UpdateStoredPartAsync(scope, session.PaymentHash, open.ChannelId, open.HtlcId,
+                                                PaymentPartState.Failed);
+            }
+
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
             LogFailed(payment);
         }
@@ -1465,6 +1683,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         }
 
         var now = _timeProvider.GetUtcNow();
+        AttributionVerification? verification;
         // The parts in flight are the ones the payee settles: the row's fee is theirs, and its route the fulfilled
         // part's (the parts of earlier rounds that failed are not paid for)
         var settledFee = LightningMoney.MilliSatoshis(session.FeesInFlightMsat);
@@ -1477,18 +1696,19 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                                  PaymentStatus.Succeeded, fulfilled.ChannelId, fulfilled.HtlcId,
                                                  fulfilled.PaymentPreimage, null, null, null, now, part.Hops,
                                                  payment.Bolt12, payment.Keysend);
-            RecordFulfillHoldTimes(succeeded, fulfilled, part.Hops);
+            verification = RecordFulfillHoldTimes(succeeded, fulfilled, part.Hops);
             await StageReplacementAsync(repository, payment, succeeded, "Superseded by the fulfilled part.");
             payment = succeeded;
         }
         else
         {
+            verification = null;
             if (payment.Status == PaymentStatus.InFlight)
             {
                 if (payment.OutgoingHtlcId is null)
                     payment.AddOutgoingHtlc(fulfilled.ChannelId, fulfilled.HtlcId);
                 payment.Succeed(fulfilled.PaymentPreimage, now);
-                RecordFulfillHoldTimes(payment, fulfilled, part?.Hops ?? payment.Route);
+                verification = RecordFulfillHoldTimes(payment, fulfilled, part?.Hops ?? payment.Route);
             }
             else
             {
@@ -1498,6 +1718,10 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             await repository.UpdateAsync(payment);
         }
 
+        if (part is not null)
+            await UpdateStoredPartAsync(scope, session.PaymentHash, fulfilled.ChannelId, fulfilled.HtlcId,
+                                        PaymentPartState.Succeeded,
+                                        verification is { } verified ? ToDurations(verified) : null);
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
         part?.Status = PaymentPartStatus.Succeeded;
         if (part is not null)
@@ -1531,6 +1755,15 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
 
         _logger.LogWarning("Payment {PaymentHash}: the part of {Amount} msat over {Path} failed: {Reason} ({Note})",
                            session.PaymentHash, part.Route.Amount.MilliSatoshi, part.Description, reason, note);
+
+        // The part's row is resolved (NL-321), with the hold times its hops reported
+        using (var scope = _serviceScopeFactory.CreateScope())
+        {
+            await UpdateStoredPartAsync(scope, session.PaymentHash, failed.ChannelId, failed.HtlcId,
+                                        PaymentPartState.Failed,
+                                        attribution.IsPresent ? ToDurations(attribution) : null);
+            await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
+        }
 
         if (session.HasPartsInFlight)
         {
@@ -1640,11 +1873,12 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
     /// fulfilled part's (<see cref="IsSameRoute"/>): another part's or round's route would pair them with the wrong
     /// nodes.
     /// </summary>
-    private void RecordFulfillHoldTimes(PaymentModel payment, OutgoingHtlcFulfilled fulfilled,
-                                        IReadOnlyList<PaymentHop> route)
+    /// <returns>The verification (null when there was nothing to verify), for the fulfilled part's stored row.</returns>
+    private AttributionVerification? RecordFulfillHoldTimes(PaymentModel payment, OutgoingHtlcFulfilled fulfilled,
+                                                            IReadOnlyList<PaymentHop> route)
     {
         if (_attributionDataService is null || fulfilled.AttributionData.IsEmpty || route.Count == 0)
-            return;
+            return null;
 
         var verified = _attributionDataService.VerifyFulfillment(route.Select(h => h.SharedSecret).ToList(),
                                                                  fulfilled.AttributionData.Span,
@@ -1662,6 +1896,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         else if (_logger.IsEnabled(LogLevel.Debug))
             _logger.LogDebug("Payment {PaymentHash}: hold times{HoldTimes}", payment.PaymentHash,
                              DescribeHoldTimes(verified.Attribution));
+
+        return verified.Attribution;
     }
 
     /// <summary>
