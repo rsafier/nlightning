@@ -4,6 +4,8 @@ using Lnrpc;
 namespace NLightning.Integration.Tests.Docker.Abcd;
 
 using Domain.Client.Responses;
+using Domain.Crypto.ValueObjects;
+using Domain.Payments.Enums;
 using Fixtures;
 using Utils;
 
@@ -120,6 +122,12 @@ public abstract class AbcdTestBase : IAsyncLifetime
                            "david C-D");
 
         await AssertNetworkHealthyAsync(after, ct);
+
+        // NL-597: Bob's listforwards shows the forward he carried, fulfilled for his fee
+        var forward = await Network.Bob.GetForwardAsync(new Hash(paymentHash), ct);
+        Assert.NotNull(forward);
+        Assert.Equal(ForwardCircuitStatus.Fulfilled, forward!.Status);
+        Assert.Equal((ulong)fees.FeeBobMsat, forward.Fee.MilliSatoshi);
     }
 
     /// <summary>

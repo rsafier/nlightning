@@ -76,6 +76,19 @@ public static class NodeClientCalls
     }
 
     /// <summary>
+    /// <c>listforwards</c>, filtered to <paramref name="paymentHash"/>; null when the node never forwarded it
+    /// (NL-597).
+    /// </summary>
+    public static async Task<ForwardInfoClientResponse?> GetForwardAsync(this NLightningTestNode node,
+                                                                         Hash paymentHash,
+                                                                         CancellationToken cancellationToken)
+    {
+        var response = await HandleAsync<ListForwardsClientRequest, ListForwardsClientResponse>(
+                           node, new ListForwardsClientRequest { Take = LookupWindow }, cancellationToken);
+        return response.Forwards.FirstOrDefault(f => f.PaymentHash == paymentHash);
+    }
+
+    /// <summary>
     /// <c>listchannels</c>, the channel <paramref name="channelId"/> (fails the test when it is not listed).
     /// </summary>
     public static async Task<ChannelInfoClientResponse> GetChannelAsync(this NLightningTestNode node,
