@@ -85,6 +85,7 @@ Updated 2026-09-30 by the batch5 integrator (branch `batch5` from `wip/fafo` at 
 Updated 2026-09-30 by the batch6 integrator (branch `batch6` from `wip/fafo` at `f5d38e8f`; 5 lanes run in parallel worktrees, cherry-picked in lane order — lane branches `batch6-*` hold the originals): 8 open lows resolved, with the per-entry SHAs being the `batch6` commits: NL-055, NL-313, NL-433, NL-498, NL-541, NL-563, NL-571, NL-573. Notes: NL-563 — a size refusal must name a byte limit; funded-channel warnings are informational and `DefaultRefusalLimit` is gone; NL-433 — the client gate reads the new `IPeerService.PeerFeatures` (the peer's own init advertisement; `Features` is the negotiated set and cannot express it), provider side unchanged; NL-573 — client-auth and PoW flags ride `ADD_ONION`, PoW requires Tor 0.4.9+ and the service refuses to start undefended on older Tor; NL-571 — implemented LND's `tor.dns` approach (a small RFC 1035 codec over the SOCKS port, `Node:Bootstrap:TorNameServer`, default LND's `soa.nodes.lightning.directory`), so Tor-only nodes ask the seeds after all; NL-541 — the live seeds answer the plain `l` node query (the entry's "answer nothing" held only for conditioned queries) and the reconnect assist dials the saved port on located addresses; NL-313 — `Node:Onchain:CatchUpScanMaxBlocks` (default 1,008, 0 = unbounded) with a clipping warning; NL-498 — the peer's update of our public channel goes out through the own-gossip publisher, `dont_forward` and private channels excepted. NL-295 stays `open` pending the duplicate-of-NL-535 close the batch4 lane evidenced. Gates on the integrated tree, net10.0 Release: build 0 errors/0 warnings; `dotnet format` clean; full non-Docker suite green per project (Daemon 854, Domain 3834, Application 3243, Serialization 622, Bolt11 337, Infrastructure 613, Infrastructure.Bitcoin 1464 +2 platform skips, Integration 949) — two single-test failures across three full runs were the documented loaded-run flakes (`AnnouncementHarnessTests`, NL-561 family; `PeerBootstrapServiceTests.Given_TorOnlyWithATorResolver`), each green alone and the suite green on re-run. Integration findings fixed at the cherry-pick: NL-571's commit conflicted with NL-541's (both touched `DnsSeedClient`, both kept), lane 2's `TryParseTorNameServer` did not parse a bare host name (its own theory expected host -> port 53; the bare-host branch added), and the config template gained the four new `Node:Tor` keys plus `Node:Bootstrap:TorNameServer` (TorConfigTemplateTests).
 Updated 2026-09-30 by lane tor (branch `wip/tor` from `wip/fafo` at `59a62d37`, code at `9f5cf49`; rebased as `tor-int` onto `wip/fafo` at `8d0e9a7e` and again at `649eea3d` (after batch5), code at `0a73ebad`, and its IDs renumbered NL-567..NL-571 → NL-569..NL-573 because `wip/fafo` had taken NL-567/NL-568): Tor support NL-569 (new epic, fixed: onion peers through SOCKS5, our v3 onion service through the control port, Tor-only mode; `docs/agents/TOR.md`); NL-542 fixed (no DNS seeds in Tor-only mode) and NL-178 fixed (`TcpService` unit-tested); new NL-570 (found in passing: `SecureKeyManager` stat offsets on Linux x86_64), NL-571..NL-573 (Tor follow-ups). Non-Docker on net10.0, Release: Domain 3801, Application 3191, Integration 941, Serialization 622, Infrastructure 544, Infrastructure.Bitcoin 1438 (2 skipped; the two NL-570 failures on linux-x64), Bolt11 337, Daemon 850, green apart from NL-570 and the known flake NL-434 (green alone). No Docker run (NL-572).
 
+Updated 2026-09-30 by the batch7 integrator (branch `batch7` from `wip/fafo` at `19ec9493`; 5 lanes run in parallel worktrees, cherry-picked in lane order with no conflicts — lane branches `batch7-*` hold the originals): 11 open issues resolved (1 medium, 10 low), with the per-entry SHAs being the `batch7` commits: NL-570, NL-439, NL-374, NL-366, NL-416, NL-423, NL-493, NL-508, NL-462, NL-295, NL-457. Notes: NL-570 — st_uid/st_gid offsets now come from a platform/architecture table (macOS 16/20, Linux x64 28/32, other 64-bit Linux 24/28), pinned by a platform-independent test, linux-x64 verification in CI; NL-439 — the Windows pipe ACL review found no gap (`CurrentUserOnly` gives a single-ACE DACL, cookie-gated answers), and the daemon warns at start when the database file is group/world readable (warn-only); NL-374 — `GraphStore.GetSnapshot` copies the graph references under the writer lock and builds the snapshot's indexes outside it, so ingress writers stall for ~ms instead of the 69-105 ms index build; NL-366 — the relay's collect drains a bounded accepted-gossip feed the ingress fills (one newest-wins slot per message direction, cap 8,192, overflow falls back to the old full pass), O(changes) instead of O(graph) per collect; NL-416 — `getblock <hash> 1` answers are stream-parsed with a `JsonTextReader` off the response (no JToken tree on the LOH; the pruned-block error still surfaces as `RPCException`); NL-423 — Esplora funding-txid lookups batch per block through `/block/{hash}/txids`, proven by computing the list's merkle root against our header (CVE-2012-2459-mutated lists refused, length checked against nTx, per-position proof kept as fallback on mismatch or 404) — a 40-50k-channel sync drops from ~80k requests (>12 h at 2 req/s) to about one request per distinct funding block; NL-493 — the CRITICAL `[SP2-C-T4]` reorg alert fires only for a reorg the process saw and is derived from persisted watch state after a restart (no schema change), and `SpliceDepthWatcher` moves a pending splice reorged out before its lock back to waiting (`OnSpliceReorgedOutAsync` under the channel lock, `splice_locked` kept, idempotent); NL-508 — `SpliceHarness.RestartAsync` registers the saved fundings with the signer the way production loads them and the `bumpsplice` refusals (no pending splice, splice not negotiated) are proven on the real `SpliceService`; NL-462 — at startup a V1FundingSigned funder's channel locks are rebuilt from its pending funding broadcast's inputs (no schema change; the NL-259 release paths release restored locks unchanged); NL-295 — the open-channel subscription answers right after subscribing from a channel already at V1FundingSigned (an NL-535 test asserting the old wait-for-update contract was rewritten to the fixed contract); NL-457 — migration `AddForwardCircuitFailureReasons` (Sqlite 20261001011637, Postgres 20261001011629, SqlServer 20261001011644) adds nullable `FailureCode`/`FailureSource` to ForwardCircuits, written by the saves that mark a circuit Failed (`FailureCode` stays null for relayed `update_fail_htlc` failures — the failure onion is encrypted for the upstream hop); the optional `listforwards` IPC was left out for now. Gates on the integrated tree, net10.0 Release: build 0 errors/0 warnings; `dotnet format` clean; `scripts/check-sln-configs.py` OK; full non-Docker suite green per project (Domain 3838 +4 platform skips, Application 3255, Daemon 868, Infrastructure.Bitcoin 1489 +2 platform skips, Integration 953, Serialization 622, Bolt11 337, Infrastructure 613) — two single-test failures in the first full run were the documented loaded-run flakes (`AnnouncementHarnessTests`, NL-561 family; `GossipFloodTests`, NL-382 family), each green alone and the suite green on re-run.
 Updated 2026-09-30 by the tor integrator (branch `tor-int`, rebased onto `wip/fafo` at `649eea3d`): the Tor review's findings fixed (owner decision: all of them), NL-575..NL-590 (NL-574 is reserved for another lane): M1 control-port authentication NL-575, M2 startup dials NL-576, M3 Tor-only listener NL-577, M4 fee estimates over HTTP NL-578, M5 onion-service peers dialed back NL-579, L1..L11 NL-580..NL-590 (the SOCKS5 credentials version NL-587 is a spec-violation, the rest bugs). Non-Docker only (Docker was busy with another lane).
 
 ## How to use this file
@@ -121,9 +122,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 4 | 75 | 79 |
+| open | 0 | 0 | 3 | 65 | 68 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 163 | 252 | 491 |
+| fixed | 14 | 62 | 164 | 262 | 502 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 1 | 2 |
 | **Total** | **14** | **62** | **171** | **333** | **580** |
@@ -1332,7 +1333,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-462 UTXO channel locks are never persisted
-- **Status:** open
+- **Status:** fixed (0a1ff563)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `UtxoModel.LockedToChannelId`, `src/NLightning.Infrastructure.Repositories/Database/Bitcoin/UtxoDbRepository.cs` (`Update` has no caller)
@@ -1500,7 +1501,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` §3.6, SP2-C-T4
 
 ### NL-493 Splice reorg handling is partial (SP2-C-T4)
-- **Status:** open (partial: f9c6b7f0, 8566caf2)
+- **Status:** fixed (1f0dfa1a; partial fixes f9c6b7f0, 8566caf2)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Reorg/SpliceReorgMonitor.cs`, `src/NLightning.Application/Channels/Splicing/SpliceDepthWatcher.cs`, `OnchainResolutionExecutor`
@@ -3342,7 +3343,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G3-T2
 
 ### NL-366 The relay diffs the whole graph snapshot every collect interval
-- **Status:** open
+- **Status:** fixed (740aca72)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Gossip/Relay/GossipRelayScheduler.Relay.cs` (`Collect`, `Gossip:RelayCollectInterval` 10 s)
@@ -3402,7 +3403,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G5-T1
 
 ### NL-374 GraphStore rebuilds the whole snapshot under the writer lock
-- **Status:** open
+- **Status:** fixed (1d805ad7)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Gossip/Graph/GraphStore.cs` (`GetSnapshot`)
@@ -3584,7 +3585,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G3-T2, D12
 
 ### NL-416 A verified sync peaks at 630 MB RSS from getblock JSON on the large object heap
-- **Status:** open
+- **Status:** fixed (1b89c1ea)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs` (`GetBlockTxIdsAsync`)
@@ -3656,7 +3657,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 D3, D12
 
 ### NL-423 An Esplora-mode verified sync from a public index takes more than 12 hours
-- **Status:** open
+- **Status:** fixed (6db9596c)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Gossip/EsploraTxIdSource.cs` (`EsploraRequestsPerSecond` 2)
@@ -4265,7 +4266,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M4-T7; ONION_ROUTING_PLAN §4.5; BOLT2 N5-T1, N8 (partial)
 
 ### NL-457 Forward circuits keep no failure reason
-- **Status:** open
+- **Status:** fixed (d49cc5f2)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Persistence/Entities/Payment/ForwardCircuitEntity.cs`, `src/NLightning.Domain/Payments/Models/ForwardCircuitModel.cs` (`MarkFailed`)
@@ -4649,7 +4650,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ABCD wave 4 W4-D
 
 ### NL-295 The open-channel subscription misses a V1FundingSigned reached before it subscribes
-- **Status:** open
+- **Status:** fixed (ee7e8fac)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Daemon/Handlers/OpenChannelClientSubscriptionHandler.cs`
@@ -5050,7 +5051,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-439 Security review did not cover the Windows named-pipe ACL or a database file outside the config directory
-- **Status:** open
+- **Status:** fixed (045563d6)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `src/NLightning.Daemon/Services/Ipc/NamedPipeIpcService.cs`, `Database` connection string
@@ -5687,7 +5688,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-508 Splice RBF test gaps left by wave spr
-- **Status:** open
+- **Status:** fixed (ae3bddd6)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Channels/Harness/TwoNodeHarness*`, `SpliceTestKit`, `test/NLightning.Daemon.Tests/` (`BumpSpliceIpcHandlerTests`)
@@ -5821,7 +5822,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `docs/agents/TOR.md`
 
 ### NL-570 SecureKeyManager reads st_mode as the owner uid on Linux x86_64
-- **Status:** open
+- **Status:** fixed (b55e8dcc)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs` (`GetUnixFileOwner`)
