@@ -856,7 +856,8 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
 
     /// <summary>
     /// Reads a Unix file's <c>st_uid</c>/<c>st_gid</c> through <c>stat(2)</c>, or null when the platform has no
-    /// direct <c>stat</c> symbol (glibc older than 2.33) or the call failed. Internal for the tests.
+    /// direct <c>stat</c> symbol (glibc older than 2.33), no known <c>struct stat</c> layout, or the call failed.
+    /// Internal for the tests.
     /// </summary>
     internal static (uint Uid, uint Gid)? GetUnixFileOwner(string path)
     {
@@ -864,17 +865,15 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         // size, the untouched tail is ignored
         try
         {
+            if (GetStatUidGidOffsets() is not { } offsets)
+                return null;
+
             var buffer = new byte[256];
             if (UnixStat(path, buffer) != 0)
                 return null;
 
-            // macOS: st_uid at 16, st_gid at 20. Linux (glibc and musl, 64-bit): st_uid at 24, st_gid at 28.
             var littleEndian = BitConverter.IsLittleEndian;
-            return RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
-                       ? (littleEndian ? BitConverter.ToUInt32(buffer, 16) : BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(16)),
-                          littleEndian ? BitConverter.ToUInt32(buffer, 20) : BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(20)))
-                       : (littleEndian ? BitConverter.ToUInt32(buffer, 24) : BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(24)),
-                          littleEndian ? BitConverter.ToUInt32(buffer, 28) : BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(28)));
+            return (ReadStatId(buffer, offsets.Uid, littleEndian), ReadStatId(buffer, offsets.Gid, littleEndian));
         }
         catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException)
         {
@@ -882,6 +881,36 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
             return null;
         }
     }
+
+    private static uint ReadStatId(byte[] buffer, int offset, bool littleEndian) =>
+        littleEndian ? BitConverter.ToUInt32(buffer, offset)
+                     : BinaryPrimitives.ReadUInt32BigEndian(buffer.AsSpan(offset));
+
+    /// <summary>
+    /// Byte offsets of <c>st_uid</c>/<c>st_gid</c> in the running platform's 64-bit <c>struct stat</c>, or null when
+    /// the platform is not one of the known ones (Unix only). Table-driven per platform and architecture (NL-570):
+    /// Linux x64's <c>st_nlink</c> is 8 bytes and precedes <c>st_mode</c>, putting the ids 4 bytes later than on the
+    /// other 64-bit platforms — reading the generic offsets there returns the file's <c>st_mode</c> as the uid.
+    /// Internal for the tests.
+    /// </summary>
+    internal static (int Uid, int Gid)? GetStatUidGidOffsets(bool isMacOS, bool isLinux, Architecture architecture)
+    {
+        if (isMacOS)
+            return (16, 20);
+
+        if (isLinux)
+            return architecture == Architecture.X64 ? (28, 32) : (24, 28);
+
+        return null;
+    }
+
+    /// <summary>
+    /// The offsets of the running platform. Internal for the tests (the Linux x64 entry can only be exercised in CI).
+    /// </summary>
+    internal static (int Uid, int Gid)? GetStatUidGidOffsets() =>
+        GetStatUidGidOffsets(RuntimeInformation.IsOSPlatform(OSPlatform.OSX),
+                             RuntimeInformation.IsOSPlatform(OSPlatform.Linux),
+                             RuntimeInformation.ProcessArchitecture);
 
     private static void TryDeleteFile(string path)
     {
