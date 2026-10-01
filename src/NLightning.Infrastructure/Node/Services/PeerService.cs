@@ -106,7 +106,7 @@ public sealed class PeerService : IPeerService
     /// <inheritdoc/>
     /// <remarks>
     /// The first subscriber first gets, in order, the channel messages that arrived while nobody was subscribed.
-    /// Handlers run on the transport read loop, one message at a time.
+    /// Handlers run on the message service's per-peer consumer, one message at a time, off the transport read loop.
     /// </remarks>
     public event EventHandler<ChannelMessageEventArgs>? OnChannelMessageReceived
     {
@@ -686,8 +686,9 @@ public sealed class PeerService : IPeerService
 
     /// <summary>
     /// Records that our init went out (<paramref name="ourInitSent"/>) or that the peer's was accepted, and asks for
-    /// gossip once both happened: the peer's init can be handled on the read loop while ours is still being written,
-    /// and BOLT 1 requires init to be the first message on the wire.
+    /// gossip once both happened: the peer's init can be handled while ours is still being written (both run on the
+    /// message service's per-peer consumer, off the read loop), and BOLT 1 requires init to be the first message on
+    /// the wire.
     /// </summary>
     private void MarkBootstrapStep(bool ourInitSent)
     {

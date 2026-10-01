@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Diagnostics.Metrics;
+using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Infrastructure.Protocol.Services;
@@ -18,7 +19,9 @@ using Exceptions;
 /// Service for sending and receiving messages.
 /// </summary>
 /// <remarks>
-/// This class is used to send and receive messages over a transport service.
+/// This class is used to send and receive messages over a transport service. Receiving is asynchronous per peer: the
+/// transport read loop only queues the raw frames it decrypts; a single consumer per peer deserializes them and runs
+/// the handlers in arrival order, so a slow handler stalls that peer's queue, never the read loop (NL-108).
 /// </remarks>
 /// <seealso cref="IMessageService" />
 internal sealed class MessageService : IMessageService
@@ -27,6 +30,14 @@ internal sealed class MessageService : IMessageService
     /// The <c>reason</c> tag of a malformed <c>onion_message</c> on <c>nlightning.onion_messages.dropped</c> (NL-444).
     /// </summary>
     internal const string MalformedOnionMessageDropReason = "malformed";
+
+    /// <summary>
+    /// Raw frames the per-peer consumer may hold back while a previous one is still being deserialized and handed to
+    /// the handlers. When full, the transport read loop waits (backpressure, exactly what the peer manager's channel
+    /// message queue does one layer up): a slow handler never runs on the read loop, it only grows this queue
+    /// (NL-108).
+    /// </summary>
+    internal const int MaxQueuedStreams = 1024;
 
     // The fallback onion-message meter of a node without the Application's OnionMessageMetrics (its counter set, the
     // registered IOnionMessageDropCounter, is preferred so every drop lands on the service's meter, NL-464)
@@ -40,6 +51,18 @@ internal sealed class MessageService : IMessageService
     private readonly ITransportService? _transportService;
     private readonly IOnionMessageDropCounter? _onionMessageDrops;
 
+    /// <summary>
+    /// The raw frames the transport read loop handed over, consumed by the one per-peer consumer
+    /// (<see cref="ProcessReceivedStreamsAsync"/>): deserialization and the handlers run off the read loop (NL-108).
+    /// </summary>
+    private readonly Channel<MemoryStream> _receivedStreams =
+        Channel.CreateBounded<MemoryStream>(new BoundedChannelOptions(MaxQueuedStreams)
+        {
+            SingleReader = true,
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.Wait
+        });
+
     private volatile bool _disposed;
     private readonly object _disposeLock = new();
     private long _malformedGossipCount;
@@ -47,6 +70,7 @@ internal sealed class MessageService : IMessageService
 
     private EventHandler<IMessage?>? _onMessageReceived;
     private bool _listening;
+    private Task _consumerTask = Task.CompletedTask;
 
     /// <inheritdoc />
     /// <remarks>
@@ -70,7 +94,10 @@ internal sealed class MessageService : IMessageService
 
             // Outside the lock: the transport may start its read loop, which raises into ReceiveMessage (takes it)
             if (startListening)
+            {
                 _transportService!.MessageReceived += ReceiveMessage;
+                _consumerTask = Task.Run(ProcessReceivedStreamsAsync);
+            }
         }
         remove
         {
@@ -146,7 +173,54 @@ internal sealed class MessageService : IMessageService
         }
     }
 
+    /// <summary>
+    /// Receives a raw frame from the transport read loop: it only queues it for the per-peer consumer, so neither the
+    /// deserialization nor a handler ever runs on the read loop (NL-108). It waits only when the queue is full
+    /// (backpressure, like the peer manager's channel message queue one layer up), never on a handler.
+    /// </summary>
     private void ReceiveMessage(object? _, MemoryStream stream)
+    {
+        try
+        {
+            _receivedStreams.Writer.WriteAsync(stream).AsTask().GetAwaiter().GetResult();
+        }
+        catch (ChannelClosedException)
+        {
+            // The service was disposed while the frame waited: the connection is gone, drop it
+        }
+    }
+
+    /// <summary>
+    /// The per-peer consumer: deserializes the queued frames one at a time, in arrival order, and raises
+    /// <see cref="OnMessageReceived"/> — everything the transport read loop used to do besides reading bytes (NL-108).
+    /// A slow handler therefore parks this loop (and the queue grows), never the read loop. A ping is answered as
+    /// soon as the consumer reaches it: the dispatch chain below this service only queues work (the channel messages
+    /// go to the peer manager's per-peer inbound loop), so the queue stays shallow and the pings prompt.
+    /// </summary>
+    private async Task ProcessReceivedStreamsAsync()
+    {
+        try
+        {
+            while (await _receivedStreams.Reader.WaitToReadAsync().ConfigureAwait(false))
+            {
+                while (_receivedStreams.Reader.TryRead(out var stream))
+                {
+                    HandleReceivedStream(stream);
+
+                    // Disposed mid-dispatch (the connection failed): drop what is left, as the read loop did
+                    if (_disposed)
+                        return;
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            // The consumer must die quietly; HandleReceivedStream raised everything worth raising already
+            _logger.LogError(e, "Failed to process the messages received from the peer");
+        }
+    }
+
+    private void HandleReceivedStream(MemoryStream stream)
     {
         Exception? malformedMessageException = null;
         var messageType = PeekMessageType(stream);
@@ -329,6 +403,10 @@ internal sealed class MessageService : IMessageService
                 _transportService.ExceptionRaised -= RaiseException;
                 _transportService.Dispose();
             }
+
+            // Stop the consumer: unblocks the read loop should it be waiting on a full queue; the frames still queued
+            // are dropped (the connection is gone either way)
+            _receivedStreams.Writer.TryComplete();
 
             _disposed = true;
         }
