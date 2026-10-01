@@ -74,5 +74,10 @@ public enum ClientCommand
     /// Stop the node gracefully (<c>shutdown</c>, NL-591): refused while HTLCs are in flight; otherwise new activity is
     /// refused from then on and the daemon stops once the answer is sent.
     /// </summary>
-    Shutdown = 39
+    Shutdown = 39,
+
+    /// <summary>
+    /// Lists the forwarded payments (NL-597), newest first, paged, filterable.
+    /// </summary>
+    ListForwards = 40
 }
