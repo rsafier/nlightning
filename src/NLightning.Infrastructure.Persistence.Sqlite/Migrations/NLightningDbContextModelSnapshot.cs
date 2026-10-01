@@ -382,9 +382,6 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<bool?>("ChangeAddressIsChange")
                         .HasColumnType("INTEGER");
 
-                    b.Property<byte?>("ChangeAddressType")
-                        .HasColumnType("INTEGER");
-
                     b.Property<byte[]>("ClosingTransaction")
                         .HasColumnType("BLOB");
 
@@ -452,9 +449,6 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<ulong?>("MaxDustHtlcExposureMsat")
                         .HasColumnType("INTEGER");
 
-                    b.Property<byte[]>("PeerEntityNodeId")
-                        .HasColumnType("BLOB");
-
                     b.Property<byte[]>("RemoteAlias")
                         .HasColumnType("BLOB");
 
@@ -505,8 +499,6 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasColumnType("INTEGER");
 
                     b.HasKey("ChannelId");
-
-                    b.HasIndex("PeerEntityNodeId");
 
                     b.HasIndex("ChangeAddressIndex", "ChangeAddressIsChange", "ChangeAddressAddressType");
 
@@ -1663,10 +1655,6 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", b =>
                 {
-                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", null)
-                        .WithMany("Channels")
-                        .HasForeignKey("PeerEntityNodeId");
-
                     b.HasOne("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletAddressEntity", "ChangeAddress")
                         .WithMany()
                         .HasForeignKey("ChangeAddressIndex", "ChangeAddressIsChange", "ChangeAddressAddressType");
@@ -1829,11 +1817,6 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Navigation("LocalAliases");
 
                     b.Navigation("WatchedTransactions");
-                });
-
-            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>
-                {
-                    b.Navigation("Channels");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity", b =>

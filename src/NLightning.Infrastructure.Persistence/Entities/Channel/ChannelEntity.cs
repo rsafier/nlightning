@@ -216,8 +216,13 @@ public class ChannelEntity
     /// <summary>The peer's contribution to a dual-funded channel's funding output, in satoshis.</summary>
     public long? RemoteFundingContributionSatoshis { get; set; }
 
-    public AddressType? ChangeAddressType { get; set; }
+    /// <summary>
+    /// The (Index, IsChange, AddressType) foreign key to the change address used by the funding transaction, if
+    /// there's one (NL-134: the IsChange and AddressType legs used to exist only as EF shadow properties).
+    /// </summary>
     public uint? ChangeAddressIndex { get; set; }
+    public bool? ChangeAddressIsChange { get; set; }
+    public AddressType? ChangeAddressAddressType { get; set; }
 
     /// <summary>
     /// The change address used by the funding transaction, if there's one

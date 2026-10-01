@@ -2,7 +2,6 @@ using System.Collections;
 using System.Collections.Immutable;
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NLightning.Domain.Protocol.Models;
@@ -25,7 +24,6 @@ using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Persistence.Contexts;
-using Persistence.Entities.Bitcoin;
 using Persistence.Entities.Channel;
 
 public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRepository
@@ -477,9 +475,6 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             RemoteBalanceMsat = checked((long)channelModel.RemoteBalance.MilliSatoshi),
             ShortChannelId = IsSet(channelModel.ShortChannelId) ? channelModel.ShortChannelId : (ShortChannelId?)null,
 
-            ChangeAddressType = channelModel.ChangeAddress?.AddressType,
-            ChangeAddressIndex = channelModel.ChangeAddress?.Index,
-
             LocalNextHtlcId = channelModel.LocalNextHtlcId,
             RemoteNextHtlcId = channelModel.RemoteNextHtlcId,
             LocalRevocationNumber = channelModel.LocalRevocationNumber,
@@ -611,29 +606,14 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     }
 
     /// <summary>
-    /// The change address relationship is keyed by (Index, IsChange, AddressType), and part of that foreign key only
-    /// exists as EF shadow properties on <see cref="ChannelEntity"/>, so it has to be set through the change tracker.
+    /// Sets the (Index, IsChange, AddressType) foreign key legs of the funding change address (NL-134: real columns
+    /// on <see cref="ChannelEntity"/>, no longer shadow properties set through the change tracker).
     /// </summary>
-    private void SetChangeAddressForeignKey(ChannelEntity channelEntity, WalletAddressModel? changeAddress)
+    private static void SetChangeAddressForeignKey(ChannelEntity channelEntity, WalletAddressModel? changeAddress)
     {
-        var entry = _context.Entry(channelEntity);
-        var foreignKey = ((INavigation)entry.Navigation(nameof(ChannelEntity.ChangeAddress)).Metadata).ForeignKey;
-
-        for (var i = 0; i < foreignKey.Properties.Count; i++)
-        {
-            object? value = changeAddress is null
-                                ? null
-                                : foreignKey.PrincipalKey.Properties[i].Name switch
-                                {
-                                    nameof(WalletAddressEntity.Index) => changeAddress.Index,
-                                    nameof(WalletAddressEntity.IsChange) => changeAddress.IsChange,
-                                    nameof(WalletAddressEntity.AddressType) => changeAddress.AddressType,
-                                    var name => throw new InvalidOperationException(
-                                                    $"Unexpected change address key property {name}.")
-                                };
-
-            entry.Property(foreignKey.Properties[i].Name).CurrentValue = value;
-        }
+        channelEntity.ChangeAddressIndex = changeAddress?.Index;
+        channelEntity.ChangeAddressIsChange = changeAddress?.IsChange;
+        channelEntity.ChangeAddressAddressType = changeAddress?.AddressType;
     }
 
     /// <summary>
