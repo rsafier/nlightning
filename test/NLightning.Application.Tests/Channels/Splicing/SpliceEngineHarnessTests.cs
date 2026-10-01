@@ -1,5 +1,6 @@
 namespace NLightning.Application.Tests.Channels.Splicing;
 
+using Domain.Bitcoin.Transactions.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
@@ -487,6 +488,95 @@ public class SpliceEngineHarnessTests
             Assert.Empty(node.Node.State.PendingFundings);
             Assert.Equal(fundingTx2, node.Node.State.Params.Funding!.FundingTxId);
         }
+    }
+
+    #endregion
+
+    #region A splice reorged out before its lock (SP2-C-T4, NL-493)
+
+    /// <summary>
+    /// Alice reaches the depth first (her <c>splice_locked</c> is out) and the splice's block is disconnected: she
+    /// moves the splice back to waiting (the depth state and the lost block's short channel id are reset, also in the
+    /// funding row), and when the splice confirms again on the new branch both sides lock it at the new short channel
+    /// id. After the lock she sent her <c>splice_locked</c> twice, the depth watcher's idempotency alone would have
+    /// kept the stale one.
+    /// </summary>
+    [Fact]
+    public async Task Given_ASpliceReorgedOutAfterOurSpliceLocked_When_ItsBlockIsDisconnected_Then_ItWaitsAgainAndLocksOnTheNewBranch()
+    {
+        // Arrange: Alice's monitor reports the depth, Bob's does not yet
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(500_000);
+        var spliceTxId = (await harness.SpliceAsync(harness.Alice, 100_000)).SpliceTxId!.Value;
+        const uint depthHeight = TwoNodeHarness.BlockHeight + 3;
+        var mark = harness.Transcript.Count;
+        await harness.ConfirmAsync(spliceTxId, depthHeight, harness.Alice);
+        var sent = harness.Alice.FundingRows.Committed[spliceTxId];
+        Assert.True(sent.SpliceLockedSent);
+        Assert.NotNull(sent.ShortChannelId);
+
+        // Act: the block holding the splice is disconnected (the monitor resets the watch row's position)
+        var watch = harness.Alice.Watches.Single(w => w.TransactionId == spliceTxId);
+        harness.Alice.Watches.Remove(watch);
+        harness.Alice.Node.ChainMonitor.Raise(m => m.OnBlockDisconnected += null,
+                                              new Domain.Onchain.Events.BlockDisconnectedEventArgs(
+                                                  depthHeight,
+                                                  new Domain.Crypto.ValueObjects.Hash(new byte[32]), depthHeight - 1));
+        await harness.Alice.DepthWatcher.WhenIdleAsync();
+        await harness.PumpAsync();
+
+        // Assert: the splice is unconfirmed again, in its row (the in-memory reset is what the re-confirmation below
+        // exercises: without it the lock's idempotency would swallow the new depth)
+        var waiting = harness.Alice.FundingRows.Committed[spliceTxId];
+        Assert.False(waiting.SpliceLockedSent);
+        Assert.Null(waiting.ConfirmedHeight);
+        Assert.Null(waiting.ShortChannelId);
+
+        // Act: the splice confirms again on the new branch (a different block, the same index) and locks both ways
+        harness.Alice.Watches.Add(new WatchedTransactionModel(TwoNodeHarness.ChannelId, spliceTxId,
+                                                              watch.RequiredDepth));
+        await harness.ConfirmAsync(spliceTxId, depthHeight + 4, harness.Alice, harness.Bob);
+
+        // Assert
+        Assert.Empty(harness.Failures);
+        Assert.Equal(["Alice:SpliceLocked", "Alice:SpliceLocked", "Bob:SpliceLocked"], Describe(harness, mark));
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+        {
+            Assert.Empty(node.Node.State.PendingFundings);
+            Assert.Equal(spliceTxId, node.Node.State.Params.Funding!.FundingTxId);
+            Assert.Equal(new ShortChannelId(depthHeight + 4, 1, node.Node.Channel.FundingOutput!.Index!.Value),
+                         node.FundingRows.Committed[spliceTxId].ShortChannelId);
+        }
+    }
+
+    /// <summary>
+    /// The depth was reached and the reorg rolled the watch row's position back (a restart during the reorg, whose
+    /// funding rows keep the depth state): the startup catch-up moves the splice back to waiting instead of leaving it
+    /// depth-reached with the lost block's short channel id.
+    /// </summary>
+    [Fact]
+    public async Task Given_ASpliceWhoseDepthWasReachedAndReorgedOut_When_TheWatcherCatchesUp_Then_ItWaitsAgain()
+    {
+        // Arrange: the depth was reached; the reorg's rollback replaced the watch row with a pending one
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(500_000);
+        var spliceTxId = (await harness.SpliceAsync(harness.Alice, 100_000)).SpliceTxId!.Value;
+        await harness.ConfirmAsync(spliceTxId, TwoNodeHarness.BlockHeight + 3, harness.Alice);
+        Assert.True(harness.Alice.FundingRows.Committed[spliceTxId].SpliceLockedSent);
+        var watch = harness.Alice.Watches.Single(w => w.TransactionId == spliceTxId);
+        harness.Alice.Watches.Remove(watch);
+        harness.Alice.Watches.Add(new WatchedTransactionModel(TwoNodeHarness.ChannelId, spliceTxId,
+                                                              watch.RequiredDepth));
+
+        // Act
+        var handed = await harness.Alice.DepthWatcher.CatchUpAsync(TestContext.Current.CancellationToken);
+        await harness.PumpAsync();
+
+        // Assert
+        Assert.Equal(0, handed);
+        var waiting = harness.Alice.FundingRows.Committed[spliceTxId];
+        Assert.False(waiting.SpliceLockedSent);
+        Assert.Null(waiting.ConfirmedHeight);
     }
 
     #endregion

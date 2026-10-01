@@ -811,6 +811,49 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
                                 [_messageFactory.CreateSpliceLockedMessage(channelId, spliceTxId), .. followUps]);
     }
 
+    /// <summary>
+    /// SP2-C-T4, before the lock (called by the depth watcher on a block disconnect and at its startup catch-up): the
+    /// pending splice's confirming block was disconnected, so the splice is unconfirmed again (the chain monitor's
+    /// rollback cleared its watch). The depth state the lock waits on is reset: our <c>splice_locked</c> was premature
+    /// and is sent again at the new depth, with the short channel id of the splice's new block; the peer's
+    /// <c>splice_locked</c> (received or not) stays remembered, so either side's depth still completes the lock
+    /// (SP-LK-03). The splice transaction is still valid and rebroadcast. Idempotent.
+    /// </summary>
+    public async Task OnSpliceReorgedOutAsync(ChannelId channelId, TxId spliceTxId, uint forkHeight,
+                                              CancellationToken cancellationToken = default)
+    {
+        using var channelLock = await _channelLockProvider.AcquireAsync(channelId, cancellationToken);
+        if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel))
+            return;
+
+        var fundings = _statePort.GetFundings(channel);
+        if (fundings.Pending.FirstOrDefault(f => f.FundingTxId == spliceTxId) is not { } funding
+         || funding.ConfirmedHeight is null)
+            return;
+
+        using var scope = _serviceProvider.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        _logger.LogWarning("The splice {TxId} of channel {ChannelId} left the active chain (reorg at or below height "
+                         + "{Height}) before it locked; it is unconfirmed again and waits for its depth",
+                           spliceTxId, channelId, forkHeight);
+        var next = fundings with
+        {
+            Pending = fundings.Pending
+                              .Select(f => f.FundingTxId == spliceTxId
+                                               ? f with
+                                               {
+                                                   SpliceLockedSent = false,
+                                                   ConfirmedHeight = null,
+                                                   ShortChannelId = null
+                                               }
+                                               : f)
+                              .ToList()
+        };
+        await _statePort.StageFundingsAsync(channel, next, [], unitOfWork, cancellationToken);
+        await unitOfWork.SaveChangesAsync();
+        _statePort.ApplyFundings(channel, next, []);
+    }
+
     /// <summary>The peer's <c>splice_locked</c> (or <c>my_current_funding_locked</c>) for the pending funding
     /// <paramref name="txId"/>: remembered, and the funding locked when ours named it too.</summary>
     private async Task<IReadOnlyList<IChannelMessage>> ReceiveSpliceLockedAsync(ChannelModel channel,
