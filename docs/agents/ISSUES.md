@@ -124,10 +124,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 3 | 65 | 68 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 164 | 261 | 501 |
+| fixed | 14 | 62 | 164 | 262 | 502 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **171** | **333** | **580** |
+| **Total** | **14** | **62** | **171** | **334** | **581** |
 
 ### Epics
 
@@ -4865,6 +4865,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Add a dummy-hop count to the message path builder (the next hop our own node id, same padding), peel a self-forward in the unwrapper before the loop rule, and prove it with CLN's onion-message proof.
 - **Blocks/Blocked-by:** Follow-up of NL-440
 - **Plan ref:** `BOLT12_PLAN.md` OM-S-08
+
+### NL-591 No graceful shutdown command: stopping the node could cut HTLCs or an open mid-flight
+- **Status:** fixed (10d1e44d)
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Daemon/Handlers/ShutdownClientHandler.cs`, `src/NLightning.Daemon/Services/NodeShutdownTrigger.cs`, `src/NLightning.Daemon/Services/Ipc/IpcRouting.cs`, `src/NLightning.Application/Node/Services/NodeDrainState.cs`, `src/NLightning.Domain/Node/Constants/NodeDrain.cs`
+- **Evidence:** The only ways to stop the daemon were `--stop` (SIGTERM through the PID file) or killing it; the FAFO upgrade script had to check `listchannels` for HTLCs by hand before stopping, and nothing kept a payment, forward, open or splice from starting between that check and the stop (owner request 2026-10-01).
+- **Fix:** `nltg shutdown` (alias `stop`, ClientCommand 39): begins a drain, counts the HTLCs in flight on every channel not Closed/Stale after the drain began, and refuses (`invalid_operation`, drain ended) while any are in flight; otherwise answers and stops the host after the IPC answer is written (normal `NltgDaemonService.StopAsync` path). While draining the router refuses the operator commands that start something, `OfferHtlcAsync` refuses adds, the switch fails new final-hop HTLCs back with `temporary_node_failure`, the peer's `open_channel`/`open_channel2` get an `error`, and our splices/bumps are refused and the peer's `splice_init`/`tx_init_rbf` answered with `tx_abort`. First pass: no wait-for-HTLCs mode (no `--force`/`--wait`); an HTLC the peer adds after the count is failed back, but the node may stop before that fail is irrevocable (reestablished at the next start); a splice or dual-funded negotiation already running when the drain begins is not waited for (resumed after the restart, NL-484).
+- **Blocks/Blocked-by:** Related NL-152, NL-216
+- **Plan ref:** —
 
 ## Crypto providers and key management
 
