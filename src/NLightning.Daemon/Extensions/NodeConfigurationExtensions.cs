@@ -418,6 +418,7 @@ public static class NodeConfigurationExtensions
                      "FallbackToPublicResolvers": true,
                      "FallbackNameServers": [{{BOOTSTRAP_FALLBACK_SERVERS}}],
                      "Transport": "{{BOOTSTRAP_TRANSPORT}}",
+                     "TorNameServer": "soa.nodes.lightning.directory:53",
                      "MinPeers": {{BOOTSTRAP_MIN_PEERS}},
                      "MaxPeersFromBootstrap": {{BOOTSTRAP_MAX_PEERS}},
                      "MaxPerSeed": {{BOOTSTRAP_MAX_PER_SEED}},
@@ -451,6 +452,10 @@ public static class NodeConfigurationExtensions
                      "OnionServicePort": 9735,
                      "OnionServiceTarget": null,
                      "OnionServiceKeyFile": "{{TOR_KEY_FILE}}",
+                     "OnionServiceClientAuthKeys": [],
+                     "OnionServicePoWEnabled": null,
+                     "OnionServicePoWQueueRate": null,
+                     "OnionServicePoWQueueBurst": null,
                      "AnnounceOnionService": true,
                      "AllowClearnetListen": false
                    },

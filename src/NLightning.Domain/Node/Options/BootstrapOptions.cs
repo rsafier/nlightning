@@ -367,12 +367,22 @@ public class BootstrapOptions
         }
 
         var separator = text.LastIndexOf(':');
-        if (separator <= 0 || text.IndexOf(':') != separator
-            || !int.TryParse(text[(separator + 1)..], out port) || port is 0 or > 65535
-            || Uri.CheckHostName(text[..separator]) != UriHostNameType.Dns)
+        if (separator > 0 && text.IndexOf(':') == separator)
+        {
+            if (!int.TryParse(text[(separator + 1)..], out port) || port is 0 or > 65535
+                || Uri.CheckHostName(text[..separator]) != UriHostNameType.Dns)
+                return false;
+
+            host = text[..separator];
+            return true;
+        }
+
+        // A bare host name: the default 53 applies
+        if (Uri.CheckHostName(text) != UriHostNameType.Dns)
             return false;
 
-        host = text[..separator];
+        host = text;
+        port = 53;
         return true;
     }
 }
