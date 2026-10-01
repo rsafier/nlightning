@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Application.Tests.Onchain;
@@ -141,13 +142,83 @@ public sealed class OnchainSpliceExecutorTests : IDisposable
         Assert.False(executor.SpliceReorgs.IsSpliceReorgedOut(channel.ChannelId, old.FundingTxId));
     }
 
+    [Fact]
+    public async Task Given_AReorgThatPredatesTheProcess_When_Checked_Then_NotReportedAgainUntilItReorgsLive()
+    {
+        // Arrange (NL-493): the locked splice's spend was already cleared when the first round of this process runs,
+        // so the CRITICAL the previous process raised must not repeat; the state is rebuilt from the persisted watch
+        using var pair = new Channels.Services.RealSigningCommitmentPair(false);
+        var channel = pair.Alice.Channel;
+        var old = Domain.Channels.Splicing.ChannelFunding.FromFundingOutput(channel.FundingOutput!)! with
+        {
+            FundingTxId = s_commitmentTxId,
+            Status = Domain.Channels.Splicing.Enums.ChannelFundingStatus.Replaced
+        };
+        var current = Domain.Channels.Splicing.ChannelFunding.FromFundingOutput(channel.FundingOutput!)!;
+        var fundings = new Mock<IChannelFundingDbRepository>();
+        fundings.Setup(f => f.GetByChannelIdAsync(channel.ChannelId)).ReturnsAsync([old, current]);
+        _unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(fundings.Object);
+        var oldWatch = new WatchedOutpointModel(old.FundingTxId, old.OutputIndex, channel.ChannelId,
+                                                WatchedOutpointPurpose.FundingOutput);
+        _watches.Setup(w => w.GetAsync(old.FundingTxId, old.OutputIndex)).ReturnsAsync(oldWatch);
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(m => m.FindChannels(It.IsAny<Func<Domain.Channels.Models.ChannelModel, bool>>()))
+              .Returns((Func<Domain.Channels.Models.ChannelModel, bool> predicate) =>
+                           new[] { channel }.Where(predicate).ToList());
+        var logger = new RecordingLogger();
+        var executor = CreateExecutor(memory.Object, logger);
+
+        // Act: the first round finds the reorg already in progress; then the splice confirms again and reorgs again,
+        // this time while the process watches
+        await executor.RunRoundAsync(701, TestContext.Current.CancellationToken);
+        var carried = executor.SpliceReorgs.IsSpliceReorgedOut(channel.ChannelId, old.FundingTxId);
+        var criticalsBeforeLive = logger.Entries.Count(e => e.Level == LogLevel.Critical);
+        oldWatch.MarkSpent(s_spliceTxId, 702, new Domain.Crypto.ValueObjects.Hash(new byte[32]));
+        await executor.RunRoundAsync(702, TestContext.Current.CancellationToken);
+        oldWatch.ClearSpend();
+        await executor.RunRoundAsync(703, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(carried);
+        Assert.Equal(0, criticalsBeforeLive);
+        Assert.Single(logger.Entries, e => e.Level == LogLevel.Critical && e.Message.Contains("SP2-C-T4"));
+        Assert.True(executor.SpliceReorgs.IsSpliceReorgedOut(channel.ChannelId, old.FundingTxId));
+    }
+
     public void Dispose() => _provider.Dispose();
 
-    private OnchainResolutionExecutor CreateExecutor(IChannelMemoryRepository? memory = null) =>
+    private OnchainResolutionExecutor CreateExecutor(IChannelMemoryRepository? memory = null,
+                                                     RecordingLogger? logger = null) =>
         new(new Mock<IChainBroadcaster>().Object, new Application.Channels.Services.ChannelLockProvider(),
-            memory ?? new Mock<IChannelMemoryRepository>().Object, NullLogger<OnchainResolutionExecutor>.Instance,
+            memory ?? new Mock<IChannelMemoryRepository>().Object,
+            logger ?? new RecordingLogger(),
             new Mock<IOutpointWatcher>().Object, _provider.GetRequiredService<IServiceScopeFactory>());
 
     private static OutpointSpentEventArgs SpentBy(TxId txId, uint vout) =>
         new(s_channelId, new SignedTransaction(s_commitmentTxId, [0x02, 0x00]), 700, 1, txId, vout);
+
+    private sealed class RecordingLogger : ILogger<OnchainResolutionExecutor>
+    {
+        private readonly List<(LogLevel Level, string Message)> _entries = [];
+
+        public IReadOnlyList<(LogLevel Level, string Message)> Entries
+        {
+            get
+            {
+                lock (_entries)
+                    return _entries.ToList();
+            }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                                Func<TState, Exception?, string> formatter)
+        {
+            lock (_entries)
+                _entries.Add((logLevel, formatter(state, exception)));
+        }
+    }
 }

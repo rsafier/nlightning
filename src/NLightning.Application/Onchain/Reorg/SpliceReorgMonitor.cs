@@ -24,7 +24,10 @@ using Domain.Persistence.Interfaces;
 /// </summary>
 /// <remarks>Run by the resolution executor's block round. Replaced fundings are read once per channel and current
 /// funding (a lock changes the current funding, so it reloads them); each round then reads one watch per replaced
-/// funding.</remarks>
+/// funding. The CRITICAL is raised for a reorg this process saw happen (the watch was seen spent, then unspent); a
+/// reorg that predates the process is derived from the persisted state instead (a replaced funding's watch that
+/// records no spend: the splice must have confirmed to lock, so its spend was cleared) and is not reported again
+/// (NL-493).</remarks>
 internal sealed class SpliceReorgMonitor
 {
     private readonly ConcurrentDictionary<ChannelId, (TxId Current, IReadOnlyList<ChannelFunding> Replaced)> _replaced =
@@ -32,6 +35,7 @@ internal sealed class SpliceReorgMonitor
 
     private readonly ConcurrentDictionary<(ChannelId, TxId), uint> _unspentSince = new();
     private readonly ConcurrentDictionary<(ChannelId, TxId), byte> _unwatched = new();
+    private readonly ConcurrentDictionary<(ChannelId, TxId), byte> _seenSpent = new();
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ILogger _logger;
     private readonly IServiceScopeFactory _serviceScopeFactory;
@@ -94,6 +98,7 @@ internal sealed class SpliceReorgMonitor
 
                 if (watch.IsSpent)
                 {
+                    _seenSpent.TryAdd(key, 0);
                     if (_unspentSince.TryRemove(key, out _))
                         _logger.LogWarning("Channel {ChannelId}: funding {FundingTxId} is spent again by {TxId} at "
                                          + "height {Height}", channel.ChannelId, Display(replaced.FundingTxId),
@@ -102,13 +107,28 @@ internal sealed class SpliceReorgMonitor
                     continue;
                 }
 
-                if (_unspentSince.TryAdd(key, height))
-                    _logger.LogCritical("[SP2-C-T4] Channel {ChannelId}: the locked splice that spent funding "
+                if (_seenSpent.ContainsKey(key))
+                {
+                    // The reorg happened in this process: raise the CRITICAL once until the splice is seen again
+                    if (_unspentSince.TryAdd(key, height))
+                        _logger.LogCritical("[SP2-C-T4] Channel {ChannelId}: the locked splice that spent funding "
                                       + "{FundingTxId} is no longer in the active chain (reorg at or below height "
                                       + "{Height}); the channel keeps operating on funding {Current}, which needs the "
                                       + "splice to confirm again (it is rebroadcast). A commitment on the old funding "
                                       + "is resolved with its own revocation data.", channel.ChannelId,
                                         Display(replaced.FundingTxId), height, Display(current));
+                    continue;
+                }
+
+                // NL-493: a replaced funding's watch that records no spend is a locked splice out of the active chain
+                // (the lock needs its confirmations, so its spend was recorded once and has been cleared): the reorg
+                // predates this process and was reported there. Seed the state without repeating the CRITICAL.
+                if (_unspentSince.TryAdd(key, height))
+                    _logger.LogInformation("Channel {ChannelId}: the locked splice that spent funding {FundingTxId} is "
+                                         + "not in the active chain (reorged out before this process started, already "
+                                         + "reported there); the channel keeps operating on funding {Current}, which "
+                                         + "needs the splice to confirm again (it is rebroadcast)", channel.ChannelId,
+                                           Display(replaced.FundingTxId), Display(current));
             }
         }
     }
