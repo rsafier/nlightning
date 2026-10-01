@@ -109,6 +109,67 @@ public class ForwardCircuitDbRepository : BaseDbRepository<ForwardCircuitEntity>
         return entities.Select(MapEntityToDomain).ToList();
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<ForwardCircuitModel>> ListAsync(ForwardCircuitListQuery query,
+                                                                    CancellationToken cancellationToken = default)
+    {
+        var page = Filter(DbSet.AsNoTracking(), query)
+                  .OrderByDescending(e => e.CreatedAt)
+                  .Skip(query.Skip)
+                  .Take(query.Take);
+        var entities = await page.ToListAsync(cancellationToken);
+        return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<ForwardCircuitTotals> SummarizeAsync(ForwardCircuitListQuery query,
+                                                           CancellationToken cancellationToken = default)
+    {
+        var filtered = Filter(DbSet.AsNoTracking(), query);
+        const byte pending = (byte)ForwardCircuitStatus.Pending;
+        const byte offered = (byte)ForwardCircuitStatus.Offered;
+        const byte fulfilled = (byte)ForwardCircuitStatus.Fulfilled;
+        const byte failed = (byte)ForwardCircuitStatus.Failed;
+
+        var counts = await filtered.GroupBy(e => e.Status)
+                                   .Select(g => new { Status = g.Key, Count = g.Count() })
+                                   .ToListAsync(cancellationToken);
+        var fees = await filtered.Where(e => e.Status == fulfilled)
+                                 .SumAsync(e => (long?)e.IncomingAmountMsat - e.OutgoingAmountMsat,
+                                           cancellationToken);
+
+        return new ForwardCircuitTotals(
+            counts.FirstOrDefault(c => c.Status == pending)?.Count ?? 0,
+            counts.FirstOrDefault(c => c.Status == offered)?.Count ?? 0,
+            counts.FirstOrDefault(c => c.Status == fulfilled)?.Count ?? 0,
+            counts.FirstOrDefault(c => c.Status == failed)?.Count ?? 0,
+            fees ?? 0);
+    }
+
+    /// <summary>The WHERE of a <c>listforwards</c> query, all of it translated into the database.</summary>
+    private static IQueryable<ForwardCircuitEntity> Filter(IQueryable<ForwardCircuitEntity> set,
+                                                           ForwardCircuitListQuery query)
+    {
+        if (query.Since is { } since)
+            set = set.Where(e => e.CreatedAt >= since);
+        if (query.Until is { } until)
+            set = set.Where(e => e.CreatedAt <= until);
+        if (query.Status is { } status)
+            set = set.Where(e => e.Status == (byte)status);
+        var channelId = query.ChannelId;
+        var channelScid = query.ChannelScid;
+        if (channelId is not null || channelScid is not null)
+        {
+            var hasId = channelId is not null;
+            var hasScid = channelScid is not null;
+            set = set.Where(e => (hasId
+                                  && (e.IncomingChannelId == channelId || e.OutgoingChannelId == channelId))
+                              || (hasScid && e.OutgoingShortChannelId == channelScid));
+        }
+
+        return set;
+    }
+
     internal static ForwardCircuitModel MapEntityToDomain(ForwardCircuitEntity entity)
     {
         return ForwardCircuitModel.Restore(entity.IncomingChannelId, entity.IncomingHtlcId,

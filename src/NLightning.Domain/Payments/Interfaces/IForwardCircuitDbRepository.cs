@@ -48,4 +48,18 @@ public interface IForwardCircuitDbRepository
     /// Circuits that are <c>Pending</c> or <c>Offered</c>.
     /// </summary>
     Task<IReadOnlyList<ForwardCircuitModel>> GetUnresolvedAsync();
+
+    /// <summary>
+    /// One page of circuits matching <paramref name="query"/>, newest first (NL-597). The filters run in the database
+    /// query; see <see cref="ForwardCircuitListQuery"/> for what matches.
+    /// </summary>
+    Task<IReadOnlyList<ForwardCircuitModel>> ListAsync(ForwardCircuitListQuery query,
+                                                       CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The aggregates of <paramref name="query"/> over the whole filtered set (not just its page): the counts per
+    /// status and the fees earned of the fulfilled circuits (NL-597).
+    /// </summary>
+    Task<ForwardCircuitTotals> SummarizeAsync(ForwardCircuitListQuery query,
+                                              CancellationToken cancellationToken = default);
 }
