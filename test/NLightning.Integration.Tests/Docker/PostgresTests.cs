@@ -141,6 +141,19 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresRowsFromBeforeAddPaymentCustomRecords_When_Migrated_Then_KeysendRecordsMoveIntoTheirColumn()
+    {
+        // Arrange (NL-460: the keysend rows' custom records move out of the borrowed BOLT 12 invoice bytes and then
+        // round-trip, on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_keysend_records");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await KeysendSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                 DatabaseType.PostgreSql, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresChannelsFromBeforeAddGossipGraph_When_Migrated_Then_TheyArePrivateAndTheGraphRoundTrips()
     {
         // Arrange (BOLT 7 plan G2-T3/G1-T1: channels stored before the migration are private with no announcement

@@ -20,9 +20,9 @@ using Persistence.Entities.Payment;
 /// <remarks>
 /// Writes are staged on the unit of work. <see cref="GetByPaymentHashAsync"/> sees what this unit of work staged
 /// (it goes through the change tracker); <see cref="ListAsync"/> reads what is saved.
-/// <para>Keysend records (<c>InvoiceKind.Keysend</c> = 2, lane lh1-l3, no schema change): no BOLT 11 string, and
-/// <c>Bolt12InvoiceBytes</c> holds the payer's custom records as a TLV stream (<see cref="CustomRecordCodec"/>; empty
-/// when there are none). Seam for a dedicated <c>CustomRecords</c> column.</para>
+/// <para>Keysend records (<c>InvoiceKind.Keysend</c> = 2): no BOLT 11 string and no BOLT 12 details, and the
+/// <c>CustomRecords</c> column holds the payer's custom records as a TLV stream (<see cref="CustomRecordCodec"/>;
+/// empty when there are none; migration <c>AddPaymentCustomRecords</c>).</para>
 /// </remarks>
 public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRepository
 {
@@ -52,9 +52,10 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
             Bolt11 = invoice.Bolt11,
             Kind = (byte)invoice.Kind,
             OfferId = invoice.Bolt12?.OfferId,
-            Bolt12InvoiceBytes = invoice.Keysend is { } keysend
-                                     ? CustomRecordCodec.Encode(keysend.CustomRecords)
-                                     : invoice.Bolt12?.InvoiceBytes.ToArray(),
+            Bolt12InvoiceBytes = invoice.Bolt12?.InvoiceBytes.ToArray(),
+            CustomRecords = invoice.Keysend is { } keysend
+                                ? CustomRecordCodec.Encode(keysend.CustomRecords)
+                                : null,
             InvoiceRequestPayerId = invoice.Bolt12?.PayerId,
             Quantity = invoice.Bolt12?.Quantity,
             PayerNote = invoice.Bolt12?.PayerNote,
@@ -155,7 +156,7 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
             return null;
 
         // Unreadable bytes give a record without custom records, never an exception under the switch's hash lock
-        CustomRecordCodec.TryDecode(entity.Bolt12InvoiceBytes ?? [], out var records);
+        CustomRecordCodec.TryDecode(entity.CustomRecords ?? [], out var records);
         return new KeysendDetails(records);
     }
 

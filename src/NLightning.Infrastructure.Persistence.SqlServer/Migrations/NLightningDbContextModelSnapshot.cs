@@ -1338,6 +1338,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<long>("CreatedAt")
                         .HasColumnType("bigint");
 
+                    b.Property<byte[]>("CustomRecords")
+                        .HasColumnType("varbinary(max)");
+
                     b.Property<string>("Description")
                         .HasColumnType("nvarchar(max)");
 
@@ -1485,6 +1488,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<long>("CreatedAt")
                         .HasColumnType("bigint");
+
+                    b.Property<byte[]>("CustomRecords")
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<int?>("FailureCode")
                         .HasColumnType("int");

@@ -20,9 +20,9 @@ using Persistence.Entities.Payment;
 /// <remarks>
 /// Writes are staged on the unit of work. <see cref="GetByPaymentHashAsync"/> sees what this unit of work staged
 /// (it goes through the change tracker); <see cref="GetInFlightAsync"/> and <see cref="ListAsync"/> read what is saved.
-/// <para>Keysend payments (lane lh1-l3, no schema change): a row with neither <c>Bolt11</c> nor <c>OfferBolt12</c> whose
-/// <c>Bolt12InvoiceBytes</c> is not null is a keysend payment, and that column holds its custom records as a TLV stream
-/// (<see cref="CustomRecordCodec"/>; empty when there are none). Seam for a dedicated <c>CustomRecords</c> column.</para>
+/// <para>Keysend payments: a row with neither <c>Bolt11</c> nor <c>OfferBolt12</c> and a non-null
+/// <c>CustomRecords</c> is a keysend payment, and that column holds its custom records as a TLV stream
+/// (<see cref="CustomRecordCodec"/>; empty when there are none; migration <c>AddPaymentCustomRecords</c>).</para>
 /// </remarks>
 public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRepository
 {
@@ -151,10 +151,11 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
 
     private static KeysendDetails? MapKeysend(PaymentEntity entity)
     {
-        if (entity.Bolt11 is not null || entity.OfferBolt12 is not null || entity.Bolt12InvoiceBytes is not { } bytes)
+        if (entity.Bolt11 is not null || entity.OfferBolt12 is not null
+                                      || entity.CustomRecords is not { } bytes)
             return null;
 
-        // The kind is inferred from the overloaded column (no Kind column on Payments yet): bytes that are not a custom
+        // The kind comes from the dedicated column (migration AddPaymentCustomRecords); bytes that are not a custom
         // record stream read as a keysend without records instead of breaking the hash lookup (lane lh1-l3 review)
         CustomRecordCodec.TryDecode(bytes, out var records);
         return new KeysendDetails(records);
@@ -173,9 +174,10 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
     {
         entity.Bolt11 = payment.Bolt11;
         entity.OfferBolt12 = payment.Bolt12?.Offer;
-        entity.Bolt12InvoiceBytes = payment.Keysend is { } keysend
-                                        ? CustomRecordCodec.Encode(keysend.CustomRecords)
-                                        : payment.Bolt12?.InvoiceBytes.ToArray();
+        entity.Bolt12InvoiceBytes = payment.Bolt12?.InvoiceBytes.ToArray();
+        entity.CustomRecords = payment.Keysend is { } keysend
+                                   ? CustomRecordCodec.Encode(keysend.CustomRecords)
+                                   : null;
         entity.InvoiceRequestMetadata = payment.Bolt12?.InvoiceRequestMetadata.ToArray();
         entity.PayerNote = payment.Bolt12?.PayerNote;
         entity.AmountMsat = checked((long)payment.Amount.MilliSatoshi);

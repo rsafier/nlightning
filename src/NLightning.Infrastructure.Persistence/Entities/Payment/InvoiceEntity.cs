@@ -57,6 +57,12 @@ public class InvoiceEntity
     public byte[]? Bolt12InvoiceBytes { get; set; }
 
     /// <summary>
+    /// The payer's custom records of a keysend record (<c>InvoiceKind.Keysend</c>), as a TLV stream (migration
+    /// <c>AddPaymentCustomRecords</c>; before it they were stored in <see cref="Bolt12InvoiceBytes"/>).
+    /// </summary>
+    public byte[]? CustomRecords { get; set; }
+
+    /// <summary>
     /// The invoice_request's 33-byte <c>invreq_payer_id</c>.
     /// </summary>
     public CompactPubKey? InvoiceRequestPayerId { get; set; }

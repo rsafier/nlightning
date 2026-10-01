@@ -29,6 +29,7 @@ public static class InvoiceEntityConfiguration
                   .HasConversion<HashConverter>()
                   .IsRequired(false);
             entity.Property(e => e.Bolt12InvoiceBytes).IsRequired(false);
+            entity.Property(e => e.CustomRecords).IsRequired(false);
             entity.Property(e => e.InvoiceRequestPayerId)
                   .HasConversion<CompactPubKeyConverter>()
                   .IsRequired(false);

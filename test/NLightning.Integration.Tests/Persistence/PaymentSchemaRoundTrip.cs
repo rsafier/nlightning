@@ -10,6 +10,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Payments.Enums;
+using Domain.Payments.Keysend;
 using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Protocol.Onion.Enums;
@@ -182,6 +183,32 @@ internal static class PaymentSchemaRoundTrip
 
         await using (var context = contextFactory())
             Assert.Empty(await new PaymentPartDbRepository(context).GetForPaymentAsync(payment.PaymentHash));
+
+        // Keysend records in their own column (NL-460)
+        CustomRecord[] records = [new(7629169, "boost"u8), new(65536, [0x01, 0x02])];
+        var keysendPayment = new PaymentModel(new Hash(Enumerable.Repeat((byte)0x35, 32).ToArray()), null, s_payee,
+                                              LightningMoney.MilliSatoshis(20_000_000), LightningMoney.Zero,
+                                              s_createdAt.AddSeconds(2), keysend: new KeysendDetails(records));
+        await SaveAsync(contextFactory, c => new PaymentDbRepository(c).AddAsync(keysendPayment), cancellationToken);
+        await using (var context = contextFactory())
+        {
+            var stored = await new PaymentDbRepository(context).GetByPaymentHashAsync(keysendPayment.PaymentHash);
+            Assert.Null(stored!.Bolt12);
+            Assert.NotNull(stored.Keysend);
+            Assert.Equal(records.OrderBy(r => r.Type), stored.Keysend!.CustomRecords);
+        }
+
+        var keysendInvoice = new InvoiceModel(new Hash(Enumerable.Repeat((byte)0x15, 32).ToArray()), SecretOf(0x16),
+                                              SecretOf(0x17), null, null, null, s_createdAt.AddSeconds(3), 3_600, 18,
+                                              keysend: new KeysendDetails(records));
+        await SaveAsync(contextFactory, c => new InvoiceDbRepository(c).AddAsync(keysendInvoice), cancellationToken);
+        await using (var context = contextFactory())
+        {
+            var stored = await new InvoiceDbRepository(context).GetByPaymentHashAsync(keysendInvoice.PaymentHash);
+            Assert.Equal(InvoiceKind.Keysend, stored!.Kind);
+            Assert.Null(stored.Bolt12);
+            Assert.Equal(records.OrderBy(r => r.Type), stored.Keysend!.CustomRecords);
+        }
 
         payment.AddOutgoingHtlc(s_channelId, 7);
         await SaveAsync(contextFactory, c => new PaymentDbRepository(c).UpdateAsync(payment), cancellationToken);

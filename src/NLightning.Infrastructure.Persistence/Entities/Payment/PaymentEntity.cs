@@ -32,6 +32,12 @@ public class PaymentEntity
     public byte[]? Bolt12InvoiceBytes { get; set; }
 
     /// <summary>
+    /// The custom records of a keysend payment, as a TLV stream (migration <c>AddPaymentCustomRecords</c>; before it
+    /// they were stored in <see cref="Bolt12InvoiceBytes"/>).
+    /// </summary>
+    public byte[]? CustomRecords { get; set; }
+
+    /// <summary>
     /// Our <c>invreq_metadata</c> for a BOLT 12 payment.
     /// </summary>
     public byte[]? InvoiceRequestMetadata { get; set; }
