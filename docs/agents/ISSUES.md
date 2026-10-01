@@ -124,10 +124,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 3 | 65 | 68 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 164 | 263 | 503 |
+| fixed | 14 | 62 | 164 | 267 | 507 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **171** | **335** | **582** |
+| **Total** | **14** | **62** | **171** | **339** | **586** |
 
 ### Epics
 
@@ -4884,6 +4884,46 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** NL-591's first pass only refused while HTLCs were in flight: no wait-for-them mode, no force, a splice or dual-funded negotiation already running when the drain began was not waited for, an HTLC the peer added after the count could be cut before the fail back was irrevocable, and a peer's `tx_init_rbf` RBFing a dual-funded open was not refused while draining (owner request 2026-10-01, second pass on NL-591).
 - **Fix:** `shutdown --wait` closes the drain gate and waits (polling `INodeBusyStateMonitor`/`NodeBusyStateMonitor`, Application `Node/Services`: the HTLCs in flight on every channel that is not Closed/Stale — the count the first pass refused on, via the shared `ChannelHtlcs` helper — plus a mid-flight negotiation: an interactive-tx attempt in progress, our `tx_abort` awaiting its echo or our `tx_init_rbf` awaiting its `tx_ack_rbf` (`InteractiveTxNegotiationInfo`), any quiescence (`IQuiescenceService.GetState`), or an open that is not signed yet; signed-but-unconfirmed opens and splices are persisted and survive the restart, so they are not busy) until the state has held for a settle period of 3 s — so the last resolution is irrevocably committed and revoked on both sides, not merely sent (`HtlcStateTable.IsFinal`) — then stops as today. `--timeout <s>` (default 300, bounded to a day) answers `TimedOut` with what is still busy (HTLC count per channel, negotiations) and reopens the gate; the client's Ctrl-C (its connection drops — `NamedPipeIpcService` watches the client's stream after its request, `IpcClientConnectionAccessor` hands the connection to the handler) cancels the wait and reopens the gate. `--force` stops although something is in flight, alone or on the wait's timeout: never broadcasting or force-closing anything (the HTLC expiry monitor and the BOLT 5 resolvers run at the next start; stopping is safe for funds while the node is back before the deadlines), logging a warning and answering `Forced` with the counts and the nearest `cltv_expiry` among the in-flight HTLCs plus the blocks until our deadline to act on it (`HtlcDeadlinePolicy`'s earliest possible deadline). The gap fixes: `--wait` waits for negotiations already running when the drain began (the monitor sees them), and `DualFundedOpenService.DecideRbfAsync` answers the peer's `tx_init_rbf` with `tx_abort` while draining. The signal path (SIGTERM) drains in short form: `Node:Shutdown:DrainOnSignalSeconds` (default 0 = off) bounds a drain before `NltgDaemonService.StopAsync` stops the services; an IPC wait already holding the gate makes it a no-op. IPC keys are append-only (request 0 Wait, 1 TimeoutSeconds, 2 Force; response 1 Outcome, 2-3 counts, 4 busy channels, 5-6 the deadline), so an older client keeps the first-pass behavior; the CLI usage text and `ShutdownPrinter` document the flags and outcomes; no new ClientCommand (one long call; the response says what happened).
 - **Blocks/Blocked-by:** Follow-up on NL-591
+- **Plan ref:** —
+
+### NL-593 The sender retries a payee's temporary_node_failure in a tight loop
+- **Status:** fixed (fb09a87d)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Protocol/Onion/Interpreters/FailureInterpreter.cs` (final-node branch), `src/NLightning.Application/Payments/Send/PaymentRetryPolicy.cs`
+- **Evidence:** Live Mutinynet 2026-10-01: during FAFO2's `shutdown --wait`, FAFO's keysend to FAFO2 was failed back by the draining switch with `temporary_node_failure`, and FAFO re-sent the payment over the same route every 2-3 s for its whole 60 s budget (about 25 HTLCs, ids 11-30+); each retry was a fresh HTLC on FAFO2, so the drain's 3 s idle settle never held and `--wait` took 66 s instead of about 8. The interpreter's final-node rule retried any non-permanent understood failure (`ShouldRetry = !isPermanent && isUnderstood`), but no route can avoid the payee.
+- **Fix:** A final-node failure with the NODE bit (the payee's `temporary_node_failure`) ends the payment, like LND's mission control. BOLT 4 "Receiving Failure Codes" leaves a non-permanent, understood final-node failure to the origin's MAY retry, so not retrying stays in spec; the only non-permanent NODE-bit final code is `temporary_node_failure` (0x2002) — `final_expiry_too_soon` (17), `final_incorrect_cltv_expiry` (18), `final_incorrect_htlc_amount` (19) and `mpp_timeout` (23) carry no NODE bit and stay retryable, so MPP parts the payee has not completed yet keep working. No change was needed beyond the interpreter: `PaymentRetryPolicy` already ends the payment on a non-retryable payee failure and excludes non-final NODE-bit failures (`RouteConstraints.ExcludedNodes`), and `MissionControl.RecordFailure` already ignores final-node failures (the payee must stay payable for later payments). The drain keeps answering with `temporary_node_failure`: it is the spec-correct node-level temporary refusal, and well-behaved senders (LND, and now we) do not retry a payee node failure. Tests: interpreter cases for the payee's `temporary_node_failure` (ends) versus its channel-level temporary failure (retries per spec), and a `PaymentHarnessTests` case paying a payee that refuses with `temporary_node_failure`: failed after one attempt (`Attempts` 1) with the payee's failure stored.
+- **Blocks/Blocked-by:** Found live with NL-592
+- **Plan ref:** —
+
+### NL-594 `shutdown --wait` timing out exited 0
+- **Status:** fixed (be9c4761)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Client/ClientApp.cs`, `src/NLightning.Client/Printers/ShutdownPrinter.cs`
+- **Evidence:** Live Mutinynet 2026-10-01: `shutdown --wait --timeout 1` printed "Shutdown timed out: the node keeps running" and exited 0, so a script (the upgrade script) could not tell it apart from an accepted shutdown.
+- **Fix:** `ClientApp.ExitCodeFor` maps the response's outcome: 0 only for `Stopped` and `Forced` (the node is stopping), 1 for `TimedOut`; a refusal never reaches the mapping (its error envelope throws and the CLI's catch exits 1). The usage text and the Client CLAUDE.md name the exit codes. Tests: client-side, one per outcome.
+- **Blocks/Blocked-by:** Found live with NL-592
+- **Plan ref:** —
+
+### NL-595 The shutdown refusal counted the node's total channels, not the busy ones
+- **Status:** fixed (0a478a6f)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Handlers/ShutdownClientHandler.cs`, `src/NLightning.Daemon/Handlers/PeerChannelSummary.cs`, `src/NLightning.Daemon/Handlers/DisconnectPeerClientHandler.cs`
+- **Evidence:** Live Mutinynet 2026-10-01: plain `shutdown` with one HTLC in flight answered "1 HTLC(s) are in flight on 7 channel(s); not shutting down", counting the node's total channels.
+- **Fix:** The refusal names the channels that carry HTLCs and lists them with their counts ("2 HTLC(s) are in flight on 1 channel(s): <id> (2)"), like the `--wait` timeout output; `PeerChannelSummary` carries `ChannelsWithHtlcs` and `disconnect`'s refusal uses it too (it counted the peer's total channels the same way). The `--force` log line and the response fields were already counting busy channels only. Tests: the existing handler test asserts the corrected message and channel id.
+- **Blocks/Blocked-by:** Found live with NL-591
+- **Plan ref:** —
+
+### NL-596 "Final hop accepts the HTLC" was logged before a drain or chain-halt refusal
+- **Status:** fixed (f605b43d)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/FinalHop/FinalHopProcessor.cs`
+- **Evidence:** Live Mutinynet 2026-10-01: for every HTLC the drain refused, FAFO2 logged `[FinalHopProcessor] Final hop accepts the HTLC for payment hash …` and then `[HtlcSwitch] Failing back incoming HTLC …: final-hop acceptance refused: the node is shutting down` — the processor logs its result before `HtlcSwitch`'s drain and chain-halt gates run.
+- **Fix:** The processor's line now says what it means, "Final-hop checks passed for payment hash …", keeping the log level; acceptance is the switch committing to the fulfill. No test asserted the old text.
+- **Blocks/Blocked-by:** Found live with NL-591
 - **Plan ref:** —
 
 ## Crypto providers and key management
