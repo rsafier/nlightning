@@ -122,12 +122,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 65 | 68 |
+| open | 0 | 0 | 3 | 67 | 70 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 62 | 164 | 267 | 507 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **171** | **339** | **586** |
+| **Total** | **14** | **62** | **171** | **341** | **588** |
 
 ### Epics
 
@@ -4924,6 +4924,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Live Mutinynet 2026-10-01: for every HTLC the drain refused, FAFO2 logged `[FinalHopProcessor] Final hop accepts the HTLC for payment hash …` and then `[HtlcSwitch] Failing back incoming HTLC …: final-hop acceptance refused: the node is shutting down` — the processor logs its result before `HtlcSwitch`'s drain and chain-halt gates run.
 - **Fix:** The processor's line now says what it means, "Final-hop checks passed for payment hash …", keeping the log level; acceptance is the switch committing to the fulfill. No test asserted the old text.
 - **Blocks/Blocked-by:** Found live with NL-591
+- **Plan ref:** —
+
+### NL-597 No `listforwards`: the forwarding history is stored but cannot be read over IPC or the CLI
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Domain/Client/Enums/ClientCommand.cs` (no command), `src/NLightning.Domain/Payments/Interfaces/IForwardCircuitDbRepository.cs` (no list query), `src/NLightning.Daemon/Handlers/`
+- **Evidence:** Operator question on 2026-10-01 ("did we forward anything we did not initiate overnight?") could only be answered by reading `ForwardCircuits` from the SQLite file by hand. `listpayments` (12) and `listinvoices` (11) cover sent and received payments; nothing lists forwards, their fees or failure reasons, although every circuit row is kept with amounts, CLTVs, times, status and (since NL-457) `FailureCode`/`FailureSource`.
+- **Fix sketch:** A `listforwards` IPC command (next free ClientCommand) and CLI: newest first, paged, filters by time range, status and channel; per forward the in/out channels (scid), amounts, fee earned, times, status and failure reason; a totals line (count per status, fees earned). A paged query on the repository; no schema change expected (add an index only if a filter needs one, on all three providers).
+- **Blocks/Blocked-by:** Follows NL-457; related NL-598
+- **Plan ref:** —
+
+### NL-598 HTLCs refused before a forward circuit exists leave no count
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs`, `src/NLightning.Application/Payments/Onion/IncomingOnionProcessor.cs`
+- **Evidence:** An incoming HTLC failed back before a circuit is written (forwarding policy refusal, unknown next channel, drain or chain-halt refusal, final-hop refusal such as an unknown payment hash from a probe) appears only in the logs, so neither `listforwards` (NL-597) nor any metric shows how often the node is probed or refuses forwards.
+- **Fix sketch:** In-memory counters by reason (and a `Meter` like the gossip/onion-message ones), reported by `info` or a `listforwards` summary; no persistence needed.
+- **Blocks/Blocked-by:** Related NL-597
 - **Plan ref:** —
 
 ## Crypto providers and key management
