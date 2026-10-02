@@ -523,6 +523,43 @@ on purpose as intended: the `Poll` timeout dumped at the timeout (14 files, 1.1 
 failure; the assertion failure dumped by the hook (15 files, 0.7 s); both namespaces kept, then reaped by hand). No
 regression: the CLN pair test 3 times at once, 3/3 green in 65-84 s, no dumps.
 
+### Phase 2 lane A record: our in-process node in a topology (2026-10-02, branch `hp2-node` from b379b779)
+
+`test/NLightning.Integration.Tests/Cluster/` (details in its `CLAUDE.md`): `InProcessNodeDeployer` is the
+`ILightningNodeDeployer` of `NodeKind.NLightning` (one `NLightningTestNode` per topology node, listening on loopback and
+announced to the pods as `host.orb.internal`, on the topology's bitcoind by pod IP), `InProcessNode` the
+`ITopologyLightningNode` adapter over the daemon's client command handlers (our node dials out, NL-497; v1, dual-fund
+and `Auto` opens; restart on the same key, database and port). The library stays free of product references; the
+integration project references it. Proofs `Live/InProcessNodeClusterTests` (CLN: dual-funded open, pay both ways,
+cooperative close; LND: v1 open by the topology with a push, pay both ways, restart, pay, close): 6/6 runs green in two
+batches of 3 at once. Found: CLN v26.06.8 sends a P2TR `shutdown` script on a dual-funded channel without
+`option_shutdown_anysegwit` negotiated, which our default features refuse, so the close stalls (the proof advertises
+the option).
+
+### Phase 2 integration record: lanes A, C and D on `wip/harness-spike` (2026-10-02)
+
+Merged `hp2-node`, `hp2-startup`, `hp2-diag` (conflicts in `TestRunOptions` (lane C's `WaitForDeletion` default false
+kept with lane D's `KeepNamespaceOnFailure`/`Diagnostics`), `TopologyBuilder.BuildAsync` (one wave and the chain
+address wait inside lane D's `CaptureOnFailureAsync`), `run-cluster.sh` options and this plan's records). Added on
+top:
+
+- `ClusterTopologyFixture.OnStoppingAsync`: after the topology's adapters, before the namespace is deleted (also after
+  a failed start).
+- `InProcessTopologyFixture` (Integration.Tests): the warm topology with the in-process deployer registered and
+  stopped by the fixture; **the seam the CLN port uses**. Live proof `Live/InProcessTopologyFixtureClusterTests`
+  (bitcoind + our node + CLN on `emptyDir`, our v1 channel with a push, two tests sharing it): 3 runs at once, 3/3
+  green, each topology started once in 9.3-9.7 s (namespace to channel active on both ends), tests 0.5-0.8 s.
+- `[assembly: ClusterDiagnostics]` in Integration.Tests; its first catch was this proof's own bug (the second test
+  read our balance while the first test's HTLC was still on our side); the dump's CLN `listpeerchannels` showed it.
+- `RunLifecycleTests` reaper test: the live run starts before the orphan, because a run waiting for a slot reaps
+  orphans every 30 s and removed the test's orphan first when the cap was full (failed in lane C's `full1` and in the
+  integrated full run below; the class 3/3 green after the change).
+
+Evidence (OrbStack, Release, net10.0): every `Category=Cluster` test of `NLightning.Testing.Cluster.Tests` in one
+process (`hp2i-c1`, over the cap of 6, 526 s): 33/34, the miss the reaper test above (`hp2i-reap`: class 3/3 after the
+fix). Integration.Tests `Category=Cluster` (`hp2i-i2`): 4/4 (CLN dual-funded proof built in 15.3 s and closed at 23.3
+s, LND proof built in 19.3 s and closed at 22.1 s, the warm pair 13.4 s). Non-Docker suite on net10.0: all green.
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.

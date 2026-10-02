@@ -52,9 +52,11 @@ public class RunLifecycleTests
         var ct = TestContext.Current.CancellationToken;
         var batch = "reap-" + TestRunId.Generate();
         var deadOwner = await DeadOwnerAsync(ct);
+        // The live run first: while a run waits for a slot its admission reaps orphans every 30 s, which removed the
+        // orphan before the reaper under test saw it whenever the cap was full (seen in the full Category=Cluster run)
+        await using var live = await TestRun.StartAsync(Options("reaper-live", $"{batch}-live"), ct);
         var orphan = await TestRun.StartAsync(Options("reaper-orphan", $"{batch}-orphan") with { Owner = deadOwner },
                                               ct);
-        await using var live = await TestRun.StartAsync(Options("reaper-live", $"{batch}-live"), ct);
         using var client = KubeClientFactory.Create();
         var options = new ReaperOptions { RunFilter = batch, WaitForDeletion = true, Log = Log };
 
