@@ -38,6 +38,18 @@ every implementation, our own node included, is driven through the same seams.
   - `NodeKind` (also the `nltg.kind` label value, lower case).
 - `Images/ImageVersions`: the one version table (bitcoind 29.0 Polar and 31.1 official by digest, `custom_lnd:latest`
   Never, CLN v26.06.8 by digest, `nltg-eclair:0.14.3` Never, `nltg-ldk-server:dc02b76c` Never, postgres, busybox).
+- `Nodes/Lnd/` (LND lane): `LndNodeOptions` (alias, the bitcoind Service, extra flags) → `LndWorkload.Build`
+  (`custom_lnd:latest` Never, LNUnit's `AddPolarLNDNode` flags, `lnddir` `/home/lnd/.lnd` on the PVC, readiness =
+  `lncli getinfo` answers with `synced_to_chain`); `LndCredentials` (`tls.cert` + `admin.macaroon` read by exec);
+  `LndGrpcConnection` (LNUnit.LND's generated `Lnrpc`/`Routerrpc`/`Walletrpc`/`Invoicesrpc` clients, the server
+  certificate **pinned** to the node's `tls.cert`, macaroon header; pod IP from the host, pod DNS name in-cluster);
+  `LndNode.DeployAsync(run, options, timeout, ct)` implements `ILightningTestPeer` and reconnects after
+  `RestartAsync`/`KillAsync`; `LndMapping` (txids, `chan_id` → `BxTxO`, channel points).
+- `Topology/Lnd/` (LND lane): `LndPairTopology.BuildAsync` = bitcoind `miner` + `alice`/`bob` with an active
+  alice → bob channel; `PayAsync` retries a failed payment (NL-319); `RestartAsync(node, kill)` restarts or kills a node
+  and redials it **by its new pod IP**: LND stores the resolved IP of a peer it dialled by name, and the cluster DNS may
+  answer with the old IP for a while after a restart. `LndTopologyChain` is a stand-in bitcoind (Polar 29.0,
+  `bitcoin-cli` by exec) until the shared `BitcoinCore` node and `Chain/` helpers land.
 - `deploy/runner-rbac.yaml`: the in-cluster runner's RBAC (ported from PR #10). Not applied by the spike.
 
 ## Rules while batch work shares the machine
