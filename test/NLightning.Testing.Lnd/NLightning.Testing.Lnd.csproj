@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    In-tree LND gRPC client for the test harness (a port of LNUnit.LND, nbd-wtf/LNUnit, MIT; see README.md and
+    THIRD_PARTY_NOTICES.md). A plain library: no product references, no Docker or Kubernetes code. The clients are
+    generated from Protos/ (scripts/lnd-protos/update.sh) into the NLightning.Testing.Lnd.<Package> namespaces, so this
+    assembly can sit next to lnunit.lnd (global Lnrpc/Routerrpc/...) in one test assembly.
+  -->
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Platforms>AnyCPU</Platforms>
+    <Deterministic>true</Deterministic>
+    <IsPackable>false</IsPackable>
+    <Version>0.0.1</Version>
+    <Configurations>Debug;Release;Debug.Native;Release.Native</Configurations>
+    <Description>LND gRPC client (generated from LND's protos) for the NLightning test harness</Description>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Debug'))">
+    <DefineConstants>DEBUG;$(DefineConstants)</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(Configuration.Contains('Release'))">
+    <Optimize Condition=" '$(Optimize)' == '' ">true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Versions follow what lnunit.lnd 3.0.4 resolves in the test assemblies (Google.Protobuf 3.34.0, Grpc 2.76.0). -->
+    <PackageReference Include="Google.Protobuf" Version="3.34.0"/>
+    <PackageReference Include="Grpc.Net.Client" Version="2.76.0"/>
+    <PackageReference Include="Grpc.Tools" Version="2.76.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Client stubs only. ProtoRoot is Protos/, as lnrpc/ is in LND's tree, so `import "lightning.proto"` resolves. -->
+    <Protobuf Include="Protos\**\*.proto" ProtoRoot="Protos" GrpcServices="Client" Access="Public"/>
+    <None Include="Protos\manifest.txt"/>
+  </ItemGroup>
+
+</Project>
