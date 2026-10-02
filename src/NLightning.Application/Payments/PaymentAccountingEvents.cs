@@ -1,16 +1,20 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Payments;
 
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Labels;
 using Domain.Accounting.Models;
 using Domain.Accounting.Services;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Money;
+using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
 using Domain.Persistence.Interfaces;
@@ -26,6 +30,10 @@ using Domain.Persistence.Interfaces;
 /// </remarks>
 internal static class PaymentAccountingEvents
 {
+    /// <summary>The detail of the BOLT 12 offer id (hex), on received and on sent payments (NL-645): what a
+    /// classification rule on an offer matches.</summary>
+    public const string OfferIdDetail = ClassificationEngine.OfferIdDetail;
+
     /// <summary>
     /// Stages the event <paramref name="build"/> returns on <paramref name="unitOfWork"/>; a failure is logged, never
     /// thrown.
@@ -68,7 +76,7 @@ internal static class PaymentAccountingEvents
             ("requestedMsat", requested),
             ("parts", parts.ToString(CultureInfo.InvariantCulture)),
             ("settledBy", claimedOnchain ? "onchainClaim" : "fulfill"),
-            ("offerId", invoice.Bolt12?.OfferId.ToString()),
+            (OfferIdDetail, invoice.Bolt12?.OfferId.ToString()),
             ("payerNote", invoice.Bolt12?.PayerNote),
             ("quantity", invoice.Bolt12?.Quantity?.ToString(CultureInfo.InvariantCulture)),
             ("customRecords", customRecords is { Count: > 0 } records
@@ -113,6 +121,7 @@ internal static class PaymentAccountingEvents
             ("parts", Math.Max(1, parts).ToString(CultureInfo.InvariantCulture)),
             (AccountingDetailKeys.SelfPayment, selfPayment ? AccountingDetailKeys.True : null),
             ("offer", payment.Bolt12?.Offer),
+            (OfferIdDetail, OfferIdOf(payment.Bolt12?.Offer)),
             ("payerNote", payment.Bolt12?.PayerNote),
             ("customRecords", payment.Keysend?.CustomRecords is { Count: > 0 } records
                                   ? string.Join(',', records.Select(r => r.Type.ToString(CultureInfo.InvariantCulture)))
@@ -149,6 +158,7 @@ internal static class PaymentAccountingEvents
             ("failureSourceIndex", payment.FailureSourceIndex?.ToString(CultureInfo.InvariantCulture)),
             ("amountMsat", Msat(payment.Amount)),
             ("offer", payment.Bolt12?.Offer),
+            (OfferIdDetail, OfferIdOf(payment.Bolt12?.Offer)),
             .. SourceLabels.FromStored(payment.Label, payment.Tags).ToDetailPairs()
         ]);
 
@@ -246,6 +256,20 @@ internal static class PaymentAccountingEvents
             ("outgoingHtlcId", circuit.OutgoingHtlcId?.ToString(CultureInfo.InvariantCulture)),
             (AccountingDetailKeys.OutgoingScid, (ScidOf(outgoing) ?? circuit.OutgoingShortChannelId).ToString()),
             ("outgoingAmountMsat", Msat(circuit.OutgoingAmount)));
+    }
+
+    /// <summary>
+    /// The offer id (hex) of the offer string <paramref name="offer"/> (<c>lno1...</c>), as <c>OfferService</c> computes
+    /// ours: the SHA-256 of the offer's TLV bytes. Null when there is no offer or it does not decode (NL-645).
+    /// </summary>
+    internal static string? OfferIdOf(string? offer)
+    {
+        if (string.IsNullOrEmpty(offer)
+         || !Bolt12Bech32.TryDecode(offer, out var hrp, out var data, out _)
+         || !string.Equals(hrp, Bolt12Constants.OfferHrp, StringComparison.Ordinal))
+            return null;
+
+        return Convert.ToHexStringLower(SHA256.HashData(data));
     }
 
     private static string KindName(InvoiceKind kind) => kind switch

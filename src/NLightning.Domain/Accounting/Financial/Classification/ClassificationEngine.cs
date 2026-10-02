@@ -24,7 +24,8 @@ using Services;
 /// <see cref="LabelDetail"/>; a regex run with <see cref="RegexOptions.NonBacktracking"/> and a 100 ms timeout; an
 /// event without a label never matches a pattern; a timeout is no match and is reported); a tag key (detail
 /// <c>tag.&lt;key&gt;</c>) and a glob on its value (<c>*</c> any run, <c>?</c> one character, case-sensitive); the
-/// counterparty; the BOLT 12 offer id (detail <see cref="OfferIdDetail"/>, written on received payments); the channel
+/// counterparty; the BOLT 12 offer id (detail <see cref="OfferIdDetail"/>, written on received payments and, since
+/// NL-645, on our payments of an offer); the channel
 /// (the event's channel, or a forward's incoming or outgoing channel).</para>
 /// <para>A stored rule whose pattern does not compile (written by another build) never matches and is listed in
 /// <see cref="InvalidRuleIds"/>; the engine never throws for a rule.</para>
@@ -37,7 +38,7 @@ public sealed class ClassificationEngine
     /// <summary>The prefix of a tag's detail (<c>tag.&lt;key&gt;</c>, A3-T1).</summary>
     public const string TagDetailPrefix = AccountingDetailKeys.TagPrefix;
 
-    /// <summary>The BOLT 12 offer id of a received payment (hex).</summary>
+    /// <summary>The BOLT 12 offer id of a received or sent payment (hex; NL-645).</summary>
     public const string OfferIdDetail = "offerId";
 
     private const string IncomingChannelDetail = "incomingChannelId";
