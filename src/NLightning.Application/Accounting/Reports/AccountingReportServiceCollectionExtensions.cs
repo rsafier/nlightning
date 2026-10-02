@@ -9,6 +9,7 @@ using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Interfaces;
+using Domain.Bitcoin.Interfaces;
 using Export;
 
 /// <summary>
@@ -20,7 +21,8 @@ public static class AccountingReportServiceCollectionExtensions
     /// Registers <see cref="AccountingReportService"/> (<see cref="IAccountingReports"/>) and
     /// <see cref="AccountingExportService"/> (<see cref="IAccountingExports"/>) as singletons (TryAdd, idempotent).
     /// They read the books through scopes of their own and take <see cref="IAccountingBooks"/> when it is registered;
-    /// without it (or with the books off) every report answers <see cref="AccountingBooksDisabledException"/>.
+    /// without it (or with the books off) every report answers <see cref="AccountingBooksDisabledException"/>. The
+    /// optional <see cref="IBlockTimeSource"/> dates a channel opened before the feed began by its funding block (NL-623).
     /// </summary>
     public static IServiceCollection AddAccountingReportServices(this IServiceCollection services)
     {
@@ -30,7 +32,8 @@ public static class AccountingReportServiceCollectionExtensions
                                                          sp.GetRequiredService<ILogger<AccountingReportService>>(),
                                                          sp.GetService<IOptions<AccountingOptions>>(),
                                                          sp.GetService<IAccountingEventSealer>(),
-                                                         sp.GetService<TimeProvider>()));
+                                                         sp.GetService<TimeProvider>(),
+                                                         sp.GetService<IBlockTimeSource>()));
         services.TryAddSingleton<IAccountingExports>(sp => new AccountingExportService(
                                                          sp.GetRequiredService<IServiceScopeFactory>(),
                                                          sp.GetService<IAccountingBooks>(),

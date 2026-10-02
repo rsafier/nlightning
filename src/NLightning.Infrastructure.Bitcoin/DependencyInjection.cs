@@ -49,6 +49,9 @@ public static class DependencyInjection
         services.AddSingleton<IChainBroadcaster>(sp => sp.GetRequiredService<IBlockchainMonitor>());
         services.AddSingleton<IOutpointWatcher>(sp => sp.GetRequiredService<IBlockchainMonitor>());
 
+        // Block times for the accounting channel report (NL-623)
+        services.AddSingleton<IBlockTimeSource, ChainBlockTimeSource>();
+
         services.AddSingleton<IClosingTransactionBuilder, ClosingTransactionBuilder>();
         services.AddSingleton<ICommitmentKeyDerivationService, CommitmentKeyDerivationService>();
         services.AddSingleton<ICommitmentTransactionBuilder, CommitmentTransactionBuilder>();

@@ -48,8 +48,21 @@ public sealed record AccountingChannelLine
     /// <summary>Whether we opened it, when known.</summary>
     public bool? IsInitiator { get; init; }
 
-    /// <summary>When its funding confirmed, when in the feed.</summary>
+    /// <summary>
+    /// When its funding confirmed: the time of a live <c>ChannelFunded</c>, or for a channel the feed only knows from
+    /// the cutover (opening balance, memo funding) the time of its funding block when the node could read it (NL-623);
+    /// null otherwise (see <see cref="TrackedSince"/>).
+    /// </summary>
     public DateTimeOffset? OpenedAt { get; init; }
+
+    /// <summary>The block its funding confirmed in, when known (the funding's short channel id).</summary>
+    public uint? OpenedAtBlockHeight { get; init; }
+
+    /// <summary>
+    /// When the feed began following a channel that was open before it (the cutover time of its opening balance or
+    /// memo funding, NL-623); null for a channel opened after the cutover. The channel was open at least since then.
+    /// </summary>
+    public DateTimeOffset? TrackedSince { get; init; }
 
     /// <summary>When it closed (mutual close or force close classified), when it did.</summary>
     public DateTimeOffset? ClosedAt { get; init; }
@@ -111,14 +124,28 @@ public sealed record AccountingChannelLine
     /// <summary>What the channel earned as a fee earner: routing out, less rebalance cost, on-chain fees and losses.</summary>
     public long NetMsat => RoutingOutMsat - RebalanceCostMsat - OnchainFeesMsat - OnchainLossMsat;
 
-    /// <summary><see cref="RoutingOutMsat"/> over <see cref="CapacityMsat"/> (null when the capacity is unknown).</summary>
+    /// <summary>
+    /// The routing yield before costs: <see cref="RoutingOutMsat"/> over <see cref="CapacityMsat"/> (null when the
+    /// capacity is unknown). It ignores on-chain fees, losses and rebalance cost; <see cref="NetYieldOnCapacity"/> is
+    /// the yield of <see cref="NetMsat"/> (NL-625).
+    /// </summary>
     public double? YieldOnCapacity { get; init; }
 
     /// <summary>
-    /// <see cref="YieldOnCapacity"/> annualized over the time the channel was open within the period (null when the
-    /// open time is unknown or shorter than an hour).
+    /// <see cref="YieldOnCapacity"/> annualized over the time the channel was open within the period (null when that
+    /// time is unknown or shorter than an hour). A channel whose open time is unknown (<see cref="TrackedSince"/>
+    /// without <see cref="OpenedAt"/>) is annualized only over a period that starts after the feed began following it.
     /// </summary>
     public double? AnnualizedYield { get; init; }
+
+    /// <summary>
+    /// <see cref="NetMsat"/> over <see cref="CapacityMsat"/>: the yield after rebalance cost, on-chain fees and losses,
+    /// negative when the channel lost money (NL-625); null when the capacity is unknown.
+    /// </summary>
+    public double? NetYieldOnCapacity { get; init; }
+
+    /// <summary><see cref="NetYieldOnCapacity"/> annualized over the same time as <see cref="AnnualizedYield"/>.</summary>
+    public double? NetAnnualizedYield { get; init; }
 }
 
 /// <summary>

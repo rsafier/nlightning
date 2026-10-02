@@ -159,6 +159,12 @@ public sealed class AccountingBalanceSheetIpcResponse
     /// <summary>Whether assets = liabilities + equity + earnings.</summary>
     [Key(7)] public required bool IsBalanced { get; init; }
 
+    /// <summary>
+    /// For a balance at a past time: the highest ledger sequence of the entries it counts, 0 when none (NL-627); null
+    /// for a balance of now.
+    /// </summary>
+    [Key(8)] public long? LastLedgerSeqAt { get; init; }
+
     public static AccountingBalanceSheetIpcResponse From(AccountingBalanceSheet sheet) => new()
     {
         Assets = sheet.Assets.Select(AccountingAccountIpcResponse.From).ToList(),
@@ -168,7 +174,8 @@ public sealed class AccountingBalanceSheetIpcResponse
         TotalAssetsMsat = sheet.TotalAssetsMsat,
         TotalLiabilitiesMsat = sheet.TotalLiabilitiesMsat,
         TotalEquityMsat = sheet.TotalEquityMsat,
-        IsBalanced = sheet.IsBalanced
+        IsBalanced = sheet.IsBalanced,
+        LastLedgerSeqAt = sheet.LastLedgerSeqAt
     };
 }
 
@@ -236,11 +243,23 @@ public sealed class AccountingChannelIpcResponse
     /// <summary>Routing out less rebalance cost, on-chain fees and losses.</summary>
     [Key(29)] public long NetMsat { get; init; }
 
-    /// <summary>Routing out over capacity (a fraction).</summary>
+    /// <summary>Routing out over capacity (a fraction): the routing yield before costs (NL-625).</summary>
     [Key(30)] public double? YieldOnCapacity { get; init; }
 
-    /// <summary>The yield annualized over the time open within the period (a fraction).</summary>
+    /// <summary>The routing yield annualized over the time open within the period (a fraction).</summary>
     [Key(31)] public double? AnnualizedYield { get; init; }
+
+    /// <summary>The block the funding confirmed in, when known (NL-623).</summary>
+    [Key(32)] public uint? OpenedAtBlockHeight { get; init; }
+
+    /// <summary>When the feed began following a channel open before it, Unix milliseconds (NL-623).</summary>
+    [Key(33)] public long? TrackedSinceUnixMilliseconds { get; init; }
+
+    /// <summary>Net over capacity (a fraction, negative for a loss; NL-625).</summary>
+    [Key(34)] public double? NetYieldOnCapacity { get; init; }
+
+    /// <summary>The net yield annualized over the same time as <see cref="AnnualizedYield"/>.</summary>
+    [Key(35)] public double? NetAnnualizedYield { get; init; }
 
     public static AccountingChannelIpcResponse From(AccountingChannelLine line) => new()
     {
@@ -275,7 +294,11 @@ public sealed class AccountingChannelIpcResponse
         OnchainFeesMsat = line.OnchainFeesMsat,
         NetMsat = line.NetMsat,
         YieldOnCapacity = line.YieldOnCapacity,
-        AnnualizedYield = line.AnnualizedYield
+        AnnualizedYield = line.AnnualizedYield,
+        OpenedAtBlockHeight = line.OpenedAtBlockHeight,
+        TrackedSinceUnixMilliseconds = AccountingReportIpcResponse.Milliseconds(line.TrackedSince),
+        NetYieldOnCapacity = line.NetYieldOnCapacity,
+        NetAnnualizedYield = line.NetAnnualizedYield
     };
 }
 
