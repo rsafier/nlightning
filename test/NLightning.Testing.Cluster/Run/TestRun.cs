@@ -5,6 +5,7 @@ using k8s.Autorest;
 
 namespace NLightning.Testing.Cluster.Run;
 
+using Diagnostics;
 using Kube;
 using Nodes;
 using Runner;
@@ -33,6 +34,8 @@ public sealed class TestRun : IAsyncDisposable
         Identity = identity;
         _options = options;
         OwnsNamespace = ownsNamespace;
+        Scope = ClusterTestScope.Current();
+        ClusterDiagnostics.Register(this);
     }
 
     /// <summary>The cluster client of the run.</summary>
@@ -53,6 +56,18 @@ public sealed class TestRun : IAsyncDisposable
 
     /// <summary>The nodes deployed so far, by alias.</summary>
     public IReadOnlyDictionary<string, KubeNodeHandle> Nodes => _nodes;
+
+    /// <summary>The xunit test or fixture the run was started from (names its diagnostics folder).</summary>
+    public ClusterTestScope Scope { get; }
+
+    /// <summary>Whether a failure was recorded on the run (<see cref="ClusterDiagnostics"/>), and its dumps.</summary>
+    public RunDiagnosticsState Diagnostics { get; } = new();
+
+    /// <summary>When and where the run's diagnostics are written (<see cref="TestRunOptions.Diagnostics"/>).</summary>
+    public DiagnosticsSettings DiagnosticsSettings => _options.Diagnostics;
+
+    /// <summary>Where the run writes what it does; null for nowhere.</summary>
+    public Action<string>? Log => _options.Log;
 
     /// <summary>
     /// Creates the run's namespace (and quota) with a client from <see cref="KubeClientFactory"/>.
@@ -178,7 +193,9 @@ public sealed class TestRun : IAsyncDisposable
 
         await Client.ApplyAsync(workload.Build(Identity), cancellationToken).ConfigureAwait(false);
         if (readyTimeout is { } timeout)
-            await handle.WaitReadyAsync(timeout, cancellationToken).ConfigureAwait(false);
+            await this.CaptureOnFailureAsync($"node {workload.Name} ready",
+                                             () => handle.WaitReadyAsync(timeout, cancellationToken))
+                      .ConfigureAwait(false);
 
         return handle;
     }
@@ -200,12 +217,20 @@ public sealed class TestRun : IAsyncDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
+        ClusterDiagnostics.Unregister(this);
         try
         {
+            await ClusterDiagnostics.BeforeDeletionAsync(this).ConfigureAwait(false);
             if (_options.KeepNamespace)
             {
                 _options.Log?.Invoke($"[nltg-cluster] run {Id}: namespace {Namespace} kept "
                                    + $"({TestRunOptions.KeepNamespaceVariable})");
+                return;
+            }
+
+            if (_options.KeepNamespaceOnFailure && Diagnostics.Failed)
+            {
+                await KeepFailedNamespaceAsync().ConfigureAwait(false);
                 return;
             }
 
@@ -241,5 +266,30 @@ public sealed class TestRun : IAsyncDisposable
         {
             Client.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Keeps a failed run's namespace (<c>NLTG_KEEP_NAMESPACE=failure</c>): annotates it <see cref="RunAnnotations.Keep"/>
+    /// so the reaper leaves it until its TTL even after this process ends. An adopted namespace keeps its nodes.
+    /// </summary>
+    private async Task KeepFailedNamespaceAsync()
+    {
+        if (OwnsNamespace)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await RunAnnotations.MarkKeptAsync(Client, Identity, cts.Token).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                _options.Log?.Invoke($"[nltg-cluster] run {Id}: namespace {Namespace} not annotated "
+                                   + $"{RunAnnotations.Keep}: {e.Message}");
+            }
+        }
+
+        _options.Log?.Invoke($"[nltg-cluster] run {Id}: namespace {Namespace} kept on failure "
+                           + $"({TestRunOptions.KeepNamespaceVariable}=failure; reaped after its TTL): "
+                           + Diagnostics.FailureReason);
     }
 }

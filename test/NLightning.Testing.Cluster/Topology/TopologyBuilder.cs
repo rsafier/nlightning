@@ -152,11 +152,18 @@ public sealed class TopologyBuilder
                                                + $"{nameof(UseDeployer)}");
     }
 
-    /// <summary>Deploys the topology into <paramref name="run"/>: nodes, fundings, channels (all active).</summary>
-    public Task<TestTopology> BuildAsync(TestRun run, CancellationToken cancellationToken) =>
-        new TopologyDeployer(Build(), _deployers, _chainFactory, ReadyTimeout, StepTimeout, Log,
-                             DeployNodesWithChain ? _chainEndpointFactory : null)
+    /// <summary>
+    /// Deploys the topology into <paramref name="run"/>: nodes, fundings, channels (all active). A failed build is
+    /// recorded on the run and its diagnostics dumped (<see cref="Diagnostics.ClusterDiagnostics"/>) before it throws.
+    /// </summary>
+    public Task<TestTopology> BuildAsync(TestRun run, CancellationToken cancellationToken)
+    {
+        var deployer = new TopologyDeployer(Build(), _deployers, _chainFactory, ReadyTimeout, StepTimeout, Log,
+                                            DeployNodesWithChain ? _chainEndpointFactory : null)
         {
             ChainAddressWait = ChainAddressWait
-        }.DeployAsync(run, cancellationToken);
+        };
+        return Diagnostics.ClusterDiagnostics.CaptureOnFailureAsync(
+            run, "topology build", () => deployer.DeployAsync(run, cancellationToken));
+    }
 }

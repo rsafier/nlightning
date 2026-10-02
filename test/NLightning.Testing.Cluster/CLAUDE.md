@@ -40,6 +40,8 @@ every implementation, our own node included, is driven through the same seams.
   - `scripts/run-cluster.sh`: builds once, runs the Category=Cluster tests (`--class`/`--method`) N times
     concurrently (`-n`, `-j` ≤ 6), each with `NLTG_TEST_RUN_ID=<batch>-<i>`, logs and xunit XML under
     `TestResults/cluster/<batch>/<run>/`, reaps each run's leftovers, prints a summary table (`summary.txt`).
+    `--diag failure|always|off`, `--keep-on-failure` and `--trait` (default `Category=Cluster`); each run's dumps go
+    to `<run>/diag/`, the table counts them (DIAG) and the summary lists the folders of every failed run.
 - `Kube/`
   - `NodeWorkload`: one node = StatefulSet (1 replica, `Parallel`) + headless Service of the same name
     (`publishNotReadyAddresses`) + optional data volume (`Data = new DataVolume(mountPath, size)`: a PVC template, or
@@ -141,6 +143,32 @@ every implementation, our own node included, is driven through the same seams.
     **established TCP connections survive** (conntrack), so disconnect the peers (node command or restart) after
     partitioning. DNS stays reachable by default; `PartitionOptions.AllowedIngressCidrs` (`NLTG_RUNNER_CIDRS`) lets
     the runner keep driving an isolated node (OrbStack host: `192.168.194.0/32`). `HealAsync` deletes the policy.
+- `Diagnostics/` (phase 2 lane D): failure diagnostics, written to
+  `<root>/<test or fixture>/<namespace>/` where `<root>` is `NLTG_CLUSTER_DIAG_DIR` (`run-cluster.sh` sets
+  `TestResults/cluster/<batch>/<run>/diag`) or `<repo>/TestResults/cluster/<run id>`.
+  - Contents (`NamespaceDumper`, read-only): `pods.txt`, `workloads.txt` (StatefulSets, Services, NetworkPolicies),
+    `events.txt` (oldest first), `storage.txt` (PVCs and their PVs), per pod `pods/<pod>/describe.txt` (conditions,
+    container state and last state, exit codes, restarts, probes, env names), `<container>.log` and, after a restart,
+    `<container>.previous.log`, and the node's own state `state/*.json` by its `nltg.kind` label
+    (`NodeStateCommands`: bitcoind `getblockchaininfo`/`getpeerinfo`/`getmempoolinfo`, CLN `getinfo`/
+    `listpeerchannels`/`listfunds`, LND `getinfo`/`listchannels`/`pendingchannels`/`listpeers`); `summary.txt` lists
+    the files and what could not be collected; `failure.txt` the reasons. No secret file is ever read (macaroons,
+    `hsm_secret`, keys) and every file goes through `SecretRedactor` (passwords, tokens, `rpcauth` masked).
+  - When (`NLTG_CLUSTER_DIAG`, `DiagnosticsSettings`): `failure` (default), `always` (also after every test and before
+    every run's deletion) or `off`. In `failure` mode a dump happens at a `Poll` timeout (the live runs of the current
+    test or fixture, while the bad state is still there; `ClusterDiagnostics.SuppressPollCapture()` for a wait that is
+    expected to time out), when `TestRun.DeployAsync`'s readiness wait or `TopologyBuilder.BuildAsync` fails (that
+    run), and after a failed test through the xunit v3 hook `[assembly: ClusterDiagnostics]`
+    (`ClusterDiagnosticsAttribute`; a `BeforeAfterTestAttribute`, whose `After` sees `TestContext.Current.TestState`).
+    One failure seen by several hooks is dumped once per label and its other reasons are appended to `failure.txt`.
+  - The hook only sees runs still alive when the test ends: fixture runs (`ClusterTestScope`: a run started in a class
+    or collection fixture belongs to that collection, one started in a test body to that test) and runs a test class
+    disposes in its own `DisposeAsync`. A run the test body disposed (`await using`) is gone by then, so an assertion
+    failure there is not dumped: wrap the body in `run.CaptureOnFailureAsync(what, action)` or keep the run in a fixture.
+  - Manual: `await run.DumpAsync(label, reason, ct)` (any mode) returns a `DiagnosticsDump` (folder, files, errors).
+  - `NLTG_KEEP_NAMESPACE=failure` (`TestRunOptions.KeepNamespaceOnFailure`) keeps a run's namespace when a failure
+    was recorded on it (`TestRun.Diagnostics.Failed`), annotated `nltg.keep` so the reaper leaves it until its TTL
+    (6 h); `nltg-cluster reap --run <id> --force` removes it earlier.
 - `deploy/runner-rbac.yaml`: the in-cluster runner's RBAC (ported from PR #10). Not applied by the spike.
 - Integration notes: an in-cluster runner's Job pod counts against the run's quota: size it with
   `QuotaSizing.ForWorkloads(workloads, extraPods: 1, job.Resources)`. An adopted run (`TestRunOptions.AdoptNamespace`)
@@ -161,6 +189,12 @@ every implementation, our own node included, is driven through the same seams.
 - Live tests carry `[Trait("Category", "Cluster")]` and `[Fact(Explicit = true)]`:
   `NLTG_KUBE_CONTEXT=orbstack dotnet run --project test/NLightning.Testing.Cluster.Tests -c Release -f net10.0 -- -explicit only -trait Category=Cluster`
   (or the built `bin/Release/net10.0/NLightning.Testing.Cluster.Tests` with the same arguments).
+- `Live/DiagnosticsClusterTests` (`Category=Cluster`, green): a manual dump of bitcoind + CLN + LND, and a topology whose
+  CLN node never becomes ready (an unknown lightningd option), dumped by the build and kept on failure.
+  `Live/DiagnosticsFailureProofTests` fail **on purpose** (a `Poll` timeout, an assertion) to prove the hook; they carry
+  `Category=ClusterFailureProof` instead of `Cluster` so the normal runs skip them:
+  `scripts/run-cluster.sh -n 1 --trait Category=ClusterFailureProof --keep-on-failure`, then
+  `nltg-cluster reap --run <id> --force`.
 - `Live/LightningDialBackTests`: LND and CLN in pods dial a loopback listener in the test process at
   `host.orb.internal` and it receives their BOLT 8 act one (spike check 1 with real implementations).
 - `Live/StartupTimingTests` (phase 2 startup cuts): `StartupTimingClnTests` and `StartupTimingLndTests`, one row

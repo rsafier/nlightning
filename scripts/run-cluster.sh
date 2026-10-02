@@ -7,6 +7,8 @@
 # Builds once, then starts the runs (at most --jobs in flight), writes each run's log and xunit XML under
 # TestResults/cluster/<batch>/<run>/, reaps what a run left behind (its own namespaces only, after its process ended),
 # and prints a summary table (also in TestResults/cluster/<batch>/summary.txt). Exit code 0 when every run is green.
+# Failure diagnostics (pod logs, describe, events, PVC/PV, node state; ClusterDiagnostics) go to
+# TestResults/cluster/<batch>/<run>/diag/<test or fixture>/<namespace>/, and the summary lists them per failed run.
 #
 # Usage: scripts/run-cluster.sh [options] [-- extra xunit v3 runner args]
 #   -n, --runs N          runs (default 3)
@@ -23,6 +25,9 @@
 #       --no-build        use the existing build
 #       --reap-orphans    first reap runs whose owner process is gone or which are past their TTL
 #       --keep            keep the namespaces (NLTG_KEEP_NAMESPACE=1; the reaper then leaves them until their TTL)
+#       --keep-on-failure keep only the namespaces of failed runs (NLTG_KEEP_NAMESPACE=failure; reaped after their TTL)
+#       --diag M          when to collect diagnostics: failure (default), always or off (NLTG_CLUSTER_DIAG)
+#       --trait T         the xunit trait filter instead of Category=Cluster (e.g. Category=ClusterFailureProof)
 #
 # Example: the scaffold's namespace test 3 times at once
 #   scripts/run-cluster.sh -n 3 --method '*ARunDeploysABusyboxStatefulSet*'
@@ -44,6 +49,8 @@ batch=""
 build=1
 reap_orphans=0
 keep=0
+diag="${NLTG_CLUSTER_DIAG:-failure}"
+trait="Category=Cluster"
 filters=()
 extra=()
 
@@ -63,7 +70,10 @@ while [[ $# -gt 0 ]]; do
     --no-build) build=0; shift ;;
     --reap-orphans) reap_orphans=1; shift ;;
     --keep) keep=1; shift ;;
-    -h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --keep-on-failure) keep=failure; shift ;;
+    --diag) diag="${2:?}"; shift 2 ;;
+    --trait) trait="${2:?}"; shift 2 ;;
+    -h|--help) sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; extra=("$@"); break ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
@@ -72,6 +82,7 @@ done
 [[ "$runs" =~ ^[0-9]+$ && "$runs" -ge 1 ]] || die "--runs must be a positive number"
 jobs="${jobs:-$runs}"
 [[ "$jobs" =~ ^[0-9]+$ && "$jobs" -ge 1 ]] || die "--jobs must be a positive number"
+[[ "$diag" =~ ^(failure|always|off)$ ]] || die "--diag must be failure, always or off"
 (( jobs > 6 )) && { echo "run-cluster: capping --jobs at 6 (the spike's namespace cap)"; jobs=6; }
 batch="${batch:-rc-$(date -u +%Y%m%d%H%M%S)}"
 batch="$(echo "$batch" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/^-*//; s/-*$//')"
@@ -122,8 +133,8 @@ start_run() {
   (
     start=$(date +%s)
     set +e
-    NLTG_TEST_RUN_ID="$id" NLTG_KEEP_NAMESPACE="$keep" \
-      dotnet "$test_dll" -explicit only -trait Category=Cluster "${filters[@]}" -xml "$dir/results.xml" \
+    NLTG_TEST_RUN_ID="$id" NLTG_KEEP_NAMESPACE="$keep" NLTG_CLUSTER_DIAG="$diag" NLTG_CLUSTER_DIAG_DIR="$dir/diag" \
+      dotnet "$test_dll" -explicit only -trait "$trait" "${filters[@]}" -xml "$dir/results.xml" \
       -showLiveOutput -noColor "${extra[@]}" > "$dir/output.log" 2>&1
     code=$?
     echo "$code $(( $(date +%s) - start )) $start" > "$dir/exit"
@@ -140,18 +151,29 @@ done
 for pid in "${pids[@]}"; do wait "$pid" || true; done
 
 # 3. Cleanup: each run's own namespaces (their processes have ended, so the reaper sees their owner gone).
-if (( ! keep )); then
+if [[ "$keep" != 1 ]]; then
   for id in "${ids[@]}"; do
     cli reap --run "$id" --wait > "$results/$id/reap-after.txt" 2>&1 || echo "run-cluster: reap of $id failed"
   done
 fi
 
 # 4. Summary.
-python3 - "$results" "$batch_start" "${ids[@]}" << 'PY' | tee "$results/summary.txt"
+python3 - "$results" "$batch_start" "$repo_root" "${ids[@]}" << 'PY' | tee "$results/summary.txt"
 import os, re, sys, xml.etree.ElementTree as ET
-results, batch_start, ids = sys.argv[1], int(sys.argv[2]), sys.argv[3:]
-rows = [("RUN", "EXIT", "TOTAL", "PASSED", "FAILED", "SKIPPED", "START", "END", "WALL", "SLOT", "NAMESPACES", "FIRST ERROR")]
+results, batch_start, repo_root, ids = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4:]
+rows = [("RUN", "EXIT", "TOTAL", "PASSED", "FAILED", "SKIPPED", "START", "END", "WALL", "SLOT", "NAMESPACES", "DIAG",
+         "FIRST ERROR")]
 failed = 0
+diag_lines = []
+
+def dumps_of(run_dir):
+    """The dump folders of a run: diag/<test or fixture>/<namespace>[-n] (each has a summary.txt)."""
+    root = os.path.join(run_dir, "diag")
+    found = []
+    for base, _, files in os.walk(root):
+        if "summary.txt" in files:
+            found.append(base)
+    return sorted(found)
 for run in ids:
     d = os.path.join(results, run)
     exit_file = os.path.join(d, "exit")
@@ -176,16 +198,26 @@ for run in ids:
         text = open(log, errors="replace").read()
         namespaces = sorted(set(re.findall(r"namespace (nltg-[a-z0-9-]+) created", text)))
         slot = "waited" if "waiting for a slot" in text or "over the cap" in text else "direct"
-    if code != "0" or fails not in ("0", "?") or total in ("0", "?"):
+    dumps = dumps_of(d)
+    kept = sorted(set(re.findall(r"namespace (nltg-[a-z0-9-]+) kept on failure", text))) if os.path.exists(log) else []
+    run_failed = code != "0" or fails not in ("0", "?") or total in ("0", "?")
+    if run_failed:
         failed += 1
         if not error:
             error = "no tests ran" if total == "0" else f"exit {code}"
+        diag_lines.append(f"{run}: " + (f"{len(dumps)} dump(s)" if dumps else "no diagnostics collected")
+                          + (f", kept namespaces {','.join(kept)}" if kept else ""))
+        diag_lines.extend(f"  {os.path.relpath(p, repo_root)}" for p in dumps)
     rows.append((run, code, total, passed, fails, skipped, begin, end, f"{wall}s", slot, ",".join(namespaces) or "-",
-                 error[:120]))
+                 str(len(dumps)), error[:120]))
 widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
 for r in rows:
     print("  ".join(c.ljust(w) for c, w in zip(r, widths)).rstrip())
 print(f"{len(ids) - failed}/{len(ids)} run(s) green")
+if diag_lines:
+    print("diagnostics of the failed runs:")
+    for line in diag_lines:
+        print(line)
 sys.exit(1 if failed else 0)
 PY
 status=${PIPESTATUS[0]}
