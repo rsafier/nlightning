@@ -20,6 +20,9 @@ using Channels.Services;
 using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Financial;
+using Domain.Accounting.Financial.Classification;
+using Domain.Accounting.Financial.Lots;
 using Domain.Accounting.Models;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
@@ -777,6 +780,143 @@ public sealed class OnchainAccountingTests : IDisposable
         Assert.Equal(0, books[AccountRole.LossOnchain]);
     }
 
+    [Theory]
+    [InlineData(AccountingCostBasisMethod.Fifo)]
+    [InlineData(AccountingCostBasisMethod.Lifo)]
+    [InlineData(AccountingCostBasisMethod.Hifo)]
+    public async Task Given_OurAnchorsHtlcTimeoutWithAWalletFeeInput_When_Resolved_Then_ItsFeeIsExpensedAndClearingNets(
+        AccountingCostBasisMethod method)
+    {
+        // Arrange (NL-748, FAFO2's dad94b77): our commitment confirmed; our anchors HTLC-timeout spends the offered HTLC
+        // output plus a 500,000 sat wallet input, pays the HTLC to its second-level output and 499,732 sat change: its
+        // 268 sat fee (stored with the broadcast) came out of the wallet input
+        var local = _pair.Alice.State.LocalCommit;
+        var commitment = BuildCommitment(CommitmentSide.Local, local.Spec, local.Number, null);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        var offered = Row(OutputDescriptorKind.LocalOfferedHtlc);
+        var executor = CreateExecutor();
+        var walletInput = (TxId: new TxId(Enumerable.Repeat((byte)0xd4, 32).ToArray()), Vout: 0u);
+        var htlcTimeout = Stored(SpendTo([(commitment.TxId, offered.OutputIndex), walletInput], OurHtlcSat, 499_732),
+                                 BroadcastPurpose.HtlcTransaction, fee: LightningMoney.Satoshis(268));
+        _resolver.OnSpent = (_, row, spender) => row.OutputIndex == offered.OutputIndex
+                                                 && row.TransactionId == commitment.TxId
+                                                     ?
+                                                     [
+                                                         new UpsertOutputAction(SecondLevelRow(spender, offered)),
+                                                         new WatchOutpointAction(new WatchedOutpointModel(
+                                                             spender.TxId, 0, _channel.ChannelId,
+                                                             WatchedOutpointPurpose.ResolutionOutput))
+                                                     ]
+                                                     : [];
+
+        // Act
+        await MineSpendAsync(executor, htlcTimeout, commitment.TxId, offered.OutputIndex, SpendHeight + 160);
+
+        // Assert: pending -> pending (the HTLC kept its value), the whole fee on the event, the wallet's part named
+        var resolved = _store.Events[^1];
+        Assert.Equal(AccountingEventKeys.OutputResolved(commitment.TxId, offered.OutputIndex), resolved.EventKey);
+        Assert.Equal(0, resolved.AmountMsat);
+        Assert.Equal(268_000, resolved.FeeMsat);
+        Assert.Equal(268_000, Msat(resolved, OnchainAccounting.WalletFeeKey));
+        Assert.Equal((long)OurHtlcSat * 1_000, Msat(resolved, OnchainAccounting.PendingOutKey));
+        Assert.Equal((long)OurHtlcSat * 1_000, Msat(resolved, OnchainAccounting.PendingInKey));
+        Assert.Equal(0, Msat(resolved, OnchainAccounting.WalletKey));
+
+        // Assert (the books, in FAFO2's order: the change, the wallet input's spend, then the resolution): the fee is
+        // a sweep fee paid out of the clearing account, which nets to zero; the HTLC stays pending at its full value
+        var change = WalletEvent(AccountingEventKind.WalletReceived,
+                                 AccountingEventKeys.WalletReceived(htlcTimeout.TxId, 1), htlcTimeout.TxId, 1,
+                                 499_732_000, SpendHeight + 160);
+        var inputSpent = WalletEvent(AccountingEventKind.WalletOutputSpent,
+                                     AccountingEventKeys.WalletOutputSpent(walletInput.TxId, walletInput.Vout),
+                                     walletInput.TxId, walletInput.Vout, -500_000_000, SpendHeight + 160);
+        var close = _store.Events[0];
+        var books = BooksSimulator.Of([close, change, inputSpent, resolved]);
+        Assert.Equal(0, books[AccountRole.Clearing]);
+        Assert.Equal(268_000, books[AccountRole.FeeSweep]);
+        Assert.Equal(-268_000, books[AccountRole.Wallet]);
+        Assert.Equal(Msat(close, OnchainAccounting.PendingKey), books[AccountRole.Pending]);
+        Assert.Equal(0, books[AccountRole.OnchainGain]);
+        Assert.Equal(0, books[AccountRole.LossOnchain]);
+        Assert.Equal([(AccountRole.Clearing, -268_000L), (AccountRole.FeeSweep, 268_000L)],
+                     books.Entry(resolved.EventKey)!.Postings.Select(p => (p.Account, p.AmountMsat)));
+
+        // Assert (the financial book, NL-749's lots invariant): opening lots in the wallet and the channel; the fee
+        // disposes of 268 sat of the wallet input's lots, nothing is owed and every bucket holds its balance
+        var financial = new LotBook(method);
+        financial.Plan(true, (AccountRole.Wallet, 1_000_000_000), (AccountRole.Opening, -1_000_000_000));
+        financial.Plan(true, (AccountRole.Channels, -close.AmountMsat), (AccountRole.Opening, close.AmountMsat));
+        FinancialEntryPlan? feePlan = null;
+        foreach (var entry in books.Entries)
+        {
+            var plan = financial.Plan(false, entry.Postings.Select(p => (p.Account, p.AmountMsat)).ToArray());
+            if (entry.EventKey == resolved.EventKey)
+                feePlan = plan;
+        }
+
+        Assert.Equal(268_000, feePlan!.Disposals.Sum(d => d.Msat));
+        Assert.Empty(financial.Pool.Debts);
+        Assert.Equal(0, financial.Shortfall);
+        Assert.Equal(0, financial.Pool.HeldMsat(AccountingLotBucket.Clearing));
+        Assert.Equal(books[AccountRole.Wallet] + 1_000_000_000, financial.Pool.HeldMsat(AccountingLotBucket.Wallet));
+        Assert.Equal(books[AccountRole.Pending], financial.Pool.HeldMsat(AccountingLotBucket.Pending));
+
+        // Act: the HTLC-timeout reorged out (the chain monitor rolled the spend back), then the next round
+        _store.Watches[(commitment.TxId, offered.OutputIndex)].ClearSpend();
+        await executor.RunRoundAsync(SpendHeight + 161, TestContext.Current.CancellationToken);
+
+        // Assert: the reversal negates the fee lines with the rest of the entry
+        var reversal = _store.Events[^1];
+        Assert.Equal(AccountingEventKind.Reversal, reversal.Kind);
+        Assert.Equal(resolved.EventKey, reversal.Details[OnchainAccounting.ReversesKey]);
+        Assert.Equal(-268_000, reversal.FeeMsat);
+        books.Apply(reversal);
+        Assert.Equal([(AccountRole.Clearing, 268_000L), (AccountRole.FeeSweep, -268_000L)],
+                     books.Entry(reversal.EventKey)!.Postings.Select(p => (p.Account, p.AmountMsat)));
+        Assert.Equal(0, books[AccountRole.FeeSweep]);
+        Assert.Equal(268_000, books[AccountRole.Clearing]);
+
+        // Act: it confirms again
+        await MineSpendAsync(executor, htlcTimeout, commitment.TxId, offered.OutputIndex, SpendHeight + 162);
+
+        // Assert: recorded again with its wallet fee (NL-613's next confirmation key)
+        var again = _store.Events[^1];
+        Assert.Equal(AccountingEventKeys.Reconfirmed(resolved.EventKey, 2), again.EventKey);
+        Assert.Equal(268_000, Msat(again, OnchainAccounting.WalletFeeKey));
+        books.Apply(again);
+        Assert.Equal(0, books[AccountRole.Clearing]);
+        Assert.Equal(268_000, books[AccountRole.FeeSweep]);
+    }
+
+    [Fact]
+    public void Given_OurLegacyHtlcTransaction_When_ItsStoredFeeIsKnown_Then_NoWalletFee()
+    {
+        // Arrange (NL-748): a pre-signed HTLC-timeout (no anchors) pays its 300 sat fee out of the HTLC and spends no
+        // other input; its stored fee is that same fee
+        var commitmentTxId = new TxId(Enumerable.Repeat((byte)0xc5, 32).ToArray());
+        var data = new OutputDescriptorData(OurHtlcSat, new byte[34], null, 0, true, null, null);
+        var htlc = new OutputResolutionModel
+        {
+            TransactionId = commitmentTxId,
+            OutputIndex = 2,
+            ChannelId = _channel.ChannelId,
+            Descriptor = OutputDescriptorKind.LocalOfferedHtlc,
+            DescriptorData = data.Encode()
+        };
+        var rows = new Dictionary<(TxId, uint), OutputResolutionModel> { [(commitmentTxId, 2)] = htlc };
+        var spender = new ChainTx(new TxId(Enumerable.Repeat((byte)0xc6, 32).ToArray()), 2, 0,
+                                  [new ChainTxInput(commitmentTxId, 2, 0, [])],
+                                  [new ChainTxOutput(OurHtlcSat - 300, new byte[34])]);
+
+        // Act
+        var flows = OnchainAccounting.Ours(htlc, (long)OurHtlcSat * 1_000, true, spender, rows, true, 300_000);
+
+        // Assert
+        Assert.Equal(300_000, flows.FeeMsat);
+        Assert.Equal(0, flows.WalletFeeMsat);
+        Assert.Equal(((long)OurHtlcSat - 300) * 1_000, flows.PendingInMsat);
+    }
+
     [Fact]
     public async Task Given_AResolutionReorgedBackToTheSameHeightTwice_When_ItReconfirms_Then_EachConfirmationIsRecorded()
     {
@@ -954,12 +1094,44 @@ public sealed class OnchainAccountingTests : IDisposable
     }
 
     /// <summary>A transaction of ours, stored for broadcast as the resolvers store theirs.</summary>
-    private SignedTransaction Stored(SignedTransaction transaction, BroadcastPurpose purpose, TxId? replaces = null)
+    private SignedTransaction Stored(SignedTransaction transaction, BroadcastPurpose purpose, TxId? replaces = null,
+                                     LightningMoney? fee = null)
     {
         _store.Broadcasts.Add(new BroadcastTransactionModel(transaction, purpose, _channel.ChannelId, SpendHeight,
-                                                            replacesTransactionId: replaces));
+                                                            replacesTransactionId: replaces, fee: fee));
         return transaction;
     }
+
+    /// <summary>A transaction spending <paramref name="inputs"/> to one output per amount.</summary>
+    private static SignedTransaction SpendTo(IEnumerable<(TxId TxId, uint Vout)> inputs, params ulong[] outputSat)
+    {
+        var transaction = Network.RegTest.CreateTransaction();
+        foreach (var (txId, vout) in inputs)
+            transaction.Inputs.Add(new OutPoint(new uint256(txId), vout));
+        foreach (var amount in outputSat)
+            transaction.Outputs.Add(Money.Satoshis(amount), new Key().PubKey.WitHash.ScriptPubKey);
+        return new SignedTransaction(new TxId(transaction.GetHash().ToBytes()), transaction.ToBytes());
+    }
+
+    /// <summary>A wallet event of the chain monitor (its source: our stored broadcast).</summary>
+    private static AccountingEventModel WalletEvent(AccountingEventKind kind, string key, TxId txId, uint vout,
+                                                    long amountMsat, uint height) =>
+        new()
+        {
+            EventKey = key,
+            Kind = kind,
+            OccurredAt = s_now,
+            BlockHeight = height,
+            TxId = txId,
+            OutputIndex = vout,
+            AmountMsat = amountMsat,
+            Finality = AccountingFinality.Confirmed,
+            Details = new Dictionary<string, string>
+            {
+                [AccountingDetailKeys.Source] = AccountingDetailKeys.BroadcastSource,
+                [AccountingDetailKeys.Purpose] = nameof(BroadcastPurpose.HtlcTransaction)
+            }
+        };
 
     private static SignedTransaction Spend(IEnumerable<(TxId TxId, uint Vout)> inputs, ulong outputSat,
                                            byte[][]? firstInputWitness = null)
@@ -1066,6 +1238,67 @@ public sealed class OnchainAccountingTests : IDisposable
                         : factory.CreateCommitmentTransactionModel(_channel, txSpec, CommitmentSide.Remote, number,
                                                                    remotePoint);
         return builder.BuildWithOutputMap(model).Transaction;
+    }
+
+    /// <summary>
+    /// The financial book's lot pool fed entry by entry through <see cref="FinancialEntryPlanner"/> (as the projector
+    /// does), checking NL-749's invariant after every entry: per bucket, its open lots plus what is owed to it less what
+    /// it owes equal its account's balance.
+    /// </summary>
+    private sealed class LotBook(AccountingCostBasisMethod method)
+    {
+        private const string Usd = "USD";
+        private static readonly AccountRole[] s_assets =
+            [AccountRole.Channels, AccountRole.Pending, AccountRole.Wallet, AccountRole.Clearing];
+
+        private readonly Dictionary<AccountRole, long> _balances = [];
+        private long _nextId = 1;
+        private long _seq;
+        private DateTimeOffset _at = s_now;
+
+        public FinancialLotPool Pool { get; } = new([], method, Usd);
+        public long Shortfall { get; private set; }
+
+        public FinancialEntryPlan Plan(bool opening, params (AccountRole Role, long Msat)[] lines)
+        {
+            _at = _at.AddHours(1);
+            _seq++;
+            var price = new AccountingPrice(_seq, Usd, _at, 60_000m + _seq * 1_000m, AccountingPriceSource.Csv, _at);
+            var chart = FinancialChart.Default;
+            var postings = lines.Select(l => new AccountingPosting(l.Role, l.Msat)
+            {
+                AccountName = chart[FinancialChart.DefaultAccountOf(l.Role)]
+            }).ToList();
+            var plan = FinancialEntryPlanner.Plan(new FinancialEntryPlanInput(postings, price, _at)
+            {
+                IsOpeningBalance = opening
+            }, Pool, chart);
+
+            Assert.Equal(0m, plan.FiatSum);
+            Shortfall += plan.ShortfallMsat;
+            foreach (var (role, msat) in lines.Where(l => FinancialLotRules.IsAsset(l.Role)))
+                _balances[role] = _balances.GetValueOrDefault(role) + msat;
+            foreach (var relief in plan.Reliefs)
+                Pool.Relieve(relief.LotId, relief.Msat);
+            foreach (var spec in plan.NewLots)
+                Pool.Add(new AccountingLot(_nextId++, _at, spec.Origin, _seq, 0, spec.Bucket, spec.ParentLotId,
+                                           spec.Msat, spec.Msat, spec.Cost, spec.Currency, spec.PriceId,
+                                           spec.BasisEstimated, null)
+                {
+                    HeldSince = spec.HeldSince,
+                    Lender = spec.Lender
+                });
+
+            foreach (var role in s_assets)
+            {
+                var bucket = (AccountingLotBucket)(int)role;
+                Assert.Equal(_balances.GetValueOrDefault(role),
+                             Pool.HeldMsat(bucket) + Pool.Debts.Where(d => d.Lender == bucket).Sum(d => d.RemainingMsat)
+                           - Pool.Debts.Where(d => d.Bucket == bucket).Sum(d => d.RemainingMsat));
+            }
+
+            return plan;
+        }
     }
 
     private sealed class FixedClock(DateTimeOffset now) : TimeProvider

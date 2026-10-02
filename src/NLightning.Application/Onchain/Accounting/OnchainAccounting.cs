@@ -54,7 +54,10 @@ using Domain.Onchain.Models;
 /// broadcast): <c>walletMsat</c> = the row's share of the spender's outputs to our wallet (outputs that are not a new
 /// pending row; several rows spent together share them pro rata, the remainder to the first input), <c>pendingInMsat</c>
 /// = the second-level output paired with the row's input, <c>FeeMsat</c> = the row's value minus both. <c>AmountMsat</c>
-/// = <c>walletMsat</c>, plus <c>pendingInMsat</c> for a row that was not counted (a gain into pending). A spender that
+/// = <c>walletMsat</c>, plus <c>pendingInMsat</c> for a row that was not counted (a gain into pending). Our anchors HTLC
+/// transaction pays its fee from wallet inputs (O7, NL-748): its stored fee beyond the row's own is
+/// <see cref="WalletFeeKey"/>, included in <c>FeeMsat</c> and posted against the clearing account, where the wallet
+/// events book the inputs and the change. A spender that
 /// also spends inputs that are not rows of the channel (our anchor CPFP child with wallet inputs) merges the row's value
 /// with them: the row leaves the pending bucket with <c>AmountMsat</c> = −value and the wallet events book the rest.
 /// <b>A resolution by someone else</b>: <c>AmountMsat</c> = −value when it was counted (our offered HTLC claimed with
@@ -114,6 +117,7 @@ internal static class OnchainAccounting
     public const string PendingOutKey = AccountingDetailKeys.PendingOutMsat;
     public const string PendingInKey = AccountingDetailKeys.PendingInMsat;
     public const string WalletKey = AccountingDetailKeys.WalletMsat;
+    public const string WalletFeeKey = AccountingDetailKeys.WalletFeeMsat;
     public const string CountedKey = AccountingDetailKeys.Counted;
     public const string ValueKey = AccountingDetailKeys.ValueMsat;
     public const string CloseTxIdKey = AccountingDetailKeys.CloseTxId;
@@ -255,12 +259,14 @@ internal static class OnchainAccounting
     /// <param name="PendingOutMsat">What left the pending bucket (its value when counted).</param>
     /// <param name="PendingInMsat">What entered it (a second-level output).</param>
     /// <param name="WalletMsat">What reached our wallet.</param>
-    /// <param name="FeeMsat">The fee paid out of the output's value.</param>
+    /// <param name="FeeMsat">The fee paid out of the output's value, plus <paramref name="WalletFeeMsat"/>.</param>
     /// <param name="AmountMsat">The event's amount.</param>
     /// <param name="ResolvedBy">"us", "peer" or "ignored".</param>
     /// <param name="Note">Why a flow could not be told, if so.</param>
+    /// <param name="WalletFeeMsat">The part of the fee the spender's wallet inputs paid (NL-748).</param>
     public sealed record ResolutionFlows(long PendingOutMsat, long PendingInMsat, long WalletMsat, long FeeMsat,
-                                         long AmountMsat, string ResolvedBy, string? Note = null);
+                                         long AmountMsat, string ResolvedBy, string? Note = null,
+                                         long WalletFeeMsat = 0);
 
     /// <summary>The flows of an output another transaction than ours took, or that was given up.</summary>
     public static ResolutionFlows Lost(long valueMsat, bool counted, string resolvedBy)
@@ -279,13 +285,15 @@ internal static class OnchainAccounting
     /// <param name="rows">Every row of the channel (after this round's changes), by outpoint.</param>
     /// <param name="isHtlcTransaction">The spender is our HTLC transaction (its output paired with the row's input is a
     /// second-level output, even before its row exists).</param>
-    /// <param name="externalInputsFeeMsat">The spender's whole fee, when it is a stored sweep of ours (never with wallet
-    /// inputs) whose fee we know: its inputs that are not rows (the peer's anchor in our anchor sweep, NL-611) are then
-    /// valued as the outputs plus the fee less the rows, and that value is a gain booked with the first row's event
-    /// (with its share of the fee), instead of merging the rows into the wallet events.</param>
+    /// <param name="spenderFeeMsat">The spender's whole fee, when it is a stored transaction of ours whose fee we know.
+    /// For a sweep (never with wallet inputs) its inputs that are not rows (the peer's anchor in our anchor sweep,
+    /// NL-611) are then valued as the outputs plus the fee less the rows, and that value is a gain booked with the first
+    /// row's event (with its share of the fee), instead of merging the rows into the wallet events. For our HTLC
+    /// transaction with wallet fee inputs (anchors, NL-748) the fee beyond the row's own is the wallet's part
+    /// (<see cref="ResolutionFlows.WalletFeeMsat"/>).</param>
     public static ResolutionFlows Ours(OutputResolutionModel row, long valueMsat, bool counted, ChainTx spender,
                                        IReadOnlyDictionary<(TxId, uint), OutputResolutionModel> rows,
-                                       bool isHtlcTransaction, long? externalInputsFeeMsat = null)
+                                       bool isHtlcTransaction, long? spenderFeeMsat = null)
     {
         var pendingOut = counted ? valueMsat : 0;
         var inputIndex = spender.IndexOfInputSpending(row.TransactionId, row.OutputIndex);
@@ -300,9 +308,16 @@ internal static class OnchainAccounting
         {
             var pendingIn = checked((long)spender.Outputs[inputIndex].AmountSat * 1_000);
             var htlcFee = Math.Max(0, valueMsat - pendingIn);
-            return new ResolutionFlows(pendingOut, pendingIn, 0, htlcFee, counted ? 0 : pendingIn,
-                                       AccountingDetailKeys.ResolvedByUs);
+
+            // NL-748: the wallet inputs of our anchors HTLC transaction paid the rest of its fee
+            var walletFee = isHtlcTransaction && spenderFeeMsat is { } whole && HasInputsOutsideRows(spender, rows)
+                                ? Math.Max(0, whole - htlcFee)
+                                : 0;
+            return new ResolutionFlows(pendingOut, pendingIn, 0, checked(htlcFee + walletFee), counted ? 0 : pendingIn,
+                                       AccountingDetailKeys.ResolvedByUs, WalletFeeMsat: walletFee);
         }
+
+        var externalInputsFeeMsat = isHtlcTransaction ? null : spenderFeeMsat;
 
         // The rows the spender spends (its other inputs must be rows too, or the row's value is merged with them)
         var merged = new ResolutionFlows(pendingOut, 0, 0, 0, -pendingOut, AccountingDetailKeys.ResolvedByUs,
@@ -417,6 +432,7 @@ internal static class OnchainAccounting
             (PaymentHashKey, htlc?.PaymentHash.ToString()), (SpenderTxIdKey, spenderTxId?.ToString()),
             (ResolvedByKey, flows.ResolvedBy), (PendingOutKey, Text(flows.PendingOutMsat)),
             (PendingInKey, Text(flows.PendingInMsat)), (WalletKey, Text(flows.WalletMsat)),
+            (WalletFeeKey, flows.WalletFeeMsat != 0 ? Text(flows.WalletFeeMsat) : null),
             (CountedKey, counted ? "true" : "false"),
             (ValueKey, data is null ? null : Text(checked((long)data.AmountSat * 1_000))),
             (CloseKindKey, close.Kind.ToString()),
@@ -515,6 +531,12 @@ internal static class OnchainAccounting
         });
         return true;
     }
+
+    /// <summary>Whether <paramref name="spender"/> spends an output that is not a row of the channel (a wallet input).
+    /// </summary>
+    private static bool HasInputsOutsideRows(ChainTx spender,
+                                             IReadOnlyDictionary<(TxId, uint), OutputResolutionModel> rows) =>
+        spender.Inputs.Any(i => !rows.ContainsKey((i.PreviousTxId, i.PreviousVout)));
 
     private static ShortChannelId? ScidOf(ChannelModel channel) =>
         ((byte[]?)channel.ShortChannelId)?.Length > 0 ? channel.ShortChannelId : (ShortChannelId?)null;

@@ -133,9 +133,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 40 | 41 |
+| open | 0 | 0 | 1 | 39 | 40 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 185 | 362 | 623 |
+| fixed | 14 | 62 | 185 | 363 | 624 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
 | **Total** | **14** | **62** | **192** | **412** | **680** |
@@ -6803,12 +6803,13 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-748 The wallet fee input of an anchors HTLC transaction is not booked as a fee, so its cost stays in the clearing account
-- **Status:** open
+- **Status:** fixed (3cbdc913)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Accounting/OnchainAccounting.cs` (the `OutputResolved` of an HTLC output spent by our second-level transaction), `OnchainTransactionFees.cs`
 - **Evidence:** FAFO2 live, 2026-10-02, after the batch10 upgrade (7e104f0c) and an operational rebuild. The HTLC-timeout dad94b77 of the force-closed anchors channel d1565a00 spent the HTLC output plus a 500,000 sat wallet input and returned 499,732 sat change. The feed books #160 `WalletReceived` 499,732 and #161 `WalletOutputSpent` 500,000 against `assets:onchain:clearing`, and #162 `OutputResolved` (the HTLC output, `out:d1565a00…:2`) has no postings. The 268 sat fee is never expensed, and clearing keeps +268,000 msat. FAFO2's reconcile shows a drift of −246,000 msat = +268,000 (this gap) − 514,000 (the anchor sweep below).
 - **Fix sketch:** When our HTLC-timeout/success transaction carries wallet fee inputs (O7, `IFeeInputSelector`), book its fee (inputs − outputs) as `expenses:onchain:fees:htlc` against `assets:onchain:clearing` in the resolution's event, as the CPFP and sweep fees are. Proof: an anchors force-close test with an HTLC, and the books' reconcile shows 0 drift.
+- **Update (lane nl748, 2026-10-02):** Root cause: `OnchainAccounting.Ours` took an HTLC transaction's fee as the HTLC's value minus its second-level output, which is 0 for a zero-fee anchors HTLC-timeout/success (`HtlcTransactionBuilder.AddFeeInputs` keeps the output equal to the HTLC), and the executor passed the stored broadcast's fee (`BroadcastTransactionModel.Fee`, NL-604: the whole fee, inputs − outputs) only for sweeps; the chain monitor's wallet events booked the wallet input's spend and the change against the clearing account, and nothing booked the difference. Fix: the executor passes the stored fee of a `HtlcTransaction` too, and when the spender also spends inputs that are not rows of the channel the resolution event carries the fee beyond the row's own as detail `walletFeeMsat` (`AccountingDetailKeys.WalletFeeMsat`), included in its `FeeMsat` (the channel report's sweep fees count it); the posting rule takes that part out of the row's balancing and posts Dr FeeSweep (`expenses:onchain:fees:sweep`, where the HTLC transactions' own fees already go; no new account) / Cr Clearing, in the resolution's entry, so a reorg's `Reversal` negates it with the rest and a reconfirmation records it again; the financial book sees an ordinary fee disposal out of the clearing bucket. The other transactions where we add wallet inputs were already booked: anchor CPFP children of either commitment (`AnchorCpfpFee`, with the merged anchor row), withdrawals (`WalletSent`), fundings and splices (`ChannelFunded`/`SpliceLocked`); sweeps, claims and penalties never take wallet inputs. The feed is append-only: FAFO2's #162 (dad94b77, before the fix) keeps no wallet fee, so its +268,000 msat stays in that node's clearing account as history (the reconcile drift −246,000 = +268,000 − 514,000 of NL-611 remains); HTLC transactions confirmed from now on net to zero. Tests (each fails before the fix): Application `OnchainAccountingTests.Given_OurAnchorsHtlcTimeoutWithAWalletFeeInput_*` (FIFO/LIFO/HIFO: the real executor over FAFO2's shape, 500,000 sat input and 499,732 sat change in FAFO2's order, clearing 0 and 268 sat of sweep fees, the NL-749 lots invariant after every entry with 268 sat disposed and nothing owed, the reorg reversal and the reconfirmation), `Given_OurLegacyHtlcTransaction_*` (no wallet fee without wallet inputs), Domain `AccountingPostingRulesTests.Given_OurAnchorsHtlcTransactionWithWalletFeeInputs_*`; Docker `AnchorsO3Tests` (b) HTLC-timeout and (c) HTLC-success assert the event's wallet fee against the stored fee and a clearing line without drift. Docker `AnchorsO3Tests` 3/3 (net10.0, Release): HTLC-timeout fee 2,655 sat and HTLC-success fee 2,747 sat booked as `walletFeeMsat`, the whole reconcile clean after each (Channels, Pending, Wallet, Clearing drift 0).
 - **Blocks/Blocked-by:** Related NL-611, NL-602
 - **Plan ref:** ACCOUNTING_PLAN A2
 

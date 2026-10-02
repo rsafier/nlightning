@@ -255,7 +255,9 @@ public static class AccountingPostingRules
     /// An output's resolution, written off or claimed: Cr Pending pendingOutMsat; Dr Pending pendingInMsat; Dr Clearing
     /// walletMsat; Dr FeeSweep fee; the difference d = debits − credits goes to the channels when an off-chain event
     /// already booked the HTLC's value (<see cref="AccountingDetailKeys.ValueBookedBy"/>), else to the on-chain gains
-    /// (d &gt; 0) or losses (d &lt; 0).
+    /// (d &gt; 0) or losses (d &lt; 0). The part of the fee that wallet inputs paid
+    /// (<see cref="AccountingDetailKeys.WalletFeeMsat"/>, our anchors HTLC transaction, NL-748) is not the output's:
+    /// Dr FeeSweep; Cr Clearing, where the wallet events book those inputs and the change.
     /// </summary>
     private static string? PostResolution(AccountingEventModel e, Lines lines)
     {
@@ -273,7 +275,9 @@ public static class AccountingPostingRules
             note = "no flows in the details: the amount is taken out of the pending bucket";
         }
 
-        var fee = e.FeeMsat;
+        // NL-748: the wallet inputs' part of the fee is paid out of the clearing account, not out of the output
+        var walletFee = Math.Clamp(Msat(e, AccountingDetailKeys.WalletFeeMsat) ?? 0, 0, Math.Max(0, e.FeeMsat));
+        var fee = e.FeeMsat - walletFee;
         if (Text(e, AccountingDetailKeys.Note) == AccountingDetailKeys.MergedNote)
         {
             // The output's value went into our CPFP child: the wallet events and its fee book what it became
@@ -284,8 +288,8 @@ public static class AccountingPostingRules
         }
 
         lines.Add(AccountRole.Pending, checked(pendingIn.Value - pendingOut.Value));
-        lines.Add(AccountRole.Clearing, wallet.Value);
-        lines.Add(AccountRole.FeeSweep, fee);
+        lines.Add(AccountRole.Clearing, checked(wallet.Value - walletFee));
+        lines.Add(AccountRole.FeeSweep, checked(fee + walletFee));
 
         var difference = checked(pendingIn.Value + wallet.Value + fee - pendingOut.Value);
         if (Text(e, AccountingDetailKeys.ValueBookedBy) is not null)
