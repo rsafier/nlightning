@@ -23,6 +23,8 @@
 
   <ItemGroup>
     <PackageReference Include="KubernetesClient" Version="19.0.2"/>
+    <!-- The repo's RPC client (RegtestBitcoinEndpoint, InteropChainHost); same version as Infrastructure.Bitcoin -->
+    <PackageReference Include="NBitcoin" Version="9.0.5"/>
   </ItemGroup>
 
   <ItemGroup>
