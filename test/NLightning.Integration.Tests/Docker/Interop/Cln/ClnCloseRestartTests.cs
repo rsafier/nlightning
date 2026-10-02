@@ -188,7 +188,8 @@ public sealed class ClnCloseRestartTests : IAsyncLifetime
         var from = cutter.CurrentSequence;
         await ComeBackAsync(session, cutter, restart: true, ct);
 
-        // Assert 1: shutdown and the agreed closing_signed again; still Closing on the same transaction
+        // Assert 1: shutdown and the agreed closing_signed again, CLN's answer at the agreed fee; still Closing on the
+        // same transaction
         await Poll.UntilAsync(() => cutter.Snapshot().Any(m => m.Message.Sequence >= from && !m.Message.Inbound
                                                             && m.Message.Type == (ushort)MessageTypes.ClosingSigned),
                               s_closeTimeout, "our closing_signed re-sent", ct);
@@ -196,7 +197,15 @@ public sealed class ClnCloseRestartTests : IAsyncLifetime
         Assert.All(cutter.Snapshot().Where(m => m.Message.Sequence >= from
                                              && m.Message.Type == (ushort)MessageTypes.ClosingSigned),
                    m => Assert.Equal(agreedFee, ClosingSignedFeeSat(m.Message)));
-        // CLN's answer, if any, comes after a moment: give it the chance to complain
+        // NL-725: CLN restarted closingd for the agreed close and waited for the funder's closing_signed; with ours
+        // re-sent it answers and reaches CLOSINGD_COMPLETE before the transaction confirms (before the fix it stayed
+        // in CLOSINGD_SIGEXCHANGE), and its answer carries the agreed fee
+        await Poll.UntilAsync(async () => (await session.GetClnChannelAsync(ct))["state"]?.GetValue<string>()
+                                       is "CLOSINGD_COMPLETE", s_closeTimeout, "CLN at CLOSINGD_COMPLETE", ct);
+        AssertReceived(cutter, from, MessageTypes.ClosingSigned);
+        Assert.All(cutter.Snapshot().Where(m => m.Message.Sequence >= from && m.Message.Inbound
+                                             && m.Message.Type == (ushort)MessageTypes.ClosingSigned),
+                   m => Assert.Equal(agreedFee, ClosingSignedFeeSat(m.Message)));
         await Task.Delay(TimeSpan.FromSeconds(3), ct);
         AssertNoErrorOrWarning(cutter, from);
         var channel = OurChannel(session);
@@ -211,7 +220,7 @@ public sealed class ClnCloseRestartTests : IAsyncLifetime
         await session.StartNodeAsync(ct);
 
         // Assert 2
-        await AssertClosedOnBothSidesAsync(session, closingTx, walletBefore, ct, mine: false);
+        await AssertClosedOnBothSidesAsync(session, closingTx, walletBefore, ct, mine: false, known: channel);
     }
 
     #region Helpers
@@ -345,9 +354,11 @@ public sealed class ClnCloseRestartTests : IAsyncLifetime
     private async Task AssertClosedOnBothSidesAsync(ClnChannelSession session,
                                                     Domain.Bitcoin.ValueObjects.SignedTransaction closingTx,
                                                     LightningMoney walletBefore, CancellationToken ct,
-                                                    bool mine = true)
+                                                    bool mine = true, ChannelModel? known = null)
     {
-        var channel = OurChannel(session);
+        // A node started after the close confirmed may finish it and unload the channel before this reads it: the
+        // caller then passes the channel it read before (its shutdown script and funding output do not change)
+        var channel = known ?? OurChannel(session);
         var tx = Transaction.Load(closingTx.RawTxBytes, Network.RegTest);
         var ourOutput = tx.Outputs.Where(o => o.ScriptPubKey.ToBytes()
                                                .SequenceEqual((byte[])channel.LocalShutdownScript!.Value))
