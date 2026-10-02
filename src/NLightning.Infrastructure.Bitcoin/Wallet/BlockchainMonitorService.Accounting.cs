@@ -197,7 +197,8 @@ public partial class BlockchainMonitorService
                                                              BlockEffects effects)
     {
         var txId = transaction.GetHash();
-        if (_pendingBroadcasts.TryGetValue(txId, out var broadcast))
+        if (_pendingBroadcasts.TryGetValue(txId, out var broadcast)
+         || effects.ConfirmedReplacedMembers.TryGetValue(txId, out broadcast))
             return new WalletTransactionSource(BroadcastSource, broadcast.Purpose, broadcast.ChannelId);
 
         if (_watchedTransactions.TryGetValue(txId, out var watched))

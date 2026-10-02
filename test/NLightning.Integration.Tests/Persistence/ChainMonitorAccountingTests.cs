@@ -20,6 +20,7 @@ using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Repositories.Database.Accounting;
+using Infrastructure.Repositories.Database.Onchain;
 using static ChainMonitorPersistenceTests;
 using static ChainWatchSchemaRoundTrip;
 
@@ -290,6 +291,90 @@ public class ChainMonitorAccountingTests
         Assert.Equal(TxIdOf(original).ToString(), bump.Details["originalTxId"]);
         Assert.Equal("1500", bump.Details["feeSat"]);
         Assert.Equal("500", bump.Details["originalFeeSat"]);
+    }
+
+    [Fact]
+    public async Task Given_ABumpedSweep_When_ItsOriginalConfirmsInstead_Then_TheOriginalIsConfirmedAndNoBumpRecorded()
+    {
+        // Arrange (NL-606): a sweep (500 sat) bumped once (900 sat); the original confirms anyway
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        var channelId = ChannelIdOf(0x15);
+        var original = CreateTransaction(0x15);
+        var bump = CreateTransaction(0x16);
+        await harness.Monitor.SaveAndPublishAsync(SweepRow(original, channelId, 500, null));
+        await ReplaceAsync(harness, original, SweepRow(bump, channelId, 900, TxIdOf(original)));
+
+        // Act: the original confirms (the mempool's replacement left out), then another block
+        await MineOnlyAsync(harness, original);
+        var sentBefore = harness.Chain.SendAttempts.Count;
+        await MineOnlyAsync(harness);
+
+        // Assert: the original's row is Confirmed, its replacement Replaced (never sent again), and no fee bump is
+        // recorded (the original's fee is the resolution's whole fee)
+        var originalRow = await LoadBroadcastAsync(harness, TxIdOf(original));
+        Assert.Equal(BroadcastState.Confirmed, originalRow.State);
+        Assert.Equal(101u, originalRow.ConfirmedHeight);
+        Assert.Equal(BroadcastState.Replaced, (await LoadBroadcastAsync(harness, TxIdOf(bump))).State);
+        Assert.Empty(await LoadEventsAsync(harness));
+        Assert.DoesNotContain(harness.Chain.SendAttempts.Skip(sentBefore), t => t.GetHash() == bump.GetHash());
+    }
+
+    [Fact]
+    public async Task Given_ASweepBumpedTwice_When_TheMiddleAttemptConfirms_Then_ItsBumpOverTheOriginalIsRecorded()
+    {
+        // Arrange (NL-606): 500 sat, bumped to 900, then to 1,500; the 900 sat attempt confirms
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        var channelId = ChannelIdOf(0x17);
+        var original = CreateTransaction(0x17);
+        var firstBump = CreateTransaction(0x18);
+        var secondBump = CreateTransaction(0x19);
+        await harness.Monitor.SaveAndPublishAsync(SweepRow(original, channelId, 500, null));
+        await ReplaceAsync(harness, original, SweepRow(firstBump, channelId, 900, TxIdOf(original)));
+        await ReplaceAsync(harness, firstBump, SweepRow(secondBump, channelId, 1_500, TxIdOf(firstBump)));
+
+        // Act
+        await MineOnlyAsync(harness, firstBump);
+
+        // Assert
+        Assert.Equal(BroadcastState.Confirmed, (await LoadBroadcastAsync(harness, TxIdOf(firstBump))).State);
+        Assert.Equal(BroadcastState.Replaced, (await LoadBroadcastAsync(harness, TxIdOf(original))).State);
+        Assert.Equal(BroadcastState.Replaced, (await LoadBroadcastAsync(harness, TxIdOf(secondBump))).State);
+        var fee = Assert.Single(await LoadEventsAsync(harness));
+        Assert.Equal(AccountingEventKeys.SweepFeeBump(TxIdOf(firstBump)), fee.EventKey);
+        Assert.Equal(400_000, fee.FeeMsat);
+        Assert.Equal(TxIdOf(original).ToString(), fee.Details["originalTxId"]);
+    }
+
+    [Fact]
+    public async Task Given_AReplacedAnchorCpfpChild_When_ItConfirmsInstead_Then_ItsFeeIsRecorded()
+    {
+        // Arrange (NL-606): a CPFP child (2,000 sat) replaced by one paying 3,000 sat; the first one confirms
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        var channelId = ChannelIdOf(0x1A);
+        var child = CreateTransaction(0x1A);
+        var replacement = CreateTransaction(0x1B);
+        await harness.Monitor.SaveAndPublishAsync(new BroadcastTransactionModel(
+                                                      ToSigned(child), BroadcastPurpose.AnchorCpfp, channelId, 100,
+                                                      2_500, fee: LightningMoney.Satoshis(2_000)));
+        await ReplaceAsync(harness, child,
+                           new BroadcastTransactionModel(ToSigned(replacement), BroadcastPurpose.AnchorCpfp, channelId,
+                                                         100, 4_000, TxIdOf(child),
+                                                         fee: LightningMoney.Satoshis(3_000)));
+
+        // Act
+        await MineOnlyAsync(harness, child);
+        await harness.RestartAsync();
+        await MineOnlyAsync(harness);
+
+        // Assert
+        var cpfp = Assert.Single(await LoadEventsAsync(harness));
+        Assert.Equal(AccountingEventKeys.AnchorCpfpFee(TxIdOf(child)), cpfp.EventKey);
+        Assert.Equal(2_000_000, cpfp.FeeMsat);
+        Assert.Equal(BroadcastState.Confirmed, (await LoadBroadcastAsync(harness, TxIdOf(child))).State);
+        Assert.Equal(BroadcastState.Replaced, (await LoadBroadcastAsync(harness, TxIdOf(replacement))).State);
     }
 
     [Fact]
@@ -583,6 +668,20 @@ public class ChainMonitorAccountingTests
                    .GetAtOrAboveHeightAsync(0, Enum.GetValues<AccountingEventKind>(),
                                             TestContext.Current.CancellationToken))
               .ToList();
+    }
+
+    /// <summary>Mines a block holding only <paramref name="transactions"/> (not the mempool) and delivers it.</summary>
+    private static async Task MineOnlyAsync(ChainMonitorHarness harness, params Transaction[] transactions)
+    {
+        var block = harness.Chain.Mine(false, transactions);
+        await harness.Monitor.ProcessNewBlockAsync(block, harness.Chain.TipHeight);
+    }
+
+    private static async Task<BroadcastTransactionModel> LoadBroadcastAsync(ChainMonitorHarness harness, TxId txId)
+    {
+        await using var context = harness.Context();
+        return await new BroadcastTransactionDbRepository(context).GetByTransactionIdAsync(txId)
+            ?? throw new InvalidOperationException($"No broadcast row {txId}");
     }
 
     private static async Task<long> SumUtxosMsatAsync(ChainMonitorHarness harness)
