@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application;
 
+using Accounting;
 using Channels.Close;
 using Channels.Close.Handlers;
 using Channels.DualFunding;
@@ -173,6 +174,9 @@ public static class DependencyInjection
 
         // Add scoped services
         services.AddScoped<FundingConfirmedMessageHandler>();
+
+        // The accounting feed's sealer and balance snapshots (NL-602); the host starts the sealer after the chain monitor
+        services.AddAccountingServices();
 
         // Last: decorates the IHtlcSwitch registered above with the dust exposure check (N9-T3)
         services.AddChannelFeeServices();

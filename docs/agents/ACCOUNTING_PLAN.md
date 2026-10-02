@@ -228,13 +228,14 @@ The journal is a projection of the feed plus the overrides, so `nltg accounting 
   The **feed itself is always on**, because the books cannot be rebuilt for a period the feed did not record (D-A5).
 - **Registration.** `AddAccountingServices(configuration)` sits in the Application layer's `DependencyInjection.cs`, is called from `AddNltgNodeServices`, and is therefore also in the Docker test node (NL-156).
   - The sealer, the snapshot timer and the projector are hosted services. They start after `NltgDaemonService` has loaded the channels and started the chain monitor, and stop before it.
+  - As built (A1-T4/T5): `AddAccountingServices()` (no configuration argument) is called by `AddApplicationServices`, and `AddNltgNodeServices` binds `AccountingOptions` from `Accounting` (`SealInterval` 5 s, `SealBatchSize` 500, `SnapshotInterval` 1 h for the books, `Enabled` for the books) and registers IPC 41/42 (`AddAccountingIpcServices`). The sealer is a singleton timer loop, not a hosted service: `NltgDaemonService` (and the Docker test node) call `Start()` after the chain monitor and `StopAsync()` before it.
   - An exception in the books is logged and metered and stops only the books, never the node. The feed writers are part of the core saves and fail with them.
 - **IPC (proposed numbers; next free is 41):**
 
 | # | Command | What it does |
 |---|---|---|
-| 41 | `listaccountingevents` | the raw feed, paged by `LedgerSeq`, with filters |
-| 42 | `accountingsnapshot` | the live balances by bucket |
+| 41 | `listaccountingevents` | the raw feed, paged by `LedgerSeq` (built, A1-T5): `[--after <seq>] [--limit <n>] [--kind <kind>[,...]] [--channel <id or scid>] [--since <time>] [--until <time>]`; the daemon seals what was committed first (`SealNowAsync`), then answers the page, `NextAfter` (the next `--after`), `HasMore` and the sealed tip; each event carries its key, kind, time (ms), block, signed amount, fee, channel and scid, payment hash, txid:vout, counterparty, finality, flags, details and chain hash |
+| 42 | `accountingsnapshot` | the live balances by bucket (built, A1-T5): one bucket per channel (state, peer, capacity, gross local and remote balance, in-flight HTLCs each way; for a force-closed channel our unspent outputs as pending on chain, HTLC outputs apart) and the wallet (confirmed, unconfirmed, locked), with totals; not persisted |
 | 43 | `accountingreport` | kind = balance, income, channels, peers, fees or register; period; profile |
 | 44 | `accountingexport` | hledger, beancount or CSV, written by the daemon to a path under the config directory, or streamed to the client |
 | 45 | `accountingadmin` | subcommands reconcile, rebuild, verify, close, classify |

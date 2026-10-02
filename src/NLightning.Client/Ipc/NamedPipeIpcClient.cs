@@ -679,6 +679,22 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
                                                                           }, ct);
 
     /// <summary>
+    /// Lists the sealed accounting events after a ledger sequence (ClientCommand 41, NL-602); every filter is
+    /// optional.
+    /// </summary>
+    public Task<ListAccountingEventsIpcResponse> ListAccountingEventsAsync(ListAccountingEventsIpcRequest request,
+                                                                           CancellationToken ct = default) =>
+        SendRequestAsync<ListAccountingEventsIpcRequest, ListAccountingEventsIpcResponse>(
+            ClientCommand.ListAccountingEvents, request, ct);
+
+    /// <summary>
+    /// The node's live balances by bucket (ClientCommand 42, NL-602).
+    /// </summary>
+    public Task<AccountingSnapshotIpcResponse> AccountingSnapshotAsync(CancellationToken ct = default) =>
+        SendRequestAsync<AccountingSnapshotIpcRequest, AccountingSnapshotIpcResponse>(
+            ClientCommand.AccountingSnapshot, new AccountingSnapshotIpcRequest(), ct);
+
+    /// <summary>
     /// Parses the `getaddress` argument. With no argument, the <see cref="GetAddressIpcRequest"/> default is used.
     /// </summary>
     internal static AddressType ParseAddressType(string? addressTypeString)

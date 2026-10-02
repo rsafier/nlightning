@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Tests.Extensions;
 
+using Application.Accounting;
 using Application.Channels.Fees;
 using Application.Channels.Interfaces;
 using Application.Channels.Quiescence;
@@ -33,6 +34,7 @@ using Application.Payments.Switch;
 using Daemon.Extensions;
 using Daemon.Interfaces;
 using Daemon.Ipc.Interfaces;
+using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
@@ -324,6 +326,38 @@ public class NodeServiceExtensionsTests
         Assert.NotNull(provider.GetRequiredService<IPeerStorageService>());
         Assert.Equal(FeatureSupport.Optional,
                      provider.GetRequiredService<IOptions<NodeOptions>>().Value.Features.OptionProvideStorage);
+    }
+
+    [Fact]
+    public void Given_NodeServices_When_Composed_Then_TheAccountingFeedCommandsAndSealerAreWired()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Accounting:SealBatchSize", "7"),
+                                                        ("Accounting:SealInterval", "00:00:02")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+
+        // Act
+        var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).ToList();
+        var sealer = provider.GetRequiredService<AccountingEventSealerService>();
+
+        // Assert (NL-602: ClientCommand 41/42, the sealer and the snapshot source from the shared composition)
+        Assert.Single(commands, c => c == ClientCommand.ListAccountingEvents);
+        Assert.Single(commands, c => c == ClientCommand.AccountingSnapshot);
+        Assert.Same(sealer, provider.GetRequiredService<IAccountingEventSealer>());
+        Assert.Equal(TimeSpan.FromSeconds(2), sealer.Interval);
+        Assert.Equal(7, provider.GetRequiredService<IOptions<AccountingOptions>>().Value.SealBatchSize);
+        Assert.NotNull(provider.GetRequiredService<INodeSnapshotSource>());
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<ListAccountingEventsClientRequest,
+                                 ListAccountingEventsClientResponse>>());
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<AccountingSnapshotClientRequest,
+                                 AccountingSnapshotClientResponse>>());
     }
 
     [Fact]

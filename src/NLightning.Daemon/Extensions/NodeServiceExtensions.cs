@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Extensions;
 
 using Application;
+using Application.Accounting;
 using Application.Channels.Close;
 using Application.Channels.DualFunding;
 using Application.Channels.Safety;
@@ -260,6 +261,10 @@ public static class NodeServiceExtensions
         services.AddDualFundIpcServices();
         // Per-channel routing policies (wave sp1 lane SP1-G): setchannelpolicy/getchannelpolicy (ClientCommand 35/36)
         services.AddChannelPolicyIpcServices();
+        // The accounting feed (NL-602): listaccountingevents/accountingsnapshot (ClientCommand 41/42); the sealer and
+        // snapshot source come from AddApplicationServices and read the Accounting section
+        services.Configure<AccountingOptions>(configuration.GetSection(AccountingOptions.SectionName));
+        services.AddAccountingIpcServices();
 
         // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
         // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate
