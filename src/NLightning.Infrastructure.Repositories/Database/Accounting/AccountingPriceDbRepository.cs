@@ -53,7 +53,7 @@ public class AccountingPriceDbRepository : IAccountingPriceDbRepository
             return false;
 
         entity.Price = price;
-        entity.Source = (byte)source;
+        entity.PriceSource = (byte)source;
         entity.FetchedAt = replacedAt;
         return true;
     }
