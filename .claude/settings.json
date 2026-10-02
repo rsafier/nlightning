@@ -6,6 +6,7 @@
       "Bash(dotnet test:*)",
       "Bash(dotnet format:*)",
       "Bash(dotnet restore:*)",
+      "Bash(dotnet publish:*)",
       "Bash(dotnet list:*)",
       "Bash(dotnet --info)",
       "Bash(dotnet --list-sdks)",
@@ -23,8 +24,7 @@
     "deny": [
       "Bash(git push:*)",
       "Bash(rm -rf:*)",
-      "Bash(dotnet nuget push:*)",
-      "Bash(dotnet publish:*)"
+      "Bash(dotnet nuget push:*)"
     ]
   }
 }
