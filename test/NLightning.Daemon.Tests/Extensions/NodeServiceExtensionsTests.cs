@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Tests.Extensions;
 
 using Application.Accounting;
+using Application.Accounting.Books;
 using Application.Channels.Fees;
 using Application.Channels.Interfaces;
 using Application.Channels.Quiescence;
@@ -34,6 +35,7 @@ using Application.Payments.Switch;
 using Daemon.Extensions;
 using Daemon.Interfaces;
 using Daemon.Ipc.Interfaces;
+using Domain.Accounting.Books;
 using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
@@ -358,6 +360,44 @@ public class NodeServiceExtensionsTests
         Assert.NotNull(scope.ServiceProvider
                             .GetRequiredService<IClientCommandHandler<AccountingSnapshotClientRequest,
                                  AccountingSnapshotClientResponse>>());
+    }
+
+    [Fact]
+    public void Given_NodeServices_When_Composed_Then_TheAccountingBooksAreWired()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Accounting:SealInterval", "00:00:03")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var books = provider.GetRequiredService<AccountingBooksService>();
+
+        // Assert (NL-602 A2: one projector instance, on by default, on the sealer's interval)
+        Assert.Same(books, provider.GetRequiredService<IAccountingBooks>());
+        Assert.True(books.IsEnabled);
+        Assert.Equal(TimeSpan.FromSeconds(3), books.Interval);
+    }
+
+    [Fact]
+    public void Given_BooksTurnedOff_When_Composed_Then_TheBooksAreOff()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Accounting:Enabled", "false")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var books = provider.GetRequiredService<IAccountingBooks>();
+
+        // Assert
+        Assert.False(books.IsEnabled);
     }
 
     [Fact]
