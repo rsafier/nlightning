@@ -463,6 +463,63 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Given_NoStoredPrice_When_OneFetchAnswersAFarPriceBetweenGoodOnes_Then_ItIsRefused()
+    {
+        // Arrange - NL-733: nothing stored yet; the batch's own good prices are its only neighbors (staged, not saved)
+        var source = new StubPriceSource(at => Price(at, at == s_hour.AddHours(1) ? 860_000m : 86_000m));
+        await using var service = CreateService(new AccountingPriceOptions(), source);
+
+        // Act
+        var result = await service.FetchAsync(s_hour, s_hour.AddHours(3), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(3, result.Requested);
+        Assert.Equal(2, result.Stored);
+        Assert.Equal(1, result.Unavailable);
+        Assert.Equal([(s_hour, 86_000m), (s_hour.AddHours(2), 86_000m)],
+                     (await ListPricesAsync()).Select(p => (p.Time, p.Price)));
+    }
+
+    [Fact]
+    public async Task Given_NoStoredPrice_When_OnePageAsksAFarPriceBetweenGoodOnes_Then_ItIsRefused()
+    {
+        // Arrange - NL-733: one valuation page asks three hours; the middle answer is ten times the others
+        for (var i = 0; i < 3; i++)
+            await AddEntryAsync(s_hour.AddHours(i).AddMinutes(10), 1_000);
+        var source = new StubPriceSource(at => Price(AccountingValuationHour(at),
+                                                     AccountingValuationHour(at) == s_hour.AddHours(1)
+                                                         ? 860_000m
+                                                         : 86_000m));
+        await using var service = CreateService(new AccountingPriceOptions { MaxFetchesPerRound = 10 }, source);
+
+        // Act
+        var round = await service.ValueNowAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(3, round.Fetched);
+        Assert.Equal(2, round.Stored);
+        Assert.Equal([s_hour, s_hour.AddHours(2)], (await ListPricesAsync()).Select(p => p.Time));
+    }
+
+    [Fact]
+    public async Task Given_APageThatUsesTheFetchBudgetExactly_When_TheNextPageWaitsToo_Then_TheServiceIsCatchingUp()
+    {
+        // Arrange - NL-734: two hours per page (an entry has two postings), a budget of two asks per round
+        for (var i = 0; i < 4; i++)
+            await AddEntryAsync(s_hour.AddHours(i).AddMinutes(10), 1_000);
+        var source = new StubPriceSource(at => Price(AccountingValuationHour(at), 86_000m));
+        await using var service = CreateService(new AccountingPriceOptions { MaxFetchesPerRound = 2 }, source,
+                                                pageSize: 4);
+
+        // Act
+        var round = await service.ValueNowAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the first page took the whole budget, the second still waits for its hours
+        Assert.Equal(2, round.Fetched);
+        Assert.True(service.IsCatchingUp);
+    }
+
+    [Fact]
     public async Task Given_TheSanityBoundOff_When_AFarPriceIsFetched_Then_ItIsStored()
     {
         // Arrange

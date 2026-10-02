@@ -359,11 +359,13 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                                                       hours.Count * 60 + 1, cancellationToken))
                              .Select(p => AccountingValuation.HourStart(p.Time))
                              .ToHashSet();
+                // The prices this batch accepted but has not saved yet: the sanity bound compares with them too (NL-733)
+                var accepted = new List<AccountingPrice>();
                 foreach (var hour in hours.Where(h => !covered.Contains(h)))
                 {
                     requested++;
                     var price = await AskSourceAsync(currency, hour, cancellationToken);
-                    if (price is not null && !await IsPlausibleAsync(prices, price, cancellationToken))
+                    if (price is not null && !await IsPlausibleAsync(prices, price, accepted, cancellationToken))
                         price = null;
                     if (price is null)
                     {
@@ -372,7 +374,10 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                     }
 
                     if (await prices.TryAddAsync(price, cancellationToken))
+                    {
                         stored++;
+                        accepted.Add(price);
+                    }
                 }
 
                 if (stored > 0)
@@ -526,6 +531,11 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             var resolved = await ResolvePricesAsync(prices, currency, postings, maxAge, cancellationToken);
 
             // The hours still without their own price, each asked once (at its earliest posting's time)
+            // A page that still waits for hours after the budget ran out (also exactly on the previous page) is a
+            // catch-up too (NL-734); a round that may not fetch at all (an import's or fetch's valuation) is not
+            if (fetchBudget == 0 && maxFetches > 0 && canFetch && postings.Any(WaitsForItsHour))
+                budgetLeftOver = true;
+
             if (fetchBudget > 0 && postings.Any(WaitsForItsHour))
             {
                 var missing = postings.Where(WaitsForItsHour)
@@ -533,6 +543,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                                       .Select(g => (Hour: g.Key, At: g.Min(p => p.OccurredAt)))
                                       .OrderBy(h => h.Hour);
                 var pageStored = 0;
+                var accepted = new List<AccountingPrice>(); // staged, not saved yet: checked against too (NL-733)
                 foreach (var (hour, at) in missing)
                 {
                     if (fetchBudget == 0)
@@ -545,7 +556,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                     fetchBudget--;
                     fetched++;
                     var price = await AskSourceAsync(currency, at, cancellationToken);
-                    if (price is not null && !await IsPlausibleAsync(prices, price, cancellationToken))
+                    if (price is not null && !await IsPlausibleAsync(prices, price, accepted, cancellationToken))
                         price = null;
                     if (price is not null && price.Time >= hour && AccountingValuation.IsUsable(price.Time, at, maxAge))
                         _retryAfter.Remove(hour);
@@ -553,7 +564,10 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                         RememberAsked(hour, now);
 
                     if (price is not null && await prices.TryAddAsync(price, cancellationToken))
+                    {
                         pageStored++;
+                        accepted.Add(price);
+                    }
                 }
 
                 if (pageStored > 0)
@@ -773,9 +787,12 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
     /// price within <see cref="AccountingPriceOptions.MaxAge"/> before or after its time by more than
     /// <see cref="AccountingPriceOptions.MaxPriceJumpFactor"/> is refused (logged, counted, never stored), so a stored
     /// price, which is never replaced, cannot come from a source's decimal-point or unit mistake next to good ones.
-    /// Imported and file prices are the operator's and are not checked; nor is a price without a saved neighbor.
+    /// Imported and file prices are the operator's and are not checked; nor is a price without a saved neighbor or one
+    /// in <paramref name="batch"/>: the prices the same fetch or page accepted and staged but has not saved yet, which
+    /// count as neighbors too (NL-733), so a 10x price fetched between good ones of one batch is refused as well.
     /// </summary>
     private async Task<bool> IsPlausibleAsync(IAccountingPriceDbRepository prices, AccountingPrice price,
+                                              IReadOnlyList<AccountingPrice> batch,
                                               CancellationToken cancellationToken)
     {
         if (price.Source != AccountingPriceSource.Http || _priceOptions.MaxPriceJumpFactor == 0)
@@ -783,12 +800,26 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
 
         var maxAge = _priceOptions.MaxAge;
         var before = await prices.GetAtOrBeforeAsync(price.Currency, price.Time, maxAge, cancellationToken);
+        foreach (var staged in batch)
+        {
+            if (staged.Currency == price.Currency && staged.Time <= price.Time && price.Time - staged.Time <= maxAge
+             && (before is null || staged.Time > before.Time))
+                before = staged;
+        }
+
         var neighbor = before;
         if (before is null || _priceOptions.IsPlausibleNext(price.Price, before.Price))
         {
             var until = DateTimeOffset.MaxValue - price.Time > maxAge ? price.Time + maxAge : DateTimeOffset.MaxValue;
             var after = await prices.ListAsync(price.Currency, price.Time.AddTicks(1), until, 1, cancellationToken);
             neighbor = after.Count > 0 ? after[0] : null;
+            foreach (var staged in batch)
+            {
+                if (staged.Currency == price.Currency && staged.Time > price.Time && staged.Time <= until
+                 && (neighbor is null || staged.Time < neighbor.Time))
+                    neighbor = staged;
+            }
+
             if (neighbor is null || _priceOptions.IsPlausibleNext(price.Price, neighbor.Price))
                 return true;
         }
