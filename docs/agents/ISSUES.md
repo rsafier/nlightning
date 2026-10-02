@@ -124,15 +124,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 56 | 59 |
+| open | 0 | 0 | 4 | 59 | 63 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 62 | 164 | 281 | 521 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **171** | **344** | **591** |
+| **Total** | **14** | **62** | **172** | **347** | **595** |
 
 ### Epics
 
+- NL-602: Accounting: core event feed, plugin host v2 and the accounting plugin (open, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A5; data gaps NL-603..NL-605; re-scopes NL-151)
 - NL-569: Tor: onion peers, our onion service, Tor-only mode (fixed, medium; lane tor, branch `wip/tor`: `Node:Tor` Off/Hybrid/TorOnly, SOCKS5 with isolation, control port with SAFECOOKIE, persisted v3 onion service announced in `node_announcement`, NL-542 and NL-178 fixed; `docs/agents/TOR.md`; follow-ups NL-571..NL-573; review fixes NL-575..NL-590)
 - NL-426: Static channel backup and restore (fixed, high; wave rf1: encrypted SCB, export/verify/restore IPC 21-23, recovery channels and the data-loss reestablish, proven against LND; wave lh1: NL-430, NL-431 old spends and every peer address, NL-432 persisted peer-storage retrievals with `listpeerstorage` (32); follow-up NL-435)
 - NL-031: HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee) (fixed, critical; N6 in wave 1, reestablish and switch in wave 2; the fail-the-channel broadcast is N9-T4 under NL-094)
@@ -4558,8 +4559,18 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Location:** `src/NLightning.Daemon/Services/PluginLoaderService.cs`, `Models/PluginEntry.cs`, `Helpers/AesGcmHelper.cs`, `Models/FeeRateCacheData.cs`, `src/NLightning.Daemon.Contracts/IControlClient.cs`, `src/NLightning.Domain/Node/Interfaces/IPeerFactory.cs`, `ISecretStorageServiceFactory.cs`, `IChannelKeySetFactory.cs`, `ISignatureValidator.cs`, `src/NLightning.Infrastructure.Bitcoin/Adapters/OutputAdapters/*`, `src/NLightning.Domain/Protocol/Enums/HtlcType.cs`
 - **Evidence:** Never registered/called; `IDaemonContext` has no implementation.
 - **Fix sketch:** Wire the plugin loader or delete; delete the rest.
-- **Blocks/Blocked-by:** —
-- **Plan ref:** —
+- **Blocks/Blocked-by:** Part of NL-602 (2026-10-02: the plugin loader is replaced by plugin host v2, not wired as is)
+- **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-602 [EPIC] Accounting: core event feed, plugin host v2 and the accounting plugin
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** new: `AccountingEvents` table and writers in the money-moving saves, `NLightning.Plugins.Abstractions`, `NLightning.Accounting`; existing: `src/NLightning.Daemon.Plugins/`, `src/NLightning.Daemon/Services/PluginLoaderService.cs`
+- **Evidence:** No accounting-level events or history API exist: the switch's domain events are at-least-once (replayed at startup, link-up and per block), `OnWalletMovementDetected` has no subscriber and covers deposits only, fees on chain are not stored (NL-604), wallet history is deleted (NL-603), the push amount is not stored (NL-605), invoices and payments carry no operator label. The plugin loader is a stub (NL-151). Survey 2026-10-02 in the plan's §2.
+- **Fix sketch:** Plan `docs/agents/ACCOUNTING_PLAN.md`: A1 transactional-outbox event feed with unique event keys, a sealer for commit-order sequence and a hash chain, snapshots, backfill, IPC 41/42; A2 plugin host v2 with a generic `Plugin` IPC command (43); A3 operational accounting plugin; A4 financial profile (labels, rules, fiat valuation, lots, period close); A5 LayeredAccounting as the general ledger fed by the node.
+- **Blocks/Blocked-by:** Includes NL-151, NL-603, NL-604, NL-605
+- **Plan ref:** ACCOUNTING_PLAN A0-A5
 
 ### NL-152 Missing IPC commands: close, list channels, invoice, pay, disconnect
 - **Status:** fixed (5611156, 2ede2ee, 6cfbcd1, c10a78e, c50fc7b, f2f1ef6, 6d81ecd, c2ae40a, d60c4be5, aa9d67e0)
@@ -4949,6 +4960,36 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix:** `RefusedHtlcMetrics` (`Meter("NLightning.Payments")`, counter `nlightning.payments.htlcs.refused` tagged by reason, plus a snapshot) counted at the switch choke points (policy, unknown next channel, drain, chain halt, unknown payment hash, other final-hop refusals, malformed onion, added after shutdown) once per HTLC, on its first onion processing only (startup replays do not count again); shown in the `listforwards` summary on appended response keys.
 - **Blocks/Blocked-by:** Related NL-597
 - **Plan ref:** —
+
+### NL-603 Wallet UTXO rows are deleted on spend, so the node keeps no on-chain wallet history
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `UtxoDbRepository.Spend` via `UnitOfWork.TrySpendUtxo`; `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`StageWalletMovements`, `StageWalletRollbackAsync`)
+- **Evidence:** A spent `Utxos` row is removed and `UsedInTransactionId` is never set; `OnWalletMovementDetected` fires for incoming outputs only and has no subscriber. Wallet deposits, withdrawals and channel fundings cannot be listed after the fact.
+- **Fix sketch:** Keep a `WalletTransactions` history (or mark rows spent with the spending txid and height instead of deleting, with reorg rollback restoring them); feeds the accounting events `WalletReceived`/`WalletSent`.
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN A1-T3
+
+### NL-604 Absolute on-chain fees are not persisted for our transactions
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `BroadcastTransactions` (`FeeratePerKw`, `RawTransaction` only); `SpliceService.GetTotalFee` (computed, not stored); funding, close, sweep, CPFP and withdraw builders
+- **Evidence:** The fee of a funding, splice, close, sweep, anchor CPFP or withdraw can only be recovered from the raw tx plus the prevout values, which needs bitcoind lookups.
+- **Fix sketch:** Store `FeeSat` (and our input total) on `BroadcastTransactions` when we build the transaction, all three providers.
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN A1-T3
+
+### NL-605 The push amount of a channel open is not persisted
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `Channels` (`FundingAmountSatoshis`, initial balances); `openchannel` push (NL-301)
+- **Evidence:** The push is folded into the opening balances; it cannot be told apart from the funding split afterwards, so it cannot be booked as liquidity given or received.
+- **Fix sketch:** Persist `PushAmountMsat` (and the side that pushed) on the channel, all three providers; record it in `ChannelFunded`.
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN A1-T3
 
 ## Crypto providers and key management
 
