@@ -20,6 +20,7 @@ using NLightning.Tests.Utils;
 /// that ends before it is signed leaves the channel on the signed funding; the accepter's open times out before our
 /// <c>commitment_signed</c>; mismatched <c>next_funding</c> values fail the channel.
 /// </summary>
+[Collection("timing-serial")]
 public class DualFundSafetyTests
 {
     private static readonly LightningMoney s_aliceShare = LightningMoney.Satoshis(600_000);

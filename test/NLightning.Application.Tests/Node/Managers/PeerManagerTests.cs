@@ -53,6 +53,7 @@ using Infrastructure.Transport.Interfaces;
 using Tests.Gossip.Metrics;
 
 // ReSharper disable AccessToDisposedClosure
+[Collection("timing-serial")]
 public partial class PeerManagerTests
 {
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(5);
