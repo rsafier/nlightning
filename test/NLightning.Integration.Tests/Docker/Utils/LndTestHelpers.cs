@@ -225,7 +225,7 @@ public static class LndTestHelpers
     /// <summary>
     /// Whether <paramref name="node"/>'s graph has the edge of its channel <paramref name="chanId"/> with its own
     /// policy, which its router needs to send over the channel. LND 0.21 lists a fresh private channel active before the
-    /// edge is in its graph more often than 0.20 did (NL-319, NL-750): a payment or <c>BuildRoute</c> pinned to it then
+    /// edge is in its graph more often than 0.20 did (NL-319, NL-768): a payment or <c>BuildRoute</c> pinned to it then
     /// fails with <c>insufficient_balance</c> or "no matching outgoing channel", and <c>GetChanInfo</c> with
     /// <c>NotFound</c>.
     /// </summary>

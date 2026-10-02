@@ -80,7 +80,7 @@ public class PaymentRetryFlowTests : IAsyncLifetime
         var david = GetLnd("david");
         var capacity = LightningMoney.Satoshis(300_000);
         // Two coins, so the second open never depends on how many blocks the first one's wait mined for its change
-        // (refused with "not enough balance" against LND 0.21 twice in a row, NL-750)
+        // (refused with "not enough balance" against LND 0.21 twice in a row, NL-768)
         await _node.FundWalletAsync(LightningMoney.Satoshis(1_000_000), AddressType.P2Wpkh, ct);
         await _node.FundWalletAsync(LightningMoney.Satoshis(1_000_000), AddressType.P2Wpkh, ct);
         var first = await OpenUsableChannelAsync(david, capacity, ct);
@@ -283,7 +283,7 @@ public class PaymentRetryFlowTests : IAsyncLifetime
         {
             var ours = await _node.GetChannelAsync(channel.ChannelId, ct);
             var lndChannel = await LndTestHelpers.GetChannelByPointAsync(peer, channel.ChannelPoint(), ct);
-            // LND's router also needs the edge before it sends over the channel (NL-750)
+            // LND's router also needs the edge before it sends over the channel (NL-768)
             if (ours.IsUsable() && lndChannel is { Active: true }
              && await LndTestHelpers.HasOwnChannelEdgeAsync(peer, lndChannel.ChanId, ct))
                 return channel;

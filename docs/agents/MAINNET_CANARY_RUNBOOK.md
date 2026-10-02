@@ -163,7 +163,7 @@ Run `$C --network mainnet <cmd>` for each command below. Keep a second terminal 
    - **Best: a node the owner or a friend runs (LND 0.18 or newer, or CLN).** Both sides can be observed, invoices
      can be issued on demand, and LND is the implementation proven most (LND suite 59/59, ABCD, the on-chain
      proofs).
-   - **A large, well-connected LND node** with a low minimum channel size. Our Docker proofs run against LND 0.21.4 (0.20 until NL-750).
+   - **A large, well-connected LND node** with a low minimum channel size. Our Docker proofs run against LND 0.21.4 (0.20 until NL-768).
    - **ACINQ** (`03864ef0…@3.33.236.230:9735`, Eclair). It is very reliable and was a clean gossip peer in the
      mainnet probe. However, **our channel and HTLC interop with Eclair is untested**, and its minimum channel size
      may exceed a canary budget (unverified).

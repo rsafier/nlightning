@@ -285,7 +285,7 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         {
             var ours = (await node.ListChannelsAsync(ct)).Channels.FirstOrDefault(c => c.ChannelId == channelId);
             var theirs = await LndTestHelpers.GetChannelByPointAsync(lnd, channelPoint, ct);
-            // LND's router also needs the edge before it sends over the channel (NL-750)
+            // LND's router also needs the edge before it sends over the channel (NL-768)
             if (ours is not null && ours.IsUsable() && theirs is { Active: true }
              && await LndTestHelpers.HasOwnChannelEdgeAsync(lnd, theirs.ChanId, ct))
                 return true;

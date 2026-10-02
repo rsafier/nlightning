@@ -6812,7 +6812,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** Related NL-611, NL-602
 - **Plan ref:** ACCOUNTING_PLAN A2
 
-### NL-750 Docker suites moved to LND v0.21.4-beta; four LND 0.21 behavior changes broke test assumptions
+### NL-768 Docker suites moved to LND v0.21.4-beta; four LND 0.21 behavior changes broke test assumptions
 - **Status:** fixed (ab46d373)
 - **Severity:** low
 - **Kind:** test
