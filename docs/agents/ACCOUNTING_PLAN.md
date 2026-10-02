@@ -1,6 +1,6 @@
 # Accounting plan (NL-602)
 
-Status: **plan, not started** (2026-10-02, revised the same day). Open owner decisions are marked **D-Ax** in §8.
+Status: **A1 in progress** (2026-10-02). A1-T1 (domain, table `AccountingEvents`, migration `AddAccountingEvents`, sealer and hasher) is done; the writers, sealer service and IPC follow. The §8 recommendations are taken as the defaults until the owner decides otherwise. Open owner decisions are marked **D-Ax** in §8.
 
 ## 1. Goal
 
@@ -66,7 +66,7 @@ Every node gets the core event feed (§3), with or without the books turned on.
 Four principles:
 
 1. **The core records facts; the books hold the opinions.** The feed records what happened to our money, in msat, with deterministic keys, inside the same database transaction as the state change. It never decides accounts, fiat or tax treatment. Every accounting opinion lives in the books layer, and the books can be rebuilt from the feed.
-2. **The feed is a transactional outbox, not an event bus.** Domain events are at-least-once and replayed, so subscribing to them directly would double count. The outbox row is written in the save that commits the fact:
+2. **The feed is a transactional outbox, not an event bus.** Domain events are at-least-once and replayed, so subscribing to them directly would double count. The outbox row is written in the save that commits the fact, at the point where the transition happens once (inside its "already transitioned" guard):
    - the invoice settle in the fulfill's save
    - a payment's completion
    - a circuit's resolution
@@ -75,7 +75,7 @@ Four principles:
    - an output's resolution
    - a wallet movement, in the block's unit of work
 
-   Each row has a **unique `EventKey`**, such as `inv:{hash}:settled`, `fwd:{inChan}:{inHtlc}:settled` or `tx:{txid}:{vout}:wallet-in`. Writers insert if absent inside their save, so a replay hits the unique index and does nothing.
+   Each row has an **`EventKey`** derived from the fact alone, such as `inv:{hash}:settled`, `fwd:{inChan}:{inHtlc}:settled` or `wallet:{txid}:{vout}:in`. There is deliberately **no unique constraint** on the key: a constraint violation would fail the core save the row rides in, and an accounting row must never cost a fulfill or a block. If a fact is ever written twice, the sealer keeps the first row and marks the others `Duplicate` (never read by the books, metered as a bug signal).
 3. **Readers follow commit order, not insert order.** Identity sequences can commit out of order across concurrent saves, and a cursor on them would skip a late commit. So:
    - Rows are inserted with a null `LedgerSeq`.
    - A single background `EventSealer` assigns a dense `LedgerSeq` in commit order, plus `PrevHash`/`Hash`, a SHA-256 chain over the canonical row bytes.
@@ -326,9 +326,21 @@ Proofs:
 
 The order is A1 → A2 → A3. A1-T3 (the data gaps) can start right away, in parallel with the rest of A1.
 
-## 10. Risks and notes
+## 10. Startup and scale
 
-- **Double counting through replays** is the main risk. Mitigation: a unique `EventKey` written in the same save, and the §5 invariant everywhere.
+Nothing at startup may cost more as history grows. A node with a million settled HTLCs and a million feed rows starts as fast as a new one.
+
+- **The existing HTLC replay is already bounded.** `ChannelDomainEvents.DerivePending` gets only open HTLC records and settled ones not yet pruned, and `HtlcSwitch` prunes a settled HTLC once both sides are done. The writers of §4 sit at the transitions, not in the replay paths.
+- **The sealer** reads only unsealed rows (`LedgerSeq IS NULL`, index on `LedgerSeq`), in batches, and continues from the chain tip (the row with the highest `LedgerSeq`). Its work is proportional to what was written since its last pass.
+- **The books** read only events after their cursor (`LedgerSeq > cursor`), in pages, and save the cursor in the same save as the entries they produced.
+- **Reconcile** compares the live snapshot with a **running balance per bucket** (each channel, wallet, pending on-chain), updated in the same save as the entries and the cursor. It never sums the history. A full re-sum from the feed runs only on demand (`accounting verify`, `accounting rebuild`).
+- **Hash chain verification** (`verify`) walks the chain in pages and can start from a checkpoint (a period-close digest), so it is not run at startup.
+- **Backfill** runs once, in batches that save their progress and can resume, in the background after startup; it never holds up the node.
+- **Proof (A1):** a startup test with a million feed rows and a cursor at the tip shows the startup cost of the feed and the books stays flat.
+
+## 11. Risks and notes
+
+- **Double counting through replays** is the main risk. Mitigation: writers at the transitions (inside their guards), a deterministic `EventKey` with duplicates marked by the sealer, and the §5 invariant everywhere.
 - **Commitment fee and reserve.** The funder's balance pays the commitment fee only if the channel force-closes. The operational books keep the gross local balance and book the actual fee at close. A "spendable" view (minus reserve, commitment fee and anchors) is a report column, not a ledger entry.
 - **Anchors (330 sat × 2).** The funder's anchors belong to the force-close flow. They are either swept (see NL-601 for the bookkeeping) or lost to dust, and are booked through `OutputResolved` or `expenses:losses:dust`.
 - **Security and privacy.** No runtime code loading keeps the AOT build and the attack surface unchanged. The feed holds counterparties, payment hashes and labels, and IPC 41-45 sit behind the existing cookie authentication. Exports stream to the client or land under the config directory only, never at an arbitrary daemon-side path. The price source leaks nothing beyond "this node wants the BTC price at time t" and goes through Tor in `TorOnly`. All of this goes into `SECURITY_REVIEW.md` with A2.
