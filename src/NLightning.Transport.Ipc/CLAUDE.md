@@ -54,3 +54,6 @@ There is no onion code here. `PayInvoice` waits for the outcome (bounded by `Tim
 
 ## Keysend (ClientCommand 31, wave lh1 lane l3)
 - `Requests/KeysendIpcRequest` (keys 0 Destination, 1 Amount, 2 CustomRecords (`Dictionary<ulong, byte[]>?`, type → value), 3 TimeoutSeconds?, 4 MaxFee?); the response is `PayInvoiceIpcResponse`. `PaymentInfoIpcResponse` keys 14 `IsKeysend`, 15 `CustomRecords`; `InvoiceInfoIpcResponse` keys 10 `Kind` (`InvoiceKind`, shared with lane lh1-l2), 12 `CustomRecords` (key 11 is lane lh1-l2's BOLT 12 `OfferId`; never give a key two types, `KeysendIpcHandlerTests` pins the layout). `CustomRecordsIpc` maps the records to and from the dictionary.
+
+## PayInvoice channel pins (NL-609)
+- `Requests/PayInvoiceIpcRequest` keys 7 `OutgoingChannel` and 8 `IncomingChannel` (`string?`: a channel id or a short channel id; the daemon resolves them). Keys 5 and 6 are left to the label and tags of accounting A3-T1 (NL-602).

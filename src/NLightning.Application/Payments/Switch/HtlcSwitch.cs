@@ -996,7 +996,9 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     /// Stages <c>Open</c> → <c>Accepted</c> → <c>Settled</c> on the fulfill's unit of work (under the channel lock and
     /// the payment hash lock), after checking again that the invoice is still <c>Open</c>, with its
     /// <c>InvoiceSettled</c> accounting event (NL-602): the settle happens once per invoice (MPP included, in the save
-    /// of the part that settles it), so the event does too.
+    /// of the part that settles it), so the event does too. When our own payment is paying the invoice (a circular
+    /// rebalance, NL-609: a payment row for the hash that is <c>InFlight</c> or <c>Succeeded</c>), the event is flagged
+    /// <c>selfPayment</c>, so the books take it as no income.
     /// </summary>
     private async Task SettleInvoiceAsync(IUnitOfWork unitOfWork, Hash paymentHash, LightningMoney amount,
                                           ChannelId channelId, int parts)
@@ -1008,12 +1010,34 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         invoice.Accept(amount);
         invoice.Settle(_timeProvider.GetUtcNow());
         await unitOfWork.InvoiceDbRepository.UpdateAsync(invoice);
+        var selfPayment = await IsOurOwnPaymentAsync(unitOfWork, paymentHash);
         PaymentAccountingEvents.TryStage(unitOfWork, () =>
         {
             _channelMemoryRepository.TryGetChannel(channelId, out var channel);
             return PaymentAccountingEvents.InvoiceSettled(invoice, amount, channelId, channel, parts,
-                                                          IsOnchain(channelId), CurrentHeight);
+                                                          IsOnchain(channelId), CurrentHeight, selfPayment);
         }, _logger);
+    }
+
+    /// <summary>
+    /// Whether one of our own payments is paying <paramref name="paymentHash"/> (NL-609): its row is <c>InFlight</c> or
+    /// <c>Succeeded</c>. False when that cannot be read (logged; the settle goes on).
+    /// </summary>
+    private async Task<bool> IsOurOwnPaymentAsync(IUnitOfWork unitOfWork, Hash paymentHash)
+    {
+        try
+        {
+            return await unitOfWork.PaymentDbRepository.GetByPaymentHashAsync(paymentHash) is
+            {
+                Status: PaymentStatus.InFlight or PaymentStatus.Succeeded
+            };
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Could not check whether invoice {PaymentHash} is paid by our own payment",
+                               paymentHash);
+            return false;
+        }
     }
 
     /// <summary>

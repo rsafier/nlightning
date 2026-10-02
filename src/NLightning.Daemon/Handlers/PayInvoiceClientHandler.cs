@@ -1,7 +1,11 @@
+using System.Globalization;
+
 namespace NLightning.Daemon.Handlers;
 
 using Application.Payments.Send;
 using Domain.Bitcoin.Constants;
+using Domain.Channels.Interfaces;
+using Domain.Channels.ValueObjects;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
 using Domain.Client.Exceptions;
@@ -32,6 +36,10 @@ using Interfaces;
 /// <para>While the chain monitor's processing is halted (NL-216) the call is refused with
 /// <see cref="ErrorCodes.InvalidOperation"/> before anything is sent (the channel operations refuse every HTLC offer
 /// then too; see <see cref="ChainProcessingHalt"/>).</para>
+/// <para>NL-609: <see cref="PayInvoiceClientRequest.OutgoingChannel"/> and
+/// <see cref="PayInvoiceClientRequest.IncomingChannel"/> (a channel id, or a short channel id or alias of one of our
+/// channels) pin the first hop and, for an invoice of our own (a circular rebalance), the channel the payment comes back
+/// in through; a value that names none of our channels is <see cref="ErrorCodes.InvalidOperation"/>.</para>
 /// </remarks>
 public sealed class PayInvoiceClientHandler
     : IClientCommandHandler<PayInvoiceClientRequest, PayInvoiceClientResponse>
@@ -47,14 +55,17 @@ public sealed class PayInvoiceClientHandler
     public const uint MaxTimeoutSeconds = 300;
 
     private readonly IBlockchainMonitor? _blockchainMonitor;
+    private readonly IChannelMemoryRepository? _channelMemoryRepository;
     private readonly IPaymentService _paymentService;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.PayInvoice;
 
-    public PayInvoiceClientHandler(IPaymentService paymentService, IBlockchainMonitor? blockchainMonitor = null)
+    public PayInvoiceClientHandler(IPaymentService paymentService, IBlockchainMonitor? blockchainMonitor = null,
+                                   IChannelMemoryRepository? channelMemoryRepository = null)
     {
         _blockchainMonitor = blockchainMonitor;
+        _channelMemoryRepository = channelMemoryRepository;
         _paymentService = paymentService;
     }
 
@@ -86,7 +97,9 @@ public sealed class PayInvoiceClientHandler
         {
             Timeout = TimeSpan.FromSeconds(timeoutSeconds),
             MaxFee = request.MaxFee,
-            MaxParts = request.MaxParts is { } maxParts ? (int)maxParts : null
+            MaxParts = request.MaxParts is { } maxParts ? (int)maxParts : null,
+            OutgoingChannelId = ResolveChannel(request.OutgoingChannel, "outgoing"),
+            IncomingChannelId = ResolveChannel(request.IncomingChannel, "incoming")
         };
 
         try
@@ -113,5 +126,51 @@ public sealed class PayInvoiceClientHandler
                                       $"The payment failed with an unexpected error: {e.Message}. It may still be "
                                     + "in flight: check listpayments before paying again.", e);
         }
+    }
+
+    /// <summary>
+    /// The channel a pin names (NL-609): a channel id (64 hex characters) as is, or the channel of ours with that short
+    /// channel id or alias; null for no pin.
+    /// </summary>
+    /// <exception cref="ClientException">The value names none of our channels.</exception>
+    internal ChannelId? ResolveChannel(string? value, string side)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        value = value.Trim();
+        if (value.Length == 64)
+        {
+            try
+            {
+                return new ChannelId(Convert.FromHexString(value));
+            }
+            catch (FormatException)
+            {
+                // Not hex: tried as a short channel id below, which fails with the message
+            }
+        }
+
+        var parts = value.Split('x');
+        if (parts.Length == 3
+         && uint.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var block) && block <= 0xFFFFFF
+         && uint.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var tx) && tx <= 0xFFFFFF
+         && ushort.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var output))
+        {
+            var scid = new ShortChannelId(block, tx, output);
+            var channel = _channelMemoryRepository?
+                         .FindChannels(c => c.ShortChannelId == scid || c.RemoteAlias == scid
+                                         || c.LocalAliases?.Contains(scid) == true)
+                         .FirstOrDefault();
+            if (channel is not null)
+                return channel.ChannelId;
+
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      $"The {side} channel {value} is not one of our channels.");
+        }
+
+        throw new ClientException(ErrorCodes.InvalidOperation,
+                                  $"Invalid {side} channel '{value}': expected a channel id (64 hex characters) or a "
+                                + "short channel id (BLOCKxTXxOUTPUT).");
     }
 }

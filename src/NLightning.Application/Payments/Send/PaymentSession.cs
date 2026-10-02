@@ -53,6 +53,19 @@ internal sealed class PaymentSession
     /// </summary>
     public KeysendDetails? KeysendDetails => Keysend is null ? null : new KeysendDetails(Keysend.CustomRecords);
 
+    /// <summary>
+    /// The payment pays one of our own invoices over a circular route (a rebalance, NL-609): every part leaves through
+    /// one of our channels and comes back in through another.
+    /// </summary>
+    public bool IsCircular { get; init; }
+
+    /// <summary>The only channel of ours the parts may leave through (<c>payinvoice --out</c>); null: any.</summary>
+    public ChannelId? OutgoingChannelId { get; init; }
+
+    /// <summary>For a circular payment, the only channel of ours the parts may come back in through
+    /// (<c>payinvoice --in</c>); null: any.</summary>
+    public ChannelId? IncomingChannelId { get; init; }
+
     public string? Bolt11 { get; }
     public Hash PaymentHash => Target.PaymentHash;
 

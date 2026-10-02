@@ -35,22 +35,43 @@ public class AccountingPostingRulesTests
         AssertPostings(postings, (AccountRole.Channels, 50_000_123), (AccountRole.Received, -50_000_123));
     }
 
-    [Theory]
-    [InlineData(false, AccountRole.Sent)]
-    [InlineData(true, AccountRole.Rebalance)]
-    public void Given_APaymentSucceeded_When_Posted_Then_AmountPlusFeeLeaveTheChannels(bool selfPayment,
-                                                                                         AccountRole expense)
+    [Fact]
+    public void Given_APaymentSucceeded_When_Posted_Then_AmountPlusFeeLeaveTheChannels()
     {
         // Arrange: 50,000 sat paid with a 1,005 msat route fee (AmountMsat = -(amount + fee))
-        var paid = Event(AccountingEventKind.PaymentSucceeded, -50_001_005, 1_005, ("kind", "bolt11"), ("parts", "1"),
-                         ("selfPayment", selfPayment ? "true" : null));
+        var paid = Event(AccountingEventKind.PaymentSucceeded, -50_001_005, 1_005, ("kind", "bolt11"), ("parts", "1"));
 
         // Act
         var postings = Post(paid);
 
         // Assert
-        AssertPostings(postings, (AccountRole.Channels, -50_001_005), (expense, 50_000_000),
+        AssertPostings(postings, (AccountRole.Channels, -50_001_005), (AccountRole.Sent, 50_000_000),
                        (AccountRole.RoutingFees, 1_005));
+    }
+
+    [Fact]
+    public void Given_ARebalance_When_BothSidesArePosted_Then_OnlyTheRouteFeeIsAnExpenseAndNothingIsIncome()
+    {
+        // Arrange - NL-609: a circular payment of our own invoice: 50,000 sat out through one channel with a 1,005 msat
+        // route fee, the same 50,000 sat back in through another
+        var paid = Event(AccountingEventKind.PaymentSucceeded, -50_001_005, 1_005, ("kind", "bolt11"), ("parts", "1"),
+                         ("selfPayment", "true"));
+        var settled = Event(AccountingEventKind.InvoiceSettled, 50_000_000, 0, ("kind", "bolt11"), ("parts", "1"),
+                            ("selfPayment", "true"));
+
+        // Act
+        var paidPostings = Post(paid);
+        var settledPostings = Post(settled);
+
+        // Assert: each entry balances; together the channels lost the fee and the rebalance account holds it
+        AssertPostings(paidPostings, (AccountRole.Channels, -50_001_005), (AccountRole.Rebalance, 50_001_005));
+        AssertPostings(settledPostings, (AccountRole.Channels, 50_000_000), (AccountRole.Rebalance, -50_000_000));
+        var together = paidPostings.Concat(settledPostings).GroupBy(p => p.Account)
+                                   .ToDictionary(g => g.Key, g => g.Sum(p => p.AmountMsat));
+        Assert.Equal(-1_005, together[AccountRole.Channels]);
+        Assert.Equal(1_005, together[AccountRole.Rebalance]);
+        Assert.DoesNotContain(paidPostings.Concat(settledPostings),
+                              p => p.Account is AccountRole.Received or AccountRole.Sent or AccountRole.RoutingFees);
     }
 
     [Fact]
@@ -655,6 +676,9 @@ public class AccountingPostingRulesTests
         Assert.Equal("Keysend received",
                      AccountingPostingRules.Describe(Event(AccountingEventKind.InvoiceSettled, 1, 0,
                                                            ("kind", "keysend"))));
+        Assert.Equal("Rebalance received: loop",
+                     AccountingPostingRules.Describe(Event(AccountingEventKind.InvoiceSettled, 1, 0,
+                                                           ("selfPayment", "true"), ("description", "loop"))));
         Assert.Equal("Rebalance: loop",
                      AccountingPostingRules.Describe(Event(AccountingEventKind.PaymentSucceeded, -1, 0,
                                                            ("selfPayment", "true"), ("description", "loop"))));

@@ -55,13 +55,19 @@ public interface IPaymentService
     /// <para>Split (BOLT 4 <c>basic_mpp</c>, only when the invoice offers it): when no single route can carry the
     /// amount, it is sent as several HTLCs with the same payment hash, each with <c>payment_secret</c> and
     /// <c>total_msat</c> = the amount, over our direct channels to the payee and the invoice's route hints.</para>
+    /// <para>Our own invoice (NL-609, a circular rebalance): paid over a circular route, out through one of our channels
+    /// and back in through another (never the same one), the incoming channel's last hop priced with the peer's
+    /// <c>channel_update</c>; refused when the invoice is not <c>Open</c> or no such route exists.
+    /// <see cref="PayInvoiceOptions.OutgoingChannelId"/> and <see cref="PayInvoiceOptions.IncomingChannelId"/> pin the
+    /// two channels.</para>
     /// </remarks>
     /// <param name="bolt11">The invoice.</param>
     /// <param name="amount">The amount for an invoice without one; must be null (or equal) when the invoice sets it.</param>
-    /// <param name="options">The per-call fee limit, part limit and timeout.</param>
+    /// <param name="options">The per-call fee limit, part limit, timeout and channel pins.</param>
     /// <param name="cancellationToken">Stops waiting and retrying, like the timeout.</param>
     /// <exception cref="ArgumentException">The invoice is malformed, expired, for another network, the amount is
-    /// missing or inconsistent, or an option is out of range. Nothing is persisted.</exception>
+    /// missing or inconsistent, an option is out of range, or a pin cannot be used (an incoming pin for another node's
+    /// invoice, the same channel both ways, a channel that is not ours). Nothing is persisted.</exception>
     /// <exception cref="InvalidOperationException">A payment for the invoice's hash is already in flight or
     /// succeeded. Nothing is persisted.</exception>
     Task<PayInvoiceResult> PayInvoiceAsync(string bolt11, LightningMoney? amount, PayInvoiceOptions options,

@@ -36,6 +36,20 @@ public sealed class PayInvoiceIpcRequest
     /// </summary>
     [Key(4)] public uint? MaxParts { get; init; }
 
+    // Keys 5 and 6 are left to the label and tags of accounting A3-T1 (NL-602).
+
+    /// <summary>
+    /// The only channel of ours the payment may leave through (a channel id or a short channel id
+    /// <c>BLOCKxTXxOUTPUT</c>), or null for any (NL-609, <c>--out</c>).
+    /// </summary>
+    [Key(7)] public string? OutgoingChannel { get; init; }
+
+    /// <summary>
+    /// For an invoice of our own (a circular rebalance, NL-609): the only channel of ours the payment may come back in
+    /// through (a channel id or a short channel id), or null for any (<c>--in</c>).
+    /// </summary>
+    [Key(8)] public string? IncomingChannel { get; init; }
+
     public PayInvoiceClientRequest ToClientRequest()
     {
         return new PayInvoiceClientRequest(Bolt11)
@@ -43,7 +57,9 @@ public sealed class PayInvoiceIpcRequest
             Amount = Amount,
             TimeoutSeconds = TimeoutSeconds,
             MaxFee = MaxFee,
-            MaxParts = MaxParts
+            MaxParts = MaxParts,
+            OutgoingChannel = OutgoingChannel,
+            IncomingChannel = IncomingChannel
         };
     }
 }

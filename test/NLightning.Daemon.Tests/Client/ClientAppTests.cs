@@ -306,6 +306,44 @@ public class ClientAppTests
     }
 
     [Fact]
+    public void GivenPayInvoiceChannelPins_WhenParsed_ThenOutAndInAreRead()
+    {
+        // Act - NL-609: --out by short channel id, --in by channel id
+        var channelId = new string('a', 64);
+        var parsed = ClientApp.ParsePayInvoiceOptions(["lnbcrt1", "--out", "500x1x0", $"--in={channelId}"],
+                                                      out var error);
+
+        // Assert
+        Assert.Null(error);
+        Assert.Equal(("500x1x0", channelId), (parsed!.OutgoingChannel, parsed.IncomingChannel));
+    }
+
+    [Theory]
+    [InlineData("--out", "nope", "Invalid channel")]
+    [InlineData("--in", "12x", "Invalid channel")]
+    public void GivenAMalformedPayInvoicePin_WhenParsed_ThenAnError(string option, string value, string expected)
+    {
+        // Act
+        var parsed = ClientApp.ParsePayInvoiceOptions(["lnbcrt1", option, value], out var error);
+
+        // Assert
+        Assert.Null(parsed);
+        Assert.Contains(expected, error);
+    }
+
+    [Fact]
+    public void GivenTheSameChannelOutAndIn_WhenParsed_ThenAnError()
+    {
+        // Act
+        var parsed = ClientApp.ParsePayInvoiceOptions(["lnbcrt1", "--out", "500x1x0", "--in", "500x1x0"],
+                                                      out var error);
+
+        // Assert
+        Assert.Null(parsed);
+        Assert.Contains("same channel", error);
+    }
+
+    [Fact]
     public void GivenOnlyPositionalPayInvoiceArguments_WhenParsed_ThenNoLimitsAreSet()
     {
         // Act
@@ -317,6 +355,8 @@ public class ClientAppTests
         Assert.Equal(20U, parsed.TimeoutSeconds);
         Assert.Null(parsed.MaxFeeMsat);
         Assert.Null(parsed.MaxParts);
+        Assert.Null(parsed.OutgoingChannel);
+        Assert.Null(parsed.IncomingChannel);
     }
 
     [Theory]

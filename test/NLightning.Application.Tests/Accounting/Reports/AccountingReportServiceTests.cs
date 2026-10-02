@@ -125,6 +125,9 @@ public class AccountingReportServiceTests
         _kit.Add(AccountingEventKind.ForwardSettled, T0.AddDays(5), 500, 0, b, bob, Forward(b, a, 50_500, 50_000));
         _kit.Add(AccountingEventKind.PaymentSucceeded, T0.AddDays(6), -20_200, 200, a, Peer(0x99),
                  AccountingDetailsCodec.Create(("selfPayment", "true")));
+        // NL-609: the rebalance's incoming side (our own invoice) is no payment received on B
+        _kit.Add(AccountingEventKind.InvoiceSettled, T0.AddDays(6), 20_000, 0, b, bob,
+                 AccountingDetailsCodec.Create(("selfPayment", "true")));
         _kit.Add(AccountingEventKind.PaymentSucceeded, T0.AddDays(6), -30_300, 300, b, Peer(0x98));
         _kit.Add(AccountingEventKind.InvoiceSettled, T0.AddDays(7), 20_000, 0, b, bob);
         _kit.Add(AccountingEventKind.ChannelForceClosed, T0.AddDays(10), -400_000, 4_000, b, bob,

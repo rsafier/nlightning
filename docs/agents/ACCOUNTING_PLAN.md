@@ -190,8 +190,8 @@ A mismatch is a bug, never an adjustment.
 
 | Event | Postings |
 |---|---|
-| `InvoiceSettled` | Dr Channels a; Cr Received a |
-| `PaymentSucceeded` (amount a = −AmountMsat − fee) | Cr Channels (a + fee); Dr Sent a (Rebalance when `selfPayment`); Dr RoutingFees fee |
+| `InvoiceSettled` | Dr Channels a; Cr Received a (Cr Rebalance a when `selfPayment`: our own invoice paid by our rebalance, NL-609) |
+| `PaymentSucceeded` (amount a = −AmountMsat − fee) | Cr Channels (a + fee); Dr Sent a; Dr RoutingFees fee. With `selfPayment` (a rebalance, NL-609): Cr Channels (a + fee); Dr Rebalance (a + fee), so with its `InvoiceSettled` only the route fee stays in Rebalance |
 | `PaymentFailed` | none |
 | `ForwardSettled` | Dr Channels fee; Cr Routing fee |
 | `ForwardLostOnchain` | Cr Channels v; Dr LossOnchain v |

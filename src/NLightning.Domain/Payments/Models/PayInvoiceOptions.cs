@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Payments.Models;
 
+using Channels.ValueObjects;
 using Money;
 
 /// <summary>
@@ -27,4 +28,17 @@ public sealed record PayInvoiceOptions
     /// A split also needs an invoice with <c>basic_mpp</c>.
     /// </summary>
     public int? MaxParts { get; init; }
+
+    /// <summary>
+    /// The only channel of ours the payment may leave through (every part); null lets the route planner choose
+    /// (NL-609, <c>payinvoice --out</c>).
+    /// </summary>
+    public ChannelId? OutgoingChannelId { get; init; }
+
+    /// <summary>
+    /// For a payment of one of our own invoices (a circular rebalance, NL-609): the only channel of ours the payment may
+    /// come back in through; null lets the planner choose. Refused for an invoice of another node
+    /// (<c>payinvoice --in</c>).
+    /// </summary>
+    public ChannelId? IncomingChannelId { get; init; }
 }
