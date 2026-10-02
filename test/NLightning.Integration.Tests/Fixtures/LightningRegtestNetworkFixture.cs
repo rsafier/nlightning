@@ -23,6 +23,15 @@ public class LightningRegtestNetworkFixture : IDisposable
     /// </summary>
     public static readonly IReadOnlyList<string> LndAliases = ["alice", "bob", "carol", "david"];
 
+    /// <summary>
+    /// The LND image the four nodes run: <c>test/Docker/custom_lnd</c> built for its <c>LND_VERSION</c> under a
+    /// versioned tag (never <c>custom_lnd:latest</c>, which other branches build for other LND versions).
+    /// </summary>
+    public const string LndImageName = "custom_lnd";
+
+    /// <inheritdoc cref="LndImageName"/>
+    public const string LndImageTag = "0.21.4-beta";
+
     private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
     private readonly SharedObjectCache _shared = new();
 
@@ -79,7 +88,7 @@ public class LightningRegtestNetworkFixture : IDisposable
         foreach (var name in ContainerNames)
             await DockerContainerUtils.RemoveContainerAsync(_client, name);
 
-        await _client.CreateDockerImageFromPath("../../../../Docker/custom_lnd", ["custom_lnd", "custom_lnd:latest"]);
+        await EnsureLndImageAsync();
         Builder = new LNUnitBuilder();
 
         Builder.AddBitcoinCoreNode();
@@ -91,7 +100,7 @@ public class LightningRegtestNetworkFixture : IDisposable
                 ChannelSize = 10_000_000, //10MSat
                 RemoteName = "bob"
             }
-        ], imageName: "custom_lnd", tagName: "latest", pullImage: false);
+        ], imageName: LndImageName, tagName: LndImageTag, pullImage: false);
         // alice signals LND's option_simple_close (bits 61/161, "rbf-coop-close"): used only with a peer that signals it
         // too (CooperativeCloseFlowTests' simple-close cases); every other close with her stays legacy
         Builder.Configuration.LNDNodes.Single(n => n.Name == "alice").Cmd.Add("--protocol.rbf-coop-close");
@@ -106,7 +115,7 @@ public class LightningRegtestNetworkFixture : IDisposable
                 RemotePushOnStart = 1_000_000, // 1MSat
                 RemoteName = "alice"
             }
-        ], imageName: "custom_lnd", tagName: "latest", pullImage: false);
+        ], imageName: LndImageName, tagName: LndImageTag, pullImage: false);
 
         Builder.AddPolarLNDNode("carol",
         [
@@ -122,11 +131,30 @@ public class LightningRegtestNetworkFixture : IDisposable
                 RemotePushOnStart = 1_000_000, // 1MSat
                 RemoteName = "bob"
             }
-        ], imageName: "custom_lnd", tagName: "latest", pullImage: false);
+        ], imageName: LndImageName, tagName: LndImageTag, pullImage: false);
 
         // No channels: the ABCD tests connect David to our Carol
-        Builder.AddPolarLNDNode("david", [], imageName: "custom_lnd", tagName: "latest", pullImage: false);
+        Builder.AddPolarLNDNode("david", [], imageName: LndImageName, tagName: LndImageTag, pullImage: false);
 
         await Builder.Build();
+    }
+
+    /// <summary>
+    /// Builds <see cref="LndImageName"/>:<see cref="LndImageTag"/> from <c>test/Docker/custom_lnd</c> when it is missing
+    /// (the Dockerfile's <c>LND_VERSION</c> must equal <see cref="LndImageTag"/>); an existing image is used as is.
+    /// </summary>
+    private async Task EnsureLndImageAsync()
+    {
+        var image = $"{LndImageName}:{LndImageTag}";
+        try
+        {
+            await _client.Images.InspectImageAsync(image);
+            return;
+        }
+        catch (DockerImageNotFoundException)
+        {
+        }
+
+        await _client.CreateDockerImageFromPath("../../../../Docker/custom_lnd", [image]);
     }
 }

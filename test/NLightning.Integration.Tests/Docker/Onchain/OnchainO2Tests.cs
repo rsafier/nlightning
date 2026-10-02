@@ -112,6 +112,10 @@ public class OnchainO2Tests : IAsyncLifetime
                               c => c.Channel.ChannelPoint == opened.ChannelPoint());
             if (waiting is not null)
                 Console.WriteLine($"LND still waits for the close: {waiting.ClosingTxid}");
+
+            // LND 0.21 acts on a spend of the funding output only after 3 to 6 confirmations (reorg protection, by
+            // capacity); until then the channel is neither waiting close nor pending force closed
+            await ChainSync.MineAndWaitAsync(_fixture, 1, [david], [node], ct);
             return false;
         }, s_timeout, "LND lists the channel as pending force closed", ct);
     }

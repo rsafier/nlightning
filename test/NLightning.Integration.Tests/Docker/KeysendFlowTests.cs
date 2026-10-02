@@ -22,7 +22,7 @@ using TestCollections;
 using Utils;
 
 /// <summary>
-/// Lane lh1-l3 Docker proof of keysend against LND 0.20 (alice runs <c>--accept-keysend</c>), both directions, with
+/// Lane lh1-l3 Docker proof of keysend against LND 0.21 (alice runs <c>--accept-keysend</c>), both directions, with
 /// custom records: our <c>keysend</c> client handler pays alice (her invoice is a keysend invoice whose HTLC carries
 /// our records), and alice's <c>SendPaymentV2</c> with <c>dest_custom_records</c> {5482373484: preimage, ...} pays us
 /// (our <c>listinvoices</c> shows a settled keysend record with her records, an even type included).

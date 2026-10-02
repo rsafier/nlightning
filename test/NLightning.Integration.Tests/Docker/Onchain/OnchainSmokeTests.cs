@@ -152,7 +152,9 @@ public class OnchainSmokeTests : IAsyncLifetime
                 if (scid is { } current && current.BlockHeight == height && current.TransactionIndex == index)
                     return true;
 
-                await ChainSync.MineAndWaitAsync(_fixture, 1, [david], [node], ct);
+                // Only our node: the competing branch is shorter than the one david saw, and LND 0.21 stays on the
+                // branch with more work and reports synced_to_chain false until bitcoind's tip is on it again
+                await ChainSync.MineAndWaitAsync(_fixture, 1, [], [node], ct);
                 return false;
             }, s_timeout, "the short channel id at the funding transaction's position on the competing branch", ct);
             Console.WriteLine($"Short channel id moved to {height}x{index}");

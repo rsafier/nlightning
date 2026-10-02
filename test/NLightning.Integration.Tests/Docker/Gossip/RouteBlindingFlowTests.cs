@@ -26,7 +26,7 @@ using BlindedPath = Domain.Protocol.Onion.Models.BlindedPath;
 using BlindedPaymentPath = Domain.Protocol.Onion.Models.BlindedPaymentPath;
 
 /// <summary>
-/// ONION M5 against LND 0.20 (lane rf1-m5, proof 1): LND david makes a BOLT 11 invoice with a blinded path whose
+/// ONION M5 against LND 0.21 (lane rf1-m5, proof 1): LND david makes a BOLT 11 invoice with a blinded path whose
 /// introduction node is our node (<c>AddInvoice</c> with <c>is_blinded</c>, one real hop, the incoming channel pinned to
 /// our public channel to david), and LND alice, whose public channel to us carries the pushed balance, pays it. We read
 /// the introduction node's <c>current_path_key</c> and <c>encrypted_recipient_data</c>, forward by the recipient's

@@ -12,7 +12,7 @@ using Fixtures;
 using Utils;
 
 /// <summary>
-/// The BOLT 7 goal proofs against LND 0.20: paying and getting paid over public channels with no route hints (plan
+/// The BOLT 7 goal proofs against LND 0.21: paying and getting paid over public channels with no route hints (plan
 /// §5 G4, gossip wave G-C lane C3). Our node has one public channel to alice; the fixture's LND channels
 /// (alice-bob twice, alice-carol, bob-carol) are public; nothing is hinted, so every route comes from a graph.
 /// (b) we pay carol's hint-free invoice: our pathfinder finds us → alice → … → carol, every LND forward charged

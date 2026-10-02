@@ -30,7 +30,7 @@ using static Interop.Cln.ClnSpliceReestablishTests;
 ///   (B2-RE-28) and keeps the HTLC; alice settles, our payment succeeds and only then is the fee negotiated and the
 ///   close completed.</item>
 ///   <item>Closing: the close is agreed and broadcast; our node restarts while the closing transaction is in the
-///   mempool (we re-send <c>shutdown</c>; LND 0.20 answers <c>channel_reestablish</c> without a <c>shutdown</c> of
+///   mempool (we re-send <c>shutdown</c>; LND 0.21 answers <c>channel_reestablish</c> without a <c>shutdown</c> of
 ///   its own, so no negotiation restarts, and neither side errors nor force-closes), then stops while it confirms 6
 ///   deep, and after the next start the channel is Closed.</item>
 /// </list>
@@ -196,7 +196,7 @@ public sealed class CloseRestartFlowTests : IAsyncLifetime
         await node.StartAsync(ct);
         await WaitReconnectedAsync(node, alice, ct);
 
-        // Assert 1: reestablish both ways and our shutdown again (B2-RE-28). LND 0.20 keeps a channel whose mutual
+        // Assert 1: reestablish both ways and our shutdown again (B2-RE-28). LND 0.21 keeps a channel whose mutual
         // close it broadcast out of the negotiation: it re-sends channel_reestablish but no shutdown (seen in this
         // proof), so there is nothing for us to answer; had it restarted the negotiation, we, the funder, would
         // propose the agreed fee again (NL-725). Either way nobody errors and LND does not force-close

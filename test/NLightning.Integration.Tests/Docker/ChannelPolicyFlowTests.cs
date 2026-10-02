@@ -19,7 +19,7 @@ using TestCollections;
 using Utils;
 
 /// <summary>
-/// Wave sp1 lane SP1-G proof against LND 0.20: <c>setchannelpolicy</c> changes one channel's routing policy at
+/// Wave sp1 lane SP1-G proof against LND 0.21: <c>setchannelpolicy</c> changes one channel's routing policy at
 /// runtime. A new signed <c>channel_update</c> goes out at once (LND <c>GetChanInfo</c> shows the new fee, rate,
 /// CLTV delta and HTLC range without a reconnection or restart), our forwarding enforces the channel's values (an
 /// HTLC above its <c>htlc_maximum_msat</c> is refused with <c>temporary_channel_failure</c> before anything is offered
@@ -315,7 +315,7 @@ public class ChannelPolicyFlowTests : IAsyncLifetime
 }
 
 /// <summary>
-/// Wave sp1 lane SP1-G proof against LND 0.20 on an announced channel: a <c>setchannelpolicy</c> change of a public
+/// Wave sp1 lane SP1-G proof against LND 0.21 on an announced channel: a <c>setchannelpolicy</c> change of a public
 /// channel reaches the network, not only the channel peer. bob, who has no channel with us, sees our new policy in his
 /// graph (<c>GetChanInfo</c>) after our own-gossip relay flush (<c>Gossip:OwnGossipFlushInterval</c>, 60 s) and
 /// alice's relay, without a reconnection or restart.

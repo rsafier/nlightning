@@ -196,8 +196,10 @@ public class ChannelUpdateExchangeTests : IAsyncLifetime
             var lndChannel = await LndTestHelpers.GetChannelByPointAsync(alice, channelPoint, ct);
             var ours = Assert.Single((await node.ListChannelsAsync(ct)).Channels,
                                      c => c.ChannelId == channel.ChannelId);
-            if (lndChannel is { Active: true } && ours.State == ChannelState.Open)
-                return (channel, lndChannel);
+            // LND's router also needs the edge before it sends over the channel (NL-750)
+            var active = lndChannel is { Active: true } && ours.State == ChannelState.Open;
+            if (active && await LndTestHelpers.HasOwnChannelEdgeAsync(alice, lndChannel!.ChanId, ct))
+                return (channel, lndChannel!);
 
             if (DateTime.UtcNow > deadline)
                 Assert.Fail($"Channel not active in time: LND active={lndChannel?.Active}, ours={ours.State}");

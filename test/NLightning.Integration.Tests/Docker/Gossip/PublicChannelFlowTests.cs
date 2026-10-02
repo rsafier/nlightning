@@ -14,7 +14,7 @@ using Fixtures;
 using Utils;
 
 /// <summary>
-/// BOLT 7 plan Proof G1 (public channels) against LND 0.20: (a) a public channel we open to alice is announced (both
+/// BOLT 7 plan Proof G1 (public channels) against LND 0.21: (a) a public channel we open to alice is announced (both
 /// policies at alice, relayed to bob, our <c>node_announcement</c> with alias and color at bob); (b) a public channel
 /// alice opens to us is announced once we send our <c>announcement_signatures</c> at 6 confirmations; (c) a restart of
 /// our node between confirmation 3 and 6 does not stop the announcement.
