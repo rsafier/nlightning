@@ -33,7 +33,9 @@ using Domain.Persistence.Interfaces;
 /// <para><b>Closed periods</b> (D-A8): a posting whose entry is in a closed period (its <c>ClosedPeriodId</c>, or a
 /// closed <see cref="AccountingPeriod"/> that holds its time) is never filled. When a price is found for it, it is
 /// handed to the <see cref="IAccountingAdjustmentSink"/> (A3-T5's rule, staged on the page's unit of work); the
-/// default sink takes nothing and the posting stays unvalued. To keep rounds cheap, a routine round starts after the
+/// default sink takes nothing and the posting stays unvalued. Each page holds the sink's write lock
+/// (<see cref="IAccountingAdjustmentSink.EnterAsync"/>) from its closed-period check to its save, never across the
+/// source's asks, so a close never commits in between. To keep rounds cheap, a routine round starts after the
 /// last closed period; a full pass from the beginning runs at the first round, every <see cref="FullPassInterval"/>,
 /// when the closed periods change and after an import or a fetch.</para>
 /// <para>Books off (<see cref="AccountingOptions.AreBooksEnabled"/> false) or invalid <c>Accounting:Prices</c>: the
@@ -530,6 +532,9 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                 }
             }
 
+            // The period lock's write lock from the closed-period check to the save (A3-T5), never across the asks
+            using var writeLock = await _adjustmentSink.EnterAsync(cancellationToken);
+            var closedNow = await GetClosedPeriodsAsync(unitOfWork, cancellationToken);
             foreach (var posting in postings)
             {
                 if (resolved[posting.Key] is not { } price)
@@ -545,7 +550,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                 }
 
                 var fiat = AccountingValuation.FiatValue(posting.AmountMsat, price.Price);
-                if (IsClosed(posting, closed))
+                if (IsClosed(posting, closedNow))
                 {
                     // Never filled (D-A8): the adjustment rule carries the value into the open period
                     if (_adjusted.Contains(posting.Key))
@@ -668,7 +673,13 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
     private async Task<IReadOnlyList<AccountingPeriod>> GetClosedPeriodsAsync(CancellationToken cancellationToken)
     {
         await using var scope = _scopeFactory.CreateAsyncScope();
-        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        return await GetClosedPeriodsAsync(scope.ServiceProvider.GetRequiredService<IUnitOfWork>(),
+                                           cancellationToken);
+    }
+
+    private static async Task<IReadOnlyList<AccountingPeriod>> GetClosedPeriodsAsync(
+        IUnitOfWork unitOfWork, CancellationToken cancellationToken)
+    {
         try
         {
             var periods = await unitOfWork.AccountingPeriodDbRepository.ListAsync(cancellationToken);

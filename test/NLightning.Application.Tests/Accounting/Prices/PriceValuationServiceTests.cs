@@ -283,6 +283,8 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
         Assert.All((await GetEntryAsync(marked)).Postings, p => Assert.Null(p.FiatAmount));
         Assert.All((await GetEntryAsync(inRange)).Postings, p => Assert.Null(p.FiatAmount));
         Assert.All((await GetEntryAsync(open)).Postings, p => Assert.NotNull(p.FiatAmount));
+        Assert.Equal(2, sink.Entered);
+        Assert.Equal(0, sink.Held);
     }
 
     [Fact]
@@ -581,11 +583,29 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
     {
         public List<AccountingLateValuation> Valuations { get; } = [];
 
+        public int Entered { get; private set; }
+
+        public int Held { get; private set; }
+
+        public Task<IDisposable> EnterAsync(CancellationToken cancellationToken = default)
+        {
+            Entered++;
+            Held++;
+            return Task.FromResult<IDisposable>(new Release(this));
+        }
+
         public Task<bool> AdjustLateValuationAsync(IUnitOfWork unitOfWork, AccountingLateValuation valuation,
                                                    CancellationToken cancellationToken = default)
         {
+            // Only under the write lock
+            Assert.Equal(1, Held);
             Valuations.Add(valuation);
             return Task.FromResult(take);
+        }
+
+        private sealed class Release(RecordingSink sink) : IDisposable
+        {
+            public void Dispose() => sink.Held--;
         }
     }
 

@@ -15,6 +15,12 @@ using Persistence.Interfaces;
 public interface IAccountingAdjustmentSink
 {
     /// <summary>
+    /// The financial book's write lock (A3-T5); dispose to release. A writer holds it from its closed-period check to
+    /// its save, so a close never commits in between; take it inside your own locks and never across a slow call.
+    /// </summary>
+    Task<IDisposable> EnterAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// A price was found for a posting of a closed period (A3-T2). Stages the adjustment that carries its value into
     /// the open period; returns true when one is staged or exists, false when the rule did not take it (the posting
     /// stays unvalued and is offered again later).
@@ -23,13 +29,27 @@ public interface IAccountingAdjustmentSink
                                         CancellationToken cancellationToken = default);
 }
 
-/// <summary>The adjustment rule before A3-T5: takes nothing (a closed period's posting stays unvalued).</summary>
+/// <summary>The adjustment rule before A3-T5: locks nothing and takes nothing (a closed period's posting stays
+/// unvalued).</summary>
 public sealed class NullAccountingAdjustmentSink : IAccountingAdjustmentSink
 {
     public static NullAccountingAdjustmentSink Instance { get; } = new();
 
     /// <inheritdoc />
+    public Task<IDisposable> EnterAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IDisposable>(NoLock.Instance);
+
+    /// <inheritdoc />
     public Task<bool> AdjustLateValuationAsync(IUnitOfWork unitOfWork, AccountingLateValuation valuation,
                                                CancellationToken cancellationToken = default) =>
         Task.FromResult(false);
+
+    private sealed class NoLock : IDisposable
+    {
+        public static NoLock Instance { get; } = new();
+
+        public void Dispose()
+        {
+        }
+    }
 }
