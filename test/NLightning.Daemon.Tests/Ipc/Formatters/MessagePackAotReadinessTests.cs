@@ -3,11 +3,10 @@ using MessagePack;
 
 namespace NLightning.Daemon.Tests.Ipc.Formatters;
 
-using Daemon.Models;
 using Transport.Ipc.MessagePack;
 
 /// <summary>
-/// NativeAOT readiness of the IPC and fee-cache MessagePack contracts (NL-338). A NativeAOT build cannot emit code, so
+/// NativeAOT readiness of the IPC MessagePack contracts (NL-338; the fee-cache contract was deleted, NL-151). A NativeAOT build cannot emit code, so
 /// every formatter the IPC options hand out must be compiled ahead of time (the MessagePack source generator, the
 /// built-in formatters or our own), never one MessagePack's dynamic resolvers emit at run time.
 /// </summary>
@@ -18,8 +17,7 @@ public class MessagePackAotReadinessTests
     {
         // Arrange
         var resolver = NLightningMessagePackOptions.Options.Resolver;
-        var contracts = new[] { typeof(NLightningMessagePackOptions).Assembly, typeof(FeeRateCacheData).Assembly }
-                       .SelectMany(assembly => assembly.GetTypes())
+        var contracts = typeof(NLightningMessagePackOptions).Assembly.GetTypes()
                        .Where(type => type.GetCustomAttribute<MessagePackObjectAttribute>() is not null
                                    && !type.IsGenericTypeDefinition)
                        .ToList();
