@@ -2266,11 +2266,13 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                     payment.Bolt12, payment.Keysend);
     }
 
-    private static async Task WaitAsync(Task outcome, TimeSpan timeout, CancellationToken cancellationToken)
+    private async Task WaitAsync(Task outcome, TimeSpan timeout, CancellationToken cancellationToken)
     {
         try
         {
-            await outcome.WaitAsync(timeout, cancellationToken);
+            // Through the node's TimeProvider, so a test with a stepped clock owns when the timeout fires and the
+            // InFlight-vs-late-outcome ordering is deterministic (NL-465)
+            await outcome.WaitAsync(timeout, _timeProvider, cancellationToken);
         }
         catch (TimeoutException)
         {

@@ -59,9 +59,11 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
             var (from, to) = round % 2 == 0 ? (bob, carol) : (carol, bob);
             var peer = await from.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(to.Address));
 
-            // Assert: the connect returns only after the init exchange, and the responder installs it too
+            // Assert: the connect returns only after the init exchange, and each end's session is waited for by
+            // name — a read never races the init exchange on the machine's timing (NL-482)
             Assert.Equal(to.NodeId, peer.NodeId);
-            Assert.NotNull(from.PeerManager.GetPeer(to.NodeId));
+            await WaitUntilAsync(() => from.PeerManager.GetPeer(to.NodeId) is not null,
+                                 "the dialer installed the session after the init exchange", ct);
             await AssertStableConnectionAsync(bob, carol, $"round {round}", ct);
 
             await DisconnectAsync(bob, carol, ct);
@@ -230,8 +232,10 @@ public sealed class PeerManagerConnectTests : IAsyncLifetime
     private static async Task AssertStableConnectionAsync(TestNode a, TestNode b, string what,
                                                           CancellationToken cancellationToken)
     {
-        await WaitUntilAsync(() => a.IsConnectedTo(b) && b.IsConnectedTo(a), $"{what}: both ends connected",
-                             cancellationToken);
+        // A session is installed only once its init was accepted, so both ends' peers are the init-exchanged
+        // connection; the stability loop then watches it survive a window (NL-482)
+        await WaitUntilAsync(() => a.IsConnectedTo(b) && b.IsConnectedTo(a),
+                             $"{what}: both ends connected and init exchanged", cancellationToken);
 
         var until = DateTime.UtcNow + s_stableWindow;
         while (DateTime.UtcNow < until)

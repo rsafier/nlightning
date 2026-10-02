@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using NLightning.Tests.Utils;
 
 namespace NLightning.Application.Tests.Channels.Backup;
 
@@ -46,6 +47,7 @@ public partial class ChannelRestoreServiceTests : IDisposable
     private readonly Sha256 _sha256 = new();
     private readonly List<(TxId TxId, uint Index, TxId Spender, uint Height)> _markedSpent = [];
     private readonly List<ChannelRestoreService> _services = [];
+    private readonly SteppedClockProvider _clock = new();
     private int _saves;
 
     private delegate bool TryGetChannelCallback(ChannelId channelId, out ChannelModel? channel);
@@ -596,14 +598,15 @@ public partial class ChannelRestoreServiceTests : IDisposable
         var recovery = Assert.Single(_storedChannels);
         _storedChannels.Add(new BackupTestData().AddChannel(2));
 
-        // The new process: the channel is loaded by the start-up registration a moment after the resume starts
-        var loaded = false;
+        // The new process: the channel is loaded by the start-up registration only after the resume has been kept
+        // waiting for it (the registration poll asks the memory twice in vain first; NL-472: no fixed sleep)
+        var registered = 0;
         var memory = new Mock<IChannelMemoryRepository>();
         memory.Setup(m => m.TryGetChannel(It.IsAny<ChannelId>(), out It.Ref<ChannelModel?>.IsAny))
               .Returns(new TryGetChannelCallback((ChannelId id, out ChannelModel? channel) =>
                {
                    channel = recovery;
-                   return loaded && id == recovery.ChannelId;
+                   return id == recovery.ChannelId && ++registered > 2;
                }));
         var spendingTxId = new TxId(Enumerable.Repeat((byte)0x5D, 32).ToArray());
         var locator = new Mock<IFundingSpendLocator>();
@@ -623,8 +626,6 @@ public partial class ChannelRestoreServiceTests : IDisposable
 
         // Act
         service.ResumeSpendSearches();
-        await Task.Delay(300, ct);
-        loaded = true;
         await service.WaitForBackgroundWorkAsync().WaitAsync(TimeSpan.FromSeconds(10), ct);
 
         // Assert: only the recovery channel looked up, the older blocks searched again, the spend handed over
@@ -701,21 +702,20 @@ public partial class ChannelRestoreServiceTests : IDisposable
         var service = CreateService(graphStore: graph.Object, connectBudget: TimeSpan.Zero);
         FailConnectsTo(a => !a.EndsWith("@10.0.0.1:9736", StringComparison.Ordinal));
 
-        // Act
+        // Act: the background attempts are waited for before the connection list is read, so the raced snapshot of
+        // the restore's own attempts (a loaded-run flake, NL-472) is gone; the connect budget itself is on the
+        // service's stepped clock
         var result = await service.RestoreAsync(backup, ct);
-        string[] synchronous;
-        lock (_connects)
-            synchronous = _connects.ToArray();
         await service.WaitForBackgroundWorkAsync().WaitAsync(TimeSpan.FromSeconds(10), ct);
 
-        // Assert: one attempt inside the restore; the rest right away (the backoff is 5 min here), then connected
-        var peer = Assert.Single(result.Peers);
-        Assert.False(peer.Connected);
-        Assert.Contains("2 more known address(es)", peer.Error);
-        Assert.Equal([$"{nodeId}@192.0.2.5:9735"], synchronous);
+        // Assert: one attempt inside the restore (the error says 2 more were left); the rest were tried at once by
+        // the background round (the backoff is 5 min here, so reaching them at all proves it), then connected
         lock (_connects)
             Assert.Equal([$"{nodeId}@192.0.2.5:9735", $"{nodeId}@192.0.2.6:9735", $"{nodeId}@10.0.0.1:9736"],
                          _connects);
+        var peer = Assert.Single(result.Peers);
+        Assert.False(peer.Connected);
+        Assert.Contains("2 more known address(es)", peer.Error);
     }
 
     private async Task<byte[]> ExportAsync(CancellationToken ct, params (byte Tag, bool Anchors)[] channels)
@@ -818,7 +818,7 @@ public partial class ChannelRestoreServiceTests : IDisposable
                                          provider.GetRequiredService<IServiceScopeFactory>(), _sha256,
                                          _node.Signer.Object, NullLogger<ChannelRestoreService>.Instance,
                                          spendLocator, onchainWatcher, keyIndexReserver, graphStore, channelMemory,
-                                         fundingKeySource)
+                                         fundingKeySource, timeProvider: _clock)
         {
             DisconnectTimeout = TimeSpan.FromSeconds(1),
             ConnectBudget = connectBudget ?? TimeSpan.FromSeconds(20),
