@@ -8,6 +8,7 @@ using Application.Accounting.Financial;
 using Domain.Accounting.Books;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Financial;
+using Domain.Accounting.Financial.Lots;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Crypto.ValueObjects;
@@ -337,7 +338,10 @@ public sealed class AccountingPeriodServiceTests
         var periods = provider.GetRequiredService<AccountingPeriodService>();
         Assert.Same(periods, provider.GetRequiredService<IAccountingAdjustmentSink>());
         Assert.Same(periods, provider.GetRequiredService<IAccountingPeriods>());
-        Assert.IsType<NullFinancialBooksProjector>(provider.GetRequiredService<IFinancialBooksProjector>());
+        // A3-T4: the financial projector (off under the default Operational profile), one instance with the lot import
+        var projector = Assert.IsType<FinancialBooksProjector>(provider.GetRequiredService<IFinancialBooksProjector>());
+        Assert.False(projector.IsEnabled);
+        Assert.Same(projector, provider.GetRequiredService<IAccountingLots>());
         Assert.Single(services, d => d.ServiceType == typeof(IAccountingAdjustmentSink));
     }
 

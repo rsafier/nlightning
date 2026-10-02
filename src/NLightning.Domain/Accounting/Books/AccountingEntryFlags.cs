@@ -19,5 +19,19 @@ public enum AccountingEntryFlags
     Unclassified = 1 << 1,
 
     /// <summary>A line of the entry has no fiat value yet (A3-T2): the back-valuation job fills it.</summary>
-    Unvalued = 1 << 2
+    Unvalued = 1 << 2,
+
+    /// <summary>
+    /// The financial projector (A3-T4) projected the entry before a price of its time was usable, so its lines are
+    /// unvalued and it relieved or opened lots without a fiat value. Once the back-valuation has valued its lines, the
+    /// projector projects it again, with every open entry after it, at that price (lots, reliefs and the realized gain
+    /// included).
+    /// </summary>
+    PendingValuation = 1 << 3,
+
+    /// <summary>
+    /// The entry disposed of lots of which one has no fiat cost (A3-T4): its realized gain is pending valuation (never
+    /// zero) until the lot's acquisition is valued; the entry carries no gain line meanwhile.
+    /// </summary>
+    GainPending = 1 << 4
 }

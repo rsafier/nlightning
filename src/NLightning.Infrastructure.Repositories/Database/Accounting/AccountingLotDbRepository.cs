@@ -255,6 +255,35 @@ public class AccountingLotDbRepository : IAccountingLotDbRepository
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<AccountingLot>> ListLotsByOriginAsync(AccountingLotOrigin origin,
+                                                                          CancellationToken cancellationToken = default)
+    {
+        var value = (byte)origin;
+        var entities = await _context.AccountingLots.AsNoTracking()
+                                     .Where(l => l.Origin == value)
+                                     .OrderBy(l => l.Id)
+                                     .ToListAsync(cancellationToken);
+        return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
+    /// <remarks>Runs at once (see the class remarks), not at the unit of work's save.</remarks>
+    public async Task<int> DeleteLotsByOriginAsync(AccountingLotOrigin origin,
+                                                   CancellationToken cancellationToken = default)
+    {
+        foreach (var tracked in _context.ChangeTracker.Entries()
+                                        .Where(e => e.Entity is AccountingLotEntity or AccountingLotReliefEntity)
+                                        .ToList())
+            tracked.State = EntityState.Detached;
+
+        var value = (byte)origin;
+        var lots = _context.AccountingLots.Where(l => l.Origin == value);
+        await _context.AccountingLotReliefs.Where(r => lots.Any(l => l.Id == r.LotId))
+                      .ExecuteDeleteAsync(cancellationToken);
+        return await lots.ExecuteDeleteAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
     /// <remarks>Runs at once (see the class remarks), not at the unit of work's save.</remarks>
     public async Task ClearAsync(CancellationToken cancellationToken = default)
     {

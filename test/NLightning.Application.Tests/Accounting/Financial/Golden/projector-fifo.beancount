@@ -1,0 +1,167 @@
+; NLightning accounting export, financial book (beancount, MSAT = millisatoshi, costs in USD)
+option "title" "NLightning financial books"
+option "operating_currency" "USD"
+
+2026-01-01 commodity MSAT
+2026-01-01 open Assets:Cost-basis "NONE"
+2026-01-01 open Assets:Lightning:Channels "NONE"
+2026-01-01 open Assets:Onchain:Clearing "NONE"
+2026-01-01 open Assets:Onchain:Wallet "NONE"
+2026-01-01 open Equity:Opening-balances
+2026-01-01 open Equity:Transfers:In
+2026-01-01 open Equity:Transfers:Out
+2026-01-01 open Equity:Transfers:Rebalance
+2026-01-01 open Expenses:Fees:Close
+2026-01-01 open Expenses:Fees:Funding
+2026-01-01 open Expenses:Fees:Routing
+2026-01-01 open Expenses:Fees:Withdraw
+2026-01-01 open Expenses:Payments
+2026-01-01 open Income:Gains:Realized
+2026-01-01 open Income:Routing
+2026-01-01 open Income:Sales
+
+2026-01-01 price MSAT 0.0000004 USD
+2026-01-10 price MSAT 0.0000005 USD
+2026-01-20 price MSAT 0.0000006 USD
+2026-02-01 price MSAT 0.0000003 USD
+2026-02-10 price MSAT 0.0000007 USD
+2026-02-15 price MSAT 0.0000007 USD
+2026-02-20 price MSAT 0.0000008 USD
+2026-03-01 price MSAT 0.0000009 USD
+2026-03-10 price MSAT 0.000001 USD
+
+2026-01-01 * "OpeningBalance"
+  key: "open:wallet"
+  seq: 1
+  time: "2026-01-01T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Onchain:Wallet                             1000000000 MSAT {{400 USD}}
+  Equity:Opening-balances                          -1000000000 MSAT @@ 400 USD
+
+2026-01-10 * "WalletReceived"
+  key: "wallet:0000000000000000000000000000000000000000000000000000000000000001:0:in"
+  seq: 3
+  time: "2026-01-10T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Onchain:Wallet                             1000000000 MSAT {{500 USD}}
+  Equity:Transfers:In                              -1000000000 MSAT @@ 500 USD
+
+2026-01-20 * "WalletOutputSpent"
+  key: "wallet:0000000000000000000000000000000000000000000000000000000000000002:0:spent"
+  seq: 4
+  time: "2026-01-20T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Onchain:Wallet                            -1000000000 MSAT {{600 USD}}
+  Assets:Onchain:Clearing                           1000000000 MSAT {{600 USD}}
+
+2026-01-20 * "ChannelFunded"
+  key: "chan:0000000000000000000000000000000000000000000000000000000000000003:funded"
+  seq: 5
+  time: "2026-01-20T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Lightning:Channels                          899000000 MSAT {{539.4 USD}}
+  Expenses:Fees:Funding                                1000000 MSAT @@ 0.6 USD
+  Assets:Onchain:Clearing                           -900000000 MSAT {{540 USD}}
+  Assets:Cost-basis                                        0.2 USD
+  Income:Gains:Realized                                   -0.2 USD
+
+2026-01-20 * "WalletReceived"
+  key: "wallet:0000000000000000000000000000000000000000000000000000000000000004:1:in"
+  seq: 6
+  time: "2026-01-20T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Onchain:Wallet                              100000000 MSAT {{60 USD}}
+  Assets:Onchain:Clearing                           -100000000 MSAT {{60 USD}}
+
+2026-02-01 * "InvoiceSettled: consulting"
+  key: "inv:0000000000000000000000000000000000000000000000000000000000000005:settled"
+  seq: 7
+  time: "2026-02-01T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Lightning:Channels                          200000000 MSAT {{60 USD}}
+  Income:Sales                                      -200000000 MSAT @@ 60 USD
+
+2026-02-10 * "PaymentSucceeded"
+  key: "pay:0000000000000000000000000000000000000000000000000000000000000006:succeeded"
+  seq: 8
+  time: "2026-02-10T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Lightning:Channels                         -300100000 MSAT {{210.07 USD}}
+  Expenses:Payments                                  300000000 MSAT @@ 210 USD
+  Expenses:Fees:Routing                                 100000 MSAT @@ 0.07 USD
+  Assets:Cost-basis                                      90.03 USD
+  Income:Gains:Realized                                 -90.03 USD
+
+2026-02-15 * "ForwardSettled"
+  key: "fwd:0000000000000000000000000000000000000000000000000000000000000007:settled"
+  seq: 9
+  time: "2026-02-15T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Lightning:Channels                              50000 MSAT {{0.035 USD}}
+  Income:Routing                                        -50000 MSAT @@ 0.035 USD
+
+2026-02-20 * "PaymentSucceeded"
+  key: "pay:0000000000000000000000000000000000000000000000000000000000000008:succeeded"
+  seq: 10
+  time: "2026-02-20T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Lightning:Channels                          -10020000 MSAT {{8.016 USD}}
+  Equity:Transfers:Rebalance                          10000000 MSAT @@ 8 USD
+  Expenses:Fees:Routing                                  20000 MSAT @@ 0.016 USD
+  Assets:Cost-basis                                      0.008 USD
+  Income:Gains:Realized                                 -0.008 USD
+
+2026-02-20 * "InvoiceSettled"
+  key: "inv:0000000000000000000000000000000000000000000000000000000000000009:settled"
+  seq: 11
+  time: "2026-02-20T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Lightning:Channels                           10000000 MSAT {{8 USD}}
+  Equity:Transfers:Rebalance                         -10000000 MSAT @@ 8 USD
+
+2026-03-01 * "ChannelClosedMutual"
+  key: "chan:000000000000000000000000000000000000000000000000000000000000000a:closed"
+  seq: 12
+  time: "2026-03-01T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Lightning:Channels                         -798930000 MSAT {{719.037 USD}}
+  Expenses:Fees:Close                                   300000 MSAT @@ 0.27 USD
+  Assets:Onchain:Clearing                            798630000 MSAT {{718.767 USD}}
+  Assets:Cost-basis                                       0.15 USD
+  Income:Gains:Realized                                  -0.15 USD
+
+2026-03-01 * "WalletReceived"
+  key: "wallet:000000000000000000000000000000000000000000000000000000000000000b:1:in"
+  seq: 13
+  time: "2026-03-01T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Onchain:Wallet                              798630000 MSAT {{718.767 USD}}
+  Assets:Onchain:Clearing                           -798630000 MSAT {{718.767 USD}}
+
+2026-03-10 * "WalletOutputSpent"
+  key: "wallet:000000000000000000000000000000000000000000000000000000000000000c:0:spent"
+  seq: 14
+  time: "2026-03-10T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Onchain:Wallet                            -1000000000 MSAT {{1000 USD}}
+  Assets:Onchain:Clearing                           1000000000 MSAT {{1000 USD}}
+
+2026-03-10 * "WalletSent"
+  key: "wsend:000000000000000000000000000000000000000000000000000000000000000d"
+  seq: 15
+  time: "2026-03-10T00:00:00.000Z"
+  annotations: "class Default"
+  Equity:Transfers:Out                               500000000 MSAT @@ 500 USD
+  Expenses:Fees:Withdraw                                200000 MSAT @@ 0.2 USD
+  Assets:Onchain:Clearing                           -500200000 MSAT {{500.2 USD}}
+  Assets:Cost-basis                                     300.12 USD
+  Income:Gains:Realized                                -300.12 USD
+
+2026-03-10 * "WalletReceived"
+  key: "wallet:000000000000000000000000000000000000000000000000000000000000000e:1:in"
+  seq: 16
+  time: "2026-03-10T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Onchain:Wallet                              499800000 MSAT {{499.8 USD}}
+  Assets:Onchain:Clearing                           -499800000 MSAT {{499.8 USD}}
+

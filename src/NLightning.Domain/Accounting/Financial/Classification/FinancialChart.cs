@@ -13,7 +13,8 @@ using Books;
 /// <c>income:other</c> (on-chain gains), <c>income:unclassified</c>, <c>income:gains:realized</c>,
 /// <c>expenses:payments</c> (sent payments), <c>expenses:losses</c>, <c>expenses:unclassified</c>,
 /// <c>expenses:losses:realized</c>, <c>expenses:fees:{routing,funding,splice,close,commitment,sweep,cpfp,withdraw}</c>
-/// and <c>equity:transfers:rebalance</c> (both halves of a self-payment, D-A12).</para>
+/// and <c>equity:transfers:rebalance</c> (both halves of a self-payment, D-A12), and <c>assets:cost-basis</c> (the
+/// financial projector's fiat-only adjustment from the market value of the asset lines to the lots' cost, A3-T4).</para>
 /// <para>Only the lines of the <see cref="IsClassifiable">classifiable roles</see> (the income and expense lines that
 /// say what the money was for, and the transfers in and out of the wallet) follow the classification; fees, assets and
 /// the opening balances always go to their chart account. The pushes have no meaning the node can tell, so their
@@ -41,7 +42,8 @@ public sealed class FinancialChart
             [FinancialAccount.FeeSweep] = "expenses:fees:sweep",
             [FinancialAccount.FeeCpfp] = "expenses:fees:cpfp",
             [FinancialAccount.FeeWithdraw] = "expenses:fees:withdraw",
-            [FinancialAccount.Rebalance] = "equity:transfers:rebalance"
+            [FinancialAccount.Rebalance] = "equity:transfers:rebalance",
+            [FinancialAccount.CostBasis] = "assets:cost-basis"
         };
 
     // The financial accounts whose default name is the operational one of a role

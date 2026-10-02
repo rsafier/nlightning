@@ -29,6 +29,10 @@ public enum AccountingAdminAction
     /// <summary>Ask the price sources for a range of hours (<c>accounting prices fetch</c>, NL-602 A3-T2).</summary>
     PricesFetch = 12,
 
+    /// <summary>Replace the opening balances' lots with the operator's (<c>accounting lots import</c>, D-A9, NL-602
+    /// A3-T4).</summary>
+    LotsImport = 13,
+
     // A3-T5 (period close) takes 20-22 so the parallel A3 lanes never collide on a value
 
     /// <summary>Close a period of the financial book (<c>accounting close &lt;period&gt; [--force]</c>).</summary>

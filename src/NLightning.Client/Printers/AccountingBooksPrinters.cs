@@ -320,6 +320,22 @@ public sealed class AccountingAdminPrinter : IPrinter<AccountingAdminIpcResponse
 
         if (item.Period is { } shown)
             PrintPeriod(shown);
+
+        if (item.LotImport is { } lotImport)
+        {
+            _output.WriteLine(string.Format(s_inv, "Imported {0} lot(s): {1} msat for {2} {3} in place of the opening "
+                                                 + "balances' lots ({4} msat){5}", lotImport.Imported,
+                                            lotImport.ImportedMsat, lotImport.ImportedCost, lotImport.Currency,
+                                            lotImport.OpeningMsat,
+                                            lotImport.ReplacedLots > 0
+                                                ? $"; {lotImport.ReplacedLots} lot(s) of an earlier import replaced"
+                                                : string.Empty));
+            if (lotImport.AdjustedMsat != 0)
+                _output.WriteLine(string.Format(s_inv, "The last lot took {0} msat so the lots hold the opening "
+                                                     + "balances exactly", lotImport.AdjustedMsat));
+            _output.WriteLine(string.Format(s_inv, "Rebuilt the financial book: {0} entries projected",
+                                            lotImport.ProjectedEntries));
+        }
     }
 
     private void PrintPeriod(AccountingPeriodIpcResponse period)

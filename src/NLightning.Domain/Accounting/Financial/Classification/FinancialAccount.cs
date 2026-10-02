@@ -14,6 +14,11 @@ public enum FinancialAccount
     Wallet = 3,
     Clearing = 4,
 
+    /// <summary>The cost-basis adjustment of the assets (A3-T4): the financial book values every msat line at the
+    /// market price of its time, and this fiat-only asset line moves the assets from that value to the cost of the lots
+    /// (a realized gain or loss, an imported basis), so the assets' fiat total is the open lots' cost.</summary>
+    CostBasis = 5,
+
     // Income
     Sales = 10,
     Routing = 11,

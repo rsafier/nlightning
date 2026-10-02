@@ -38,6 +38,10 @@ using Domain.Persistence.Interfaces;
 /// source's asks, so a close never commits in between. To keep rounds cheap, a routine round starts after the
 /// last closed period; a full pass from the beginning runs at the first round, every <see cref="FullPassInterval"/>,
 /// when the closed periods change and after an import or a fetch.</para>
+/// <para><b>The financial projector's replay</b> (A3-T4): when a page values a line of an entry the projector marked
+/// <see cref="AccountingEntryFlags.PendingValuation"/> (projected before its price was known), the page lowers the
+/// financial book's cursor to just before the earliest such entry in the same save; the projector then projects it
+/// again with its lots, reliefs and realized gain.</para>
 /// <para>Books off (<see cref="AccountingOptions.AreBooksEnabled"/> false) or invalid <c>Accounting:Prices</c>: the
 /// loop never starts (logged); an exception in a round is logged and metered and only that round stops.</para>
 /// </remarks>
@@ -535,6 +539,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             // The period lock's write lock from the closed-period check to the save (A3-T5), never across the asks
             using var writeLock = await _adjustmentSink.EnterAsync(cancellationToken);
             var closedNow = await GetClosedPeriodsAsync(unitOfWork, cancellationToken);
+            long? replayFrom = null;
             foreach (var posting in postings)
             {
                 if (resolved[posting.Key] is not { } price)
@@ -573,7 +578,22 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                 }
 
                 if (await books.SetPostingValueAsync(posting.Key, fiat, currency, price.Id, cancellationToken))
+                {
                     valued++;
+                    if (posting.Key is { Book: AccountingBook.Financial, Adjustment: 0 }
+                     && posting.EntryFlags.HasFlag(AccountingEntryFlags.PendingValuation)
+                     && (replayFrom is null || posting.Key.LedgerSeq < replayFrom))
+                        replayFrom = posting.Key.LedgerSeq;
+                }
+            }
+
+            // An entry the financial projector projected before its price was known (A3-T4): the projector values it
+            // again, with its lots and gains, from just before it (the cursor commits with the values)
+            if (replayFrom is { } from)
+            {
+                var financialCursor = await books.GetCursorAsync(AccountingBook.Financial, cancellationToken);
+                if (from - 1 < financialCursor)
+                    await books.SetCursorAsync(AccountingBook.Financial, from - 1, cancellationToken);
             }
 
             // Whether the posting still waits for a price of its own hour that may yet be asked

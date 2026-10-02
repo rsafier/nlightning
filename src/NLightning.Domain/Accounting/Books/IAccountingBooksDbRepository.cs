@@ -147,6 +147,26 @@ public interface IAccountingBooksDbRepository
         return sums.Select(s => new AccountingAccountSum(book, s.Key, null, s.Value, 0m, 0)).ToList();
     }
 
+    /// <summary>
+    /// The highest ledger sequence of the book's entries projected from an event (adjustment 0) that are in no closed
+    /// period, or 0 (A3-T4: an open entry above the book's cursor means the cursor was lowered for a replay).
+    /// </summary>
+    Task<long> GetLastOpenEntrySeqAsync(AccountingBook book, CancellationToken cancellationToken = default) =>
+        throw NotSupported(book);
+
+    /// <summary>
+    /// Rolls the book back to just before <paramref name="fromLedgerSeq"/> (A3-T4: the financial projector's replay of a
+    /// valuation found late, a reversal or a reclassification in the open period), at once and in one database
+    /// transaction (not staged): deletes the entries projected from an event (adjustment 0) at or after
+    /// <paramref name="fromLedgerSeq"/> that are in no closed period, with their postings, and takes those postings out
+    /// of the running balances; deletes their reliefs (giving the msat back to the lots that stay) and the lots they
+    /// opened (with every relief of those lots); sets the book's cursor to <paramref name="fromLedgerSeq"/> − 1. The
+    /// adjustments and the closed entries stay. A crash leaves the book as it was before the call.
+    /// </summary>
+    Task RollbackOpenEntriesAsync(AccountingBook book, long fromLedgerSeq,
+                                  CancellationToken cancellationToken = default) =>
+        throw NotSupported(book);
+
     private static NotSupportedException NotSupported(AccountingBook book) =>
         new($"This repository does not store the {book} book.");
 }

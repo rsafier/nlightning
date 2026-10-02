@@ -2,6 +2,7 @@ namespace NLightning.Domain.Client.Responses;
 
 using Accounting.Books;
 using Accounting.Financial;
+using Accounting.Financial.Lots;
 using Accounting.Models;
 using Enums;
 
@@ -34,4 +35,7 @@ public sealed record AccountingAdminClientResponse(AccountingAdminAction Action,
 
     /// <summary><c>verify</c>: every closed period checked (A3-T5); null when the closes are not served.</summary>
     public IReadOnlyList<AccountingCloseVerification>? PeriodVerifications { get; init; }
+
+    /// <summary><c>lots import</c>: what the import did (NL-602 A3-T4).</summary>
+    public AccountingLotImportResult? LotImport { get; init; }
 }

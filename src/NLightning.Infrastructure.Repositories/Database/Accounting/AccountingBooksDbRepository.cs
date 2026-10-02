@@ -429,7 +429,7 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
                               on new { p.Book, p.LedgerSeq, p.Adjustment }
                               equals new { e.Book, e.LedgerSeq, e.Adjustment }
                           orderby p.OccurredAt, p.LedgerSeq, p.Adjustment, p.Index
-                          select new { Posting = p, e.ClosedPeriodId })
+                          select new { Posting = p, e.ClosedPeriodId, e.Flags })
                         .Take(take)
                         .ToListAsync(cancellationToken);
 
@@ -437,7 +437,10 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
                                 new AccountingPostingKey(book, r.Posting.LedgerSeq, r.Posting.Adjustment,
                                                          r.Posting.Index),
                                 r.Posting.OccurredAt, (AccountRole)r.Posting.Account, r.Posting.AccountName,
-                                r.Posting.AmountMsat, r.ClosedPeriodId))
+                                r.Posting.AmountMsat, r.ClosedPeriodId)
+        {
+            EntryFlags = (AccountingEntryFlags)r.Flags
+        })
                    .ToList();
     }
 
@@ -604,6 +607,109 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
             Book = bookValue,
             LastLedgerSeq = reset.CursorLedgerSeq
         });
+
+        await _context.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<long> GetLastOpenEntrySeqAsync(AccountingBook book, CancellationToken cancellationToken = default)
+    {
+        var bookValue = (byte)book;
+        return await _context.AccountingEntries.AsNoTracking()
+                             .Where(e => e.Book == bookValue && e.Adjustment == 0 && e.ClosedPeriodId == null)
+                             .OrderByDescending(e => e.LedgerSeq)
+                             .Select(e => (long?)e.LedgerSeq)
+                             .FirstOrDefaultAsync(cancellationToken) ?? 0;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>Runs at once in a database transaction of its own, not at the unit of work's save; the lots and reliefs
+    /// it rolls back are the financial book's (no other book has lots). The running balances lose the deleted postings
+    /// (the fiat summed in memory: SQLite keeps decimals as text).</remarks>
+    public async Task RollbackOpenEntriesAsync(AccountingBook book, long fromLedgerSeq,
+                                               CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(fromLedgerSeq);
+        if (book == AccountingBook.Operational)
+            throw new NotSupportedException("The operational book is never rolled back: rebuild it with ClearAsync");
+
+        var bookValue = (byte)book;
+        var from = fromLedgerSeq;
+
+        // The bulk statements bypass the change tracker: forget what it tracks of the book and the lots
+        foreach (var tracked in _context.ChangeTracker.Entries()
+                                        .Where(e => e.Entity switch
+                                         {
+                                             AccountingEntryEntity entry => entry.Book == bookValue,
+                                             AccountingPostingEntity posting => posting.Book == bookValue,
+                                             AccountingBalanceEntity balance => balance.Book == bookValue,
+                                             AccountingCursorEntity cursor => cursor.Book == bookValue,
+                                             AccountingLotEntity or AccountingLotReliefEntity => true,
+                                             _ => false
+                                         })
+                                        .ToList())
+            tracked.State = EntityState.Detached;
+
+        await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
+
+        // Lots: the reliefs of the rolled-back entries (and of the lots they opened) go, their msat back to the lots
+        // that stay
+        var importOrigin = (byte)AccountingLotOrigin.Import;
+        var lotsToDelete = _context.AccountingLots.Where(l => l.ClosedPeriodId == null && l.SourceAdjustment == 0
+                                                           && l.SourceLedgerSeq >= from
+                                                           && l.Origin != importOrigin);
+        var reliefsToDelete = _context.AccountingLotReliefs
+                                      .Where(r => (r.ClosedPeriodId == null && r.Adjustment == 0
+                                                && r.LedgerSeq >= from)
+                                               || lotsToDelete.Any(l => l.Id == r.LotId));
+        var givenBack = await reliefsToDelete.Where(r => !lotsToDelete.Any(l => l.Id == r.LotId))
+                                             .GroupBy(r => r.LotId)
+                                             .Select(g => new { LotId = g.Key, Msat = g.Sum(r => r.Msat) })
+                                             .ToListAsync(cancellationToken);
+        foreach (var lot in givenBack)
+        {
+            var lotId = lot.LotId;
+            var msat = lot.Msat;
+            await _context.AccountingLots.Where(l => l.Id == lotId)
+                          .ExecuteUpdateAsync(setters => setters.SetProperty(l => l.RemainingMsat,
+                                                                             l => l.RemainingMsat + msat),
+                                              cancellationToken);
+        }
+
+        await reliefsToDelete.ExecuteDeleteAsync(cancellationToken);
+        await lotsToDelete.ExecuteDeleteAsync(cancellationToken);
+
+        // Balances: the rolled-back postings come out of them
+        var entries = _context.AccountingEntries.Where(e => e.Book == bookValue && e.Adjustment == 0
+                                                         && e.ClosedPeriodId == null && e.LedgerSeq >= from);
+        var postings = _context.AccountingPostings
+                               .Where(p => p.Book == bookValue && p.Adjustment == 0 && p.LedgerSeq >= from
+                                        && entries.Any(e => e.LedgerSeq == p.LedgerSeq));
+        var removed = (await postings.Select(p => new { p.Account, p.AccountName, p.AmountMsat, p.FiatAmount })
+                                     .ToListAsync(cancellationToken))
+                     .GroupBy(p => (p.Account, Name: p.AccountName ?? string.Empty))
+                     .ToList();
+        foreach (var group in removed)
+        {
+            var balance = await FindOrAddBalanceAsync(bookValue, group.Key.Account, group.Key.Name,
+                                                      cancellationToken);
+            balance.BalanceMsat = checked(balance.BalanceMsat - group.Sum(p => p.AmountMsat));
+            balance.FiatAmount -= group.Sum(p => p.FiatAmount ?? 0m);
+        }
+
+        await postings.ExecuteDeleteAsync(cancellationToken);
+        await entries.ExecuteDeleteAsync(cancellationToken);
+
+        var cursorRow = await _context.AccountingCursor.FindAsync([bookValue], cancellationToken);
+        if (cursorRow is null)
+            _context.AccountingCursor.Add(new AccountingCursorEntity
+            {
+                Book = bookValue,
+                LastLedgerSeq = from - 1
+            });
+        else
+            cursorRow.LastLedgerSeq = from - 1;
 
         await _context.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);

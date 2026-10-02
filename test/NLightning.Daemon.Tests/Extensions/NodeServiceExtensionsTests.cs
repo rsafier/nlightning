@@ -42,6 +42,7 @@ using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Financial;
+using Domain.Accounting.Financial.Lots;
 using Domain.Accounting.Interfaces;
 using Domain.Accounting.Prices;
 using Domain.Bitcoin.Interfaces;
@@ -434,6 +435,31 @@ public class NodeServiceExtensionsTests
         Assert.IsType<CsvPriceSource>(Assert.Single(source.Sources));
         var periods = Assert.IsType<AccountingPeriodService>(provider.GetRequiredService<IAccountingAdjustmentSink>());
         Assert.Same(periods, provider.GetRequiredService<IAccountingPeriods>());
+    }
+
+    [Fact]
+    public async Task Given_TheFinancialProfile_When_Composed_Then_TheFinancialProjectorIsOnWithItsCostBasis()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Accounting:Profile", "Financial"),
+                                                        ("Accounting:CostBasis", "Hifo")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var projector = provider.GetRequiredService<FinancialBooksProjector>();
+
+        // Assert (NL-602 A3-T4: one instance behind the close's and the reports' seam and the lot import; the period
+        // lock resolves to the period service)
+        Assert.Same(projector, provider.GetRequiredService<IFinancialBooksProjector>());
+        Assert.Same(projector, provider.GetRequiredService<IAccountingLots>());
+        Assert.True(projector.IsEnabled);
+        Assert.Equal(AccountingCostBasisMethod.Hifo, projector.Method);
+        Assert.Equal("USD", projector.Currency);
+        Assert.IsType<AccountingPeriodService>(provider.GetRequiredService<IAccountingAdjustmentSink>());
     }
 
     [Fact]

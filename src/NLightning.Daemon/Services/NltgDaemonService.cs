@@ -8,6 +8,7 @@ namespace NLightning.Daemon.Services;
 
 using Application.Accounting;
 using Application.Accounting.Books;
+using Application.Accounting.Financial;
 using Application.Accounting.Prices;
 using Application.Channels.Fees;
 using Application.Channels.RoutingPolicies;
@@ -69,6 +70,7 @@ public class NltgDaemonService : BackgroundService
     private readonly AccountingEventSealerService? _accountingEventSealer;
     private readonly AccountingBooksService? _accountingBooks;
     private readonly PriceValuationService? _priceValuation;
+    private readonly FinancialBooksProjector? _financialBooks;
     private readonly IAccountingBackfill? _accountingBackfill;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
@@ -95,9 +97,11 @@ public class NltgDaemonService : BackgroundService
                              AccountingEventSealerService? accountingEventSealer = null,
                              AccountingBooksService? accountingBooks = null,
                              IAccountingBackfill? accountingBackfill = null,
-                             PriceValuationService? priceValuation = null)
+                             PriceValuationService? priceValuation = null,
+                             FinancialBooksProjector? financialBooks = null)
     {
         _priceValuation = priceValuation;
+        _financialBooks = financialBooks;
         _accountingEventSealer = accountingEventSealer;
         _accountingBooks = accountingBooks;
         _accountingBackfill = accountingBackfill;
@@ -226,6 +230,10 @@ public class NltgDaemonService : BackgroundService
             // Accounting:Enabled=false
             _accountingBooks?.Start();
 
+            // Project the operational entries into the financial book (NL-602 A3-T4) after the books; nothing unless
+            // Accounting:Profile=Financial
+            _financialBooks?.Start();
+
             // Give the financial postings their fiat value every Accounting:Prices:FetchInterval (NL-602 A3-T2), after
             // the books; nothing while the books are off
             _priceValuation?.Start();
@@ -310,6 +318,9 @@ public class NltgDaemonService : BackgroundService
         // The back-valuation stops before the books (NL-602 A3-T2), the books before the sealer that feeds them (A2)
         if (_priceValuation is not null)
             await _priceValuation.StopAsync();
+        // The financial projector before the operational books it reads (A3-T4)
+        if (_financialBooks is not null)
+            await _financialBooks.StopAsync();
         if (_accountingBooks is not null)
             await _accountingBooks.StopAsync();
 

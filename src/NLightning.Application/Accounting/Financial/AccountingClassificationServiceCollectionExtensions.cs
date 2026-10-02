@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Accounting.Financial;
 
 using Domain.Accounting.Books;
+using Domain.Accounting.Financial;
 using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Interfaces;
 
@@ -23,7 +24,8 @@ public static class AccountingClassificationServiceCollectionExtensions
                                      sp.GetRequiredService<IServiceScopeFactory>(),
                                      sp.GetRequiredService<ILogger<AccountingClassificationService>>(),
                                      sp.GetService<IOptions<AccountingOptions>>(), sp.GetService<IAccountingBooks>(),
-                                     sp.GetService<IAccountingEventSealer>(), sp.GetService<TimeProvider>()));
+                                     sp.GetService<IAccountingEventSealer>(), sp.GetService<TimeProvider>(),
+                                     sp.GetService<IAccountingAdjustmentSink>()));
         services.TryAddSingleton<IAccountingClassificationAdmin>(
             sp => sp.GetRequiredService<AccountingClassificationService>());
         return services;

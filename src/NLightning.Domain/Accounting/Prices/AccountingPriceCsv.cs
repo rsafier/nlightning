@@ -145,7 +145,9 @@ public static class AccountingPriceCsv
         return true;
     }
 
-    private static bool TryParseTime(string field, out DateTimeOffset time, out string? error)
+    /// <summary>Parses a time field: Unix seconds or an ISO 8601 time (UTC unless it carries an offset), from
+    /// <see cref="EarliestTime"/> on (the lot file of A3-T4 shares it).</summary>
+    public static bool TryParseTime(string field, out DateTimeOffset time, out string? error)
     {
         time = default;
         if (long.TryParse(field, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var seconds))
@@ -207,11 +209,12 @@ public static class AccountingPriceCsv
         return true;
     }
 
-    private static bool IsHeader(string line)
+    /// <summary>Whether the first data line of a file is a header (its first field starts with a letter).</summary>
+    public static bool IsHeader(string line)
     {
         var first = line.Split(',')[0].Trim();
         return first.Length > 0 && char.IsAsciiLetter(first[0]) && first.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or ' ');
     }
 
-    private static string Truncate(string field) => field.Length <= 40 ? field : field[..40] + "...";
+    internal static string Truncate(string field) => field.Length <= 40 ? field : field[..40] + "...";
 }

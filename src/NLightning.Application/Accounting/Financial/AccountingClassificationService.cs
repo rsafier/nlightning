@@ -35,6 +35,11 @@ using Reports;
 /// <see cref="MaxScanPerCall"/> entries per call; it is on demand only, never at startup.</para>
 /// <para>A change of a rule or an override never rewrites a closed period: the financial book posts it as an
 /// adjustment in the open period (D-A8, A3-T5); <c>set</c> warns when the event lies in a closed period.</para>
+/// <para><b>The open period</b> (A3-T4): <c>set</c> and <c>unset</c> of an event the financial book projected in the
+/// open period lower the financial book's cursor to just before it, and a rule added, removed, enabled or disabled to
+/// just before the open period, in the same save and under the period lock's write lock
+/// (<see cref="IAccountingAdjustmentSink.EnterAsync"/>), so the financial projector projects those entries again
+/// with the classification in effect (their lots and gains included).</para>
 /// </remarks>
 public sealed class AccountingClassificationService : IAccountingClassificationAdmin
 {
@@ -53,12 +58,15 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
     private readonly SemaphoreSlim _ruleGate = new(1, 1);
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly TimeProvider _timeProvider;
+    private readonly IAccountingAdjustmentSink _sink;
 
     public AccountingClassificationService(IServiceScopeFactory scopeFactory,
                                            ILogger<AccountingClassificationService> logger,
                                            IOptions<AccountingOptions>? options = null, IAccountingBooks? books = null,
-                                           IAccountingEventSealer? sealer = null, TimeProvider? timeProvider = null)
+                                           IAccountingEventSealer? sealer = null, TimeProvider? timeProvider = null,
+                                           IAccountingAdjustmentSink? adjustmentSink = null)
     {
+        _sink = adjustmentSink ?? NullAccountingAdjustmentSink.Instance;
         _scopeFactory = scopeFactory;
         _logger = logger;
         _options = options?.Value ?? new AccountingOptions();
@@ -198,7 +206,11 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
             using var scope = _scopeFactory.CreateScope();
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
             unitOfWork.AccountingRuleDbRepository.Add(rule);
-            await unitOfWork.SaveChangesAsync();
+            using (await _sink.EnterAsync(cancellationToken))
+            {
+                await RequestReprojectionAsync(unitOfWork, null, cancellationToken);
+                await unitOfWork.SaveChangesAsync();
+            }
 
             var saved = (await unitOfWork.AccountingRuleDbRepository.ListAsync(false, cancellationToken))
                        .MaxBy(r => r.Id) ?? rule;
@@ -241,7 +253,12 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
         };
         if (changed)
         {
-            await unitOfWork.SaveChangesAsync();
+            using (await _sink.EnterAsync(cancellationToken))
+            {
+                await RequestReprojectionAsync(unitOfWork, null, cancellationToken);
+                await unitOfWork.SaveChangesAsync();
+            }
+
             _logger.LogInformation("Accounting rule {RuleId}: {Action}", id, request.Action);
         }
 
@@ -317,7 +334,12 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
 
         var stored = new AccountingOverride(key, account, request.Note, _timeProvider.GetUtcNow());
         await unitOfWork.AccountingOverrideDbRepository.SetAsync(stored, cancellationToken);
-        await unitOfWork.SaveChangesAsync();
+        using (await _sink.EnterAsync(cancellationToken))
+        {
+            await RequestReprojectionAsync(unitOfWork, key, cancellationToken);
+            await unitOfWork.SaveChangesAsync();
+        }
+
         _logger.LogInformation("Accounting override of {EventKey}: {Account}", key, account);
         return response with { Override = stored };
     }
@@ -332,7 +354,12 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
         var changed = await unitOfWork.AccountingOverrideDbRepository.RemoveAsync(key, cancellationToken);
         if (changed)
         {
-            await unitOfWork.SaveChangesAsync();
+            using (await _sink.EnterAsync(cancellationToken))
+            {
+                await RequestReprojectionAsync(unitOfWork, key, cancellationToken);
+                await unitOfWork.SaveChangesAsync();
+            }
+
             _logger.LogInformation("Accounting override of {EventKey} removed", key);
         }
 
@@ -366,6 +393,55 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
         if (page.HasMore && page.Items.Count < request.Limit)
             warnings.Add($"Looked at {page.Scanned} entries; continue after {page.NextAfter} for the rest.");
         return response with { Unclassified = page };
+    }
+
+    /// <summary>
+    /// Lowers the financial book's cursor (staged on <paramref name="unitOfWork"/>; the caller holds the period lock's
+    /// write lock and saves) so the financial projector projects the open-period entry of <paramref name="eventKey"/>
+    /// again, or with no key every open-period entry (A3-T4). Nothing for an event the financial book has not projected
+    /// or holds in a closed period, or with a unit of work that keeps no financial book (test doubles).
+    /// </summary>
+    private static async Task RequestReprojectionAsync(IUnitOfWork unitOfWork, string? eventKey,
+                                                       CancellationToken cancellationToken)
+    {
+        try
+        {
+            var books = unitOfWork.AccountingBooksDbRepository;
+            long from;
+            if (eventKey is not null)
+            {
+                var entries = await books.GetEntriesByKeyAsync(AccountingBook.Financial, eventKey, cancellationToken);
+                if (entries.FirstOrDefault(e => e.Adjustment == 0 && e.ClosedPeriodId is null) is not { } open)
+                    return;
+
+                from = open.LedgerSeq;
+            }
+            else
+            {
+                // The open period starts after the last close's replay point (A3-T5's closing state)
+                var last = await unitOfWork.AccountingPeriodDbRepository.GetLastClosedAsync(cancellationToken);
+                from = 1;
+                if (last is not null)
+                {
+                    try
+                    {
+                        from = AccountingClosingState.Decode(last.ClosingState).ReplayAfterLedgerSeq + 1;
+                    }
+                    catch (FormatException)
+                    {
+                        // An unreadable closing state (verify reports it): from the start, the closed facts stay
+                    }
+                }
+            }
+
+            var cursor = await books.GetCursorAsync(AccountingBook.Financial, cancellationToken);
+            if (from - 1 < cursor)
+                await books.SetCursorAsync(AccountingBook.Financial, Math.Max(0, from - 1), cancellationToken);
+        }
+        catch (NotSupportedException)
+        {
+            // A unit of work without the financial book: nothing to project again
+        }
     }
 
     private async Task PrepareBooksAsync(CancellationToken cancellationToken)

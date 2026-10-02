@@ -3,6 +3,7 @@ namespace NLightning.Application.Accounting;
 using Domain.Accounting.Books;
 using Domain.Accounting.Financial;
 using Domain.Accounting.Financial.Classification;
+using Domain.Accounting.Financial.Lots;
 
 /// <summary>
 /// Options of the accounting feed and books (section <see cref="SectionName"/>, plan
@@ -62,4 +63,15 @@ public sealed class AccountingOptions
     /// <summary>The financial chart in effect (its assets, opening balances and transfers follow
     /// <see cref="GetAccountNames"/>).</summary>
     public FinancialChart GetFinancialChart() => new(GetAccountNames(), FinancialAccountNames);
+
+    /// <summary>
+    /// The order in which the financial book's disposals relieve the cost-basis lots (<c>Accounting:CostBasis</c>,
+    /// D-A2, D-A12; NL-602 A3-T4): <see cref="AccountingCostBasisMethod.Fifo"/> (the default),
+    /// <see cref="AccountingCostBasisMethod.Lifo"/> or <see cref="AccountingCostBasisMethod.Hifo"/>. A change applies to
+    /// the disposals projected after it; <c>accounting rebuild --book financial</c> applies it to the open period.
+    /// </summary>
+    public AccountingCostBasisMethod CostBasis { get; set; } = AccountingCostBasisMethod.Fifo;
+
+    /// <summary>Whether the financial book is kept (the books on and <see cref="Profile"/> Financial).</summary>
+    public bool IsFinancialBookEnabled => AreBooksEnabled && Profile == AccountingProfile.Financial;
 }

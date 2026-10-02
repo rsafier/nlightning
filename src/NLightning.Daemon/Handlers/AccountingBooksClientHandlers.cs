@@ -9,6 +9,7 @@ using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Financial;
 using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Financial.Export;
+using Domain.Accounting.Financial.Lots;
 using Domain.Accounting.Financial.Reports;
 using Domain.Accounting.Prices;
 using Domain.Accounting.Services;
@@ -216,6 +217,7 @@ public sealed class AccountingAdminClientHandler
     private readonly IAccountingPeriods? _periods;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAccountingClassificationAdmin? _classification;
+    private readonly IAccountingLots? _lots;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.AccountingAdmin;
@@ -224,8 +226,10 @@ public sealed class AccountingAdminClientHandler
                                         IOptions<AccountingOptions>? options = null,
                                         IAccountingClassificationAdmin? classification = null,
                                         IAccountingPrices? prices = null,
-                                        IAccountingPeriods? periods = null)
+                                        IAccountingPeriods? periods = null,
+                                        IAccountingLots? lots = null)
     {
+        _lots = lots;
         _prices = prices;
         _unitOfWork = unitOfWork;
         _books = books;
@@ -272,6 +276,8 @@ public sealed class AccountingAdminClientHandler
             case AccountingAdminAction.PricesList:
             case AccountingAdminAction.PricesFetch:
                 return response with { Prices = await AccountingPricesAdmin.HandleAsync(_prices, request, ct) };
+            case AccountingAdminAction.LotsImport:
+                return response with { LotImport = await ImportLotsAsync(request, ct) };
             default:
                 throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown accounting action {request.Action}.");
         }
@@ -311,6 +317,27 @@ public sealed class AccountingAdminClientHandler
             throw new ClientException(ErrorCodes.InvalidOperation, e.Message);
         }
         catch (ArgumentException e)
+        {
+            throw new ClientException(ErrorCodes.InvalidOperation, e.Message);
+        }
+    }
+
+    /// <summary><c>lots import</c> (A3-T4): a refusal (the financial book off, a closed period, totals that differ) is
+    /// <c>invalid_operation</c> with the reason.</summary>
+    private async Task<AccountingLotImportResult> ImportLotsAsync(AccountingAdminClientRequest request,
+                                                                  CancellationToken ct)
+    {
+        var lots = _lots ?? throw new ClientException(ErrorCodes.InvalidOperation,
+                                                      "The accounting lot import is not available on this node.");
+        var arguments = request.Lots;
+        if (arguments is null || arguments.Lots.Count == 0)
+            throw new ClientException(ErrorCodes.InvalidOperation, "No lots to import.");
+
+        try
+        {
+            return await lots.ImportAsync(arguments.Currency, arguments.Lots, ct);
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException)
         {
             throw new ClientException(ErrorCodes.InvalidOperation, e.Message);
         }

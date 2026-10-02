@@ -25,4 +25,7 @@ public sealed class AccountingAdminClientRequest
 
     /// <summary>The book of <c>rebuild</c> (<c>--book</c>; the operational one when null).</summary>
     public AccountingBook? Book { get; init; }
+
+    /// <summary>The arguments of <c>lots import</c> (NL-602 A3-T4).</summary>
+    public AccountingLotsClientRequest? Lots { get; init; }
 }

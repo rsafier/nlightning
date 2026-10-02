@@ -68,6 +68,9 @@ public sealed class AccountingAdminIpcResponse
     /// <summary>The answer of a <c>prices</c> action (NL-602 A3-T2).</summary>
     [Key(10)] public AccountingPricesIpcResponse? Prices { get; init; }
 
+    /// <summary><c>lots import</c>: what the import did (NL-602 A3-T4).</summary>
+    [Key(13)] public AccountingLotImportIpcResponse? LotImport { get; init; }
+
     // Keys 20-22 are A3-T5's (period close), apart from the other A3 lanes' keys
 
     /// <summary><c>close list</c>: every period, oldest first.</summary>
@@ -126,6 +129,7 @@ public sealed class AccountingAdminIpcResponse
             Verification = verification,
             Classify = response.Classify is { } classify ? AccountingClassifyIpcResponse.FromClientResponse(classify) : null,
             Prices = response.Prices is { } prices ? AccountingPricesIpcResponse.FromClientResponse(prices) : null,
+            LotImport = response.LotImport is { } lotImport ? AccountingLotImportIpcResponse.FromResult(lotImport) : null,
             Periods = response.Periods?.Select(AccountingPeriodIpcResponse.FromReport).ToList(),
             Period = response.Period is { } period ? AccountingPeriodIpcResponse.FromReport(period) : null,
             PeriodVerifications = response.PeriodVerifications?.Select(v => new AccountingPeriodVerificationIpcResponse

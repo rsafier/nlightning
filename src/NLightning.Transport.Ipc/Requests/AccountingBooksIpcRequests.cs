@@ -177,8 +177,8 @@ public sealed class AccountingExportIpcRequest
 [MessagePackObject]
 public sealed class AccountingAdminIpcRequest
 {
-    /// <summary>The <c>AccountingAdminAction</c> value (1 reconcile, 2 rebuild, 3 verify, 20 close, 21 close list,
-    /// 22 close show).</summary>
+    /// <summary>The <c>AccountingAdminAction</c> value (1 reconcile, 2 rebuild, 3 verify, 5 classify, 10-12 prices,
+    /// 13 lots import, 20 close, 21 close list, 22 close show).</summary>
     [Key(0)] public int Action { get; set; } = (int)AccountingAdminAction.Verify;
 
     /// <summary>The classify action (action 5, NL-602 A3-T3).</summary>
@@ -186,6 +186,9 @@ public sealed class AccountingAdminIpcRequest
 
     /// <summary>The arguments of the <c>prices</c> actions (10 import, 11 list, 12 fetch; NL-602 A3-T2).</summary>
     [Key(10)] public AccountingPricesIpcRequest? Prices { get; set; }
+
+    /// <summary>The arguments of <c>lots import</c> (action 13; NL-602 A3-T4).</summary>
+    [Key(13)] public AccountingLotsIpcRequest? Lots { get; set; }
 
     // Keys 20-22 are A3-T5's (period close), apart from the other A3 lanes' keys
 
@@ -213,7 +216,8 @@ public sealed class AccountingAdminIpcRequest
             Prices = Prices?.ToClientRequest(),
             Period = string.IsNullOrWhiteSpace(Period) ? null : Period.Trim(),
             Force = Force,
-            Book = Book is { } value ? (AccountingBook)value : null
+            Book = Book is { } value ? (AccountingBook)value : null,
+            Lots = Lots?.ToClientRequest()
         };
     }
 }

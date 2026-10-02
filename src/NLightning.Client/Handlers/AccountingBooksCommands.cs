@@ -20,7 +20,8 @@ using Transport.Ipc.Responses;
 /// 43), <c>accounting export --format hledger|beancount|csv [--since] [--until] [--output &lt;file&gt;]</c> (44) and
 /// <c>accounting reconcile|rebuild|verify</c> (45); <c>accounting prices import|list|fetch</c> (45, A3-T2:
 /// <see cref="AccountingPricesCommands"/>); since A3-T5 also <c>accounting close &lt;period&gt; [--force]</c>,
-/// <c>close list</c>, <c>close show &lt;period&gt;</c> and <c>rebuild --book financial</c> (45).
+/// <c>close list</c>, <c>close show &lt;period&gt;</c> and <c>rebuild --book financial</c> (45); since A3-T4
+/// <c>accounting lots import &lt;file&gt;</c> (45, <see cref="AccountingLotsCommands"/>).
 /// </summary>
 /// <remarks>
 /// An export is fetched page by page and written by the client, to standard output or to <c>--output</c> (a path on
@@ -39,7 +40,7 @@ internal static class AccountingBooksCommands
       + "[--since <time>] [--until <time>] [--output <file>] | accounting "
       + "<reconcile|rebuild [--book operational|financial]|verify> | accounting close <period> [--force] | accounting "
       + "close list | accounting close show <period> | " + AccountingClassifyCommands.Usage + " | "
-      + AccountingPricesCommands.Usage;
+      + AccountingPricesCommands.Usage + " | " + AccountingLotsCommands.Usage;
 
     /// <summary>The largest register page.</summary>
     internal const int MaxLimit = 1_000;
@@ -86,7 +87,8 @@ internal static class AccountingBooksCommands
         AccountingExportIpcRequest? Export = null,
         string? OutputPath = null,
         AccountingAdminIpcRequest? Admin = null,
-        string? PricesFile = null);
+        string? PricesFile = null,
+        string? LotsFile = null);
 
     /// <summary>Checks the arguments; an error message with the usage, or null when they are valid.</summary>
     internal static string? Validate(string[] commandArgs) =>
@@ -119,6 +121,8 @@ internal static class AccountingBooksCommands
                            : null;
             case "prices":
                 return AccountingPricesCommands.Parse(commandArgs[1..], out error);
+            case "lots":
+                return AccountingLotsCommands.Parse(commandArgs[1..], out error);
             case "close":
                 return ParseClose(commandArgs[1..], out error);
             case "rebuild" when commandArgs.Length > 1:
@@ -279,6 +283,13 @@ internal static class AccountingBooksCommands
         if (arguments.Admin?.Prices is not null)
         {
             await AccountingPricesCommands.RunAsync(arguments, client.AccountingAdminAsync, output, cancellationToken);
+            return;
+        }
+
+        if (arguments.LotsFile is not null)
+        {
+            var lots = await AccountingLotsCommands.BuildRequestAsync(arguments, cancellationToken);
+            new AccountingAdminPrinter(output).Print(await client.AccountingAdminAsync(lots, cancellationToken));
             return;
         }
 

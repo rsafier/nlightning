@@ -16,6 +16,7 @@ namespace NLightning.Integration.Tests.Docker.Utils;
 using Application.Accounting;
 using Application.Accounting.Backfill;
 using Application.Accounting.Books;
+using Application.Accounting.Financial;
 using Application.Accounting.Prices;
 using Application.Channels.Fees;
 using Application.Channels.RoutingPolicies;
@@ -357,6 +358,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             Services.GetService<AccountingEventSealerService>()?.Start();
             // As the daemon does: the books after the sealer (NL-602 A2)
             Services.GetService<AccountingBooksService>()?.Start();
+            // As the daemon does: the financial projector after the books (NL-602 A3-T4); off unless Profile=Financial
+            Services.GetService<FinancialBooksProjector>()?.Start();
             // As the daemon does: the back-valuation after the books (NL-602 A3-T2)
             Services.GetService<PriceValuationService>()?.Start();
             // As the daemon does: the accounting memo backfill in the background (NL-602 A1-T6)
@@ -388,6 +391,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
                 await StopSafetyServicesAsync();
                 // As the daemon does: the back-valuation before the books, the books before the sealer (NL-602)
                 await (Services.GetService<PriceValuationService>()?.StopAsync() ?? Task.CompletedTask);
+                await (Services.GetService<FinancialBooksProjector>()?.StopAsync() ?? Task.CompletedTask);
                 await (Services.GetService<AccountingBooksService>()?.StopAsync() ?? Task.CompletedTask);
                 await Task.WhenAll(Services.GetRequiredService<OnionReplayBlockPruner>().StopAsync(),
                                    Services.GetRequiredService<IMempoolReactor>().StopAsync(),

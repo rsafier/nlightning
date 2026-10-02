@@ -9,6 +9,7 @@ using Backfill;
 using Books;
 using Domain.Accounting.Books;
 using Domain.Accounting.Financial;
+using Domain.Accounting.Financial.Lots;
 using Domain.Accounting.Interfaces;
 using Domain.Accounting.Prices;
 using Domain.Accounting.Services;
@@ -36,8 +37,8 @@ public static class AccountingServiceCollectionExtensions
     /// <see cref="IAccountingBackfill"/>: the host awaits its cutover before the peers start and starts its memo pass
     /// after the chain monitor). And the period close (A3-T5): <see cref="AccountingPeriodService"/> as itself, as
     /// <see cref="IAccountingPeriods"/> and as the lock's <see cref="IAccountingAdjustmentSink"/> (one instance), with
-    /// the off <see cref="NullFinancialBooksProjector"/> as <see cref="IFinancialBooksProjector"/> until A3-T4 registers
-    /// its own.
+    /// the financial projector of A3-T4 (<see cref="AddFinancialBooksProjector"/>) as <see cref="IFinancialBooksProjector"/>
+    /// and <see cref="IAccountingLots"/>.
     /// </summary>
     public static IServiceCollection AddAccountingServices(this IServiceCollection services)
     {
@@ -69,6 +70,7 @@ public static class AccountingServiceCollectionExtensions
         services.AddAccountingReportServices();
         services.AddAccountingClassificationServices();
         services.AddAccountingPriceValuation();
+        services.AddFinancialBooksProjector();
         services.AddAccountingPeriodServices();
 
         return services;
@@ -98,10 +100,35 @@ public static class AccountingServiceCollectionExtensions
     }
 
     /// <summary>
+    /// The financial book's projector (NL-602 A3-T4): <see cref="FinancialBooksProjector"/> as itself, as
+    /// <see cref="IFinancialBooksProjector"/> (the seam of the period close and the financial reports) and as
+    /// <see cref="IAccountingLots"/> (the lot import), one instance; off unless <c>Accounting:Profile=Financial</c>. The
+    /// period lock (<see cref="IAccountingAdjustmentSink"/>) depends on the projector, so the projector resolves it at its
+    /// first round. The host starts it after the operational books and stops it before them. Idempotent (TryAdd);
+    /// called by <see cref="AddAccountingServices"/> before <see cref="AddAccountingPeriodServices"/>, so the off
+    /// <see cref="NullFinancialBooksProjector"/> default is never used.
+    /// </summary>
+    public static IServiceCollection AddFinancialBooksProjector(this IServiceCollection services)
+    {
+        services.TryAddSingleton(sp => new FinancialBooksProjector(
+                                     sp.GetRequiredService<IServiceScopeFactory>(),
+                                     sp.GetRequiredService<ILogger<FinancialBooksProjector>>(),
+                                     sp.GetService<IOptions<AccountingOptions>>(),
+                                     sp.GetService<IOptions<AccountingPriceOptions>>(),
+                                     sp.GetService<IAccountingAdjustmentSink>,
+                                     sp.GetService<IPriceSource>() is not null, sp.GetService<TimeProvider>()));
+        services.TryAddSingleton<IFinancialBooksProjector>(sp => sp.GetRequiredService<FinancialBooksProjector>());
+        services.TryAddSingleton<IAccountingLots>(sp => sp.GetRequiredService<FinancialBooksProjector>());
+
+        return services;
+    }
+
+    /// <summary>
     /// Period close, lock and signed digests (NL-602 A3-T5): <see cref="AccountingPeriodService"/> as itself, as
     /// <see cref="IAccountingPeriods"/> and as the period lock's <see cref="IAccountingAdjustmentSink"/> (replacing the
-    /// off default of <see cref="AddAccountingPriceValuation"/> whatever the order). The financial projector is A3-T4's:
-    /// until it registers its own (before this call, or with Replace), the default is off and closes are refused.
+    /// off default of <see cref="AddAccountingPriceValuation"/> whatever the order). The financial projector is A3-T4's
+    /// (<see cref="AddFinancialBooksProjector"/>, registered first by <see cref="AddAccountingServices"/>); a host that
+    /// calls this alone gets the off <see cref="NullFinancialBooksProjector"/>, and closes are refused.
     /// </summary>
     public static IServiceCollection AddAccountingPeriodServices(this IServiceCollection services)
     {

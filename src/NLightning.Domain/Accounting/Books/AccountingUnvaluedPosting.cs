@@ -7,4 +7,9 @@ public sealed record AccountingUnvaluedPosting(
     AccountRole Account,
     string? AccountName,
     long AmountMsat,
-    string? ClosedPeriodId);
+    string? ClosedPeriodId)
+{
+    /// <summary>The flags of the posting's entry (A3-T4: the back-valuation lowers the financial cursor for the entries
+    /// the projector marked <see cref="AccountingEntryFlags.PendingValuation"/>).</summary>
+    public AccountingEntryFlags EntryFlags { get; init; }
+}

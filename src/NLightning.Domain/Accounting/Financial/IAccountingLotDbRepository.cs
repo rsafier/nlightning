@@ -65,6 +65,17 @@ public interface IAccountingLotDbRepository
     /// <summary>Deletes every lot and relief at once (a rebuild before any close; not staged).</summary>
     Task ClearAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>The saved lots of <paramref name="origin"/>, by id, whatever is left of them (A3-T4: the imported lots
+    /// of D-A9). The default (test doubles) throws <see cref="NotSupportedException"/>.</summary>
+    Task<IReadOnlyList<AccountingLot>> ListLotsByOriginAsync(AccountingLotOrigin origin,
+                                                             CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This repository does not list lots by origin.");
+
+    /// <summary>Deletes every lot of <paramref name="origin"/> with its reliefs at once (not staged; A3-T4: an import
+    /// replaces the earlier one). The default (test doubles) throws <see cref="NotSupportedException"/>.</summary>
+    Task<int> DeleteLotsByOriginAsync(AccountingLotOrigin origin, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This repository does not delete lots by origin.");
+
     /// <summary>
     /// The saved reliefs made in [<paramref name="since"/>, <paramref name="until"/>) with an id above
     /// <paramref name="afterId"/>, by id, at most <paramref name="take"/> (A3-T6's realized gains, paged by id). The
