@@ -16,8 +16,11 @@ public class AccountingEventDbRepository : BaseDbRepository<AccountingEventEntit
 {
     private const int DuplicateFlag = (int)AccountingEventFlags.Duplicate;
 
-    public AccountingEventDbRepository(NLightningDbContext context) : base(context)
+    private readonly AccountingFeedGate? _gate;
+
+    public AccountingEventDbRepository(NLightningDbContext context, AccountingFeedGate? gate = null) : base(context)
     {
+        _gate = gate;
     }
 
     /// <inheritdoc />
@@ -26,6 +29,10 @@ public class AccountingEventDbRepository : BaseDbRepository<AccountingEventEntit
         ArgumentNullException.ThrowIfNull(accountingEvent);
         if (accountingEvent.IsSealed)
             throw new ArgumentException("A new accounting event cannot be sealed", nameof(accountingEvent));
+
+        // NL-619: while the feed has no cutover (it failed in this process) live events are dropped
+        if (_gate?.Admits(accountingEvent.EventKey) == false)
+            return;
 
         Insert(new AccountingEventEntity
         {

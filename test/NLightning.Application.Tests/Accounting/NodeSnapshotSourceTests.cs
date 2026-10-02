@@ -108,6 +108,7 @@ public class NodeSnapshotSourceTests
         _outputs.Add(Output(s_closedOnChain, 2, OutputDescriptorKind.PeerOutput, 300_000));
         _outputs.Add(Output(s_closedOnChain, 3, OutputDescriptorKind.OurAnchor, 330,
                             OutputResolutionState.Resolved));
+        _outputs.Add(Output(s_closedOnChain, 4, OutputDescriptorKind.RemoteOfferedHtlc, 4_000));
         _outputs.Add(Output(s_notLoaded, 0, OutputDescriptorKind.RevokedToLocal, 20_000,
                             OutputResolutionState.Broadcast));
 
@@ -123,16 +124,20 @@ public class NodeSnapshotSourceTests
         Assert.Equal(500_000_000, loaded.CapacityMsat);
         Assert.Equal(50_000_000, loaded.PendingOnchainMsat);
         Assert.Equal(7_000_000, loaded.PendingHtlcOnchainMsat);
-        Assert.Equal(2, loaded.PendingSweepCount);
+        Assert.Equal(4_000_000, loaded.PendingUncountedMsat);
+        Assert.Equal(3, loaded.PendingSweepCount);
         Assert.True(loaded.IsLoaded);
         var gone = Assert.Single(snapshot.Channels, c => c.ChannelId == s_notLoaded);
         Assert.False(gone.IsLoaded);
         Assert.Equal(ChannelState.OnchainResolving, gone.State);
         Assert.Null(gone.Counterparty);
-        Assert.Equal(20_000_000, gone.PendingOnchainMsat);
-        Assert.Equal(70_000_000, snapshot.PendingOnchainMsat);
+        // NL-618: a revoked commitment's output is booked only once claimed, so it is not pending in the books' sense
+        Assert.Equal(0, gone.PendingOnchainMsat);
+        Assert.Equal(20_000_000, gone.PendingUncountedMsat);
+        Assert.Equal(50_000_000, snapshot.PendingOnchainMsat);
         Assert.Equal(7_000_000, snapshot.PendingHtlcOnchainMsat);
-        Assert.Equal(3, snapshot.PendingSweepCount);
+        Assert.Equal(24_000_000, snapshot.PendingUncountedMsat);
+        Assert.Equal(4, snapshot.PendingSweepCount);
         Assert.Equal(0, snapshot.ChannelLocalMsat);
     }
 

@@ -10,6 +10,7 @@ using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Interfaces;
 using Domain.Accounting.Models;
+using Domain.Accounting.Services;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing.Enums;
@@ -58,6 +59,7 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
     private static readonly string[] s_invoiceDetailsUnknown = ["parts", "settledBy"];
     private static readonly string[] s_paymentDetailsUnknown = ["parts"];
 
+    private readonly AccountingFeedGate? _feedGate;
     private readonly Lock _gate = new();
     private readonly ILogger<AccountingBackfillService> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
@@ -70,9 +72,11 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
     private bool _stopped;
 
     public AccountingBackfillService(IServiceScopeFactory scopeFactory, ILogger<AccountingBackfillService> logger,
-                                     TimeProvider? timeProvider = null, int batchSize = DefaultBatchSize)
+                                     TimeProvider? timeProvider = null, int batchSize = DefaultBatchSize,
+                                     AccountingFeedGate? feedGate = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(batchSize);
+        _feedGate = feedGate;
         _scopeFactory = scopeFactory;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
@@ -102,7 +106,25 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
     internal Meter Meter { get; }
 
     /// <inheritdoc />
+    /// <remarks>A failure holds the feed's gate (NL-619, <see cref="AccountingFeedGate"/>): the live writers' events are
+    /// dropped until a later start's cutover succeeds, which then opens the feed with the balances of that moment.
+    /// Success (or a cutover done before) releases it.</remarks>
     public async Task<AccountingCutoverResult> EnsureCutoverAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var result = await EnsureCutoverCoreAsync(cancellationToken);
+            _feedGate?.Release();
+            return result;
+        }
+        catch (Exception e)
+        {
+            _feedGate?.Hold($"the accounting cutover failed: {e.Message}");
+            throw;
+        }
+    }
+
+    private async Task<AccountingCutoverResult> EnsureCutoverCoreAsync(CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -213,6 +235,13 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
         {
             if (_memoTask is not null || _stopped)
                 return;
+
+            // NL-619: without a cutover the memo pass would mark its completion with nothing written
+            if (_feedGate?.IsHeld == true)
+            {
+                _logger.LogWarning("The accounting memo backfill does not run: {Reason}", _feedGate.Reason);
+                return;
+            }
 
             var token = _stopping.Token;
             _memoTask = Task.Run(() => RunMemoLoopAsync(token), CancellationToken.None);

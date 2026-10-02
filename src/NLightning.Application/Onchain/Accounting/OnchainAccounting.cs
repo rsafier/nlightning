@@ -41,7 +41,9 @@ using Domain.Onchain.Models;
 /// resolution event carries the output's value as <see cref="ValueKey"/>). The close event lists the counted outputs (<see cref="CountedVoutsKey"/>), and the resolution events read
 /// them from it, so a close recorded before the feed (no close event) counts nothing.</para>
 /// <para><b>The close.</b> <c>AmountMsat</c> = −B, B = our balance per the commitment that confirmed (our net balance
-/// plus the HTLCs we offered, trimmed ones included); for a commitment we cannot rebuild (a future commitment, an unknown
+/// plus the HTLCs we offered, trimmed ones included), except for a revoked commitment, where B is our latest local
+/// commitment's balance (what the books hold, NL-616; the revoked state's is <see cref="RevokedStateBalanceKey"/>); for
+/// a commitment we cannot rebuild (a future commitment, an unknown
 /// spend, a revoked one without its revocation log entry) our latest local commitment's balance stands in
 /// (<see cref="BalanceSourceKey"/>). B = <c>pendingMsat</c> + <c>FeeMsat</c> + <c>lostMsat</c>: <c>FeeMsat</c> is what
 /// our balance paid for the commitment beyond its outputs when we fund it (the commitment fee, the peer's anchor and
@@ -97,6 +99,7 @@ internal static class OnchainAccounting
     public const string OurOutputsKey = "ourOutputsSat";
     public const string CommitmentFeeKey = "commitmentFeeSat";
     public const string LatestBalanceKey = "latestLocalBalanceMsat";
+    public const string RevokedStateBalanceKey = "revokedStateBalanceMsat";
     public const string FundingTxIdKey = "fundingTxId";
     public const string CountedVoutsKey = "countedVouts";
     public const string DescriptorKey = AccountingDetailKeys.Descriptor;
@@ -178,7 +181,13 @@ internal static class OnchainAccounting
     {
         var weFund = channel.IsInitiator;
         var latest = latestSpec is null ? (long?)null : OurBalanceMsat(latestSpec);
-        var balance = spec is not null ? OurBalanceMsat(spec) : latest ?? 0;
+        var stateBalance = spec is not null ? OurBalanceMsat(spec) : latest ?? 0;
+
+        // NL-616: a revoked commitment carries an old state's balance, while the books' Channels account holds our
+        // latest one (every payment since was booked); the close takes the latest out, and the difference to the
+        // revoked state is part of lostMsat (the penalty's gains come back through the resolution events)
+        var revokedWithLatest = closeKind == ChannelCloseKind.RevokedCommitment && latest is not null;
+        var balance = revokedWithLatest ? latest!.Value : stateBalance;
         var counted = descriptors.Where(d => CountsAtClose(d, weFund)).OrderBy(d => d.Vout).ToList();
         var pending = counted.Sum(d => checked((long)d.AmountSat * 1_000));
 
@@ -189,7 +198,7 @@ internal static class OnchainAccounting
                                        && output.Id == htlc.Id))
                     trimmed += (long)htlc.Amount.MilliSatoshi;
 
-        var fee = spec is not null && weFund ? Math.Max(0, balance - pending - trimmed) : 0;
+        var fee = spec is not null && weFund ? Math.Max(0, stateBalance - pending - trimmed) : 0;
         var lost = balance - pending - fee;
         var outputsSat = spend.Outputs.Aggregate(0UL, (sum, o) => sum + o.AmountSat);
         var commitmentFee = spentFunding.CapacitySatoshis >= outputsSat
@@ -214,7 +223,8 @@ internal static class OnchainAccounting
                 (BucketFromKey, ChannelBucket), (BucketToKey, PendingBucket),
                 (CloseKindKey, closeKind.ToString()), (CommitmentNumberKey, Text(commitmentNumber)),
                 (FunderKey, weFund ? "true" : "false"),
-                (BalanceSourceKey, spec is not null ? BalanceFromCommitment : BalanceFromLatestLocal),
+                (BalanceSourceKey, spec is not null && !revokedWithLatest ? BalanceFromCommitment : BalanceFromLatestLocal),
+                (RevokedStateBalanceKey, revokedWithLatest ? Text(stateBalance) : null),
                 (PendingKey, Text(pending)), (LostKey, Text(lost)), (TrimmedHtlcKey, Text(trimmed)),
                 (OurOutputsKey, ours.ToString(CultureInfo.InvariantCulture)), (CommitmentFeeKey, commitmentFee),
                 (LatestBalanceKey, latest is { } value ? Text(value) : null),

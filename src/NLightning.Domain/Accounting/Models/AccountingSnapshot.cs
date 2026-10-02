@@ -37,6 +37,10 @@ public sealed record AccountingSnapshot(
     /// <see cref="ChannelBalanceBucket.PendingHtlcOnchainMsat"/>).</summary>
     public long PendingHtlcOnchainMsat => Channels.Sum(c => c.PendingHtlcOnchainMsat);
 
+    /// <summary>Outputs of force closes we may still take that the books do not count yet (see
+    /// <see cref="ChannelBalanceBucket.PendingUncountedMsat"/>).</summary>
+    public long PendingUncountedMsat => Channels.Sum(c => c.PendingUncountedMsat);
+
     /// <summary>How many outputs of force closes are still waiting for a resolution of ours.</summary>
     public int PendingSweepCount => Channels.Sum(c => c.PendingSweepCount);
 
@@ -64,12 +68,16 @@ public sealed record AccountingSnapshot(
 /// <param name="LocalInFlightMsat">Our offered HTLCs not final yet (part of <see cref="LocalBalanceMsat"/>).</param>
 /// <param name="RemoteInFlightMsat">The peer's offered HTLCs not final yet (part of
 /// <see cref="RemoteBalanceMsat"/>).</param>
-/// <param name="PendingOnchainMsat">Our outputs of the channel's force close that no transaction spent yet (to_local,
-/// to_remote, anchor, penalties): pending, waiting or broadcast.</param>
-/// <param name="PendingHtlcOnchainMsat">The channel's HTLC outputs on chain not resolved yet: either side may still
-/// take them.</param>
-/// <param name="PendingSweepCount">How many outputs make up the two amounts above.</param>
+/// <param name="PendingOnchainMsat">Our outputs of the channel's force close that no transaction spent yet and that the
+/// books count as pending (to_local, to_remote, a funder's anchor, second-level outputs): pending, waiting or
+/// broadcast.</param>
+/// <param name="PendingHtlcOnchainMsat">The channel's HTLC outputs on chain not resolved yet that the books count as
+/// pending (the HTLCs we offered): either side may still take them.</param>
+/// <param name="PendingSweepCount">How many outputs make up the three pending amounts.</param>
 /// <param name="IsLoaded">Whether the channel is loaded in memory (false: only its on-chain outputs are known).</param>
+/// <param name="PendingUncountedMsat">Unresolved outputs we may still take that the books book only once claimed
+/// (the peer's HTLCs, a revoked commitment's outputs, a fundee's anchor; NL-618): a possible gain, not part of
+/// <see cref="AccountingSnapshot.TotalMsat"/>.</param>
 public sealed record ChannelBalanceBucket(
     ChannelId ChannelId,
     ShortChannelId? ShortChannelId,
@@ -83,7 +91,8 @@ public sealed record ChannelBalanceBucket(
     long PendingOnchainMsat,
     long PendingHtlcOnchainMsat,
     int PendingSweepCount,
-    bool IsLoaded);
+    bool IsLoaded,
+    long PendingUncountedMsat = 0);
 
 /// <summary>
 /// The on-chain wallet in an <see cref="AccountingSnapshot"/> (the <c>walletbalance</c> numbers).

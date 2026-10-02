@@ -178,6 +178,8 @@ public class TcpServiceTests
     [Fact]
     public async Task Given_AnIPv6LoopbackListenAddress_When_AClientConnectsOverV6_Then_TheEventCarriesThePeer()
     {
+        Assert.SkipUnless(s_ipv6LoopbackAvailable.Value, "The host has no IPv6 loopback (NL-615)");
+
         // Arrange
         var port = await PortPoolUtil.GetAvailablePortAsync();
         var service = CreateService([$"[::1]:{port}"]);
@@ -209,6 +211,8 @@ public class TcpServiceTests
     [Fact]
     public async Task Given_AWildcardV6ListenAddress_When_ClientsConnectOverBothFamilies_Then_BothAreAccepted()
     {
+        Assert.SkipUnless(s_ipv6LoopbackAvailable.Value, "The host has no IPv6 loopback (NL-615)");
+
         // Arrange: [::] is bound dual-stack, so an IPv4 peer (loopback here) reaches it as a mapped address too
         var port = await PortPoolUtil.GetAvailablePortAsync();
         var service = CreateService([$"[::]:{port}"]);
@@ -275,6 +279,27 @@ public class TcpServiceTests
         // Act / Assert
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.StopListeningAsync());
     }
+
+    /// <summary>
+    /// Whether this host can bind the IPv6 loopback (NL-615): a container without an IPv6 stack reports
+    /// <see cref="Socket.OSSupportsIPv6"/> yet refuses <c>[::1]</c>.
+    /// </summary>
+    private static readonly Lazy<bool> s_ipv6LoopbackAvailable = new(() =>
+    {
+        if (!Socket.OSSupportsIPv6)
+            return false;
+
+        try
+        {
+            using var probe = new Socket(AddressFamily.InterNetworkV6, SocketType.Stream, ProtocolType.Tcp);
+            probe.Bind(new IPEndPoint(IPAddress.IPv6Loopback, 0));
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+    });
 
     private static TcpService CreateService(IReadOnlyList<string> listenAddresses)
     {

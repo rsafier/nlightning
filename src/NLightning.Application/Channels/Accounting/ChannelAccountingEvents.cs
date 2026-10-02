@@ -71,12 +71,48 @@ internal static class ChannelAccountingEvents
     }
 
     /// <summary>
+    /// Records <see cref="AccountingEventKind.ChannelFunded"/> (and the push) for a channel that failed or went on chain
+    /// before its funding reached its depth (NL-617): the confirmation handler only runs for a channel awaiting it, so
+    /// without this its force close would take our balance out of a channel bucket that never received it. Once per
+    /// funding (the event's key), in its own save; never throws.
+    /// </summary>
+    public static async Task RecordLateChannelFundedAsync(IUnitOfWork unitOfWork, ChannelModel channel, uint height,
+                                                          ShortChannelId shortChannelId, DateTimeOffset occurredAt,
+                                                          ILogger logger)
+    {
+        try
+        {
+            if (unitOfWork.AccountingEventDbRepository is not { } events
+             || channel.FundingOutput is not { TransactionId: { } fundingTxId }
+             || await events.ExistsAsync(AccountingEventKeys.ChannelFunded(channel.ChannelId, fundingTxId)))
+                return;
+
+            var built = await BuildChannelFundedAsync(unitOfWork, channel, occurredAt, (height, shortChannelId));
+            foreach (var accountingEvent in built)
+                if (!await events.ExistsAsync(accountingEvent.EventKey))
+                    events.Add(accountingEvent);
+
+            await unitOfWork.SaveChangesAsync();
+            logger.LogInformation("Recorded the funding of channel {ChannelId}, {State} before its funding confirmed",
+                                  channel.ChannelId, Enum.GetName(channel.State));
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            logger.LogError(e, "Could not record the late funding of channel {ChannelId} in the accounting feed",
+                            channel.ChannelId);
+        }
+    }
+
+    /// <summary>
     /// The events <see cref="StageChannelFundedAsync"/> stages (<see cref="AccountingEventKind.ChannelFunded"/>, then the
     /// push when one was recorded and is not zero), read from <paramref name="unitOfWork"/> but not staged; empty when
     /// the channel has no funding outpoint. The backfill writes them as memo events (NL-602 A1-T6). May throw.
     /// </summary>
+    /// <param name="confirmedAt">The funding's block and short channel id when the channel does not hold them (a
+    /// channel that failed before its funding confirmed, NL-617); null takes the channel's.</param>
     public static async Task<IReadOnlyList<AccountingEventModel>> BuildChannelFundedAsync(
-        IUnitOfWork unitOfWork, ChannelModel channel, DateTimeOffset occurredAt)
+        IUnitOfWork unitOfWork, ChannelModel channel, DateTimeOffset occurredAt,
+        (uint Height, ShortChannelId ShortChannelId)? confirmedAt = null)
     {
         if (channel.FundingOutput is not { TransactionId: { } fundingTxId } funding)
             return [];
@@ -115,8 +151,10 @@ internal static class ChannelAccountingEvents
         }
 
         var push = await GetPushAmountAsync(unitOfWork, channel.ChannelId);
-        var height = channel.FundingCreatedAtBlockHeight > 0 ? channel.FundingCreatedAtBlockHeight : (uint?)null;
-        var shortChannelId = IsSet(channel.ShortChannelId) ? channel.ShortChannelId : (ShortChannelId?)null;
+        var height = confirmedAt?.Height
+                  ?? (channel.FundingCreatedAtBlockHeight > 0 ? channel.FundingCreatedAtBlockHeight : (uint?)null);
+        var shortChannelId = confirmedAt?.ShortChannelId
+                          ?? (IsSet(channel.ShortChannelId) ? channel.ShortChannelId : (ShortChannelId?)null);
         var funded = new AccountingEventModel
         {
             EventKey = AccountingEventKeys.ChannelFunded(channel.ChannelId, fundingTxId),

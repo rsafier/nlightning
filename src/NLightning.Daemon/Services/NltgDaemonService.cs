@@ -242,7 +242,8 @@ public class NltgDaemonService : BackgroundService
 
     /// <summary>
     /// The accounting cutover (NL-602 A1-T6). A failure is logged and the node starts anyway: the node must run to
-    /// protect its channels, and the cutover is tried again at the next start.
+    /// protect its channels. The feed then records nothing until a later start's cutover succeeds (NL-619: the backfill
+    /// holds the feed's gate), so that start opens the feed with the node's balances again.
     /// </summary>
     private async Task EnsureAccountingCutoverAsync(CancellationToken cancellationToken)
     {
@@ -255,8 +256,8 @@ public class NltgDaemonService : BackgroundService
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            _logger.LogError(e, "The accounting cutover failed; the node starts without it and tries again at the "
-                              + "next start");
+            _logger.LogError(e, "The accounting cutover failed; the node starts without it, the accounting feed "
+                              + "records nothing until the next start's cutover succeeds");
         }
     }
 

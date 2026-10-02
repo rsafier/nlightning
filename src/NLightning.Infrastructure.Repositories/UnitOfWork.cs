@@ -13,6 +13,7 @@ using Database.Onchain;
 using Database.Payment;
 using Domain.Accounting.Books;
 using Domain.Accounting.Interfaces;
+using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
@@ -89,6 +90,7 @@ public class UnitOfWork : IUnitOfWork
 
     // Accounting feed (NL-602)
     private AccountingEventDbRepository? _accountingEventDbRepository;
+    private readonly AccountingFeedGate? _accountingFeedGate;
     private AccountingBooksDbRepository? _accountingBooksDbRepository;
 
     public IBlockchainStateDbRepository BlockchainStateDbRepository =>
@@ -165,7 +167,7 @@ public class UnitOfWork : IUnitOfWork
     public IOfferDbRepository OfferDbRepository => _offerDbRepository ??= new OfferDbRepository(_context);
 
     public IAccountingEventDbRepository AccountingEventDbRepository =>
-        _accountingEventDbRepository ??= new AccountingEventDbRepository(_context);
+        _accountingEventDbRepository ??= new AccountingEventDbRepository(_context, _accountingFeedGate);
 
     public IAccountingBooksDbRepository AccountingBooksDbRepository =>
         _accountingBooksDbRepository ??= new AccountingBooksDbRepository(_context);
@@ -189,8 +191,9 @@ public class UnitOfWork : IUnitOfWork
     /// snapshot stored without one runs under while it is loaded (NL-290); null keeps the check off.</param>
     public UnitOfWork(NLightningDbContext context, ILogger<UnitOfWork> logger, ISha256 sha256,
                       IUtxoMemoryRepository utxoMemoryRepository, TimeProvider? timeProvider = null,
-                      ulong? maxDustHtlcExposureMsat = null)
+                      ulong? maxDustHtlcExposureMsat = null, AccountingFeedGate? accountingFeedGate = null)
     {
+        _accountingFeedGate = accountingFeedGate;
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _logger = logger;
         _sha256 = sha256;

@@ -459,10 +459,13 @@ public sealed class OnchainAccountingTests : IDisposable
     [Fact]
     public async Task Given_RevokedCommitment_When_PenalizedAndTheCheaterTakesOurHtlc_Then_PenaltyBreachAndZeroPending()
     {
-        // Arrange: Bob's commitment with both HTLCs, revoked by the next round, confirmed
+        // Arrange: Bob's commitment with both HTLCs, revoked by the next rounds (in which we pay Bob 5,000 sat, so our
+        // latest balance is not the revoked state's, NL-616), confirmed
         var revoked = _pair.Alice.State.RemoteCommit;
-        _pair.Add(_pair.Alice, 5_000_000, RealSigningCommitmentPair.Preimage(3));
+        var paid = _pair.Add(_pair.Alice, 5_000_000, RealSigningCommitmentPair.Preimage(3));
         _pair.Settle(_pair.Alice);
+        _pair.Fulfill(_pair.Bob, paid, RealSigningCommitmentPair.Preimage(3));
+        _pair.Settle(_pair.Bob);
         _channel.UpdateCommitments(_pair.Alice.State);
         _store.RevocationLog[(_channel.ChannelId, revoked.Number)] =
             RevokedCommitmentModel.From(_channel.ChannelId, revoked);
@@ -474,10 +477,15 @@ public sealed class OnchainAccountingTests : IDisposable
                                          revoked.PerCommitmentPoint);
         await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
 
-        // Assert: our balance on the revoked commitment moved (it holds our offered HTLC)
+        // Assert (NL-616): the close takes our latest balance out of the channels (what the books hold), not the
+        // revoked state's, which the details keep
         var closed = Assert.Single(_store.Events);
-        Assert.Equal(-OurBalanceMsat(revoked.Spec), closed.AmountMsat);
-        Assert.Equal(OnchainAccounting.BalanceFromCommitment, closed.Details[OnchainAccounting.BalanceSourceKey]);
+        var latestBalance = OurBalanceMsat(_pair.Alice.State.LocalCommit.Spec);
+        Assert.NotEqual(OurBalanceMsat(revoked.Spec), latestBalance);
+        Assert.Equal(-latestBalance, closed.AmountMsat);
+        Assert.Equal(OnchainAccounting.BalanceFromLatestLocal, closed.Details[OnchainAccounting.BalanceSourceKey]);
+        Assert.Equal(OurBalanceMsat(revoked.Spec).ToString(CultureInfo.InvariantCulture),
+                     closed.Details[OnchainAccounting.RevokedStateBalanceKey]);
         var toRemote = Row(OutputDescriptorKind.PaymentToRemote);
         var toLocal = Row(OutputDescriptorKind.RevokedToLocal);
         var ourHtlc = _store.Outputs.Values.Single(o => o is
@@ -526,9 +534,9 @@ public sealed class OnchainAccountingTests : IDisposable
         var books = BooksSimulator.Of(_store.Events);
         Assert.Equal(0, books[AccountRole.Pending]);
         Assert.Equal(closed.AmountMsat, books[AccountRole.Channels]);
-        Assert.Equal(-(long)penaltyInputsSat * 1_000, books[AccountRole.OnchainGain]);
-        Assert.Equal((long)OurHtlcSat * 1_000 + Math.Max(0, Msat(closed, OnchainAccounting.LostKey)),
-                     books[AccountRole.LossOnchain]);
+        var lost = Msat(closed, OnchainAccounting.LostKey);
+        Assert.Equal(-(long)penaltyInputsSat * 1_000 + Math.Min(0, lost), books[AccountRole.OnchainGain]);
+        Assert.Equal((long)OurHtlcSat * 1_000 + Math.Max(0, lost), books[AccountRole.LossOnchain]);
     }
 
     [Fact]

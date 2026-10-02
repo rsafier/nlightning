@@ -9,6 +9,7 @@ using Backfill;
 using Books;
 using Domain.Accounting.Books;
 using Domain.Accounting.Interfaces;
+using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -44,10 +45,12 @@ public static class AccountingServiceCollectionExtensions
                                                           sp.GetRequiredService<IServiceScopeFactory>(),
                                                           sp.GetService<IBlockchainMonitor>(),
                                                           sp.GetService<TimeProvider>()));
+        services.TryAddSingleton<AccountingFeedGate>();
         services.TryAddSingleton(sp => new AccountingBackfillService(
                                      sp.GetRequiredService<IServiceScopeFactory>(),
                                      sp.GetRequiredService<ILogger<AccountingBackfillService>>(),
-                                     sp.GetService<TimeProvider>()));
+                                     sp.GetService<TimeProvider>(),
+                                     feedGate: sp.GetService<AccountingFeedGate>()));
         services.TryAddSingleton<IAccountingBackfill>(sp => sp.GetRequiredService<AccountingBackfillService>());
         services.TryAddSingleton(sp => new AccountingBooksService(
                                      sp.GetRequiredService<IServiceScopeFactory>(),

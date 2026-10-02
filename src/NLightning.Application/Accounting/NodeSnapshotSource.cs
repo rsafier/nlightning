@@ -14,6 +14,7 @@ using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Onchain.Accounting;
 
 /// <summary>
 /// The node's live balances by bucket (NL-602, plan <c>docs/agents/ACCOUNTING_PLAN.md</c> §7 IPC 42): one bucket per
@@ -25,7 +26,11 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <para>Pending on-chain funds are the channel's unresolved <c>OutputResolutions</c> rows (read in a scope of its
 /// own) that are ours and not spent yet (<see cref="OutputResolutionState.Pending"/>, <c>Waiting</c>,
 /// <c>Broadcast</c>): a <c>Resolved</c> output's money is already in the wallet (our sweep) or gone (the peer's
-/// spend). HTLC outputs are reported apart: either side may still take them.</para>
+/// spend). HTLC outputs are reported apart: either side may still take them. Only the outputs the books count as
+/// pending (<see cref="OnchainAccounting.CountsAtClose(OutputDescriptorKind, HtlcDirection?, bool)"/>, the rule the
+/// close event's <c>countedVouts</c> and the resolutions follow) go into those two amounts; the others (the peer's
+/// HTLCs, a revoked commitment's outputs, a fundee's anchor) are booked only once claimed and are reported as
+/// <see cref="ChannelBalanceBucket.PendingUncountedMsat"/> (NL-618).</para>
 /// <para>Closed and Stale channels are left out; a channel whose funding is spent (<see cref="ChannelState.OnchainResolving"/>)
 /// reports no off-chain amount (see <see cref="ChannelBalanceBucket"/>).</para>
 /// </remarks>
@@ -67,20 +72,20 @@ public sealed class NodeSnapshotSource : INodeSnapshotSource
             if (!listed.Add(channel.ChannelId))
                 continue;
 
-            pending.TryGetValue(channel.ChannelId, out var outputs);
+            pending.Outputs.TryGetValue(channel.ChannelId, out var outputs);
             buckets.Add(ToBucket(channel, outputs));
         }
 
         // Channels resolved on chain that are no longer loaded (a restart keeps every non-Closed channel loaded, so
         // this is a channel removed from memory while outputs of it are still open)
-        foreach (var (channelId, outputs) in pending.OrderBy(p => p.Key.ToString(), StringComparer.Ordinal))
+        foreach (var (channelId, outputs) in pending.Outputs.OrderBy(p => p.Key.ToString(), StringComparer.Ordinal))
         {
             if (!listed.Add(channelId))
                 continue;
 
-            var (ours, htlcs, count) = Sum(outputs);
+            var (ours, htlcs, uncounted, count) = Sum(outputs, pending.Funders.GetValueOrDefault(channelId));
             buckets.Add(new ChannelBalanceBucket(channelId, null, ChannelState.OnchainResolving, null, 0, 0, 0, 0, 0,
-                                                 ours, htlcs, count, false));
+                                                 ours, htlcs, count, false, uncounted));
         }
 
         var wallet = new WalletBalanceBucket(ToMsat(_utxoMemoryRepository.GetConfirmedBalance(height).MilliSatoshi),
@@ -100,13 +105,13 @@ public sealed class NodeSnapshotSource : INodeSnapshotSource
 
     private static ChannelBalanceBucket ToBucket(ChannelModel channel, List<OutputResolutionModel>? outputs)
     {
-        var (pendingOnchain, pendingHtlcs, count) = Sum(outputs);
+        var (pendingOnchain, pendingHtlcs, uncounted, count) = Sum(outputs, channel.IsInitiator);
         // A default ShortChannelId has no bytes; block 0 never holds a funding transaction
         var scid = channel.ShortChannelId.BlockHeight == 0 ? (ShortChannelId?)null : channel.ShortChannelId;
         var capacity = channel.FundingOutput is { } funding ? ToMsat(funding.Amount.MilliSatoshi) : 0;
         if (channel.State is ChannelState.OnchainResolving)
             return new ChannelBalanceBucket(channel.ChannelId, scid, channel.State, channel.RemoteNodeId, capacity, 0, 0,
-                                            0, 0, pendingOnchain, pendingHtlcs, count, true);
+                                            0, 0, pendingOnchain, pendingHtlcs, count, true, uncounted);
 
         long localInFlight = 0;
         long remoteInFlight = 0;
@@ -127,41 +132,45 @@ public sealed class NodeSnapshotSource : INodeSnapshotSource
         return new ChannelBalanceBucket(channel.ChannelId, scid, channel.State, channel.RemoteNodeId, capacity,
                                         ToMsat(channel.LocalBalance.MilliSatoshi),
                                         ToMsat(channel.RemoteBalance.MilliSatoshi), localInFlight, remoteInFlight,
-                                        pendingOnchain, pendingHtlcs, count, true);
+                                        pendingOnchain, pendingHtlcs, count, true, uncounted);
     }
 
-    private static (long Ours, long Htlcs, int Count) Sum(List<OutputResolutionModel>? outputs)
+    private static (long Ours, long Htlcs, long Uncounted, int Count) Sum(List<OutputResolutionModel>? outputs,
+                                                                          bool weFund)
     {
         if (outputs is null)
-            return (0, 0, 0);
+            return (0, 0, 0, 0);
 
         long ours = 0;
         long htlcs = 0;
+        long uncounted = 0;
         foreach (var output in outputs)
         {
             var amountMsat = ToMsat((OutputDescriptorData.TryDecode(output)?.AmountSat ?? 0) * 1_000);
-            if (IsHtlc(output.Descriptor))
+            if (!OnchainAccounting.CountsAtClose(output.Descriptor, output.HtlcDirection, weFund))
+                uncounted += amountMsat;
+            else if (IsHtlc(output.Descriptor) || output.Descriptor == OutputDescriptorKind.RevokedHtlc)
                 htlcs += amountMsat;
             else
                 ours += amountMsat;
         }
 
-        return (ours, htlcs, outputs.Count);
+        return (ours, htlcs, uncounted, outputs.Count);
     }
 
-    private async Task<Dictionary<ChannelId, List<OutputResolutionModel>>> ReadPendingOutputsAsync(
-        CancellationToken cancellationToken)
+    private sealed record PendingOutputs(Dictionary<ChannelId, List<OutputResolutionModel>> Outputs,
+                                         Dictionary<ChannelId, bool> Funders);
+
+    private async Task<PendingOutputs> ReadPendingOutputsAsync(CancellationToken cancellationToken)
     {
         var pending = new Dictionary<ChannelId, List<OutputResolutionModel>>();
+        var funders = new Dictionary<ChannelId, bool>();
         if (_scopeFactory is null)
-            return pending;
+            return new PendingOutputs(pending, funders);
 
-        IReadOnlyList<OutputResolutionModel> outputs;
-        using (var scope = _scopeFactory.CreateScope())
-        {
-            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            outputs = await unitOfWork.OnchainResolutionDbRepository.GetUnresolvedOutputsAsync();
-        }
+        using var scope = _scopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var outputs = await unitOfWork.OnchainResolutionDbRepository.GetUnresolvedOutputsAsync();
 
         foreach (var output in outputs)
         {
@@ -176,7 +185,24 @@ public sealed class NodeSnapshotSource : INodeSnapshotSource
             list.Add(output);
         }
 
-        return pending;
+        // Whether we funded a channel that is no longer loaded (only its anchor depends on it, NL-618)
+        foreach (var channelId in pending.Keys)
+        {
+            if (_channelMemoryRepository.TryGetChannel(channelId, out _))
+                continue;
+
+            try
+            {
+                if (await unitOfWork.ChannelDbRepository.GetByIdAsync(channelId) is { } stored)
+                    funders[channelId] = stored.IsInitiator;
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                // Unreadable: its anchor is reported as not counted
+            }
+        }
+
+        return new PendingOutputs(pending, funders);
     }
 
     private static long ToMsat(ulong msat) => msat > long.MaxValue ? long.MaxValue : (long)msat;

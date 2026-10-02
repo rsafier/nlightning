@@ -311,9 +311,10 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
             new AccountingReconcileLine(AccountRole.Pending, balances.GetValueOrDefault(AccountRole.Pending),
                                         pendingMsat,
                                         $"{prefix}{snapshot.PendingSweepCount} unspent outputs of force closes "
-                                      + $"({snapshot.PendingHtlcOnchainMsat} msat of HTLC outputs); the node also "
-                                      + "counts outputs the books book only once claimed (the peer's HTLCs, a revoked "
-                                      + "commitment's outputs, a fundee's anchor)"),
+                                      + $"({snapshot.PendingHtlcOnchainMsat} msat of HTLC outputs); "
+                                      + $"{snapshot.PendingUncountedMsat} msat more of outputs the books book only once "
+                                      + "claimed (the peer's HTLCs, a revoked commitment's outputs, a fundee's anchor) "
+                                      + "left out"),
             new AccountingReconcileLine(AccountRole.Wallet, balances.GetValueOrDefault(AccountRole.Wallet),
                                         walletMsat,
                                         $"{prefix}wallet outputs in a block ({snapshot.Wallet.UnconfirmedMsat} msat "

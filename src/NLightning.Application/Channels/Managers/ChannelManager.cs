@@ -2171,6 +2171,19 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 return;
             }
 
+            // NL-617: a channel that failed (or went on chain) before its funding reached the depth still had its
+            // funding confirmed: the accounting feed records it, so the force close leaves a bucket it entered
+            if (channel.State is ChannelState.Failed or ChannelState.OnchainResolving && confirmedTxId is { } fundedTxId
+             && channel.FundingOutput is { TransactionId: { } fundingTxId, Index: { } fundingIndex }
+             && fundingTxId == fundedTxId)
+            {
+                await ChannelAccountingEvents.RecordLateChannelFundedAsync(
+                    scope.ServiceProvider.GetRequiredService<IUnitOfWork>(), channel, firstSeenAtHeight,
+                    new ShortChannelId(firstSeenAtHeight, transactionIndex, fundingIndex),
+                    (_serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow(), _logger);
+                return;
+            }
+
             // Funding confirmation is only processed once per channel
             if (!IsAwaitingOurFundingConfirmation(channel))
             {

@@ -8,6 +8,7 @@ using Application.Accounting.Backfill;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Models;
+using Domain.Accounting.Services;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
@@ -201,6 +202,70 @@ public sealed class AccountingBackfillTests : IAsyncLifetime
         Assert.Equal("true", marker.Details["skippedOpening"]);
         Assert.DoesNotContain(events, e => e.EventKey.StartsWith("open:channel", StringComparison.Ordinal)
                                          || e.EventKey == AccountingEventKeys.OpeningBalance("wallet"));
+    }
+
+    [Fact]
+    public async Task Given_AFailedCutover_When_LiveEventsFollowAndTheNodeStartsAgain_Then_TheOpeningBalancesAreWritten()
+    {
+        // Arrange: the cutover fails (NL-619), the node runs on and a live writer adds an event
+        await SeedNodeAsync();
+        var gate = new AccountingFeedGate();
+        await using (var failing = new AccountingBackfillService(new FailingScopeFactory(),
+                                                                 NullLogger<AccountingBackfillService>.Instance,
+                                                                 _clock, feedGate: gate))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => failing.EnsureCutoverAsync(
+                                                                    TestContext.Current.CancellationToken));
+            failing.StartMemoBackfill();
+            await failing.MemoTask;
+        }
+
+        Assert.True(gate.IsHeld);
+        using (var uow = new UnitOfWork(Db.CreateDbContext(), NullLogger<UnitOfWork>.Instance, Db.Sha256,
+                                        new UtxoMemoryRepository(), _clock, accountingFeedGate: gate))
+        {
+            uow.AccountingEventDbRepository.Add(new AccountingEventModel
+            {
+                EventKey = AccountingEventKeys.WalletReceived(new TxId(Fill(0x78)), 0),
+                Kind = AccountingEventKind.WalletReceived,
+                OccurredAt = s_cutoverAt,
+                AmountMsat = 1_000,
+                Finality = AccountingFinality.Confirmed
+            });
+            await uow.SaveChangesAsync();
+        }
+
+        Assert.Equal(1, gate.DroppedCount);
+        Assert.Empty(await ReadEventsAsync());
+        await using var backfill = CreateBackfill();
+
+        // Act: the next start
+        var result = await backfill.EnsureCutoverAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the opening balances, not the dev-node path that writes none
+        Assert.Equal(AccountingCutoverOutcome.Written, result.Outcome);
+        var events = (await ReadEventsAsync()).ToDictionary(e => e.EventKey);
+        Assert.Contains(AccountingEventKeys.OpeningBalance("wallet"), events.Keys);
+        Assert.DoesNotContain(events.Values, e => e.Kind == AccountingEventKind.WalletReceived);
+        Assert.False(events[AccountingEventKeys.Cutover()].Details.ContainsKey("skippedOpening"));
+    }
+
+    [Fact]
+    public async Task Given_TheGateHeld_When_ACutoverSucceeds_Then_TheGateOpens()
+    {
+        // Arrange
+        var gate = new AccountingFeedGate();
+        gate.Hold("an earlier attempt failed");
+        await using var backfill = new AccountingBackfillService(Provider.GetRequiredService<IServiceScopeFactory>(),
+                                                                 NullLogger<AccountingBackfillService>.Instance, _clock,
+                                                                 feedGate: gate);
+
+        // Act
+        await backfill.EnsureCutoverAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(gate.IsHeld);
+        Assert.True(gate.Admits(AccountingEventKeys.WalletReceived(new TxId(Fill(0x79)), 0)));
     }
 
     [Fact]
@@ -512,6 +577,12 @@ public sealed class AccountingBackfillTests : IAsyncLifetime
     private sealed class ManualClock(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    /// <summary>A scope factory whose database is unreachable.</summary>
+    private sealed class FailingScopeFactory : IServiceScopeFactory
+    {
+        public IServiceScope CreateScope() => throw new InvalidOperationException("The database is unreachable");
     }
 
     /// <summary>Cancels <paramref name="cancellation"/> when the <paramref name="cancelAtScope"/>th scope opens.
