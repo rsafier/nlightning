@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-02 by the batch10 integrator (branch `wip/batch10` from `wip/fafo` at `44aeaf5f`; 13 lanes run in parallel worktrees on the owner decisions of 2026-10-02 and merged with `--no-ff` in lane order — lane branches `b10-*` hold the originals; the statuses carry the lane SHAs and the merge SHA): merges `a8bfc61a` (b10-plugin: NL-151 fixed, new NL-706, NL-707), `94d3e68e` (b10-chain: NL-012 fixed, testnet4), `666ec562` (b10-sec: NL-677, NL-678, NL-679 fixed, new NL-693), `d8ffd72e` (b10-acct-edges: NL-606, NL-607, NL-608, NL-610, NL-611, NL-612, NL-613, NL-645 fixed, new NL-688; migration `AddMutualCloseTerms`), `7b778718` (b10-lots: NL-674 (owner decision A, D-A12 amended), NL-657, NL-675, NL-680, NL-681, NL-658 fixed; migration `AddLotBuckets`), `f24b7ba3` (b10-splice-resume: NL-600 fixed, NL-698 new and fixed, NL-496 partial), `cb806664` (b10-attr: NL-332 fixed, `option_attribution_data` Optional by default), `a38caf6c` (b10-aot: NL-338 fixed, NL-300 partial, new NL-708, NL-709, NL-710 (fixed)), `1600d945` (b10-db-proofs: NL-662, NL-429, NL-347 fixed), `0419d687` (b10-eclair: NL-557, NL-407 fixed, NL-554 partial, NL-717, NL-718, NL-719 new and fixed), `4178186b` (b10-ldk: NL-556 fixed, NL-722, NL-723 new and fixed, new NL-721, NL-724), `9cabb01e` (b10-close-interop: NL-286 fixed, NL-725 new and fixed), `ee20aa9f` (b10-tor-interop: NL-572 fixed, new NL-729). Integration fixes: `5602e27b` (the later migration's Designers regenerated over both lanes' columns; `HasPendingModelChanges` false on all three providers), `08caba71` (the AOT MessagePack test after the plugin deletion). Review findings fixed with regression tests (each fails before its fix): NL-732 (`8be600e6`, a stalled HTTP body hung the fee/price/Esplora readers), NL-735 (`8be600e6`, LAN IP `http://` accepted), NL-733 and NL-734 (`1f956f72`), NL-736, NL-737, NL-738 (`290f3dcc`; plus `SetClosingTransaction`'s doc), NL-739 (`017d3ff0`, lots stranded by an unsettled claim), NL-740, NL-741 (`8a094fa9`, `2a26ac15`), NL-742, NL-743 (`fe957403`, route hints by the peer's alias; the template's old 144 margin raised on existing nodes), NL-744 (`3655e6f3`), and two test-strength findings without new IDs: the NL-600 wallet-load test now counts the loads (`41ab5a74`) and the NL-725 CLN proof asserts CLOSINGD_COMPLETE (`4e1f7763`, class 4/4 under the Docker lock). Rejected review findings: the BlindedPathBuilder scid choice "has no unit test" (the three arms are the `BlindedPaymentPathFactoryTests` alias theory), the blinded BOLT 11 margin "still 144" and the stale Application CLAUDE.md margin (both already 1,008 once b10-eclair and b10-ldk were merged). Owner decisions recorded: NL-161, NL-162, NL-169 wontfix (WASM/Blazor parked until there is a browser-wallet goal), NL-157 wontfix (layering left as is, do not make it worse), NL-437 wontfix (a .NET limitation; `SECURITY_REVIEW.md` SR-09 note), NL-180 stays open (interop stays local, no CI Docker). FAFO/FAFO2 (`~/.nltg`, not touched): NL-743 raises their pinned 144 margin at the next start with a warning. Gates on the merged tree: Release build `--no-incremental` 0 warnings, `dotnet format` clean, `check-sln-configs` OK, full non-Docker net10.0 suite green (see the final run in the integrator's report).
+
 Updated 2026-10-02 by the A3 final integrator (branch `wip/acct-a3`, A3-T4 at `77f455b0`): merged lane `acct-a3-t7` with `--no-ff` (`c62d861b`: config template, `SECURITY_REVIEW.md` SR-20..SR-27, plan and CLAUDE.md docs), then fixed the confirmed findings of the two reviews (waves 1-2 and A3-T4): NL-670 (`94af679d`, one self-payment rule: we are the payee), NL-671, NL-672, NL-673 (`ecd983b1`: late facts rolled back and re-staged with the open period, valued at their own time; the reversal of a pre-feed wallet receive corrects the opening lots at cost). Ledger: NL-640 fixed (`77f455b0`), NL-641 fixed (`503b2a6b`), NL-667 fixed (partial, `77f455b0`), NL-659 fixed (`ecd983b1`, as NL-672), NL-602 closed (fixed); new open: NL-657, NL-658 (A3-T4 follow-ups), NL-674 (finding 4 of the T4 review: the lot kind ignores the classified account, a D-A12 owner decision), NL-675 (the closed-fact reversal's phantom gain the T4 review noted), NL-676 (the A3 Docker smoke), NL-677..NL-679 (SECURITY_REVIEW SR-21, SR-22, SR-26), NL-680 (a forced close of a still-unvalued late fact). No review finding was rejected. Gates: Release `--no-incremental` build 0 CS warnings, `dotnet format` clean, sln check OK, full non-Docker net10.0 suite green at `ecd983b1` (13,033 passed, 6 platform/explicit skips: Domain 4126, Application 3522, Infrastructure.Bitcoin 1532, Daemon 1232, Integration 1027, Infrastructure 635, Serialization 622, Bolt11 337; `HasPendingModelChanges` false on all three providers); no schema change. No Docker.
 
 Updated 2026-10-02 by the A3 integrator (branch `wip/acct-a3` from `wip/fafo` at `9873f3d3`, A3-T0 schema at `5e3ffb0b`; 8 lanes run in parallel worktrees and merged with `--no-ff` in lane order — lane branches `acct-a3-*` hold the originals): merges `42915f80` (fixes-a: NL-621, NL-624, NL-626), `64cb9db0` (fixes-b: NL-622, NL-623, NL-625, NL-627, NL-628), `5812ac5e` (NL-609 rebalances), `27e8cb95` (A3-T1 labels and tags), `214dd51b` (A3-T3 classification), `8b5b0f75` (A3-T2 prices), `d7a9d1f9` (A3-T5 period close), `53daea21` (A3-T6 financial reports), integration commit `afce146a`. Fixed: NL-609, NL-621..NL-628 (per-entry SHAs are the merge commits). New: NL-640, NL-641 (T2), NL-645, NL-646 (T3), NL-653 (fixes-b), NL-660..NL-662 (T5), NL-665..NL-667 (T6); of these NL-646 (by NL-609), NL-661 and NL-666 (both by T2) were already fixed in the merged tree. Integration decisions: one `IAccountingAdjustmentSink` (T5's, carrying T2's `AdjustLateValuationAsync`) registered by the new `AddAccountingPeriodServices`; T6's `IAccountingFinancialProjection` folded into T5's `IFinancialBooksProjector` (one seam for A3-T4; the off default now also refuses the financial reports and exports until T4); NL-609's Dr Rebalance (a + fee) is split in the financial lines into the transfer a and an `expenses:fees:routing` line of the fee (D-A12); IPC 45 actions 5 (classify), 10-12 (prices), 20-22 (close) and `PayInvoiceIpcRequest` keys 5/6 (labels) and 7/8 (pins) kept as the lanes numbered them (no collisions). Gates: Release `--no-incremental` build 0 CS warnings, `dotnet format` clean, sln check OK, full non-Docker net10.0 suite green at `afce146a` (12,948 passed, 6 platform/explicit skips: Domain 4094, Application 3495, Infrastructure.Bitcoin 1532, Daemon 1205, Integration 1024, Infrastructure 635, Serialization 622, Bolt11 337; `HasPendingModelChanges` false on all three providers); in the first run one T3 regex-timeout case (`ClassificationEngineTests` "label regex matches") failed once under load at 178 ms against its 100 ms budget and passed alone and in the second run. No Docker.
@@ -129,12 +131,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 64 | 67 |
+| open | 0 | 0 | 1 | 40 | 41 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 172 | 319 | 567 |
-| wontfix | 0 | 0 | 3 | 5 | 8 |
+| fixed | 14 | 62 | 184 | 358 | 618 |
+| wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **179** | **390** | **645** |
+| **Total** | **14** | **62** | **191** | **408** | **675** |
 
 ### Epics
 
@@ -281,11 +283,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-012 No signet / testnet4 chain hashes
-- **Status:** open (partial: e7d90370)
+- **Status:** fixed (e7d90370, 56382bc8; merged 94d3e68e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Protocol/Constants/ChainConstants.cs:20-40`
 - **Evidence:** Only Main, Testnet, Regtest exist. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): signet (and custom signets such as Mutinynet) is added (`ChainConstants.cs:53`, e7d90370, NL-291); testnet4 is still missing.
+- **Update (batch10, 2026-10-02):** Lane b10-chain: testnet4 is a fifth built-in network: `ChainConstants.Testnet4` (BIP 94 genesis 00000000da84f2ba...0da8bf043 in wire order, recomputed from its header and equal to NBitcoin's), `BitcoinNetwork.Testnet4` (`ChainHash`, `IsBuiltIn`, `Resolve`, refused as a custom name), the NBitcoin mapping, BOLT 11 `lntb` (decoded as testnet4 only when it is the expected network), the config template (RPC 48332, mempool.space testnet4 fees, LND seed, bootstrap off), the `withdraw` network hint and the CLI help. Tests: `BitcoinNetworkTests`, `NBitcoinNetworkResolverTests`, `SecureKeyManagerTests` (testnet3 and testnet4 refuse each other's key files), `InvoiceTestnet4Tests`, `NodeServiceExtensionsTests`.
 - **Fix sketch:** Add Signet and Testnet4 genesis hashes and network mappings.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -1740,11 +1743,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-557 Eclair refuses any v1 open from us once option_dual_fund is negotiated (push opens, --v1)
-- **Status:** open
+- **Status:** fixed (369669f1, eda14abc; merged 0419d687)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Daemon/Handlers/OpenChannelClientHandler.cs` (`OpensDualFundedByDefault`: a push amount, zero-conf or `--v1` keeps the open v1)
 - **Evidence:** Since NL-551 a plain `openchannel` to a peer with `option_dual_fund` is v2, but a push amount (v2 has no push), zero-conf or `--v1` still sends `open_channel`, and Eclair 0.14.3 refuses it once both `init`s offered `option_dual_fund`: "requirement failed: custom remote channel reserve is incompatible with dual-funded channels" (`EclairInteropTests.Given_DefaultFeatures_When_WeOpenWithAPush_Then_EclairRefusesTheV1Open`, a regular test that asserts the refusal). BOLT 2 does not forbid a v1 open between peers that both support dual funding, so this is Eclair's policy; our side only fails late with Eclair's error text. The Eclair suite's push open comes from a node with `DualFund = No`, which Eclair accepts. CLN and LND accept v1 opens from us.
+- **Update (batch10, 2026-10-02):** Lane b10-eclair: Eclair's policy, not our bug: v0.14.3 (and its master) takes DualFunding from both `init`s and then refuses any custom reserve, so every v1 `open_channel` fails once `option_dual_fund` is negotiated; BOLT 2 allows the v1 open and CLN and LDK accept it. Our client error now says the peer may accept only a dual-funded open (drop the push, zero-conf or `--v1`); the Docker refusal test asserts it.
 - **Fix sketch:** None needed on the wire. Optionally, when a v1 open fails with that Eclair error, say in the client error that the peer requires a dual-funded open (drop the push or zero-conf); or report it upstream to Eclair.
 - **Blocks/Blocked-by:** Related NL-180, NL-551
 - **Plan ref:** —
@@ -2356,11 +2360,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-332 OptionAttributionData cannot be un-gated on an LND interop proof
-- **Status:** open
+- **Status:** fixed (a96f82f7; merged cb806664)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Node/Options/FeatureOptions.cs` (`ExperimentalFeatures`)
 - **Evidence:** LND 0.20 does not implement option_attribution_data (no bits 36/37, no TLV 1 sent; it accepts ours and still reads the failure), so the LND interop gate for taking `OptionAttributionData` out of `ExperimentalFeatures` cannot pass. Attribution is proven only between NLightning nodes (Docker `AttributionFlowTests`) (reported by W7-A and the W7 integrator).
+- **Update (batch10, 2026-10-02):** Lane b10-attr, owner decision (b): `option_attribution_data` (bits 36/37) is Optional by default on every network and left `FeatureOptions.ExperimentalFeatures`, which is now empty (the gate stays, testable through the internal `ExperimentalFeatureSet`). BOLT 4 ties the requirements to our own advertisement and TLVs 1/3 are odd, so peers without the feature ignore them; invoices do not set bit 37. Docker: `AttributionFlowTests` 6/6 on the default features, plus a default node paid by LND and failing LND's HTLC with 920-byte TLVs that LND accepts (bit 37 in `ListPeers`, 0x400F at index 1, channel active).
 - **Fix sketch:** Decide: un-gate on the NLightning-to-NLightning proof plus a CLN/Eclair check, or wait for an LND release with the feature.
 - **Blocks/Blocked-by:** Related NL-072, NL-326
 - **Plan ref:** ONION M3b
@@ -3503,11 +3508,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 D12, G5-T1
 
 ### NL-407 Eclair stops answering query_short_channel_ids after four queries
-- **Status:** open
+- **Status:** fixed (3c1dedc1; merged 0419d687)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs`
 - **Evidence:** In every first-run probe ACINQ (Eclair) answered 4 queries of 200 channels, then the fifth got no `reply_short_channel_ids_end` within `SyncReplyTimeout` (2 min) and we ended the querying of that connection (live gossip kept flowing) (reported by the mainnet gossip probe, first run, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Not diagnosed. The verified run did **not** reproduce it at its slower, paced rate: Eclair answered 109 queries in run1 (one later query and one in the restart timed out).
+- **Update (batch10, 2026-10-02):** Lane b10-eclair: Eclair answers at most 5 gossip queries per second per connection (`router.sync.max-queries-per-second`) and drops the rest without a reply. Our sync waits at least `Gossip:MinQueryInterval` (250 ms) between queries on one connection; Docker: 12 queries in a row answered with the default, query 5 never answered at 0. New: NL-718.
 - **Fix sketch:** Check Eclair's per-peer query budget in its source and with a peer we have a channel with; pace queries to Eclair if a budget exists.
 - **Blocks/Blocked-by:** Part of NL-099
 - **Plan ref:** BOLT7 G3-T2
@@ -4558,14 +4564,35 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-151 Dead or unwired code (plugin loader and friends)
-- **Status:** open
+- **Status:** fixed (3678f297; merged a8bfc61a)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Daemon/Services/PluginLoaderService.cs`, `Models/PluginEntry.cs`, `Helpers/AesGcmHelper.cs`, `Models/FeeRateCacheData.cs`, `src/NLightning.Daemon.Contracts/IControlClient.cs`, `src/NLightning.Domain/Node/Interfaces/IPeerFactory.cs`, `ISecretStorageServiceFactory.cs`, `IChannelKeySetFactory.cs`, `ISignatureValidator.cs`, `src/NLightning.Infrastructure.Bitcoin/Adapters/OutputAdapters/*`, `src/NLightning.Domain/Protocol/Enums/HtlcType.cs`
 - **Evidence:** Never registered/called; `IDaemonContext` has no implementation.
+- **Update (batch10, 2026-10-02):** Lane b10-plugin, owner decision (a): `NLightning.Daemon.Plugins` (project, sln entry and its 36 mapping lines, the Daemon reference), `PluginLoaderService`, `PluginEntry`, `IControlClient`, `AesGcmHelper`, `FeeRateCacheData` (with its model test), `IPeerFactory`, `HtlcType` and the six `Adapters/OutputAdapters` interfaces deleted; `ISecretStorageServiceFactory`, `IChannelKeySetFactory` and `ISignatureValidator` were already gone. A grep of every deleted name found no other reference. Integration: the NativeAOT lane's changes to the deleted plugin files were dropped and its `MessagePackAotReadinessTests` scans the IPC contracts only (08caba71). New: NL-706, NL-707.
 - **Fix sketch:** Wire the plugin loader or delete; delete the rest.
 - **Blocks/Blocked-by:** Part of NL-602 (2026-10-02 owner decision: no runtime plugin loading (AOT, security); accounting is built in, so the loader, `NLightning.Daemon.Plugins` and `IControlClient` are deleted)
 - **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-706 The fee rate cache file (`FeeEstimation:CacheFile`) is never written or read
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/FeeService.cs` (`SaveToFileAsync`, `LoadFromFileAsync`)
+- **Evidence:** Both methods only log and return; their old bodies were commented out and serialized the Daemon-only `FeeRateCacheData` (deleted under NL-151). `FeeService` still parses `FeeEstimation:CacheFile`, the template writes it and CLAUDE.md (NL-306) resolves it against the config directory, so an operator expects a cached estimate across restarts but gets none: after a restart the service uses `FallbackFeeRatePerKw` until the first fetch succeeds (reported by lane b10-plugin).
+- **Fix sketch:** Persist the last estimate (rate, buckets, time) with a source-generated JSON context in Infrastructure.Bitcoin and load it at start when younger than the refresh interval; or drop the setting and its docs.
+- **Blocks/Blocked-by:** Related NL-151
+- **Plan ref:** —
+
+### NL-707 A load flake in the full non-Docker run reported by lane b10-plugin
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** the full `dotnet test -f net10.0 --filter FullyQualifiedName!~Docker` run
+- **Evidence:** Lane b10-plugin saw one failure under the full loaded run that passed alone (its report names it as a load flake; the test was not named in the copy the integrator received). The batch10 integration runs saw only `ClassificationEngineTests` (NL-729) fail that way.
+- **Fix sketch:** Name the test the next time it fails, then de-time it or fold it into NL-729.
+- **Blocks/Blocked-by:** Related NL-729
+- **Plan ref:** —
 
 ### NL-602 [EPIC] Accounting: core event feed and built-in books
 - **Status:** fixed (c62d861b, ecd983b1)
@@ -4632,11 +4659,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION_ROUTING_PLAN §9 risk 8; BOLT2 N0-T8
 
 ### NL-157 Application references Infrastructure; PeerService lives in Infrastructure
-- **Status:** open
+- **Status:** wontfix
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/NLightning.Application.csproj`, `src/NLightning.Infrastructure/Node/Services/PeerService.cs:17`
 - **Evidence:** Handlers use `IBlockchainMonitor`, tx builders and `ITcpService` directly; `TODO: Eventually move this to the Application layer`.
+- **Update (batch10, 2026-10-02):** Owner decision 2026-10-02: the layering is left as it is (a large refactor for no functional gain); the rule stays "do not make it worse" (CLAUDE.md, Layers).
 - **Fix sketch:** Move ports to Domain incrementally; don't add new references.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -5004,34 +5032,77 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Update (A1-T2):** both sides record the push (0 when none) in the channel's first save (`FundingCreatedMessageHandler`, `FundingSignedMessageHandler`); `ChannelFunded` carries it and a `PushSent`/`PushReceived` event goes with it.
 
 ### NL-606 A replaced broadcast that confirms anyway is never marked Confirmed
-- **Status:** open
+- **Status:** fixed (6efaa852, 290f3dcc; merged d8ffd72e)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Repositories/Database/Onchain/BroadcastTransactionDbRepository.cs` (`MarkConfirmedAsync`, ~:121-130, returns for Replaced/Abandoned rows), `BroadcastTransactionModel.MarkConfirmed`, `BlockchainMonitorService` (`_pendingBroadcasts`, `DropSettledBroadcastsAsync`)
 - **Evidence:** Found by the accounting writers (NL-602 A1-T2): when the original of an RBF chain (sweep, claim, penalty, anchor CPFP) confirms instead of its replacement, its row stays `Replaced` and no row of the chain becomes `Confirmed`; the confirmed transaction's fee is then never classified (`AnchorCpfpFee`/`SweepFeeBump`) and only the wallet events record the money. `pendingsweeps` keeps showing the chain as replaced.
+- **Update (batch10, 2026-10-02):** Lane b10-acct-edges: the block decides a broadcast's state: a Replaced or Abandoned row that confirms is marked Confirmed with its fee event, and the still-pending replacement is marked Replaced and no longer sent. Integration review fix NL-736: splice and funding attempts are left out of that voiding.
 - **Fix sketch:** Mark the row of whichever chain member the block holds `Confirmed` (decide from the spender, not from row state), and its siblings `Replaced`.
 - **Blocks/Blocked-by:** Related NL-602
 - **Plan ref:** ACCOUNTING_PLAN A1
 
+### NL-736 The NL-606 voiding marked a pending splice RBF attempt Replaced
+- **Status:** fixed (290f3dcc)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`GetReplacedChainMembersAsync`)
+- **Evidence:** Batch10 review of lane b10-acct-edges: a splice RBF attempt names the attempt it bumps in `ReplacesTransactionId` but keeps it Pending on purpose (wave SPR). When the bumped attempt confirmed, the bump was marked Replaced and dropped; a reorg of that block before the lock left the splice with no attempt to send, and the bump's own later confirmation was not seen. Test: `ChainMonitorAccountingTests.Given_ASpliceRbfAttempt_*` (Splice and Funding; fails before the fix).
+- **Fix sketch:** Done: splice and funding heads are left out of the replacement chains; the splice lock abandons the losers as before.
+- **Blocks/Blocked-by:** Follows NL-606
+- **Plan ref:** —
+
 ### NL-607 Funding and mutual-close accounting events are not reversed by a reorg
-- **Status:** open
+- **Status:** fixed (8270f3e5, 290f3dcc; merged d8ffd72e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Reorg/FundingReconfirmationHandler.cs` (moves the SCID, writes no accounting event), `ChannelManager.CompleteCloseAsync`, `src/NLightning.Application/Channels/Accounting/ChannelAccountingEvents.cs`
 - **Evidence:** NL-602 A1-T2: `ChannelFunded`/`PushSent`/`PushReceived` keep the height and SCID of a funding block that a reorg disconnected, and a `ChannelClosedMutual` whose block is reorged out after the channel went Closed has no `Reversal`. The wallet and on-chain resolution writers already reverse and re-emit (`AccountingConfirmations`, `AccountingEventKeys.Reconfirmed`/`Reemitted`).
+- **Update (batch10, 2026-10-02):** Lane b10-acct-edges: a funding confirmed again elsewhere moves its `ChannelFunded`, push or `SpliceLocked` (reversed and recorded again under the next confirmation key); a mutual close above a fork is reversed in the rewind and recorded again when it confirms again. Integration review fixes NL-737 (memo closes) and NL-738 (same height, another index).
 - **Fix sketch:** Reverse in the reconfirmation handler's save and re-emit with `Reconfirmed`; for a mutual close, reverse when the closing watch is reset by the rewind.
 - **Blocks/Blocked-by:** Related NL-602
 - **Plan ref:** ACCOUNTING_PLAN A1
 
+### NL-737 A memo mutual close reversed by a rewind was recorded again as a real, posting close
+- **Status:** fixed (290f3dcc)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.Accounting.cs` (`StageReorgReversalsAsync`), `src/NLightning.Application/Channels/Accounting/ChannelAccountingEvents.cs` (`RecordMutualCloseAgainAsync`)
+- **Evidence:** Batch10 review of lane b10-acct-edges: a reorg right after the cutover reversed the backfill's memo `ChannelClosedMutual`, and the confirmation that followed recorded a non-memo close that posted Dr Clearing / Cr Channels for a balance the opening balances left out (Channels negative by it). Tests: `ChainMonitorAccountingTests.Given_AMemoMutualCloseAboveTheFork_*`, `ClosingLifecycleTests.Given_AReversedMemoMutualClose_*` (both fail before the fix).
+- **Fix sketch:** Done: memo closes are not reversed by a rewind and never recorded again.
+- **Blocks/Blocked-by:** Follows NL-607
+- **Plan ref:** —
+
+### NL-738 Funding events kept a stale SCID when the funding confirmed again at the same height
+- **Status:** fixed (290f3dcc)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/Reorg/FundingReconfirmationHandler.cs` (`StageFundingEventsMovedAsync`)
+- **Evidence:** Batch10 review of lane b10-acct-edges: the move skipped events recorded at the same height, so a reorg that put the funding back at the same height and another index left `ChannelFunded`, the push and `SpliceLocked` on the void short channel id. Test: `FundingReconfirmationHandlerTests.Given_TheFundingsAccountingEvents_When_TheFundingConfirmedAgainAtTheSameHeightElsewhere_*`.
+- **Fix sketch:** Done: the events stay only when height and short channel id both match.
+- **Blocks/Blocked-by:** Follows NL-607
+- **Plan ref:** —
+
 ### NL-608 A forward booked as settled whose upstream HTLC later times out on chain records no loss
-- **Status:** open
+- **Status:** fixed (0b80fc35; merged d8ffd72e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs` (`FulfillForwardLockedAsync`: the circuit is marked Fulfilled even when the upstream fulfill is refused), on-chain resolvers of the incoming channel
 - **Evidence:** NL-602 A1-T2: `ForwardSettled` (+fee) is written when the circuit turns Fulfilled; if the upstream fulfill was refused (link down, channel on chain) and the incoming HTLC then times out to the peer on chain, we paid downstream and lost the incoming amount, but no event records it (the resolution event of that output is informational under the HTLC ownership rule).
+- **Update (batch10, 2026-10-02):** Lane b10-acct-edges: a Fulfilled circuit whose incoming HTLC the peer takes on chain (or we give up) records `ForwardLostOnchain` for the incoming amount in the resolution's save; a reorg or a replaced close reverses it. The same gap for our own invoice is NL-688.
 - **Fix sketch:** When an incoming HTLC whose circuit is Fulfilled times out to the peer on chain, write a `ForwardLostOnchain` (−incoming amount) in the resolution save.
 - **Blocks/Blocked-by:** Related NL-602, NL-316
 - **Plan ref:** ACCOUNTING_PLAN A1
+
+### NL-688 An invoice settled before its HTLC times out to the peer on chain records no loss
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs`; `Payments/PaymentAccountingEvents.cs`
+- **Evidence:** NL-608 records `ForwardLostOnchain` when a settled forward's incoming HTLC is lost on chain; our own invoice settled (booked `InvoiceSettled`) whose incoming HTLC then times out to the peer on chain (or is given up) books nothing, so the books keep a receipt the node no longer holds (reported by lane b10-acct-edges).
+- **Fix sketch:** Record an `InvoiceLostOnchain` (or a reversal of the settle) in the resolution's save, keyed by generation, reversed by a reorg, like NL-608.
+- **Blocks/Blocked-by:** Related NL-608; part of NL-602
+- **Plan ref:** —
 
 ### NL-609 Rebalances cannot be recorded: the node refuses to pay its own invoices
 - **Status:** fixed (5812ac5e)
@@ -5045,17 +5116,18 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A2
 
 ### NL-610 Who paid a mutual close's fee is inferred, not recorded
-- **Status:** open
+- **Status:** fixed (7cbfe80c, 5602e27b; merged d8ffd72e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Accounting/ChannelAccountingEvents.cs` (`ChannelClosedMutual`), `ChannelModel`
 - **Evidence:** NL-602 A1-T2: the channel does not record whether the close was legacy `closing_signed` (funder pays) or `option_simple_close` and which side was the closer, so `feePaidByUs` is inferred from our balance minus our output (loss of 1,000 msat or more).
+- **Update (batch10, 2026-10-02):** Lane b10-acct-edges: a mutual close records its protocol and, for a simple close, the closer (`ChannelModel.SetCloseTerms`; migration `AddMutualCloseTerms` on all three providers), so who paid the closing fee is no longer inferred. Integration: its Designers regenerated to carry `AddLotBuckets` merged before it (5602e27b); `HasPendingModelChanges` false on all three providers.
 - **Fix sketch:** Persist the close protocol and the closer when the close completes.
 - **Blocks/Blocked-by:** Related NL-602
 - **Plan ref:** ACCOUNTING_PLAN A1
 
 ### NL-611 Our own anchor sweep is not stored, so its resolution is booked as taken by the peer
-- **Status:** open
+- **Status:** fixed (1e50e00c, e62266ba; merged d8ffd72e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Anchors/AnchorCpfpService.cs` (the 16-block anchor sweep is published once and never stored), `OnchainAccounting` resolution events
@@ -5064,23 +5136,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-601, NL-602
 - **Plan ref:** ACCOUNTING_PLAN A1
 - **Update (A2 lane B1):** books impact: a counted anchor (a channel we fund) swept alone by our unstored sweep resolves as taken by the peer and is booked as a loss, while the sweep's deposit to our wallet posts to Clearing, which then does not net to zero.
+- **Update (batch10, 2026-10-02):** Lane b10-acct-edges: our anchor sweep is saved before it is published as `BroadcastPurpose.AnchorSweep = 12` with its fee; its resolution is booked as ours and the peer's anchor in the same sweep as a gain, so the clearing account nets to zero (the -514,000 msat clearing drift seen live on FAFO/FAFO2 on 2026-10-02); a refused sweep is abandoned, and the chain monitor may abandon it after permanent refusals.
 
 ### NL-612 The peer's spend of our offered HTLC output is assumed to be a preimage claim
-- **Status:** open
+- **Status:** fixed (41473b6f; merged d8ffd72e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (resolution events, ownership rule (b))
 - **Evidence:** NL-602 A1-T2: the executor does not parse the spender's witness, so a revocation spend of our own (revoked) commitment's offered HTLC output is tagged `claimedBy=peer`/`valueBookedBy=payment|forward` like a preimage claim.
+- **Update (batch10, 2026-10-02):** Lane b10-acct-edges: the peer's spend of our offered HTLC output is classified by its witness (detail `claimPath`): only a preimage claim leaves the value to the payment or forward; a revocation or unknown spend is booked as a loss.
 - **Fix sketch:** Classify the witness (preimage vs revocation key) when the peer spends one of our HTLC outputs.
 - **Blocks/Blocked-by:** Related NL-602
 - **Plan ref:** ACCOUNTING_PLAN A1
 
 ### NL-613 Two key schemes for re-recorded on-chain facts (Reconfirmed and Reemitted)
-- **Status:** open
+- **Status:** fixed (a5fe3b48; merged d8ffd72e)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Domain/Accounting/Constants/AccountingEventKeys.cs` (`Reconfirmed(baseKey, n)` from the wallet writers, `Reemitted(key, height)` from the resolution writers), `AccountingConfirmations`
 - **Evidence:** NL-602 A1-T2 integration: the two writer groups solved "the same fact recorded again after a reorg" differently; `Reemitted` keyed by height can collide when a fact is reorged back to the same height twice.
+- **Update (batch10, 2026-10-02):** Lane b10-acct-edges: the on-chain resolution writers use the wallet writers' generation keys (`{key}:c2`, `:c3`); `AccountingEventKeys.Reemitted` is gone and old `:re:` keys still count; a fact reorged back to the same height twice is recorded each time.
 - **Fix sketch:** Use `AccountingConfirmations.NextConfirmationKey` (generation counter) for the resolution writers too and drop `Reemitted`.
 - **Blocks/Blocked-by:** Related NL-602
 - **Plan ref:** ACCOUNTING_PLAN A1
@@ -5266,11 +5341,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Update (A3 final integration, 2026-10-02):** fixed by A3-T7 (`503b2a6b`, merged in `c62d861b`): `NLightningTestNode` sets `Accounting:Prices:Source=None`, so a Docker run with `Profile=Financial` never asks mempool.space; a test imports its prices.
 
 ### NL-645 Offer-id classification rules match only received payments: payment events carry the offer string, not its id
-- **Status:** open
+- **Status:** fixed (7e5224ca; merged d8ffd72e)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/PaymentAccountingEvents.cs` (`PaymentSucceeded`/`PaymentFailed` detail `offer`)
 - **Evidence:** Lane A3-T3: `InvoiceSettled` writes detail `offerId` (hex), but `PaymentSucceeded`/`PaymentFailed` write only `offer` (the `lno...` string); `ClassificationEngine` matches `AccountingRule.OfferId` against `offerId`, so a rule on an offer we paid never matches.
+- **Update (batch10, 2026-10-02):** Lane b10-acct-edges: payment events of an offer we paid carry `offerId` (SHA-256 of the offer bytes, as for our own offers), so offer-id classification rules match them.
 - **Fix sketch:** Have the payment writers also write `offerId` (computed from the offer TLVs as `OfferService` does); the engine needs no change.
 - **Blocks/Blocked-by:** Part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN A3-T3
@@ -5317,7 +5393,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T5
 
 ### NL-662 `ResetToCloseAsync`'s bulk statements are not yet proven on Postgres and SQL Server
-- **Status:** open
+- **Status:** fixed (8aa664f0; merged 1600d945)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `src/NLightning.Infrastructure.Repositories/Database/Accounting/AccountingBooksDbRepository.cs` `ResetToCloseAsync`
@@ -5326,6 +5402,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Part of NL-602; A3-T7
 - **Plan ref:** ACCOUNTING_PLAN A3-T5
 - **Update (A3 final integration, 2026-10-02):** `RollbackOpenEntriesAsync` and `ResetToCloseAsync` now also select the open late facts by a `List<long>.Contains` over their ledger sequences and a bitwise flag test (NL-671); still proven on SQLite only, so the Postgres case of the next Docker pass should cover a reset and a rollback with a late fact.
+- **Update (batch10, 2026-10-02):** Lane b10-db-proofs: the shared `Persistence/AccountingBulkStatementsRoundTrip` (`AssertResetToCloseAsync`, `AssertRollbackAsync`) seeds closed entries and lots, an imported lot, a plain adjustment and open late facts before and after the replay point, and checks entries, postings, cursor, last open seq, msat and fiat balances, kept lots' remaining msat and reliefs: it covers the method's transaction, the correlated ExecuteDelete, the ExecuteUpdate of RemainingMsat + n, the `List<long>.Contains` and the bitwise LateFact test. SQLite 8/8, Postgres (`PostgresTests`) 23/23; written for SQL Server, not run (owner rule).
 
 ### NL-665 The operational hledger export's header `commodity 1 msat` is rejected by hledger 1.52
 - **Status:** fixed (be057b0e)
@@ -5361,24 +5438,46 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Update (A3-T4, 2026-10-02):** partial in `77f455b0`: in the open period, `classify set|unset` and rule changes lower the financial cursor and the entry is projected again with the new classification (`Unclassified` dropped, `Classification`/`RuleId` updated; `FinancialBooksProjectorTests.Given_AnOverrideOfAnOpenPeriodEntry_*`, `Given_ARuleAddedAfterAClose_*`). Remaining: closed-period entries keep the flag; their adjustment is NL-660 (open).
 
 ### NL-657 Financial asset accounts carry the market value of their flows, not their own cost basis (lots are pooled node-wide)
-- **Status:** open
+- **Status:** fixed (0b6ad1d6, 017d3ff0; merged 7b778718)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Accounting/Financial/Lots/FinancialEntryPlanner.cs`, `FinancialLotPool.cs` (`AccountingLot.Account` stays null)
 - **Evidence:** Lane A3-T4: every msat line is valued at market and `assets:cost-basis` carries the difference to the lots' cost, so the asset total equals the open lots' cost, but a single account does not: in the FIFO golden journal `assets:lightning:channels` ends at 0 msat and -329.69 USD, offset by `assets:cost-basis` 390.51 USD.
+- **Update (batch10, 2026-10-02):** Lane b10-lots: every lot belongs to a bucket (`AccountingLotBucket`: Channels 1, Pending 2, Wallet 3, Clearing 4, Rebalance 22, HeldOutside 60; migration `AddLotBuckets`: `HeldSince`, `Lender`, relief `Kind`); `FinancialEntryPlanner` plans each entry as flows: a transfer moves its lots at cost (relief Move and a child lot keeping cost and acquisition time), only disposals realize gains, and every asset line carries the cost of the lots it moved; a short bucket settles a debt, takes over bucket-less lots, then borrows (a `Debt` lot). Integration review fix NL-739: only a rebalance in transit claims the destination's lots.
 - **Fix sketch:** Track lots per bucket (`AccountingLot.Account` plus `Split` lots with `ParentLotId`, both already in the schema): a transfer moves the lots it takes, a disposal relieves the source bucket's lots, transfers are valued at the moved lots' cost; handle a bucket that goes negative for a moment (the clearing order between `ChannelFunded` and `WalletOutputSpent`).
 - **Blocks/Blocked-by:** Part of NL-602; related NL-674
 - **Plan ref:** ACCOUNTING_PLAN A3-T4, D-A12
 
+### NL-739 A short bucket claimed the destination's lots, and nothing ever settled the claim
+- **Status:** fixed (017d3ff0)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Accounting/Financial/Lots/FinancialEntryPlanner.cs` (`FromBucket`)
+- **Evidence:** Batch10 review of lane b10-lots, reproduced with a probe: on a node with a channel (lot C, 1e9 for 700) the clearing account spent before the wallet's event claimed C (a debt Clearing->Channels that only a flow Channels->Clearing could settle); the wallet's spend then moved W's lots into the clearing bucket, where they stayed while `assets:onchain:clearing` read 0 msat, the channels bucket held only C against 1.899e9 msat, and later FIFO/LIFO/HIFO disposals from the channels relieved C before the older W. The same for a sweep recorded before its force close. Test: `FinancialEntryPlannerTests.Given_TheClearingAccountSpentFirstOnANodeWithAChannel_*` (fails before).
+- **Fix sketch:** Done: only a rebalance in transit (whose other half pays the destination back) claims; any other short bucket borrows in `LendersOf` order, as on a node without a channel.
+- **Blocks/Blocked-by:** Follows NL-657
+- **Plan ref:** —
+
 ### NL-658 Financial projector scale: catch-up replays over a long unpriced history and a full read of the open lots per working round
-- **Status:** open
+- **Status:** fixed (7d97b859, 1f956f72; merged 7b778718)
 - **Severity:** low
 - **Kind:** performance
 - **Location:** `src/NLightning.Application/Accounting/Financial/FinancialBooksProjector.cs`, `FinancialProjectionRound.LoadAsync`; `PriceValuationService` (cursor lowering)
 - **Evidence:** Lane A3-T4, by design review: when `Profile=Financial` is turned on over months of history with no stored prices, each back-valuation round (24 hours of prices per 10 minutes) lowers the cursor to its earliest newly valued entry and the projector replays the whole tail each time (roughly quadratic). Each round with work reads every open lot (`ListOpenLotsAsync`), and every routing fee opens its own lot.
+- **Update (batch10, 2026-10-02):** Lane b10-lots: the projector keeps its lot pool across rounds and reads every open lot again only when `GetOpenLotsFingerprintAsync` no longer matches, after a rollback or `RunExclusiveAsync`; background rounds wait (at most 6 h) with replays while `PriceValuationService.IsCatchingUp`. Integration review fix NL-734 (the flag missed a page that spent the budget exactly).
 - **Fix sketch:** Import or fetch prices before switching the profile on (documented in the Application CLAUDE.md A3-T7 section). Code options: lower the cursor only once the valued frontier stops moving, or have the projector wait at the first old unvalued entry while a source can still fetch it; keep the pool across rounds and invalidate it on rollback; merge acquisitions of the same kind, hour and price into one lot.
 - **Blocks/Blocked-by:** Part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN A3-T4, §10
+
+### NL-734 `IsCatchingUp` missed a catch-up when one page used the fetch budget exactly
+- **Status:** fixed (1f956f72)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (`RoundAsync`)
+- **Evidence:** Batch10 review of lane b10-lots: `budgetLeftOver` was set only inside the fetch loop, which later pages never enter once the budget is 0, so the NL-658 deferral did not engage and the projector rolled back and replayed every round. Test: `PriceValuationServiceTests.Given_APageThatUsesTheFetchBudgetExactly_*`.
+- **Fix sketch:** Done: a page that still waits for its hours with the budget spent sets it (never a round that may not fetch).
+- **Blocks/Blocked-by:** Follows NL-658
+- **Plan ref:** —
 
 ### NL-659 Late-fact adjustments and closed-fact reversals projected without a price keep unvalued lots for good
 - **Status:** fixed (ecd983b1)
@@ -5406,6 +5505,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Repositories/Database/Accounting/AccountingBooksDbRepository.cs` (`RollbackOpenEntriesAsync`, `ResetToCloseAsync`); `FinancialBooksProjector` (late-fact staging)
 - **Evidence:** A3-T4 review (2026-10-02), reproduced: LIFO, January closed with a 1e9 msat opening balance, a deposit of 5e8 on Mar 5 projected without a price (lot L), a withdrawal of 1e8 dated Jan 20 sealed late (a `LateFact` relieving L). When the Mar 5 price arrived the rollback deleted L together with the adjustment's relief (`lotsToDelete.Any(l => l.Id == r.LotId)`) and the replay skipped the existing late fact: lots 1.5e9 msat against assets of 1.4e9, the withdrawal's 1e8 disposable again; `rebuild --book financial` did the same (rebuild != incremental). Any rollback past such a lot (a reorg, a reclassification) triggered it.
+- **Update (batch10, 2026-10-02):** Lane b10-db-proofs (merged 1600d945, NL-662): the bulk statements of this fix are proven on Postgres too.
 - **Fix sketch:** Done: late facts carry `AccountingEntryFlags.LateFact`; `RollbackOpenEntriesAsync` and `ResetToCloseAsync` delete the open late facts from the replay point on with their postings, lots and reliefs (balances adjusted), `GetLastOpenEntrySeqAsync` counts them, and the replay stages them again (dated at the replay, adjustment 1). Tests: `Accounting/Financial/FinancialBooksProjectorLateFactTests.Given_ALateFactRelievingAnUnvaluedLot_*` (equal to a book that knew the price from the start) and `Given_ALateFactRelievingAnOpenLot_When_Rebuilt_*` (both failed before the fix).
 - **Blocks/Blocked-by:** Part of NL-602; related NL-662 (the bulk statements are proven on SQLite only)
 - **Plan ref:** ACCOUNTING_PLAN A3-T4, A3-T5 (D-A8)
@@ -5431,21 +5531,23 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A3-T4, D-A9, D-A12
 
 ### NL-674 The lot kind follows the operational role, not the classified account: a withdrawal to the operator's own cold wallet classified as a transfer still realizes a gain
-- **Status:** open
+- **Status:** fixed (0b6ad1d6, 4a36cd95; merged 7b778718)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Accounting/Financial/Lots/FinancialLineKind.cs` (`FinancialLotRules.KindOf` reads `posting.Account` only)
 - **Evidence:** A3-T4 review (2026-10-02), confirmed by code reading: `TransfersOut`/`TransfersIn` lines are classifiable (default `equity:transfers:out`/`in`), but a `WalletSent` to the operator's own cold storage stays a disposal whatever account it is classified to (an override to `equity:transfers:cold-storage` included): lots are relieved and a gain realized at market, and the return deposit acquires at market and resets the basis (the "transfer treated as a disposal" mistake §6.2 warns about). The inverse also holds: a rebalance line reclassified to an `expenses:*`/`income:*` account stays a transfer. This follows D-A12's literal "withdrawals to outside dispose", so it is a design gap, not a slip; not fixed tonight because it needs an owner decision (and a held-outside lot pool, which NL-657's per-bucket lots would give).
+- **Update (batch10, 2026-10-02):** Lane b10-lots, owner decision A (D-A12 amended 2026-10-02 in ACCOUNTING_PLAN.md): a `TransfersOut`/`TransfersIn` line a rule or override sends to an `equity:*` account other than the chart's own transfer accounts is a held-outside transfer: a withdrawal moves its lots out at cost (no gain) into the `HeldOutside` bucket, and a deposit classified as the transfer back takes them in at their original cost and dates; beyond what is held outside it acquires at market and notes it. Unclassified withdrawals and deposits stay disposals and acquisitions; a rebalance line classified to income/expenses acquires or disposes.
 - **Fix sketch:** Owner decision on D-A12, then either derive the kind from the classified target as well (a transfer line whose target is in the equity category moves its lots into a "held outside" pool at cost, no gain, and a transfer back takes them out; a rebalance line reclassified to income/expense acquires/disposes), or record the rule in D-A12 and refuse `equity:*` targets for `TransfersIn`/`TransfersOut` rules and overrides.
 - **Blocks/Blocked-by:** Part of NL-602; related NL-657
 - **Plan ref:** ACCOUNTING_PLAN §6.2, D-A12
 
 ### NL-675 The reversal of a closed period's acquisition disposes by the method's order at the original value, realizing a gain against older lots
-- **Status:** open
+- **Status:** fixed (0b6ad1d6; merged 7b778718)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/Financial/FinancialBooksProjector.cs` (`ClosedFactLinesAsync` path); `FinancialEntryPlanner`
 - **Evidence:** A3-T4 review (related to NL-673; documented in A3-T4 reading (4)): a reorg reversing a deposit of a closed period posts the deposit's lines negated at their January value and disposes by FIFO: `FinancialBooksProjectorTests.Given_AFactOfAClosedPeriodReversed_*` relieves the opening lot (1e9 for 400) at the deposit's value 500 and realizes a gain of 100 on sats that never arrived.
+- **Update (batch10, 2026-10-02):** Lane b10-lots: the reversal of a closed fact passes `CorrectionOf`, takes back the lot that fact acquired first, at cost, and realizes nothing.
 - **Fix sketch:** Treat a reversal's disposal of an acquisition as a correction like NL-673's: relieve first the lot the reversed fact opened (`SourceLedgerSeq` = the fact's sequence, when still open) and take its proceeds at cost (`FinancialEntryPlanner`'s `AtCost`), so nothing is realized; update the test's expected lines.
 - **Blocks/Blocked-by:** Part of NL-602; related NL-673
 - **Plan ref:** ACCOUNTING_PLAN A3-T4, A3-T5 (D-A8)
@@ -5461,51 +5563,96 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A3-T7
 
 ### NL-677 The price source's requests mark the node's active hours, from its own IP outside `TorOnly` (SR-21)
-- **Status:** open
+- **Status:** fixed (31fd465e; merged 666ec562)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Accounting/Prices/HttpPriceSource.cs` and its registration (`AddAccountingPriceSources`); `docs/agents/SECURITY_REVIEW.md` SR-21
 - **Evidence:** A3-T7 security review: with `Profile=Financial` and `Prices:Source` `Http`/`Both` (the default) the back-valuation asks mempool.space once per UTC hour that holds an unvalued posting, so the set of hours asked mirrors when the node moved money (no amounts); in Tor `Off` and `Hybrid` it is asked from the node's IP (only `TorOnly` routes it through Tor). Nothing is asked with the default `Operational` profile or `Source=None`/`Csv`.
+- **Update (batch10, 2026-10-02):** Lane b10-sec, owner decision (a): `TorHttpHandler.Create(sp, lifetime, throughTorWhenEnabled)` routes each host when Tor is on (loopback/private IP literals and `localhost` direct, `.onion` through Tor, other hosts through Tor in `TorOnly` or for a client created with the flag); `AddAccountingPriceSources` passes it, so prices go through Tor in `Hybrid` too; a missing SOCKS dialer is refused, never a clearnet fallback. Side effects: in `TorOnly` the fee and Esplora clients reach LAN IPs directly, and in `Hybrid` a `.onion` fee/Esplora URL works. Test: `PriceSourceTorRoutingTests`.
 - **Fix sketch:** Route the price client through Tor whenever `Node:Tor:Mode` is not `Off`, and/or ask whole days (24 contiguous hours) so the request set no longer marks the active hours; meanwhile operators who care run `TorOnly` or `Source=Csv` with `accounting prices import`.
 - **Blocks/Blocked-by:** Part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN D-A1, D-A11; SECURITY_REVIEW SR-21
 
 ### NL-678 The price (and fee/Esplora) HTTP clients read a response of any size, accept `http://`, and a stored price cannot be replaced (SR-22)
-- **Status:** open
+- **Status:** fixed (31fd465e, 8be600e6, 1f956f72; merged 666ec562)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Accounting/Prices/HttpPriceSource.cs` (and the fee/Esplora clients); `PriceValuationService.ImportAsync` (first price of an hour wins); `docs/agents/SECURITY_REVIEW.md` SR-22
 - **Evidence:** A3-T7 security review: the body is read with `HttpClient`'s default buffer limit (2 GiB) under a 30 s timeout; an `http://` URL is accepted and then unauthenticated; a wrong fetched price is stored with its source and time and an import keeps a stored time's price, so it is corrected only by editing `AccountingPrices` before the period closes (after a close a change only posts an adjustment, D-A8).
+- **Update (batch10, 2026-10-02):** Lane b10-sec: answers read bounded (`Infrastructure/Transport/Http/HttpResponseLimits`: price and fee 64 KiB, Esplora 64 KiB and the txid list 4 MiB, `MaxResponseContentBufferSize` as a backstop); plain `http://` refused by the Domain `HttpUrlPolicy` unless loopback/`localhost`/`.onion` or the section's `AllowPlainHttp`; `Accounting:Prices:MaxPriceJumpFactor` (3, 0 = off) refuses a fetched price that far from its nearest stored neighbor within `MaxAge` (meter `nlightning.accounting.prices.rejected`). Integration review fixes: NL-732 (a stalled body hung the reads), NL-733 (the bound ignored the batch's own prices), NL-735 (LAN IP literals accepted). Left: NL-693.
 - **Fix sketch:** Set `MaxResponseContentBufferSize` (for example 64 KiB) on the price client (and the fee/Esplora clients); refuse `http://` unless loopback or `.onion`; add a `prices replace` that rewrites an open-period hour's price and re-projects.
 - **Blocks/Blocked-by:** Part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN D-A11; SECURITY_REVIEW SR-22
 
-### NL-679 `accounting export --output` writes its temporary file with the umask and follows a planted symlink (SR-26)
+### NL-693 A wrong price stored from the source can only be corrected by editing `AccountingPrices`
 - **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs`; IPC `accounting prices`
+- **Evidence:** Stored prices are never replaced (first wins, reproducible reports), so a wrong one that passes the NL-678 sanity bound (or one fetched before any neighbor existed) stays until the operator edits the table before the period closes; there is no `prices replace` command (SECURITY_REVIEW "What remains" 6, reported by lane b10-sec).
+- **Fix sketch:** An `accounting prices replace` admin command that swaps an open-period price, logs it and lets the back-valuation re-value the entries it priced (closed periods: an adjustment, D-A8).
+- **Blocks/Blocked-by:** Related NL-678; part of NL-602
+- **Plan ref:** —
+
+### NL-679 `accounting export --output` writes its temporary file with the umask and follows a planted symlink (SR-26)
+- **Status:** fixed (31fd465e; merged 666ec562)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Client/Handlers/AccountingBooksCommands.cs` (the `accounting export --output` writer: `<file>.part` with `FileMode.Create`, then a rename); `docs/agents/SECURITY_REVIEW.md` SR-26
 - **Evidence:** A3-T7 security review: the export holds the node's whole money history (SR-20); the `.part` file gets the process umask (typically 0644), so in a shared directory another user can read it, and a pre-planted `<file>.part` symlink is followed (the client truncates the link's target with the operator's rights).
+- **Update (batch10, 2026-10-02):** Lane b10-sec: `accounting export --output` goes through `AccountingBooksCommands.WriteExportFileAsync`: a `<file>.<random hex>.part` created with `FileMode.CreateNew` (O_EXCL: a planted file or symlink fails the create) and mode 0600, flushed, then renamed over the target (a symlink there is replaced, not followed); a failed export deletes the temporary file and keeps the old target. Test: `Daemon.Tests/Client/AccountingExportFileTests`.
 - **Fix sketch:** Create the temporary file 0600 (`UnixCreateMode`) with `FileMode.CreateNew` and a random suffix, as the daemon's own secret files are (SR-03).
 - **Blocks/Blocked-by:** Part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN D-A6; SECURITY_REVIEW SR-26
 
+### NL-732 A fee, price or Esplora answer whose body stalls after its headers hangs the reader forever
+- **Status:** fixed (8be600e6)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/FeeService.cs`, `Accounting/Prices/HttpPriceSource.cs`, `Gossip/EsploraTxIdSource.cs`
+- **Evidence:** Batch10 review of lane b10-sec (before it shipped): with `ResponseHeadersRead` the 30 s `HttpClient.Timeout` stops at the headers, and the bounded body read had only the caller's token, so a server or Tor circuit that sent headers and then stalled held `FeeService.StartAsync` (daemon start), the refresh loop, every expired-cache fee lookup and the price round gate. Proven by `Tests.Utils/Mocks/StallingBodyHttpHandler` tests in `FeeServiceSourceTests`, `HttpPriceSourceTests` and `EsploraTxIdSourceTests` (all three hang 30 s and fail before the fix).
+- **Fix sketch:** Done: one linked deadline (the client's `Timeout`) over the request and the bounded body read in the three clients; a timeout is handled like a request timeout.
+- **Blocks/Blocked-by:** Follows NL-678
+- **Plan ref:** —
+
+### NL-733 The price sanity bound ignored the prices accepted earlier in the same batch
+- **Status:** fixed (1f956f72)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (`IsPlausibleAsync`)
+- **Evidence:** Batch10 review of lane b10-sec: the neighbors came from AsNoTracking queries while `prices fetch` and a valuation page save only after their loop, so over a range without stored prices a 10x answer between good ones was stored (and stored prices are never replaced, NL-693). Tests: `PriceValuationServiceTests.Given_NoStoredPrice_*` (two, both fail before the fix).
+- **Fix sketch:** Done: the batch's accepted, staged prices count as neighbors too.
+- **Blocks/Blocked-by:** Follows NL-678
+- **Plan ref:** —
+
+### NL-735 Plain `http://` to a LAN IP literal stopped an upgraded node from starting
+- **Status:** fixed (8be600e6)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Node/Options/HttpUrlPolicy.cs`
+- **Evidence:** Batch10 review of lane b10-sec: a self-hosted mempool on the LAN (`http://192.168.1.10:3006/...`, common on Umbrel/Start9) made `FeeEstimationOptions` invalid after the upgrade, so `FeeService` threw at start, while the transport (`TorOptions.IsLocalNetworkAddress`, `TorHttpHandler`) already treats those addresses as local. Tests: `HttpUrlPolicyTests`, `FeeServiceSourceTests.Given_AFeeUrl_*`.
+- **Fix sketch:** Done: private-network IP literals (RFC 1918, link-local, unique-local) are accepted like loopback; host names are not (DNS could point anywhere) and CGNAT space is not local.
+- **Blocks/Blocked-by:** Follows NL-678
+- **Plan ref:** —
+
 ### NL-680 A late fact closed while still unvalued (a forced close) is valued by a price adjustment at its adjustment date's price
-- **Status:** open
+- **Status:** fixed (c026ba04; merged 7b778718)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (`LateFactTimesAsync` skips closed postings; the closed path calls `AdjustLateValuationAsync` with the posting's own time); `AccountingPeriodService.AdjustLateValuationAsync`
 - **Evidence:** A3 final integration, by code reading while fixing NL-672: a late fact's lines are re-staged at the fact's price only while the late fact is open. A close refuses unvalued postings unless `--force`; after a forced close of the period that holds a still-unvalued late fact, the back-valuation's closed path values its postings through a `Price` adjustment at the late fact's own `OccurredAt` (the adjustment's date), so it takes that date's price and leaves the lot's cost null (NL-672's defect, for forced closes only).
+- **Update (batch10, 2026-10-02):** Lane b10-lots: the back-valuation prices a late fact that a forced close closed unvalued at the fact's own time.
 - **Fix sketch:** In the closed path, look a `LateFact` posting up at the fact's time too (`LateFactTimesAsync` without the open filter) for the price, and stage the lot's cost and the reliefs' gains in the same adjustment; or refuse `--force` while a late fact is unvalued.
 - **Blocks/Blocked-by:** Part of NL-602; follow-up of NL-672
 - **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T5
 
 ### NL-681 A reclassification of a line left unvalued by a forced close moves its fiat at the adjustment's price
-- **Status:** open
+- **Status:** fixed (c026ba04; merged 7b778718)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Accounting/Financial/Classification/AccountingReclassification.cs` (`PlanMove`); `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs`; `AccountingPeriodService.AdjustLateValuationAsync`
 - **Evidence:** NL-660 fix (by code reading): a closed line that was unvalued at a forced close moves with no fiat, so the back-valuation values the two move lines at the adjustment's own time (they cancel in the entry, but shift that value between the accounts), and a `Price` adjustment found later for the closed line still lands on the line's original account (the next reclassification carries it over).
+- **Update (batch10, 2026-10-02):** Lane b10-lots: a reclassified closed line without a value moves at 0 in the book currency (`PlanMove`'s `unvaluedCurrency`), and its later price adjustment lands on the account it is held in now (`AccountingReclassification.CurrentAccountOf`).
 - **Fix sketch:** Leave the move lines of an unvalued closed line out of the back-valuation (or value them at the fact's time), and post a later `Price` adjustment on the account the reclassifications hold the line in now; or refuse a reclassification of an unvalued closed line until it is valued.
 - **Blocks/Blocked-by:** Part of NL-602; related NL-680
 - **Plan ref:** ACCOUNTING_PLAN A3-T3, A3-T5 (D-A8)
@@ -5554,21 +5701,23 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-161 Argon2 not implemented in the JS (WASM) provider
-- **Status:** open
+- **Status:** wontfix
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Crypto/Providers/JS/SodiumJsCryptoProvider.cs:207-210`
 - **Evidence:** `throw new NotImplementedException();`
+- **Update (batch10, 2026-10-02):** Owner decision 2026-10-02: WASM/Blazor is parked until there is a browser-wallet goal; the `Release.Wasm` CI build stays as it is.
 - **Fix sketch:** Bind libsodium.js `crypto_pwhash`.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
 
 ### NL-162 JS ChaCha20 keystream never executed; blazorSodium.js export unverified
-- **Status:** open
+- **Status:** wontfix
 - **Severity:** medium
 - **Kind:** test
 - **Location:** `src/NLightning.Infrastructure/Crypto/Providers/JS/{LibsodiumJsWrapper,SodiumJsCryptoProvider}.cs`, `test/BlazorTests/`
 - **Evidence:** Compiled in CI `Release.Wasm` only; no Blazor/Playwright test; unverified whether `blazorSodium.js` needs to re-export `crypto_stream_chacha20_ietf_xor`.
+- **Update (batch10, 2026-10-02):** Owner decision 2026-10-02: WASM/Blazor is parked until there is a browser-wallet goal; the `Release.Wasm` CI build stays as it is.
 - **Fix sketch:** Add a BlazorTestApp page + Playwright test with the RFC 8439 vector.
 - **Blocks/Blocked-by:** Blocked-by NL-169 for local runs
 - **Plan ref:** M1-T2 open items
@@ -5686,11 +5835,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-437 Plaintext key copies in managed strings and NBitcoin objects cannot be wiped
-- **Status:** open
+- **Status:** wontfix
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs`
 - **Evidence:** The xprv and password strings and NBitcoin `Key`/`ExtKey` objects stay in managed memory until collected (SECURITY_REVIEW SR-09, lane R3).
+- **Update (batch10, 2026-10-02):** Owner decision 2026-10-02: a .NET limitation. An immutable `string` and the private fields of NBitcoin `Key`/`ExtKey` cannot be wiped and the GC may copy them first; `SECURITY_REVIEW.md` SR-09 and "What remains" 3 now say so and name the OS mitigations (encrypted disk and swap, no core dumps, no memory-reading process on the node's machine).
 - **Fix sketch:** Keep secrets in pinned byte arrays and wipe them; minimise NBitcoin key objects.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -5738,11 +5888,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-169 Release.Wasm build fails on macOS (linux-x64 pinned npm deps)
-- **Status:** open
+- **Status:** wontfix
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure/Crypto/Providers/JS/package.json`
 - **Evidence:** esbuild/rollup pinned to linux-x64 → `EBADPLATFORM`; Wasm changes can only be verified in CI.
+- **Update (batch10, 2026-10-02):** Owner decision 2026-10-02: WASM/Blazor is parked until there is a browser-wallet goal; the `Release.Wasm` CI build stays as it is.
 - **Fix sketch:** Use optional platform deps or unpin.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -5853,6 +6004,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/`, `.github/workflows/`
 - **Evidence:** The project goal requires LND/CLN/Eclair/LDK interop; only LND v0.20.0 is exercised, manually. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): re-scoped: CLN v26.06.8 interop is covered (`Docker/Interop/Cln/`, 7c7c8c5e and later: connect, channels both ways, payments, reestablish, close, gossip, onion messages, offers, peer storage; 39 tests at wave B12). Remaining: no Eclair or LDK fixture (Eclair is met only as a mainnet gossip peer by `tools/NLightning.GossipProbe`, NL-407), and CI runs no Docker test (`.github/workflows/dotnet.yml:40` and the other workflows filter `FullyQualifiedName!~Docker`), which needs NL-276. Update (lane interop-el, branch `wip/fafo-interop-el`): Eclair 0.14.3 basic interop covered: `Fixtures/EclairFixture` (own bitcoind 31.1 and network, image built from `test/Docker/eclair`), `Docker/Interop/Eclair/EclairInteropTests` (`Category=Interop.Eclair`, `scripts/run-interop.sh eclair`): init both ways, our dual-funded open and Eclair's, v1 opens both ways, payments both ways, cooperative close from either side, reestablish after Eclair restarts; 8 regular + 2 `Explicit` tests, 10/10 green from the host in about 3 min. Findings NL-550, NL-551, NL-552, NL-553, NL-554. Update (lane interop-el, LDK): ldk-server `dc02b76c` (LDK Node over rust-lightning 0.3.0-rc1) basic interop covered: `Fixtures/LdkFixture` (own bitcoind 31.1 and network, image built from `test/Docker/ldk_server`), `Docker/Interop/Ldk/LdkInteropTests` (`Category=Interop.Ldk`, `scripts/run-interop.sh ldk`): init both ways (anchors, splice, quiesce, route blinding, onion messages negotiated; no dual funding), our v1 open (1M sat, 300k pushed) and LDK's (1M sat), both anchors and private, payments both ways, cooperative close started by either side (legacy `closing_signed`), reestablish after LDK restarts; 6 tests, 6/6 green three runs in a row from the host (53-98 s; the image was already built). No new incompatibility: LDK asks for a `to_self_delay` of 144 and offers a 100 % in-flight limit on unannounced channels, so neither NL-550 nor NL-552 applies. Findings NL-555, NL-556. Still open: Docker tests in CI.
+- **Update (batch10, 2026-10-02):** Owner 2026-10-02: interop stays local, no CI Docker (the Docker suites keep running locally under the machine-wide lock). Batch10 widened the local coverage: Eclair (lane b10-eclair, NL-554: splicing, dual-funded RBF, force and simple closes, gossip, offers), LDK (lane b10-ldk, NL-556: force closes, offers, keysend, public channels, reestablish with an HTLC), close restarts against CLN and LND (NL-286) and Tor against CLN (NL-572). Left: the CI half, by owner decision.
 - **Fix sketch:** Add an LDK fixture (ldk-server) and a scheduled CI job with Docker.
 - **Blocks/Blocked-by:** Related NL-550, NL-551, NL-552
 - **Plan ref:** —
@@ -5938,21 +6090,33 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ABCD wave 3 gate
 
 ### NL-286 Close interop gaps are proven in-process only
-- **Status:** open (partial: 8096700, a38c999)
+- **Status:** fixed (8096700, a38c999, d222ceca, ae518c9c, 4e1f7763; merged 9cabb01e)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/CooperativeCloseFlowTests.cs`, `test/NLightning.Application.Tests/Channels/Close/`
 - **Evidence:** LND 0.20 ignores fee_range, so the fee_range receive path (B2-CLS-R03..R06) runs only between two of our nodes; there is no Docker restart while ShuttingDown/Negotiating/Closing, no close against CLN/Eclair, and an LND-funded channel closed by LND (our non-funder path) is in-process only (reported by W3-B). Update (ABCD wave 4, `6b5d50e`): close against CLN is proven in Docker (`ClnCloseTests`: we close with and without our `fee_range`, CLN closes a channel we funded and one it funded, each to a confirmed closing tx; CLN's fee, range and our decision asserted from the log). Still missing: a Docker restart while ShuttingDown/Negotiating/Closing, and Eclair. The integrator listed this as fixed; the ledger keeps it open for the restart case.
+- **Update (batch10, 2026-10-02):** Lane b10-close-interop: Docker restarts while ShuttingDown, Negotiating or Closing: `Interop/Cln/ClnCloseRestartTests` (CLN v26.06.8: shutdown reply lost then reconnection or restart; closing_signed answer lost then restart; restart in Closing before and while the tx confirms) and `CloseRestartFlowTests` (LND 0.20: restart while ShuttingDown with a held HTLC that then settles before the fee negotiation; restart in Closing, LND keeps a broadcast close out of the negotiation). Found NL-725. Integration: the Closing case now asserts CLN reaches CLOSINGD_COMPLETE with its closing_signed at the agreed fee, and reuses the channel read before the stop (a node started after the close confirmed may unload it first, seen once); class 4/4 under the Docker lock.
 - **Fix sketch:** Add a Docker restart-while-ShuttingDown case, and CLN close cases on the W3-E `ClnFixture`.
 - **Blocks/Blocked-by:** Related NL-034, NL-285
 - **Plan ref:** BOLT2 Proof N10
 
+### NL-725 After a reconnection a Closing funder ignored CLN's `shutdown`, leaving CLN in SIGEXCHANGE
+- **Status:** fixed (d222ceca)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Close/ChannelCloseCoordinator.cs`
+- **Evidence:** Lane b10-close-interop: CLN restarts closingd for an agreed close and waits for the funder's `closing_signed`; our Closing channel ignored its `shutdown`, so CLN stayed in CLOSINGD_SIGEXCHANGE until the closing transaction confirmed.
+- **Fix sketch:** Done: a funder on the legacy close answers that `shutdown` with the agreed `closing_signed` (our signature of the stored tx, `fee_range` [fee, fee] when we send ranges) once per connection; `CooperativeCloseHarnessTests.Given_BothClosing_When_Reconnect_*` and the CLN Docker proof (asserts CLOSINGD_COMPLETE since the integration).
+- **Blocks/Blocked-by:** Part of NL-286
+- **Plan ref:** —
+
 ### NL-300 net11.0 Docker suite, NativeAOT publish and Wasm on SDK 11 not verified
-- **Status:** open (partial: a5b24e3)
+- **Status:** open (partial: a5b24e3, 3239babe)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `src/Directory.Build.props`, `test/Directory.Build.props`, `docs/agents/NET11_PLAN.md`
 - **Evidence:** The multi-target build and the non-Docker tests pass on net10.0 and net11.0 (SDK 11 rc.1), but the Docker suite ran on net10.0 only (both frameworks would fight over the fixed container names), and NativeAOT and Wasm were not built with SDK 11. Seen with SDK 11 rc.1: building through a symlinked path skipped `CopyToOutputDirectory` items (not reproduced from the real path). `IHost.RunAsync` exits 1 on a failed BackgroundService on net11.0 but 0 on net10.0 (reported by W4-C). Update (ABCD wave 5, `1a5ab49`): the full Docker suite ran on net11.0 at the wave 5 integration from an sdk:11.0 container: LND suite 48/48, `Docker.Utils` 2/2, CLN 17/17, ABCD 10/10, `Docker.Onchain` 14/14 (3 Explicit not run), the same as net10.0. Remaining: NativeAOT publish and Wasm on SDK 11, `allowPrerelease: false` after GA. Update (ABCD wave 7, `4c37998`): NativeAOT publish on SDK 11 rc.1 fails at compile (NL-338). SDK 10 AOT and Wasm on SDK 11 not run. At the wave 7 integration the full Docker suite and non-Docker tests passed on net11.0 from the sdk:11.0 container; host SDK 11 on macOS hung in `dotnet test` for net10.0 (environment, not code).
+- **Update (batch10, 2026-10-02):** Lane b10-aot (merged a38caf6c): SDK 11 rc.1 builds the whole solution for net10.0 and net11.0 with 0 warnings and the touched tests pass on net11.0; the AOT analyzers report 0 on SDK 11. Still open: a real AOT publish on SDK 11 (NL-709) and the net11.0 Docker suite; Wasm on SDK 11 is moot while WASM is parked (NL-161, NL-162, NL-169 wontfix).
 - **Fix sketch:** Run the Docker suite with `-f net11.0`; publish AOT and build Wasm with SDK 11; after GA set `allowPrerelease: false`.
 - **Blocks/Blocked-by:** Related NL-155
 - **Plan ref:** `NET11_PLAN.md` step 6
@@ -5988,23 +6152,75 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-338 NativeAOT publish of the daemon fails on the configuration binder generator
-- **Status:** open
+- **Status:** fixed (3239babe, 8a094fa9; merged a38caf6c)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Options/BitcoinOptions.cs`, `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs:192`
 - **Evidence:** `dotnet publish src/NLightning.Daemon -c Release.Native -f net11.0 -r osx-arm64 -p:PublishAot=true` (SDK 11 rc.1) fails with 6x CS9035: the configuration-binding source generator (on with PublishAot) cannot build `BitcoinOptions`, whose members are `required`. Also SYSLIB1100/1101 for `NodeOptions` (`LightningMoney`, `IPAddress`, `Features`) and IL2026/IL3050/IL207x from reflection-based handler registration, EF migrations, the plugin loader and `SecureKeyManager` JSON (reported by W7-C; log was /private/tmp/w7-aot/net11.log). SDK 10 not compared.
+- **Update (batch10, 2026-10-02):** Lane b10-aot (owner decision: NativeAOT is a supported target): `BitcoinOptions` without `required` (validated at start), `LightningMoney` parameterless constructor (its three `Node` amount keys refused in the file), key file through a source-generated JSON context (byte-identical), the plugin loader and EF migrations guarded; the configuration binding generator is on in every src build, which found NL-710. `dotnet build -p:PublishAot=true` shows 0 AOT warnings on SDK 10 and 11 rc.1; `nltg --check-config` added; `scripts/aot-smoke.sh` (`--emulate`, `--ipc`); `MessagePackAotReadinessTests`. Integration review fixes NL-740, NL-741. Left: the node cannot run under NativeAOT yet (NL-708) and no real publish ran here (NL-709).
 - **Fix sketch:** Drop `required` from `BitcoinOptions` and validate at startup (or `-p:EnableConfigurationBindingGenerator=false`), fix the NodeOptions binding, then address or suppress the trim warnings and smoke-run the binary.
 - **Blocks/Blocked-by:** Related NL-300, NL-155
 - **Plan ref:** `NET11_PLAN.md` step 6
 
 ---
 
-### NL-347 The Postgres case of the multi-node server-database theory is not run in the standard Docker cycle
+### NL-708 A NativeAOT daemon cannot run the node: EF Core needs a compiled model and precompiled queries
 - **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure.Persistence*`, `src/NLightning.Infrastructure.Repositories`
+- **Evidence:** EF Core under NativeAOT refuses dynamic queries ("Query wasn't precompiled and dynamic code isn't supported with NativeAOT"); about 557 query call sites. Until then a NativeAOT `nltg` stops before the password prompt with that message; `--help`, `--status`, `--stop`, `--check-config` and the AOT client work (reported by lane b10-aot).
+- **Fix sketch:** Generate the compiled model and precompiled queries per provider (EF 10 `dotnet ef dbcontext optimize --precompile-queries`), or keep the AOT build client-only.
+- **Blocks/Blocked-by:** Related NL-338, NL-300
+- **Plan ref:** —
+
+### NL-709 No real NativeAOT publish has run (local `dotnet publish` denied; CI steps never run)
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `scripts/aot-smoke.sh`, `.github/workflows/dotnet.native.yml`, `pr.native.yml`
+- **Evidence:** Lane b10-aot verified with the AOT analyzers and by running the build output under the JIT with the NativeAOT runtime switches off; the project's permissions deny `dotnet publish`, so no native binary was produced. The new CI publish-and-smoke steps for linux-x64 have not run yet.
+- **Fix sketch:** Run `scripts/aot-smoke.sh` (and `--ipc`) on a machine that may publish, on SDK 10 and 11, and watch the first CI run.
+- **Blocks/Blocked-by:** Related NL-300, NL-338
+- **Plan ref:** —
+
+### NL-710 The configuration binding generator silently ignores init-only option properties
+- **Status:** fixed (3239babe)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `SweepFeePolicyOptions`, `RevokedCommitResolverOptions` (and the deleted `PluginEntry`)
+- **Evidence:** Lane b10-aot: the generator binds into the existing instance and skips init-only members, so an AOT build ignored `Node:Onchain:FeePolicy` and the revoked-resolver options.
+- **Fix sketch:** Done: the properties are settable, and `Daemon.Tests/Extensions/ConfigurationBindingAotTests` reads the generated binder and fails on any init-only member (checked against a reintroduced one).
+- **Blocks/Blocked-by:** Related NL-338
+- **Plan ref:** —
+
+### NL-740 The new start-up check refused `Bitcoin:RpcEndpoint` values the RPC client accepts
+- **Status:** fixed (8a094fa9, 2a26ac15)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Options/BitcoinOptions.cs`
+- **Evidence:** Batch10 review of lane b10-aot: NBitcoin's `RPCClient` takes a scheme-less `host[:port]` and an empty value (127.0.0.1 on the network's RPC port), so nodes configured that way stopped starting after the upgrade. Tests: `ConfigurationCheckTests`, `BitcoinOptionsTests`.
+- **Fix sketch:** Done: `BitcoinOptions.IsUsableRpcEndpoint` accepts an http(s) URL, a scheme-less host[:port] or empty, and refuses another scheme or a value that is no host.
+- **Blocks/Blocked-by:** Follows NL-338
+- **Plan ref:** —
+
+### NL-741 `--check-config` crashed on a value the binder cannot convert
+- **Status:** fixed (8a094fa9)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Utilities/ConfigurationCheck.cs`
+- **Evidence:** Batch10 review of lane b10-aot: `"MinimumDepth": "three"` or `"ReconnectInitialDelay": "5 seconds"` threw `InvalidOperationException` from the options factory, outside the validation, so the command ended with a fatal stack trace instead of its report. Test: `ConfigurationCheckTests.Given_AValueTheBinderCannotConvert_*`.
+- **Fix sketch:** Done: those exceptions are reported as failures.
+- **Blocks/Blocked-by:** Follows NL-338
+- **Plan ref:** —
+
+### NL-347 The Postgres case of the multi-node server-database theory is not run in the standard Docker cycle
+- **Status:** fixed (8aa664f0, 3682915a; merged 1600d945)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/MultiNodeHarnessTests.cs` (`Given_ServerDatabase_When_NodeRestarts_Then_ItReconnectsToTheStoredPeer`)
 - **Evidence:** The standard cycle skips SQL Server containers, but the in-container xunit runner cannot exclude one case of a theory, so the gossip wave G-A integration excluded the whole theory and its Postgres case did not run. Update (gossip wave G-B, `5bbfbb5`): the G-B integration excluded the whole theory again, so its Postgres case did not run in this wave either. Update (gossip wave G-D, `48a8951`): excluded again (the whole theory), so its Postgres case did not run in this wave either.
+- **Update (batch10, 2026-10-02):** Lane b10-db-proofs: the Postgres case runs on its own now (see NL-429).
 - **Fix sketch:** Split the theory into one test per provider (or tag the SqlServer case with a trait) so the Postgres case runs with `!~SqlServer`.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -6121,11 +6337,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G3
 
 ### NL-429 The MultiNodeHarness restart theory's Postgres case cannot run without its SQL Server case
-- **Status:** open
+- **Status:** fixed (8aa664f0, 3682915a; merged 1600d945)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/MultiNodeHarnessTests.cs` (`Given_ServerDatabase_When_NodeRestarts...`)
 - **Evidence:** xunit cannot filter out one data row, so skipping SQL Server (standard test cycle) also skips the Postgres restart case; it was not run in waves d12, rf1 and M6 (reported by the rf1 integrator).
+- **Update (batch10, 2026-10-02):** Lane b10-db-proofs: the theory is two facts, `Given_PostgresDatabase_When_NodeRestarts_*` (trait `Database=Postgres`) and `Given_SqlServerDatabase_*` (`Database=SqlServer`), over one helper; the Postgres case ran alone in the SDK container and passed; `!~SqlServer` or `-notrait Database=SqlServer` leaves the SQL Server one out.
 - **Fix sketch:** Split the theory into one test per provider, or add a trait per row.
 - **Blocks/Blocked-by:** Related NL-347
 - **Plan ref:** —
@@ -6283,12 +6500,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-496 Splice test coverage gaps left by wave sp2
-- **Status:** open (partial: de620e7b, a0800ac2)
+- **Status:** open (partial: de620e7b, a0800ac2, 2aa992e5, 65c17739)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Channels/Splicing/SpliceConformanceTests.cs`, `RetiredScidForwardTests.cs`, `test/NLightning.Integration.Tests/Docker/Onchain/OnchainSpliceTests.cs`, `Docker/Interop/Cln/ClnSpliceReestablishTests.cs`
 - **Evidence:** Not covered: the SP-T-04, SP-T-05 and SP-T-08 restart variants of SP2-A-T3 (SP-T-03, SP-T-06 and the both-CS-lost case have them; NL-484 unblocked the rest) and a crash at every SP-I7 save; one test with a real splice lock followed by a real HTLC over the old SCID (split between `RetiredScidForwardTests` and `SpliceAnnouncementHarnessTests`; Proof SP2 (c) covers it against CLN); a Docker case where a close is reorged out and the splice is mined instead, and `OnchainSpliceTests` (c) with an HTLC in flight; a unit test of `LocalCommitResolver` HTLC transactions on a splice funding; LND 0.20 learning a spliced channel (Proof SP2 (c) runs against CLN only) (reported by lanes SP2-A, SP2-B, SP2-C, SP2-D).
 - **Update (wave spr, integrated at `a0800ac2`):** LND 0.20 learning a spliced channel is proven: `Docker/SpliceLndObserverTests` (a public channel between two NLightning nodes spliced in; LND alice (peer) and bob (through alice's relay) list the new SCID with the new capacity and both policies, alice pays over it, both forget the old SCID) (lane SPR-E, de620e7b; the fundee's anchors reserve funded at integration, a0800ac2). Still open: the SP-T-04/05/08 restart variants and a crash at every SP-I7 save, one test with a real lock then a real HTLC over the old SCID, a Docker close-reorged-out-for-the-splice case, `OnchainSpliceTests` (c) with an HTLC in flight, and a unit test of `LocalCommitResolver` HTLC transactions on a splice funding.
+- **Update (batch10, 2026-10-02):** Lane b10-splice-resume (merged f24b7ba3): SP-T-04 with the accepter restarted, SP-T-05 with either side restarted, SP-T-08 with both, a crash at every save of a splice-in on each side (found NL-698), and `LocalCommitResolver` HTLC-timeout on our commitment of a pending and of a locked splice funding (witness verified). Still open: one test with a real lock then a real HTLC over the old SCID, a Docker close-reorged-out-for-the-splice case, and `OnchainSpliceTests` (c) with an HTLC in flight.
 - **Fix sketch:** Add the cases, most usefully the LND check of a spliced public channel before D13.
 - **Blocks/Blocked-by:** Part of NL-021
 - **Plan ref:** `SPLICING_PLAN.md` SP2-A-T3, Proof SP2 (c), (d)
@@ -6437,13 +6655,64 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-554 Eclair interop gaps left by the basic lane
-- **Status:** open
+- **Status:** open (partial: eda14abc, d0eeccbf)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Eclair/`
 - **Evidence:** Not covered against Eclair 0.14.3: splicing and quiescence (both negotiated), RBF of a dual-funded open, `option_simple_close` (Eclair offers it; ours is off by default), `attribution_data` (Eclair offers it, unlike LND 0.20; ours stays experimental, NL-332), BOLT 12 and onion messages, gossip and public channels, force closes and on-chain resolution. Eclair 0.14 opens only anchor, taproot and zero-fee channel types, so a node pinned to `option_static_remotekey` cannot open with it; its taproot preference is never reached (we do not offer it). A real dual-funded open with our contribution passes (`Explicit` E-X1) once Eclair's `open` is given a `fundingFeeBudgetSatoshis` above its default (500 sat for 500k sat, below the 825 sat the shared transaction costs; test-side only). Update (NL-550..NL-552 follow-up): the fixture runs Eclair's default channel policy (the 144-block pin is gone), the default-delay and in-flight cases are regular proofs now, the shared channel is a plain `openchannel` (v2, NL-551), and E-X1 still passes (`Explicit`); no gap above closed. New: NL-557.
+- **Update (batch10, 2026-10-02):** Lane b10-eclair (merged 0419d687): Docker proofs against Eclair 0.14.3: `EclairSpliceTests` (7: splice in and out by either side, both RBFs, an Eclair restart while pending), `EclairDualFundRbfTests` (either side, our accepter-side `bumpopen`), `EclairCloseTests` (force closes either side with sweeps, `option_simple_close` either side), `EclairGossipTests` (a dual-funded public channel both ways, the query rate limit, NL-407), `EclairOfferTests` (offers both ways); the Eclair category 28 passed in one run (about 19.5 min) plus 1 `Explicit`. Found NL-717, NL-718, NL-719 (fixed). Still open: `attribution_data` against Eclair (ours Optional since NL-332), HTLCs resolved on chain against Eclair; taproot channels are not offered by us.
 - **Fix sketch:** Add the proofs that matter for the day-0 goal first (splice in/out with Eclair, RBF of a dual-funded open, attribution_data once NL-332 is decided).
 - **Blocks/Blocked-by:** Related NL-180, NL-332
+- **Plan ref:** —
+
+### NL-717 Blinded paths named an unannounced channel by its real scid, which Eclair cannot resolve
+- **Status:** fixed (640606fa, fe957403)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Invoices/BlindedPathBuilder.cs`, channel_ready handling
+- **Evidence:** Lane b10-eclair: Eclair maps a private channel only by its own alias, so it could not pay our offers ("could not resolve outgoingChannelId"). The peer's alias is now kept from any `channel_ready` that carries one (before: only for `option_scid_alias` channels and only on a resent `channel_ready`), and the path builder uses it for unannounced channels. Integration review: the same rule for route hints and incoming candidates is NL-742.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Part of NL-554
+- **Plan ref:** —
+
+### NL-718 After an unanswered gossip query, the next query on that connection waited forever
+- **Status:** fixed (43a3038c)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs` (`ConsumeOutstandingRepliesAsync`)
+- **Evidence:** Lane b10-eclair: the NL-365 wait for a given-up query's late reply had no bound (580 s in the Eclair proof, whose rate limit drops queries without a reply).
+- **Fix sketch:** Done: bounded by another `SyncReplyTimeout`, after which nothing more is queried on the connection.
+- **Blocks/Blocked-by:** Related NL-407, NL-365
+- **Plan ref:** —
+
+### NL-719 Our blinded paths' `max_cltv_expiry` margin was below a payer's random final-expiry delta
+- **Status:** fixed (8062ceb3, 43deb91a, fe957403)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Offers/Receive/OfferOptions.cs`, `Payments/Invoices/InvoiceService.cs`
+- **Evidence:** Lane b10-eclair: Eclair adds 150-350 random blocks to a payment's final expiry (`eclair.send.recipient-final-expiry`); with a 144-block margin we refused Eclair's offer payments. The margin is 1,008 blocks for BOLT 12 (`Offers:PathLifetimeMarginBlocks`) and blinded BOLT 11 invoices (`InvoiceService.BlindedPathLifetimeMarginBlocks`). Same finding against LDK: NL-723. Existing nodes: NL-743.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Part of NL-554; related NL-723, NL-743
+- **Plan ref:** —
+
+### NL-742 Route hints and circular-payment candidates named a private channel by its real scid
+- **Status:** fixed (fe957403)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Invoices/InvoiceService.cs` (`BuildRouteHints`, `GetInboundShortChannelId`), `Payments/Send/PaymentService.cs` (`BuildIncomingCandidates`)
+- **Evidence:** Batch10 review of lane b10-eclair: NL-717 changed only `BlindedPathBuilder`; a BOLT 11 invoice of a private non-alias channel with an Eclair peer still hinted the real scid, so a payment relayed by Eclair failed to resolve its next hop. Test: `InvoiceRouteHintTests.Given_APrivateChannelWithoutScidAlias_*`.
+- **Fix sketch:** Done: one rule, `InvoiceService.GetInboundShortChannelId`, for blinded paths, route hints and incoming candidates: announced -> real scid; else the peer's `channel_ready` alias whenever it sent one (BOLT 2: its sender MUST recognize it); else the real scid unless the type is `option_scid_alias`. Not yet proven in Docker with a hinted payment relayed by Eclair.
+- **Blocks/Blocked-by:** Follows NL-717
+- **Plan ref:** —
+
+### NL-743 The raised blinded-path margin never reached existing nodes (their file pins 144)
+- **Status:** fixed (fe957403)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Offers/Receive/OfferOptions.cs`, `Offers/OffersServiceCollectionExtensions.cs`
+- **Evidence:** Batch10 review of lanes b10-eclair and b10-ldk: the `appsettings.json` template wrote `Offers:PathLifetimeMarginBlocks: 144` into every node's file, so FAFO/FAFO2 and every node created before NL-719/NL-723 kept refusing Eclair and LDK payers. Test: `OfferOptionsUpgradeTests`.
+- **Fix sketch:** Done: a bound 144 is taken as the former default and raised to 1,008 (`OfferOptions.UpgradeFormerDefaults` in `PostConfigure`) with one warning naming the setting; another value pins a margin.
+- **Blocks/Blocked-by:** Follows NL-719, NL-723
 - **Plan ref:** —
 
 ### NL-555 ldk-server has no tags, releases or official image; the interop fixture builds a pinned commit
@@ -6457,14 +6726,65 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-556 LDK interop gaps left by the basic lane
-- **Status:** open
+- **Status:** fixed (8d61d5c1, 55997fef, b177a40f, 43deb91a; merged 4178186b)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Ldk/`
 - **Evidence:** LDK Node has no dual funding (rust-lightning's `enable_dual_funded_channels` is off and ldk-server does not expose it; LDK's `init` has no bit 28/29, so we never negotiate `option_dual_fund` with it and every open is v1). Not covered against ldk-server `dc02b76c`: splicing and quiescence (both negotiated: LDK offers them), `option_simple_close` (ours is off by default), route blinding, onion messages and BOLT 12 (all offered by LDK), public channels and gossip (LDK keeps channels unannounced without an alias and announcement address), force closes and on-chain resolution, zero-fee commitments (off in LDK by default), and LDK's 10 % `max_htlc_value_in_flight_msat` on announced channels, which our v1 accepter would refuse (NL-552). Observation to check: when we closed a 500k sat anchors channel we funded (legacy `closing_signed`), the closing transaction paid 5,070 sat with our estimate at 2,500 sat/kw, about three times what its weight needs; LDK's close of its own channel paid 171 sat. Which side's `closing_signed`/`fee_range` choice set the 5,070 sat was not analysed in this lane.
+- **Update (batch10, 2026-10-02):** Lane b10-ldk: the LDK suite went from 13 to 27 Docker tests, 27/27 twice (512 s, 568 s) against ldk-server dc02b76c (rust-lightning 0.3.0-rc1): `LdkOnchainTests` (4: our and LDK's force close with each side's sweeps, an HTLC held by LDK claimed on chain with the preimage, the same HTLC timed out by our anchors HTLC-timeout), `LdkOfferTests` (5: offers both ways over blinded paths, keysend both ways), `LdkGossipTests` (2: public channels both ways, hint-free invoices, LDK's 25 % in-flight limit on announced channels accepted, a fresh node syncing LDK's graph), and reestablish with an HTLC held. The fixture gives LDK an alias and an address. Not provable against LDK, so out of scope: `option_simple_close` (behind `cfg(simple_close)`), zero-fee commitments (off by default) and dual funding (absent). The 5,070 sat close is explained (NL-721). Found NL-722, NL-723 (fixed) and NL-724.
 Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence are proven against ldk-server `dc02b76c` without a pin bump (it exposes `splice-in`, `splice-out --address` and `bump-channel-funding-fee`; LDK Node sets `reject_inbound_splices = false`, so no configuration on either side; rust-lightning `697a239f` speaks the final BOLT 2 messages 77/80/81/127 and the `channel_reestablish` TLVs 1/5, bits 35/63): `Docker/Interop/Ldk/LdkSpliceTests` (7) (a) we splice in, (b) we splice out to a bitcoind address, (c) LDK splices in on a channel it opened, (d) LDK splices out to an address, (e) LDK restarts while our splice is pending, (f) our `bumpsplice` followed by LDK, (g) LDK's `bump-channel-funding-fee` followed by us; each with the quiescence initiator's `stfu` first, the splice `commitment_signed` both ways before `tx_signatures` with `shared_input_signature`, `start_batch` batches (of three with an RBF sibling) answered by one `revoke_and_ack` while pending, payments both ways while pending and after the lock, and both `splice_locked`, LDK's `funding_txo`/`channel_value_sats`/`short_channel_id` equal to ours at the lock. The full LDK suite (13) passed twice in a row after the fix of NL-558 (our receiver charged the shared input the maximum witness and refused LDK's splice at 2,488 sat/kw); found as well: NL-559 (LDK keeps no peer storage from us). LDK behaviour recorded in the class header: LDK splices at its `ChannelFunding` estimate (253 sat/kw on an idle regtest, about 2,490 once bitcoind has fee data), its splice-in contribution carries its coin selection's surplus (+2..+6 sat), its splice-out contribution is -(amount + fee), its RBF takes the BOLT 2 minimum (2,490 -> 2,593 sat/kw), and it locks at the channel's `minimum_depth` (6 as fundee). Remaining here: `option_simple_close`, route blinding, onion messages and BOLT 12, public channels and gossip, force closes and on-chain resolution (splices included), zero-fee commitments, LDK's 10 % in-flight limit on announced channels, and the closing-fee observation above.
 - **Fix sketch:** Remaining gaps above; read the negotiated closing fee from our coordinator's `closing_signed` log line as `ClnCloseTests` does.
 - **Blocks/Blocked-by:** Related NL-180, NL-554, NL-558, NL-559
+- **Plan ref:** —
+
+### NL-721 As funder our legacy close `fee_range` reaches 3x our estimate, and LDK takes the top
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Close/` (fee_range proposal)
+- **Evidence:** Lane b10-ldk: we propose 1,690 sat with `fee_range` [171, 5070]; rust-lightning as non-funder deliberately takes the top of the overlap, so the close pays 5,070 sat (3x our estimate) out of our balance.
+- **Fix sketch:** Cap our `max_fee_satoshis` nearer the estimate (e.g. 1.5x, or a configurable factor) when we fund.
+- **Blocks/Blocked-by:** Related NL-556
+- **Plan ref:** —
+
+### NL-722 A peer that ignores `query_short_channel_ids` (LDK) never sent us its existing graph
+- **Status:** fixed (55997fef, 3655e6f3)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs`
+- **Evidence:** Lane b10-ldk: rust-lightning 0.3 answers `query_channel_range` but ignores `query_short_channel_ids` and streams its graph only to a `gossip_timestamp_filter` older than 6 h; our failed sync filtered from now. The failed sync now sends the backlog filter (`SyncFilterBacklog`), and LDK streams its graph (Docker proof in `LdkGossipTests`). Integration review fix NL-744.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Part of NL-556
+- **Plan ref:** —
+
+### NL-744 The NL-722 backlog filter also hit a slow LND or CLN peer
+- **Status:** fixed (3655e6f3)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs`
+- **Evidence:** Batch10 review of lane b10-ldk: any `query_short_channel_ids` timeout set the two-week backlog filter, also for a peer that answered earlier batches and was only slow, which then streamed its whole graph past the NL-353 ingress pacing. Test: `GossipSyncManagerTests.Given_APeerThatAnsweredAScidQuery_*`.
+- **Fix sketch:** Done: only a peer that never answered a scid query on the connection (in time or late) gets it. Left as is: a peer whose very first scid query times out still gets the backlog filter.
+- **Blocks/Blocked-by:** Follows NL-722
+- **Plan ref:** —
+
+### NL-723 Our BOLT 12 paths' margin refused LDK's shadow CLTV offset
+- **Status:** fixed (43deb91a)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Offers/Receive/OfferOptions.cs`
+- **Evidence:** Lane b10-ldk: LDK adds a random shadow CLTV offset of up to 432 blocks to a blinded path's final CLTV; once LDK knew public channels it exceeded our 144-block margin and our final hop answered `invalid_onion_blinding`. `Offers:PathLifetimeMarginBlocks` defaults to 1,008 (merged with NL-719's identical change). Existing nodes: NL-743.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Part of NL-556; related NL-719, NL-743
+- **Plan ref:** —
+
+### NL-724 LDK's fulfill `attribution_data` on its blinded paths does not verify at our end
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (attribution verification)
+- **Evidence:** Lane b10-ldk: our payments over LDK's blinded paths log that the fulfill's attribution_data does not verify for hop 0; the payment is unaffected. Not analysed whose side is wrong (a blinded-path hold-time or HMAC layout difference).
+- **Fix sketch:** Capture LDK's fulfill TLV and check it against BOLT 4's blinded-path attribution rules.
+- **Blocks/Blocked-by:** Related NL-332, NL-556
 - **Plan ref:** —
 
 ### NL-569 [EPIC] Tor: onion peers, our onion service, Tor-only mode
@@ -6498,14 +6818,25 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** BOLT 10
 
 ### NL-572 No Docker proof of Tor interop against LND or CLN
-- **Status:** open
+- **Status:** fixed (184e167e; merged ee20aa9f)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/`
 - **Evidence:** Lane tor proved the transport in process (two peer managers through a SOCKS5 tunnel) and against a real Tor 0.4.8.10 without network (the lane's sandbox could not build circuits). No test opens a channel over Tor with LND (`tor.active`, `tor.v3`) or CLN (`proxy`, `addr=statictor:`), in either direction.
+- **Update (batch10, 2026-10-02):** Lane b10-tor-interop: `Docker/Interop/Tor/ClnTorInteropTests` (trait `Interop.Tor`, `scripts/run-interop.sh tor`, image `test/Docker/tor`) against CLN v26.06.8 over the public Tor network: Hybrid dial, channel and payments both ways; TorOnly with our onion service (control port, password) and a Tor kill/restart (same onion re-added, redial, reestablish, payments again); TorOnly inbound (CLN dials our onion and funds a channel). 3/3 twice (209 s, 303 s). `NLightningTestNode` starts/stops `ITorOnionService` like the daemon. Not covered: LND, CLN statictor, a hermetic chutney network, NL-579 (inbound from loopback). New: NL-729.
 - **Fix sketch:** A Docker fixture with a private Tor network (chutney) or a Tor container with network access, an LND or CLN onion node, and our node in Hybrid and TorOnly: connect both ways, open, pay, reconnect after a Tor restart.
 - **Blocks/Blocked-by:** Related NL-569, NL-180
 - **Plan ref:** `docs/agents/TOR.md`
+
+### NL-729 `ClassificationEngineTests` regex-timeout case fails under a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Domain.Tests/Accounting/Financial/ClassificationEngineTests.cs`
+- **Evidence:** Lane b10-tor-interop, and seen again in the batch10 integration's first full run: `Given_ARule_When_AnInvoiceIsClassified_Then_ItMatchesOnlyWhenEverySetFieldMatches(name: "label regex matches")` failed once under load and passes alone (the rule's regex timeout fires on a loaded machine).
+- **Fix sketch:** Give the test rule a generous timeout (or a fake clock) so only the timeout case itself depends on it.
+- **Blocks/Blocked-by:** Related NL-707
+- **Plan ref:** —
 
 ### NL-573 Onion service client authorization and PoW defenses are not configurable
 - **Status:** fixed (00f7f7a7)
@@ -6688,13 +7019,24 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-600 A splice resumed after our restart failed once signing our wallet input ("The signer found no wallet input in the transaction")
-- **Status:** open
+- **Status:** fixed (a9fefca0, 655a8cc6, 41ab5a74; merged f24b7ba3)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/InteractiveTx/WalletInteractiveTxContributor.cs` (`SignAsync`, line ~348), `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs` (`SignWalletTransaction`)
 - **Evidence:** batch9 integration Docker CLN run (2026-10-01, tree `7e54edb9`): `ClnSpliceReestablishTests.Given_ASpliceCutMidway_*(cut: AfterClnCommitmentSigned, restartOurNode: True)` — after our restart the resumed splice received CLN's `tx_signatures`; `LocalLightningSigner` logged "Transaction bcd9830e… has no wallet input to sign", `SignAsync` threw `InvalidOperationException: The signer found no wallet input in the transaction`, and we sent `warning` "Sorry, we had an internal error" and disconnected. The class passed 11/11 alone right after, and the same case passed in batch8's run. Cause not confirmed: `ReleaseOrphanedReservationsAsync` keeps reservations a stored negotiation holds, so it is not the obvious startup release; a startup ordering where the signer runs before the restarted node's wallet UTXO set (or the reservation's rows) is loaded is a candidate, possibly exposed by NL-108's read-loop change (messages dispatched sooner after connect).
+- **Update (batch10, 2026-10-02):** Lane b10-splice-resume: the hosts started `PeerManager` before the chain monitor, and the UTXO set and fee reservations were loaded only in `BlockchainMonitorService.StartAsync`, so CLN's `tx_signatures` after a restart could reach `WalletInteractiveTxContributor.SignAsync` against an empty set. `IBlockchainMonitor.LoadWalletAsync` (database only, once per start) now runs before `PeerManager.StartAsync` in the daemon and `NLightningTestNode`; `StartAsync` loads it itself otherwise; a still-missing input names each of ours and its reservation. Proofs: `ChainMonitorWalletLoadTests` (now counting the loads, integration review), `NltgDaemonServiceStartupOrderTests`, an Application restart test, `ClnSpliceReestablishTests` 11/11 three runs in a row. New: NL-698.
 - **Fix sketch:** Reproduce with the class in a loop; log the reservation id, its outpoints and what the signer's UTXO lookup sees when it returns false; then order the resume after the wallet load or retry the signing once the wallet is loaded.
 - **Blocks/Blocked-by:** Related NL-484 (restart mid-splice), NL-108
+- **Plan ref:** —
+
+### NL-698 A crash between the two saves of the peer's splice `commitment_signed` failed the channel
+- **Status:** fixed (2aa992e5)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Reestablish/ReestablishService.cs`, `Channels/Splicing/SpliceService.cs` (`EnsureLoadedAsync`)
+- **Evidence:** Lane b10-splice-resume (found by the crash-at-every-save test of NL-496): the engine save (SP-I2) and the driver's `InteractiveTxSessions` save are two saves; a crash between them left the row saying the peer's `commitment_signed` never arrived, so on reconnect we set `next_funding` bit 0, refused the peer's retransmission as SP-OP-05 and failed the channel. The dual-funded open shares one save and was not affected.
+- **Fix sketch:** Done: `ReestablishService` counts it as received when the restored local commitment holds the peer's signatures on that funding, and `EnsureLoadedAsync` replays the driver's step after `ResumeAsync`.
+- **Blocks/Blocked-by:** Part of NL-496
 - **Plan ref:** —
 
 ### NL-601 On the peer's commitment our anchor is recorded `Ignored` although the anchor sweep spends it
