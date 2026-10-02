@@ -50,13 +50,23 @@ internal static class ForceCloseMemoEvents
     /// <summary>The value of <see cref="SourceKey"/>.</summary>
     public const string FromRecords = "records";
 
+    /// <summary>The detail with the channel's capacity at the close, in satoshis (the report's fallback, NL-682).
+    /// </summary>
+    public const string CapacityKey = "capacitySat";
+
+    /// <summary>The detail with the block of the channel's original funding (the report's open time when no
+    /// <c>ChannelFunded</c> tells it, such as a spliced channel's, NL-682).</summary>
+    public const string OpenedAtHeightKey = "openedAtHeight";
+
     /// <summary>
     /// The <see cref="AccountingEventKind.ChannelForceClosed"/> of a close recorded before the cutover (see the
-    /// remarks), not yet in memo form.
+    /// remarks), not yet in memo form. <paramref name="openedAtHeight"/> is the block of the channel's original funding
+    /// when known.
     /// </summary>
     public static AccountingEventModel ForceClosed(ChannelModel channel, ChannelCloseModel close,
                                                    IReadOnlyList<OutputResolutionModel> rows,
-                                                   IReadOnlyList<BroadcastTransactionModel> broadcasts)
+                                                   IReadOnlyList<BroadcastTransactionModel> broadcasts,
+                                                   uint? openedAtHeight = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(close);
@@ -106,6 +116,9 @@ internal static class ForceCloseMemoEvents
                 (OnchainAccounting.CountedVoutsKey,
                  string.Join(",", counted.Select(r => r.OutputIndex.ToString(CultureInfo.InvariantCulture)))),
                 ("feeUnknown", weFund && commitmentFeeSat is null ? "true" : null),
+                (CapacityKey,
+                 channel.FundingOutput is { } funding ? Text(checked((long)funding.Amount.Satoshi)) : null),
+                (OpenedAtHeightKey, openedAtHeight is > 0 ? Text(openedAtHeight.Value) : null),
                 (SourceKey, FromRecords))
         };
     }

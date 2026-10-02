@@ -131,10 +131,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 3 | 64 | 67 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 172 | 318 | 566 |
+| fixed | 14 | 62 | 172 | 319 | 567 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **179** | **389** | **644** |
+| **Total** | **14** | **62** | **179** | **390** | **645** |
 
 ### Epics
 
@@ -5509,6 +5509,17 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Leave the move lines of an unvalued closed line out of the back-valuation (or value them at the fact's time), and post a later `Price` adjustment on the account the reclassifications hold the line in now; or refuse a reclassification of an unvalued closed line until it is valued.
 - **Blocks/Blocked-by:** Part of NL-602; related NL-680
 - **Plan ref:** ACCOUNTING_PLAN A3-T3, A3-T5 (D-A8)
+
+### NL-682 The memo backfill never runs sources added after a node's memo pass completed (NL-624's force-close history missing on upgraded nodes)
+- **Status:** fixed (1f4e4a4c)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Accounting/Backfill/AccountingBackfillService.cs` (`RunMemoBackfillAsync`: the pass returned at once when `open:memo:complete` existed); `ForceCloseMemoEvents`; `src/NLightning.Application/Accounting/Reports/AccountingReportService.cs`
+- **Evidence:** Live on Mutinynet (2026-10-02): NL-624 (42915f80, via cab1c9b0) added the force-close memo source (`MemoForceCloseAsync`, `ForceCloseMemoEvents`), but the memo pass ends for good once `AccountingEventKeys.MemoComplete()` exists, so on every node whose memo pass completed before NL-624 shipped (both live Mutinynet nodes) it never runs. FAFO's channel `fede6471bad5b816c1845c331ecd2e2313db50bf953de743f7b01f9476720b47` (force-closed and `Closed` before the cutover; `ChannelCloses`/`OutputResolutions`/`BroadcastTransactions` rows present) has no `ChannelForceClosed`/`OutputResolved` memo events, and `accounting report channels` shows it with `Capacity: unknown`, `Open: - to now` and 0 close fees. The channel was spliced, so the memo pass writes no `ChannelFunded` for it either (its funding outpoint is the splice's) and NL-622's fallback had nothing to read.
+- **Fix:** Memo sources added after the first pass are listed in `AccountingBackfillService.LaterMemoSources` (append-only; first `forceclose`), each ended by its own marker `open:memo:complete:<source>` (`AccountingEventKeys.MemoSourceComplete`). A node with the old completion marker runs only the sources without their marker, then writes it; a fresh node's first pass covers them and writes every marker in one save; a start costs one indexed key lookup per marker, and keys already in the feed are skipped (resumable). Only a close row created at or before the cutover (or resolving at it) gets memo events. The memo `ChannelForceClosed` carries `capacitySat` and `openedAtHeight` (the initial `ChannelFundings` row's block for a spliced channel), which the channels report takes, with `funder` for the initiator, when no `ChannelFunded`/opening balance gives them. Tests: Integration `AccountingBackfillTests.Given_AMemoPassCompletedBeforeTheForceCloseSource_*` (exactly the force-close events and the marker; a second start writes nothing), `Given_AForceCloseRecordedAfterTheCutover_*`; Application `AccountingReportReviewFixTests.Given_OnlyAMemoForceCloseOfASplicedChannel_*`.
+- **Fix sketch:** Version the memo pass with a per-source completion marker (`open:memo:complete:forceclose`); run only the sources not completed, resumable and idempotent (keys already in the feed skipped), cheap at startup (indexed key lookups only), never re-running sources already done; check that `report channels` then shows the channel's capacity, open and close from the memo events.
+- **Blocks/Blocked-by:** Follows NL-624; part of NL-602
+- **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md` §4
 
 ## Crypto providers and key management
 

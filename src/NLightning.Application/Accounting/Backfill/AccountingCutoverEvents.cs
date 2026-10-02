@@ -264,6 +264,20 @@ internal static class AccountingCutoverEvents
                                                     ("channels", Text(totals.Channels)))
         };
 
+    /// <summary>The marker of a memo source added after the first memo pass (NL-682), amount 0.</summary>
+    public static AccountingEventModel MemoSourceCompleteMarker(DateTimeOffset at, string source, int written) =>
+        new()
+        {
+            EventKey = AccountingEventKeys.MemoSourceComplete(source),
+            Kind = AccountingEventKind.OpeningBalance,
+            OccurredAt = at,
+            AmountMsat = 0,
+            FeeMsat = 0,
+            Finality = AccountingFinality.Final,
+            Flags = AccountingEventFlags.Backfilled,
+            Details = AccountingDetailsCodec.Create((MemoKey, "true"), ("source", source), ("written", Text(written)))
+        };
+
     /// <summary>The cutover time stored in a marker, or null when it cannot be read.</summary>
     public static DateTimeOffset? ReadCutoverAt(AccountingEventModel marker) =>
         marker.Details.TryGetValue(CutoverAtKey, out var text)

@@ -13,6 +13,7 @@ using Domain.Accounting.Models;
 using Domain.Accounting.Services;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Models;
@@ -49,7 +50,10 @@ using Payments;
 /// <c>ChannelFunded</c> is the fact) and the mutual close of every closed channel with a closing transaction. Pages of
 /// <see cref="BatchSize"/> source rows, one scope and one save per page; a key already in the feed (a live event or an
 /// earlier run) is skipped, so a run stopped at any point resumes at the next start, and the completion marker
-/// (<see cref="AccountingEventKeys.MemoComplete"/>) ends it for good.</para>
+/// (<see cref="AccountingEventKeys.MemoComplete"/>) ends it for good. A source added after that first pass
+/// (<see cref="LaterMemoSources"/>, NL-682: the force closes of NL-624) has its own marker
+/// (<see cref="AccountingEventKeys.MemoSourceComplete"/>): a node whose first pass completed before the source existed
+/// runs that source alone at its next start, once; a fresh node's first pass covers it and writes both markers.</para>
 /// <para>Metrics on <c>Meter("NLightning.Accounting")</c>: <c>nlightning.accounting.backfill.opening</c> (opening
 /// balances written, tag <c>bucket</c>) and <c>nlightning.accounting.backfill.memo</c> (memo events written, tag
 /// <c>source</c>).</para>
@@ -58,6 +62,17 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
 {
     /// <summary>The source rows read per page (and saved per save) of the memo pass.</summary>
     public const int DefaultBatchSize = 500;
+
+    /// <summary>The memo source of the force closes recorded before the cutover (NL-624), added after the first memo
+    /// pass shipped (NL-682).</summary>
+    public const string ForceCloseMemoSource = "forceclose";
+
+    /// <summary>
+    /// The memo sources added after the first memo pass, each ended by its own
+    /// <see cref="AccountingEventKeys.MemoSourceComplete"/> marker (NL-682). Append only: a source listed here runs once
+    /// on every node whose <see cref="AccountingEventKeys.MemoComplete"/> predates it.
+    /// </summary>
+    public static readonly IReadOnlyList<string> LaterMemoSources = [ForceCloseMemoSource];
 
     private static readonly string[] s_invoiceDetailsUnknown = ["parts", "settledBy"];
     private static readonly string[] s_paymentDetailsUnknown = ["parts"];
@@ -297,17 +312,25 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
 
     /// <summary>
     /// Runs the memo pass now (what <see cref="StartMemoBackfill"/> runs in the background): nothing without the cutover
-    /// marker, nothing more once the completion marker exists.
+    /// marker, nothing more once the completion marker and the marker of every <see cref="LaterMemoSources"/> exist
+    /// (one indexed key lookup each). With the completion marker written by an earlier version, only the later sources
+    /// without their marker run (NL-682).
     /// </summary>
     public async Task<AccountingMemoResult> RunMemoBackfillAsync(CancellationToken cancellationToken = default)
     {
         DateTimeOffset cutoverAt;
         uint? cutoverHeight;
         bool openingSkipped;
+        bool firstPassDone;
+        var pendingSources = new List<string>();
         using (var scope = _scopeFactory.CreateScope())
         {
             var events = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().AccountingEventDbRepository;
-            if (await events.ExistsAsync(AccountingEventKeys.MemoComplete(), cancellationToken))
+            firstPassDone = await events.ExistsAsync(AccountingEventKeys.MemoComplete(), cancellationToken);
+            foreach (var source in LaterMemoSources)
+                if (!await events.ExistsAsync(AccountingEventKeys.MemoSourceComplete(source), cancellationToken))
+                    pendingSources.Add(source);
+            if (firstPassDone && pendingSources.Count == 0)
                 return new AccountingMemoResult(true, 0, 0, 0, 0, 0);
 
             var marker = await events.GetByKeyAsync(AccountingEventKeys.Cutover(), cancellationToken);
@@ -320,18 +343,37 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
         }
 
         var tally = new MemoTally();
-        await MemoInvoicesAsync(cutoverAt, tally, cancellationToken);
-        await MemoPaymentsAsync(cutoverAt, tally, cancellationToken);
-        await MemoForwardsAsync(cutoverAt, tally, cancellationToken);
-        await MemoChannelsAsync(openingSkipped, cutoverHeight, tally, cancellationToken);
+        var forceCloses = !firstPassDone || pendingSources.Contains(ForceCloseMemoSource);
+        if (firstPassDone)
+        {
+            // A node whose first pass predates these sources (NL-682): only they run
+            if (_logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation("Accounting memo backfill: running the memo source(s) added since this node's "
+                                     + "memo pass completed: {Sources}", string.Join(", ", pendingSources));
+        }
+        else
+        {
+            await MemoInvoicesAsync(cutoverAt, tally, cancellationToken);
+            await MemoPaymentsAsync(cutoverAt, tally, cancellationToken);
+            await MemoForwardsAsync(cutoverAt, tally, cancellationToken);
+        }
+
+        await MemoChannelsAsync(openingSkipped, cutoverAt, cutoverHeight, !firstPassDone, forceCloses, tally,
+                                cancellationToken);
 
         var result = new AccountingMemoResult(true, tally.Invoices, tally.Payments, tally.Forwards, tally.Channels,
                                               tally.Skipped);
         using (var scope = _scopeFactory.CreateScope())
         {
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            unitOfWork.AccountingEventDbRepository.Add(
-                AccountingCutoverEvents.MemoCompleteMarker(_timeProvider.GetUtcNow(), result));
+            var now = _timeProvider.GetUtcNow();
+            if (!firstPassDone)
+                unitOfWork.AccountingEventDbRepository.Add(AccountingCutoverEvents.MemoCompleteMarker(now, result));
+            // The first pass runs every later source too: their markers are written with it
+            foreach (var source in pendingSources)
+                unitOfWork.AccountingEventDbRepository.Add(
+                    AccountingCutoverEvents.MemoSourceCompleteMarker(
+                        now, source, source == ForceCloseMemoSource ? tally.ForceCloses : 0));
             await unitOfWork.SaveChangesAsync();
         }
 
@@ -500,9 +542,12 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
     /// (NL-624, <see cref="ForceCloseMemoEvents"/>): for a channel closed at the cutover its
     /// <c>ChannelForceClosed</c>, the resolution of every final output and its anchor CPFP fees; for a channel still
     /// resolving at the cutover (its close already has the cutover's synthetic event) only what was resolved or
-    /// confirmed at or below the cutover's block.
+    /// confirmed at or below the cutover's block; a close recorded after the cutover is a live fact and left out.
+    /// <paramref name="fundingsAndMutualCloses"/> false (a node whose first pass predates the force-close source,
+    /// NL-682) writes only the force closes; <paramref name="forceCloses"/> false leaves them out.
     /// </summary>
-    private async Task MemoChannelsAsync(bool openingSkipped, uint? cutoverHeight, MemoTally tally,
+    private async Task MemoChannelsAsync(bool openingSkipped, DateTimeOffset cutoverAt, uint? cutoverHeight,
+                                         bool fundingsAndMutualCloses, bool forceCloses, MemoTally tally,
                                          CancellationToken cancellationToken)
     {
         List<ChannelModel> channels;
@@ -535,7 +580,11 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
                 if (!closed && !hadOpening)
                     continue;
 
-                if (await IsSplicedAsync(unitOfWork, channel))
+                if (!fundingsAndMutualCloses)
+                {
+                    // Only the force closes (NL-682)
+                }
+                else if (await IsSplicedAsync(unitOfWork, channel))
                 {
                     // The funding outpoint is a splice's: the original funding's key and fee are not known any more
                     _logger.LogDebug("Accounting memo backfill: channel {ChannelId} was spliced; its funding is not "
@@ -566,10 +615,19 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
                                 ? await unitOfWork.OnchainResolutionDbRepository.GetCloseAsync(channel.ChannelId)
                                 : null;
                 if (close is not null)
-                    written += await MemoForceCloseAsync(unitOfWork, events, channel, close,
-                                                         resolvingAtCutover ? cutoverHeight ?? 0 : null, tally,
-                                                         cancellationToken);
-                else if (closed && !hadOpening && channel.ClosingTransaction is { } closingTransaction)
+                {
+                    // A close recorded after the cutover is a live fact (its events are the live writers')
+                    if (forceCloses && (resolvingAtCutover || close.CreatedAt <= cutoverAt))
+                    {
+                        var forceCloseEvents = await MemoForceCloseAsync(unitOfWork, events, channel, close,
+                                                                         resolvingAtCutover ? cutoverHeight ?? 0 : null,
+                                                                         tally, cancellationToken);
+                        written += forceCloseEvents;
+                        tally.ForceCloses += forceCloseEvents;
+                    }
+                }
+                else if (fundingsAndMutualCloses && closed && !hadOpening
+                      && channel.ClosingTransaction is { } closingTransaction)
                 {
                     var height = (await unitOfWork.WatchedTransactionDbRepository
                                                   .GetByTransactionIdAsync(closingTransaction.TxId))
@@ -615,10 +673,14 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
         }
 
         var built = new List<AccountingEventModel>();
-        if (resolvedAtOrBelow is null
-         && Build("channel", channel.ChannelId.ToString(),
-                  () => ForceCloseMemoEvents.ForceClosed(channel, close, rows, broadcasts)) is { } closeEvent)
-            built.Add(closeEvent);
+        if (resolvedAtOrBelow is null)
+        {
+            var openedAtHeight = await OriginalFundingHeightAsync(unitOfWork, channel);
+            if (Build("channel", channel.ChannelId.ToString(),
+                      () => ForceCloseMemoEvents.ForceClosed(channel, close, rows, broadcasts, openedAtHeight))
+                is { } closeEvent)
+                built.Add(closeEvent);
+        }
 
         try
         {
@@ -721,6 +783,34 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
         }
     }
 
+    /// <summary>
+    /// The block of the channel's original funding (NL-682): the initial funding row's short channel id (kept after a
+    /// splice replaced it), else the channel's own when its funding is not a splice's; null when unknown.
+    /// </summary>
+    private static async Task<uint?> OriginalFundingHeightAsync(IUnitOfWork unitOfWork, ChannelModel channel)
+    {
+        IReadOnlyList<ChannelFunding> fundings;
+        try
+        {
+            fundings = await unitOfWork.ChannelFundingDbRepository.GetByChannelIdAsync(channel.ChannelId);
+        }
+        catch (NotSupportedException)
+        {
+            fundings = [];
+        }
+
+        if (fundings.FirstOrDefault(f => f.Kind == ChannelFundingKind.Initial
+                                      && f.Status != ChannelFundingStatus.Discarded
+                                      && (f.ConfirmedHeight is > 0 || f.ShortChannelId is { BlockHeight: > 0 }))
+            is { } initial)
+            return initial.ShortChannelId is { BlockHeight: > 0 } scid ? scid.BlockHeight : initial.ConfirmedHeight;
+
+        if (await IsSplicedAsync(unitOfWork, channel) || !IsSet(channel))
+            return null;
+
+        return channel.ShortChannelId.BlockHeight > 0 ? channel.ShortChannelId.BlockHeight : null;
+    }
+
     /// <summary>Whether the channel's funding output is a splice's (its <c>ChannelFunded</c> key would name the splice
     /// transaction, not the open).</summary>
     private static async Task<bool> IsSplicedAsync(IUnitOfWork unitOfWork, ChannelModel channel)
@@ -760,6 +850,7 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
         public int Payments;
         public int Forwards;
         public int Channels;
+        public int ForceCloses;
         public int Skipped;
     }
 }

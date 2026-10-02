@@ -309,8 +309,19 @@ public sealed class AccountingReportService : IAccountingReports
                 channel.CapacityMsat = SatDetail(accountingEvent, "capacitySat") ?? channel.CapacityMsat;
                 break;
             case AccountingEventKind.ChannelClosedMutual:
+                channel.ClosedAt ??= accountingEvent.OccurredAt;
+                break;
             case AccountingEventKind.ChannelForceClosed:
                 channel.ClosedAt ??= accountingEvent.OccurredAt;
+                // A memo force close (NL-682) carries what no ChannelFunded may give, such as a spliced channel's
+                channel.CapacityMsat ??= SatDetail(accountingEvent, "capacitySat");
+                if (uint.TryParse(accountingEvent.Details.GetValueOrDefault("openedAtHeight"), NumberStyles.None,
+                                  CultureInfo.InvariantCulture, out var openedAtHeight)
+                 && openedAtHeight > 0)
+                    channel.OpenedAtBlockHeight ??= openedAtHeight;
+                if (channel.IsInitiator is null
+                 && bool.TryParse(accountingEvent.Details.GetValueOrDefault("funder"), out var funder))
+                    channel.IsInitiator = funder;
                 break;
         }
     }

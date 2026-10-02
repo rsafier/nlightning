@@ -125,6 +125,51 @@ public class AccountingReportReviewFixTests
     }
 
     [Fact]
+    public async Task Given_OnlyAMemoForceCloseOfASplicedChannel_When_TheChannelsViewIsRead_Then_ItDatesItsLife()
+    {
+        // Arrange (NL-682): a spliced channel force-closed before the cutover: no ChannelFunded (its funding is the
+        // splice's), only the backfill's memo ChannelForceClosed with the capacity and the original funding's block
+        var channel = Channel(0xFE);
+        var closedAt = s_cutover.AddDays(-5);
+        var forceClosed = Event(1, AccountingEventKind.ChannelForceClosed, closedAt, channel,
+                                AccountingDetailsCodec.Create(("memo", "true"), ("capacitySat", "449816"),
+                                                              ("openedAtHeight", "790000"), ("funder", "true")),
+                                AccountingEventFlags.Backfilled);
+        _kit.AddBuilt(seq => new AccountingEventModel
+        {
+            EventKey = forceClosed.EventKey,
+            Kind = forceClosed.Kind,
+            OccurredAt = forceClosed.OccurredAt,
+            BlockHeight = forceClosed.BlockHeight,
+            ChannelId = forceClosed.ChannelId,
+            ShortChannelId = forceClosed.ShortChannelId,
+            Counterparty = forceClosed.Counterparty,
+            AmountMsat = -300_000_000,
+            FeeMsat = 1_340_000,
+            Finality = forceClosed.Finality,
+            Flags = forceClosed.Flags,
+            Details = forceClosed.Details,
+            LedgerSeq = seq,
+            Hash = new byte[32]
+        });
+        var blockTimes = new Mock<IBlockTimeSource>();
+        blockTimes.Setup(b => b.GetBlockTimeAsync(790_000, It.IsAny<CancellationToken>())).ReturnsAsync(T0);
+
+        // Act
+        var report = await _kit.CreateReports(blockTimes: blockTimes.Object)
+                               .GetChannelsReportAsync(null, null, channel, TestContext.Current.CancellationToken);
+
+        // Assert: capacity, initiator, open (the original funding's block) and close from the memo close
+        var line = Assert.Single(report.Channels);
+        Assert.Equal(449_816_000, line.CapacityMsat);
+        Assert.True(line.IsInitiator);
+        Assert.Equal(790_000u, line.OpenedAtBlockHeight);
+        Assert.Equal(T0, line.OpenedAt);
+        Assert.Equal(closedAt, line.ClosedAt);
+        Assert.Equal(1_340_000, line.CommitmentFeeMsat);
+    }
+
+    [Fact]
     public async Task Given_ABlockTimeSourceThatFails_When_TheChannelsViewIsRead_Then_TheReportStillAnswers()
     {
         // Arrange (NL-623)

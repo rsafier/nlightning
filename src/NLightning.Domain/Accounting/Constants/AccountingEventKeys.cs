@@ -89,4 +89,8 @@ public static class AccountingEventKeys
     /// <summary>The marker the backfill writes once every memo event of the history before the cutover is written.
     /// </summary>
     public static string MemoComplete() => "open:memo:complete";
+
+    /// <summary>The marker the backfill writes once a memo source added after the first memo pass (NL-682) has written
+    /// its history: a node whose <see cref="MemoComplete"/> predates the source runs that source alone, once.</summary>
+    public static string MemoSourceComplete(string source) => $"open:memo:complete:{source}";
 }
