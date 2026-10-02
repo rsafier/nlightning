@@ -23,8 +23,10 @@ public class AccountingPriceEntity
     /// <summary>The price of 1 BTC (decimal, 8 places).</summary>
     public required decimal Price { get; set; }
 
-    /// <summary><c>AccountingPriceSource</c>.</summary>
-    public required byte Source { get; set; }
+    /// <summary><c>AccountingPriceSource</c>, in the column <c>Source</c> (<c>source</c> on Postgres). Not named
+    /// <c>Source</c> in C#: the compiled-model generator names a local after the property and collides with its own
+    /// <c>source</c> lambda parameter (CS1503, NL-708).</summary>
+    public required byte PriceSource { get; set; }
 
     /// <summary>When we stored it (UTC ticks).</summary>
     public required DateTimeOffset FetchedAt { get; set; }

@@ -29,10 +29,12 @@ public static class DatabaseExtensions
             return;
         }
 
-        // EF Core migrations need dynamic code; a NativeAOT build never gets here (Program stops it first, NL-708)
+        // EF Core refuses migrations under NativeAOT ("Design-time DbContext operations are not supported"), compiled
+        // model or not; a NativeAOT build never gets here (Program stops it first, NL-708)
         if (!RuntimeFeature.IsDynamicCodeSupported)
             throw new PlatformNotSupportedException(
-                "EF Core migrations cannot run in a NativeAOT build (NL-708); apply them with the JIT build.");
+                "EF Core migrations cannot run in a NativeAOT build (NL-708); apply them with the JIT build or an SQL "
+              + "script (dotnet ef migrations script --idempotent).");
 
         try
         {
