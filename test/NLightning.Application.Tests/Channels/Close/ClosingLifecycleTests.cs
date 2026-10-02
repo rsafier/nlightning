@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
+using NLightning.Tests.Utils.Accounting;
 
 namespace NLightning.Application.Tests.Channels.Close;
 
@@ -8,10 +9,12 @@ using Application.Channels.Close;
 using Application.Channels.Managers;
 using Application.Channels.Reestablish;
 using Application.Channels.Services;
+using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Interfaces;
 using Domain.Accounting.Models;
+using Domain.Accounting.Services;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
@@ -127,6 +130,26 @@ public class ClosingLifecycleTests
         Assert.Equal("true", closed.Details["feePaidByUs"]);
         Assert.Equal(["event", "save"], _saveOrder);
 
+        // NL-602 A2 (the books): the balance leaves the channels, the closing fee is ours, and the clearing account
+        // holds our closing output until the chain monitor's deposit of it (written in its format here) nets it
+        var books = BooksSimulator.Of(_accountingEvents);
+        Assert.Equal(-1_000_000_000, books[AccountRole.Channels]);
+        Assert.Equal(1_000_000, books[AccountRole.FeeClose]);
+        Assert.Equal(999_000_000, books[AccountRole.Clearing]);
+        books.Apply(new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.WalletReceived(closing.TxId, 0),
+            Kind = AccountingEventKind.WalletReceived,
+            OccurredAt = closed.OccurredAt,
+            BlockHeight = closed.BlockHeight,
+            TxId = closing.TxId,
+            OutputIndex = 0,
+            AmountMsat = 999_000_000,
+            Details = AccountingDetailsCodec.Create(("source", "channel"), ("change", "false"))
+        });
+        Assert.Equal(0, books[AccountRole.Clearing]);
+        Assert.Equal(999_000_000, books[AccountRole.Wallet]);
+
         // A confirmation raised again (a replayed block) finds the channel Closed: nothing more
         _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, closing.TxId));
         await Task.Delay(200, TestContext.Current.CancellationToken);
@@ -152,6 +175,13 @@ public class ClosingLifecycleTests
         var closed = Assert.Single(_accountingEvents);
         Assert.Equal(-600_000_500, closed.AmountMsat);
         Assert.Equal(500, closed.FeeMsat);
+
+        // NL-602 A2 (the books): our 600,000 sat output reaches the clearing account, the half satoshi it could not
+        // carry is our closing fee
+        var books = BooksSimulator.Of(_accountingEvents);
+        Assert.Equal(-600_000_500, books[AccountRole.Channels]);
+        Assert.Equal(500, books[AccountRole.FeeClose]);
+        Assert.Equal(600_000_000, books[AccountRole.Clearing]);
         Assert.Equal("1000", closed.Details["closingFeeSat"]);
         Assert.Equal("false", closed.Details["feePaidByUs"]);
     }

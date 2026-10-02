@@ -1,8 +1,10 @@
 using Microsoft.Extensions.Logging;
+using NLightning.Tests.Utils.Accounting;
 
 namespace NLightning.Integration.Tests.Persistence;
 
 using Application.Channels.Handlers;
+using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Models;
@@ -70,6 +72,15 @@ public class ChannelFundedAccountingPersistenceTests
         Assert.Equal(-400_000_000, push.AmountMsat);
         Assert.Equal(0, push.FeeMsat);
         Assert.Equal(FundingHeight, push.BlockHeight);
+
+        // NL-602 A2 (the books, the funding entries alone: no wallet events here): the channel holds the capacity
+        // less the push, the clearing account owes the wallet the capacity and the funding fee (the wallet events of
+        // the funding transaction net it: our inputs spent minus our change)
+        var books = BooksSimulator.Of(events);
+        Assert.Equal(600_000_000, books[AccountRole.Channels]);
+        Assert.Equal(400_000_000, books[AccountRole.PushSent]);
+        Assert.Equal(1_234_000, books[AccountRole.FeeFunding]);
+        Assert.Equal(-1_001_234_000, books[AccountRole.Clearing]);
     }
 
     [Fact]
@@ -94,6 +105,12 @@ public class ChannelFundedAccountingPersistenceTests
         Assert.False(funded.Details.ContainsKey("feeUnknown"));
         var push = events.Single(e => e.Kind == AccountingEventKind.PushReceived);
         Assert.Equal(600_000_000, push.AmountMsat);
+
+        // NL-602 A2 (the books): only the push moves, as income; the wallet is not involved
+        var books = BooksSimulator.Of(events);
+        Assert.Equal(600_000_000, books[AccountRole.Channels]);
+        Assert.Equal(-600_000_000, books[AccountRole.PushReceived]);
+        Assert.Equal(0, books[AccountRole.Clearing]);
     }
 
     [Fact]

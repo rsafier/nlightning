@@ -500,6 +500,10 @@ internal sealed class SwitchNode
 
     public IReadOnlyList<ChannelModel> Channels => Memory.FindChannels(_ => true);
 
+    /// <summary>Our gross local balance over every loaded channel, in msat (what the books' channels account
+    /// follows).</summary>
+    public long LocalBalanceMsat => Channels.Sum(c => checked((long)c.LocalBalance.MilliSatoshi));
+
     public SwitchNode(ThreeNodeHarness harness, string name, byte seed, string databasePath, RoutingOptions routing)
     {
         _harness = harness;

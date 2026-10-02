@@ -1,9 +1,11 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Tests.Utils.Accounting;
 
 namespace NLightning.Integration.Tests.Persistence;
 
+using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Models;
@@ -148,6 +150,15 @@ public class ChainMonitorAccountingTests
         Assert.Equal(await SumUtxosMsatAsync(harness), SumOf(await LoadEventsAsync(harness), s_walletKinds));
         Assert.Equal(ChangeSat * 1_000, await SumUtxosMsatAsync(harness));
 
+        // NL-602 A2 (the books): the wallet account equals the UTXO table, the clearing account nets to zero (the
+        // spent output against the change and the withdrawal), and the deposit and the withdrawal are transfers
+        var books = BooksSimulator.Of(await LoadEventsAsync(harness));
+        Assert.Equal(await SumUtxosMsatAsync(harness), books[AccountRole.Wallet]);
+        Assert.Equal(0, books[AccountRole.Clearing]);
+        Assert.Equal(-DepositSat * 1_000, books[AccountRole.TransfersIn]);
+        Assert.Equal(SentSat * 1_000, books[AccountRole.TransfersOut]);
+        Assert.Equal(WithdrawFeeSat * 1_000, books[AccountRole.FeeWithdraw]);
+
         // Act: replayed after a restart, and the next block
         await harness.RestartAsync();
         await harness.MineAndDeliverAsync();
@@ -218,6 +229,65 @@ public class ChainMonitorAccountingTests
     }
 
     [Fact]
+    public async Task Given_AnAnchorCpfpChildWithAWalletInput_When_ItConfirms_Then_TheBooksClearingNetsWithItsAnchor()
+    {
+        // Arrange: a deposit, then our CPFP child spending our anchor (330 sat) and that deposit, its change back to
+        // the wallet; its fee is the anchor plus the input minus the change (NL-604, what AnchorCpfpService stores)
+        await using var harness = new ChainMonitorHarness();
+        var wallet = await SeedWalletAsync(harness, 2);
+        await harness.StartAsync(95);
+        var deposit = CreateDeposit(0x0c, wallet[0], DepositSat);
+        await harness.MineAndDeliverAsync(deposit);
+        const long anchorSat = 330;
+        const long childChangeSat = DepositSat - 1_000;
+        var anchor = new OutPoint(new uint256(Enumerable.Repeat((byte)0x0d, 32).ToArray()), 2);
+        var child = Network.RegTest.CreateTransaction();
+        child.Inputs.Add(anchor);
+        child.Inputs.Add(new OutPoint(deposit.GetHash(), 1));
+        child.Inputs[1].WitScript = new WitScript(Op.GetPushOp(new byte[71]), Op.GetPushOp(wallet[0].Key.PubKey.ToBytes()));
+        child.Outputs.Add(Money.Satoshis(childChangeSat), BitcoinAddress.Create(wallet[1].Model.Address, Network.RegTest));
+        var channelId = ChannelIdOf(0x0c);
+        await harness.Monitor.SaveAndPublishAsync(new BroadcastTransactionModel(
+                                                      ToSigned(child), BroadcastPurpose.AnchorCpfp, channelId, 101,
+                                                      2_500,
+                                                      fee: LightningMoney.Satoshis(anchorSat + DepositSat
+                                                                                 - childChangeSat)));
+
+        // Act
+        await harness.MineAndDeliverAsync();
+
+        // Assert: the wallet events and the CPFP fee leave the anchor's value owed to the clearing account
+        var events = await LoadEventsAsync(harness);
+        Assert.Contains(events, e => e.Kind == AccountingEventKind.AnchorCpfpFee);
+        var books = BooksSimulator.Of(events);
+        Assert.Equal(await SumUtxosMsatAsync(harness), books[AccountRole.Wallet]);
+        Assert.Equal(childChangeSat * 1_000, books[AccountRole.Wallet]);
+        Assert.Equal((anchorSat + DepositSat - childChangeSat) * 1_000, books[AccountRole.FeeCpfp]);
+        Assert.Equal(-anchorSat * 1_000, books[AccountRole.Clearing]);
+
+        // Act: the executor's resolution of the anchor merged into the child (OnchainAccounting's format: a counted
+        // anchor of a close we funded, "merged" note)
+        books.Apply(new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.OutputResolved(TxIdOf(deposit), 7),
+            Kind = AccountingEventKind.OutputResolved,
+            OccurredAt = DateTimeOffset.UnixEpoch,
+            BlockHeight = 102,
+            ChannelId = channelId,
+            AmountMsat = -anchorSat * 1_000,
+            Finality = AccountingFinality.Confirmed,
+            Details = AccountingDetailsCodec.Create(("pendingOutMsat", "330000"), ("pendingInMsat", "0"),
+                                                    ("walletMsat", "0"), ("counted", "true"), ("resolvedBy", "us"),
+                                                    ("valueMsat", "330000"), ("descriptor", "OurAnchor"),
+                                                    ("note", AccountingDetailKeys.MergedNote))
+        });
+
+        // Assert: the clearing account nets to zero; the anchor left the pending bucket the close had put it in
+        Assert.Equal(0, books[AccountRole.Clearing]);
+        Assert.Equal(-anchorSat * 1_000, books[AccountRole.Pending]);
+    }
+
+    [Fact]
     public async Task Given_AReorgOfOurWithdrawal_When_ItConfirmsAgain_Then_ItsEventsAreReversedAndRecordedAgain()
     {
         // Arrange: 101 holds a deposit, 102 our withdrawal spending it (with change)
@@ -263,6 +333,13 @@ public class ChainMonitorAccountingTests
         Assert.Equal(DepositSat * 1_000, await SumUtxosMsatAsync(harness));
         Assert.Equal(DepositSat * 1_000, SumOf(events, s_walletKinds));
 
+        // NL-602 A2 (the books): the reversals undid the withdrawal's postings: the deposit alone stands
+        var rewound = BooksSimulator.Of(events);
+        Assert.Equal(DepositSat * 1_000, rewound[AccountRole.Wallet]);
+        Assert.Equal(0, rewound[AccountRole.Clearing]);
+        Assert.Equal(0, rewound[AccountRole.TransfersOut]);
+        Assert.Equal(0, rewound[AccountRole.FeeWithdraw]);
+
         // Act: the withdrawal (sent again after the rewind) confirms on the new branch
         Assert.Contains(harness.Chain.Mempool, t => t.GetHash() == withdrawal.GetHash());
         await harness.MineAndDeliverAsync();
@@ -280,6 +357,13 @@ public class ChainMonitorAccountingTests
         Assert.Equal(ChangeSat * 1_000, SumOf(events, s_walletKinds));
         Assert.Equal(-SentSat * 1_000, SumOf(events, [AccountingEventKind.WalletSent]));
         Assert.Equal(events.Count, events.Select(e => e.EventKey).Distinct().Count());
+
+        // NL-602 A2 (the books): after the second confirmation the books match the wallet again
+        var books = BooksSimulator.Of(events);
+        Assert.Equal(await SumUtxosMsatAsync(harness), books[AccountRole.Wallet]);
+        Assert.Equal(0, books[AccountRole.Clearing]);
+        Assert.Equal(SentSat * 1_000, books[AccountRole.TransfersOut]);
+        Assert.Equal(WithdrawFeeSat * 1_000, books[AccountRole.FeeWithdraw]);
     }
 
     [Fact]
@@ -317,6 +401,12 @@ public class ChainMonitorAccountingTests
                                                    AccountingEventKeys.WalletOutputSpent(TxIdOf(deposit), 1), 2));
         Assert.Equal("wallet", spent.Details["source"]);
         Assert.Equal(0, SumOf(events, s_walletKinds));
+
+        // NL-602 A2 (the books): the wallet is empty; the spend is no stored broadcast of ours, so nothing books where
+        // its output went and the clearing account keeps it (a reconcile finding, plan §6.1)
+        var books = BooksSimulator.Of(events);
+        Assert.Equal(0, books[AccountRole.Wallet]);
+        Assert.Equal(DepositSat * 1_000, books[AccountRole.Clearing]);
     }
 
     [Fact]

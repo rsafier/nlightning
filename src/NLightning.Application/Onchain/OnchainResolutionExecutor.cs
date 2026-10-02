@@ -1056,8 +1056,9 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                     accounting.Add(OnchainAccounting.Resolution(
                                        channel, close, row, data,
                                        revoked ? AccountingEventKind.BreachLoss : AccountingEventKind.OutputResolved,
-                                       ignoredKey, OnchainAccounting.Lost(valueMsat, true, "ignored"), counted, null,
-                                       height, now));
+                                       ignoredKey,
+                                       OnchainAccounting.Lost(valueMsat, true, AccountingDetailKeys.ResolvedByIgnored),
+                                       counted, null, height, now));
                     continue;
                 }
 
@@ -1072,7 +1073,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 var flows = ours
                                 ? OnchainAccounting.Ours(row, valueMsat, counted, spender, outputs,
                                                          broadcast?.Purpose == BroadcastPurpose.HtlcTransaction)
-                                : OnchainAccounting.Lost(valueMsat, counted, "peer");
+                                : OnchainAccounting.Lost(valueMsat, counted, AccountingDetailKeys.ResolvedByPeer);
                 if (data is null)
                     flows = flows with { Note = "the output's value is unknown" };
 
@@ -1092,7 +1093,8 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 if (eventKey is null)
                     continue;
 
-                var ownership = await GetHtlcValueOwnerAsync(unitOfWork, channel.ChannelId, data?.Htlc, ours);
+                var ownership = await GetHtlcValueOwnerAsync(unitOfWork, channel.ChannelId, data?.Htlc, ours,
+                                                             revoked);
                 accounting.Add(OnchainAccounting.Resolution(channel, close, row, data, kind, eventKey, flows, counted,
                                                             spender.TxId, spent.BlockHeight, now,
                                                             broadcast?.ReplacesTransactionId is not null, ownership));
@@ -1109,17 +1111,19 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     /// The details that tell the books which off-chain event already owns an HTLC output's value (the coordinator rule
     /// in <see cref="OnchainAccounting"/>): an incoming HTLC we claimed (invoice or forward) and an offered HTLC of ours
     /// the peer took (payment or forward, written off the pending bucket). Empty for any other output, or when the
-    /// lookup fails (logged).
+    /// lookup fails (logged). A penalty of a revoked commitment's incoming HTLC (<paramref name="revoked"/>) takes it
+    /// through the revocation path, without the preimage: no invoice or forward booked that value, it is a gain
+    /// (NL-602 A2).
     /// </summary>
     private async Task<IReadOnlyList<(string Key, string? Value)>> GetHtlcValueOwnerAsync(
-        IUnitOfWork unitOfWork, ChannelId channelId, SpecHtlc? htlc, bool ours)
+        IUnitOfWork unitOfWork, ChannelId channelId, SpecHtlc? htlc, bool ours, bool revoked)
     {
         if (htlc is not { } spec)
             return [];
 
         try
         {
-            if (spec.Direction == HtlcDirection.Incoming && ours)
+            if (spec.Direction == HtlcDirection.Incoming && ours && !revoked)
             {
                 var circuit = unitOfWork.ForwardCircuitDbRepository is { } circuits
                                   ? await circuits.GetByIncomingAsync(channelId, spec.Id)
@@ -1134,7 +1138,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                                  : null;
                 return
                 [
-                    (OnchainAccounting.ClaimedByKey, "peer"),
+                    (OnchainAccounting.ClaimedByKey, AccountingDetailKeys.ResolvedByPeer),
                     (OnchainAccounting.ValueBookedByKey, origin?.Kind switch
                     {
                         HtlcOriginKind.Local => "payment",

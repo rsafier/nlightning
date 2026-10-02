@@ -43,8 +43,8 @@ using Splicing;
 /// </remarks>
 internal static class ChannelAccountingEvents
 {
-    private const string WalletBucket = "wallet";
-    private const string ChannelBucket = "channel";
+    private const string WalletBucket = AccountingDetailKeys.WalletBucket;
+    private const string ChannelBucket = AccountingDetailKeys.ChannelBucket;
 
     /// <summary>
     /// Stages <see cref="AccountingEventKind.ChannelFunded"/> (and the push, when one was recorded and is not zero) for a
@@ -112,11 +112,11 @@ internal static class ChannelAccountingEvents
                 FeeMsat = feeMsat ?? 0,
                 Finality = AccountingFinality.Confirmed,
                 Details = AccountingDetailsCodec.Create(
-                    ("bucketFrom", WalletBucket),
-                    ("bucketTo", ChannelBucket),
+                    (AccountingDetailKeys.BucketFrom, WalletBucket),
+                    (AccountingDetailKeys.BucketTo, ChannelBucket),
                     ("capacitySat", Format(funding.Amount.Satoshi)),
                     ("isInitiator", Format(channel.IsInitiator)),
-                    ("dualFunded", Format(isDualFunded)),
+                    (AccountingDetailKeys.DualFunded, Format(isDualFunded)),
                     ("public", Format(channel.AnnounceChannel)),
                     ("anchors", Format(channel.ChannelParams.OptionAnchorOutputs)),
                     ("scidAlias", Format(channel.ChannelParams.UseScidAlias > FeatureSupport.No)),
@@ -146,8 +146,8 @@ internal static class ChannelAccountingEvents
                 FeeMsat = 0,
                 Finality = AccountingFinality.Confirmed,
                 Details = AccountingDetailsCodec.Create(channel.IsInitiator
-                                                            ? ("bucketFrom", ChannelBucket)
-                                                            : ("bucketTo", ChannelBucket))
+                                                            ? (AccountingDetailKeys.BucketFrom, ChannelBucket)
+                                                            : (AccountingDetailKeys.BucketTo, ChannelBucket))
             });
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -221,9 +221,11 @@ internal static class ChannelAccountingEvents
                 FeeMsat = feeMsat ?? 0,
                 Finality = AccountingFinality.Confirmed,
                 Details = AccountingDetailsCodec.Create(
-                    ("bucketFrom", locked.LocalBalanceDeltaMsat >= 0 ? WalletBucket : ChannelBucket),
-                    ("bucketTo", locked.LocalBalanceDeltaMsat >= 0 ? ChannelBucket : WalletBucket),
-                    ("kind", locked.Kind.ToString()),
+                    (AccountingDetailKeys.BucketFrom,
+                     locked.LocalBalanceDeltaMsat >= 0 ? WalletBucket : ChannelBucket),
+                    (AccountingDetailKeys.BucketTo,
+                     locked.LocalBalanceDeltaMsat >= 0 ? ChannelBucket : WalletBucket),
+                    (AccountingDetailKeys.Kind, locked.Kind.ToString()),
                     ("capacitySat", Format(locked.CapacitySatoshis)),
                     ("previousCapacitySat", Format(previous.CapacitySatoshis)),
                     ("previousFundingTxId", previous.FundingTxId.ToString()),
@@ -310,8 +312,8 @@ internal static class ChannelAccountingEvents
                 FeeMsat = feeMsat ?? 0,
                 Finality = AccountingFinality.Confirmed,
                 Details = AccountingDetailsCodec.Create(
-                    ("bucketFrom", ChannelBucket),
-                    ("bucketTo", WalletBucket),
+                    (AccountingDetailKeys.BucketFrom, ChannelBucket),
+                    (AccountingDetailKeys.BucketTo, WalletBucket),
                     ("balanceMsat", Format(balanceMsat)),
                     ("ourOutputSat", ourOutputSat is { } ours ? Format(ours) : null),
                     ("closingFeeSat", closingFeeSat is { } fee ? Format(fee) : null),
