@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-02 by the A3 final integrator (branch `wip/acct-a3`, A3-T4 at `77f455b0`): merged lane `acct-a3-t7` with `--no-ff` (`c62d861b`: config template, `SECURITY_REVIEW.md` SR-20..SR-27, plan and CLAUDE.md docs), then fixed the confirmed findings of the two reviews (waves 1-2 and A3-T4): NL-670 (`94af679d`, one self-payment rule: we are the payee), NL-671, NL-672, NL-673 (`ecd983b1`: late facts rolled back and re-staged with the open period, valued at their own time; the reversal of a pre-feed wallet receive corrects the opening lots at cost). Ledger: NL-640 fixed (`77f455b0`), NL-641 fixed (`503b2a6b`), NL-667 fixed (partial, `77f455b0`), NL-659 fixed (`ecd983b1`, as NL-672), NL-602 closed (fixed); new open: NL-657, NL-658 (A3-T4 follow-ups), NL-674 (finding 4 of the T4 review: the lot kind ignores the classified account, a D-A12 owner decision), NL-675 (the closed-fact reversal's phantom gain the T4 review noted), NL-676 (the A3 Docker smoke), NL-677..NL-679 (SECURITY_REVIEW SR-21, SR-22, SR-26), NL-680 (a forced close of a still-unvalued late fact). No review finding was rejected. Gates: Release `--no-incremental` build 0 CS warnings, `dotnet format` clean, sln check OK, full non-Docker net10.0 suite green at `ecd983b1` (13,033 passed, 6 platform/explicit skips: Domain 4126, Application 3522, Infrastructure.Bitcoin 1532, Daemon 1232, Integration 1027, Infrastructure 635, Serialization 622, Bolt11 337; `HasPendingModelChanges` false on all three providers); no schema change. No Docker.
+
 Updated 2026-10-02 by the A3 integrator (branch `wip/acct-a3` from `wip/fafo` at `9873f3d3`, A3-T0 schema at `5e3ffb0b`; 8 lanes run in parallel worktrees and merged with `--no-ff` in lane order — lane branches `acct-a3-*` hold the originals): merges `42915f80` (fixes-a: NL-621, NL-624, NL-626), `64cb9db0` (fixes-b: NL-622, NL-623, NL-625, NL-627, NL-628), `5812ac5e` (NL-609 rebalances), `27e8cb95` (A3-T1 labels and tags), `214dd51b` (A3-T3 classification), `8b5b0f75` (A3-T2 prices), `d7a9d1f9` (A3-T5 period close), `53daea21` (A3-T6 financial reports), integration commit `afce146a`. Fixed: NL-609, NL-621..NL-628 (per-entry SHAs are the merge commits). New: NL-640, NL-641 (T2), NL-645, NL-646 (T3), NL-653 (fixes-b), NL-660..NL-662 (T5), NL-665..NL-667 (T6); of these NL-646 (by NL-609), NL-661 and NL-666 (both by T2) were already fixed in the merged tree. Integration decisions: one `IAccountingAdjustmentSink` (T5's, carrying T2's `AdjustLateValuationAsync`) registered by the new `AddAccountingPeriodServices`; T6's `IAccountingFinancialProjection` folded into T5's `IFinancialBooksProjector` (one seam for A3-T4; the off default now also refuses the financial reports and exports until T4); NL-609's Dr Rebalance (a + fee) is split in the financial lines into the transfer a and an `expenses:fees:routing` line of the fee (D-A12); IPC 45 actions 5 (classify), 10-12 (prices), 20-22 (close) and `PayInvoiceIpcRequest` keys 5/6 (labels) and 7/8 (pins) kept as the lanes numbered them (no collisions). Gates: Release `--no-incremental` build 0 CS warnings, `dotnet format` clean, sln check OK, full non-Docker net10.0 suite green at `afce146a` (12,948 passed, 6 platform/explicit skips: Domain 4094, Application 3495, Infrastructure.Bitcoin 1532, Daemon 1205, Integration 1024, Infrastructure 635, Serialization 622, Bolt11 337; `HasPendingModelChanges` false on all three providers); in the first run one T3 regex-timeout case (`ClassificationEngineTests` "label regex matches") failed once under load at 178 ms against its 100 ms budget and passed alone and in the second run. No Docker.
 
 Updated 2026-09-25 after the fix swarm and its follow-ups were integrated into `wip/fafo` (at `1a38360`): statuses carry the `wip/fafo` SHAs (the swarm commits were cherry-picked with `-x`), and NL-203..NL-225 record the cross-batch review findings and the follow-ups the batches reported.
@@ -127,16 +129,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 6 | 56 | 62 |
-| in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 62 | 164 | 315 | 555 |
+| open | 0 | 0 | 5 | 63 | 68 |
+| in-progress | 0 | 0 | 0 | 0 | 0 |
+| fixed | 14 | 62 | 170 | 318 | 564 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **175** | **378** | **629** |
+| **Total** | **14** | **62** | **179** | **388** | **643** |
 
 ### Epics
 
-- NL-602: Accounting: core event feed and built-in books (in-progress, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3; data gaps NL-603..NL-605; the plugin stub NL-151 is deleted in A2; A3-T0..T3, T5, T6 integrated on `wip/acct-a3`, A3-T4 and A3-T7 left; A3 follow-ups NL-640, NL-641, NL-645, NL-660, NL-662, NL-665, NL-667)
+- NL-602: Accounting: core event feed and built-in books (fixed, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3 all built on `wip/acct-a3`: A1 feed, A2 operational books, A3 financial profile (labels, classification, prices, projector and lots, period close, financial reports, config/security/docs; merge `c62d861b`, review fixes `94af679d`, `ecd983b1`); data gaps NL-603..NL-605 and the plugin stub NL-151 done; open follow-ups NL-606..NL-608, NL-610..NL-613, NL-645, NL-657, NL-658, NL-660, NL-662, NL-665, NL-667 (partial), NL-674..NL-680, flakes NL-620, NL-653)
 - NL-569: Tor: onion peers, our onion service, Tor-only mode (fixed, medium; lane tor, branch `wip/tor`: `Node:Tor` Off/Hybrid/TorOnly, SOCKS5 with isolation, control port with SAFECOOKIE, persisted v3 onion service announced in `node_announcement`, NL-542 and NL-178 fixed; `docs/agents/TOR.md`; follow-ups NL-571..NL-573; review fixes NL-575..NL-590)
 - NL-426: Static channel backup and restore (fixed, high; wave rf1: encrypted SCB, export/verify/restore IPC 21-23, recovery channels and the data-loss reestablish, proven against LND; wave lh1: NL-430, NL-431 old spends and every peer address, NL-432 persisted peer-storage retrievals with `listpeerstorage` (32); follow-up NL-435)
 - NL-031: HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee) (fixed, critical; N6 in wave 1, reestablish and switch in wave 2; the fail-the-channel broadcast is N9-T4 under NL-094)
@@ -4566,7 +4568,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A2
 
 ### NL-602 [EPIC] Accounting: core event feed and built-in books
-- **Status:** in-progress (branch `claude/youthful-hamilton-x4ngo7`)
+- **Status:** fixed (c62d861b, ecd983b1)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** new: Domain/Application `Accounting/`, `AccountingEvents` and journal tables in `NLightningDbContext`, writers in the money-moving saves, IPC 41-45; removed: `src/NLightning.Daemon.Plugins/`, `src/NLightning.Daemon/Services/PluginLoaderService.cs`
@@ -4577,6 +4579,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Update (A1-T1, 2026-10-02):** Domain `Accounting/` (event model, kinds, keys, canonical hasher, sealer, details codec, `IAccountingEventDbRepository` with a null default on `IUnitOfWork`), table `AccountingEvents` with migration `AddAccountingEvents` on all three providers (also `Channels.PushAmountMsat` for NL-605 and `BroadcastTransactions.FeeSat` for NL-604, no writers yet); SQLite round trip and sealer tests.
 - **Update (A1-T2, A1-T4, A1-T5, 2026-10-02):** writers in the saves of every money transition: `InvoiceSettled`, `PaymentSucceeded`/`PaymentFailed`, `ForwardSettled`, `ForwardLostOnchain` (Application `Payments/PaymentAccountingEvents`); `ChannelFunded` with push and our fee share, `SpliceLocked`, `ChannelClosedMutual` (`Channels/Accounting/ChannelAccountingEvents`); `ChannelForceClosed`, `OutputResolved`/`PenaltyClaimed`/`BreachLoss`/`OutputIgnored` and reversals of a replaced close or a reorged resolution (`Onchain/Accounting/`); wallet deposits and spends, `AnchorCpfpFee`, `SweepFeeBump`, `WalletSent` and rewind reversals in the chain monitor (NL-603, NL-604, NL-605 fixed). The sealer service (`Application/Accounting/AccountingEventSealerService`, `Accounting` options), the live balance snapshot (`INodeSnapshotSource`) and IPC `listaccountingevents` (41) / `accountingsnapshot` (42). Remaining in A1: the backfill (A1-T6; closes recorded before the feed have no `ChannelForceClosed`, so their sweeps would read as gains), the flat-startup proof, and follow-ups NL-606..NL-613. Notes for A2: wallet events overlap the channel and fee events (the books use `source` and kind), a pending funding is in both the channel and the wallet buckets of a snapshot until it confirms, a splice-out to an outside address shows as wallet outputs in the details.
 - **Update (A1-T6, A2 lanes B1/B2, 2026-10-02):** the cutover (`Application/Accounting/Backfill/`: opening balances by bucket and a synthetic close per resolving channel, once, before `PeerManager.StartAsync`; memo history of earlier facts after the chain monitor) and the flat-startup proof (indexed startup queries on 50,000 rows; marker check plus an empty sealer round 2.0 ms at 10,000 rows, 3.1 ms at 1,000,000) are done, which completes A1. A2: posting rules (`Domain/Accounting/Books/AccountingPostingRules`, proven against the real writers' events), the books' tables (migration `AddAccountingBooks`), the projector, rebuild and reconcile (`Application/Accounting/Books/AccountingBooksService`). Follow-ups NL-616..NL-620; memo gaps (spliced channels' funding skipped, a failed payment retried after the cutover can lose its memo, a close retired for a splice gets no pending opening balance) are logged, not filed.
+- **Update (A2, A3, 2026-10-02; closed by the A3 final integrator on `wip/acct-a3`):** A2 (operational books, reports, exports, IPC 43-45, NL-151 deleted) and A3 are built: A3-T0 schema `5e3ffb0b`, A3-T1 labels `27e8cb95`, A3-T3 classification `214dd51b`, A3-T2 prices `8b5b0f75`, A3-T5 period close `d7a9d1f9`, A3-T6 financial reports `53daea21`, integration `afce146a`, A3-T4 financial projector, lots and gains `77f455b0`, A3-T7 config template, security review and docs (merge `c62d861b`), and the review fixes NL-670 (`94af679d`) and NL-671..NL-673 (`ecd983b1`). The epic is closed with the plan's A3 scope done; the A3 Docker smoke was skipped by owner decision (NL-676). Open follow-ups carried as their own entries: A1 data NL-606, NL-607, NL-608, NL-610, NL-611, NL-612, NL-613; A3 NL-645, NL-657, NL-658, NL-660, NL-662, NL-665, NL-667 (partial), NL-674, NL-675, NL-676, NL-680; security NL-677 (SR-21), NL-678 (SR-22), NL-679 (SR-26); test flakes NL-620, NL-653. Out of A3 by decision: specific-id cost basis, the OpenTimestamps anchor of a close, tax forms and multi-node consolidation.
 
 ### NL-152 Missing IPC commands: close, list channels, invoice, pay, disconnect
 - **Status:** fixed (5611156, 2ede2ee, 6cfbcd1, c10a78e, c50fc7b, f2f1ef6, 6d81ecd, c2ae40a, d60c4be5, aa9d67e0)
@@ -5241,7 +5244,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-640 Lots opened by an acquisition valued late keep a null fiat cost
-- **Status:** open
+- **Status:** fixed (77f455b0)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (fills postings only); A3-T4 financial projector / `IAccountingLotDbRepository`
@@ -5249,9 +5252,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** A3-T4: when the projector meets unvalued lots whose source entry now has valued postings, set the lot's cost (`UpdateLotAsync`) and recompute its open-period reliefs; for a closed period raise an adjustment through `IAccountingAdjustmentSink`. Or the valuation job calls an optional hook in the same save.
 - **Blocks/Blocked-by:** Part of NL-602; A3-T4
 - **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T4
+- **Update (A3 final integration, 2026-10-02):** fixed by A3-T4 (`77f455b0`): `PriceValuationService` lowers the financial cursor when it values a line of a `PendingValuation` entry and the projector rolls the open entries back and projects them again at the stored price, so lot costs, reliefs and realized gains are filled; closed periods stay untouched (D-A8). Proof: `FinancialBooksProjectorTests.Given_NoPriceYet_When_TheBackValuationFindsThemLater_Then_TheBookEqualsOneValuedFromTheStart`. The same gap for late facts (adjustments) is NL-659/NL-672, fixed in `ecd983b1`.
 
 ### NL-641 The Docker test node would query mempool.space for prices under `Profile=Financial`
-- **Status:** open
+- **Status:** fixed (503b2a6b)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs`; `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs` (`AddAccountingPriceSources`)
@@ -5259,6 +5263,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Set `Accounting:Prices:Source=None` in `NLightningTestNode` (and import fixture prices), or re-register `AddAccountingPriceSources(_ => new FakePriceHttpHandler())` after `AddNltgNodeServices`.
 - **Blocks/Blocked-by:** Part of NL-602; A3-T7
 - **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T7
+- **Update (A3 final integration, 2026-10-02):** fixed by A3-T7 (`503b2a6b`, merged in `c62d861b`): `NLightningTestNode` sets `Accounting:Prices:Source=None`, so a Docker run with `Profile=Financial` never asks mempool.space; a test imports its prices.
 
 ### NL-645 Offer-id classification rules match only received payments: payment events carry the offer string, not its id
 - **Status:** open
@@ -5319,6 +5324,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Add a Postgres case to `Docker/PostgresTests` (seed the `AccountingPeriodPersistenceTests` rows, reset, assert the same outcome) in the next Docker pass; write the SQL Server case without running it, per the test cycle.
 - **Blocks/Blocked-by:** Part of NL-602; A3-T7
 - **Plan ref:** ACCOUNTING_PLAN A3-T5
+- **Update (A3 final integration, 2026-10-02):** `RollbackOpenEntriesAsync` and `ResetToCloseAsync` now also select the open late facts by a `List<long>.Contains` over their ledger sequences and a bitwise flag test (NL-671); still proven on SQLite only, so the Postgres case of the next Docker pass should cover a reset and a rollback with a late fact.
 
 ### NL-665 The operational hledger export's header `commodity 1 msat` is rejected by hledger 1.52
 - **Status:** open
@@ -5341,7 +5347,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T6
 
 ### NL-667 An unclassified entry reclassified by a later adjustment stays in the unclassified listing
-- **Status:** open
+- **Status:** fixed (partial, 77f455b0)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** A3-T6 report kind `Unclassified` (`AccountingFinancialReportDispatcher`, `WithFlags = Unclassified`); A3-T3 `classify list --unclassified`
@@ -5349,6 +5355,147 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Leave out entries whose event key has a later adjustment with classification Override or Rule, or have A3-T4 clear the flag on open-period entries it re-projects; T3 and T4 agree on one approach (and on which listing stays).
 - **Blocks/Blocked-by:** Part of NL-602; related NL-660
 - **Plan ref:** ACCOUNTING_PLAN A3-T3, A3-T6
+- **Update (A3-T4, 2026-10-02):** partial in `77f455b0`: in the open period, `classify set|unset` and rule changes lower the financial cursor and the entry is projected again with the new classification (`Unclassified` dropped, `Classification`/`RuleId` updated; `FinancialBooksProjectorTests.Given_AnOverrideOfAnOpenPeriodEntry_*`, `Given_ARuleAddedAfterAClose_*`). Remaining: closed-period entries keep the flag; their adjustment is NL-660 (open).
+
+### NL-657 Financial asset accounts carry the market value of their flows, not their own cost basis (lots are pooled node-wide)
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Domain/Accounting/Financial/Lots/FinancialEntryPlanner.cs`, `FinancialLotPool.cs` (`AccountingLot.Account` stays null)
+- **Evidence:** Lane A3-T4: every msat line is valued at market and `assets:cost-basis` carries the difference to the lots' cost, so the asset total equals the open lots' cost, but a single account does not: in the FIFO golden journal `assets:lightning:channels` ends at 0 msat and -329.69 USD, offset by `assets:cost-basis` 390.51 USD.
+- **Fix sketch:** Track lots per bucket (`AccountingLot.Account` plus `Split` lots with `ParentLotId`, both already in the schema): a transfer moves the lots it takes, a disposal relieves the source bucket's lots, transfers are valued at the moved lots' cost; handle a bucket that goes negative for a moment (the clearing order between `ChannelFunded` and `WalletOutputSpent`).
+- **Blocks/Blocked-by:** Part of NL-602; related NL-674
+- **Plan ref:** ACCOUNTING_PLAN A3-T4, D-A12
+
+### NL-658 Financial projector scale: catch-up replays over a long unpriced history and a full read of the open lots per working round
+- **Status:** open
+- **Severity:** low
+- **Kind:** performance
+- **Location:** `src/NLightning.Application/Accounting/Financial/FinancialBooksProjector.cs`, `FinancialProjectionRound.LoadAsync`; `PriceValuationService` (cursor lowering)
+- **Evidence:** Lane A3-T4, by design review: when `Profile=Financial` is turned on over months of history with no stored prices, each back-valuation round (24 hours of prices per 10 minutes) lowers the cursor to its earliest newly valued entry and the projector replays the whole tail each time (roughly quadratic). Each round with work reads every open lot (`ListOpenLotsAsync`), and every routing fee opens its own lot.
+- **Fix sketch:** Import or fetch prices before switching the profile on (documented in the Application CLAUDE.md A3-T7 section). Code options: lower the cursor only once the valued frontier stops moving, or have the projector wait at the first old unvalued entry while a source can still fetch it; keep the pool across rounds and invalidate it on rollback; merge acquisitions of the same kind, hour and price into one lot.
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN A3-T4, §10
+
+### NL-659 Late-fact adjustments and closed-fact reversals projected without a price keep unvalued lots for good
+- **Status:** fixed (ecd983b1)
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Accounting/Financial/FinancialBooksProjector.cs` (the locked-period `LateFact` path; the reversal of a closed fact); `PriceValuationService`
+- **Evidence:** Lane A3-T4: an adjustment (`Adjustment` >= 1) was never `PendingValuation` and never replayed, so with no usable price at projection time the back-valuation later valued its lines while the lot it opened kept a null cost and its reliefs a pending gain (NL-640, but for adjustments).
+- **Fix sketch:** Done in `ecd983b1` as NL-672 (the A3-T4 review's finding of the same defect, which also showed the lines valued at the adjustment's date): a late fact keeps `PendingValuation`, the back-valuation looks its lines up at the fact's time and lowers the cursor to it, and the projector stages it again at that price. A reversal of a closed fact is an adjustment-0 entry (flag `Adjustment` only), so without a price it is `PendingValuation` and already took NL-640's replay (checked by code reading; no dedicated test).
+- **Blocks/Blocked-by:** Part of NL-602; duplicate in substance of NL-672
+- **Plan ref:** ACCOUNTING_PLAN A3-T4
+
+### NL-670 Both halves of a rebalance decided "self-payment" by different tests, so other payments and receipts could be booked as rebalances
+- **Status:** fixed (94af679d)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`IsOurInvoiceAsync`), `Payments/Switch/HtlcSwitch.cs` (`IsOurOwnPaymentAsync`), `Accounting/Backfill/AccountingBackfillService.cs` (both memo checks)
+- **Evidence:** A3 waves 1-2 review (2026-10-02): the paying side flagged a `PaymentSucceeded` whose hash matched any invoice of ours, the receiving side an `InvoiceSettled` whose hash had an `InFlight`/`Succeeded` payment row; neither checked that we are the payee. A peer that learned the preimage of our invoice could bill us on the same hash (our payment booked as Dr Rebalance a + fee, no Sent/RoutingFees, and in the financial book an equity transfer instead of a disposal; the rebalance account kept a + fee for good), and with `Node:Keysend:Accept` a keysend received on the hash of a payment we made was booked as Cr Rebalance instead of income. Money moved correctly; only the books were wrong.
+- **Fix sketch:** Done: one rule, `Application/Payments/SelfPaymentRule` (same hash, a BOLT 11 invoice of ours that is no keysend record or BOLT 12 invoice, a non-keysend payment whose `PayeeNodeId` is our node id), used by `PaymentService` (our id from `ISecureKeyManager`), `HtlcSwitch` (new optional `ISecureKeyManager`; without one nothing is flagged) and the backfill. Tests: `Payments/SelfPaymentRuleTests` (both review cases), `PaymentServiceTests.Given_AnotherNodesInvoiceOnTheHashOfOurInvoice_*`; `RebalanceHarnessTests` still flags both halves of a real rebalance.
+- **Blocks/Blocked-by:** Part of NL-602; follow-up of NL-609
+- **Plan ref:** ACCOUNTING_PLAN §6.1 (`selfPayment`), D-A12
+
+### NL-671 A late fact's lot reliefs were lost when the open period was replayed (rollback or rebuild): the lots then held more msat than the assets
+- **Status:** fixed (ecd983b1)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Repositories/Database/Accounting/AccountingBooksDbRepository.cs` (`RollbackOpenEntriesAsync`, `ResetToCloseAsync`); `FinancialBooksProjector` (late-fact staging)
+- **Evidence:** A3-T4 review (2026-10-02), reproduced: LIFO, January closed with a 1e9 msat opening balance, a deposit of 5e8 on Mar 5 projected without a price (lot L), a withdrawal of 1e8 dated Jan 20 sealed late (a `LateFact` relieving L). When the Mar 5 price arrived the rollback deleted L together with the adjustment's relief (`lotsToDelete.Any(l => l.Id == r.LotId)`) and the replay skipped the existing late fact: lots 1.5e9 msat against assets of 1.4e9, the withdrawal's 1e8 disposable again; `rebuild --book financial` did the same (rebuild != incremental). Any rollback past such a lot (a reorg, a reclassification) triggered it.
+- **Fix sketch:** Done: late facts carry `AccountingEntryFlags.LateFact`; `RollbackOpenEntriesAsync` and `ResetToCloseAsync` delete the open late facts from the replay point on with their postings, lots and reliefs (balances adjusted), `GetLastOpenEntrySeqAsync` counts them, and the replay stages them again (dated at the replay, adjustment 1). Tests: `Accounting/Financial/FinancialBooksProjectorLateFactTests.Given_ALateFactRelievingAnUnvaluedLot_*` (equal to a book that knew the price from the start) and `Given_ALateFactRelievingAnOpenLot_When_Rebuilt_*` (both failed before the fix).
+- **Blocks/Blocked-by:** Part of NL-602; related NL-662 (the bulk statements are proven on SQLite only)
+- **Plan ref:** ACCOUNTING_PLAN A3-T4, A3-T5 (D-A8)
+
+### NL-672 A late fact projected without a price was never projected again, and its lines were valued at the adjustment's date
+- **Status:** fixed (ecd983b1)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Accounting/Financial/FinancialBooksProjector.cs` (late facts staged with `PendingValuation` stripped); `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs`
+- **Evidence:** A3-T4 review (2026-10-02), reproduced: January closed with only a Jan 1 price; a late invoice of 1e8 dated Jan 25 06:00 was staged unvalued with `PendingValuation` stripped and its lot had no cost. When prices for Jan 25 05:00 (45,000) and the adjustment's date (90,000) arrived, the back-valuation valued the adjustment's postings in place at the adjustment's date (90 instead of 45); the lot's `FiatCost` stayed null for good (every later disposal from it `GainPending`), and a `LossOnchain` line would have been valued at market instead of 0.
+- **Fix sketch:** Done: a late fact keeps `PendingValuation` (with `LateFact`); the back-valuation never values its lines in place but looks them up at the fact's time (the operational entry's `OccurredAt`), asks the source for that hour and, once a price is usable, lowers the financial cursor to the fact; the projector rolls back (NL-671) and stages it again valued at the fact's price through the planner (zero-proceeds rule included). Test: `FinancialBooksProjectorLateFactTests.Given_AnUnvaluedLateFact_When_APriceOfItsTimeArrives_*` (failed before the fix). Remaining edge: NL-680.
+- **Blocks/Blocked-by:** Part of NL-602; NL-659 is the A3-T4 lane's entry for the same gap
+- **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T4, D-A11
+
+### NL-673 The reversal of a wallet receive from before the feed was booked as a sale of lots, realizing a phantom gain
+- **Status:** fixed (ecd983b1)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Accounting/Financial/Lots/FinancialLineKind.cs` (`FinancialLotRules.KindOf`), `FinancialEntryPlanner.cs`, `FinancialLotPool.cs`
+- **Evidence:** A3-T4 review (2026-10-02), reproduced: `PostReversal` turns the reversal of a pre-feed wallet receive into Wallet -x / Opening +x; the financial book had no entry for the original, so `KindOf` made the Opening debit a disposal at market: with LIFO it relieved the newest lot (a later deposit) at market and posted a realized gain on sats that never arrived (the review's case: a 2017 imported lot costing 10 USD relieved at 205 USD, a 200 USD gain).
+- **Fix sketch:** Done: a debit of the opening balances is an opening correction (`FinancialLotRules.IsOpeningCorrection`): it relieves the opening and imported lots first (`FinancialLotPool.PlanRelief(..., preferred)`) and, when every take has a cost, its proceeds are that cost (the disposal lines revalued to it; the cost-basis line takes the difference to market), so nothing is realized. Tests: `FinancialBooksProjectorLateFactTests.Given_TheReversalOfAWalletReceiveFromBeforeTheFeed_*` (failed before the fix), Domain `FinancialEntryPlannerTests.Given_ADebitOfTheOpeningBalances_*`. The same phantom gain on the reversal of a closed period's acquisition is NL-675.
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN A3-T4, D-A9, D-A12
+
+### NL-674 The lot kind follows the operational role, not the classified account: a withdrawal to the operator's own cold wallet classified as a transfer still realizes a gain
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Domain/Accounting/Financial/Lots/FinancialLineKind.cs` (`FinancialLotRules.KindOf` reads `posting.Account` only)
+- **Evidence:** A3-T4 review (2026-10-02), confirmed by code reading: `TransfersOut`/`TransfersIn` lines are classifiable (default `equity:transfers:out`/`in`), but a `WalletSent` to the operator's own cold storage stays a disposal whatever account it is classified to (an override to `equity:transfers:cold-storage` included): lots are relieved and a gain realized at market, and the return deposit acquires at market and resets the basis (the "transfer treated as a disposal" mistake §6.2 warns about). The inverse also holds: a rebalance line reclassified to an `expenses:*`/`income:*` account stays a transfer. This follows D-A12's literal "withdrawals to outside dispose", so it is a design gap, not a slip; not fixed tonight because it needs an owner decision (and a held-outside lot pool, which NL-657's per-bucket lots would give).
+- **Fix sketch:** Owner decision on D-A12, then either derive the kind from the classified target as well (a transfer line whose target is in the equity category moves its lots into a "held outside" pool at cost, no gain, and a transfer back takes them out; a rebalance line reclassified to income/expense acquires/disposes), or record the rule in D-A12 and refuse `equity:*` targets for `TransfersIn`/`TransfersOut` rules and overrides.
+- **Blocks/Blocked-by:** Part of NL-602; related NL-657
+- **Plan ref:** ACCOUNTING_PLAN §6.2, D-A12
+
+### NL-675 The reversal of a closed period's acquisition disposes by the method's order at the original value, realizing a gain against older lots
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Accounting/Financial/FinancialBooksProjector.cs` (`ClosedFactLinesAsync` path); `FinancialEntryPlanner`
+- **Evidence:** A3-T4 review (related to NL-673; documented in A3-T4 reading (4)): a reorg reversing a deposit of a closed period posts the deposit's lines negated at their January value and disposes by FIFO: `FinancialBooksProjectorTests.Given_AFactOfAClosedPeriodReversed_*` relieves the opening lot (1e9 for 400) at the deposit's value 500 and realizes a gain of 100 on sats that never arrived.
+- **Fix sketch:** Treat a reversal's disposal of an acquisition as a correction like NL-673's: relieve first the lot the reversed fact opened (`SourceLedgerSeq` = the fact's sequence, when still open) and take its proceeds at cost (`FinancialEntryPlanner`'s `AtCost`), so nothing is realized; update the test's expected lines.
+- **Blocks/Blocked-by:** Part of NL-602; related NL-673
+- **Plan ref:** ACCOUNTING_PLAN A3-T4, A3-T5 (D-A8)
+
+### NL-676 The A3 Docker smoke (`Profile=Financial` on the ABCD or LND suite) has not run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/` (no test yet); plan ACCOUNTING_PLAN A3-T7
+- **Evidence:** A3-T7 (2026-10-02): skipped by owner decision (no Docker in the A3 lanes); the financial books are proven by the non-Docker suites only (SQLite harnesses, golden files, IPC round trips). `NLightningTestNode` already sets `Accounting:Prices:Source=None` (NL-641).
+- **Fix sketch:** In the next Docker pass, run the ABCD or LND suite with `Accounting:Profile=Financial` (through `ExtraConfiguration`), import fixture prices (`IAccountingPrices.ImportAsync`), and assert `reconcile` clean and the financial book balanced in fiat.
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN A3-T7
+
+### NL-677 The price source's requests mark the node's active hours, from its own IP outside `TorOnly` (SR-21)
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Accounting/Prices/HttpPriceSource.cs` and its registration (`AddAccountingPriceSources`); `docs/agents/SECURITY_REVIEW.md` SR-21
+- **Evidence:** A3-T7 security review: with `Profile=Financial` and `Prices:Source` `Http`/`Both` (the default) the back-valuation asks mempool.space once per UTC hour that holds an unvalued posting, so the set of hours asked mirrors when the node moved money (no amounts); in Tor `Off` and `Hybrid` it is asked from the node's IP (only `TorOnly` routes it through Tor). Nothing is asked with the default `Operational` profile or `Source=None`/`Csv`.
+- **Fix sketch:** Route the price client through Tor whenever `Node:Tor:Mode` is not `Off`, and/or ask whole days (24 contiguous hours) so the request set no longer marks the active hours; meanwhile operators who care run `TorOnly` or `Source=Csv` with `accounting prices import`.
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN D-A1, D-A11; SECURITY_REVIEW SR-21
+
+### NL-678 The price (and fee/Esplora) HTTP clients read a response of any size, accept `http://`, and a stored price cannot be replaced (SR-22)
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Accounting/Prices/HttpPriceSource.cs` (and the fee/Esplora clients); `PriceValuationService.ImportAsync` (first price of an hour wins); `docs/agents/SECURITY_REVIEW.md` SR-22
+- **Evidence:** A3-T7 security review: the body is read with `HttpClient`'s default buffer limit (2 GiB) under a 30 s timeout; an `http://` URL is accepted and then unauthenticated; a wrong fetched price is stored with its source and time and an import keeps a stored time's price, so it is corrected only by editing `AccountingPrices` before the period closes (after a close a change only posts an adjustment, D-A8).
+- **Fix sketch:** Set `MaxResponseContentBufferSize` (for example 64 KiB) on the price client (and the fee/Esplora clients); refuse `http://` unless loopback or `.onion`; add a `prices replace` that rewrites an open-period hour's price and re-projects.
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN D-A11; SECURITY_REVIEW SR-22
+
+### NL-679 `accounting export --output` writes its temporary file with the umask and follows a planted symlink (SR-26)
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Client/Handlers/AccountingBooksCommands.cs` (the `accounting export --output` writer: `<file>.part` with `FileMode.Create`, then a rename); `docs/agents/SECURITY_REVIEW.md` SR-26
+- **Evidence:** A3-T7 security review: the export holds the node's whole money history (SR-20); the `.part` file gets the process umask (typically 0644), so in a shared directory another user can read it, and a pre-planted `<file>.part` symlink is followed (the client truncates the link's target with the operator's rights).
+- **Fix sketch:** Create the temporary file 0600 (`UnixCreateMode`) with `FileMode.CreateNew` and a random suffix, as the daemon's own secret files are (SR-03).
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN D-A6; SECURITY_REVIEW SR-26
+
+### NL-680 A late fact closed while still unvalued (a forced close) is valued by a price adjustment at its adjustment date's price
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (`LateFactTimesAsync` skips closed postings; the closed path calls `AdjustLateValuationAsync` with the posting's own time); `AccountingPeriodService.AdjustLateValuationAsync`
+- **Evidence:** A3 final integration, by code reading while fixing NL-672: a late fact's lines are re-staged at the fact's price only while the late fact is open. A close refuses unvalued postings unless `--force`; after a forced close of the period that holds a still-unvalued late fact, the back-valuation's closed path values its postings through a `Price` adjustment at the late fact's own `OccurredAt` (the adjustment's date), so it takes that date's price and leaves the lot's cost null (NL-672's defect, for forced closes only).
+- **Fix sketch:** In the closed path, look a `LateFact` posting up at the fact's time too (`LateFactTimesAsync` without the open filter) for the price, and stage the lot's cost and the reliefs' gains in the same adjustment; or refuse `--force` while a late fact is unvalued.
+- **Blocks/Blocked-by:** Part of NL-602; follow-up of NL-672
+- **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T5
 
 ## Crypto providers and key management
 
