@@ -135,7 +135,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 39 | 40 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 185 | 363 | 624 |
+| fixed | 14 | 62 | 185 | 364 | 625 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
 | **Total** | **14** | **62** | **192** | **413** | **681** |
