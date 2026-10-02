@@ -40,4 +40,19 @@ public class TestRunOptionsTests
         Assert.Equal("orbstack", options.KubeContext);
         Assert.True(options.KeepNamespace);
     }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("0", false)]
+    [InlineData("1", true)]
+    [InlineData("TRUE", true)]
+    public void Given_TheAdoptVariable_When_OptionsAreRead_Then_AdoptNamespaceFollowsIt(string? value, bool expected)
+    {
+        // Act
+        var options = TestRunOptions.FromEnvironment(
+            "runner", k => k == TestRunOptions.AdoptNamespaceVariable ? value : null);
+
+        // Assert
+        Assert.Equal(expected, options.AdoptNamespace);
+    }
 }

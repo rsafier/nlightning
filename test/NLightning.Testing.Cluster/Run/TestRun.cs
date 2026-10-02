@@ -7,6 +7,7 @@ namespace NLightning.Testing.Cluster.Run;
 
 using Kube;
 using Nodes;
+using Runner;
 
 /// <summary>
 /// One run of the harness (plan R1, R3): its own namespace <c>&lt;prefix&gt;-&lt;run id&gt;</c>, labelled
@@ -26,11 +27,12 @@ public sealed class TestRun : IAsyncDisposable
     private readonly TestRunOptions _options;
     private int _disposed;
 
-    private TestRun(IKubernetes client, RunIdentity identity, TestRunOptions options)
+    private TestRun(IKubernetes client, RunIdentity identity, TestRunOptions options, bool ownsNamespace)
     {
         Client = client;
         Identity = identity;
         _options = options;
+        OwnsNamespace = ownsNamespace;
     }
 
     /// <summary>The cluster client of the run.</summary>
@@ -42,6 +44,12 @@ public sealed class TestRun : IAsyncDisposable
     public string Id => Identity.Id;
 
     public string Namespace => Identity.Namespace;
+
+    /// <summary>
+    /// False when the run adopted an existing namespace (<see cref="TestRunOptions.AdoptNamespace"/>): disposing
+    /// then removes only the run's nodes and leaves the namespace to whoever created it.
+    /// </summary>
+    public bool OwnsNamespace { get; }
 
     /// <summary>The nodes deployed so far, by alias.</summary>
     public IReadOnlyDictionary<string, KubeNodeHandle> Nodes => _nodes;
@@ -79,6 +87,20 @@ public sealed class TestRun : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(options);
 
+        if (options.AdoptNamespace)
+        {
+            if (string.IsNullOrWhiteSpace(options.RunId))
+                throw new InvalidOperationException(
+                    $"{TestRunOptions.AdoptNamespaceVariable} needs the run id ({TestRunId.EnvironmentVariable})");
+
+            // The host created (and admitted) the namespace: adopt it as is, no cap, no derived id.
+            var adopted = RunIdentity.Create(options, DateTimeOffset.UtcNow);
+            await AdoptedNamespace.RequireOwnedAsync(client, adopted, cancellationToken).ConfigureAwait(false);
+            options.Log?.Invoke($"[nltg-cluster] run {adopted.Id}: namespace {adopted.Namespace} adopted "
+                              + $"({KubeClientFactory.DetectSource()})");
+            return new TestRun(client, adopted, options, ownsNamespace: false);
+        }
+
         var annotations = RunAnnotations.ForRun(options, options.Owner ?? RunOwner.Current());
         var baseId = TestRunId.Resolve(options.RunId);
         for (var attempt = 1; ; attempt++)
@@ -93,7 +115,7 @@ public sealed class TestRun : IAsyncDisposable
              || await RunAdmission.IsAdmittedAsync(client, identity, cap, cancellationToken).ConfigureAwait(false))
             {
                 options.Log?.Invoke($"[nltg-cluster] run {identity.Id}: namespace {identity.Namespace} created");
-                return new TestRun(client, identity, options);
+                return new TestRun(client, identity, options, ownsNamespace: true);
             }
 
             // Another process raced past the cap at the same time and ranks before us: give the slot back.
@@ -185,6 +207,16 @@ public sealed class TestRun : IAsyncDisposable
             }
 
             using var cts = new CancellationTokenSource(_options.DeletionTimeout + TimeSpan.FromSeconds(30));
+            if (!OwnsNamespace)
+            {
+                await AdoptedNamespace.DeleteNodesAsync(Client, Namespace, _nodes.Keys, _options.DeletionTimeout,
+                                                        cts.Token)
+                                      .ConfigureAwait(false);
+                _options.Log?.Invoke($"[nltg-cluster] run {Id}: {_nodes.Count} node(s) removed from adopted "
+                                   + $"namespace {Namespace}");
+                return;
+            }
+
             if (await RunNamespace.DeleteAsync(Client, Identity, cts.Token).ConfigureAwait(false)
              && _options.WaitForDeletion)
                 await RunNamespace.WaitForDeletionAsync(Client, Namespace, _options.DeletionTimeout, cts.Token)

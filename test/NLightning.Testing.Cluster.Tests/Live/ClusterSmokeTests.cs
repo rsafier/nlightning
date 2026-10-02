@@ -6,6 +6,7 @@ using Cluster.Images;
 using Cluster.Kube;
 using Cluster.Nodes;
 using Cluster.Run;
+using Cluster.Runner;
 
 /// <summary>
 /// The harness against a real cluster (OrbStack's locally; the context is <c>NLTG_KUBE_CONTEXT</c> or the current
@@ -53,6 +54,7 @@ public class ClusterSmokeTests
         var watch = Stopwatch.StartNew();
         var run = await TestRun.StartAsync(Options("cluster-smoke"), ct);
         var ns = run.Namespace;
+        var ownsNamespace = run.OwnsNamespace;
         try
         {
             // Act
@@ -77,10 +79,19 @@ public class ClusterSmokeTests
             await run.DisposeAsync();
         }
 
-        // Assert: the namespace is gone
+        // Assert: the namespace is gone, or, in a namespace adopted by the in-cluster runner, the run's node
         using var client = KubeClientFactory.Create();
-        Assert.Null(await RunNamespace.TryReadAsync(client, ns, ct));
-        Log($"{ns}: created, ready and deleted in {watch.Elapsed.TotalSeconds:F1} s");
+        if (ownsNamespace)
+        {
+            Assert.Null(await RunNamespace.TryReadAsync(client, ns, ct));
+            Log($"{ns}: created, ready and deleted in {watch.Elapsed.TotalSeconds:F1} s");
+        }
+        else
+        {
+            Assert.False(await AdoptedNamespace.NodeExistsAsync(client, ns, "probe", ct));
+            Log($"{ns} (adopted, {KubeClientFactory.DetectSource()}): node deployed, ready and removed in "
+              + $"{watch.Elapsed.TotalSeconds:F1} s");
+        }
     }
 
     [Fact(Explicit = true)]

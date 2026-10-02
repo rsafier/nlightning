@@ -17,6 +17,12 @@ public sealed record TestRunOptions
     /// <summary>Set to <c>1</c> or <c>true</c> to keep the namespace after the run, for debugging.</summary>
     public const string KeepNamespaceVariable = "NLTG_KEEP_NAMESPACE";
 
+    /// <summary>
+    /// Set to <c>1</c> or <c>true</c> to adopt the run's existing namespace instead of creating one (the in-cluster
+    /// runner, whose ServiceAccount cannot create namespaces; see <see cref="Runner.TestRunnerJob"/>).
+    /// </summary>
+    public const string AdoptNamespaceVariable = "NLTG_ADOPT_NAMESPACE";
+
     /// <summary>The longest namespace prefix (the run id gets the rest of the 63 characters).</summary>
     public const int MaxPrefixLength = 22;
 
@@ -37,6 +43,13 @@ public sealed record TestRunOptions
 
     /// <summary>The namespace's ResourceQuota, or null for none.</summary>
     public NamespaceQuota? Quota { get; init; }
+
+    /// <summary>
+    /// Use the existing namespace <c>&lt;prefix&gt;-&lt;run id&gt;</c> (checked to be the run's own) instead of
+    /// creating it: no namespace or quota is created, and disposing removes only the nodes the run deployed
+    /// (<see cref="Runner.AdoptedNamespace"/>). Needs <see cref="RunId"/>.
+    /// </summary>
+    public bool AdoptNamespace { get; init; }
 
     /// <summary>Keep the namespace when the run is disposed.</summary>
     public bool KeepNamespace { get; init; }
@@ -67,22 +80,27 @@ public sealed record TestRunOptions
     /// <summary>
     /// Options for <paramref name="suite"/> with the environment applied: <see cref="TestRunId.EnvironmentVariable"/>,
     /// <see cref="NamespacePrefixVariable"/>, <see cref="KubeClientFactory.ContextVariable"/>,
-    /// <see cref="KeepNamespaceVariable"/> and <see cref="RunAdmission.MaxRunsVariable"/> (default
-    /// <see cref="RunAdmission.DefaultMaxRuns"/>).
+    /// <see cref="KeepNamespaceVariable"/>, <see cref="AdoptNamespaceVariable"/> and
+    /// <see cref="RunAdmission.MaxRunsVariable"/> (default <see cref="RunAdmission.DefaultMaxRuns"/>).
     /// </summary>
     public static TestRunOptions FromEnvironment(string suite, Func<string, string?>? environment = null)
     {
         environment ??= Environment.GetEnvironmentVariable;
         var prefix = environment(NamespacePrefixVariable);
         var keep = environment(KeepNamespaceVariable);
+        var adopt = environment(AdoptNamespaceVariable);
         return new TestRunOptions
         {
             Suite = suite,
             RunId = environment(TestRunId.EnvironmentVariable),
             NamespacePrefix = string.IsNullOrWhiteSpace(prefix) ? SpikeNamespacePrefix : prefix.Trim(),
             KubeContext = environment(KubeClientFactory.ContextVariable),
-            KeepNamespace = keep is not null && (keep == "1" || keep.Equals("true", StringComparison.OrdinalIgnoreCase)),
+            KeepNamespace = IsSet(keep),
+            AdoptNamespace = IsSet(adopt),
             MaxConcurrentRuns = RunAdmission.ParseMaxRuns(environment(RunAdmission.MaxRunsVariable))
         };
     }
+
+    private static bool IsSet(string? value) =>
+        value is not null && (value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase));
 }
