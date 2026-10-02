@@ -109,13 +109,13 @@ public sealed class ClnCloseTests : IAsyncLifetime
             // B2-CLS-R03: CLN answers inside the range we sent, and we close at its fee
             var ourRange = _ourClosingSigned.First().FeeRangeTlv!;
             Assert.InRange(theirs.FeeSat, (ulong)ourRange.MinFeeAmount.Satoshi, (ulong)ourRange.MaxFeeAmount.Satoshi);
-            Assert.Equal("B2-CLS-R03", theirs.RequirementId);
+            AssertAnsweredOrAccepted(theirs, "B2-CLS-R03");
         }
         else
         {
             // B2-CLS-R05: we sent no range, CLN did; as the funder we take its fee, which lies in its range
             Assert.InRange(theirs.FeeSat, theirs.Range.Value.Min, theirs.Range.Value.Max);
-            Assert.Equal("B2-CLS-R05", theirs.RequirementId);
+            AssertAnsweredOrAccepted(theirs, "B2-CLS-R05");
         }
 
         await AssertAgreedAndEchoedAsync(theirs, ct);
@@ -143,7 +143,7 @@ public sealed class ClnCloseTests : IAsyncLifetime
         var theirs = Assert.Single(PeerClosingSigned(session));
         var ourRange = _ourClosingSigned.First().FeeRangeTlv!;
         Assert.InRange(theirs.FeeSat, (ulong)ourRange.MinFeeAmount.Satoshi, (ulong)ourRange.MaxFeeAmount.Satoshi);
-        Assert.Equal("B2-CLS-R03", theirs.RequirementId);
+        AssertAnsweredOrAccepted(theirs, "B2-CLS-R03");
         await AssertAgreedAndEchoedAsync(theirs, ct);
         var clnTxId = result["txids"]![0]!.GetValue<string>();
         var ours = await WaitClosingTxAsync(session, ct);
@@ -204,6 +204,22 @@ public sealed class ClnCloseTests : IAsyncLifetime
                                   m.Groups["decision"].Value, ulong.Parse(m.Groups["decisionFee"].Value),
                                   m.Groups["requirement"].Value))
                       .ToList();
+    }
+
+    /// <summary>
+    /// CLN's answer to the <c>closing_signed</c> we opened with as the funder: either a fee of its own, which we take
+    /// under <paramref name="requirementId"/> (B2-CLS-R03 inside our range, B2-CLS-R05 when we sent none), or our own
+    /// fee back, which we take under B2-CLS-R02. CLN picks our fee whenever it lies inside its own range: in a full CLN
+    /// run the earlier classes have moved CLN's estimate up so that the bottom of its range is our fee (seen: 1,690 sat in
+    /// [1,690, 500,000]), while on an idle chain its range lies elsewhere and it answers with its own fee (NL-745).
+    /// </summary>
+    private void AssertAnsweredOrAccepted(ClnClosingSigned theirs, string requirementId)
+    {
+        var ourFirstFeeSat = (ulong)_ourClosingSigned.First().Payload.FeeAmount.Satoshi;
+        if (theirs.RequirementId == "B2-CLS-R02")
+            Assert.Equal(ourFirstFeeSat, theirs.FeeSat);
+        else
+            Assert.Equal(requirementId, theirs.RequirementId);
     }
 
     /// <summary>
