@@ -5716,6 +5716,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Use the fake clock in the MissionControl assertion and a generous or count-based budget in the pathfinder test. De-flaked: MissionControl: the probabilistic lower-bound asserts were replaced with the deterministic decay formula (fresh weight 0.5 blend) after a fixed Advance. GraphPathfinder: the 50 ms Stopwatch budget was replaced with a count bound (<= 4 x NodeCount adjacency scans per query; measured 6112 vs 40,000) plus a 2500 ms smoke canary.
 - **Blocks/Blocked-by:** Related NL-382
 - **Plan ref:** —
+- **Update (2026-10-02, NL-602 integration):** after the de-timing pass the deterministic bound held (at most 6,112 adjacency scans per query, bound 40,000), but the 2,500 ms wall-clock canary tripped once (3,108 ms for 20 queries) on a 4-core cloud host at load average 26 (three agent builds running); the class passed 44/44 alone. The canary only catches a gross regression; on an oversubscribed host it can still fire.
 
 ### NL-445 GossipIngressTests retry case failed once under a loaded full run
 - **Status:** fixed (2b9fd41d)
