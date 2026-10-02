@@ -34,6 +34,10 @@ using Options;
 /// Follows the chain: ZMQ <c>rawblock</c> for new blocks, RPC to catch up, one unit of work per block.
 /// </summary>
 /// <remarks>
+/// <para>Tip poll: ZMQ announces only what bitcoind publishes after the subscription reached it, so every
+/// <see cref="BitcoinOptions.TipPollInterval"/> the monitor also reads bitcoind's tip over RPC and catches up the blocks
+/// ZMQ never announced (mined right after the start's catch-up, or while the connection was down); see
+/// <see cref="PollTipAsync"/>.</para>
 /// <para>Per block (BOLT 5 plan O0): watched transactions (first sighting and depth), wallet deposits and spends,
 /// spends of watched outpoints, confirmations of the transactions we broadcast, the blockchain state and the header
 /// ring are staged in one unit of work and saved together (NL-214). Memory is updated and the events are raised only
@@ -103,6 +107,10 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     private SubscriberSocket? _blockSocket;
     private SubscriberSocket? _txSocket;
 
+    // The tip poll: our last processed height when a poll first found bitcoind's tip above it, null otherwise
+    private uint? _tipPollBehindAt;
+    private long _tipPollCatchUps;
+
     public event EventHandler<NewBlockEventArgs>? OnNewBlockDetected;
     public event EventHandler<BlockInputsEventArgs>? OnBlockInputs;
     public event EventHandler<TransactionConfirmedEventArgs>? OnTransactionConfirmed;
@@ -112,6 +120,12 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     public event EventHandler<MempoolSpendEventArgs>? OnWatchedOutpointSpentInMempool;
 
     public uint LastProcessedBlockHeight => _lastProcessedBlockHeight;
+
+    /// <summary>
+    /// How many times the tip poll (<see cref="BitcoinOptions.TipPollInterval"/>) caught up blocks ZMQ never announced
+    /// since the service was created.
+    /// </summary>
+    public long TipPollCatchUps => Interlocked.Read(ref _tipPollCatchUps);
 
     /// <inheritdoc />
     public bool IsChainProcessingHalted { get; private set; }
@@ -564,12 +578,21 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Starting blockchain monitoring loop");
 
+        var tipPollInterval = _bitcoinOptions.TipPollInterval;
+        var nextTipPoll = _timeProvider.GetUtcNow() + tipPollInterval;
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
                 try
                 {
+                    // Blocks ZMQ never announced (lost before the subscription was up, or while it reconnects)
+                    if (tipPollInterval > TimeSpan.Zero && _timeProvider.GetUtcNow() >= nextTipPoll)
+                    {
+                        nextTipPoll = _timeProvider.GetUtcNow() + tipPollInterval;
+                        await PollTipAsync();
+                    }
+
                     // Check for new blocks
                     if (_blockSocket != null &&
                         _blockSocket.TryReceiveFrameString(TimeSpan.FromMilliseconds(100), out var topic))
@@ -608,6 +631,75 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         catch (Exception ex)
         {
             _logger.LogError(ex, "Fatal error in blockchain monitoring loop");
+        }
+    }
+
+    /// <summary>
+    /// One tip poll (<see cref="BitcoinOptions.TipPollInterval"/>): when bitcoind's tip is above our last processed
+    /// block and was already above it, at the same processed height, on the previous poll, ZMQ lost the blocks in
+    /// between, so they are fetched over RPC and processed, as a ZMQ block would have them; returns true then.
+    /// </summary>
+    /// <remarks>
+    /// A ZMQ subscriber gets only what bitcoind publishes after the subscription reached it. The start catches up over
+    /// RPC before it subscribes, and NetMQ connects in the background, so a block mined in between (or while the
+    /// connection is down or set up again after a bitcoind restart) is never announced; without the poll the monitor
+    /// waits for the next block (about 10 minutes on mainnet). The first poll that finds the monitor behind only
+    /// notes it, so a block ZMQ is still delivering is not fetched twice; the catch-up runs under the same lock as a
+    /// ZMQ block and checks the tip again inside it. Nothing is polled while processing is halted (the next block or a
+    /// restart retries, as before). An RPC failure is logged and the next poll tries again.
+    /// </remarks>
+    internal async Task<bool> PollTipAsync()
+    {
+        try
+        {
+            if (IsChainProcessingHalted)
+            {
+                _tipPollBehindAt = null;
+                return false;
+            }
+
+            var tip = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+            var processed = _lastProcessedBlockHeight;
+            if (tip <= processed)
+            {
+                _tipPollBehindAt = null;
+                return false;
+            }
+
+            if (_tipPollBehindAt != processed)
+            {
+                // Behind for the first time at this height: ZMQ may still deliver; the next poll decides
+                _tipPollBehindAt = processed;
+                return false;
+            }
+
+            await _newBlockSemaphore.WaitAsync();
+            try
+            {
+                _tipPollBehindAt = null;
+                tip = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+                if (tip <= _lastProcessedBlockHeight || IsChainProcessingHalted)
+                    return false;
+
+                Interlocked.Increment(ref _tipPollCatchUps);
+                if (_logger.IsEnabled(LogLevel.Warning))
+                    _logger.LogWarning(
+                        "ZMQ announced no block from height {From} to bitcoind's tip {Tip} within {Interval}; catching up over RPC (check Bitcoin:ZmqHost and Bitcoin:ZmqBlockPort if this repeats)",
+                        _lastProcessedBlockHeight + 1, tip, _bitcoinOptions.TipPollInterval);
+
+                await AddMissingBlocksToProcessAsync(tip + 1);
+                await ProcessPendingBlocksAsync();
+                return true;
+            }
+            finally
+            {
+                _newBlockSemaphore.Release();
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "The chain tip poll failed; the next poll tries again");
+            return false;
         }
     }
 
