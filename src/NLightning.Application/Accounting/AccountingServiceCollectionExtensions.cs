@@ -5,6 +5,8 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Accounting;
 
+using Books;
+using Domain.Accounting.Books;
 using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
@@ -18,7 +20,9 @@ public static class AccountingServiceCollectionExtensions
     /// <summary>
     /// Registers the sealer (<see cref="AccountingEventSealerService"/> as itself and as
     /// <see cref="IAccountingEventSealer"/>, one instance; the host starts it after the chain monitor and stops it
-    /// before) and the balance snapshot source (<see cref="INodeSnapshotSource"/>). Idempotent (TryAdd). The host binds
+    /// before), the balance snapshot source (<see cref="INodeSnapshotSource"/>) and the operational books
+    /// (<see cref="AccountingBooksService"/> as itself and as <see cref="IAccountingBooks"/>, one instance; the host
+    /// starts it after the sealer and stops it before). Idempotent (TryAdd). The host binds
     /// <see cref="AccountingOptions"/> from <see cref="AccountingOptions.SectionName"/>; without a binding the
     /// defaults apply.
     /// </summary>
@@ -35,6 +39,13 @@ public static class AccountingServiceCollectionExtensions
                                                           sp.GetRequiredService<IServiceScopeFactory>(),
                                                           sp.GetService<IBlockchainMonitor>(),
                                                           sp.GetService<TimeProvider>()));
+        services.TryAddSingleton(sp => new AccountingBooksService(
+                                     sp.GetRequiredService<IServiceScopeFactory>(),
+                                     sp.GetRequiredService<ILogger<AccountingBooksService>>(),
+                                     sp.GetService<IOptions<AccountingOptions>>(),
+                                     sp.GetService<IAccountingEventSealer>(), sp.GetService<INodeSnapshotSource>(),
+                                     sp.GetService<TimeProvider>()));
+        services.TryAddSingleton<IAccountingBooks>(sp => sp.GetRequiredService<AccountingBooksService>());
 
         return services;
     }
