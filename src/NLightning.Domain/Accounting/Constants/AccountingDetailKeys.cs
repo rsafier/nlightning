@@ -114,6 +114,13 @@ public static class AccountingDetailKeys
     /// <summary>What reached our wallet, in msat.</summary>
     public const string WalletMsat = "walletMsat";
 
+    /// <summary>
+    /// The part of a resolution's fee that wallet inputs of the spender paid, in msat (NL-748: our anchors HTLC
+    /// transaction with wallet fee inputs); included in the event's fee and posted against the clearing account, where
+    /// the wallet events book those inputs and the change.
+    /// </summary>
+    public const string WalletFeeMsat = "walletFeeMsat";
+
     /// <summary>An output's value, in msat.</summary>
     public const string ValueMsat = "valueMsat";
 

@@ -1,5 +1,7 @@
+using System.Globalization;
 using Lnrpc;
 using LNUnit.LND;
+using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
 using OutPoint = NBitcoin.OutPoint;
 using Transaction = NBitcoin.Transaction;
@@ -7,12 +9,16 @@ using Transaction = NBitcoin.Transaction;
 namespace NLightning.Integration.Tests.Docker.Onchain.Anchors;
 
 using Abcd;
+using Domain.Accounting.Books;
+using Domain.Accounting.Constants;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Payments.Enums;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Onion.Enums;
 using Fixtures;
 using Utils;
@@ -158,6 +164,7 @@ public class AnchorsO3Tests : IAsyncLifetime
         Assert.Equal(htlc.CltvExpiry, (uint)timeout.LockTime);
         Assert.Empty(htlcInput.WitScript[3]);
         await _harness.MineUntilConfirmedAsync(node, [david], timeoutTxId, ct);
+        await AssertHtlcTransactionFeeBookedAsync(node, commitment.TxId, htlcRow.OutputIndex, timeoutTxId, ct);
         var timeoutInfo = await _harness.Fixture.Bitcoin.GetRawTransactionInfoAsync(timeout.GetHash(), ct);
         var timeoutHeight = (uint)(await _harness.Fixture.Bitcoin.GetBlockCountAsync(ct)
                                  - timeoutInfo.Confirmations + 1);
@@ -244,6 +251,7 @@ public class AnchorsO3Tests : IAsyncLifetime
             var confirmedAt = (uint)(await _harness.Fixture.Bitcoin.GetBlockCountAsync(ct) - info.Confirmations + 1);
             Assert.True(confirmedAt < incoming.CltvExpiry,
                         $"HTLC-success at {confirmedAt}, expiry {incoming.CltvExpiry}");
+            await AssertHtlcTransactionFeeBookedAsync(node, commitment.TxId, htlcRow.OutputIndex, successTxId, ct);
 
             // alice learns the preimage (from our HTLC-success or our fulfill) and her payment succeeds
             var result = await _harness.MineUntilAsync(node, [alice, david], async () =>
@@ -290,6 +298,56 @@ public class AnchorsO3Tests : IAsyncLifetime
         Console.WriteLine($"HTLC transaction {tx.GetHash()}: {tx.Inputs.Count} inputs, {tx.Outputs.Count} outputs, "
                         + $"HTLC input {index}, vsize {tx.GetVirtualSize()}");
         return htlcInput;
+    }
+
+    /// <summary>
+    /// NL-748: the resolution of the HTLC output our confirmed anchors HTLC transaction spent carries the transaction's
+    /// stored fee, all of it paid by the wallet inputs (<c>walletFeeMsat</c>), and the operational books' clearing
+    /// account does not drift (the wallet input's spend and the change net against that fee).
+    /// </summary>
+    private static async Task AssertHtlcTransactionFeeBookedAsync(NLightningTestNode node, TxId commitmentTxId,
+                                                                  uint vout, TxId htlcTxId, CancellationToken ct)
+    {
+        var resolved = await Poll.ForAsync(async () =>
+        {
+            using var scope = node.Services.CreateScope();
+            var accounting = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().AccountingEventDbRepository;
+            return accounting is null
+                       ? null
+                       : await accounting.GetByKeyAsync(AccountingEventKeys.OutputResolved(commitmentTxId, vout), ct);
+        }, AnchorsHarness.Timeout, "the resolution event of the HTLC output", ct);
+        LightningMoney? fee;
+        using (var scope = node.Services.CreateScope())
+            fee = (await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().BroadcastTransactionDbRepository
+                              .GetByTransactionIdAsync(htlcTxId))?.Fee;
+        Assert.NotNull(fee);
+        Console.WriteLine($"HTLC transaction {htlcTxId}: fee {fee.Satoshi} sat; resolution {resolved.EventKey} fee "
+                        + $"{resolved.FeeMsat} msat, details "
+                        + string.Join(", ", resolved.Details.Select(d => $"{d.Key}={d.Value}")));
+        Assert.Equal(htlcTxId.ToString(), resolved.Details["spenderTxId"]);
+        Assert.Equal((long)fee.MilliSatoshi, resolved.FeeMsat);
+        Assert.Equal(((long)fee.MilliSatoshi).ToString(CultureInfo.InvariantCulture),
+                     resolved.Details[AccountingDetailKeys.WalletFeeMsat]);
+
+        var books = node.Services.GetRequiredService<IAccountingBooks>();
+        Assert.True(books.IsEnabled, $"{node.Name}'s books are off");
+        AccountingReconcileResult? last = null;
+        try
+        {
+            await Poll.ForAsync(async () =>
+            {
+                last = await books.ReconcileAsync(ct);
+                return last.Lines.Single(l => l.Account == AccountRole.Clearing).DriftMsat == 0 ? last : null;
+            }, TimeSpan.FromSeconds(30), "the clearing account reconciles without drift", ct, TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            Console.WriteLine($"Reconcile at seq {last?.LedgerSeq}: "
+                            + string.Join("; ", last?.Lines.Select(l => $"{l.Account} books {l.BooksMsat} node "
+                                                                       + $"{l.NodeMsat} outstanding "
+                                                                       + $"{l.OutstandingMsat} drift {l.DriftMsat}")
+                                             ?? []));
+        }
     }
 
     /// <summary>The CSV LND imposes on our <c>to_local</c> (our channel's <c>Remote.ToSelfDelay</c>).</summary>

@@ -1084,11 +1084,13 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 var flows = ours
                                 ? OnchainAccounting.Ours(row, valueMsat, counted, spender, outputs,
                                                          broadcast?.Purpose == BroadcastPurpose.HtlcTransaction,
-                                                         // NL-611: a stored sweep's other inputs (the peer's anchor)
+                                                         // NL-611: a stored sweep's other inputs (the peer's anchor);
+                                                         // NL-748: our HTLC transaction's wallet fee inputs
                                                          broadcast is
                                                          {
                                                              Purpose: BroadcastPurpose.Sweep
-                                                                   or BroadcastPurpose.AnchorSweep,
+                                                                   or BroadcastPurpose.AnchorSweep
+                                                                   or BroadcastPurpose.HtlcTransaction,
                                                              Fee: { } fee
                                                          }
                                                              ? checked((long)fee.MilliSatoshi)
