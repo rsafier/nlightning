@@ -208,10 +208,15 @@ public sealed class ReestablishService
         if (latest?.ConstructedTx is not { } transaction)
             return null;
 
-        return new ReestablishInteractiveTxState(transaction.TxId,
-                                                 latest.Purpose is InteractiveTxPurpose.Splice
-                                                                or InteractiveTxPurpose.SpliceRbf,
-                                                 latest.CommitmentSignedSent, latest.CommitmentSignedReceived,
+        var isSplice = latest.Purpose is InteractiveTxPurpose.Splice or InteractiveTxPurpose.SpliceRbf;
+
+        // NL-698: a splice's commitment_signed is received once the engine holds the peer's signatures on its funding
+        // (SP-I2, saved one save before the session row records it): a crash between the two must not ask for it again
+        var commitmentSignedReceived = latest.CommitmentSignedReceived
+                                    || (isSplice && channel.Commitments?.LocalCommit.SignaturesFor(transaction.TxId)
+                                            is not null);
+        return new ReestablishInteractiveTxState(transaction.TxId, isSplice,
+                                                 latest.CommitmentSignedSent, commitmentSignedReceived,
                                                  latest.TxSignaturesSent, latest.TxSignaturesReceived,
                                                  SendsTxSignaturesFirst(channel, latest));
     }

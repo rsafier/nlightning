@@ -14,6 +14,7 @@ using Domain.Protocol.Models;
 using Domain.Protocol.Onion.ValueObjects;
 using Harness;
 using NLightning.Tests.Utils;
+using NLightning.Tests.Utils.Mocks;
 
 /// <summary>
 /// Splicing plan SP2-A-T3: the reestablish flows of <c>bolt02/splicing-test.md</c> (SP-T-03..SP-T-11) on the real
@@ -195,6 +196,52 @@ public class SpliceConformanceTests
         await AssertUsableAsync(harness, spliceTxId);
     }
 
+    /// <summary>
+    /// SP-T-04 across the accepter's restart (NL-496): both <c>commitment_signed</c> are lost and Bob, who did not start
+    /// the splice, restarts. His negotiation is resumed from his stored rows on <c>channel_reestablish</c>: his
+    /// <c>commitment_signed</c> is retransmitted byte for byte, Alice's is taken as the splice's, and he sends
+    /// <c>tx_signatures</c> first.
+    /// </summary>
+    [Fact]
+    public async Task Given_BothCommitSigsLostAndTheAccepterRestarted_When_Reconnected_Then_TheSpliceCompletes()
+    {
+        // Arrange
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(SpliceIn + 200_000);
+        var start = StartSplice(harness);
+        await PumpUntilAsync(harness, (_, m) => m is CommitmentSignedMessage);
+        var lostAlice = (CommitmentSignedMessage)harness.Alice.Node.PeekNext()!;
+        var lostBob = (CommitmentSignedMessage)harness.Bob.Node.PeekNext()!;
+        var spliceTxId = lostBob.FundingTxIdTlv!.FundingTxId;
+
+        // Act
+        await harness.RestartAsync(harness.Bob);
+        await start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Null(harness.Bob.Driver.GetInfo(TwoNodeHarness.ChannelId));
+        var mark = harness.Transcript.Count;
+        await harness.Harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert
+        foreach (var name in new[] { "Alice", "Bob" })
+        {
+            var reestablish = Reestablish(harness, mark, name);
+            Assert.NotNull(reestablish.NextFundingTlv);
+            Assert.Equal(spliceTxId, new TxId(reestablish.NextFundingTlv.NextFundingTxId));
+            Assert.Equal(1, reestablish.NextFundingTlv.RetransmitFlags);
+        }
+
+        Assert.Equal(
+        [
+            "Alice:ChannelReestablish", "Bob:ChannelReestablish", "Bob:CommitmentSigned", "Alice:CommitmentSigned",
+            "Bob:TxSignatures", "Alice:TxSignatures"
+        ], Sequence(harness, mark, IsSigningStep));
+        AssertSameBytes(harness, lostAlice, Retransmitted<CommitmentSignedMessage>(harness, mark, "Alice"));
+        AssertSameBytes(harness, lostBob, Retransmitted<CommitmentSignedMessage>(harness, mark, "Bob"));
+        AssertPendingOnBoth(harness, spliceTxId);
+        await AssertUsableAsync(harness, spliceTxId);
+    }
+
     #endregion
 
     #region SP-T-05 one side sent tx_signatures
@@ -234,6 +281,83 @@ public class SpliceConformanceTests
             "Alice:ChannelReestablish", "Bob:ChannelReestablish", "Bob:TxSignatures", "Alice:TxSignatures"
         ], Sequence(harness, mark, IsSigningStep));
         AssertSameBytes(harness, lost, Retransmitted<TxSignaturesMessage>(harness, mark, "Bob"));
+        AssertPendingOnBoth(harness, lost.Payload.TxId);
+        await AssertUsableAsync(harness, lost.Payload.TxId);
+    }
+
+    /// <summary>
+    /// SP-T-05 across the sender's restart (NL-496): Bob's <c>tx_signatures</c> (the first) is lost and Bob restarts.
+    /// Both still name FundingTx2 without bit 0; Bob's <c>tx_signatures</c> are rebuilt byte for byte from his stored
+    /// row, Alice then signs.
+    /// </summary>
+    [Fact]
+    public async Task Given_TheFirstTxSignaturesLostAndTheSenderRestarted_When_Reconnected_Then_ItIsRebuiltFromItsRow()
+    {
+        // Arrange
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(SpliceIn + 200_000);
+        var start = StartSplice(harness);
+        await PumpUntilAsync(harness, (from, m) => from == "Bob" && m is TxSignaturesMessage);
+        var lost = (TxSignaturesMessage)harness.Bob.Node.PeekNext()!;
+
+        // Act
+        await harness.RestartAsync(harness.Bob);
+        await start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Null(harness.Bob.Driver.GetInfo(TwoNodeHarness.ChannelId));
+        var mark = harness.Transcript.Count;
+        await harness.Harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert
+        foreach (var name in new[] { "Alice", "Bob" })
+        {
+            var reestablish = Reestablish(harness, mark, name);
+            Assert.NotNull(reestablish.NextFundingTlv);
+            Assert.Equal(lost.Payload.TxId, new TxId(reestablish.NextFundingTlv.NextFundingTxId));
+            Assert.Equal(0, reestablish.NextFundingTlv.RetransmitFlags);
+        }
+
+        Assert.Equal(
+        [
+            "Alice:ChannelReestablish", "Bob:ChannelReestablish", "Bob:TxSignatures", "Alice:TxSignatures"
+        ], Sequence(harness, mark, IsSigningStep));
+        AssertSameBytes(harness, lost, Retransmitted<TxSignaturesMessage>(harness, mark, "Bob"));
+        AssertPendingOnBoth(harness, lost.Payload.TxId);
+        await AssertUsableAsync(harness, lost.Payload.TxId);
+    }
+
+    /// <summary>
+    /// SP-T-05 across the waiting side's restart (NL-496; the shape of NL-600 against CLN): Bob's first
+    /// <c>tx_signatures</c> is lost and Alice, who has sent her <c>commitment_signed</c> and waits for them, restarts.
+    /// She resumes the negotiation from her stored row on <c>channel_reestablish</c>, takes Bob's retransmitted
+    /// <c>tx_signatures</c> and signs her wallet inputs.
+    /// </summary>
+    [Fact]
+    public async Task Given_TheFirstTxSignaturesLostAndTheReceiverRestarted_When_Reconnected_Then_SheSignsAfterResuming()
+    {
+        // Arrange
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(SpliceIn + 200_000);
+        var start = StartSplice(harness);
+        await PumpUntilAsync(harness, (from, m) => from == "Bob" && m is TxSignaturesMessage);
+        var lost = (TxSignaturesMessage)harness.Bob.Node.PeekNext()!;
+        var signCalls = harness.Alice.Contributor.SignCalls;
+
+        // Act
+        await harness.RestartAsync(harness.Alice);
+        await start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Null(harness.Alice.Driver.GetInfo(TwoNodeHarness.ChannelId));
+        var mark = harness.Transcript.Count;
+        await harness.Harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert
+        Assert.Equal(
+        [
+            "Alice:ChannelReestablish", "Bob:ChannelReestablish", "Bob:TxSignatures", "Alice:TxSignatures"
+        ], Sequence(harness, mark, IsSigningStep));
+        AssertSameBytes(harness, lost, Retransmitted<TxSignaturesMessage>(harness, mark, "Bob"));
+        Assert.Equal(signCalls + 1, harness.Alice.Contributor.SignCalls);
         AssertPendingOnBoth(harness, lost.Payload.TxId);
         await AssertUsableAsync(harness, lost.Payload.TxId);
     }
@@ -422,6 +546,70 @@ public class SpliceConformanceTests
         ], Describe(harness, mark));
     }
 
+    /// <summary>
+    /// SP-T-08 across restarts (NL-496): Alice's <c>splice_locked</c> is lost and she restarts; her stored lock still
+    /// names FundingTx2 in <c>my_current_funding_locked</c> and Bob takes it as her <c>splice_locked</c>. Bob then
+    /// reaches the depth while disconnected, locks, and restarts before his <c>splice_locked</c> leaves; his
+    /// <c>my_current_funding_locked</c> after the restart locks Alice. An update is signed on FundingTx2 alone.
+    /// </summary>
+    [Fact]
+    public async Task Given_SpliceLockedLostBothWaysAndBothRestarted_When_Reconnected_Then_MyCurrentFundingLockedLocksBothSides()
+    {
+        // Arrange: a signed splice
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(SpliceIn + 200_000);
+        var result = await harness.SpliceAsync(harness.Alice, SpliceIn);
+        var fundingTx1 = harness.Alice.Node.State.Params.Funding!.FundingTxId;
+        var fundingTx2 = result.SpliceTxId!.Value;
+
+        // Act 1: Alice reaches the depth, her splice_locked is lost with her restart
+        harness.Alice.Confirm(fundingTx2, TwoNodeHarness.BlockHeight + 3);
+        await harness.Alice.DepthWatcher.WhenIdleAsync();
+        await harness.WhenIdleAsync();
+        Assert.IsType<SpliceLockedMessage>(harness.Alice.Node.PeekNext());
+        await harness.RestartAsync(harness.Alice);
+        var mark = harness.Transcript.Count;
+        await harness.Harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert 1
+        Assert.Equal(fundingTx2, Reestablish(harness, mark, "Alice").MyCurrentFundingLockedTlv!.FundingTxId);
+        Assert.Equal(fundingTx1, Reestablish(harness, mark, "Bob").MyCurrentFundingLockedTlv!.FundingTxId);
+        Assert.True(harness.Bob.FundingRows.Committed[fundingTx2].SpliceLockedReceived);
+        Assert.True(Assert.Single(harness.Alice.Node.State.PendingFundings).FundingTxId == fundingTx2);
+        Assert.Empty(harness.Failures);
+
+        // Act 2: Bob reaches the depth while disconnected, locks, and restarts
+        await harness.Harness.DisconnectAsync();
+        harness.Bob.Confirm(fundingTx2, TwoNodeHarness.BlockHeight + 3);
+        await harness.Bob.DepthWatcher.WhenIdleAsync();
+        await harness.WhenIdleAsync();
+        Assert.Empty(harness.Bob.Node.State.PendingFundings);
+        await harness.RestartAsync(harness.Bob);
+        Assert.Empty(harness.Bob.Node.State.PendingFundings);
+        Assert.Equal(fundingTx2, harness.Bob.Node.State.Params.Funding!.FundingTxId);
+        mark = harness.Transcript.Count;
+        await harness.Harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert 2
+        Assert.Equal(fundingTx2, Reestablish(harness, mark, "Bob").MyCurrentFundingLockedTlv!.FundingTxId);
+        Assert.Empty(harness.Failures);
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+        {
+            Assert.Empty(node.Node.State.PendingFundings);
+            Assert.Equal(fundingTx2, node.Node.State.Params.Funding!.FundingTxId);
+        }
+
+        mark = harness.Transcript.Count;
+        await OfferAsync(harness, harness.Alice, 10_000_000, 2);
+        Assert.Equal(
+        [
+            "Alice:UpdateAddHtlc", $"Alice:CommitmentSigned:{fundingTx2}", "Bob:RevokeAndAck",
+            $"Bob:CommitmentSigned:{fundingTx2}", "Alice:RevokeAndAck"
+        ], Describe(harness, mark));
+    }
+
     #endregion
 
     #region SP-T-09..11 after tx_signatures, channel updates
@@ -520,6 +708,162 @@ public class SpliceConformanceTests
         ], Sequence(harness, mark, IsFlowMessage));
         AssertPendingOnBoth(harness, fundingTx2);
         AssertCommitmentNumber(harness, number + 1);
+    }
+
+    #endregion
+
+    #region SP-I7 a crash at every save
+
+    /// <summary>
+    /// SP2-A-T3's crash variant (SP-I7, NL-496): the node dies instead of performing its n-th save of a splice-in, for
+    /// every save it makes from Alice's request until the splice is signed on both sides. Nothing of that save persists
+    /// and nothing it would have sent leaves (the restart drops the outboxes both ways); the node restarts on what it
+    /// saved and reconnects. Whatever the crash point, both sides end up agreeing: the same pending splice (the same
+    /// transaction broadcast by both) or none, no failure after the restart, and a payment over the channel works on
+    /// every active funding.
+    /// </summary>
+    [Theory]
+    [InlineData("Alice")]
+    [InlineData("Bob")]
+    public async Task Given_ACrashAtEverySpliceSave_When_TheNodeRestarts_Then_BothSidesAgreeAndTheChannelWorks(
+        string crashing)
+    {
+        var saves = await MeasureSpliceSavesAsync(crashing);
+        Assert.InRange(saves, 2, 200);
+        for (var crashAt = 1; crashAt <= saves; crashAt++)
+        {
+            // Arrange
+            var context = $"{crashing} crashed at save {crashAt} of {saves}";
+            using var harness = new SpliceHarness(realEngine: true);
+            harness.Alice.Fund(SpliceIn + 200_000);
+            var node = crashing == "Alice" ? harness.Alice : harness.Bob;
+            node.Node.Store.CrashAtSave = node.Node.Store.Saves + crashAt;
+
+            // Act
+            var start = StartSplice(harness);
+            var failuresAtRestart = await PumpThroughCrashAsync(harness, node, context);
+            // The request dies with Alice's process when she crashes (its task is abandoned); otherwise it ends
+            if (crashing == "Bob")
+            {
+                try
+                {
+                    await start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+                }
+                catch (Exception e) when (e is not TimeoutException)
+                {
+                    // A failed request: the reconnection decides the splice
+                }
+            }
+            else
+            {
+                _ = start.ContinueWith(t => t.Exception, TaskScheduler.Default);
+            }
+
+            // Assert
+            Assert.True(failuresAtRestart is not null, $"{context}: the node never crashed");
+            Assert.True(harness.Failures.Count == failuresAtRestart,
+                        $"{context}: {string.Join(" | ", harness.Failures.Skip(failuresAtRestart.Value)
+                                                                 .Select(f => $"{f.Node}: {f.Exception.Message}"))}");
+            var alicePending = harness.Alice.Node.State.PendingFundings.Select(f => f.FundingTxId).ToList();
+            var bobPending = harness.Bob.Node.State.PendingFundings.Select(f => f.FundingTxId).ToList();
+            Assert.True(alicePending.SequenceEqual(bobPending),
+                        $"{context}: Alice pends [{string.Join(", ", alicePending)}], Bob [{string.Join(", ", bobPending)}]");
+            foreach (var spliceNode in new[] { harness.Alice, harness.Bob })
+                Assert.True(spliceNode.Node.Channel.State == ChannelState.Open, $"{context}: {spliceNode.Name} is "
+                                                                              + spliceNode.Node.Channel.State);
+
+            var pending = alicePending.Count == 0 ? (TxId?)null : Assert.Single(alicePending);
+            if (pending is { } spliceTxId)
+            {
+                var aliceTx = harness.Alice.Broadcasts.Where(b => b.TransactionId == spliceTxId).ToList();
+                var bobTx = harness.Bob.Broadcasts.Where(b => b.TransactionId == spliceTxId).ToList();
+                Assert.True(aliceTx.Count > 0 && bobTx.Count > 0, $"{context}: the splice is not broadcast by both");
+                Assert.Equal(aliceTx[0].RawTransaction, bobTx[0].RawTransaction);
+            }
+
+            await AssertUsableAsync(harness, pending);
+        }
+    }
+
+    /// <summary>How many saves <paramref name="crashing"/> makes from Alice's splice-in request until both signed.</summary>
+    private static async Task<int> MeasureSpliceSavesAsync(string crashing)
+    {
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(SpliceIn + 200_000);
+        var node = crashing == "Alice" ? harness.Alice : harness.Bob;
+        var before = node.Node.Store.Saves;
+        var result = await harness.SpliceAsync(harness.Alice, SpliceIn);
+        await harness.PumpAsync();
+        Assert.Equal(SpliceNegotiationState.Signed, result.State);
+        return node.Node.Store.Saves - before;
+    }
+
+    /// <summary>
+    /// Pumps the exchange; once <paramref name="crashing"/>'s store crashed, nothing more of the dead process is
+    /// delivered: it restarts on what it saved (both outboxes are lost with the link) and reconnects, and the pump goes
+    /// on until both sides are quiet. Returns the failure count at the restart (null when the node never crashed).
+    /// </summary>
+    private static async Task<int?> PumpThroughCrashAsync(SpliceHarness harness, SpliceNode crashing, string context)
+    {
+        int? failuresAtRestart = null;
+        var quietRounds = 0;
+        for (var round = 0; round < 4_000; round++)
+        {
+            await IdleThroughCrashAsync(harness);
+            if (crashing.Node.Store.Crashed)
+            {
+                await harness.RestartAsync(crashing);
+                failuresAtRestart = harness.Failures.Count;
+                await harness.Harness.ReconnectAsync();
+                quietRounds = 0;
+                continue;
+            }
+
+            var moved = false;
+            foreach (var node in new[] { harness.Alice, harness.Bob })
+            {
+                if (crashing.Node.Store.Crashed)
+                    break;
+
+                try
+                {
+                    moved |= await TryDeliverAsync(harness, node, static (_, _) => false);
+                }
+                catch (SimulatedCrashException)
+                {
+                    moved = true;
+                }
+            }
+
+            if (moved || crashing.Node.Store.Crashed)
+            {
+                quietRounds = 0;
+                continue;
+            }
+
+            if (!harness.Alice.Node.OutboxIsEmpty || !harness.Bob.Node.OutboxIsEmpty)
+                continue;
+
+            // A background continuation (after a save, a quiescence end) may still publish
+            if (++quietRounds >= 5)
+                return failuresAtRestart;
+
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
+
+        throw new InvalidOperationException($"{context}: the exchange did not converge");
+    }
+
+    private static async Task IdleThroughCrashAsync(SpliceHarness harness)
+    {
+        try
+        {
+            await harness.WhenIdleAsync();
+        }
+        catch (SimulatedCrashException)
+        {
+            // A background continuation died with its process
+        }
     }
 
     #endregion
