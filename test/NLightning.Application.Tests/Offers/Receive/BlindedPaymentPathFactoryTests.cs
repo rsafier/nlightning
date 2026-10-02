@@ -111,6 +111,35 @@ public sealed class BlindedPaymentPathFactoryTests : IDisposable
         Assert.Equal(privatePeer, path.Path.FirstNodeId);
     }
 
+    [Theory]
+    [InlineData(false, true, "alias")]
+    [InlineData(false, false, "real")]
+    [InlineData(true, true, "real")]
+    public async Task Given_ThePeersAlias_When_CreatingPaths_Then_AnUnannouncedChannelIsNamedByIt(bool announced,
+        bool withAlias, string expected)
+    {
+        // Arrange (NL-717: Eclair resolves a private channel only by the alias it sent in channel_ready; a channel
+        // without option_scid_alias in its type)
+        var peerKeys = new TestNodeKeyManager(0x0e);
+        var realScid = new ShortChannelId(402, 2, 1);
+        var alias = new ShortChannelId(0x0240b310846dca2aUL);
+        var channel = AddChannel(peerKeys.NodeId, 2, realScid, 600_000, announced);
+        if (withAlias)
+            channel.RemoteAlias = alias;
+        SetPeerUpdate(channel);
+
+        // Act
+        var paths = await CreateFactory().CreateAsync(s_preimage, LightningMoney.Satoshis(50_000), 7_200,
+                                                      TestContext.Current.CancellationToken);
+
+        // Assert: the introduction node (the peer) reads the short channel id it must forward over
+        var path = Assert.Single(paths).Path;
+        var unblinded = _provider.GetRequiredService<IRouteBlindingService>()
+                                 .Unblind(peerKeys.GetNodeKeyPair().PrivKey, path.FirstPathKey,
+                                          path.Hops[0].EncryptedRecipientData);
+        Assert.Equal(expected == "alias" ? alias : realScid, unblinded.RecipientData.ShortChannelId);
+    }
+
     private BlindedPaymentPathFactory CreateFactory() =>
         new(new BlindedPathBuilder(_provider.GetRequiredService<IRouteBlindingService>(), _us, _channels.Object,
                                    _updates.Object, NullLogger<BlindedPathBuilder>.Instance),
