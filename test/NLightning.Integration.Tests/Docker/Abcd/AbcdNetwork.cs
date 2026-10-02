@@ -296,6 +296,10 @@ public sealed class AbcdNetwork : IAsyncDisposable
                                                        configureNodeOptions: o => Configure(o, AbcdPolicy.Bob));
         var carol = await NLightningTestNode.CreateAsync(fixture, "carol",
                                                          configureNodeOptions: o => Configure(o, AbcdPolicy.Carol));
+        // NL-676: Bob and Carol keep the financial book next to the operational one for the whole suite (A3 Docker
+        // smoke, AbcdAccountingTests); the test node's Accounting:Prices:Source=None stays, prices are imported
+        foreach (var node in new[] { bob, carol })
+            node.ExtraConfiguration["Accounting:Profile"] = "Financial";
         var network = new AbcdNetwork(fixture, alice, david, bob, carol);
         try
         {
