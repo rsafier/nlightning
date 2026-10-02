@@ -5,6 +5,7 @@ using Grpc.Core;
 using Lnrpc;
 using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Routerrpc;
 
 namespace NLightning.Integration.Tests.Docker;
@@ -21,6 +22,7 @@ using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
+using Domain.Node.Options;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Protocol.Messages;
@@ -47,6 +49,9 @@ using Utils;
 /// hashes through the attributed <c>IChannelOperations.FailHtlcAsync</c> overload. The production switch attributes
 /// when the node advertises <c>option_attribution_data</c> (W7 integration): three NLightning nodes with the feature
 /// forward a payment, and the payer verifies the payee's and the forwarding node's hold times from the fulfill.</para>
+/// <para>Since NL-332 (owner decision 2026-10-02) every node advertises <c>option_attribution_data</c> Optional by
+/// default: a default node's production switch attributes its fulfill and its failure towards LND 0.20, which ignores
+/// the odd TLV 1 and stays connected with the channel usable.</para>
 /// </remarks>
 [Collection(LightningRegtestNetworkFixtureCollection.Name)]
 public class AttributionFlowTests : IAsyncLifetime
@@ -59,6 +64,7 @@ public class AttributionFlowTests : IAsyncLifetime
     private readonly LightningRegtestNetworkFixture _fixture;
     private readonly ConcurrentDictionary<Hash, byte> _failWithAttribution = new();
     private readonly ConcurrentQueue<UpdateFailHtlcMessage> _sentFails = new();
+    private readonly ConcurrentQueue<UpdateFulfillHtlcMessage> _sentFulfills = new();
     private readonly List<NLightningTestNode> _nodes = [];
     private readonly ConcurrentQueue<uint> _reportedHoldTimes = new();
 
@@ -80,7 +86,7 @@ public class AttributionFlowTests : IAsyncLifetime
         // Act
         var info = await alice.LightningClient.GetInfoAsync(new GetInfoRequest(), cancellationToken: ct);
 
-        // Assert: why OptionAttributionData stays experimental (the LND interop proof cannot pass yet)
+        // Assert: LND 0.20 does not advertise it; we do by default since NL-332, and LND ignores our odd TLV 1
         Console.WriteLine($"LND {info.Version}: features {string.Join(", ", info.Features.Keys.Order())}");
         Assert.DoesNotContain(36u, info.Features.Keys);
         Assert.DoesNotContain(37u, info.Features.Keys);
@@ -152,6 +158,89 @@ public class AttributionFlowTests : IAsyncLifetime
             return ours.IsUsable() && ours.OfferedHtlcCount + ours.ReceivedHtlcCount == 0
                 && lnd is { Active: true, PendingHtlcs.Count: 0 };
         }, s_timeout, "the channel usable with nothing pending after the attributed failure", ct);
+        Assert.True(await LndTestHelpers.IsConnectedToAsync(alice, node.NodeIdHex, ct), "LND disconnected");
+    }
+
+    [Fact]
+    public async Task Given_ADefaultNode_When_LndPaysOurInvoiceAndAnUnknownHash_Then_OurAttributedFulfillAndFailAreAccepted()
+    {
+        // Arrange: a node with the default features (option_attribution_data Optional since NL-332), no test switch
+        var ct = TestContext.Current.CancellationToken;
+        var alice = _fixture.GetLndNode("alice");
+        var node = await NLightningTestNode.CreateAsync(_fixture, "attr-lnd-default");
+        _nodes.Add(node);
+        await node.StartAsync(ct);
+        node.Services.GetRequiredService<IChannelManager>().OnResponseMessageReady += RecordFail;
+        var channel = await OpenUsableChannelToLndAsync(node, alice, ct);
+        var lndChannel = await LndTestHelpers.GetChannelByPointAsync(alice, channel.ChannelPoint(), ct);
+        Assert.NotNull(lndChannel);
+        var peers = await alice.LightningClient.ListPeersAsync(new ListPeersRequest(), cancellationToken: ct);
+        var us = Assert.Single(peers.Peers, p => p.PubKey == node.NodeIdHex);
+        Assert.Contains(37u, us.Features.Keys);
+        var invoice = await node.CreateInvoiceAsync(LightningMoney.Satoshis(20_000), "nl-332 default fulfill", ct);
+
+        // Act 1: LND pays our invoice, so the production switch fulfills it as the final node
+        // (LND's router learns a fresh private channel a moment after it turns active, NL-319)
+        var payment = await Poll.ForAsync(async () =>
+        {
+            await LndTestHelpers.ResetMissionControlAsync(alice, ct);
+            var attempt = await LndTestHelpers.SendPaymentV2Async(
+                              alice, LndTestHelpers.PinnedPayment(invoice.Bolt11!, [lndChannel.ChanId]), ct);
+            if (attempt.Status == Payment.Types.PaymentStatus.Succeeded)
+                return attempt;
+
+            Console.WriteLine($"LND's payment: {attempt.Status}, {attempt.FailureReason}; retrying");
+            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            return null;
+        }, s_timeout, "LND pays our invoice", ct);
+
+        // Assert 1: our fulfill carried attribution_data (TLV 1) and LND took the preimage
+        Assert.Equal((byte[])invoice.PaymentHash, SHA256.HashData(Convert.FromHexString(payment.PaymentPreimage)));
+        var fulfill = Assert.Single(_sentFulfills);
+        Assert.NotNull(fulfill.AttributionDataTlv);
+        Assert.Equal(920, fulfill.AttributionDataTlv.AttributionData.Length);
+
+        // Act 2: LND sends an HTLC for a hash we have no invoice for, so the production switch fails it as the erring
+        // node
+        const long amountMsat = 10_000_000;
+        var (_, paymentHash) = LndTestHelpers.NewPreimage();
+        var route = await alice.RouterClient.BuildRouteAsync(new BuildRouteRequest
+        {
+            AmtMsat = amountMsat,
+            FinalCltvDelta = 40,
+            OutgoingChanId = lndChannel.ChanId,
+            HopPubkeys = { ByteString.CopyFrom(node.NodeId) }
+        }, cancellationToken: ct);
+        route.Route.Hops[^1].MppRecord = new MPPRecord
+        {
+            PaymentAddr = ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+            TotalAmtMsat = amountMsat
+        };
+        var failed = await alice.RouterClient.SendToRouteV2Async(new Routerrpc.SendToRouteRequest
+        {
+            PaymentHash = ByteString.CopyFrom(paymentHash),
+            Route = route.Route
+        }, cancellationToken: ct);
+
+        // Assert 2: our update_fail_htlc carried attribution_data and LND read the legacy return packet
+        Console.WriteLine($"SendToRouteV2: {failed.Status}, {failed.Failure?.Code}, index "
+                        + $"{failed.Failure?.FailureSourceIndex}");
+        var fail = Assert.Single(_sentFails);
+        Assert.NotNull(fail.AttributionDataTlv);
+        Assert.Equal(920, fail.AttributionDataTlv.AttributionData.Length);
+        Assert.Equal(HTLCAttempt.Types.HTLCStatus.Failed, failed.Status);
+        Assert.NotNull(failed.Failure);
+        Assert.Equal(Failure.Types.FailureCode.IncorrectOrUnknownPaymentDetails, failed.Failure.Code);
+        Assert.Equal(1u, failed.Failure.FailureSourceIndex);
+
+        // The channel stays usable on both sides with nothing pending, and LND stays connected
+        await Poll.UntilAsync(async () =>
+        {
+            var ours = await node.GetChannelAsync(channel.ChannelId, ct);
+            var lnd = await LndTestHelpers.GetChannelByPointAsync(alice, channel.ChannelPoint(), ct);
+            return ours.IsUsable() && ours.OfferedHtlcCount + ours.ReceivedHtlcCount == 0
+                && lnd is { Active: true, PendingHtlcs.Count: 0 };
+        }, s_timeout, "the channel usable with nothing pending after the attributed fulfill and failure", ct);
         Assert.True(await LndTestHelpers.IsConnectedToAsync(alice, node.NodeIdHex, ct), "LND disconnected");
     }
 
@@ -238,7 +327,7 @@ public class AttributionFlowTests : IAsyncLifetime
     [Fact]
     public async Task Given_ThreeNodesAdvertisingAttribution_When_APaymentIsForwarded_Then_ThePayerRecordsEveryHopsHoldTime()
     {
-        // Arrange: payer -> hop -> payee, production switches with option_attribution_data (experimental) advertised
+        // Arrange: payer -> hop -> payee, production switches with option_attribution_data advertised by default
         var ct = TestContext.Current.CancellationToken;
         var payer = await StartAdvertisingNodeAsync("attr-payer", ct);
         var hop = await StartAdvertisingNodeAsync("attr-hop", ct);
@@ -335,16 +424,18 @@ public class AttributionFlowTests : IAsyncLifetime
         return node;
     }
 
-    /// <summary>A fresh production node that advertises <c>option_attribution_data</c> (experimental).</summary>
+    /// <summary>
+    /// A fresh production node with the default features, which advertise <c>option_attribution_data</c> Optional
+    /// without any experimental opt-in since NL-332.
+    /// </summary>
     private async Task<NLightningTestNode> StartAdvertisingNodeAsync(string name, CancellationToken ct)
     {
-        var node = await NLightningTestNode.CreateAsync(_fixture, name, configureNodeOptions: options =>
-        {
-            options.Features.AllowExperimentalFeatures = true;
-            options.Features.OptionAttributionData = FeatureSupport.Optional;
-        });
+        var node = await NLightningTestNode.CreateAsync(_fixture, name);
         _nodes.Add(node);
         await node.StartAsync(ct);
+        var features = node.Services.GetRequiredService<IOptions<NodeOptions>>().Value.Features;
+        Assert.Equal(FeatureSupport.Optional, features.OptionAttributionData);
+        Assert.False(features.AllowExperimentalFeatures);
         return node;
     }
 
@@ -352,6 +443,8 @@ public class AttributionFlowTests : IAsyncLifetime
     {
         if (args.ResponseMessage is UpdateFailHtlcMessage fail)
             _sentFails.Enqueue(fail);
+        else if (args.ResponseMessage is UpdateFulfillHtlcMessage fulfill)
+            _sentFulfills.Enqueue(fulfill);
     }
 
     private void DecorateSwitch(IServiceCollection services)

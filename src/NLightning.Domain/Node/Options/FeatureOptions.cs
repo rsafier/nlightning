@@ -14,17 +14,20 @@ public class FeatureOptions
     /// fails <see cref="GetValidationErrors"/>) unless <see cref="AllowExperimentalFeatures"/> is set.
     /// </summary>
     /// <remarks>
-    /// Advertising a feature makes peers act on it: attribution_data needs error attribution (onion M3b), which LND 0.20
-    /// does not implement (NL-332). Features that left the set: quiesce, dual_fund and splice by splicing plan D13 after
+    /// Empty since NL-332 (owner decision 2026-10-02): attribution_data, the last member, left it and is advertised
+    /// Optional by default. Features that left the set before: quiesce, dual_fund and splice by splicing plan D13 after
     /// Proofs SP2, SPR and DF (wave d13); provide_storage with the peer_storage handlers and route_blinding with the
     /// blinded payloads (onion M5), wave rf1; onion_messages with the onion message service after Proof M6, wave M6,
     /// plan D9.
-    /// Remove a feature from this set when it is implemented.
+    /// Add a feature here while it is not implemented, and remove it from this set when it is.
     /// </remarks>
-    public static readonly IReadOnlySet<Feature> ExperimentalFeatures = new HashSet<Feature>
-    {
-        Feature.OptionAttributionData
-    };
+    public static readonly IReadOnlySet<Feature> ExperimentalFeatures = new HashSet<Feature>();
+
+    /// <summary>
+    /// The experimental set these options are gated by: <see cref="ExperimentalFeatures"/>, replaced only by tests of
+    /// the gate itself (the configuration binder never sets an internal property).
+    /// </summary>
+    internal IReadOnlySet<Feature> ExperimentalFeatureSet { get; init; } = ExperimentalFeatures;
 
     /// <summary>
     /// Allow advertising the <see cref="ExperimentalFeatures"/> (not implemented yet). Off by default; only turn it on
@@ -155,15 +158,18 @@ public class FeatureOptions
     public FeatureSupport OptionSplice { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
-    /// Enable attribution data.
+    /// Enable attribution data (BOLT 4 attributable failures and hold times, BOLT 9 bits 36/37).
     /// </summary>
     /// <remarks>
-    /// Stays No and in <see cref="ExperimentalFeatures"/> although attribution_data is implemented (onion M3b, NL-072;
-    /// used by the switch and payments since ABCD wave 7) and proven between NLightning nodes (Docker
-    /// <c>AttributionFlowTests</c>): LND 0.20 has no <c>option_attribution_data</c>, so un-gating it needs an interop
-    /// decision (NL-332).
+    /// Optional by default on every network since NL-332 (owner decision 2026-10-02) and no longer in
+    /// <see cref="ExperimentalFeatures"/>: implemented in onion M3b (NL-072) and used by the switch and payments since
+    /// ABCD wave 7, proven between NLightning nodes (Docker <c>AttributionFlowTests</c>). BOLT 4 ties every
+    /// requirement to our own advertisement, not to the peer's: while advertised, the switch adds
+    /// <c>attribution_data</c> (TLV 1, odd) to the <c>update_fail_htlc</c>/<c>update_fulfill_htlc</c> of an incoming
+    /// HTLC without <c>path_key</c>. A peer without the feature (LND 0.20) ignores the odd TLV and reads the legacy
+    /// reason/preimage unchanged. A received <c>attribution_data</c> is verified whatever this setting.
     /// </remarks>
-    public FeatureSupport OptionAttributionData { get; set; } = FeatureSupport.No;
+    public FeatureSupport OptionAttributionData { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable onion messages (BOLT 4, wave M6): Optional by default since Proof M6 against CLN (plan D9).
@@ -255,7 +261,7 @@ public class FeatureOptions
             if (support == FeatureSupport.No)
                 continue;
 
-            if (!AllowExperimentalFeatures && ExperimentalFeatures.Contains(feature))
+            if (!AllowExperimentalFeatures && ExperimentalFeatureSet.Contains(feature))
             {
                 errors.Add($"Feature {feature} is not implemented yet; set {nameof(AllowExperimentalFeatures)} to "
                          + "advertise it anyway");
@@ -309,7 +315,7 @@ public class FeatureOptions
     private bool IsAdvertised(Feature feature, FeatureSupport support)
     {
         return support != FeatureSupport.No
-            && (AllowExperimentalFeatures || !ExperimentalFeatures.Contains(feature));
+            && (AllowExperimentalFeatures || !ExperimentalFeatureSet.Contains(feature));
     }
 
     private FeatureSet BuildFeatureSet()
