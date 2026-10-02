@@ -2449,7 +2449,15 @@ public partial class PeerManagerTests
         var until = DateTime.UtcNow + s_stableWindow;
         while (DateTime.UtcNow < until)
         {
-            Assert.Equal(expected, value());
+            try
+            {
+                Assert.Equal(expected, value());
+            }
+            catch (Xunit.Sdk.XunitException)
+            {
+                throw new Xunit.Sdk.XunitException($"{what}: expected {expected}, saw {value()}");
+            }
+
             await Task.Delay(10, TestContext.Current.CancellationToken);
         }
     }
