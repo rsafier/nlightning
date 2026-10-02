@@ -34,7 +34,10 @@ using Domain.Persistence.Interfaces;
 /// cursor stay, and a node started with the books on again catches up from the cursor. The feed is never off.</para>
 /// <para><b>Reconcile</b> (on demand, and every <see cref="AccountingOptions.SnapshotInterval"/> in the loop, logged
 /// only): see <see cref="BuildReconcileLines"/>. A drift is logged as a warning and recorded on the gauge
-/// <c>nlightning.accounting.reconcile.drift_msat</c> by account; it is never posted.</para>
+/// <c>nlightning.accounting.reconcile.drift_msat</c> by account; it is never posted. The clearing balance that
+/// transactions in flight explain (<see cref="ClearingOutstandingReader"/>: a funding or splice below its lock, a mutual
+/// close below its depth) is outstanding, not drift: reported apart on the line and on the gauge
+/// <c>nlightning.accounting.reconcile.outstanding_msat</c>, never logged as a warning (NL-621).</para>
 /// <para>An exception in the books is logged and metered and stops only the books, never the node.</para>
 /// </remarks>
 public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable, IDisposable
@@ -58,6 +61,7 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
     private readonly Counter<long> _projectedCounter;
     private readonly Counter<long> _failureCounter;
     private readonly Gauge<long> _driftGauge;
+    private readonly Gauge<long> _outstandingGauge;
 
     private Task? _loop;
     private bool _started;
@@ -92,6 +96,9 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
         _driftGauge = Meter.CreateGauge<long>("nlightning.accounting.reconcile.drift_msat", "msat",
                                               "The books' balance minus the node's live balance, by account, at the "
                                             + "last reconcile");
+        _outstandingGauge = Meter.CreateGauge<long>("nlightning.accounting.reconcile.outstanding_msat", "msat",
+                                                    "The part of the books' balance that transactions in flight "
+                                                  + "explain (not a drift), by account, at the last reconcile");
     }
 
     /// <inheritdoc />
@@ -266,11 +273,13 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
     /// the node may be above the books while such outputs are unresolved.</item>
     /// <item><see cref="AccountRole.Wallet"/>: every wallet output in a block (the snapshot's confirmed and
     /// unconfirmed amounts: the books post a deposit at its first block, the snapshot calls it confirmed at 3).</item>
-    /// <item><see cref="AccountRole.Clearing"/>: 0; see the line's note for what may legitimately be outstanding.</item>
+    /// <item><see cref="AccountRole.Clearing"/>: 0, with <paramref name="outstanding"/> (the clearing balance of the
+    /// transactions in flight, NL-621) reported as the line's outstanding amount: only the rest is a drift.</item>
     /// </list>
     /// </remarks>
     internal static IReadOnlyList<AccountingReconcileLine> BuildReconcileLines(
-        AccountingSnapshot snapshot, IReadOnlyDictionary<AccountRole, long> balances, string? projectionError = null)
+        AccountingSnapshot snapshot, IReadOnlyDictionary<AccountRole, long> balances, string? projectionError = null,
+        ClearingOutstanding? outstanding = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(balances);
@@ -320,10 +329,13 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
                                         $"{prefix}wallet outputs in a block ({snapshot.Wallet.UnconfirmedMsat} msat "
                                       + "with fewer than 3 confirmations)"),
             new AccountingReconcileLine(AccountRole.Clearing, balances.GetValueOrDefault(AccountRole.Clearing), 0,
-                                        $"{prefix}nets to zero once the transactions settle; may be outstanding: a "
-                                      + "funding or splice below its depth (wallet inputs spent, channel not booked "
-                                      + "yet), a close, sweep or withdrawal whose wallet side is not in a block yet, "
-                                      + "an output to an address outside the wallet")
+                                        $"{prefix}nets to zero once the transactions settle; outstanding: "
+                                      + $"{outstanding?.Msat ?? 0} msat held by {outstanding?.TransactionCount ?? 0} of "
+                                      + $"{outstanding?.CandidateCount ?? 0} transactions in flight (a funding or "
+                                      + "splice below its lock, a close, sweep or withdrawal not settled yet); a drift "
+                                      + "is what they do not explain, such as an output to an address outside the "
+                                      + "wallet",
+                                        outstanding?.Msat ?? 0)
         ];
     }
 
@@ -498,6 +510,27 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
         _projectionError = null;
     }
 
+    /// <summary>
+    /// The clearing balance of the transactions in flight (NL-621), read after the snapshot; a failure is logged and
+    /// reads as none (the whole clearing balance is then reported as drift).
+    /// </summary>
+    private async Task<ClearingOutstanding> ReadOutstandingAsync(AccountingSnapshot snapshot,
+                                                                 CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            return await ClearingOutstandingReader.ReadAsync(scope.ServiceProvider.GetRequiredService<IUnitOfWork>(),
+                                                             snapshot, _logger, cancellationToken);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Accounting reconcile: cannot read the transactions in flight; the whole clearing "
+                                + "balance is reported as drift");
+            return ClearingOutstanding.None;
+        }
+    }
+
     /// <summary>The caller holds the round gate.</summary>
     private async Task<AccountingReconcileResult> ReconcileCoreAsync(CancellationToken cancellationToken)
     {
@@ -512,16 +545,20 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
             balances = await books.GetBalancesAsync(cancellationToken);
         }
 
-        var lines = BuildReconcileLines(snapshot, balances, _projectionError);
+        var outstanding = await ReadOutstandingAsync(snapshot, cancellationToken);
+        var lines = BuildReconcileLines(snapshot, balances, _projectionError, outstanding);
         var result = new AccountingReconcileResult(snapshot.TakenAt, snapshot.BlockHeight, ledgerSeq, lines);
         foreach (var line in lines)
         {
             _driftGauge.Record(line.DriftMsat, new KeyValuePair<string, object?>("account", line.Account.ToString()));
+            _outstandingGauge.Record(line.OutstandingMsat,
+                                     new KeyValuePair<string, object?>("account", line.Account.ToString()));
             if (line.DriftMsat != 0 && _logger.IsEnabled(LogLevel.Warning))
                 _logger.LogWarning("Accounting reconcile at ledger sequence {LedgerSeq}, block {BlockHeight}: "
-                                 + "{Account} drifts by {DriftMsat} msat (books {BooksMsat}, node {NodeMsat}; "
-                                 + "{Note})", ledgerSeq, snapshot.BlockHeight, line.Account, line.DriftMsat,
-                                   line.BooksMsat, line.NodeMsat, line.Note);
+                                 + "{Account} drifts by {DriftMsat} msat (books {BooksMsat}, node {NodeMsat}, "
+                                 + "outstanding {OutstandingMsat}; {Note})", ledgerSeq, snapshot.BlockHeight,
+                                   line.Account, line.DriftMsat, line.BooksMsat, line.NodeMsat, line.OutstandingMsat,
+                                   line.Note);
         }
 
         _lastReconcile = result;

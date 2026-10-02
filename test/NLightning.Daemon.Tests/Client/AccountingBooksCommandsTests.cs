@@ -269,6 +269,54 @@ public class AccountingBooksCommandsTests
         Assert.Contains("Rebuilt the books: 7 entries", printed);
     }
 
+    [Fact]
+    public void Given_AReconcileWithAnOutstandingClearing_When_Printed_Then_ItIsCleanWithTheOutstandingAmountNotDrift()
+    {
+        // Arrange (NL-621)
+        var reconcile = new AccountingAdminIpcResponse
+        {
+            Action = (int)AccountingAdminAction.Reconcile,
+            Reconcile = new AccountingReconcileIpcResponse
+            {
+                TakenAtUnixMilliseconds = 0,
+                BlockHeight = 3_469_200,
+                LedgerSeq = 156,
+                IsClean = true,
+                Lines =
+                [
+                    new AccountingReconcileLineIpcResponse
+                    {
+                        Account = 4,
+                        Name = "assets:onchain:clearing",
+                        BooksMsat = 10_252_000,
+                        NodeMsat = 0,
+                        DriftMsat = 0,
+                        OutstandingMsat = 10_252_000
+                    },
+                    new AccountingReconcileLineIpcResponse
+                    {
+                        Account = 3,
+                        Name = "assets:onchain:wallet",
+                        BooksMsat = 5_000,
+                        NodeMsat = 5_000,
+                        DriftMsat = 0
+                    }
+                ]
+            }
+        };
+        using var output = new StringWriter();
+
+        // Act
+        new AccountingAdminPrinter(output).Print(reconcile);
+
+        // Assert
+        var printed = output.ToString();
+        Assert.DoesNotContain("DRIFT", printed);
+        Assert.Contains("books through #156: clean, 10252000 msat outstanding (in flight)", printed);
+        Assert.Contains("books 10252000 msat, node 0 msat, outstanding 10252000 msat, drift 0 msat", printed);
+        Assert.Contains("books 5000 msat, node 5000 msat, drift 0 msat", printed);
+    }
+
     private static AccountingExportIpcResponse Page(string text, long nextAfter, bool hasMore, int entries) => new()
     {
         Format = (int)AccountingExportFormat.Csv,

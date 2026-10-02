@@ -14,13 +14,17 @@ namespace NLightning.Application.Tests.Accounting;
 using Application.Accounting;
 using Application.Accounting.Books;
 using Domain.Accounting.Books;
+using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Interfaces;
 using Domain.Accounting.Models;
 using Domain.Accounting.Services;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Hashes;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Persistence;
@@ -295,6 +299,111 @@ public sealed class AccountingBooksServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Given_ASpliceBelowItsLock_When_Reconciled_Then_ItsClearingIsOutstandingAndOnlyTheRestDrifts()
+    {
+        // Arrange (NL-621): a splice-in spent a 100,000 sat wallet output with 39,000 sat of change; its wallet side is
+        // booked (the change reorged out once and confirmed again), its lock is not: 61,000,000 msat of clearing that
+        // the splice, a transaction the node knows in flight, explains. The real posting rules.
+        var logger = new RecordingLogger();
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x0a, 32).ToArray());
+        var deposit = new TxId(Enumerable.Repeat((byte)0xd0, 32).ToArray());
+        var splice = NBitcoin.Network.RegTest.CreateTransaction();
+        splice.Inputs.Add(new NBitcoin.OutPoint(new NBitcoin.uint256(deposit), 1));
+        splice.Outputs.Add(NBitcoin.Money.Satoshis(160_500), new NBitcoin.Key().PubKey.WitHash.ScriptPubKey);
+        splice.Outputs.Add(NBitcoin.Money.Satoshis(39_000), new NBitcoin.Key().PubKey.WitHash.ScriptPubKey);
+        var spliceTxId = new TxId(splice.GetHash().ToBytes());
+        await using (var scope = Provider.CreateAsyncScope())
+        {
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            // A pending broadcast row (the below-depth paths, a confirmed row with its watch or pending funding, need
+            // a channel row: Integration AccountingReconcileOutstandingTests)
+            unitOfWork.BroadcastTransactionDbRepository.Add(new BroadcastTransactionModel(
+                new SignedTransaction(spliceTxId, NBitcoin.BitcoinSerializableExtensions.ToBytes(splice)),
+                BroadcastPurpose.Splice, channelId, 100));
+            await unitOfWork.SaveChangesAsync();
+        }
+
+        var changeKey = AccountingEventKeys.WalletReceived(spliceTxId, 1);
+        await AddAndSealAsync(
+            WalletEvent(AccountingEventKind.WalletReceived, AccountingEventKeys.WalletReceived(deposit, 1), 100_000_000,
+                        90, deposit, 1, AccountingDetailKeys.ExternalSource),
+            WalletEvent(AccountingEventKind.WalletOutputSpent, AccountingEventKeys.WalletOutputSpent(deposit, 1),
+                        -100_000_000, 101, deposit, 1, AccountingDetailKeys.BroadcastSource, spliceTxId),
+            WalletEvent(AccountingEventKind.WalletReceived, changeKey, 39_000_000, 101, spliceTxId, 1,
+                        AccountingDetailKeys.BroadcastSource),
+            WalletEvent(AccountingEventKind.Reversal, AccountingEventKeys.Reversal(changeKey, 101), -39_000_000, 101,
+                        spliceTxId, 1, null, reverses: changeKey),
+            WalletEvent(AccountingEventKind.WalletReceived, AccountingEventKeys.Reconfirmed(changeKey, 2), 39_000_000,
+                        102, spliceTxId, 1, AccountingDetailKeys.BroadcastSource));
+        var snapshot = new AccountingSnapshot(s_at, 102, [], new WalletBalanceBucket(0, 39_000_000, 0));
+        var source = new Mock<INodeSnapshotSource>();
+        source.Setup(s => s.TakeSnapshotAsync(It.IsAny<CancellationToken>())).ReturnsAsync(() => snapshot);
+        await using var books = new AccountingBooksService(Provider.GetRequiredService<IServiceScopeFactory>(), logger,
+                                                           Options.Create(new AccountingOptions
+                                                           {
+                                                               SealInterval = TimeSpan.FromHours(1),
+                                                               SnapshotInterval = TimeSpan.FromHours(1)
+                                                           }), Sealer, source.Object);
+        using var recorder = new MetricRecorder(books.Meter);
+
+        // Act
+        var result = await books.ReconcileAsync(TestContext.Current.CancellationToken);
+
+        // Assert: clean, the clearing held by the splice reported apart, no warning and no drift metered
+        Assert.True(result.IsClean);
+        var clearing = result.Lines.Single(l => l.Account == AccountRole.Clearing);
+        Assert.Equal((61_000_000L, 0L, 61_000_000L, 0L),
+                     (clearing.BooksMsat, clearing.NodeMsat, clearing.OutstandingMsat, clearing.DriftMsat));
+        Assert.Contains("61000000 msat held by 1 of 1 transactions in flight", clearing.Note, StringComparison.Ordinal);
+        Assert.DoesNotContain(logger.Warnings, w => w.Contains("drifts", StringComparison.Ordinal));
+        Assert.Equal(0, recorder.Last("nlightning.accounting.reconcile.drift_msat", "account", "Clearing"));
+        Assert.Equal(61_000_000,
+                     recorder.Last("nlightning.accounting.reconcile.outstanding_msat", "account", "Clearing"));
+
+        // Act: an output spent by a transaction the node does not know (an address outside the wallet)
+        var lost = new TxId(Enumerable.Repeat((byte)0xe0, 32).ToArray());
+        var unknown = new TxId(Enumerable.Repeat((byte)0xe1, 32).ToArray());
+        await AddAndSealAsync(
+            WalletEvent(AccountingEventKind.WalletReceived, AccountingEventKeys.WalletReceived(lost, 0), 5_000_000, 103,
+                        lost, 0, AccountingDetailKeys.ExternalSource),
+            WalletEvent(AccountingEventKind.WalletOutputSpent, AccountingEventKeys.WalletOutputSpent(lost, 0),
+                        -5_000_000, 104, lost, 0, AccountingDetailKeys.WalletSource, unknown));
+        result = await books.ReconcileAsync(TestContext.Current.CancellationToken);
+
+        // Assert: only what nothing explains drifts
+        Assert.False(result.IsClean);
+        clearing = result.Lines.Single(l => l.Account == AccountRole.Clearing);
+        Assert.Equal((66_000_000L, 61_000_000L, 5_000_000L),
+                     (clearing.BooksMsat, clearing.OutstandingMsat, clearing.DriftMsat));
+        Assert.Equal(5_000_000, recorder.Last("nlightning.accounting.reconcile.drift_msat", "account", "Clearing"));
+        Assert.Single(logger.Warnings, w => w.Contains("drifts", StringComparison.Ordinal));
+
+        // Act: the splice locks (its channel side is booked) while its watch is still pending
+        await AddAndSealAsync(new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.SpliceLocked(channelId, spliceTxId),
+            Kind = AccountingEventKind.SpliceLocked,
+            OccurredAt = s_at,
+            BlockHeight = 107,
+            ChannelId = channelId,
+            TxId = spliceTxId,
+            AmountMsat = 60_500_000,
+            FeeMsat = 500_000
+        });
+        snapshot = snapshot with
+        {
+            Channels = [Bucket(0x0a, new ShortChannelId(101, 1, 0), ChannelState.Open, local: 60_500_000)]
+        };
+        result = await books.ReconcileAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the splice nets to zero, nothing of it is outstanding; the unexplained output still drifts
+        clearing = result.Lines.Single(l => l.Account == AccountRole.Clearing);
+        Assert.Equal((5_000_000L, 0L, 5_000_000L),
+                     (clearing.BooksMsat, clearing.OutstandingMsat, clearing.DriftMsat));
+        Assert.Equal(0, result.Lines.Single(l => l.Account == AccountRole.Channels).DriftMsat);
+    }
+
+    [Fact]
     public void Given_SnapshotBuckets_When_TheLinesAreBuilt_Then_OnlyFundedOffChainChannelsCountAsChannels()
     {
         // Arrange
@@ -439,6 +548,25 @@ public sealed class AccountingBooksServiceTests : IAsyncLifetime
             Kind = AccountingEventKind.WalletReceived,
             OccurredAt = s_at,
             AmountMsat = amountMsat
+        };
+
+    private static AccountingEventModel WalletEvent(AccountingEventKind kind, string key, long amountMsat,
+                                                    uint height, TxId txId, uint vout, string? source,
+                                                    TxId? spentBy = null, string? reverses = null) =>
+        new()
+        {
+            EventKey = key,
+            Kind = kind,
+            OccurredAt = s_at,
+            BlockHeight = height,
+            TxId = txId,
+            OutputIndex = vout,
+            AmountMsat = amountMsat,
+            Details = AccountingDetailsCodec.Create((AccountingDetailKeys.Source, source),
+                                                    ("spentBy", spentBy?.ToString()),
+                                                    (AccountingConfirmations.ReversesDetail, reverses),
+                                                    (AccountingConfirmations.OriginalKindDetail,
+                                                     reverses is null ? null : nameof(AccountingEventKind.WalletReceived)))
         };
 
     private static AccountingEventModel Failed(string key) =>

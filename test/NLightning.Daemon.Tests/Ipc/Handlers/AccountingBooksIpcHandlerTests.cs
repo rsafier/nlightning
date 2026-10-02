@@ -289,6 +289,29 @@ public class AccountingBooksIpcHandlerTests
     }
 
     [Fact]
+    public async Task Given_ClearingHeldByTransactionsInFlight_When_Reconciled_Then_ItCrossesTheEnvelopeAsOutstanding()
+    {
+        // Arrange (NL-621): a splice below its lock explains the whole clearing balance
+        _books.Setup(b => b.ReconcileAsync(It.IsAny<CancellationToken>()))
+              .ReturnsAsync(new AccountingReconcileResult(s_at, 800_000, 12,
+                                                          [
+                                                              new AccountingReconcileLine(
+                                                                  AccountRole.Clearing, 10_252_000, 0, "in flight",
+                                                                  10_252_000)
+                                                          ]));
+
+        // Act
+        var reconcile = await AdminAsync(AccountingAdminAction.Reconcile);
+
+        // Assert
+        var result = reconcile.Reconcile!;
+        Assert.True(result.IsClean);
+        var line = Assert.Single(result.Lines);
+        Assert.Equal(10_252_000, line.OutstandingMsat);
+        Assert.Equal(0, line.DriftMsat);
+    }
+
+    [Fact]
     public void Given_TheRegistrationCalledTwice_When_Composed_Then_OneHandlerPerCommand()
     {
         // Arrange
