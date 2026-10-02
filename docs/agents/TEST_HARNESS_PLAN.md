@@ -372,6 +372,74 @@ for the core phase: start the Lightning nodes' StatefulSets together with bitcoi
 keep a topology warm per collection as the fixtures do, and delete run namespaces in the background (the reaper owns
 cleanup) instead of awaiting the deletion in each test.
 
+### Spike results (2026-10-02)
+
+Summary of the spike on `wip/harness-spike` (stacked on `wip/fafo` at 44aeaf5f; three new projects
+`test/NLightning.Testing.Cluster`, `.Cli` and `.Tests`, about 17,700 added lines, nothing in `src/` changed). The
+detailed evidence is in the three records above; this section is the verdict.
+
+**The checks (all on OrbStack k8s v1.35.6+orb1, one node, shared with the batch Docker suites the whole time):**
+
+| # | Check | Result | Evidence (numbers) |
+|---|---|---|---|
+| 1 | Host ↔ pod reachability, both ways | **pass** | Host → pod IP 2 ms, headless Service DNS 123-129 ms; ClusterIP routed only 4-9 s after creation (so nodes are addressed by headless Service). Pod → `host.orb.internal` reaches a listener on the Mac's loopback in 31-104 ms. Real LND and CLN in pods dial the in-process listener: BOLT 8 act one (50 bytes) received in 253 ms / 252 ms (`Live/LightningDialBackTests`). In-cluster Job runner: pod running 2.3 s after the Job, exit code propagated, RBAC confined to the run's namespace |
+| 2 | A restart keeps the DNS name and PVC data | **pass** | 8/8 live tests. LND pair: restart → channel active 5.6 s, kill → 6.2 s, same node ids, funding txid and scid, balance kept across 3 payments. CLN pair: crash in place → active 1.8 s, restart (new pod IP) 9.6 s → active 0.9 s later. bitcoind: restart 2.0 s, crash 2.3 s, height kept. DNS follows the new pod at +0.0 s |
+| 3 | Local images without a registry | **pass** | `custom_lnd:latest` with `imagePullPolicy: Never` ("already present on machine"), CLN v26.06.8 and bitcoind 29.0 pinned by digest with `IfNotPresent` from the local store, `nltg-spike-runner:latest` with `Never` |
+| 4 | Startup compared with today's Docker fixtures | **pass, slower per topology** | k8s bitcoind + 2 nodes + 1 channel: 20.8-21.9 s alone, 24.7-43.8 s with 6 at once. Docker: LNUnit regtest fixture (4 LND, 4 channels) 9.5-11.4 s, `ClnFixture` 3.4-6.8 s, but one at a time per machine. About 12 s of the k8s 21 s is two StatefulSet waves each waiting ~6 s for PVC binding and local-path provisioning. Teardown 19-62 s per namespace |
+| 5 | Concurrency (the goal) | **pass** | `scripts/run-cluster.sh -n 3` with a CLN pair and an LND pair per run: 6 namespaces at once, 3 batches, 18/18 green, 104-112 s per batch; independent chains (all CLN channels 108x1x0, all LND 103x1x0), no cross-talk, every namespace removed by its own run (reaper found 0). Peak 18 containers, 2.28 CPU cores, 1,173 MiB |
+| — | Faults (beyond the plan's checks) | **pass** | Restart, kill (1 s grace; grace 0 overlapped two processes on one PVC, fixed), crash in place, pause/resume (SIGSTOP/SIGCONT, 0.1 s), NetworkPolicy partitions and heal (two bitcoinds: peer held at 103 while the miner reached 108, caught up 0.4 s after the heal) |
+
+**Decisions taken:**
+
+- **Host-side vs in-cluster.** On OrbStack the test process stays on the host: in-process NLightning nodes listen on
+  loopback and are announced to peers as `host.orb.internal:<port>` (`HostEndpoints.ForPods`, `NLTG_HOST_ADDRESS`
+  overrides). Pods appear to our node as 127.0.0.1, so a pod peer that connects to us is saved inbound-only
+  (NL-497): tests have our node dial out to the peers (their addresses are stable DNS names). On any other cluster
+  (kind, k3d, multi-machine) the test assembly runs as a Job in the run's namespace (`InClusterTestRunner`,
+  `nltg-spike-runner` image, namespaced RBAC, `NLTG_ADOPT_NAMESPACE=1`); this path is proven, not just planned.
+- **NetworkPolicy on OrbStack: supported.** OrbStack's k3s runs kube-router's policy controller (flannel host-gw), and
+  a policy is enforced for **new** connections in both directions (pod-to-pod dropped, host-to-pod refused) within
+  about 1 s. **Established TCP connections survive** (conntrack), so a partition test must also disconnect the peers
+  (a node command or a restart) after applying it. DNS stays reachable by default; the runner's CIDR
+  (`NLTG_RUNNER_CIDRS`, `192.168.194.0/32` for the OrbStack host) can be let in so an isolated node is still driven.
+  Clusters without a policy controller (plain kind) need Calico/Cilium for partition tests; the harness should check
+  and skip with a clear message there.
+- **Image strategy.** One version table (`Images/ImageVersions`). Public images (bitcoind, CLN, postgres, busybox) are
+  pinned by digest with `IfNotPresent`; images we build (`custom_lnd`, `nltg-eclair`, `nltg-ldk-server`, the runner)
+  are used by tag with `Never` locally, because OrbStack's cluster shares the Docker image store. No registry
+  locally. Multi-machine clusters push to a registry (in-cluster or GHCR) under digests and switch the policy to
+  `IfNotPresent`; the runner image takes `NLTG_RUNNER_IMAGE` for that. The spike built only `nltg-spike-runner`.
+- **Shape.** StatefulSet (1 replica) + headless Service + PVC per node, one namespace per run with labels, owner
+  annotations, a ResourceQuota sized from the pod specs, an admission cap (`NLTG_MAX_CONCURRENT_RUNS`, default 6) and
+  a reaper (`nltg-cluster reap`). LND uses LNUnit.LND's generated gRPC clients for now with the server certificate
+  pinned (the plan's own Grpc.Tools generation is still to do).
+
+**Not done in the spike:** the Eclair, LDK, Tor, Postgres and `nltg` (container) node kinds; no existing suite is
+ported (the Docker suites and LNUnit are untouched and remain the CI/local path); in-process `NLightningTestNode`
+against a cluster topology is not wired yet (only the raw dial-back is proven); the LND gRPC clients still come from
+the `LNUnit.LND` package; diagnostics collection on failure (`kubectl logs/describe` per pod) is missing; the runner
+is a spike runner (`run-cluster.sh`), not the suite-matrix runner of step 5.
+
+**Revised next steps and estimates** (the spike delivered much of the core and LND phases' plumbing, so those
+shrink; the porting of fixtures and suites is the real remaining cost):
+
+1. **Startup cut (≈0.5 day).** Deploy the Lightning nodes' StatefulSets together with bitcoind (they wait for it
+   themselves), keep a topology warm per xunit collection, delete namespaces in the background and let the reaper
+   finish. Target: ≤ 12 s to a ready pair alone. Optionally a pre-created StorageClass `nltg-spike-*` with
+   `Immediate` binding to skip the `WaitForFirstConsumer` retry.
+2. **Core + CLN suite port (≈2 days, was 2-3).** Wire `NLightningTestNode` into a topology (bitcoind RPC/ZMQ by pod
+   address, dial-out to peers), port `ClnFixture`, prove the CLN interop suite 3 times concurrently, green; add
+   failure diagnostics.
+3. **LND regtest port (≈3 days, was 3-4).** The miner + alice/bob/carol/david topology with pre-opened channels,
+   an adapter keeping the member names the 47 LNUnit-based files use, then generate the gRPC clients in-tree and
+   drop `lnunit`/`LNUnit.LND`.
+4. **Eclair, LDK, Tor, Postgres and partition tests (≈2-3 days, unchanged).**
+5. **Matrix runner (≈1 day, was 1-2).** Grow `run-cluster.sh` into the suite matrix with rerun-alone and summary.
+6. **Proof (≈1 day).** The full matrix twice concurrently, then at the tuned N; wall time against today's serial
+   ≈75 min; close NL-262 and NL-276.
+
+Total to replace the Docker suites: about 9.5-10.5 working days (the plan's §5 had 9-13 plus the spike).
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.
