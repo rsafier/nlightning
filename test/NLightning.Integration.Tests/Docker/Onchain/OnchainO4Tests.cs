@@ -1,8 +1,8 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Onchain;
 
@@ -419,9 +419,9 @@ public class OnchainO4Tests : IAsyncLifetime
         GC.SuppressFinalize(this);
     }
 
-    private LNDNodeConnection GetDavid() => _fixture.GetLndNode("david");
+    private LndNodeConnection GetDavid() => _fixture.GetLndNode("david");
 
-    private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LNDNodeConnection peer,
+    private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LndNodeConnection peer,
         LightningMoney? push, CancellationToken ct)
     {
         await Node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
@@ -453,7 +453,7 @@ public class OnchainO4Tests : IAsyncLifetime
     /// once for want of a route (its router adds the private channel's edge a moment after the channel turns active)
     /// is started again; any other end of the payment before <paramref name="sent"/> fails the test.
     /// </summary>
-    private static async Task PayUntilSentAsync(LNDNodeConnection lnd, string bolt11, ulong chanId, Task sent,
+    private static async Task PayUntilSentAsync(LndNodeConnection lnd, string bolt11, ulong chanId, Task sent,
                                                 CancellationToken ct)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -478,7 +478,7 @@ public class OnchainO4Tests : IAsyncLifetime
     }
 
     /// <summary>LND <c>CloseChannel { force = true }</c>; returns the commitment's txid once it is broadcast.</summary>
-    private static async Task<uint256> ForceCloseAsync(LNDNodeConnection lnd,
+    private static async Task<uint256> ForceCloseAsync(LndNodeConnection lnd,
                                                        OpenChannelClientSubscriptionResponse channel,
                                                        CancellationToken ct)
     {
@@ -503,7 +503,7 @@ public class OnchainO4Tests : IAsyncLifetime
 
     /// <summary>Mines one block at a time until <paramref name="txId"/> (internal order) is confirmed.</summary>
     private async Task<NBitcoin.Transaction> MineUntilConfirmedAsync(Domain.Bitcoin.ValueObjects.TxId txId,
-                                                            IEnumerable<LNDNodeConnection> lndNodes,
+                                                            IEnumerable<LndNodeConnection> lndNodes,
                                                             CancellationToken ct)
     {
         var displayTxId = new uint256((byte[])txId);
@@ -595,7 +595,7 @@ public class OnchainO4Tests : IAsyncLifetime
         }
     }
 
-    private static async Task CancelHoldInvoiceQuietlyAsync(LNDNodeConnection node, byte[] paymentHash)
+    private static async Task CancelHoldInvoiceQuietlyAsync(LndNodeConnection node, byte[] paymentHash)
     {
         try
         {

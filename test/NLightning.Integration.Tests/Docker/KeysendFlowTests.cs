@@ -1,9 +1,9 @@
 using System.Security.Cryptography;
 using Google.Protobuf;
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
-using Routerrpc;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
+using NLightning.Testing.Lnd.Routerrpc;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -180,7 +180,7 @@ public class KeysendFlowTests : IAsyncLifetime
         return await handler.HandleAsync(request, ct);
     }
 
-    private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LNDNodeConnection peer,
+    private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LndNodeConnection peer,
         string peerAddress, CancellationToken ct)
     {
         await Node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
@@ -211,7 +211,7 @@ public class KeysendFlowTests : IAsyncLifetime
     /// no announcement of). Started again while LND fails it for want of a route or balance (a fresh private channel's
     /// edge, NL-319); the final update of any other outcome is returned.
     /// </summary>
-    private static async Task<Payment> LndKeysendUntilDoneAsync(LNDNodeConnection lnd, CompactPubKey destination,
+    private static async Task<Payment> LndKeysendUntilDoneAsync(LndNodeConnection lnd, CompactPubKey destination,
                                                                 long amountSat, byte[] preimage, ulong chanId,
                                                                 Dictionary<ulong, byte[]> records,
                                                                 CancellationToken ct, byte[]? paymentHash = null)

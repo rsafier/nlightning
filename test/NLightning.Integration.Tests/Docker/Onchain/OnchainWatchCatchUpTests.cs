@@ -1,7 +1,7 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Onchain;
 
@@ -135,7 +135,7 @@ public class OnchainWatchCatchUpTests : IAsyncLifetime
         GC.SuppressFinalize(this);
     }
 
-    private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LNDNodeConnection peer,
+    private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LndNodeConnection peer,
                                                                                     CancellationToken ct)
     {
         await Node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
@@ -162,7 +162,7 @@ public class OnchainWatchCatchUpTests : IAsyncLifetime
     }
 
     /// <summary>LND <c>CloseChannel { force = true }</c>; returns the commitment's txid once it is broadcast.</summary>
-    private static async Task<uint256> ForceCloseAsync(LNDNodeConnection lnd,
+    private static async Task<uint256> ForceCloseAsync(LndNodeConnection lnd,
                                                        OpenChannelClientSubscriptionResponse channel,
                                                        CancellationToken ct)
     {
@@ -186,7 +186,7 @@ public class OnchainWatchCatchUpTests : IAsyncLifetime
     }
 
     /// <summary>Mines one block at a time until <paramref name="txId"/> is confirmed; returns its block height.</summary>
-    private async Task<uint> MineUntilConfirmedAsync(uint256 txId, LNDNodeConnection lnd, CancellationToken ct) =>
+    private async Task<uint> MineUntilConfirmedAsync(uint256 txId, LndNodeConnection lnd, CancellationToken ct) =>
         (await Poll.ForAsync(async () =>
         {
             try

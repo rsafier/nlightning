@@ -2,11 +2,11 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using Google.Protobuf;
 using Grpc.Core;
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using Routerrpc;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
+using NLightning.Testing.Lnd.Routerrpc;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -132,7 +132,7 @@ public class AttributionFlowTests : IAsyncLifetime
         };
 
         // Act
-        var attempt = await alice.RouterClient.SendToRouteV2Async(new Routerrpc.SendToRouteRequest
+        var attempt = await alice.RouterClient.SendToRouteV2Async(new Testing.Lnd.Routerrpc.SendToRouteRequest
         {
             PaymentHash = ByteString.CopyFrom(paymentHash),
             Route = route.Route
@@ -216,7 +216,7 @@ public class AttributionFlowTests : IAsyncLifetime
             PaymentAddr = ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
             TotalAmtMsat = amountMsat
         };
-        var failed = await alice.RouterClient.SendToRouteV2Async(new Routerrpc.SendToRouteRequest
+        var failed = await alice.RouterClient.SendToRouteV2Async(new Testing.Lnd.Routerrpc.SendToRouteRequest
         {
             PaymentHash = ByteString.CopyFrom(paymentHash),
             Route = route.Route
@@ -461,7 +461,7 @@ public class AttributionFlowTests : IAsyncLifetime
     }
 
     private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelToLndAsync(NLightningTestNode node,
-        LNDNodeConnection lnd, CancellationToken ct)
+        LndNodeConnection lnd, CancellationToken ct)
     {
         await node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
         var address = await node.ConnectToAsync(lnd, ct);

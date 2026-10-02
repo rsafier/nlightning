@@ -1,6 +1,6 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -263,7 +263,7 @@ public class ChannelPolicyFlowTests : IAsyncLifetime
     }
 
     /// <summary>Our direction of the channel in <paramref name="lnd"/>'s graph, or null while it has none.</summary>
-    private static async Task<RoutingPolicy?> GetOurPolicyAsync(NLightningTestNode node, LNDNodeConnection lnd,
+    private static async Task<RoutingPolicy?> GetOurPolicyAsync(NLightningTestNode node, LndNodeConnection lnd,
                                                                ulong chanId, CancellationToken ct)
     {
         try
@@ -282,7 +282,7 @@ public class ChannelPolicyFlowTests : IAsyncLifetime
     }
 
     private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(NLightningTestNode node,
-        LNDNodeConnection peer, LightningMoney? push, CancellationToken ct)
+        LndNodeConnection peer, LightningMoney? push, CancellationToken ct)
     {
         var peerAddress = await node.ConnectToAsync(peer, ct);
         var channel = await node.OpenChannelAsync(new OpenChannelClientRequest(peerAddress,
@@ -390,7 +390,7 @@ public class ChannelPolicyPublicFlowTests
     }
 
     /// <summary>Our direction of the channel in <paramref name="lnd"/>'s graph, or null while it has none.</summary>
-    private static async Task<RoutingPolicy?> GetOurPolicyAsync(NLightningTestNode node, LNDNodeConnection lnd,
+    private static async Task<RoutingPolicy?> GetOurPolicyAsync(NLightningTestNode node, LndNodeConnection lnd,
                                                                ulong chanId, CancellationToken ct)
     {
         var edge = await GossipGraphProbe.TryGetChanInfoAsync(lnd, chanId, ct);

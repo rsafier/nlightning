@@ -1,7 +1,7 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Day0;
 
@@ -164,7 +164,7 @@ public static class Day0Harness
     /// usable on both ends, has its short channel id on both and carries no HTLC.
     /// </summary>
     public static async Task<(ChannelInfoClientResponse A, ChannelInfoClientResponse B)> MineUntilUsableAsync(
-        LightningRegtestNetworkFixture fixture, IReadOnlyList<LNDNodeConnection> lndNodes, NLightningTestNode a,
+        LightningRegtestNetworkFixture fixture, IReadOnlyList<LndNodeConnection> lndNodes, NLightningTestNode a,
         NLightningTestNode b, ChannelId channelId, CancellationToken ct)
     {
         for (var block = 0; ; block++)
@@ -187,7 +187,7 @@ public static class Day0Harness
     /// locked: <c>splice_locked</c> both ways), are usable and carry no HTLC.
     /// </summary>
     public static async Task<(ChannelInfoClientResponse A, ChannelInfoClientResponse B)> MineUntilSpliceLockedAsync(
-        LightningRegtestNetworkFixture fixture, IReadOnlyList<LNDNodeConnection> lndNodes, NLightningTestNode a,
+        LightningRegtestNetworkFixture fixture, IReadOnlyList<LndNodeConnection> lndNodes, NLightningTestNode a,
         NLightningTestNode b, ChannelId channelId, uint256 spliceTxId, CancellationToken ct)
     {
         for (var block = 1; ; block++)
@@ -290,7 +290,7 @@ public static class Day0Harness
     /// A payment from <paramref name="lnd"/> to <paramref name="payee"/>'s invoice over any route LND finds (retried
     /// while LND has no route yet, NL-319); succeeds and settles.
     /// </summary>
-    public static async Task<Payment> LndPaysAsync(LNDNodeConnection lnd, NLightningTestNode payee, long amountSat,
+    public static async Task<Payment> LndPaysAsync(LndNodeConnection lnd, NLightningTestNode payee, long amountSat,
                                                    string description, CancellationToken ct)
     {
         var invoice = await payee.CreateInvoiceAsync(LightningMoney.Satoshis(amountSat), description, ct);
@@ -320,7 +320,7 @@ public static class Day0Harness
     /// confirmations); returns the edge.
     /// </summary>
     public static async Task<ChannelEdge> WaitLndHasChannelAsync(LightningRegtestNetworkFixture fixture,
-                                                                 LNDNodeConnection lnd, ulong scid,
+                                                                 LndNodeConnection lnd, ulong scid,
                                                                  NLightningTestNode a, NLightningTestNode b,
                                                                  CancellationToken ct)
     {
@@ -351,7 +351,7 @@ public static class Day0Harness
     /// that follows the delay forgets it after at most <see cref="SpentChannelPruneDelayBlocks"/> + 1 blocks.
     /// </remarks>
     public static async Task<int> WaitLndForgotChannelAsync(LightningRegtestNetworkFixture fixture,
-                                                            LNDNodeConnection lnd, ulong scid, NLightningTestNode a,
+                                                            LndNodeConnection lnd, ulong scid, NLightningTestNode a,
                                                             NLightningTestNode b, CancellationToken ct)
     {
         var description = $"{lnd.LocalAlias} forgot {new ShortChannelId(scid)}";

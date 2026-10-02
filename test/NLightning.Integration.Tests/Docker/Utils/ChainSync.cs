@@ -1,6 +1,6 @@
 using System.Text;
-using Lnrpc;
-using LNUnit.LND;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
@@ -24,7 +24,7 @@ public static class ChainSync
     /// <returns>The tip everybody reached.</returns>
     /// <exception cref="TimeoutException">Some node did not reach the tip in time; the message lists every height.</exception>
     public static async Task<uint> WaitAllAtTipAsync(LightningRegtestNetworkFixture fixture,
-                                                     IEnumerable<LNDNodeConnection> lndNodes,
+                                                     IEnumerable<LndNodeConnection> lndNodes,
                                                      IEnumerable<NLightningTestNode> nodes,
                                                      CancellationToken cancellationToken, TimeSpan? timeout = null)
     {
@@ -96,7 +96,7 @@ public static class ChainSync
     /// </summary>
     /// <returns>The new tip.</returns>
     public static async Task<uint> MineAndWaitAsync(LightningRegtestNetworkFixture fixture, int blocks,
-                                                    IEnumerable<LNDNodeConnection> lndNodes,
+                                                    IEnumerable<LndNodeConnection> lndNodes,
                                                     IEnumerable<NLightningTestNode> nodes,
                                                     CancellationToken cancellationToken, TimeSpan? timeout = null)
     {

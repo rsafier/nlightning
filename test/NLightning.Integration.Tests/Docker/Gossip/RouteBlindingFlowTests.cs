@@ -2,9 +2,9 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using Google.Protobuf;
 using Grpc.Core;
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
@@ -264,7 +264,7 @@ public class RouteBlindingFlowTests
         }, s_timeout, "bob's route to our blinded path", ct, TimeSpan.FromSeconds(5));
         Console.WriteLine($"bob's route: {route.Hops.Count} hops, {route.TotalFeesMsat} msat fees, "
                         + $"timelock {route.TotalTimeLock}");
-        var attempt = await bob.RouterClient.SendToRouteV2Async(new Routerrpc.SendToRouteRequest
+        var attempt = await bob.RouterClient.SendToRouteV2Async(new Testing.Lnd.Routerrpc.SendToRouteRequest
         {
             PaymentHash = ByteString.CopyFrom((byte[])invoice.PaymentHash),
             Route = route
@@ -275,7 +275,7 @@ public class RouteBlindingFlowTests
         // Assert
         foreach (var line in node.NodeLog.Where(l => l.Contains("blinded", StringComparison.OrdinalIgnoreCase)))
             Console.WriteLine(line);
-        Assert.Equal(Lnrpc.HTLCAttempt.Types.HTLCStatus.Succeeded, attempt.Status);
+        Assert.Equal(Testing.Lnd.Lnrpc.HTLCAttempt.Types.HTLCStatus.Succeeded, attempt.Status);
         Assert.Equal(Convert.ToHexStringLower((byte[])invoice.Preimage),
                      Convert.ToHexStringLower(attempt.Preimage.ToByteArray()));
         var stored = await Poll.ForAsync(async () => await node.GetInvoiceAsync(invoice.PaymentHash, ct) is
@@ -303,7 +303,7 @@ public class RouteBlindingFlowTests
     /// An LND blinded invoice: <paramref name="minRealHops"/> real hops before the recipient (0: the recipient is the
     /// introduction node), padded to <paramref name="numHops"/>, optionally entering over one channel.
     /// </summary>
-    private static async Task<AddInvoiceResponse> AddBlindedInvoiceAsync(LNDNodeConnection lnd, ulong amountMsat,
+    private static async Task<AddInvoiceResponse> AddBlindedInvoiceAsync(LndNodeConnection lnd, ulong amountMsat,
                                                                          string memo, uint minRealHops, uint numHops,
                                                                          ulong? incomingChannel, CancellationToken ct)
     {
@@ -337,7 +337,7 @@ public class RouteBlindingFlowTests
 
     /// <summary>The invoice's blinded paths as LND decodes them (our BOLT 11 decoder reads no blinded paths).</summary>
     private static async Task<IReadOnlyList<BlindedPaymentPath>> DecodeBlindedPathsAsync(
-        LNDNodeConnection lnd, string paymentRequest, CancellationToken ct)
+        LndNodeConnection lnd, string paymentRequest, CancellationToken ct)
     {
         var decoded = await lnd.LightningClient.DecodePayReqAsync(new PayReqString { PayReq = paymentRequest },
                                                                   cancellationToken: ct);
@@ -364,7 +364,7 @@ public class RouteBlindingFlowTests
         }, s_timeout, "our blinded payment offered", ct, TimeSpan.FromSeconds(5));
     }
 
-    private static BlindedPaymentPath FromLnd(Lnrpc.BlindedPaymentPath lnd)
+    private static BlindedPaymentPath FromLnd(Testing.Lnd.Lnrpc.BlindedPaymentPath lnd)
     {
         var hops = lnd.BlindedPath.BlindedHops
                       .Select(h => new BlindedPathHop(new CompactPubKey(h.BlindedNode.ToByteArray()),
@@ -377,9 +377,9 @@ public class RouteBlindingFlowTests
                                                                lnd.HtlcMaxMsat));
     }
 
-    private static Lnrpc.BlindedPaymentPath ToLnd(BlindedPaymentPath path)
+    private static Testing.Lnd.Lnrpc.BlindedPaymentPath ToLnd(BlindedPaymentPath path)
     {
-        var blinded = new Lnrpc.BlindedPath
+        var blinded = new Testing.Lnd.Lnrpc.BlindedPath
         {
             IntroductionNode = ByteString.CopyFrom((byte[])path.Path.FirstNodeId),
             BlindingPoint = ByteString.CopyFrom((byte[])path.Path.FirstPathKey)
@@ -391,7 +391,7 @@ public class RouteBlindingFlowTests
                 EncryptedData = ByteString.CopyFrom(hop.EncryptedRecipientData.Span)
             });
 
-        return new Lnrpc.BlindedPaymentPath
+        return new Testing.Lnd.Lnrpc.BlindedPaymentPath
         {
             BlindedPath = blinded,
             BaseFeeMsat = path.PayInfo.FeeBaseMsat,

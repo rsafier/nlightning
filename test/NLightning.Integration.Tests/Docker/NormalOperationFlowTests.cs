@@ -1,11 +1,11 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using Google.Protobuf;
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
+using NLightning.Testing.Lnd.Routerrpc;
 using NLightning.Tests.Utils;
-using Routerrpc;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -164,7 +164,7 @@ public class NormalOperationFlowTests : IAsyncLifetime
         };
 
         // Act
-        var attempt = await alice.RouterClient.SendToRouteV2Async(new Routerrpc.SendToRouteRequest
+        var attempt = await alice.RouterClient.SendToRouteV2Async(new Testing.Lnd.Routerrpc.SendToRouteRequest
         {
             PaymentHash = ByteString.CopyFrom(paymentHash),
             Route = route.Route
@@ -444,11 +444,9 @@ public class NormalOperationFlowTests : IAsyncLifetime
                     $"{amount.Satoshi} sat is not trimmed on our commitment (threshold {ourThresholdSat} sat)");
     }
 
-    private LNDNodeConnection GetAlice()
+    private LndNodeConnection GetAlice()
     {
-        var alice = _fixture.Builder?.LNDNodePool?.ReadyNodes.First(x => x.LocalAlias == "alice");
-        Assert.NotNull(alice);
-        return alice;
+        return _fixture.GetLndNode("alice");
     }
 
     private void RecordChannelReady(object? _, ChannelResponseMessageEventArgs args)
@@ -458,7 +456,7 @@ public class NormalOperationFlowTests : IAsyncLifetime
     }
 
     private async Task<(OpenChannelClientSubscriptionResponse Channel, Channel LndChannel)>
-        OpenChannelAndWaitUntilActiveAsync(LNDNodeConnection alice, LightningMoney capacity, LightningMoney? push,
+        OpenChannelAndWaitUntilActiveAsync(LndNodeConnection alice, LightningMoney capacity, LightningMoney? push,
                                            CancellationToken ct)
     {
         await _node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
@@ -496,7 +494,7 @@ public class NormalOperationFlowTests : IAsyncLifetime
     /// is mined after this, so no HTLC ever sees one).
     /// </summary>
     private async Task<(OpenChannelClientSubscriptionResponse Channel, Channel LndChannel)>
-        OpenUsableChannelAsync(LNDNodeConnection alice, LightningMoney capacity, LightningMoney? push,
+        OpenUsableChannelAsync(LndNodeConnection alice, LightningMoney capacity, LightningMoney? push,
                                CancellationToken ct)
     {
         var (channel, _) = await OpenChannelAndWaitUntilActiveAsync(alice, capacity, push, ct);
@@ -511,7 +509,7 @@ public class NormalOperationFlowTests : IAsyncLifetime
     /// <summary>
     /// Waits until our end is <c>Open</c>, connected and reestablished and LND lists the channel active.
     /// </summary>
-    private async Task WaitUntilUsableAsync(LNDNodeConnection alice, OpenChannelClientSubscriptionResponse channel,
+    private async Task WaitUntilUsableAsync(LndNodeConnection alice, OpenChannelClientSubscriptionResponse channel,
                                             CancellationToken ct)
     {
         await Poll.UntilAsync(async () =>
@@ -526,7 +524,7 @@ public class NormalOperationFlowTests : IAsyncLifetime
     /// LND pays an invoice we create for <paramref name="amount"/> over <paramref name="lndChannel"/>, and every side
     /// agrees on the outcome.
     /// </summary>
-    private async Task AssertLndPaysOurInvoiceAsync(LNDNodeConnection alice,
+    private async Task AssertLndPaysOurInvoiceAsync(LndNodeConnection alice,
                                                     OpenChannelClientSubscriptionResponse channel, Channel lndChannel,
                                                     LightningMoney amount, CancellationToken ct)
     {
@@ -553,7 +551,7 @@ public class NormalOperationFlowTests : IAsyncLifetime
     /// Waits until nothing is pending on either side, then checks our balance moved by exactly
     /// <paramref name="localDeltaMsat"/>, both sides agree on both balances, and the channel is still usable.
     /// </summary>
-    private async Task AssertBalancesMovedAsync(LNDNodeConnection alice,
+    private async Task AssertBalancesMovedAsync(LndNodeConnection alice,
                                                 OpenChannelClientSubscriptionResponse channel,
                                                 ChannelInfoClientResponse before, long localDeltaMsat,
                                                 CancellationToken ct)
@@ -601,7 +599,7 @@ public class NormalOperationFlowTests : IAsyncLifetime
     /// <summary>
     /// Fails back a hold invoice a failed run left accepted, so the channel does not keep the HTLC.
     /// </summary>
-    private static async Task CancelHoldInvoiceQuietlyAsync(LNDNodeConnection alice, byte[] paymentHash)
+    private static async Task CancelHoldInvoiceQuietlyAsync(LndNodeConnection alice, byte[] paymentHash)
     {
         try
         {
@@ -614,7 +612,7 @@ public class NormalOperationFlowTests : IAsyncLifetime
         }
     }
 
-    private async Task<Channel?> GetLndChannelAsync(LNDNodeConnection alice,
+    private async Task<Channel?> GetLndChannelAsync(LndNodeConnection alice,
                                                     OpenChannelClientSubscriptionResponse channel,
                                                     CancellationToken ct)
     {

@@ -1,7 +1,7 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -136,7 +136,7 @@ public class ChannelUpdateExchangeTests : IAsyncLifetime
         GC.SuppressFinalize(this);
     }
 
-    private static async Task<RoutingPolicy?> GetOurPolicyAsync(NLightningTestNode node, LNDNodeConnection alice,
+    private static async Task<RoutingPolicy?> GetOurPolicyAsync(NLightningTestNode node, LndNodeConnection alice,
                                                                ulong chanId, CancellationToken ct)
     {
         var info = await alice.LightningClient.GetChanInfoAsync(new ChanInfoRequest { ChanId = chanId },
@@ -150,7 +150,7 @@ public class ChannelUpdateExchangeTests : IAsyncLifetime
     /// Drops the connection to alice and connects again. Alice may reconnect first (we are a channel peer); either
     /// way a new connection is installed.
     /// </summary>
-    private static async Task ReconnectAsync(NLightningTestNode node, LNDNodeConnection alice, CancellationToken ct)
+    private static async Task ReconnectAsync(NLightningTestNode node, LndNodeConnection alice, CancellationToken ct)
     {
         CompactPubKey aliceId = alice.LocalNodePubKeyBytes;
         node.PeerManager.DisconnectPeer(aliceId);
@@ -178,7 +178,7 @@ public class ChannelUpdateExchangeTests : IAsyncLifetime
     }
 
     private static async Task<(OpenChannelClientSubscriptionResponse Channel, Channel LndChannel)>
-        OpenChannelAndWaitUntilActiveAsync(NLightningTestNode node, LNDNodeConnection alice, CancellationToken ct)
+        OpenChannelAndWaitUntilActiveAsync(NLightningTestNode node, LndNodeConnection alice, CancellationToken ct)
     {
         await node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
         var aliceAddress = await node.ConnectToAsync(alice, ct);

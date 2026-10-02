@@ -1,7 +1,7 @@
 using Docker.DotNet;
-using LNUnit.LND;
 using LNUnit.Setup;
 using NBitcoin.RPC;
+using NLightning.Testing.Lnd;
 
 namespace NLightning.Integration.Tests.Fixtures;
 
@@ -10,6 +10,13 @@ namespace NLightning.Integration.Tests.Fixtures;
 /// <c>alice</c>, <c>bob</c> and <c>carol</c> get LND-LND channels at startup; <c>david</c> has none, so the ABCD
 /// tests can give him exactly the channels they need.
 /// </summary>
+/// <remarks>
+/// LNUnit's <c>LNUnitBuilder</c> only orchestrates the containers (bitcoind, the LND nodes and their startup
+/// channels); it stays private to this fixture. Every LND client the tests get is our own
+/// <see cref="LndNodeConnection"/> (<c>test/NLightning.Testing.Lnd</c>, LND 0.21.4 protos), built from the gRPC
+/// endpoint, <c>tls.cert</c> and <c>admin.macaroon</c> the builder read out of each container (test harness phase 3
+/// lane B).
+/// </remarks>
 // ReSharper disable once ClassNeverInstantiated.Global
 public class LightningRegtestNetworkFixture : IDisposable
 {
@@ -34,30 +41,58 @@ public class LightningRegtestNetworkFixture : IDisposable
 
     private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
     private readonly SharedObjectCache _shared = new();
+    private readonly List<LndNodeConnection> _lndNodes = [];
+    private LNUnitBuilder? _builder;
 
     public LightningRegtestNetworkFixture()
     {
         SetupNetwork().GetAwaiter().GetResult();
     }
 
-    public LNUnitBuilder? Builder { get; private set; }
-
     public RPCClient Bitcoin =>
-        Builder?.BitcoinRpcClient ?? throw new InvalidOperationException("The regtest network is not running");
+        _builder?.BitcoinRpcClient ?? throw new InvalidOperationException("The regtest network is not running");
 
     /// <summary>
-    /// The LND nodes that are ready (all four once <see cref="SetupNetwork"/> returned).
+    /// The ZMQ ports of the miner's raw block and raw tx feeds, on <see cref="Bitcoin"/>'s host.
     /// </summary>
-    public IReadOnlyList<LNDNodeConnection> LndNodes =>
-        Builder?.LNDNodePool?.ReadyNodes.ToList()
-     ?? throw new InvalidOperationException("The regtest network is not running");
+    public (int RawBlockPort, int RawTxPort) BitcoinZmqPorts
+    {
+        get
+        {
+            var bitcoinConfiguration = _builder?.Configuration.BTCNodes[0]
+                                    ?? throw new InvalidOperationException("The regtest network is not running");
+            return (ParsePort("-zmqpubrawblock"), ParsePort("-zmqpubrawtx"));
+
+            int ParsePort(string option) =>
+                int.Parse(bitcoinConfiguration.Cmd.First(c => c.Contains(option)).Split(':')[2]);
+        }
+    }
+
+    /// <summary>
+    /// The four LND nodes, in <see cref="LndAliases"/> order (all ready once <see cref="SetupNetwork"/> returned).
+    /// </summary>
+    public IReadOnlyList<LndNodeConnection> LndNodes =>
+        _lndNodes.Count > 0
+            ? _lndNodes.ToList()
+            : throw new InvalidOperationException("The regtest network is not running");
 
     /// <summary>
     /// The LND node with <paramref name="alias"/> (<c>alice</c>, <c>bob</c>, <c>carol</c> or <c>david</c>).
     /// </summary>
-    public LNDNodeConnection GetLndNode(string alias) =>
-        LndNodes.FirstOrDefault(n => n.LocalAlias == alias)
+    /// <remarks>
+    /// The connection stays the same across container restarts: gRPC reconnects to the same address and the
+    /// restarted LND keeps its <c>tls.cert</c>, which the connection pins.
+    /// </remarks>
+    public LndNodeConnection GetLndNode(string alias) =>
+        _lndNodes.FirstOrDefault(n => n.LocalAlias == alias)
      ?? throw new InvalidOperationException($"LND node {alias} is not ready");
+
+    /// <summary>
+    /// Restarts the container of the LND node <paramref name="alias"/> (a plain container restart: same container,
+    /// network and data). The caller waits for LND to be ready again.
+    /// </summary>
+    public Task RestartLndAsync(string alias) =>
+        (_builder ?? throw new InvalidOperationException("The regtest network is not running")).RestartByAlias(alias);
 
     /// <summary>
     /// Returns the object stored under <paramref name="key"/>, creating it once with <paramref name="factory"/>.
@@ -75,11 +110,15 @@ public class LightningRegtestNetworkFixture : IDisposable
 
         _shared.DisposeAll();
 
+        foreach (var lnd in _lndNodes)
+            lnd.Dispose();
+        _lndNodes.Clear();
+
         // Remove containers
         foreach (var name in ContainerNames)
             DockerContainerUtils.RemoveContainerAsync(_client, name).GetAwaiter().GetResult();
 
-        Builder?.Destroy();
+        _builder?.Destroy();
         _client.Dispose();
     }
 
@@ -89,11 +128,11 @@ public class LightningRegtestNetworkFixture : IDisposable
             await DockerContainerUtils.RemoveContainerAsync(_client, name);
 
         await EnsureLndImageAsync();
-        Builder = new LNUnitBuilder();
+        var builder = _builder = new LNUnitBuilder();
 
-        Builder.AddBitcoinCoreNode();
+        builder.AddBitcoinCoreNode();
 
-        Builder.AddPolarLNDNode("alice",
+        builder.AddPolarLNDNode("alice",
         [
             new()
             {
@@ -103,11 +142,11 @@ public class LightningRegtestNetworkFixture : IDisposable
         ], imageName: LndImageName, tagName: LndImageTag, pullImage: false);
         // alice signals LND's option_simple_close (bits 61/161, "rbf-coop-close"): used only with a peer that signals it
         // too (CooperativeCloseFlowTests' simple-close cases); every other close with her stays legacy
-        Builder.Configuration.LNDNodes.Single(n => n.Name == "alice").Cmd.Add("--protocol.rbf-coop-close");
+        builder.Configuration.LNDNodes.Single(n => n.Name == "alice").Cmd.Add("--protocol.rbf-coop-close");
         // alice receives spontaneous payments (keysend, lane lh1-l3: KeysendFlowTests); off by default in LND
-        Builder.Configuration.LNDNodes.Single(n => n.Name == "alice").Cmd.Add("--accept-keysend");
+        builder.Configuration.LNDNodes.Single(n => n.Name == "alice").Cmd.Add("--accept-keysend");
 
-        Builder.AddPolarLNDNode("bob",
+        builder.AddPolarLNDNode("bob",
         [
             new()
             {
@@ -117,7 +156,7 @@ public class LightningRegtestNetworkFixture : IDisposable
             }
         ], imageName: LndImageName, tagName: LndImageTag, pullImage: false);
 
-        Builder.AddPolarLNDNode("carol",
+        builder.AddPolarLNDNode("carol",
         [
             new()
             {
@@ -134,9 +173,32 @@ public class LightningRegtestNetworkFixture : IDisposable
         ], imageName: LndImageName, tagName: LndImageTag, pullImage: false);
 
         // No channels: the ABCD tests connect David to our Carol
-        Builder.AddPolarLNDNode("david", [], imageName: LndImageName, tagName: LndImageTag, pullImage: false);
+        builder.AddPolarLNDNode("david", [], imageName: LndImageName, tagName: LndImageTag, pullImage: false);
 
-        await Builder.Build();
+        await builder.Build();
+        await ConnectLndNodesAsync(builder);
+    }
+
+    /// <summary>
+    /// Opens our own gRPC connection to each LND node, from the endpoint, certificate and macaroon LNUnit's builder
+    /// read out of its container.
+    /// </summary>
+    private async Task ConnectLndNodesAsync(LNUnitBuilder builder)
+    {
+        var lnUnitNodes = builder.LNDNodePool?.ReadyNodes.ToList()
+                       ?? throw new InvalidOperationException("LNUnit started no LND node");
+        foreach (var lnd in _lndNodes)
+            lnd.Dispose();
+        _lndNodes.Clear();
+        foreach (var alias in LndAliases)
+        {
+            var lnUnitNode = lnUnitNodes.FirstOrDefault(n => n.LocalAlias == alias)
+                          ?? throw new InvalidOperationException($"LND node {alias} is not ready");
+            var settings = LndSettings.FromBase64(lnUnitNode.Settings.GrpcEndpoint!,
+                                                  lnUnitNode.Settings.TlsCertBase64!,
+                                                  lnUnitNode.Settings.MacaroonBase64);
+            _lndNodes.Add(await LndNodeConnection.ConnectAsync(settings));
+        }
     }
 
     /// <summary>

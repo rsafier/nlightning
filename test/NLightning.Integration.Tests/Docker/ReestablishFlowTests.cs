@@ -4,10 +4,10 @@ using System.Security.Cryptography;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using Google.Protobuf;
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
-using Routerrpc;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
+using NLightning.Testing.Lnd.Routerrpc;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -78,7 +78,8 @@ public class ReestablishFlowTests : IAsyncLifetime
 
     /// <summary>Proof N7 (b): LND restarts (the alice container) and we reconnect with backoff.</summary>
     /// <remarks>
-    /// <c>RestartByAlias</c> with its defaults (<c>isLND: false</c>) is a plain container restart: same container,
+    /// <see cref="LightningRegtestNetworkFixture.RestartLndAsync"/> (LNUnit's <c>RestartByAlias</c> with its defaults,
+    /// <c>isLND: false</c>) is a plain container restart: same container,
     /// network, data and, in practice, address. With <c>isLND: true</c> it reopens alice's fixture channels and can
     /// hang in <c>WaitUntilAliasIsServerReady</c> (it waits on the stale connection when the address changed), so that
     /// mode is not used. Docker hands a restarted container the lowest free address of its network, so a container
@@ -96,11 +97,10 @@ public class ReestablishFlowTests : IAsyncLifetime
         var addressBefore = await GetAddressAsync(docker, "alice", ct);
 
         // Act
-        var builder = _fixture.Builder ?? throw new InvalidOperationException("The regtest network is not running");
         var placeholders = await HoldAddressesBelowAsync(docker, "alice", ct);
         try
         {
-            await builder.RestartByAlias("alice").WaitAsync(s_activeTimeout, ct);
+            await _fixture.RestartLndAsync("alice").WaitAsync(s_activeTimeout, ct);
         }
         finally
         {
@@ -219,15 +219,13 @@ public class ReestablishFlowTests : IAsyncLifetime
         static uint ToUInt32(IPAddress address) => BinaryPrimitives.ReadUInt32BigEndian(address.GetAddressBytes());
     }
 
-    private LNDNodeConnection GetAlice()
+    private LndNodeConnection GetAlice()
     {
-        var alice = _fixture.Builder?.LNDNodePool?.ReadyNodes.First(x => x.LocalAlias == "alice");
-        Assert.NotNull(alice);
-        return alice;
+        return _fixture.GetLndNode("alice");
     }
 
     private async Task<(OpenChannelClientSubscriptionResponse Channel, Channel LndChannel)>
-        OpenChannelAndWaitUntilActiveAsync(LNDNodeConnection alice, CancellationToken ct)
+        OpenChannelAndWaitUntilActiveAsync(LndNodeConnection alice, CancellationToken ct)
     {
         await Node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
         var aliceAddress = await Node.ConnectToAsync(alice, ct);
@@ -260,7 +258,7 @@ public class ReestablishFlowTests : IAsyncLifetime
     /// A bounded wait for the restarted alice to answer and be synced to the chain (LNUnit's own readiness wait can
     /// block without a deadline).
     /// </summary>
-    private async Task<LNDNodeConnection> WaitUntilLndSyncedAsync(CancellationToken ct)
+    private async Task<LndNodeConnection> WaitUntilLndSyncedAsync(CancellationToken ct)
     {
         return await Poll.ForAsync(async () =>
         {
@@ -283,7 +281,7 @@ public class ReestablishFlowTests : IAsyncLifetime
     /// Both sides use the channel again: we processed LND's channel_reestablish on the current connection and LND
     /// lists the channel Active.
     /// </summary>
-    private async Task WaitUntilReestablishedAsync(LNDNodeConnection alice, OpenChannelClientSubscriptionResponse channel,
+    private async Task WaitUntilReestablishedAsync(LndNodeConnection alice, OpenChannelClientSubscriptionResponse channel,
                                                    CancellationToken ct)
     {
         await Poll.UntilAsync(async () =>
@@ -301,14 +299,14 @@ public class ReestablishFlowTests : IAsyncLifetime
         Assert.True(ours.IsPeerConnected);
     }
 
-    private async Task PayAndExpectFailBackAsync(LNDNodeConnection alice, Channel lndChannel, CancellationToken ct)
+    private async Task PayAndExpectFailBackAsync(LndNodeConnection alice, Channel lndChannel, CancellationToken ct)
     {
         var attempt = await SendToUsAsync(alice, lndChannel, ct);
         AssertFailedBackByUs(attempt);
     }
 
     /// <summary>LND pays us over its channel with a random hash (as N6-T5): we can only fail it back.</summary>
-    private async Task<HTLCAttempt> SendToUsAsync(LNDNodeConnection alice, Channel lndChannel, CancellationToken ct)
+    private async Task<HTLCAttempt> SendToUsAsync(LndNodeConnection alice, Channel lndChannel, CancellationToken ct)
     {
         var (_, paymentHash) = LndTestHelpers.NewPreimage();
         var route = await alice.RouterClient.BuildRouteAsync(new BuildRouteRequest
@@ -327,7 +325,7 @@ public class ReestablishFlowTests : IAsyncLifetime
             TotalAmtMsat = AmountMsat
         };
 
-        return await alice.RouterClient.SendToRouteV2Async(new Routerrpc.SendToRouteRequest
+        return await alice.RouterClient.SendToRouteV2Async(new Testing.Lnd.Routerrpc.SendToRouteRequest
         {
             PaymentHash = ByteString.CopyFrom(paymentHash),
             Route = route.Route
@@ -347,7 +345,7 @@ public class ReestablishFlowTests : IAsyncLifetime
     /// After one HTLC added and failed back on a fresh channel, both commitment numbers are 2 on our side, nothing is
     /// pending anywhere, and the balances are the opening ones.
     /// </summary>
-    private async Task AssertSettledAtTwoTwoAsync(LNDNodeConnection alice, OpenChannelClientSubscriptionResponse channel,
+    private async Task AssertSettledAtTwoTwoAsync(LndNodeConnection alice, OpenChannelClientSubscriptionResponse channel,
                                                   CancellationToken ct)
     {
         await Poll.UntilAsync(async () =>
@@ -369,7 +367,7 @@ public class ReestablishFlowTests : IAsyncLifetime
         Assert.Equal(s_push.Satoshi, lndChannel.LocalBalance);
     }
 
-    private async Task AssertNoForceCloseAsync(LNDNodeConnection alice, OpenChannelClientSubscriptionResponse channel,
+    private async Task AssertNoForceCloseAsync(LndNodeConnection alice, OpenChannelClientSubscriptionResponse channel,
                                                CancellationToken ct)
     {
         var pending = await alice.LightningClient.PendingChannelsAsync(new PendingChannelsRequest(),
@@ -382,7 +380,7 @@ public class ReestablishFlowTests : IAsyncLifetime
         Assert.Equal(0, Node.CountLogLines("Failing channel"));
     }
 
-    private async Task<Channel?> GetLndChannelAsync(LNDNodeConnection alice,
+    private async Task<Channel?> GetLndChannelAsync(LndNodeConnection alice,
                                                     OpenChannelClientSubscriptionResponse channel,
                                                     CancellationToken ct)
     {

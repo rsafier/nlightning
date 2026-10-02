@@ -1,5 +1,5 @@
-using Lnrpc;
-using LNUnit.LND;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
@@ -27,7 +27,7 @@ public static class LndRoutingProbe
     /// <paramref name="lnd"/>'s graph has it.
     /// </summary>
     /// <exception cref="InvalidOperationException">LND does not know the channel or that end has no policy.</exception>
-    public static async Task<RoutingPolicy> GetPolicyAsync(LNDNodeConnection lnd, ulong shortChannelId,
+    public static async Task<RoutingPolicy> GetPolicyAsync(LndNodeConnection lnd, ulong shortChannelId,
                                                            string fromNodeHex, CancellationToken cancellationToken)
     {
         var edge = await GossipGraphProbe.TryGetChanInfoAsync(lnd, shortChannelId, cancellationToken)
@@ -59,7 +59,7 @@ public static class LndRoutingProbe
     /// <summary>
     /// The forwards <paramref name="lndNodes"/> recorded since <paramref name="since"/>.
     /// </summary>
-    public static async Task<IReadOnlyList<Forward>> GetForwardsAsync(IEnumerable<LNDNodeConnection> lndNodes,
+    public static async Task<IReadOnlyList<Forward>> GetForwardsAsync(IEnumerable<LndNodeConnection> lndNodes,
                                                                       DateTimeOffset since,
                                                                       CancellationToken cancellationToken)
     {
@@ -119,7 +119,7 @@ public static class LndRoutingProbe
     /// Polls <paramref name="lndNodes"/>' forwarding logs (LND writes forwarding events in batches, every 15 s) until
     /// <see cref="TryTraceForwards"/> finds the whole chain of the payment; returns it, payee side first.
     /// </summary>
-    public static Task<IReadOnlyList<Forward>> WaitForForwardChainAsync(IReadOnlyList<LNDNodeConnection> lndNodes,
+    public static Task<IReadOnlyList<Forward>> WaitForForwardChainAsync(IReadOnlyList<LndNodeConnection> lndNodes,
                                                                          DateTimeOffset since,
                                                                          ulong amountAtPayeeMsat, ulong firstChannel,
                                                                          CancellationToken cancellationToken) =>
@@ -132,7 +132,7 @@ public static class LndRoutingProbe
     /// <paramref name="lnd"/> has no channel with <paramref name="nodeIdHex"/> (so a payment between them has to
     /// travel through other nodes).
     /// </summary>
-    public static async Task AssertNoChannelWithAsync(LNDNodeConnection lnd, string nodeIdHex,
+    public static async Task AssertNoChannelWithAsync(LndNodeConnection lnd, string nodeIdHex,
                                                       CancellationToken cancellationToken)
     {
         var channels = await lnd.LightningClient.ListChannelsAsync(new ListChannelsRequest(),
@@ -149,7 +149,7 @@ public static class LndRoutingProbe
     /// Every forward in <paramref name="chain"/> charged exactly the fee its node announced for the outgoing channel
     /// (read from <paramref name="observer"/>'s graph), and its in/out amounts differ by that fee. Returns the total.
     /// </summary>
-    public static async Task<ulong> AssertForwardFeesMatchPoliciesAsync(LNDNodeConnection observer,
+    public static async Task<ulong> AssertForwardFeesMatchPoliciesAsync(LndNodeConnection observer,
                                                                         IReadOnlyList<Forward> chain,
                                                                         CancellationToken cancellationToken)
     {
@@ -179,7 +179,7 @@ public static class LndRoutingProbe
     /// hop) and its <c>FeeMsat</c> what that node keeps, so channel i carries
     /// <c>Hops[i].AmtToForwardMsat + Hops[i].FeeMsat</c>.
     /// </remarks>
-    public static async Task<ulong> AssertRouteFeesMatchPoliciesAsync(LNDNodeConnection observer, Route route,
+    public static async Task<ulong> AssertRouteFeesMatchPoliciesAsync(LndNodeConnection observer, Route route,
                                                                       CancellationToken cancellationToken)
     {
         ulong total = 0;
@@ -213,7 +213,7 @@ public static class LndRoutingProbe
     /// The routes of <paramref name="lnd"/>'s pathfinding from <paramref name="sourceNodeHex"/> (any node of its
     /// graph) to <paramref name="destinationHex"/> for <paramref name="amountMsat"/>, without mission control.
     /// </summary>
-    public static async Task<Route> QueryRouteAsync(LNDNodeConnection lnd, string sourceNodeHex, string destinationHex,
+    public static async Task<Route> QueryRouteAsync(LndNodeConnection lnd, string sourceNodeHex, string destinationHex,
                                                     long amountMsat, CancellationToken cancellationToken)
     {
         var response = await lnd.LightningClient.QueryRoutesAsync(new QueryRoutesRequest
@@ -233,7 +233,7 @@ public static class LndRoutingProbe
     /// <paramref name="bolt11"/> as <paramref name="lnd"/> decodes it; asserts it carries no route hint (the payer has
     /// to find the payee through the graph).
     /// </summary>
-    public static async Task<PayReq> AssertNoRouteHintsAsync(LNDNodeConnection lnd, string bolt11,
+    public static async Task<PayReq> AssertNoRouteHintsAsync(LndNodeConnection lnd, string bolt11,
                                                              CancellationToken cancellationToken)
     {
         var decoded = await lnd.LightningClient.DecodePayReqAsync(new PayReqString { PayReq = bolt11 },
@@ -248,7 +248,7 @@ public static class LndRoutingProbe
     /// Sets <paramref name="lnd"/>'s policy on the channel at <paramref name="channelPoint"/> (<c>txid:index</c>),
     /// keeping the HTLC limits of <paramref name="current"/>.
     /// </summary>
-    public static async Task UpdatePolicyAsync(LNDNodeConnection lnd, string channelPoint, RoutingPolicy current,
+    public static async Task UpdatePolicyAsync(LndNodeConnection lnd, string channelPoint, RoutingPolicy current,
                                                long feeBaseMsat, uint feePpm, CancellationToken cancellationToken)
     {
         var parts = channelPoint.Split(':');
@@ -273,7 +273,7 @@ public static class LndRoutingProbe
     /// The channel point (<c>txid:index</c>) of <paramref name="shortChannelId"/> in <paramref name="lnd"/>'s own
     /// channels.
     /// </summary>
-    public static async Task<string> GetChannelPointAsync(LNDNodeConnection lnd, ulong shortChannelId,
+    public static async Task<string> GetChannelPointAsync(LndNodeConnection lnd, ulong shortChannelId,
                                                           CancellationToken cancellationToken)
     {
         var channels = await lnd.LightningClient.ListChannelsAsync(new ListChannelsRequest(),

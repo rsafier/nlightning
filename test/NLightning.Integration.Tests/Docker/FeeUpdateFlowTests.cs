@@ -1,8 +1,8 @@
 using System.Security.Cryptography;
 using Google.Protobuf;
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -278,7 +278,7 @@ public class FeeUpdateFlowTests : IAsyncLifetime
     private static FeeUpdateScheduler CreateScheduler(NLightningTestNode node, IFeeService feeService) =>
         ActivatorUtilities.CreateInstance<FeeUpdateScheduler>(node.Services, feeService);
 
-    private async Task MineUntilUsableAsync(NLightningTestNode node, LNDNodeConnection lnd, ChannelId channelId,
+    private async Task MineUntilUsableAsync(NLightningTestNode node, LndNodeConnection lnd, ChannelId channelId,
                                             string channelPoint, CancellationToken ct)
     {
         await Poll.UntilAsync(async () =>
@@ -296,7 +296,7 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         await ChainSync.WaitAllAtTipAsync(_fixture, [lnd], [node], ct);
     }
 
-    private static async Task WaitForLndFeerateAsync(LNDNodeConnection lnd, string channelPoint, long feeratePerKw,
+    private static async Task WaitForLndFeerateAsync(LndNodeConnection lnd, string channelPoint, long feeratePerKw,
                                                      CancellationToken ct) =>
         await Poll.UntilAsync(async () =>
         {
@@ -317,7 +317,7 @@ public class FeeUpdateFlowTests : IAsyncLifetime
     /// Once nothing is pending: the non-funder's balance is its whole to_local on LND's side; the funder's also pays
     /// the commitment fee.
     /// </summary>
-    private static async Task AssertBalancesAgreeAsync(NLightningTestNode node, LNDNodeConnection lnd,
+    private static async Task AssertBalancesAgreeAsync(NLightningTestNode node, LndNodeConnection lnd,
                                                        ChannelId channelId, string channelPoint, bool weAreFunder,
                                                        CancellationToken ct)
     {
@@ -351,7 +351,7 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         Assert.True(ours.IsUsable(), ours.Describe());
     }
 
-    private static async Task AssertLndPaysUsAsync(NLightningTestNode node, LNDNodeConnection lnd,
+    private static async Task AssertLndPaysUsAsync(NLightningTestNode node, LndNodeConnection lnd,
                                                    ChannelId channelId, string channelPoint, LightningMoney amount,
                                                    CancellationToken ct)
     {
@@ -375,7 +375,7 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         }, s_timeout, $"our balance up by {amount.MilliSatoshi} msat", ct);
     }
 
-    private static async Task AssertWePayLndAsync(NLightningTestNode node, LNDNodeConnection lnd,
+    private static async Task AssertWePayLndAsync(NLightningTestNode node, LndNodeConnection lnd,
                                                   LightningMoney amount, CancellationToken ct)
     {
         var invoice = await LndTestHelpers.AddInvoiceAsync(lnd, (long)amount.MilliSatoshi, [], ct,

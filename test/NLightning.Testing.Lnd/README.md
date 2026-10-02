@@ -88,6 +88,8 @@ A pool's readiness check defaults to `State.GetState` answering `SERVER_ACTIVE` 
 
 ## Swap table for phase 3 (LNUnit.LND to this project)
 
+**Done (test harness phase 3 lane B).** Every test in `NLightning.Integration.Tests` uses this client. `Fixtures/LightningRegtestNetworkFixture` keeps LNUnit's `LNUnitBuilder` private, as the container orchestrator only, and builds one `LndNodeConnection` per LND node with `LndSettings.FromBase64` from what the builder read out of each container (endpoint, `tls.cert`, `admin.macaroon`). Tests reach the nodes through `LndNodes`, `GetLndNode(alias)` and `RestartLndAsync(alias)`, and the miner through `Bitcoin` and `BitcoinZmqPorts`. The LNUnit package moved from NLightning.Tests.Utils to NLightning.Integration.Tests; lnunit.lnd still comes with it transitively until the cluster backend replaces the builder, so `LnUnitCoexistenceTests` stays.
+
 ### Namespaces
 
 In a test file, swap the `using` directives:
@@ -99,14 +101,14 @@ In a test file, swap the `using` directives:
 | `using Routerrpc;` | `using NLightning.Testing.Lnd.Routerrpc;` |
 | `using Walletrpc;`, `Invoicesrpc`, `Signrpc`, `Chainrpc`, `Peersrpc`, `Devrpc`, `Verrpc`, … | `using NLightning.Testing.Lnd.<same>;` |
 
-By the repo's convention these become relative `using Testing.Lnd.Lnrpc;` lines after the file-scoped namespace.
+Keep them **above** the file-scoped namespace, with the full name, where the old `using Lnrpc;` lines were. A using above the namespace loses to the relative `NLightning.*` usings inside it, so names that exist in both, such as `AddressType` (Domain and lnrpc), `Invoice` (Bolt11 and lnrpc) or `OutPoint`/`Transaction` next to NBitcoin aliases, resolve as before. Relative `using Testing.Lnd.Lnrpc;` lines inside the namespace make those names ambiguous (`CS0104`).
 
-Some code qualifies a type with the namespace, such as `Routerrpc.SendToRouteRequest`, `Lnrpc.Payment` or `Walletrpc.EstimateFeeRequest`. That happens in about 11 Docker test files. Inside an `NLightning.*` namespace, such a name no longer resolves on its own. Either:
+Some code qualifies a type with the namespace, such as `Routerrpc.SendToRouteRequest`, `Lnrpc.Payment` or `Walletrpc.EstimateFeeRequest`. That happened in 11 Docker test files; lane B wrote the `Testing.Lnd.` prefix. Inside an `NLightning.*` namespace, such a name no longer resolves on its own. Either:
 
 - write `Testing.Lnd.Routerrpc.SendToRouteRequest` (works at any time), or
 - use project-wide aliases in the test csproj, such as `<Using Include="NLightning.Testing.Lnd.Routerrpc" Alias="LndRouterrpc"/>`, and write `LndRouterrpc.SendToRouteRequest`.
 
-An alias with the old name (`Alias="Routerrpc"`, so the qualified code compiles unchanged) works only once neither LNUnit nor LNUnit.LND is referenced by the test assembly, directly or transitively (NLightning.Tests.Utils references LNUnit 3.0.4 today). While lnunit.lnd is there, its global `Routerrpc`/`Lnrpc`/... namespaces conflict with the alias at every use: `error CS0576: Namespace '<global namespace>' contains a definition conflicting with alias 'Routerrpc'`. So either drop the LNUnit package (the Docker fixture builder) in the same step as the swap, or use a non-clashing alias or the `Testing.Lnd.` prefix.
+An alias with the old name (`Alias="Routerrpc"`, so the qualified code compiles unchanged) works only once neither LNUnit nor LNUnit.LND is referenced by the test assembly, directly or transitively (NLightning.Integration.Tests references LNUnit 3.0.4 for its container builder). While lnunit.lnd is there, its global `Routerrpc`/`Lnrpc`/... namespaces conflict with the alias at every use: `error CS0576: Namespace '<global namespace>' contains a definition conflicting with alias 'Routerrpc'`. So either drop the LNUnit package (the Docker fixture builder) in the same step as the swap, or use a non-clashing alias or the `Testing.Lnd.` prefix.
 
 ### Types and members
 

@@ -4,6 +4,7 @@ using Docker.DotNet.Models;
 using NBitcoin;
 using NBitcoin.RPC;
 using Newtonsoft.Json.Linq;
+using NLightning.Testing.Lnd;
 using Network = NBitcoin.Network;
 
 namespace NLightning.Integration.Tests.Docker.Onchain.Anchors;
@@ -147,7 +148,7 @@ internal sealed class RelayBitcoind : IAsyncDisposable
     /// </summary>
     /// <exception cref="InvalidOperationException">The minimum did not rise within <paramref name="maxFills"/>.</exception>
     public async Task<decimal> FillMempoolAsync(decimal fillRateSatPerVByte, decimal targetSatPerVByte,
-                                                int maxFills, IEnumerable<LNUnit.LND.LNDNodeConnection> lndNodes,
+                                                int maxFills, IEnumerable<LndNodeConnection> lndNodes,
                                                 IEnumerable<NLightningTestNode> nodes, CancellationToken ct)
     {
         // One confirmed coin per fill transaction, from the miner's wallet to keys of this test

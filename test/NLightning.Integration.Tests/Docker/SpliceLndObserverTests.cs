@@ -1,4 +1,4 @@
-using LNUnit.LND;
+using NLightning.Testing.Lnd;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -74,7 +74,7 @@ public sealed class SpliceLndObserverTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         var alice = _fixture.GetLndNode("alice");
         var bob = _fixture.GetLndNode("bob");
-        IReadOnlyList<LNDNodeConnection> observers = [alice];
+        IReadOnlyList<LndNodeConnection> observers = [alice];
 
         // Arrange: A (public channel to alice, who gets a push so she can pay B through A) and B, both splice-capable
         var a = await StartNodeAsync("splice-lnd-a", "nltg-splice-lnd-a", ct);
@@ -130,7 +130,7 @@ public sealed class SpliceLndObserverTests : IAsyncLifetime
 
         // (3) alice routes to B over the new short channel id
         var payment = await Day0Harness.LndPaysAsync(alice, b, 20_000, "splice-lnd alice->a->b", ct);
-        var route = payment.Htlcs.Single(h => h.Status == Lnrpc.HTLCAttempt.Types.HTLCStatus.Succeeded).Route;
+        var route = payment.Htlcs.Single(h => h.Status == Testing.Lnd.Lnrpc.HTLCAttempt.Types.HTLCStatus.Succeeded).Route;
         Assert.Equal(b.NodeIdHex, route.Hops[^1].PubKey, StringComparer.OrdinalIgnoreCase);
         Assert.Equal(scidSplice, route.Hops[^1].ChanId);
 

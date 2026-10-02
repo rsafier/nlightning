@@ -1,4 +1,5 @@
 using NBitcoin;
+using NLightning.Testing.Lnd;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
@@ -124,20 +125,20 @@ public class GossipFixtureTests
         Assert.Equal(0, node.CountLogLines(DeserializeFailedLogFragment));
     }
 
-    private IReadOnlyList<LNUnit.LND.LNDNodeConnection> GossipLndNodes() =>
+    private IReadOnlyList<LndNodeConnection> GossipLndNodes() =>
         [_fixture.GetLndNode("alice"), _fixture.GetLndNode("bob"), _fixture.GetLndNode("carol")];
 
     /// <summary>
     /// Every funding transaction of the fixture's LND-LND channels has at least <paramref name="depth"/>
     /// confirmations (BOLT 7: announced at 6); mines the difference first.
     /// </summary>
-    private async Task AssertFundingDepthAsync(IReadOnlyList<LNUnit.LND.LNDNodeConnection> lndNodes, int depth,
+    private async Task AssertFundingDepthAsync(IReadOnlyList<LndNodeConnection> lndNodes, int depth,
                                                CancellationToken ct)
     {
         var fundingTxIds = new HashSet<uint256>();
         foreach (var lnd in lndNodes)
         {
-            var list = await lnd.LightningClient.ListChannelsAsync(new Lnrpc.ListChannelsRequest(),
+            var list = await lnd.LightningClient.ListChannelsAsync(new Testing.Lnd.Lnrpc.ListChannelsRequest(),
                                                                    cancellationToken: ct);
             foreach (var channel in list.Channels)
                 fundingTxIds.Add(uint256.Parse(channel.ChannelPoint.Split(':')[0]));

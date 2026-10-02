@@ -1,7 +1,7 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 using OutPoint = NBitcoin.OutPoint;
 using Transaction = NBitcoin.Transaction;
 
@@ -309,7 +309,7 @@ public class OnchainO3Tests : IAsyncLifetime
     /// Fails the channel through <see cref="IChannelFailureService"/> (our latest commitment, broadcast), mines it and
     /// waits until the node recorded the funding spend as our local commitment.
     /// </summary>
-    private async Task<ConfirmedCommitment> ForceCloseAndConfirmAsync(NLightningTestNode node, LNDNodeConnection peer,
+    private async Task<ConfirmedCommitment> ForceCloseAndConfirmAsync(NLightningTestNode node, LndNodeConnection peer,
                                                                       OpenChannelClientSubscriptionResponse channel,
                                                                       CancellationToken ct)
     {
@@ -338,7 +338,7 @@ public class OnchainO3Tests : IAsyncLifetime
     }
 
     /// <summary>The CSV LND imposes on our <c>to_local</c> (our channel's <c>Remote.ToSelfDelay</c>).</summary>
-    private static async Task<ushort> GetOurCsvAsync(NLightningTestNode node, LNDNodeConnection peer,
+    private static async Task<ushort> GetOurCsvAsync(NLightningTestNode node, LndNodeConnection peer,
                                                      OpenChannelClientSubscriptionResponse channel,
                                                      CancellationToken ct)
     {
@@ -385,7 +385,7 @@ public class OnchainO3Tests : IAsyncLifetime
         return (await _fixture.Bitcoin.GetRawTransactionInfoAsync(displayTxId, ct)).Transaction;
     }
 
-    private async Task MineToAsync(NLightningTestNode node, LNDNodeConnection[] peers, uint height,
+    private async Task MineToAsync(NLightningTestNode node, LndNodeConnection[] peers, uint height,
                                    CancellationToken ct)
     {
         var tip = (uint)await _fixture.Bitcoin.GetBlockCountAsync(ct);
@@ -393,7 +393,7 @@ public class OnchainO3Tests : IAsyncLifetime
             await ChainSync.MineAndWaitAsync(_fixture, (int)(height - tip), peers, [node], ct);
     }
 
-    private async Task<T> MineUntilAsync<T>(NLightningTestNode node, LNDNodeConnection[] peers,
+    private async Task<T> MineUntilAsync<T>(NLightningTestNode node, LndNodeConnection[] peers,
                                             Func<Task<T?>> probe, string what, CancellationToken ct) where T : class
     {
         for (var i = 0; i < 40; i++)
@@ -415,7 +415,7 @@ public class OnchainO3Tests : IAsyncLifetime
         return utxos.GetConfirmedBalance(height) + utxos.GetUnconfirmedBalance(height);
     }
 
-    private async Task AssertLndClosedAsync(LNDNodeConnection peer, OpenChannelClientSubscriptionResponse channel,
+    private async Task AssertLndClosedAsync(LndNodeConnection peer, OpenChannelClientSubscriptionResponse channel,
                                             ConfirmedCommitment commitment, CancellationToken ct)
     {
         var displayTxId = new uint256((byte[])commitment.TxId).ToString();
@@ -438,7 +438,7 @@ public class OnchainO3Tests : IAsyncLifetime
     }
 
     private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(NLightningTestNode node,
-        LNDNodeConnection peer, LightningMoney? push, CancellationToken ct)
+        LndNodeConnection peer, LightningMoney? push, CancellationToken ct)
     {
         var peerAddress = await node.ConnectToAsync(peer, ct);
         var channel = await node.OpenChannelAsync(new OpenChannelClientRequest(peerAddress,

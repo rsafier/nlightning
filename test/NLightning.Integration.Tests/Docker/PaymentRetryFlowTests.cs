@@ -1,6 +1,6 @@
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 using NLightning.Tests.Utils;
 
 namespace NLightning.Integration.Tests.Docker;
@@ -217,7 +217,7 @@ public class PaymentRetryFlowTests : IAsyncLifetime
     /// (read from LND, never changed: the fixture's alice is shared).
     /// </summary>
     private async Task<(string AliceIdHex, ulong ChanId, RoutingPolicy Policy)> AliceChannelToBobAsync(
-        LNDNodeConnection alice, LNDNodeConnection bob, LightningMoney amount, CancellationToken ct)
+        LndNodeConnection alice, LndNodeConnection bob, LightningMoney amount, CancellationToken ct)
     {
         await _node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
         await OpenUsableChannelAsync(alice, LightningMoney.Satoshis(1_000_000), ct);
@@ -244,11 +244,9 @@ public class PaymentRetryFlowTests : IAsyncLifetime
         return (aliceIdHex, toBob.ChanId, policy);
     }
 
-    private LNDNodeConnection GetLnd(string alias)
+    private LndNodeConnection GetLnd(string alias)
     {
-        var node = _fixture.Builder?.LNDNodePool?.ReadyNodes.First(x => x.LocalAlias == alias);
-        Assert.NotNull(node);
-        return node;
+        return _fixture.GetLndNode(alias);
     }
 
     /// <summary>
@@ -265,7 +263,7 @@ public class PaymentRetryFlowTests : IAsyncLifetime
     /// <summary>
     /// Connects, opens a channel we fund and mines until both ends consider it usable.
     /// </summary>
-    private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LNDNodeConnection peer,
+    private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(LndNodeConnection peer,
         LightningMoney capacity, CancellationToken ct)
     {
         // Connect once per peer: a second connect to a connected peer is refused

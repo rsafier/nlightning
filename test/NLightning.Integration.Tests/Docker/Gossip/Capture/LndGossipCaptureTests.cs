@@ -1,5 +1,5 @@
 using Google.Protobuf;
-using Lnrpc;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Gossip.Capture;
 

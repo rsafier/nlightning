@@ -1,7 +1,7 @@
 using Grpc.Core;
-using Lnrpc;
-using LNUnit.LND;
-using Routerrpc;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
+using NLightning.Testing.Lnd.Routerrpc;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
@@ -109,7 +109,7 @@ public class Bolt11BlindedPathFlowTests
 
         // Assert
         var settled = await LndTestHelpers.WaitForInvoiceStateAsync(david, invoice.RHash.ToByteArray(),
-                                                                     Lnrpc.Invoice.Types.InvoiceState.Settled,
+                                                                     Testing.Lnd.Lnrpc.Invoice.Types.InvoiceState.Settled,
                                                                      s_timeout, ct);
         // david keeps what his own dummy hops charge: he is paid the amount plus at most the path's fee
         Assert.InRange(settled.AmtPaidMsat, (long)amountMsat,
@@ -214,7 +214,7 @@ public class Bolt11BlindedPathFlowTests
     /// An LND blinded invoice: <paramref name="minRealHops"/> real hops before the recipient (0: the recipient is the
     /// introduction node), padded with dummy hops to <paramref name="numHops"/>.
     /// </summary>
-    private static async Task<AddInvoiceResponse> AddBlindedInvoiceAsync(LNDNodeConnection lnd, ulong amountMsat,
+    private static async Task<AddInvoiceResponse> AddBlindedInvoiceAsync(LndNodeConnection lnd, ulong amountMsat,
                                                                          string memo, uint minRealHops, uint numHops,
                                                                          CancellationToken ct)
     {
@@ -222,7 +222,7 @@ public class Bolt11BlindedPathFlowTests
         {
             try
             {
-                var request = new Lnrpc.Invoice
+                var request = new Testing.Lnd.Lnrpc.Invoice
                 {
                     ValueMsat = (long)amountMsat,
                     Memo = memo,

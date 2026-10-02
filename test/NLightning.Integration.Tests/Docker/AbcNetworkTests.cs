@@ -1,5 +1,5 @@
 using System.Collections.Immutable;
-using Lnrpc;
+using NLightning.Testing.Lnd.Lnrpc;
 using NLightning.Tests.Utils;
 using ServiceStack.Text;
 
@@ -37,9 +37,7 @@ public class AbcNetworkTests : IAsyncLifetime
         // Arrange
         var hex = Convert.ToHexString(_node.SecureKeyManager.GetNodePubKey());
 
-        var alice =
-            _lightningRegtestNetworkFixture.Builder?.LNDNodePool?.ReadyNodes.First(x => x.LocalAlias == "alice");
-        Assert.NotNull(alice);
+        var alice = _lightningRegtestNetworkFixture.GetLndNode("alice");
 
         // Act
         await _node.ConnectToAsync(alice, TestContext.Current.CancellationToken);
@@ -62,9 +60,7 @@ public class AbcNetworkTests : IAsyncLifetime
         var hostAddress = Environment.GetEnvironmentVariable("HOST_ADDRESS") ?? "host.docker.internal";
         var hex = Convert.ToHexString(_node.SecureKeyManager.GetNodePubKey());
 
-        var bob = _lightningRegtestNetworkFixture.Builder?.LNDNodePool?.ReadyNodes
-                                                 .First(x => x.LocalAlias == "bob");
-        Assert.NotNull(bob);
+        var bob = _lightningRegtestNetworkFixture.GetLndNode("bob");
 
         // Act
         await bob.LightningClient.ConnectPeerAsync(new ConnectPeerRequest
@@ -94,7 +90,7 @@ public class AbcNetworkTests : IAsyncLifetime
     [Fact]
     public async Task Verify_Alice_Bob_Carol_David_Setup()
     {
-        var readyNodes = _lightningRegtestNetworkFixture.Builder!.LNDNodePool!.ReadyNodes.ToImmutableList();
+        var readyNodes = _lightningRegtestNetworkFixture.LndNodes.ToImmutableList();
         var nodeCount = readyNodes.Count;
         Assert.Equal(LightningRegtestNetworkFixture.LndAliases.Count, nodeCount);
         Assert.Equal(LightningRegtestNetworkFixture.LndAliases.Order(), readyNodes.Select(n => n.LocalAlias).Order());
@@ -112,7 +108,7 @@ public class AbcNetworkTests : IAsyncLifetime
             channels.PrintDump();
         }
 
-        $"Bitcoin Node Balance: {(await _lightningRegtestNetworkFixture.Builder!.BitcoinRpcClient!.GetBalanceAsync()).Satoshi / 1e8}"
+        $"Bitcoin Node Balance: {(await _lightningRegtestNetworkFixture.Bitcoin.GetBalanceAsync()).Satoshi / 1e8}"
            .Print();
     }
 

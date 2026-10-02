@@ -1,8 +1,8 @@
 using Google.Protobuf;
-using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 using OutPoint = NBitcoin.OutPoint;
 using Transaction = NBitcoin.Transaction;
 
@@ -135,7 +135,7 @@ internal sealed class AnchorsHarness
     /// Gives <paramref name="lnd"/> at least 0.01 BTC confirmed on chain: LND refuses an anchors channel that would
     /// leave its wallet without the reserve it keeps for fee bumping.
     /// </summary>
-    public async Task EnsureLndWalletFundedAsync(LNDNodeConnection lnd, CancellationToken ct)
+    public async Task EnsureLndWalletFundedAsync(LndNodeConnection lnd, CancellationToken ct)
     {
         var balance = await lnd.LightningClient.WalletBalanceAsync(new WalletBalanceRequest(),
                                                                    cancellationToken: ct);
@@ -144,7 +144,7 @@ internal sealed class AnchorsHarness
 
         var address = await lnd.LightningClient.NewAddressAsync(new NewAddressRequest
         {
-            Type = Lnrpc.AddressType.WitnessPubkeyHash
+            Type = Testing.Lnd.Lnrpc.AddressType.WitnessPubkeyHash
         }, cancellationToken: ct);
         await _fixture.Bitcoin.SendToAddressAsync(BitcoinAddress.Create(address.Address, Network.RegTest),
                                                   Money.Coins(0.05m), cancellationToken: ct);
@@ -160,7 +160,7 @@ internal sealed class AnchorsHarness
     /// it and checks it is an anchors channel on both ends.
     /// </summary>
     public async Task<OpenChannelClientSubscriptionResponse> OpenAnchorsChannelAsync(
-        NLightningTestNode node, LNDNodeConnection peer, LightningMoney? push, CancellationToken ct,
+        NLightningTestNode node, LndNodeConnection peer, LightningMoney? push, CancellationToken ct,
         LightningMoney? feeRatePerKw = null)
     {
         await EnsureLndWalletFundedAsync(peer, ct);
@@ -234,7 +234,7 @@ internal sealed class AnchorsHarness
     /// <summary>
     /// <see cref="ForceCloseAsync"/>, one block, and the node's record of the funding spend as our local commitment.
     /// </summary>
-    public async Task<ConfirmedCommitment> ForceCloseAndConfirmAsync(NLightningTestNode node, LNDNodeConnection[] peers,
+    public async Task<ConfirmedCommitment> ForceCloseAndConfirmAsync(NLightningTestNode node, LndNodeConnection[] peers,
                                                                      OpenChannelClientSubscriptionResponse channel,
                                                                      CancellationToken ct)
     {
@@ -250,7 +250,7 @@ internal sealed class AnchorsHarness
     }
 
     /// <summary>LND <c>CloseChannel { force = true }</c>; returns the commitment's txid once it is broadcast.</summary>
-    public static async Task<uint256> LndForceCloseAsync(LNDNodeConnection lnd,
+    public static async Task<uint256> LndForceCloseAsync(LndNodeConnection lnd,
                                                          OpenChannelClientSubscriptionResponse channel,
                                                          CancellationToken ct)
     {
@@ -365,7 +365,7 @@ internal sealed class AnchorsHarness
 
     /// <summary>Mines one block at a time until <paramref name="txId"/> is confirmed.</summary>
     public async Task<NBitcoin.RPC.RawTransactionInfo> MineUntilConfirmedAsync(NLightningTestNode node,
-                                                                               IEnumerable<LNDNodeConnection> peers,
+                                                                               IEnumerable<LndNodeConnection> peers,
                                                                                uint256 txId, CancellationToken ct)
     {
         var lnd = peers.ToList();
@@ -388,7 +388,7 @@ internal sealed class AnchorsHarness
     }
 
     public Task<NBitcoin.RPC.RawTransactionInfo> MineUntilConfirmedAsync(NLightningTestNode node,
-                                                                        IEnumerable<LNDNodeConnection> peers,
+                                                                        IEnumerable<LndNodeConnection> peers,
                                                                         TxId txId, CancellationToken ct) =>
         MineUntilConfirmedAsync(node, peers, new uint256((byte[])txId), ct);
 
@@ -396,7 +396,7 @@ internal sealed class AnchorsHarness
     /// Mines <paramref name="count"/> empty blocks (<c>generateblock</c> with no transactions): the regtest way of a
     /// mempool whose fees the miners do not take.
     /// </summary>
-    public async Task MineEmptyBlocksAsync(int count, NLightningTestNode node, LNDNodeConnection[] peers,
+    public async Task MineEmptyBlocksAsync(int count, NLightningTestNode node, LndNodeConnection[] peers,
                                            CancellationToken ct)
     {
         for (var i = 0; i < count; i++)
@@ -408,7 +408,7 @@ internal sealed class AnchorsHarness
         await ChainSync.WaitAllAtTipAsync(_fixture, peers, [node], ct);
     }
 
-    public async Task MineToAsync(NLightningTestNode node, LNDNodeConnection[] peers, uint height,
+    public async Task MineToAsync(NLightningTestNode node, LndNodeConnection[] peers, uint height,
                                   CancellationToken ct)
     {
         var tip = (uint)await _fixture.Bitcoin.GetBlockCountAsync(ct);
@@ -416,7 +416,7 @@ internal sealed class AnchorsHarness
             await ChainSync.MineAndWaitAsync(_fixture, (int)(height - tip), peers, [node], ct);
     }
 
-    public async Task<T> MineUntilAsync<T>(NLightningTestNode node, LNDNodeConnection[] peers, Func<Task<T?>> probe,
+    public async Task<T> MineUntilAsync<T>(NLightningTestNode node, LndNodeConnection[] peers, Func<Task<T?>> probe,
                                            string what, CancellationToken ct) where T : class
     {
         for (var i = 0; i < 40; i++)
@@ -435,7 +435,7 @@ internal sealed class AnchorsHarness
     /// Mines one block at a time (up to 40) until the node recorded a resolving transaction for the output; returns
     /// it.
     /// </summary>
-    public async Task<TxId> MineUntilResolvingTxAsync(NLightningTestNode node, LNDNodeConnection[] peers,
+    public async Task<TxId> MineUntilResolvingTxAsync(NLightningTestNode node, LndNodeConnection[] peers,
                                                       ChannelId channelId, TxId txId, uint vout, CancellationToken ct)
     {
         for (var i = 0; i < 40; i++)
@@ -531,7 +531,7 @@ internal sealed class AnchorsHarness
                       Timeout, $"{direction} HTLC in both commitments of {channelId}", ct);
 
     /// <summary>LND <paramref name="lnd"/> lists the channel closed with <paramref name="closeType"/> and our txid.</summary>
-    public async Task AssertLndClosedAsync(NLightningTestNode node, LNDNodeConnection lnd,
+    public async Task AssertLndClosedAsync(NLightningTestNode node, LndNodeConnection lnd,
                                            OpenChannelClientSubscriptionResponse channel, uint256 commitmentTxId,
                                            ChannelCloseSummary.Types.ClosureType closeType, CancellationToken ct)
     {
@@ -557,7 +557,7 @@ internal sealed class AnchorsHarness
 
     #region Payments
 
-    public static async Task CancelHoldInvoiceQuietlyAsync(LNDNodeConnection node, byte[] paymentHash)
+    public static async Task CancelHoldInvoiceQuietlyAsync(LndNodeConnection node, byte[] paymentHash)
     {
         try
         {
@@ -571,7 +571,7 @@ internal sealed class AnchorsHarness
     }
 
     /// <summary>We pay <paramref name="lnd"/> <paramref name="amountSat"/> and wait until both sides settled.</summary>
-    public static async Task PayLndAsync(NLightningTestNode node, LNDNodeConnection lnd, ChannelId channelId,
+    public static async Task PayLndAsync(NLightningTestNode node, LndNodeConnection lnd, ChannelId channelId,
                                          string channelPoint, long amountSat, CancellationToken ct)
     {
         var invoice = await LndTestHelpers.AddInvoiceAsync(lnd, amountSat * 1_000, [], ct, "o7 we pay lnd");
@@ -581,7 +581,7 @@ internal sealed class AnchorsHarness
     }
 
     /// <summary><paramref name="lnd"/> pays our invoice of <paramref name="amountSat"/>, and both sides settle.</summary>
-    public static async Task LndPaysUsAsync(NLightningTestNode node, LNDNodeConnection lnd, ulong chanId,
+    public static async Task LndPaysUsAsync(NLightningTestNode node, LndNodeConnection lnd, ulong chanId,
                                             ChannelId channelId, string channelPoint, long amountSat,
                                             CancellationToken ct)
     {
@@ -604,7 +604,7 @@ internal sealed class AnchorsHarness
         await WaitSettledWithLndAsync(node, lnd, channelId, channelPoint, ct);
     }
 
-    private static async Task WaitSettledWithLndAsync(NLightningTestNode node, LNDNodeConnection lnd,
+    private static async Task WaitSettledWithLndAsync(NLightningTestNode node, LndNodeConnection lnd,
                                                       ChannelId channelId, string channelPoint, CancellationToken ct)
     {
         await Poll.UntilAsync(async () =>
@@ -622,7 +622,7 @@ internal sealed class AnchorsHarness
     /// want of a route (its router adds the private edge a moment after the channel turns active, NL-319) is started
     /// again.
     /// </summary>
-    public static async Task PayUntilSentAsync(LNDNodeConnection lnd, string bolt11, ulong chanId, Task sent,
+    public static async Task PayUntilSentAsync(LndNodeConnection lnd, string bolt11, ulong chanId, Task sent,
                                                CancellationToken ct)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -655,19 +655,19 @@ internal sealed class AnchorsHarness
     /// <paramref name="duration"/>, so LND cannot fund a CPFP child of its own commitment through its anchor: whatever
     /// bumps that commitment then is ours. Returns the leased outpoints for <see cref="ReleaseLndWalletAsync"/>.
     /// </summary>
-    public static async Task<IReadOnlyList<Lnrpc.OutPoint>> LeaseLndWalletAsync(LNDNodeConnection lnd, byte[] leaseId,
+    public static async Task<IReadOnlyList<Testing.Lnd.Lnrpc.OutPoint>> LeaseLndWalletAsync(LndNodeConnection lnd, byte[] leaseId,
                                                                                TimeSpan duration,
                                                                                CancellationToken ct)
     {
-        var unspent = await lnd.WalletKitClient.ListUnspentAsync(new Walletrpc.ListUnspentRequest
+        var unspent = await lnd.WalletKitClient.ListUnspentAsync(new Testing.Lnd.Walletrpc.ListUnspentRequest
         {
             MinConfs = 0,
             MaxConfs = int.MaxValue
         }, cancellationToken: ct);
-        var leased = new List<Lnrpc.OutPoint>();
+        var leased = new List<Testing.Lnd.Lnrpc.OutPoint>();
         foreach (var utxo in unspent.Utxos)
         {
-            await lnd.WalletKitClient.LeaseOutputAsync(new Walletrpc.LeaseOutputRequest
+            await lnd.WalletKitClient.LeaseOutputAsync(new Testing.Lnd.Walletrpc.LeaseOutputRequest
             {
                 Id = ByteString.CopyFrom(leaseId),
                 Outpoint = utxo.Outpoint,
@@ -681,15 +681,15 @@ internal sealed class AnchorsHarness
     }
 
     /// <summary>Releases the leases of <see cref="LeaseLndWalletAsync"/> (best effort; they also expire).</summary>
-    public static async Task ReleaseLndWalletAsync(LNDNodeConnection lnd, byte[] leaseId,
-                                                   IEnumerable<Lnrpc.OutPoint> leased)
+    public static async Task ReleaseLndWalletAsync(LndNodeConnection lnd, byte[] leaseId,
+                                                   IEnumerable<Testing.Lnd.Lnrpc.OutPoint> leased)
     {
         foreach (var outPoint in leased)
         {
             try
             {
                 using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                await lnd.WalletKitClient.ReleaseOutputAsync(new Walletrpc.ReleaseOutputRequest
+                await lnd.WalletKitClient.ReleaseOutputAsync(new Testing.Lnd.Walletrpc.ReleaseOutputRequest
                 {
                     Id = ByteString.CopyFrom(leaseId),
                     Outpoint = outPoint

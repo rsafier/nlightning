@@ -1,9 +1,9 @@
 using System.Globalization;
 using System.Net;
 using Google.Protobuf;
-using Lnrpc;
-using LNUnit.LND;
 using NBitcoin;
+using NLightning.Testing.Lnd;
+using NLightning.Testing.Lnd.Lnrpc;
 using ServiceStack;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
@@ -255,7 +255,7 @@ public class GraphStoreFlowTests
     /// Re-announces each node's policies every <see cref="s_keepFreshInterval"/> until cancelled.
     /// </summary>
     private static async Task KeepFreshAsync(LndPolicyChanges changes,
-                                             IReadOnlyList<(LNDNodeConnection Lnd, List<ulong> Scids)> keepers,
+                                             IReadOnlyList<(LndNodeConnection Lnd, List<ulong> Scids)> keepers,
                                              CancellationToken cancellationToken)
     {
         var round = 1;
@@ -276,7 +276,7 @@ public class GraphStoreFlowTests
     }
 
     private static bool IsBetween((ulong ShortChannelId, string Local, string Remote, bool Private) channel,
-                                  LNDNodeConnection a, LNDNodeConnection b)
+                                  LndNodeConnection a, LndNodeConnection b)
     {
         var ids = new[] { a.LocalNodePubKey.ToLowerInvariant(), b.LocalNodePubKey.ToLowerInvariant() };
         return ids.Contains(channel.Local) && ids.Contains(channel.Remote);
@@ -291,13 +291,13 @@ public class GraphStoreFlowTests
         Assert.Equal(spendHeight, stored.SpentAtHeight);
     }
 
-    private IReadOnlyList<LNDNodeConnection> GossipLndNodes() =>
+    private IReadOnlyList<LndNodeConnection> GossipLndNodes() =>
         [_fixture.GetLndNode("alice"), _fixture.GetLndNode("bob"), _fixture.GetLndNode("carol")];
 
     /// <summary>
     /// The fixture's LND-LND channels, once LND lists them as announced with both policies (6 confirmations).
     /// </summary>
-    private async Task<IReadOnlyList<ulong>> GetFixtureScidsAsync(IReadOnlyList<LNDNodeConnection> lndNodes,
+    private async Task<IReadOnlyList<ulong>> GetFixtureScidsAsync(IReadOnlyList<LndNodeConnection> lndNodes,
                                                                   CancellationToken ct)
     {
         var channels = await GossipGraphProbe.GetFixtureChannelsAsync(lndNodes, ct);
@@ -333,7 +333,7 @@ public class GraphStoreFlowTests
     /// needed) and mines 6 blocks; returns the short channel id and LND's channel point.
     /// </summary>
     private async Task<(ulong ShortChannelId, ChannelPoint ChannelPoint)> OpenPublicLndChannelAsync(
-        LNDNodeConnection funder, LNDNodeConnection peer, NLightningTestNode node, CancellationToken ct)
+        LndNodeConnection funder, LndNodeConnection peer, NLightningTestNode node, CancellationToken ct)
     {
         await EnsureLndFundsAsync(funder, node, ct);
         var peerHost = (await Dns.GetHostAddressesAsync(peer.Host.SplitOnFirst("//")[1].SplitOnFirst(":")[0], ct))
@@ -365,7 +365,7 @@ public class GraphStoreFlowTests
     /// Sends 0.1 BTC to <paramref name="lnd"/>'s wallet when it holds less than 0.05 BTC (david starts without
     /// channels; other suites may have spent his coins).
     /// </summary>
-    private async Task EnsureLndFundsAsync(LNDNodeConnection lnd, NLightningTestNode node, CancellationToken ct)
+    private async Task EnsureLndFundsAsync(LndNodeConnection lnd, NLightningTestNode node, CancellationToken ct)
     {
         var balance = await lnd.LightningClient.WalletBalanceAsync(new WalletBalanceRequest(), cancellationToken: ct);
         Console.WriteLine($"{lnd.LocalAlias} confirmed wallet balance {balance.ConfirmedBalance} sat");
@@ -379,7 +379,7 @@ public class GraphStoreFlowTests
         await ChainSync.MineAndWaitAsync(_fixture, 1, _fixture.LndNodes, [node], ct);
     }
 
-    private static async Task CloseCooperativelyAsync(LNDNodeConnection lnd, ChannelPoint point, CancellationToken ct)
+    private static async Task CloseCooperativelyAsync(LndNodeConnection lnd, ChannelPoint point, CancellationToken ct)
     {
         using var closeTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         closeTimeout.CancelAfter(s_timeout);
