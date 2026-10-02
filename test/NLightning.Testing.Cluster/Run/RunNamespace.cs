@@ -12,7 +12,13 @@ namespace NLightning.Testing.Cluster.Run;
 public static class RunNamespace
 {
     /// <summary>The namespace manifest of <paramref name="run"/>.</summary>
-    public static V1Namespace Build(RunIdentity run) =>
+    public static V1Namespace Build(RunIdentity run) => Build(run, null);
+
+    /// <summary>
+    /// The namespace manifest of <paramref name="run"/> with <paramref name="annotations"/> (the owner and keep/TTL
+    /// annotations the reaper reads, <see cref="RunAnnotations.ForRun"/>).
+    /// </summary>
+    public static V1Namespace Build(RunIdentity run, IReadOnlyDictionary<string, string>? annotations) =>
         new()
         {
             ApiVersion = "v1",
@@ -20,7 +26,10 @@ public static class RunNamespace
             Metadata = new V1ObjectMeta
             {
                 Name = run.Namespace,
-                Labels = new Dictionary<string, string>(run.Labels)
+                Labels = new Dictionary<string, string>(run.Labels),
+                Annotations = annotations is null || annotations.Count == 0
+                                  ? null
+                                  : new Dictionary<string, string>(annotations)
             }
         };
 
@@ -74,15 +83,34 @@ public static class RunNamespace
     }
 
     /// <summary>Creates the namespace and, when given, its quota.</summary>
+    public static Task CreateAsync(IKubernetes client, RunIdentity run, NamespaceQuota? quota,
+                                   CancellationToken cancellationToken) =>
+        CreateAsync(client, run, quota, null, cancellationToken);
+
+    /// <summary>
+    /// Creates the namespace with <paramref name="annotations"/> and, when given, its quota; when the quota cannot be
+    /// created the namespace is deleted again before the error is thrown.
+    /// </summary>
     public static async Task CreateAsync(IKubernetes client, RunIdentity run, NamespaceQuota? quota,
+                                         IReadOnlyDictionary<string, string>? annotations,
                                          CancellationToken cancellationToken)
     {
-        await client.CoreV1.CreateNamespaceAsync(Build(run), cancellationToken: cancellationToken)
+        await client.CoreV1.CreateNamespaceAsync(Build(run, annotations), cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
-        if (quota is not null)
+        if (quota is null)
+            return;
+
+        try
+        {
             await client.CoreV1.CreateNamespacedResourceQuotaAsync(BuildQuota(run, quota), run.Namespace,
                                                                    cancellationToken: cancellationToken)
                         .ConfigureAwait(false);
+        }
+        catch
+        {
+            await DeleteAsync(client, run, CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <summary>

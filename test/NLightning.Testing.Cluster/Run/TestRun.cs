@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.Net;
 using k8s;
+using k8s.Autorest;
 
 namespace NLightning.Testing.Cluster.Run;
 
@@ -65,16 +67,75 @@ public sealed class TestRun : IAsyncDisposable
     /// <summary>
     /// Creates the run's namespace (and quota) with <paramref name="client"/>; the run disposes the client.
     /// </summary>
+    /// <remarks>
+    /// The namespace records its owner (this process, or <see cref="TestRunOptions.Owner"/>) for the reaper. When the
+    /// name is taken (a second run of a process under one <c>NLTG_TEST_RUN_ID</c>, or a namespace of that name still
+    /// terminating) the run takes <c>&lt;id&gt;-2</c>, <c>&lt;id&gt;-3</c>, ... With
+    /// <see cref="TestRunOptions.MaxConcurrentRuns"/> it first waits for a slot (<see cref="RunAdmission"/>).
+    /// </remarks>
     public static async Task<TestRun> StartAsync(IKubernetes client, TestRunOptions options,
                                                  CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(options);
 
-        var identity = RunIdentity.Create(options, DateTimeOffset.UtcNow);
-        await RunNamespace.CreateAsync(client, identity, options.Quota, cancellationToken).ConfigureAwait(false);
-        options.Log?.Invoke($"[nltg-cluster] run {identity.Id}: namespace {identity.Namespace} created");
-        return new TestRun(client, identity, options);
+        var annotations = RunAnnotations.ForRun(options, options.Owner ?? RunOwner.Current());
+        var baseId = TestRunId.Resolve(options.RunId);
+        for (var attempt = 1; ; attempt++)
+        {
+            if (options.MaxConcurrentRuns is { } max)
+                await RunAdmission.WaitForCapacityAsync(client, options.NamespacePrefix, max, options.AdmissionTimeout,
+                                                        options.Log, cancellationToken).ConfigureAwait(false);
+
+            var identity = await CreateNamespaceAsync(client, options, baseId, annotations, cancellationToken)
+                               .ConfigureAwait(false);
+            if (options.MaxConcurrentRuns is not { } cap
+             || await RunAdmission.IsAdmittedAsync(client, identity, cap, cancellationToken).ConfigureAwait(false))
+            {
+                options.Log?.Invoke($"[nltg-cluster] run {identity.Id}: namespace {identity.Namespace} created");
+                return new TestRun(client, identity, options);
+            }
+
+            // Another process raced past the cap at the same time and ranks before us: give the slot back.
+            options.Log?.Invoke($"[nltg-cluster] run {identity.Id}: over the cap of {cap} runs, retrying");
+            await RunNamespace.DeleteAsync(client, identity, cancellationToken).ConfigureAwait(false);
+            await RunNamespace.WaitForDeletionAsync(client, identity.Namespace, options.DeletionTimeout,
+                                                    cancellationToken).ConfigureAwait(false);
+            if (attempt >= MaxAdmissionAttempts)
+                throw new TimeoutException($"Run {baseId} lost the race for a slot {attempt} times");
+
+            await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next(500, 3000)), cancellationToken)
+                      .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>How often a run gives its slot back after a race before it gives up.</summary>
+    private const int MaxAdmissionAttempts = 20;
+
+    /// <summary>How many derived ids (<c>&lt;id&gt;-&lt;n&gt;</c>) a run tries when its name is taken.</summary>
+    private const int MaxIdSuffix = 20;
+
+    private static async Task<RunIdentity> CreateNamespaceAsync(IKubernetes client, TestRunOptions options,
+                                                                string baseId,
+                                                                IReadOnlyDictionary<string, string> annotations,
+                                                                CancellationToken cancellationToken)
+    {
+        for (var n = 1; ; n++)
+        {
+            var identity = RunIdentity.Create(options with { RunId = TestRunId.WithSuffix(baseId, n) },
+                                              DateTimeOffset.UtcNow);
+            try
+            {
+                await RunNamespace.CreateAsync(client, identity, options.Quota, annotations, cancellationToken)
+                                  .ConfigureAwait(false);
+                return identity;
+            }
+            catch (HttpOperationException e) when (e.Response.StatusCode == HttpStatusCode.Conflict
+                                                && n < MaxIdSuffix)
+            {
+                options.Log?.Invoke($"[nltg-cluster] namespace {identity.Namespace} exists, trying the next id");
+            }
+        }
     }
 
     /// <summary>
