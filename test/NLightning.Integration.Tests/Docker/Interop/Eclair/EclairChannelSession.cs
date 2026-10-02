@@ -305,14 +305,6 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
         var invoice = await Node.CreateInvoiceAsync(amount, $"eclair pays nltg {Guid.NewGuid():N}", ct);
 
         var result = await Eclair.PayInvoiceAsync(invoice.Bolt11!, ct);
-        // On an announced channel Eclair's router learns the balance a payment just moved a moment later, and until
-        // then finds no route ("route not found", no attempt made); retry while that is the only failure
-        for (var retry = 0; retry < 10 && IsRouteNotFoundOnly(result); retry++)
-        {
-            Console.WriteLine($"[eclair] Eclair found no route yet: {result.ToJsonString()}");
-            await Task.Delay(TimeSpan.FromSeconds(2), ct);
-            result = await Eclair.PayInvoiceAsync(invoice.Bolt11!, ct);
-        }
 
         Console.WriteLine($"[eclair] Eclair payinvoice: {result.ToJsonString()}");
         Assert.Equal("payment-sent", result["type"]?.GetValue<string>());
@@ -358,12 +350,6 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
         var after = await GetOurChannelAsync(ct);
         Assert.Equal(before.LocalBalance.MilliSatoshi - amount.MilliSatoshi, after.LocalBalance.MilliSatoshi);
     }
-
-    /// <summary>A failed Eclair payment whose every failure is "route not found" (no HTLC was sent).</summary>
-    private static bool IsRouteNotFoundOnly(JsonNode result) =>
-        result["type"]?.GetValue<string>() == "payment-failed"
-     && result["failures"]?.AsArray() is { Count: > 0 } failures
-     && failures.All(f => f?["t"]?.GetValue<string>() == "route not found");
 
     private async Task<(bool Ready, string Status)> CheckUsableAsync(bool requireNoHtlcs,
                                                                      CancellationToken cancellationToken)

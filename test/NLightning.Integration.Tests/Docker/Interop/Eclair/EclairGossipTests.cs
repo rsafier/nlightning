@@ -13,9 +13,9 @@ using Utils;
 
 /// <summary>
 /// BOLT 7 against Eclair 0.14.3 (NL-554, NL-407): (a) the mainnet day-0 channel shape, a dual-funded public channel we
-/// open with a plain <c>openchannel --public</c>: <c>announcement_signatures</c> both ways at 6 confirmations, Eclair's
-/// graph lists the channel, our <c>channel_update</c> and our <c>node_announcement</c>, and ours lists the channel with
-/// both policies and Eclair's node; (b) and (c) NL-407: Eclair answers at most 5 gossip queries per second per
+/// open with a plain <c>openchannel --public</c>, and (b) the one Eclair opens: <c>announcement_signatures</c> both
+/// ways at 6 confirmations, Eclair's graph lists the channel, our <c>channel_update</c> and our
+/// <c>node_announcement</c>, and ours lists the channel with both policies and Eclair's node; (c) and (d) NL-407: Eclair answers at most 5 gossip queries per second per
 /// connection (<c>router.sync.max-queries-per-second</c>, <c>query_channel_range</c> and
 /// <c>query_short_channel_ids</c> together) and drops the rest without a <c>reply_short_channel_ids_end</c>. With our
 /// default <c>Gossip:MinQueryInterval</c> (250 ms) twelve <c>query_short_channel_ids</c> in a row are all answered;
@@ -64,24 +64,66 @@ public sealed class EclairGossipTests : IAsyncLifetime
 
     /// <summary>
     /// (a) A dual-funded public channel to Eclair (plain <c>openchannel --public</c>, 1M sat; v2 since NL-551): at 6
-    /// confirmations both announce it; Eclair's <c>allchannels</c> lists it, its <c>allupdates</c> has our
-    /// <c>channel_update</c> and its <c>nodes</c> our <c>node_announcement</c> with our alias; our graph has the channel
-    /// with both policies and Eclair's node announcement; a payment each way works on the announced channel.
+    /// confirmations both announce it (<see cref="AssertBothGraphsAsync"/>) and we pay Eclair over it. Eclair's own
+    /// <c>channel_update</c> caps its <c>htlc_maximum_msat</c> by its balance
+    /// (<c>eclair.channel.channel-update.balance-thresholds</c>: its HTLC minimum below 1,000 sat available, 1,000 sat
+    /// below 10,000 sat, ...) and refreshes it at most hourly (<c>min-time-between-updates</c>), and its own router obeys
+    /// it: with no balance at the announcement its update says 1,000 msat, so Eclair cannot pay us 10,000 sat over this
+    /// channel for an hour ("route not found" in the first run; its policy, not ours), which the log of its update
+    /// shows. Payments both ways over a public channel are (b).
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
-    public async Task Given_ADualFundedPublicChannel_When_Confirmed_Then_BothGraphsHaveTheChannelAndBothNodes()
+    public async Task Given_OurDualFundedPublicChannel_When_Confirmed_Then_BothGraphsHaveItAndWePayEclair()
     {
         // Arrange + Act
         var ct = TestContext.Current.CancellationToken;
         var session = await EclairChannelSession.BuildOurFundedAsync(
                           _fixture, "nltg-eclair-public", LightningMoney.Satoshis(1_000_000), null, ct,
-                          configureNode: n =>
-                          {
-                              n.ExtraConfiguration["Node:Alias"] = OurAlias;
-                              n.ExtraConfiguration["Node:Color"] = GossipTestNodes.Color;
-                          },
-                          isPublic: true);
+                          configureNode: SetAlias, isPublic: true);
         _sessions.Add(session);
+
+        // Assert
+        var scid = await AssertBothGraphsAsync(session, ct);
+        await session.AssertWePayEclairAsync(LightningMoney.Satoshis(30_000), ct);
+        await LogEclairRoutingAsync(session, scid, ct);
+    }
+
+    /// <summary>
+    /// (b) Eclair opens a dual-funded public channel to us (<c>open --announceChannel=true</c>, <c>open_channel2</c>,
+    /// 1M sat; we accept public channels by default): both graphs have it, and payments flow both ways over it (Eclair
+    /// first, from its full balance).
+    /// </summary>
+    [Fact(Timeout = TestTimeoutMs)]
+    public async Task Given_EclairsDualFundedPublicChannel_When_Confirmed_Then_BothGraphsHaveItAndPaymentsFlow()
+    {
+        // Arrange + Act
+        var ct = TestContext.Current.CancellationToken;
+        var session = await EclairChannelSession.BuildEclairFundedAsync(
+                          _fixture, "nltg-eclair-public-in", LightningMoney.Satoshis(1_000_000), ct,
+                          configureNode: SetAlias, announce: true);
+        _sessions.Add(session);
+        Assert.True(session.Node.ChannelMemoryRepository.TryGetChannel(session.ChannelId, out var model));
+        Assert.False(model.IsInitiator);
+
+        // Assert
+        await AssertBothGraphsAsync(session, ct);
+        await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(30_000), ct);
+        await session.AssertWePayEclairAsync(LightningMoney.Satoshis(10_000), ct);
+    }
+
+    private static void SetAlias(NLightningTestNode node)
+    {
+        node.ExtraConfiguration["Node:Alias"] = OurAlias;
+        node.ExtraConfiguration["Node:Color"] = GossipTestNodes.Color;
+    }
+
+    /// <summary>
+    /// The session's channel is a v2 announced channel; mining until Eclair's <c>allchannels</c> lists it, Eclair has
+    /// our <c>channel_update</c> and our <c>node_announcement</c> (with our alias), and our graph has the channel with
+    /// both policies and Eclair's node announcement. Returns the short channel id.
+    /// </summary>
+    private async Task<ulong> AssertBothGraphsAsync(EclairChannelSession session, CancellationToken ct)
+    {
         var ours = await session.GetOurChannelAsync(ct);
         Assert.NotNull(ours.ShortChannelId);
         var scid = ours.ShortChannelId.Value.ToUInt64();
@@ -89,13 +131,13 @@ public sealed class EclairGossipTests : IAsyncLifetime
         Assert.Equal(Domain.Channels.Enums.ChannelVersion.V2, model.Version);
         Assert.True(model.AnnounceChannel);
 
-        // Assert: Eclair's graph
+        // Eclair's graph
         await MineUntilAsync(session, async () =>
         {
             var channels = await session.Eclair.AllChannelsAsync(ct);
             return channels.Any(c => c?["shortChannelId"]?.GetValue<string>() is { } s
                                   && EclairJson.ParseShortChannelId(s) == scid);
-        }, "Eclair's graph has our channel", ct);
+        }, "Eclair's graph has the channel", ct);
         var update = await Poll.ForAsync(async () =>
         {
             var updates = await session.Eclair.AllUpdatesAsync(session.Node.NodeIdHex, ct);
@@ -124,36 +166,25 @@ public sealed class EclairGossipTests : IAsyncLifetime
                                                                            Convert.FromHexString(_fixture.EclairNodeId)),
                             s_gossipTimeout, "our graph has Eclair's node_announcement", ct,
                             GossipGraphProbe.PollInterval);
-
-        await session.AssertWePayEclairAsync(LightningMoney.Satoshis(30_000), ct);
-        await LogEclairRoutingAsync(session, ct);
-        await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(10_000), ct);
-    }
-
-    /// <summary>What Eclair's router knows of the way to us: its usable balances, its own updates and a route.</summary>
-    private static async Task LogEclairRoutingAsync(EclairChannelSession session, CancellationToken ct)
-    {
-        foreach (var (method, args) in new (string, (string, object?)[])[]
-                 {
-                     ("usablebalances", []),
-                     ("allupdates", [("nodeId", (object?)session.EclairPubKeyHex)]),
-                     ("findroutetonode", [("nodeId", session.Node.NodeIdHex), ("amountMsat", 10_000_000)])
-                 })
-        {
-            try
-            {
-                Console.WriteLine($"[eclair] {method}: {(await session.Eclair.CallAsync(method, ct, args))
-                   ?.ToJsonString()}");
-            }
-            catch (EclairRpcException e)
-            {
-                Console.WriteLine($"[eclair] {method} failed: {e.Message}");
-            }
-        }
+        return scid;
     }
 
     /// <summary>
-    /// (b) NL-407 fixed: a node with the default <c>Gossip:MinQueryInterval</c> asks Eclair for twelve short channel ids
+    /// Eclair's own <c>channel_update</c> of the channel and its usable balance, for the record of (a): its
+    /// <c>htlc_maximum_msat</c> follows its balance thresholds, not its balance.
+    /// </summary>
+    private static async Task LogEclairRoutingAsync(EclairChannelSession session, ulong scid, CancellationToken ct)
+    {
+        var updates = await session.Eclair.AllUpdatesAsync(session.EclairPubKeyHex, ct);
+        var own = updates.FirstOrDefault(u => u?["shortChannelId"]?.GetValue<string>() is { } s
+                                           && EclairJson.ParseShortChannelId(s) == scid);
+        var balances = await session.Eclair.CallAsync("usablebalances", ct);
+        Console.WriteLine($"[proof] Eclair's own channel_update: {own?.ToJsonString()}; usable balances: "
+                        + balances?.ToJsonString());
+    }
+
+    /// <summary>
+    /// (c) NL-407 fixed: a node with the default <c>Gossip:MinQueryInterval</c> asks Eclair for twelve short channel ids
     /// one after another (<c>IGossipSyncManager.QueryScidAsync</c>, each a <c>query_short_channel_ids</c> waiting for its
     /// <c>reply_short_channel_ids_end</c>); Eclair answers every one.
     /// </summary>
@@ -172,7 +203,7 @@ public sealed class EclairGossipTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// (c) NL-407 as it was: with <c>Gossip:MinQueryInterval</c> at zero the twelve queries go out as fast as Eclair
+    /// (d) NL-407 as it was: with <c>Gossip:MinQueryInterval</c> at zero the twelve queries go out as fast as Eclair
     /// answers, Eclair's rate limiter drops one without a <c>reply_short_channel_ids_end</c>, and that query is given up
     /// after the reply timeout (in the run that proved it: queries 0-4 answered within 3 ms each, query 5 given up after
     /// the 15 s timeout; a later query waits for the late end, NL-365, which Eclair never sends, for one more timeout
