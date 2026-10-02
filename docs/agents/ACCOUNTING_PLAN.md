@@ -116,6 +116,7 @@ Every row stores these fields:
 | `PaymentFailed` | `PaymentService` | 0 | Informational only; it never posts money. |
 | `ForwardSettled` | Circuit → Fulfilled (the incoming fulfill's save) | +fee = in − out | Records the in and out channels and amounts. |
 | `ForwardLostOnchain` | Resolver path where we paid downstream on chain but lost upstream, or the reverse | ± | Loss event. Rare but real. |
+| `InvoiceLostOnchain` | `OnchainResolutionExecutor`, in the resolution's save: an incoming HTLC of our settled invoice (its record carries the preimage) that the peer took by its timeout, or we gave up (NL-688) | −HTLC amount | Keyed per HTLC (`inv:{hash}:{channel}:{htlc}:onchain`); a reorg or a replaced close reverses it. The sale stays income (the payer holds the preimage). |
 | `ChannelFunded` | Funding confirmation (`ChannelFundings` lock save) | −our contribution; fee = our share of the funding tx fee | Records push (NL-605), dual-fund shares, public/private, and whether it is an anchors channel. The contribution moves wallet → channel; the push is a separate `PushSent`/`PushReceived`. |
 | `SpliceLocked` | `IChannelFundingDbRepository.ApplyLockAsync` save | ±delta; fee = our share | Splice in and out. RBF siblings that never lock emit nothing except the wallet release. |
 | `ChannelClosedMutual` | Close tx confirmation | channel → wallet; fee = closing fee if we pay it | Fees are settled on the closing tx, not on the commitment. |
@@ -195,6 +196,7 @@ A mismatch is a bug, never an adjustment.
 | `PaymentFailed` | none |
 | `ForwardSettled` | Dr Channels fee; Cr Routing fee |
 | `ForwardLostOnchain` | Cr Channels v; Dr LossOnchain v |
+| `InvoiceLostOnchain` | Cr Channels v; Dr LossOnchain v (the amount `InvoiceSettled` put in the channels, which the close never took out; NL-688) |
 | `ChannelFunded` | Dr Channels c; Dr FeeFunding fee; Cr Clearing (c + fee) |
 | `PushSent` / `PushReceived` | Cr Channels p; Dr PushSent p / Dr Channels p; Cr PushReceived p |
 | `SpliceLocked` (delta d, fee already out of d) | Dr Channels d; Dr FeeSplice fee; Cr Clearing (d + fee) |

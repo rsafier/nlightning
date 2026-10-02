@@ -467,8 +467,13 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 
                 // NL-608: the loss of a settled forward's incoming HTLC recorded with it
                 if (row.State is OutputResolutionState.Resolved or OutputResolutionState.Ignored)
+                {
                     await OnchainResolutionExecutor.StageUpstreamForwardLossReversalAsync(
                         accounting, channelId, old, row, now, CancellationToken.None);
+                    // NL-688: and the loss of a settled invoice's incoming HTLC
+                    await OnchainResolutionExecutor.StageInvoiceLossReversalAsync(
+                        accounting, channelId, old, row, now, CancellationToken.None);
+                }
             }
 
             var close = await OnchainAccounting.FindAsync(
