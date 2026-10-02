@@ -49,6 +49,9 @@ internal sealed class OnchainTestStore
     /// <summary>The forward circuits (<c>ForwardCircuitDbRepository.GetByIncomingAsync</c>).</summary>
     public Dictionary<(ChannelId IncomingChannelId, ulong IncomingHtlcId), ForwardCircuitModel> Circuits { get; } = [];
 
+    /// <summary>Our invoices by payment hash (<c>InvoiceDbRepository.GetByPaymentHashAsync</c>, NL-688).</summary>
+    public Dictionary<Hash, InvoiceModel> Invoices { get; } = [];
+
     /// <summary>The first commitment number the revocation log covers (<c>GetLogStartAsync</c>).</summary>
     public ulong RevocationLogStart { get; set; }
 
@@ -86,6 +89,7 @@ internal sealed class OnchainTestStore
         unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(CreateInteractiveTxSessions().Object);
         unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(CreateChannelState().Object);
         unitOfWork.SetupGet(u => u.ForwardCircuitDbRepository).Returns(CreateCircuits().Object);
+        unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(CreateInvoices().Object);
         unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(new AccountingRepository(this));
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
@@ -248,6 +252,14 @@ internal sealed class OnchainTestStore
                        var keyBytes = (ChannelId: channelId, key.Direction, key.Id);
                        return Origins.TryGetValue(keyBytes, out var origin) ? origin : null;
                    });
+        return repository;
+    }
+
+    private Mock<IInvoiceDbRepository> CreateInvoices()
+    {
+        var repository = new Mock<IInvoiceDbRepository>();
+        repository.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
+                  .ReturnsAsync((Hash paymentHash) => Invoices.GetValueOrDefault(paymentHash));
         return repository;
     }
 

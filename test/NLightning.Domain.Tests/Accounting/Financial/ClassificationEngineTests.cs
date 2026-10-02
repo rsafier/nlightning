@@ -215,6 +215,7 @@ public class ClassificationEngineTests
         { AccountingEventKind.PushReceived, 2_000, 0, "income:unclassified", true },
         { AccountingEventKind.PushSent, -2_000, 0, "expenses:unclassified", true },
         { AccountingEventKind.ForwardLostOnchain, -700, 0, "expenses:losses", false },
+        { AccountingEventKind.InvoiceLostOnchain, -700, 0, "expenses:losses", false },
         { AccountingEventKind.WalletReceived, 9_000, 0, "equity:transfers:in", false },
         { AccountingEventKind.WalletSent, -9_000, 100, "equity:transfers:out", false }
     };

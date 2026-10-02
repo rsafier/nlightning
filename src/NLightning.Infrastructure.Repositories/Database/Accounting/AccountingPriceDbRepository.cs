@@ -44,6 +44,21 @@ public class AccountingPriceDbRepository : IAccountingPriceDbRepository
     }
 
     /// <inheritdoc />
+    public async Task<bool> ReplaceAsync(long id, decimal price, AccountingPriceSource source,
+                                         DateTimeOffset replacedAt, CancellationToken cancellationToken = default)
+    {
+        var entity = _context.AccountingPrices.Local.FirstOrDefault(p => p.Id == id)
+                  ?? await _context.AccountingPrices.FirstOrDefaultAsync(p => p.Id == id, cancellationToken);
+        if (entity is null)
+            return false;
+
+        entity.Price = price;
+        entity.Source = (byte)source;
+        entity.FetchedAt = replacedAt;
+        return true;
+    }
+
+    /// <inheritdoc />
     public async Task<AccountingPrice?> GetByIdAsync(long id, CancellationToken cancellationToken = default)
     {
         var entity = await _context.AccountingPrices.AsNoTracking()

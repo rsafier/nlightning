@@ -8,7 +8,7 @@ using Transport.Ipc.Requests;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// The CLI's <c>accounting prices import|list|fetch</c> (NL-602 A3-T2): the arguments, an import file read on the
+/// The CLI's <c>accounting prices import|list|fetch|replace</c> (NL-602 A3-T2, NL-693): the arguments, an import file read on the
 /// client with its bad lines reported by number (nothing sent), a large file sent in chunks, and the printer.
 /// </summary>
 public sealed class AccountingPricesCommandsTests : IDisposable
@@ -75,6 +75,69 @@ public sealed class AccountingPricesCommandsTests : IDisposable
         Assert.Contains("Missing --since", missing);
     }
 
+    [Fact]
+    public void Given_AReplace_When_Parsed_Then_TheTimePriceAndAuditTextAreSent()
+    {
+        // Act (NL-693)
+        var request = AccountingBooksCommands.Parse(
+                          ["prices", "replace", "2025-10-02T12:00:00Z", "86048.5", "--currency", "eur", "--source",
+                           "exchange statement", "--note", "the source was off by 10x"], out var error)!.Admin!;
+
+        // Assert
+        Assert.Null(error);
+        Assert.Equal((int)AccountingAdminAction.PricesReplace, request.Action);
+        Assert.Equal(1_759_406_400, request.Prices!.ReplaceTimeUnixSeconds);
+        Assert.Equal("86048.5", request.Prices.ReplacePrice);
+        Assert.Equal("EUR", request.Prices.Currency);
+        Assert.Equal("exchange statement", request.Prices.Source);
+        Assert.Equal("the source was off by 10x", request.Prices.Note);
+        Assert.Null(ClientApp.ValidateArguments("accounting", ["prices", "replace", "1759406400", "86000"]));
+    }
+
+    [Fact]
+    public void Given_AReplace_When_Printed_Then_TheOldAndNewPriceAndTheRevaluationAreShown()
+    {
+        // Arrange
+        var output = new StringWriter();
+        var price = new AccountingPriceIpc
+        {
+            Id = 7,
+            TimeUnixSeconds = 1_759_406_400,
+            Price = "45000",
+            Source = 4,
+            SourceName = "Manual",
+            FetchedAtUnixSeconds = 1_759_500_000
+        };
+
+        // Act
+        new AccountingPricesPrinter(output).Print(new AccountingPricesIpcResponse
+        {
+            Currency = "USD",
+            Replace = new AccountingPriceReplaceIpc
+            {
+                Price = price,
+                OldPrice = "50000",
+                OldSource = 1,
+                OldSourceName = "Csv",
+                OldFetchedAtUnixSeconds = 1_759_406_400,
+                Changed = true,
+                ReplayFromLedgerSeq = 12,
+                OpenEntries = 3,
+                ClosedEntries = 2,
+                Adjustments = 2,
+                LinesRepriced = 3
+            }
+        });
+
+        // Assert
+        var text = output.ToString();
+        Assert.Contains("Replaced the USD price of 2025-10-02 12:00:00Z (id 7): 50000 (Csv", text);
+        Assert.Contains("-> 45000 (Manual", text);
+        Assert.Contains("3 open-period entr(ies) valued with it are projected again from ledger sequence 12", text);
+        Assert.Contains("2 entr(ies) of closed periods valued with it: 2 price adjustment(s) in the open period, 3 "
+                      + "line(s) revalued", text);
+    }
+
     [Theory]
     [InlineData(new[] { "prices" }, "Missing prices subcommand")]
     [InlineData(new[] { "prices", "drop" }, "Unknown prices subcommand")]
@@ -84,6 +147,10 @@ public sealed class AccountingPricesCommandsTests : IDisposable
     [InlineData(new[] { "prices", "list", "--since", "2", "--until", "1" }, "--until must be after --since")]
     [InlineData(new[] { "prices", "fetch", "--since", "x" }, "Invalid since")]
     [InlineData(new[] { "prices", "list", "--format", "csv" }, "Unknown option")]
+    [InlineData(new[] { "prices", "replace", "1759406400" }, "Missing the time or the price")]
+    [InlineData(new[] { "prices", "replace", "x", "86000" }, "Invalid time")]
+    [InlineData(new[] { "prices", "replace", "1759406400", "-5" }, "Invalid price")]
+    [InlineData(new[] { "prices", "replace", "1759406400", "86000", "--why", "x" }, "Unknown option")]
     public void Given_BadArguments_When_Validated_Then_TheErrorSaysWhy(string[] args, string expected)
     {
         // Act

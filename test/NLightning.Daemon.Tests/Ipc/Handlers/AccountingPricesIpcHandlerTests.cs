@@ -16,7 +16,7 @@ using Transport.Ipc.Requests;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// <c>accounting prices import|list|fetch</c> over IPC 45 (NL-602 A3-T2): the rows, the range and the answers cross the
+/// <c>accounting prices import|list|fetch|replace</c> over IPC 45 (NL-602 A3-T2, NL-693): the rows, the range and the answers cross the
 /// envelope, the service's refusals are <c>invalid_operation</c>, and a node without the price service says so.
 /// </summary>
 public class AccountingPricesIpcHandlerTests
@@ -129,6 +129,70 @@ public class AccountingPricesIpcHandlerTests
         Assert.Equal(1, fetch.Stored);
         Assert.Equal(1, fetch.Unavailable);
         Assert.Null(fetch.Valuation);
+    }
+
+    [Fact]
+    public async Task Given_AReplace_When_Sent_Then_TheCorrectionReachesTheServiceAndTheRevaluationComesBack()
+    {
+        // Arrange (NL-693)
+        AccountingPriceReplacement? sent = null;
+        var replaced = new AccountingPrice(7, "USD", s_hour, 45_000m, AccountingPriceSource.Manual,
+                                           s_hour.AddDays(1));
+        _prices.Setup(p => p.ReplaceAsync(It.IsAny<AccountingPriceReplacement>(), It.IsAny<CancellationToken>()))
+               .Callback((AccountingPriceReplacement r, CancellationToken _) => sent = r)
+               .ReturnsAsync(new AccountingPriceReplaceResult(replaced, 50_000m, AccountingPriceSource.Http, s_hour,
+                                                              true, 12, 3, 2, 2, 3));
+
+        // Act
+        var response = await AdminAsync(new AccountingAdminIpcRequest
+        {
+            Action = (int)AccountingAdminAction.PricesReplace,
+            Prices = new AccountingPricesIpcRequest
+            {
+                ReplaceTimeUnixSeconds = s_hour.ToUnixTimeSeconds(),
+                ReplacePrice = "45000",
+                Source = " statement ",
+                Note = "10x"
+            }
+        });
+
+        // Assert
+        Assert.Equal(new AccountingPriceReplacement(null, s_hour, 45_000m, "statement", "10x"), sent);
+        var replace = response.Prices!.Replace!;
+        Assert.Equal("USD", response.Prices.Currency);
+        Assert.Equal(7, replace.Price.Id);
+        Assert.Equal("45000", replace.Price.Price);
+        Assert.Equal("Manual", replace.Price.SourceName);
+        Assert.Equal("50000", replace.OldPrice);
+        Assert.Equal("Http", replace.OldSourceName);
+        Assert.True(replace.Changed);
+        Assert.Equal(12, replace.ReplayFromLedgerSeq);
+        Assert.Equal((3, 2, 2, 3),
+                     (replace.OpenEntries, replace.ClosedEntries, replace.Adjustments, replace.LinesRepriced));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("not a price")]
+    public async Task Given_AReplaceWithoutAPrice_When_Sent_Then_ItIsInvalidOperation(string? price)
+    {
+        // Act
+        var response = await SendAsync(new AccountingAdminIpcRequest
+        {
+            Action = (int)AccountingAdminAction.PricesReplace,
+            Prices = price is null
+                         ? new AccountingPricesIpcRequest()
+                         : new AccountingPricesIpcRequest
+                         {
+                             ReplaceTimeUnixSeconds = s_hour.ToUnixTimeSeconds(),
+                             ReplacePrice = price
+                         }
+        });
+
+        // Assert
+        Assert.Equal(ErrorCodes.InvalidOperation, ReadError(response).Code);
+        _prices.Verify(p => p.ReplaceAsync(It.IsAny<AccountingPriceReplacement>(), It.IsAny<CancellationToken>()),
+                       Times.Never);
     }
 
     [Fact]

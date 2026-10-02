@@ -8,8 +8,8 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 
 /// <summary>
-/// The <c>prices</c> actions of <c>ClientCommand.AccountingAdmin</c> (NL-602 A3-T2): <c>import</c>, <c>list</c> and
-/// <c>fetch</c> through <see cref="IAccountingPrices"/>. They work with the books off (they only store prices; the
+/// The <c>prices</c> actions of <c>ClientCommand.AccountingAdmin</c> (NL-602 A3-T2): <c>import</c>, <c>list</c>,
+/// <c>fetch</c> and <c>replace</c> (NL-693) through <see cref="IAccountingPrices"/>. They work with the books off (they only store prices; the
 /// valuation that follows an import or a fetch runs with the books on).
 /// </summary>
 internal static class AccountingPricesAdmin
@@ -47,6 +47,15 @@ internal static class AccountingPricesAdmin
 
                     var fetch = await prices.FetchAsync(since, arguments.Until, ct);
                     return new AccountingPricesClientResponse(fetch.Currency) { Fetch = fetch };
+                case AccountingAdminAction.PricesReplace:
+                    if (arguments.Replacement is not { } point)
+                        throw new ClientException(ErrorCodes.InvalidOperation,
+                                                  "prices replace needs the stored price's time and the new price.");
+
+                    var replaced = await prices.ReplaceAsync(
+                                       new AccountingPriceReplacement(arguments.Currency, point.Time, point.Price,
+                                                                      arguments.Source, arguments.Note), ct);
+                    return new AccountingPricesClientResponse(replaced.Price.Currency) { Replace = replaced };
                 default:
                     throw new ClientException(ErrorCodes.InvalidOperation,
                                               $"Unknown accounting prices action {request.Action}.");

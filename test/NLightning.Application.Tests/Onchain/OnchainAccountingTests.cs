@@ -581,6 +581,144 @@ public sealed class OnchainAccountingTests : IDisposable
         Assert.DoesNotContain(_store.Events, e => e.Kind == AccountingEventKind.ForwardLostOnchain);
     }
 
+    [Theory]
+    [InlineData(AccountingCostBasisMethod.Fifo)]
+    [InlineData(AccountingCostBasisMethod.Lifo)]
+    [InlineData(AccountingCostBasisMethod.Hifo)]
+    public async Task Given_ASettledInvoicesIncomingHtlc_When_ThePeerTimesItOutOnChain_Then_InvoiceLostOnchainAndReorgReversal(
+        AccountingCostBasisMethod method)
+    {
+        // Arrange (NL-688): the peer's HTLC pays our invoice; we fulfilled it off chain (the invoice is settled and its
+        // InvoiceSettled booked the amount into the channels), but the peer's commitment with the HTLC still on it
+        // confirmed and the peer's timeout took the output before any claim of ours
+        var preimage = RealSigningCommitmentPair.Preimage(2);
+        Assert.NotNull(_pair.Alice.State.GetHtlc(HtlcDirection.Incoming, 0));
+        _pair.Fulfill(_pair.Alice, 0, preimage);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        var invoice = SettledInvoice(preimage);
+        var settled = PaymentAccountingEvents.InvoiceSettled(invoice, LightningMoney.Satoshis(TheirHtlcSat),
+                                                             _channel.ChannelId, _channel, 1, false, SpendHeight - 1);
+        var remote = _pair.Alice.State.RemoteCommit;
+        var commitment = BuildCommitment(CommitmentSide.Remote, remote.Spec, remote.Number,
+                                         remote.PerCommitmentPoint);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        var theirHtlc = Row(OutputDescriptorKind.RemoteOfferedHtlc);
+        var executor = CreateExecutor();
+
+        // Act: the peer's timeout takes it
+        var timeout = Spend([(commitment.TxId, theirHtlc.OutputIndex)], TheirHtlcSat - 300);
+        await MineSpendAsync(executor, timeout, commitment.TxId, theirHtlc.OutputIndex, SpendHeight + 40);
+
+        // Assert: the resolution is informational (0) and the HTLC's amount is lost, in the same save
+        var resolution = _store.Events.Single(e => e.Kind == AccountingEventKind.OutputResolved
+                                                && e.OutputIndex == theirHtlc.OutputIndex);
+        Assert.Equal(0, resolution.AmountMsat);
+        var lost = Assert.Single(_store.Events, e => e.Kind == AccountingEventKind.InvoiceLostOnchain);
+        Assert.Equal(AccountingEventKeys.InvoiceLostOnchain(invoice.PaymentHash, _channel.ChannelId, 0), lost.EventKey);
+        Assert.Equal(-(long)TheirHtlcSat * 1_000, lost.AmountMsat);
+        Assert.Equal(_channel.ChannelId, lost.ChannelId);
+        Assert.Equal(invoice.PaymentHash, lost.PaymentHash);
+        Assert.Equal(SpendHeight + 40, lost.BlockHeight);
+        Assert.Equal(PaymentAccountingEvents.InvoiceOnchainCause, lost.Details["cause"]);
+        Assert.Equal(timeout.TxId.ToString(), lost.Details["spenderTxId"]);
+        Assert.Equal(commitment.TxId.ToString(), lost.Details[AccountingDetailKeys.CloseTxId]);
+        Assert.Equal(settled.EventKey, lost.Details["settledKey"]);
+        Assert.DoesNotContain(_store.Events, e => e.Kind == AccountingEventKind.ForwardLostOnchain);
+        var (_, lossSave) = _store.AccountingEvents.Single(a => a.Event.EventKey == lost.EventKey);
+        var (_, resolutionSave) = _store.AccountingEvents.Single(a => a.Event.EventKey == resolution.EventKey);
+        Assert.Equal(resolutionSave, lossSave);
+
+        // Assert (the books, the reconcile): the close took our balance B out of the channels, the invoice's amount
+        // comes out as a loss, so the channels hold exactly what the opening put in (no drift once the channel is
+        // closed); the sale stays income: the payer holds the preimage
+        var close = _store.Events.Single(e => e.Kind == AccountingEventKind.ChannelForceClosed);
+        var books = BooksSimulator.Of([settled, .. _store.Events]);
+        Assert.Equal(close.AmountMsat, books[AccountRole.Channels]);
+        Assert.Equal(-(long)TheirHtlcSat * 1_000, books[AccountRole.Received]);
+        Assert.Equal((long)TheirHtlcSat * 1_000 + Math.Max(0, Msat(close, OnchainAccounting.LostKey)),
+                     books[AccountRole.LossOnchain]);
+        Assert.Equal([(AccountRole.Channels, -(long)TheirHtlcSat * 1_000),
+                      (AccountRole.LossOnchain, (long)TheirHtlcSat * 1_000)],
+                     books.Entry(lost.EventKey)!.Postings.Select(p => (p.Account, p.AmountMsat)).OrderBy(p => p.Account));
+
+        // Assert (the financial book, NL-749's lots invariant after every entry): the opening lots of the channel and
+        // the invoice's acquisition; the loss disposes of the invoice's msat and the channels' bucket ends empty
+        var financial = new LotBook(method);
+        financial.Plan(true, (AccountRole.Channels, -close.AmountMsat), (AccountRole.Opening, close.AmountMsat));
+        foreach (var entry in books.Entries.Where(e => e.Postings.Count > 0))
+            financial.Plan(false, entry.Postings.Select(p => (p.Account, p.AmountMsat)).ToArray());
+        Assert.Empty(financial.Pool.Debts);
+        Assert.Equal(0, financial.Shortfall);
+        Assert.Equal(0, financial.Pool.HeldMsat(AccountingLotBucket.Channels));
+        Assert.Equal(books[AccountRole.Pending], financial.Pool.HeldMsat(AccountingLotBucket.Pending));
+
+        // Act: a reorg rolls the timeout back; then it confirms again
+        _store.Watches[(commitment.TxId, theirHtlc.OutputIndex)].ClearSpend();
+        await executor.RunRoundAsync(SpendHeight + 41, TestContext.Current.CancellationToken);
+        var reversals = _store.Events.Where(e => e.Kind == AccountingEventKind.Reversal).ToList();
+        await MineSpendAsync(executor, timeout, commitment.TxId, theirHtlc.OutputIndex, SpendHeight + 42);
+
+        // Assert: both reversed (the reversal posts the loss back into the channels), then recorded again under their
+        // next confirmation keys
+        var lossReversal = Assert.Single(reversals, r => r.Details[OnchainAccounting.ReversesKey] == lost.EventKey);
+        Assert.Equal((long)TheirHtlcSat * 1_000, lossReversal.AmountMsat);
+        Assert.Contains(reversals, r => r.Details[OnchainAccounting.ReversesKey] == resolution.EventKey);
+        var again = _store.Events.Where(e => e.Kind == AccountingEventKind.InvoiceLostOnchain).ToList();
+        Assert.Equal([lost.EventKey, AccountingEventKeys.Reconfirmed(lost.EventKey, 2)], again.Select(e => e.EventKey));
+        var replayed = BooksSimulator.Of([settled, .. _store.Events]);
+        Assert.Equal(close.AmountMsat, replayed[AccountRole.Channels]);
+        Assert.Equal(books[AccountRole.LossOnchain], replayed[AccountRole.LossOnchain]);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task Given_AnIncomingHtlcNotBookedByASettledInvoice_When_ThePeerTimesItOutOnChain_Then_NoLossIsRecorded(
+        bool fulfilled, bool settled)
+    {
+        // Arrange (NL-688): either the invoice was settled by other HTLCs and this one never carried its preimage (a
+        // duplicate outside the set, left to time out), or it carried it but the invoice is not settled (no income was
+        // booked)
+        var preimage = RealSigningCommitmentPair.Preimage(2);
+        if (fulfilled)
+            _pair.Fulfill(_pair.Alice, 0, preimage);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        var invoice = settled
+                          ? SettledInvoice(preimage)
+                          : new InvoiceModel(RealSigningCommitmentPair.Hash(preimage), preimage,
+                                             RealSigningCommitmentPair.Preimage(9),
+                                             LightningMoney.Satoshis(TheirHtlcSat), "open", "lnbcrt-test", s_now,
+                                             3_600, 18);
+        _store.Invoices[invoice.PaymentHash] = invoice;
+        var remote = _pair.Alice.State.RemoteCommit;
+        var commitment = BuildCommitment(CommitmentSide.Remote, remote.Spec, remote.Number,
+                                         remote.PerCommitmentPoint);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        var theirHtlc = Row(OutputDescriptorKind.RemoteOfferedHtlc);
+        var executor = CreateExecutor();
+
+        // Act
+        var timeout = Spend([(commitment.TxId, theirHtlc.OutputIndex)], TheirHtlcSat - 300);
+        await MineSpendAsync(executor, timeout, commitment.TxId, theirHtlc.OutputIndex, SpendHeight + 40);
+
+        // Assert: the resolution only
+        Assert.Contains(_store.Events, e => e.Kind == AccountingEventKind.OutputResolved
+                                         && e.OutputIndex == theirHtlc.OutputIndex);
+        Assert.DoesNotContain(_store.Events, e => e.Kind == AccountingEventKind.InvoiceLostOnchain);
+    }
+
+    /// <summary>Our invoice of <see cref="TheirHtlcSat"/> paid by the peer's HTLC, settled and stored (NL-688).</summary>
+    private InvoiceModel SettledInvoice(Secret preimage)
+    {
+        var invoice = new InvoiceModel(RealSigningCommitmentPair.Hash(preimage), preimage,
+                                       RealSigningCommitmentPair.Preimage(9), LightningMoney.Satoshis(TheirHtlcSat),
+                                       "lost on chain", "lnbcrt-test", s_now, 3_600, 18);
+        invoice.Accept(LightningMoney.Satoshis(TheirHtlcSat));
+        invoice.Settle(s_now);
+        _store.Invoices[invoice.PaymentHash] = invoice;
+        return invoice;
+    }
+
     [Fact]
     public async Task Given_RevokedCommitment_When_PenalizedAndTheCheaterTakesOurHtlc_Then_PenaltyBreachAndZeroPending()
     {

@@ -191,6 +191,31 @@ public class AccountingReportServiceTests
     }
 
     [Fact]
+    public async Task Given_HtlcsLostOnChainAndAReorg_When_TheChannelsViewIsRead_Then_OnlyTheStandingLossesCount()
+    {
+        // Arrange (NL-688): a settled invoice's HTLC and a settled forward's HTLC lost on chain; a reorg reverses the
+        // forward's loss once (before the fix the reversal left the loss counted)
+        var b = Channel(0xB2);
+        var bob = Peer(0x22);
+        _kit.Add(AccountingEventKind.ChannelFunded, T0, 0, 0, b, bob,
+                 AccountingDetailsCodec.Create(("capacitySat", "500000"), ("isInitiator", "false")));
+        _kit.Add(AccountingEventKind.ChannelForceClosed, T0.AddDays(10), -400_000, 4_000, b, bob);
+        _kit.Add(AccountingEventKind.InvoiceLostOnchain, T0.AddDays(11), -20_000, 0, b, bob);
+        _kit.Add(AccountingEventKind.ForwardLostOnchain, T0.AddDays(11), -1_000, 0, b, bob);
+        _kit.Add(AccountingEventKind.Reversal, T0.AddDays(11), 1_000, 0, b, bob,
+                 AccountingDetailsCodec.Create(("originalKind", "ForwardLostOnchain")));
+        _kit.Clock.Now = T0.AddDays(20);
+
+        // Act
+        var report = await _kit.CreateReports().GetChannelsReportAsync(null, null, null,
+                                                                       TestContext.Current.CancellationToken);
+
+        // Assert
+        var line = report.Channels.Single(c => c.ChannelId == b);
+        Assert.Equal(20_000, line.OnchainLossMsat);
+    }
+
+    [Fact]
     public async Task Given_APeriodAfterTheOpen_When_TheChannelsViewIsRead_Then_TheCapacityIsStillKnown()
     {
         // Arrange
