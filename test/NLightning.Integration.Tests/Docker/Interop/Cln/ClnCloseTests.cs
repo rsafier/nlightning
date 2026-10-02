@@ -63,7 +63,7 @@ public sealed class ClnCloseTests : IAsyncLifetime
                 Console.WriteLine($"[cln] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
                 Console.WriteLine("[cln] CLN close log:\n"
                                 + await _fixture.Cln.GetLogLinesAsync("closing", CancellationToken.None, 60));
-                await DockerDiagnostics.DumpContainerLogsAsync([ClnFixture.ClnContainerName], 300);
+                await _fixture.DumpClnLogAsync(300);
             }
 
             await _session.DisposeAsync();

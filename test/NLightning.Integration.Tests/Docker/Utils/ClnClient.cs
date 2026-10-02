@@ -6,13 +6,39 @@ namespace NLightning.Integration.Tests.Docker.Utils;
 
 /// <summary>
 /// A Core Lightning JSON-RPC client that runs <c>lightning-cli --network=regtest -k &lt;method&gt; key=value…</c> in the
-/// CLN container (<c>docker exec</c> through the Docker API), so the tests need no TLS/rune setup and no docker CLI.
+/// CLN node, so the tests need no TLS/rune setup and no docker CLI. Where the command runs is the backend's: a
+/// <c>docker exec</c> through the Docker API (<see cref="ClnClient(DockerClient, string)"/>) or a Kubernetes exec in
+/// the node's pod (the cluster backend of <c>Fixtures/ClnFixture</c>, through <see cref="ClnClient(string, ClnExec)"/>).
 /// </summary>
-public sealed class ClnClient(DockerClient client, string containerName)
+public sealed class ClnClient
 {
     private static readonly TimeSpan s_callTimeout = TimeSpan.FromSeconds(90);
 
-    public string ContainerName { get; } = containerName;
+    private readonly ClnExec _exec;
+
+    /// <summary>A client of the CLN container <paramref name="containerName"/> (<c>docker exec</c>).</summary>
+    public ClnClient(DockerClient client, string containerName)
+        : this(containerName, DockerExec(client, containerName))
+    {
+    }
+
+    /// <summary>A client that runs its commands through <paramref name="exec"/> in the node <paramref name="name"/>.</summary>
+    public ClnClient(string name, ClnExec exec)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ContainerName = name;
+        _exec = exec ?? throw new ArgumentNullException(nameof(exec));
+    }
+
+    /// <summary>The container (Docker) or node (cluster) the commands run in.</summary>
+    public string ContainerName { get; }
+
+    /// <summary>
+    /// Runs <paramref name="command"/> in the CLN node and returns its exit code and output, without interpreting
+    /// them (a call whose error data matters, e.g. an <c>invoice_error</c>).
+    /// </summary>
+    public Task<ClnExecResult> ExecAsync(IReadOnlyList<string> command, CancellationToken cancellationToken) =>
+        _exec(command, cancellationToken);
 
     /// <summary>
     /// Calls <paramref name="method"/> with named parameters (values are passed as <c>key=value</c>; a JSON value
@@ -29,17 +55,7 @@ public sealed class ClnClient(DockerClient client, string containerName)
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(s_callTimeout);
 
-        var exec = await client.Exec.ExecCreateContainerAsync(ContainerName, new ContainerExecCreateParameters
-        {
-            Cmd = cmd,
-            AttachStdout = true,
-            AttachStderr = true
-        }, timeoutCts.Token);
-        string stdout, stderr;
-        using (var stream = await client.Exec.StartAndAttachContainerExecAsync(exec.ID, false, timeoutCts.Token))
-            (stdout, stderr) = await stream.ReadOutputToEndAsync(timeoutCts.Token);
-
-        var inspect = await client.Exec.InspectContainerExecAsync(exec.ID, timeoutCts.Token);
+        var (exitCode, stdout, stderr) = await _exec(cmd, timeoutCts.Token);
         JsonNode? json = null;
         try
         {
@@ -53,13 +69,13 @@ public sealed class ClnClient(DockerClient client, string containerName)
             // not JSON: reported below
         }
 
-        if (inspect.ExitCode == 0 && json is not null)
+        if (exitCode == 0 && json is not null)
             return json;
 
         if (json?["code"] is { } code)
             throw new ClnRpcException(method, code.GetValue<long>(), json["message"]?.GetValue<string>() ?? stdout);
 
-        throw new ClnRpcException(method, inspect.ExitCode, $"{stdout} {stderr}".Trim());
+        throw new ClnRpcException(method, exitCode, $"{stdout} {stderr}".Trim());
     }
 
     public Task<JsonNode> GetInfoAsync(CancellationToken cancellationToken) =>
@@ -120,6 +136,23 @@ public sealed class ClnClient(DockerClient client, string containerName)
         }
     }
 
+    /// <summary>A <c>docker exec</c> of a command in <paramref name="containerName"/>.</summary>
+    private static ClnExec DockerExec(DockerClient client, string containerName) => async (command, cancellationToken) =>
+    {
+        var exec = await client.Exec.ExecCreateContainerAsync(containerName, new ContainerExecCreateParameters
+        {
+            Cmd = [.. command],
+            AttachStdout = true,
+            AttachStderr = true
+        }, cancellationToken);
+        string stdout, stderr;
+        using (var stream = await client.Exec.StartAndAttachContainerExecAsync(exec.ID, false, cancellationToken))
+            (stdout, stderr) = await stream.ReadOutputToEndAsync(cancellationToken);
+
+        var inspect = await client.Exec.InspectContainerExecAsync(exec.ID, cancellationToken);
+        return new ClnExecResult(inspect.ExitCode, stdout, stderr);
+    };
+
     private static string Format(object value) => value switch
     {
         bool b => b ? "true" : "false",
@@ -127,6 +160,16 @@ public sealed class ClnClient(DockerClient client, string containerName)
         _ => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty
     };
 }
+
+/// <summary>
+/// Runs a command (<c>lightning-cli ...</c>) in a CLN node.
+/// </summary>
+public delegate Task<ClnExecResult> ClnExec(IReadOnlyList<string> command, CancellationToken cancellationToken);
+
+/// <summary>
+/// What a command run in a CLN node returned.
+/// </summary>
+public sealed record ClnExecResult(long ExitCode, string StdOut, string StdErr);
 
 /// <summary>
 /// A CLN JSON-RPC error.

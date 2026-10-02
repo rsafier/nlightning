@@ -94,6 +94,10 @@ public sealed class TorInteropFixture : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
+        // Docker-only (Tor on the public network): on the cluster backend its tests skip, so start nothing
+        if (TestBackend.IsCluster)
+            return;
+
         try
         {
             await StartAsync();
@@ -108,6 +112,12 @@ public sealed class TorInteropFixture : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         _shared.DisposeAll();
+        if (TestBackend.IsCluster)
+        {
+            _client.Dispose();
+            return;
+        }
+
         await DockerContainerUtils.RemoveContainerAsync(_client, ClnContainerName);
         await DockerContainerUtils.RemoveContainerAsync(_client, TorContainerName);
         await _chain.RemoveAsync();

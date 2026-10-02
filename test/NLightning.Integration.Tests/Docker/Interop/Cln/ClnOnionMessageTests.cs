@@ -5,8 +5,6 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
-using Docker.DotNet;
-using Docker.DotNet.Models;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using NLightning.Tests.Utils.Bolt12;
@@ -95,7 +93,6 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
     private static readonly TimeSpan s_clnCallTimeout = TimeSpan.FromSeconds(150);
 
     private readonly ClnFixture _fixture;
-    private readonly DockerClient _docker = new DockerClientConfiguration().CreateClient();
     private readonly List<ProofNode> _nodes = [];
 
     public ClnOnionMessageTests(ClnFixture fixture, ITestOutputHelper output)
@@ -129,9 +126,7 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
         }
 
         if (DockerDiagnostics.CurrentTestFailed)
-            await DockerDiagnostics.DumpContainerLogsAsync([ClnFixture.ClnContainerName], 300);
-
-        _docker.Dispose();
+            await _fixture.DumpClnLogAsync(300);
     }
 
     /// <summary>
@@ -772,7 +767,7 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Runs <c>lightning-cli</c> in the CLN container and returns its exit code and whole output, error data included
+    /// Runs <c>lightning-cli</c> in the CLN node and returns its exit code and whole output, error data included
     /// (<see cref="ClnClient"/> keeps only an error's message, and CLN puts a received <c>invoice_error</c> in the
     /// error's data).
     /// </summary>
@@ -784,19 +779,8 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(s_clnCallTimeout);
-        var exec = await _docker.Exec.ExecCreateContainerAsync(ClnFixture.ClnContainerName,
-                                                               new ContainerExecCreateParameters
-                                                               {
-                                                                   Cmd = cmd,
-                                                                   AttachStdout = true,
-                                                                   AttachStderr = true
-                                                               }, timeout.Token);
-        string stdout, stderr;
-        using (var stream = await _docker.Exec.StartAndAttachContainerExecAsync(exec.ID, false, timeout.Token))
-            (stdout, stderr) = await stream.ReadOutputToEndAsync(timeout.Token);
-
-        var inspect = await _docker.Exec.InspectContainerExecAsync(exec.ID, timeout.Token);
-        return new ClnRawResult(inspect.ExitCode, $"{stdout} {stderr}".Trim());
+        var (exitCode, stdout, stderr) = await Cln.ExecAsync(cmd, timeout.Token);
+        return new ClnRawResult(exitCode, $"{stdout} {stderr}".Trim());
     }
 
     private sealed record ClnRawResult(long ExitCode, string Output);

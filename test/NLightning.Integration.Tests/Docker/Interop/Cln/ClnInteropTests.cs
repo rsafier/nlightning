@@ -57,7 +57,7 @@ public sealed class ClnInteropTests : IAsyncLifetime
             if (_session is not null)
                 Console.WriteLine($"[cln] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
 
-            await DockerDiagnostics.DumpContainerLogsAsync([ClnFixture.ClnContainerName], 400);
+            await _fixture.DumpClnLogAsync(400);
         }
     }
 
@@ -98,7 +98,7 @@ public sealed class ClnInteropTests : IAsyncLifetime
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_OurListeningNode_When_ClnConnectsToUs_Then_InitExchangedAndConnectionStable()
     {
-        // Arrange: listen on every interface so the CLN container can reach us through the host
+        // Arrange: listen on every interface so CLN (a container or a pod) can reach us through the host
         var ct = TestContext.Current.CancellationToken;
         await using var node = await NLightningTestNode.CreateAsync(
                                    _fixture.Bitcoin, "nltg-inbound",
@@ -111,7 +111,7 @@ public sealed class ClnInteropTests : IAsyncLifetime
 
         // Act
         var connect = await _fixture.Cln.CallAsync("connect", ct, ("id", node.NodeIdHex),
-                                                   ("host", ClnFixture.HostAddressFromContainers),
+                                                   ("host", _fixture.HostAddressForCln),
                                                    ("port", node.Port));
 
         // Assert

@@ -69,7 +69,7 @@ public sealed class ClnCloseRestartTests : IAsyncLifetime
                 Console.WriteLine($"[close] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
                 Console.WriteLine("[close] CLN close log:\n"
                                 + await _fixture.Cln.GetLogLinesAsync("clos", CancellationToken.None, 80));
-                await DockerDiagnostics.DumpContainerLogsAsync([ClnFixture.ClnContainerName], 300);
+                await _fixture.DumpClnLogAsync(300);
             }
 
             _cutter?.Heal();
