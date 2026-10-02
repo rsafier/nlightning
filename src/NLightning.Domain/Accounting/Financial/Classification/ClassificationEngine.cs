@@ -176,15 +176,7 @@ public sealed class ClassificationEngine
         var lines = new List<AccountingPosting>(entry.Postings.Count);
         foreach (var posting in entry.Postings)
         {
-            string name;
-            if (!FinancialChart.IsClassifiable(posting.Account))
-                name = Chart[FinancialChart.DefaultAccountOf(posting.Account)];
-            else if (classification.Source != AccountingClassificationSource.Default
-                  && classification.Account is { } account)
-                name = account;
-            else
-                name = Chart[DefaultAccountOf(posting.Account, accountingEvent)];
-
+            var name = AccountNameOf(posting.Account, accountingEvent, classification);
             if (IsRebalanceWithFee(posting, accountingEvent))
             {
                 var fee = accountingEvent.FeeMsat;
@@ -200,6 +192,25 @@ public sealed class ClassificationEngine
         }
 
         return lines;
+    }
+
+    /// <summary>
+    /// The financial account of a line of <paramref name="role"/> under <paramref name="classification"/> (the name
+    /// <see cref="MapPostings"/> gives it): the classified account for a classifiable line, its role's default under a
+    /// default classification, the chart account of the role otherwise.
+    /// </summary>
+    public string AccountNameOf(AccountRole role, AccountingEventModel accountingEvent,
+                                AccountingClassification classification)
+    {
+        ArgumentNullException.ThrowIfNull(accountingEvent);
+        ArgumentNullException.ThrowIfNull(classification);
+        if (!FinancialChart.IsClassifiable(role))
+            return Chart[FinancialChart.DefaultAccountOf(role)];
+
+        if (classification.Source != AccountingClassificationSource.Default && classification.Account is { } account)
+            return account;
+
+        return Chart[DefaultAccountOf(role, accountingEvent)];
     }
 
     /// <summary>The default account of a classifiable line of <paramref name="role"/> in this event.</summary>

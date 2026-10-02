@@ -456,13 +456,17 @@ public sealed class FinancialBooksProjectorTests
         }, TestContext.Current.CancellationToken);
         await kit.ProjectAsync();
 
-        // Assert: February's invoice follows the rule; January's closed entry is left alone (NL-660)
+        // Assert: February's invoice follows the rule; January's closed entry is left alone and an adjustment in the
+        // open period moves it (NL-660)
         var entries = await kit.ListEntriesAsync(AccountingBook.Financial);
         var feb = entries.Single(e => e.EventKey == february.EventKey);
         var jan = entries.Single(e => e.EventKey == january.EventKey && e.Adjustment == 0);
+        var moved = entries.Single(e => e.EventKey == january.EventKey && e.Adjustment == 1);
         Assert.Equal(AccountingClassificationSource.Rule, feb.Classification);
         Assert.Contains(feb.Postings, p => p.AccountName == "income:consulting");
         Assert.Contains(jan.Postings, p => p.AccountName == "income:sales");
+        Assert.Contains("RuleChange", moved.Note);
+        Assert.Equal(["income:sales", "income:consulting"], moved.Postings.Select(p => p.AccountName));
         Assert.All(await kit.Periods.VerifyClosesAsync(TestContext.Current.CancellationToken),
                    v => Assert.True(v.IsIntact, v.Problem));
     }

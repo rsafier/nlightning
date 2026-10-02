@@ -33,8 +33,15 @@ using Reports;
 /// first and need the books on. The unclassified listing classifies every projected entry with the rules and
 /// overrides in effect now (the same engine as the projector), in ledger order, at most
 /// <see cref="MaxScanPerCall"/> entries per call; it is on demand only, never at startup.</para>
-/// <para>A change of a rule or an override never rewrites a closed period: the financial book posts it as an
-/// adjustment in the open period (D-A8, A3-T5); <c>set</c> warns when the event lies in a closed period.</para>
+/// <para><b>Closed periods</b> (NL-660, D-A8): a change of a rule or an override never rewrites a closed period. In the
+/// same save and under the period lock's write lock, each closed entry it classifies differently (the one event of
+/// <c>set</c>/<c>unset</c>; for a rule change every closed entry with a classifiable line, read with the rules as they
+/// will be after the save) gets an adjustment of the open period through
+/// <see cref="IAccountingAdjustmentSink.StageAdjustmentAsync"/> (reason <see cref="AccountingAdjustmentReason.Override"/>
+/// or <see cref="AccountingAdjustmentReason.RuleChange"/>, dedupe key <c>reclass:{n}</c>) that moves its classifiable
+/// lines, msat and fiat at their original values, from the accounts the book holds them in now to the new ones
+/// (<see cref="AccountingReclassification"/>); no lot moves. <c>set</c> warns when it posted one. An adjustment for a
+/// rule just added carries no rule id (the rule has none until the save).</para>
 /// <para><b>The open period</b> (A3-T4): <c>set</c> and <c>unset</c> of an event the financial book projected in the
 /// open period lower the financial book's cursor to just before it, and a rule added, removed, enabled or disabled to
 /// just before the open period, in the same save and under the period lock's write lock
@@ -51,6 +58,9 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
 
     private const int ScanPageSize = 500;
     private const string CandidatePlaceholderAccount = "income:candidate";
+
+    // The id of a rule being added, until its save gives it one (the highest: last among the rules of its priority)
+    private const long PendingRuleId = long.MaxValue;
 
     private readonly AccountingBooksAccess _access;
     private readonly ILogger<AccountingClassificationService> _logger;
@@ -205,10 +215,15 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
         {
             using var scope = _scopeFactory.CreateScope();
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var rules = (await unitOfWork.AccountingRuleDbRepository.ListAsync(false, cancellationToken)).ToList();
             unitOfWork.AccountingRuleDbRepository.Add(rule);
+
+            // The new rule gets the highest id when saved: last among the rules of its priority
+            rules.Add(rule with { Id = PendingRuleId });
             using (await _sink.EnterAsync(cancellationToken))
             {
                 await RequestReprojectionAsync(unitOfWork, null, cancellationToken);
+                await AdjustClosedEntriesAsync(unitOfWork, rules, cancellationToken);
                 await unitOfWork.SaveChangesAsync();
             }
 
@@ -245,6 +260,9 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
         using var scope = _scopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var rules = unitOfWork.AccountingRuleDbRepository;
+
+        // The rules as they will be after the save (the change is only staged until then)
+        var after = (await rules.ListAsync(false, cancellationToken)).ToList();
         var changed = request.Action switch
         {
             AccountingClassifyAction.RuleRemove => await rules.RemoveAsync(id, cancellationToken),
@@ -253,9 +271,17 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
         };
         if (changed)
         {
+            after = request.Action switch
+            {
+                AccountingClassifyAction.RuleRemove => after.Where(r => r.Id != id).ToList(),
+                _ => after.Select(r => r.Id == id
+                                           ? r with { Enabled = request.Action == AccountingClassifyAction.RuleEnable }
+                                           : r).ToList()
+            };
             using (await _sink.EnterAsync(cancellationToken))
             {
                 await RequestReprojectionAsync(unitOfWork, null, cancellationToken);
+                await AdjustClosedEntriesAsync(unitOfWork, after, cancellationToken);
                 await unitOfWork.SaveChangesAsync();
             }
 
@@ -320,25 +346,21 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
          && !entry.Postings.Any(p => FinancialChart.IsClassifiable(p.Account)))
             throw Invalid($"The entry of '{key}' has no income, expense or transfer line to classify.");
 
-        try
-        {
-            if (await unitOfWork.AccountingPeriodDbRepository.GetClosedContainingAsync(
-                    accountingEvent.OccurredAt, cancellationToken) is { } period)
-                warnings.Add($"The event lies in the closed period {period.PeriodId}: the financial book posts the "
-                           + "change as an adjustment in the open period.");
-        }
-        catch (NotSupportedException)
-        {
-            // A unit of work without the periods (test doubles): no closed period to warn about
-        }
-
         var stored = new AccountingOverride(key, account, request.Note, _timeProvider.GetUtcNow());
         await unitOfWork.AccountingOverrideDbRepository.SetAsync(stored, cancellationToken);
+        string? closedPeriod;
         using (await _sink.EnterAsync(cancellationToken))
         {
             await RequestReprojectionAsync(unitOfWork, key, cancellationToken);
+            var engine = await CreateEngineAsync(unitOfWork, cancellationToken);
+            closedPeriod = await AdjustClosedEntryAsync(unitOfWork, key, engine, stored,
+                                                        AccountingAdjustmentReason.Override, cancellationToken);
             await unitOfWork.SaveChangesAsync();
         }
+
+        if (closedPeriod is not null)
+            warnings.Add($"The event's entry lies in the closed period {closedPeriod}: the change is posted as an "
+                       + "adjustment in the open period (D-A8).");
 
         _logger.LogInformation("Accounting override of {EventKey}: {Account}", key, account);
         return response with { Override = stored };
@@ -357,6 +379,9 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
             using (await _sink.EnterAsync(cancellationToken))
             {
                 await RequestReprojectionAsync(unitOfWork, key, cancellationToken);
+                var engine = await CreateEngineAsync(unitOfWork, cancellationToken);
+                await AdjustClosedEntryAsync(unitOfWork, key, engine, null, AccountingAdjustmentReason.Override,
+                                             cancellationToken);
                 await unitOfWork.SaveChangesAsync();
             }
 
@@ -411,7 +436,9 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
             if (eventKey is not null)
             {
                 var entries = await books.GetEntriesByKeyAsync(AccountingBook.Financial, eventKey, cancellationToken);
-                if (entries.FirstOrDefault(e => e.Adjustment == 0 && e.ClosedPeriodId is null) is not { } open)
+                // The open entry of the fact: its projection, or its late fact's adjustment (rolled back and staged
+                // again with the open period, NL-671)
+                if (AccountingReclassification.BaseEntry(entries) is not { ClosedPeriodId: null } open)
                     return;
 
                 from = open.LedgerSeq;
@@ -441,6 +468,127 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
         catch (NotSupportedException)
         {
             // A unit of work without the financial book: nothing to project again
+        }
+    }
+
+    /// <summary>
+    /// A rule change (staged on <paramref name="unitOfWork"/>, <paramref name="rules"/> as they will be after the save):
+    /// every closed entry the new rules classify differently gets its reclassification adjustment in the open period
+    /// (NL-660, D-A8). The caller holds the period lock's write lock and saves.
+    /// </summary>
+    private async Task AdjustClosedEntriesAsync(IUnitOfWork unitOfWork, IReadOnlyList<AccountingRule> rules,
+                                                CancellationToken cancellationToken)
+    {
+        try
+        {
+            var last = await unitOfWork.AccountingPeriodDbRepository.GetLastClosedAsync(cancellationToken);
+            if (last is null)
+                return;
+
+            var engine = new ClassificationEngine(Chart, rules);
+            var books = unitOfWork.AccountingBooksDbRepository;
+            long afterSeq = 0;
+            var afterAdjustment = -1;
+            var adjusted = 0;
+            while (true)
+            {
+                var page = await books.ListEntriesAsync(new AccountingEntryQuery(afterSeq, ScanPageSize, null, last.End)
+                {
+                    Book = AccountingBook.Financial,
+                    AfterAdjustment = afterAdjustment
+                }, cancellationToken);
+                foreach (var entry in page.Where(e => e.ClosedPeriodId is not null
+                                                   && (e.Adjustment == 0
+                                                    || e.Flags.HasFlag(AccountingEntryFlags.LateFact))
+                                                   && e.Postings.Any(p => FinancialChart.IsClassifiable(p.Account))))
+                {
+                    var accountingOverride =
+                        await unitOfWork.AccountingOverrideDbRepository.GetAsync(entry.EventKey, cancellationToken);
+                    if (await AdjustClosedEntryAsync(unitOfWork, entry.EventKey, engine, accountingOverride,
+                                                     AccountingAdjustmentReason.RuleChange, cancellationToken)
+                        is not null)
+                        adjusted++;
+                }
+
+                if (page.Count < ScanPageSize)
+                    break;
+
+                afterSeq = page[^1].LedgerSeq;
+                afterAdjustment = page[^1].Adjustment;
+            }
+
+            if (adjusted > 0)
+                _logger.LogInformation("Accounting rule change: {Count} entries of closed periods reclassified by "
+                                     + "adjustments in the open period", adjusted);
+        }
+        catch (NotSupportedException)
+        {
+            // A unit of work without the financial book or the periods (test doubles): nothing closed
+        }
+    }
+
+    /// <summary>
+    /// When the financial entry of <paramref name="eventKey"/> lies in a closed period and
+    /// <paramref name="engine"/> with <paramref name="accountingOverride"/> classifies it into other accounts than the
+    /// book holds it in now, stages the adjustment that moves its classifiable lines there, in the open period, dated
+    /// now, at their original values (NL-660, D-A8; <see cref="AccountingReclassification"/>). No lot moves. The caller
+    /// holds the period lock's write lock and saves.
+    /// </summary>
+    /// <returns>The closed period of the entry when an adjustment was staged, else null.</returns>
+    private async Task<string?> AdjustClosedEntryAsync(IUnitOfWork unitOfWork, string eventKey,
+                                                       ClassificationEngine engine,
+                                                       AccountingOverride? accountingOverride,
+                                                       AccountingAdjustmentReason reason,
+                                                       CancellationToken cancellationToken)
+    {
+        try
+        {
+            var books = unitOfWork.AccountingBooksDbRepository;
+            var entries = await books.GetEntriesByKeyAsync(AccountingBook.Financial, eventKey, cancellationToken);
+            if (AccountingReclassification.BaseEntry(entries) is not { ClosedPeriodId: { } periodId } baseEntry
+             || await books.GetEntryByKeyAsync(eventKey, cancellationToken) is not { } operational)
+                return null;
+
+            var events = await unitOfWork.AccountingEventDbRepository.GetSealedRangeAsync(operational.LedgerSeq, 1,
+                                                                                          cancellationToken);
+            if (events.FirstOrDefault(e => e.LedgerSeq == operational.LedgerSeq) is not { } accountingEvent
+             || await _sink.GetLockingPeriodAsync(operational.OccurredAt, cancellationToken) is null)
+                return null;
+
+            var classification = engine.Classify(operational, accountingEvent, accountingOverride);
+            if (!classification.HasClassifiableLine)
+                return null;
+
+            var moves = AccountingReclassification.PlanMove(
+                entries, role => engine.AccountNameOf(role, accountingEvent, classification));
+            if (moves.Count == 0)
+                return null;
+
+            var target = classification.Source == AccountingClassificationSource.Default
+                             ? "the default accounts"
+                             : classification.Account;
+            var staged = await _sink.StageAdjustmentAsync(unitOfWork, new AccountingAdjustment(
+                                                              reason, baseEntry.LedgerSeq, eventKey, baseEntry.Kind,
+                                                              operational.OccurredAt, moves)
+            {
+                ChannelId = baseEntry.ChannelId,
+                PaymentHash = baseEntry.PaymentHash,
+                DedupeKey = AccountingReclassification.NextDedupeKey(entries),
+                Note = $"reclassified to {target} ({classification.Reason})",
+                Classification = classification.Source,
+                RuleId = classification.RuleId is { } ruleId && ruleId != PendingRuleId ? ruleId : null
+            }, cancellationToken);
+            if (staged is null)
+                return null;
+
+            _logger.LogInformation("Accounting: {EventKey} of the closed period {PeriodId} reclassified to {Account} "
+                                 + "by adjustment {Adjustment}", eventKey, periodId, target, staged.Adjustment);
+            return periodId;
+        }
+        catch (NotSupportedException)
+        {
+            // A unit of work without the financial book (test doubles): nothing closed
+            return null;
         }
     }
 

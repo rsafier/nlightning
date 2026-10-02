@@ -126,7 +126,9 @@ public sealed record AccountingLotTotals
 
 /// <summary>
 /// A page of the financial book's entries in (ledger sequence, adjustment) order (NL-602 A3-T6): the register of the
-/// financial book, or the entries flagged for review (<see cref="AccountingEntryFlags.Unclassified"/>).
+/// financial book, or the entries flagged for review (<see cref="AccountingEntryFlags.Unclassified"/>; a closed entry
+/// reclassified later by an adjustment is left out once none of its classifiable lines is in an unclassified account,
+/// NL-667, so a page of that listing may hold fewer entries than asked while <see cref="HasMore"/> is true).
 /// </summary>
 /// <param name="Entries">The page.</param>
 /// <param name="NextAfter">The ledger sequence of the next page's cursor.</param>

@@ -8,6 +8,7 @@ namespace NLightning.Application.Accounting.Reports.Financial;
 using Domain.Accounting.Books;
 using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Financial;
+using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Financial.Reports;
 using Domain.Accounting.Interfaces;
 using Domain.Persistence.Interfaces;
@@ -37,6 +38,7 @@ public sealed class AccountingFinancialReportService : IAccountingFinancialRepor
     private static readonly TimeSpan s_longTerm = TimeSpan.FromDays(365);
 
     private readonly AccountingFinancialAccess _access;
+    private readonly FinancialChart _chart;
     private readonly AccountNames _names;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly INodeSnapshotSource? _snapshotSource;
@@ -55,6 +57,7 @@ public sealed class AccountingFinancialReportService : IAccountingFinancialRepor
         _scopeFactory = scopeFactory;
         _access = new AccountingFinancialAccess(books, sealer, projection, logger);
         _names = (options?.Value ?? new AccountingOptions()).GetAccountNames();
+        _chart = (options?.Value ?? new AccountingOptions()).GetFinancialChart();
         _snapshotSource = snapshotSource;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _weights = weights ?? AccountingRiskWeights.Default;
@@ -225,11 +228,40 @@ public sealed class AccountingFinancialReportService : IAccountingFinancialRepor
         var books = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().AccountingBooksDbRepository;
         var cursor = await books.GetCursorAsync(AccountingBook.Financial, cancellationToken);
         var entries = await books.ListEntriesAsync(query with { Book = AccountingBook.Financial }, cancellationToken);
+        if (entries.Count == 0)
+            return new AccountingFinancialRegister(entries, query.AfterLedgerSeq, query.AfterAdjustment, false, cursor);
 
-        return entries.Count == 0
-                   ? new AccountingFinancialRegister(entries, query.AfterLedgerSeq, query.AfterAdjustment, false, cursor)
-                   : new AccountingFinancialRegister(entries, entries[^1].LedgerSeq, entries[^1].Adjustment,
-                                                     entries.Count == query.Take, cursor);
+        // The page's position is the read's, even when the review listing leaves entries out
+        var listed = query.WithFlags.HasFlag(AccountingEntryFlags.Unclassified)
+                         ? await StillUnclassifiedAsync(books, entries, cancellationToken)
+                         : entries;
+        return new AccountingFinancialRegister(listed, entries[^1].LedgerSeq, entries[^1].Adjustment,
+                                               entries.Count == query.Take, cursor);
+    }
+
+    /// <summary>
+    /// The unclassified entries still waiting for review (NL-667): a closed entry reclassified later by an adjustment
+    /// in the open period (NL-660) keeps its flag, so it is listed only while a classifiable line of it is left in an
+    /// unclassified account (<see cref="AccountingReclassification.IsStillUnclassified"/>); open entries are projected
+    /// again when reclassified, so their flag is current.
+    /// </summary>
+    private async Task<IReadOnlyList<AccountingEntry>> StillUnclassifiedAsync(IAccountingBooksDbRepository books,
+                                                                             IReadOnlyList<AccountingEntry> entries,
+                                                                             CancellationToken cancellationToken)
+    {
+        var listed = new List<AccountingEntry>(entries.Count);
+        foreach (var entry in entries)
+        {
+            if (entry.ClosedPeriodId is not null
+             && !AccountingReclassification.IsStillUnclassified(
+                    await books.GetEntriesByKeyAsync(AccountingBook.Financial, entry.EventKey, cancellationToken),
+                    _chart))
+                continue;
+
+            listed.Add(entry);
+        }
+
+        return listed;
     }
 
     /// <inheritdoc/>
