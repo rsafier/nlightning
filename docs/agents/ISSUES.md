@@ -133,12 +133,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 39 | 40 |
+| open | 0 | 0 | 1 | 43 | 44 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 185 | 363 | 624 |
+| fixed | 14 | 62 | 185 | 369 | 630 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **192** | **412** | **680** |
+| **Total** | **14** | **62** | **192** | **422** | **690** |
 
 ### Epics
 
@@ -4577,12 +4577,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A2
 
 ### NL-706 The fee rate cache file (`FeeEstimation:CacheFile`) is never written or read
-- **Status:** open
+- **Status:** fixed (4ca32727, 3fbe8710; merged 01742fda)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/FeeService.cs` (`SaveToFileAsync`, `LoadFromFileAsync`)
 - **Evidence:** Both methods only log and return; their old bodies were commented out and serialized the Daemon-only `FeeRateCacheData` (deleted under NL-151). `FeeService` still parses `FeeEstimation:CacheFile`, the template writes it and CLAUDE.md (NL-306) resolves it against the config directory, so an operator expects a cached estimate across restarts but gets none: after a restart the service uses `FallbackFeeRatePerKw` until the first fetch succeeds (reported by lane b10-plugin).
 - **Fix sketch:** Persist the last estimate (rate, buckets, time) with a source-generated JSON context in Infrastructure.Bitcoin and load it at start when younger than the refresh interval; or drop the setting and its docs.
+- **Fix:** Batch11 lane fee-cache: `FeeRateCacheFile`/`FeeRateCacheEntry` (source-generated JSON: node-wide rate, HTTP buckets, fetch time, source and a SHA-256 of the source settings) written atomically (unique 0600 temp file, flush, rename) by one background writer after each successful fetch; read on a thread-pool task at construction, `StartAsync` waits at most 2 s, `StopAsync` at most 5 s for the last write. An estimate younger than `CacheExpiration` starts without waiting for a fetch, one younger than the new `FeeEstimation:CacheMaxAge` (default 1h, validated when a cache file is set) replaces the fallback while the first fetch fails; stale, future, corrupt, oversized, implausible and other-source files are logged and ignored; `Source=Fixed` never uses the file. The library default `CacheFile` is empty (off); the daemon anchors the template name, or `fee_estimation_cache.bin` when its file names none, to the configuration directory, and an empty value turns it off. The integration fixed NL-763 (the read could put older buckets over a fetch's). Tests: `FeeServiceCacheFileTests` (38), `DaemonArgsTests`.
 - **Blocks/Blocked-by:** Related NL-151
 - **Plan ref:** —
 
@@ -5097,12 +5098,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A1
 
 ### NL-688 An invoice settled before its HTLC times out to the peer on chain records no loss
-- **Status:** open
+- **Status:** fixed (c8055767; merged b676c6a4)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs`; `Payments/PaymentAccountingEvents.cs`
 - **Evidence:** NL-608 records `ForwardLostOnchain` when a settled forward's incoming HTLC is lost on chain; our own invoice settled (booked `InvoiceSettled`) whose incoming HTLC then times out to the peer on chain (or is given up) books nothing, so the books keep a receipt the node no longer holds (reported by lane b10-acct-edges).
 - **Fix sketch:** Record an `InvoiceLostOnchain` (or a reversal of the settle) in the resolution's save, keyed by generation, reversed by a reorg, like NL-608.
+- **Fix:** Batch11 lane acct-gaps: a new event kind `InvoiceLostOnchain` (6) staged by `OnchainResolutionExecutor` (`StageInvoiceLossAsync`) in the resolution's save when the peer takes an incoming HTLC output of the close by its timeout or we give it up, the HTLC has no forward circuit, the invoice is `Settled` and the HTLC record carries the invoice's preimage (`KnownPreimage` or a fulfill) and no failure; amount = −HTLC amount, key `inv:{hash}:{channel}:{htlc}:onchain` by generation, reversed by a reorg or a replaced close (executor and `OnchainChannelWatcher`, `StageInvoiceLossReversalAsync`). Books: Cr Channels / Dr LossOnchain like `ForwardLostOnchain`; the sale stays income (the payer holds the preimage) and the channels reconcile to the close. Tests: `OnchainAccountingTests.Given_ASettledInvoicesIncomingHtlc_*` (FIFO/LIFO/HIFO, real watcher and executor, NL-749 lots invariant, reorg reversal and reconfirmation; fail with the fix off), `Given_AnIncomingHtlcNotBookedByASettledInvoice_*`, Domain `AccountingPostingRulesTests`, `ClassificationEngineTests`.
 - **Blocks/Blocked-by:** Related NL-608; part of NL-602
 - **Plan ref:** —
 
@@ -5589,12 +5591,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN D-A11; SECURITY_REVIEW SR-22
 
 ### NL-693 A wrong price stored from the source can only be corrected by editing `AccountingPrices`
-- **Status:** open
+- **Status:** fixed (6c6e483c, merge fix bf64a4dc; merged b676c6a4)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs`; IPC `accounting prices`
 - **Evidence:** Stored prices are never replaced (first wins, reproducible reports), so a wrong one that passes the NL-678 sanity bound (or one fetched before any neighbor existed) stays until the operator edits the table before the period closes; there is no `prices replace` command (SECURITY_REVIEW "What remains" 6, reported by lane b10-sec).
 - **Fix sketch:** An `accounting prices replace` admin command that swaps an open-period price, logs it and lets the back-valuation re-value the entries it priced (closed periods: an adjustment, D-A8).
+- **Fix:** Batch11 lane acct-gaps: `nltg accounting prices replace <time> <price> [--currency] [--source] [--note]` (IPC 45 action 14, request keys 5-8, response key 4; `PriceValuationService.ReplaceAsync`): the stored price of that second is replaced in place (id and time kept, source `Manual` = 4, `FetchedAt` = now) under the round gate and the period lock's write lock, in one save: open-period entries valued with it lower the financial cursor (projected again: values, lots, gains), closed-period entries (and their adjustments, late valuations included) get one `Price` adjustment each in the open period (Domain `AccountingRepricing`: realized gain for what left the node, `assets:cost-basis` for what came in; closed lots keep their cost, D-A8), a closed fact reversed by a reorg nets to zero in either order (`FinancialBooksProjector.ClosedFactLinesAsync`). Audit trail: a warning log and the adjustments' notes (NL-758). The integration renamed the entity write to `PriceSource` (the compiled-model lane's rename, NL-708). Tests: `FinancialPriceReplaceTests` (6), Domain `AccountingRepricingTests` (6), Daemon IPC handler (3), client (6).
 - **Blocks/Blocked-by:** Related NL-678; part of NL-602
 - **Plan ref:** —
 
@@ -6177,6 +6180,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Generate the compiled model and precompiled queries per provider (EF 10 `dotnet ef dbcontext optimize --precompile-queries`), or keep the AOT build client-only.
 - **Blocks/Blocked-by:** Related NL-338, NL-300
 - **Plan ref:** —
+Update (batch11, lane aot-ef, partial: 1c8cbfd8, 623d8eaf, 6a6911a1; merged fecd3a5d): EF Core compiled models for Sqlite, Postgres and SqlServer (`Persistence/CompiledModels/`, generated by `dotnet ef dbcontext optimize --nativeaot` through the new design-time project `NLightning.Infrastructure.Persistence.Design` and `scripts/optimize_model.sh`, which `add_migration.sh` runs; chosen by `CompiledModelCatalog`, used under NativeAOT or with `Database:UseCompiledModel=true`; the generated assembly attribute removed; `CreateDefault<T>` comparer roots for every model value type; `ChannelIdConverter` written as `(ChannelId)bytes` and `AccountingPriceEntity.Source` renamed `PriceSource` in C# with the column kept, no schema change), guarded by `Integration.Tests/Persistence/CompiledModelTests` (all three providers). A real osx-arm64 native probe initializes the three models and SaveChanges inserts and updates through SQLite. Left: EF 10.0.12 refuses to precompile 173 repository queries (`optimize_model.sh --check-queries`: 96 dynamic LINQ via `BaseDbRepository.DbSet` and conditional composition, 68 captured method parameters, 4 static members, 3 query syntax, 1 DbSet local, 1 argument types), precompilation is all or nothing and provider-specific inside the one Repositories assembly, and EF refuses Migrate under NativeAOT; the AOT daemon still stops before the password prompt. Remaining fix: rewrite the queries in a precompilable form, pick one provider (SQLite) for the AOT build's interceptors, apply migrations outside the AOT binary.
 
 ### NL-709 No real NativeAOT publish has run (local `dotnet publish` denied; CI steps never run)
 - **Status:** open
@@ -6187,6 +6191,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Run `scripts/aot-smoke.sh` (and `--ipc`) on a machine that may publish, on SDK 10 and 11, and watch the first CI run.
 - **Blocks/Blocked-by:** Related NL-300, NL-338
 - **Plan ref:** —
+Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ran locally (publish allowed by the owner, 2026-10-02): with SDK 10.0.103 (ILCompiler 10.0.3) the link fails (NL-750); with SDK 11 rc.1's ILCompiler 10.0.12 for net10.0 it links (daemon 89 MB, client 13 MB) and `scripts/aot-smoke.sh` passes 7/7 in real publish mode (after NL-751). Still open: the linux-x64 CI publish-and-smoke steps have not run.
 
 ### NL-710 The configuration binding generator silently ignores init-only option properties
 - **Status:** fixed (3239babe)
@@ -7104,6 +7109,109 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done (85eed189): the resolver leaves our anchor of the peer's commitment `Waiting` with the sweep's due height (+16, `AnchorCsvSequence`) while `Anchors:SweepAnchors` is on, and the executor records whoever's spend — our sweep's or the peer's racing one — as `Resolved` (the same default path the local commitment's anchor rows take); still unspent at the irrevocable depth (sweep refused or lost, the peer uninterested) the row settles `Ignored`. With the sweep off, `Ignored` as before. The race itself stays out of scope (harmless: the loser's sweep is refused and its rows see the spend).
 - **Blocks/Blocked-by:** Related NL-381 (CPFP through our anchor on the peer's commitment)
 - **Plan ref:** BOLT5 O7
+
+### NL-750 A NativeAOT publish with SDK 10.0.103 fails at link on macOS (Xcode 26.3)
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** toolchain (`dotnet publish -c Release.Native -r osx-arm64 -p:PublishAot=true`, `scripts/aot-smoke.sh`)
+- **Evidence:** Batch11 lane aot-ef, 2026-10-02: with SDK 10.0.103 (ILCompiler 10.0.3) the ILCompiler finishes but Apple's ld (Xcode 26.3) asserts ("too many large addends"); with SDK 11 rc.1's ILCompiler 10.0.12 for net10.0 the same publish links (`DOTNET=/usr/local/share/dotnet/dotnet scripts/aot-smoke.sh`). Not a code defect of ours.
+- **Fix sketch:** Publish with SDK 11 rc.1 (ILCompiler 10.0.12) or a newer SDK 10 patch; recheck on the next SDK 10 servicing release.
+- **Blocks/Blocked-by:** Related NL-709, NL-338
+- **Plan ref:** NET11_PLAN.md (batch 11 update)
+
+### NL-751 `aot-smoke.sh`'s broken-Bitcoin-section case failed since NL-740 accepts a bare host
+- **Status:** fixed (30cbf374; merged fecd3a5d)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `scripts/aot-smoke.sh`
+- **Evidence:** The smoke broke the section with `Bitcoin:RpcEndpoint=localhost`, which NL-740 made valid, so "daemon --check-config (broken Bitcoin section)" exited 0 ("Configuration OK") on every run (batch11 lane aot-ef).
+- **Fix sketch:** Use an endpoint the check refuses.
+- **Fix:** It writes `ftp://localhost` (one of `BitcoinOptionsTests`' refused endpoints); the emulated and the real-publish smoke pass 7/7.
+- **Blocks/Blocked-by:** Related NL-740, NL-338
+- **Plan ref:** —
+
+### NL-752 A real NativeAOT publish reports trim/AOT warnings the analyzer build does not
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Daemon` publish (ILCompiler), `src/NLightning.Infrastructure.Persistence/CompiledModels/`
+- **Evidence:** Batch11 lane aot-ef: the analyzer build (`dotnet build ... -p:PublishAot=true`) stays at 0, but the ILCompiler of a real publish reports about 100 trim/AOT warnings (74 IL2026 and others) plus about 3,900 IL3050 in the generated compiled models.
+- **Fix sketch:** Triage the ILCompiler warnings (suppress the generated models' IL3050 where EF documents them as safe, fix or annotate the rest) and gate the real publish's warning count.
+- **Blocks/Blocked-by:** Related NL-708, NL-709
+- **Plan ref:** NET11_PLAN.md (batch 11 update)
+
+### NL-755 With an expired estimate and a failing fee API, every `GetFeeRatePerKwAsync` caller waits for its own fetch
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/FeeService.cs` (`GetFeeRatePerKwAsync`, `IsCacheValid`)
+- **Evidence:** Predates NL-706 (found by batch11 lane fee-cache while reading the code; no test). Once the estimate is older than `CacheExpiration` (5 min), `GetFeeRatePerKwAsync` awaits `RefreshFeeRateAsync`; while the API is down or stalling every caller (open_channel, update_fee, sweeps) starts its own fetch, bounded only by the 30 s HttpClient timeout, before it falls back to the kept estimate, although the background loop already refreshes on its own schedule.
+- **Fix sketch:** Serve the kept estimate at once and let one fetch run at a time (single-flight), or leave refreshing to the background loop; optionally a short backoff after a failed fetch.
+- **Blocks/Blocked-by:** Related NL-706
+- **Plan ref:** —
+
+### NL-756 `FeeEstimation:CacheExpiration` is not validated: a malformed value silently becomes 5 minutes
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/FeeService.cs` (`ParseCacheTime`)
+- **Evidence:** Predates NL-706 (batch11 lane fee-cache). `ParseCacheTime` strips the non-digits and non-letters, so "1h30m" reads as 130 with the unit "hm", which becomes 5 min; any unknown unit also becomes 5 min, with no error or log. The new `CacheMaxAge` uses the strict `FeeEstimationOptions.TryParseDuration` and is validated; `CacheExpiration` was left lenient so existing configurations keep binding.
+- **Fix sketch:** Validate `CacheExpiration` with `TryParseDuration` in `GetValidationErrors`, or at least log a warning when the value falls back to 5 min.
+- **Blocks/Blocked-by:** Related NL-706
+- **Plan ref:** —
+
+### NL-758 A price replacement's note and the replaced price are kept only in the log when no closed period used the price
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (`ReplaceAsync`); `docs/agents/SECURITY_REVIEW.md` SR-22
+- **Evidence:** Batch11 lane acct-gaps (NL-693): `prices replace` writes the old price, the old source, `--source` and `--note` into a warning log line and into the notes of the `Price` adjustments it posts for closed periods; when no closed period used the price there is no adjustment, so the audit trail lives only in the log.
+- **Fix sketch:** A table of price replacements (price id, old and new price and source, time, operator source and note), shown by `accounting prices list`; needs a migration for the three providers.
+- **Blocks/Blocked-by:** Related NL-693; part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN A3-T2
+
+### NL-759 After a price replacement, closed lots keep the old cost and a closed period's export prints the corrected price
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (`RepriceAsync`), `Accounting/Financial/` lots and export
+- **Evidence:** Batch11 lane acct-gaps (NL-693): the period-close rule (D-A8) keeps the cost of lots acquired in a closed period, so a lot valued with a replaced price keeps its old cost and a later disposal realizes its gain against it (the replacement's `assets:cost-basis` correction moves the balance, not the lot); a closed period's export prints the stored (corrected) price in its price directives, not the one its entries were valued with.
+- **Fix sketch:** Decide per D-A8 whether a replacement re-costs open lots acquired in a closed period (with a lot adjustment), and print the price a closed period used (or both) in its export.
+- **Blocks/Blocked-by:** Related NL-693; part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN A3-T2
+
+### NL-761 The channel report kept a reorg-reversed on-chain loss of a forward
+- **Status:** fixed (c8055767; merged b676c6a4)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Accounting/Reports/AccountingReportService.cs` (`ApplyOnchain`)
+- **Evidence:** Batch11 lane acct-gaps: a `Reversal` of a `ForwardLostOnchain` (a reorg or a replaced close, NL-608) went through `ApplyOnchain`, which had no case for that kind, so the channel report's `OnchainLossMsat` kept the reversed loss.
+- **Fix sketch:** Take a reversed loss off again.
+- **Fix:** `ApplyOnchain` subtracts a reversed `ForwardLostOnchain` or `InvoiceLostOnchain` (NL-688) from `OnchainLossMsat`; `AccountingReportServiceTests`.
+- **Blocks/Blocked-by:** Related NL-608, NL-688; part of NL-602
+- **Plan ref:** —
+
+### NL-763 The fee cache file read could put older HTTP buckets over a fetch's
+- **Status:** fixed (3fbe8710)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/FeeService.cs` (`LoadFromFile`, `FetchFeeRatePerKwAsync`)
+- **Evidence:** Batch11 integration review of NL-706: a fetch stored its per-target HTTP buckets before it took the state lock and set `_fetchedOnce`; a cache file read finishing in between (a consumer asking for a rate before the read completes) kept the fetched node-wide rate but replaced the buckets with the file's older ones until the next fetch (at most `CacheMaxAge` old).
+- **Fix sketch:** Store the fetched buckets under the state lock and take the file's only while none are held.
+- **Fix:** Done as sketched; `FeeService*` tests 80/80 three times, Infrastructure.Bitcoin 1615 + 2 skipped.
+- **Blocks/Blocked-by:** Related NL-706
+- **Plan ref:** —
+
+### NL-764 Application.Tests hung once in a loaded full non-Docker run (test not identified)
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests` (unknown test)
+- **Evidence:** Batch11 integration, `wip/batch11` at 895d9c26, macOS arm64, Release net10.0: in the second of three full non-Docker runs the Application.Tests host stopped progressing after 3516 of 3616 tests (no output for more than 8 minutes, killed; "Test host process crashed"). Application.Tests alone with `--blame-hang-timeout 4m` passed 3616/3616 in 2 m 19 s, and a third full run with `--blame-hang-timeout 5m` passed every project (13517 passed, 6 skipped), so no hang dump was captured.
+- **Fix sketch:** Run the full suite with `--blame-hang-timeout 5m --blame-hang-dump-type mini` until it recurs and read the dump's stacks; then move the test to a stepped clock or a bounded event-driven wait like the earlier de-timing pass.
+- **Blocks/Blocked-by:** Related NL-512, NL-565, NL-707
+- **Plan ref:** —
 
 ## Docs
 
