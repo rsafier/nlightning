@@ -13,7 +13,7 @@ using Runner;
 /// One run of the harness (plan R1, R3): its own namespace <c>&lt;prefix&gt;-&lt;run id&gt;</c>, labelled
 /// <c>nltg.run</c>/<c>nltg.suite</c>/<c>nltg.started</c> (and <c>nltg.spike</c> in the spike), the nodes deployed into
 /// it, and its cleanup: disposing deletes the namespace, and with it everything the run created, after checking that
-/// the namespace is the run's own.
+/// the namespace is the run's own (in the background by default, <see cref="TestRunOptions.WaitForDeletion"/>).
 /// </summary>
 /// <example>
 /// <code>
@@ -171,7 +171,8 @@ public sealed class TestRun : IAsyncDisposable
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
 
         var handle = new KubeNodeHandle(Client, Namespace, workload.Name, workload.Kind,
-                                        workload.TerminationGracePeriodSeconds);
+                                        workload.TerminationGracePeriodSeconds,
+                                        workload.Data?.Storage ?? NodeStorage.Persistent);
         if (!_nodes.TryAdd(workload.Name, handle))
             throw new InvalidOperationException($"Run {Id} already has a node named {workload.Name}");
 
@@ -189,8 +190,10 @@ public sealed class TestRun : IAsyncDisposable
             : throw new KeyNotFoundException($"Run {Id} has no node named {name}");
 
     /// <summary>
-    /// Deletes the run's namespace (unless <see cref="TestRunOptions.KeepNamespace"/>) and waits for it to go when
-    /// <see cref="TestRunOptions.WaitForDeletion"/>; then disposes the client.
+    /// Stops the run's pods with <see cref="TestRunOptions.TeardownGracePeriodSeconds"/> (about 3 s), deletes its
+    /// namespace (unless <see cref="TestRunOptions.KeepNamespace"/>) and returns while it terminates in the background
+    /// (it holds its admission slot until it is gone); with <see cref="TestRunOptions.WaitForDeletion"/> it waits for it
+    /// to go. Then disposes the client.
     /// </summary>
     public async ValueTask DisposeAsync()
     {
@@ -217,11 +220,22 @@ public sealed class TestRun : IAsyncDisposable
                 return;
             }
 
-            if (await RunNamespace.DeleteAsync(Client, Identity, cts.Token).ConfigureAwait(false)
-             && _options.WaitForDeletion)
+            var deleted = await RunNamespace.DeleteAsync(Client, Identity, cts.Token,
+                                                         _options.TeardownGracePeriodSeconds)
+                                            .ConfigureAwait(false);
+            if (deleted && _options.WaitForDeletion)
+            {
                 await RunNamespace.WaitForDeletionAsync(Client, Namespace, _options.DeletionTimeout, cts.Token)
                                   .ConfigureAwait(false);
-            _options.Log?.Invoke($"[nltg-cluster] run {Id}: namespace {Namespace} deleted");
+                _options.Log?.Invoke($"[nltg-cluster] run {Id}: namespace {Namespace} deleted");
+            }
+            else
+            {
+                _options.Log?.Invoke(deleted
+                                         ? $"[nltg-cluster] run {Id}: namespace {Namespace} deletion issued "
+                                         + "(it terminates in the background)"
+                                         : $"[nltg-cluster] run {Id}: namespace {Namespace} already gone");
+            }
         }
         finally
         {

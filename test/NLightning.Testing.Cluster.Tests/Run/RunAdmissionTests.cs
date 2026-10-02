@@ -81,4 +81,19 @@ public class RunAdmissionTests
         // Act & Assert
         Assert.Equal(expected, RunAdmission.HoldsSlot(Namespace(name, 0, managed, run), "nltg-spike"));
     }
+
+    [Fact]
+    public void Given_ATerminatingRunNamespace_When_Counted_Then_ItStillHoldsASlot()
+    {
+        // Arrange: deleted in the background by its run (TestRun.DisposeAsync), its pods and PVCs still going
+        var terminating = Namespace("nltg-spike-old", 0);
+        terminating.Metadata.DeletionTimestamp = DateTime.UtcNow;
+        terminating.Status = new V1NamespaceStatus { Phase = "Terminating" };
+        var live = new[] { terminating, Namespace("nltg-spike-new", 1) };
+
+        // Act & Assert: it counts, and ranks first (oldest), so a cap of 1 keeps the new run out until it is gone
+        Assert.True(RunAdmission.HoldsSlot(terminating, "nltg-spike"));
+        Assert.Equal(0, RunAdmission.Rank(live.Where(ns => RunAdmission.HoldsSlot(ns, "nltg-spike")), "nltg-spike-old"));
+        Assert.Equal(1, RunAdmission.Rank(live, "nltg-spike-new"));
+    }
 }

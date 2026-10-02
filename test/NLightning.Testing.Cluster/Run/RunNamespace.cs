@@ -114,12 +114,15 @@ public static class RunNamespace
     }
 
     /// <summary>
-    /// Deletes <paramref name="run"/>'s namespace (everything in it goes with it, PVCs included). Returns false when it
-    /// does not exist.
+    /// Deletes <paramref name="run"/>'s namespace (everything in it goes with it, PVCs included). With
+    /// <paramref name="podGracePeriodSeconds"/> it first stops the run's pods with that grace period
+    /// (<see cref="StopPodsAsync"/>), so the namespace goes in seconds instead of half a minute. Returns false when it
+    /// does not exist. Does not wait for it to go (<see cref="WaitForDeletionAsync"/>).
     /// </summary>
     /// <exception cref="InvalidOperationException">The namespace exists but is not the run's own.</exception>
     public static async Task<bool> DeleteAsync(IKubernetes client, RunIdentity run,
-                                               CancellationToken cancellationToken)
+                                               CancellationToken cancellationToken,
+                                               int? podGracePeriodSeconds = null)
     {
         var ns = await TryReadAsync(client, run.Namespace, cancellationToken).ConfigureAwait(false);
         if (ns is null)
@@ -128,6 +131,10 @@ public static class RunNamespace
             throw new InvalidOperationException(
                 $"Refusing to delete namespace {run.Namespace}: it does not carry {RunLabels.Run}={run.Id} and "
               + $"{RunLabels.ManagedBy}={RunLabels.ManagedByValue}");
+
+        if (podGracePeriodSeconds is { } grace && ns.Metadata.DeletionTimestamp is null)
+            await StopPodsAsync(client, run.Namespace, grace, StopPodsTimeout, cancellationToken)
+               .ConfigureAwait(false);
 
         try
         {
@@ -140,6 +147,51 @@ public static class RunNamespace
         }
 
         return true;
+    }
+
+    /// <summary>How long <see cref="DeleteAsync"/> waits for the pods it stopped before it deletes the namespace anyway.</summary>
+    public static readonly TimeSpan StopPodsTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Stops every pod of a namespace whose run is over, quickly: deletes its StatefulSets without their pods (so none
+    /// is recreated), deletes the pods with a grace period of <paramref name="gracePeriodSeconds"/> instead of their
+    /// own (up to 30 s, plus CLN's <c>preStop</c> drain), and waits (at most <paramref name="timeout"/>) until none is
+    /// still pending or running. Best effort: an API error leaves the rest to the namespace's deletion.
+    /// </summary>
+    /// <remarks>
+    /// Why before the namespace's deletion and not after: the namespace controller, finding pods that are not finished
+    /// yet, waits for the largest <c>terminationGracePeriodSeconds</c> of their specs before it looks again (30 s for
+    /// bitcoind), however soon the pods are actually gone. Measured on OrbStack: run namespaces deleted with their pods
+    /// still running took 12-57 s to go with 6 runs at once (up to 169 s when their deletions overlapped), and a solo
+    /// one 14-21 s.
+    /// </remarks>
+    public static async Task StopPodsAsync(IKubernetes client, string ns, int gracePeriodSeconds, TimeSpan timeout,
+                                           CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(gracePeriodSeconds);
+        try
+        {
+            await client.AppsV1.DeleteCollectionNamespacedStatefulSetAsync(ns, propagationPolicy: "Orphan",
+                                                                           cancellationToken: cancellationToken)
+                        .ConfigureAwait(false);
+            await client.CoreV1.DeleteCollectionNamespacedPodAsync(ns, gracePeriodSeconds: gracePeriodSeconds,
+                                                                   cancellationToken: cancellationToken)
+                        .ConfigureAwait(false);
+            var deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                var pods = await client.CoreV1.ListNamespacedPodAsync(ns, cancellationToken: cancellationToken)
+                                       .ConfigureAwait(false);
+                if (pods.Items.All(p => p.Status?.Phase is "Succeeded" or "Failed"))
+                    return;
+
+                await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (HttpOperationException)
+        {
+            // The namespace's deletion stops them with their own grace
+        }
     }
 
     /// <summary>Waits until <paramref name="name"/> no longer exists.</summary>

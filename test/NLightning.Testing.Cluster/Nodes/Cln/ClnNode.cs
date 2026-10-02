@@ -27,7 +27,7 @@ public static class ClnNode
         var workload = new NodeWorkload(name, NodeKind.Cln, options.Image)
         {
             Resources = options.Resources,
-            Data = new DataVolume(DataPath, options.DataSize),
+            Data = new DataVolume(DataPath, options.DataSize, Storage: options.Storage),
             ReadinessProbe = Probes.Exec(ReadinessCommand, periodSeconds: 1, timeoutSeconds: 5, failureThreshold: 3),
             TerminationGracePeriodSeconds = 15,
             // The image's PID 1 is a bash script that does not pass SIGTERM on to lightningd: drain, then stop it over
@@ -37,6 +37,8 @@ public static class ClnNode
                 PreStop = new V1LifecycleHandler { Exec = new V1ExecAction { Command = [.. StopCommand] } }
             }
         };
+        if (options.StartupWait is { } wait)
+            workload.InitContainers.Add(wait);
         workload.Env["LIGHTNINGD_NETWORK"] = Network;
         workload.Ports.Add(new WorkloadPort("p2p", P2PPort));
         foreach (var arg in BuildArgs(name, options))

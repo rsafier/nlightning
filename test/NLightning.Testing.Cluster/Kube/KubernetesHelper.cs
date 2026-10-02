@@ -65,6 +65,35 @@ public static class KubernetesHelper
         }
     }
 
+    /// <summary>
+    /// Waits until <paramref name="service"/>'s EndpointSlices list an address (ready or not: the harness's headless
+    /// Services publish not-ready addresses), which is when the cluster DNS starts answering for its name. Returns
+    /// false after <paramref name="timeout"/> instead of throwing.
+    /// </summary>
+    /// <remarks>
+    /// Why wait for it: CoreDNS caches a name that does not resolve (NXDOMAIN) for 5 s (measured on OrbStack's k3s: a
+    /// Service created right after a miss resolved only 5.0 s after the miss). A pod that looks a node's name up before
+    /// the node's pod has an IP therefore cannot reach it for up to 5 s more.
+    /// </remarks>
+    public static async Task<bool> WaitForServiceAddressAsync(this IKubernetes client, string ns, string service,
+                                                              TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            var slices = await client.DiscoveryV1.ListNamespacedEndpointSliceAsync(
+                                         ns, labelSelector: $"kubernetes.io/service-name={service}",
+                                         cancellationToken: cancellationToken)
+                                     .ConfigureAwait(false);
+            if (slices.Items.Any(slice => slice.Endpoints?.Any(e => e.Addresses is { Count: > 0 }) == true))
+                return true;
+            if (DateTime.UtcNow >= deadline)
+                return false;
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     /// <summary>The pod, or null when it does not exist (yet).</summary>
     public static async Task<V1Pod?> TryReadPodAsync(this IKubernetes client, string ns, string podName,
                                                      CancellationToken cancellationToken)

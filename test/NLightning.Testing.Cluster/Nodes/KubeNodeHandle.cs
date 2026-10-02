@@ -22,14 +22,23 @@ public sealed class KubeNodeHandle : INodeHandle
     private readonly IKubernetes _client;
     private readonly int _gracePeriodSeconds;
 
-    public KubeNodeHandle(IKubernetes client, string ns, string name, NodeKind kind, int gracePeriodSeconds = 10)
+    public KubeNodeHandle(IKubernetes client, string ns, string name, NodeKind kind, int gracePeriodSeconds = 10,
+                          NodeStorage storage = NodeStorage.Persistent)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         Namespace = KubeNames.RequireDns1123Label(ns, "namespace");
         Name = KubeNames.RequireDns1123Label(name, "node name", KubeNames.MaxWorkloadNameLength);
         Kind = kind;
         _gracePeriodSeconds = gracePeriodSeconds;
+        Storage = storage;
     }
+
+    /// <summary>
+    /// Where the node's data lives. With <see cref="NodeStorage.Ephemeral"/> a restart or a kill would bring it back
+    /// empty (new keys, no channels, an empty chain), so <see cref="RestartAsync"/> and <see cref="KillAsync"/> refuse;
+    /// a crash in place keeps the <c>emptyDir</c>.
+    /// </summary>
+    public NodeStorage Storage { get; }
 
     /// <summary>The client this handle drives, for implementation-specific calls.</summary>
     public IKubernetes Client => _client;
@@ -87,6 +96,12 @@ public sealed class KubeNodeHandle : INodeHandle
     private async Task ReplacePodAsync(int gracePeriodSeconds, TimeSpan readyTimeout,
                                        CancellationToken cancellationToken)
     {
+        if (Storage == NodeStorage.Ephemeral)
+            throw new InvalidOperationException(
+                $"{this} keeps its data in an emptyDir ({nameof(NodeStorage)}.{nameof(NodeStorage.Ephemeral)}): a new "
+              + $"pod would start empty. Deploy it with {nameof(NodeStorage)}.{nameof(NodeStorage.Persistent)} to "
+              + "restart or kill it");
+
         var previousUid = await _client.DeletePodAsync(Namespace, PodName, gracePeriodSeconds, cancellationToken)
                                        .ConfigureAwait(false);
         var pod = await _client.WaitForPodReadyAsync(Namespace, PodName, readyTimeout, cancellationToken,

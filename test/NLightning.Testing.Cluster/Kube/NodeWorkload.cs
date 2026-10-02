@@ -54,11 +54,19 @@ public sealed class NodeWorkload
 
     public WorkloadResources Resources { get; set; } = WorkloadResources.Default;
 
-    /// <summary>The persistent data volume, or null for none.</summary>
+    /// <summary>
+    /// The data volume (a PVC, or an <c>emptyDir</c> with <see cref="NodeStorage.Ephemeral"/>), or null for none.
+    /// </summary>
     public DataVolume? Data { get; set; }
 
     /// <summary><c>emptyDir</c> volumes (name to mount path) for data that need not survive a restart.</summary>
     public IDictionary<string, string> ScratchVolumes { get; } = new Dictionary<string, string>();
+
+    /// <summary>
+    /// Init containers, run in order before the node's container at every pod start (e.g. the chain's startup wait,
+    /// <see cref="Topology.ITopologyChainEndpoint.CreateStartupWait"/>). Each declares its resources (the quota needs them).
+    /// </summary>
+    public IList<V1Container> InitContainers { get; } = new List<V1Container>();
 
     /// <summary>The readiness probe (see <see cref="Probes"/>), or null to be ready once the container runs.</summary>
     public V1Probe? ReadinessProbe { get; set; }
@@ -112,16 +120,16 @@ public sealed class NodeWorkload
             VolumeMounts = BuildMounts()
         };
 
+        var persistentData = Data is { IsEphemeral: false } ? Data : null;
+        var volumes = ScratchVolumes.Keys.Select(EmptyDirVolume).ToList();
+        if (Data is { IsEphemeral: true })
+            volumes.Insert(0, EmptyDirVolume(DataVolume.VolumeName));
+
         var podSpec = new V1PodSpec
         {
+            InitContainers = InitContainers.Count == 0 ? null : [.. InitContainers],
             Containers = [container],
-            Volumes = ScratchVolumes.Count == 0
-                          ? null
-                          : ScratchVolumes.Keys.Select(v => new V1Volume
-                          {
-                              Name = v,
-                              EmptyDir = new V1EmptyDirVolumeSource()
-                          }).ToList(),
+            Volumes = volumes.Count == 0 ? null : volumes,
             RestartPolicy = "Always",
             TerminationGracePeriodSeconds = TerminationGracePeriodSeconds,
             EnableServiceLinks = false,
@@ -155,8 +163,8 @@ public sealed class NodeWorkload
                     },
                     Spec = podSpec
                 },
-                VolumeClaimTemplates = Data is null ? null : [BuildClaimTemplate(Data, labels)],
-                PersistentVolumeClaimRetentionPolicy = Data is null
+                VolumeClaimTemplates = persistentData is null ? null : [BuildClaimTemplate(persistentData, labels)],
+                PersistentVolumeClaimRetentionPolicy = persistentData is null
                                                            ? null
                                                            : new V1StatefulSetPersistentVolumeClaimRetentionPolicy
                                                            {
@@ -195,6 +203,8 @@ public sealed class NodeWorkload
 
         return new NodeWorkloadManifests(statefulSet, service);
     }
+
+    private static V1Volume EmptyDirVolume(string name) => new() { Name = name, EmptyDir = new V1EmptyDirVolumeSource() };
 
     private List<V1VolumeMount>? BuildMounts()
     {

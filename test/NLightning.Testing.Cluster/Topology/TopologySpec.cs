@@ -99,9 +99,12 @@ public sealed record TopologySpec(IReadOnlyList<TopologyNodeSpec> Nodes, IReadOn
     private bool IsLightningNode(string name) => Nodes.Any(n => n.Name == name && IsLightning(n.Kind));
 }
 
-/// <summary>One node: its alias, its implementation, an image override and extra flags.</summary>
+/// <summary>
+/// One node: its alias, its implementation, an image override, extra flags and where it keeps its data (null: the
+/// builder's <see cref="TopologyBuilder.Storage"/>, else a PVC).
+/// </summary>
 public sealed record TopologyNodeSpec(string Name, NodeKind Kind, ImageRef? Image = null,
-                                      IReadOnlyList<string>? ExtraArgs = null)
+                                      IReadOnlyList<string>? ExtraArgs = null, NodeStorage? Storage = null)
 {
     public IReadOnlyList<string> Args => ExtraArgs ?? [];
 }

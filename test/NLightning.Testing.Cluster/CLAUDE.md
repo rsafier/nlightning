@@ -9,7 +9,13 @@ every implementation, our own node included, is driven through the same seams.
 - `Run/`
   - `TestRun.StartAsync(TestRunOptions, ct)` creates the run's namespace `<prefix>-<run id>` (+ `ResourceQuota` when
     `Options.Quota` is set); `DeployAsync(NodeWorkload, readyTimeout, ct)` returns a `KubeNodeHandle`;
-    `DisposeAsync` deletes the namespace (refuses one that is not the run's own) and waits for it to go.
+    `DisposeAsync` (refuses a namespace that is not the run's own) stops the run's pods first
+    (`RunNamespace.StopPodsAsync`: StatefulSets deleted with `Orphan`, pods with `TeardownGracePeriodSeconds`, default
+    1 s, then a wait until none runs, about 1-5 s), deletes the namespace and **returns while it terminates in the
+    background** (`WaitForDeletion`, default false since phase 2; the reaper owns leftovers). Why the pods first: the
+    namespace controller, finding unfinished pods, waits their largest spec `terminationGracePeriodSeconds` (bitcoind
+    30 s) before it looks again. A terminating namespace still holds its admission slot (`RunAdmission.HoldsSlot`) until
+    it is gone; live tests assert "gone or terminating" (`Live/RunAssertions`).
   - `TestRunOptions.FromEnvironment(suite)`: `NLTG_TEST_RUN_ID` (run id; generated when unset),
     `NLTG_TEST_NAMESPACE_PREFIX` (default `nltg-spike`; the real harness uses `nltg`), `NLTG_KUBE_CONTEXT`,
     `NLTG_KEEP_NAMESPACE=1` (keep for debugging).
@@ -36,7 +42,8 @@ every implementation, our own node included, is driven through the same seams.
     `TestResults/cluster/<batch>/<run>/`, reaps each run's leftovers, prints a summary table (`summary.txt`).
 - `Kube/`
   - `NodeWorkload`: one node = StatefulSet (1 replica, `Parallel`) + headless Service of the same name
-    (`publishNotReadyAddresses`) + optional PVC template (`Data = new DataVolume(mountPath, size)`), resources
+    (`publishNotReadyAddresses`) + optional data volume (`Data = new DataVolume(mountPath, size)`: a PVC template, or
+    an `emptyDir` with `Storage: NodeStorage.Ephemeral`), `InitContainers` (run in order before the node), resources
     (`WorkloadResources.Default` 250m/256Mi requests, 1 CPU/1 GiB limits), `ReadinessProbe` (`Probes.Exec/Tcp`),
     `Command`/`Args`/`Env`/`Ports`/`ScratchVolumes`, image pull policy from the `ImageRef`, service links and the SA
     token off, and `CustomizePod` for init containers, sidecars or ConfigMap volumes. Container name = node name.
@@ -45,6 +52,14 @@ every implementation, our own node included, is driven through the same seams.
     (exit code, binary stdout/stderr), `ReadFileAsync`/`ReadTextFileAsync`/`WaitForFileAsync`, `WriteFileAsync`
     (≤ 256 KiB, base64 in argv), `ReadLogAsync`, `DeletePodAsync`, `ApplyAsync`, standalone PVCs.
   - `PodStatusReader` (ready / fatal reason / one-line description for messages).
+  - `NodeStorage` (`Persistent` = PVC, the default; `Ephemeral` = `emptyDir`) and `NodeStorageEnvironment`
+    (`NLTG_NODE_STORAGE=persistent|ephemeral`, the default of builders that leave it unset). A PVC costs each wave of
+    StatefulSets about 6 s alone and 12-15 s under load (local-path's `WaitForFirstConsumer` binding, a scheduling
+    retry, provisioning), an `emptyDir` nothing; `KubeNodeHandle.RestartAsync`/`KillAsync` refuse an ephemeral node
+    (its new pod would start empty), a crash in place keeps it.
+  - `KubernetesHelper.WaitForServiceAddressAsync`: until a Service's EndpointSlices list an address, i.e. its name
+    resolves. CoreDNS caches a miss (NXDOMAIN) for 5 s (measured), so a pod that looks a node up before the node's
+    pod has an IP cannot reach it for up to 5 s more.
 - `Nodes/`
   - `INodeHandle` (`KubeNodeHandle`): name/alias, namespace, `PodName` (`<name>-0`), `ServiceDnsName`,
     `PodDnsName`, `PodIp`, exec and file IO, logs, `RestartAsync` (graceful delete, same name + PVC) and `KillAsync`
@@ -77,24 +92,34 @@ every implementation, our own node included, is driven through the same seams.
   says what is missing, `ForAsync<T>` for a value); every wait of the chain helpers, topologies and node adapters
   goes through it. Do not add another poll loop.
 - `Nodes/BitcoinCore/` and `Chain/` (chain lane, details in `Chain/CLAUDE.md`): `BitcoinCoreNode` (the one bitcoind
-  of the harness: StatefulSet + PVC, `miner` wallet, ZMQ 28332/28333/28334, user/password `nltg`), the typed RPC
-  (`IBitcoinCoreRpc` over HTTP or `bitcoin-cli` exec, `RpcRoute.Auto`) and `RegtestChain` (mine, wait at the tip,
-  tx waits, reorgs, fee seeding).
+  of the harness: StatefulSet + PVC (or `emptyDir`, `BitcoinCoreOptions.Storage`), `miner` wallet, ZMQ
+  28332/28333/28334, user/password `nltg`), the typed RPC (`IBitcoinCoreRpc` over HTTP or `bitcoin-cli` exec,
+  `RpcRoute.Auto`) and `RegtestChain` (mine, wait at the tip, tx waits, reorgs, fee seeding).
+  `BitcoinCoreWorkload.StartupWaitContainer` is the Lightning nodes' init container (bitcoind's own image,
+  `getblockchaininfo` from the node's pod every 0.2 s until it answers, gives up after 180 s and lets the node start
+  anyway; its log says how long it waited and the last error). `BitcoinCoreTopologyChain` mines its 101 maturity blocks
+  as 1 to the wallet and 100 to `BurnAddress` (a coinbase to the wallet costs ~40 ms a block, a foreign one ~1 ms: 4.2 s
+  against 0.12 s for 100; the spendable 50 BTC at 101 is the same).
 - `Topology/` and `Nodes/Cln/` (CLN lane, details in `Topology/CLAUDE.md`): the declarative `TopologyBuilder`
-  (`AddBitcoinCore`/`AddLnd`/`AddCln`, fundings, channels), its chain `BitcoinCoreTopologyChain` (the shared bitcoind
-  + `RegtestChain` as an `ITopologyChain`, the default `ChainFactory`), the deployers `ClnNodeDeployer` and
-  `LndNodeDeployer` (both registered by default), `StableNodeAddress` and the CLN node.
+  (`AddBitcoinCore`/`AddLnd`/`AddCln`, fundings, channels, `Storage`, `DeployNodesWithChain`), its chain
+  `BitcoinCoreTopologyChain` (the shared bitcoind + `RegtestChain` as an `ITopologyChain`, the default `ChainFactory`;
+  its `ITopologyChainEndpoint` is known before it is up), the deployers `ClnNodeDeployer` and `LndNodeDeployer` (both
+  registered by default, both `DeploysWithChain`: their StatefulSets start in the chain's wave behind the startup
+  wait), `StableNodeAddress`, the CLN node and `ClusterTopologyFixture<TDefinition>` (a topology kept warm per xunit
+  collection).
 - `Nodes/Lnd/` (LND lane): `LndNodeOptions` (alias, the bitcoind Service, extra flags) → `LndWorkload.Build`
   (`custom_lnd:latest` Never, LNUnit's `AddPolarLNDNode` flags, `lnddir` `/home/lnd/.lnd` on the PVC, readiness =
   `lncli getinfo` answers with `synced_to_chain`); `LndCredentials` (`tls.cert` + `admin.macaroon` read by exec);
   `LndGrpcConnection` (LNUnit.LND's generated `Lnrpc`/`Routerrpc`/`Walletrpc`/`Invoicesrpc` clients, the server
   certificate **pinned** to the node's `tls.cert`, macaroon header; pod IP from the host, pod DNS name in-cluster);
-  `LndNode.DeployAsync(run, options, timeout, ct)` implements `ITopologyLightningNode` and reconnects after
-  `RestartAsync`/`KillAsync`; `LndNodeDeployer` puts LND in a declarative topology (`AddLnd`); `LndMapping` (txids,
+  `LndNode.DeployAsync(run, options, timeout, ct)` implements `ITopologyLightningNode` (its block height counts only
+  once `synced_to_chain`: an open before the wallet caught up fails "channels cannot be created before the wallet is
+  fully synced") and reconnects after `RestartAsync`/`KillAsync`; `LndNodeDeployer` puts LND in a declarative topology (`AddLnd`); `LndMapping` (txids,
   `chan_id` → `BxTxO`, channel points). `LndNodeOptions` defaults follow the shared bitcoind (`miner`, `nltg`, ZMQ
   28332/28333).
 - `Topology/Lnd/` (LND lane): `LndPairTopology.BuildAsync` = the shared bitcoind `miner`
-  (`BitcoinCoreTopologyChain`) + `alice`/`bob` with an active alice → bob channel; `PayAsync` retries a failed
+  (`BitcoinCoreTopologyChain`) + `alice`/`bob` (started in bitcoind's wave, `Settings.DeployNodesWithChain`;
+  `Settings.Storage`) with an active alice → bob channel; `PayAsync` retries a failed
   payment (NL-319; any `ILightningTestPeer` pair); `RestartAsync(node, kill)` restarts or kills a node and redials it
   **by its new pod IP**: LND stores the resolved IP of a peer it dialled by name, and the cluster DNS may answer with
   the old IP for a while after a restart.
@@ -136,7 +161,13 @@ every implementation, our own node included, is driven through the same seams.
   (or the built `bin/Release/net10.0/NLightning.Testing.Cluster.Tests` with the same arguments).
 - `Live/LightningDialBackTests`: LND and CLN in pods dial a loopback listener in the test process at
   `host.orb.internal` and it receives their BOLT 8 act one (spike check 1 with real implementations).
-- `Live/InClusterRunnerTests` need the runner image (`Runner/image/build.sh` first); `Live/ReachabilityTests` assert
+- `Live/StartupTimingTests` (phase 2 startup cuts): `StartupTimingClnTests` and `StartupTimingLndTests`, one row
+  each for the spike's two waves on PVCs, one wave on PVCs and one wave on `emptyDir`s; each logs `[timing]` lines
+  (build per step, disposal). `Live/TopologyFixtureTests` is the warm topology proof (two tests, one namespace, one
+  build). `scripts/run-cluster.sh -n 3 --class '...StartupTimingClnTests' --class '...StartupTimingLndTests'` runs six
+  topologies at once.
+- `Live/InClusterRunnerTests` need the runner image (`Runner/image/build.sh` first; a lane that runs beside others
+  builds its own tag, `NLTG_RUNNER_TAG=<lane> ...build.sh` and `NLTG_RUNNER_IMAGE=nltg-spike-runner:<lane>`); `Live/ReachabilityTests` assert
   OrbStack's matrix and only record it on another context. `Live/MixedTopologyTests` is the integration proof (LND +
   CLN on the shared bitcoind through `TopologyBuilder`, a channel and a payment each way); `scripts/run-cluster.sh
   -n 3 --class NLightning.Testing.Cluster.Tests.Live.MixedTopologyTests` runs it three times at once.
