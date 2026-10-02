@@ -60,7 +60,7 @@ public static class OffersServiceCollectionExtensions
         return services;
     }
 
-        /// <summary>
+    /// <summary>
     /// The configured <see cref="OfferOptions"/>, or the defaults when they are invalid (logged as an error); a margin
     /// raised from the former template default is logged once as a warning (NL-743).
     /// </summary>

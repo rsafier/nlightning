@@ -9,7 +9,6 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
-using Domain.Enums;
 using Domain.Money;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
