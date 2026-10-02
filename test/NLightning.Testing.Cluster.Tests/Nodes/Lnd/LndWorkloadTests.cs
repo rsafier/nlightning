@@ -60,8 +60,8 @@ public class LndWorkloadTests
         Assert.Contains("--bitcoin.regtest", args);
         Assert.Contains("--bitcoin.node=bitcoind", args);
         Assert.Contains("--bitcoind.rpchost=chain:18000", args);
-        Assert.Contains("--bitcoind.zmqpubrawblock=tcp://chain:28334", args);
-        Assert.Contains("--bitcoind.zmqpubrawtx=tcp://chain:28335", args);
+        Assert.Contains("--bitcoind.zmqpubrawblock=tcp://chain:28332", args);
+        Assert.Contains("--bitcoind.zmqpubrawtx=tcp://chain:28333", args);
         Assert.Contains("--tlsextradomain=bob", args);
         Assert.Contains("--tlsextradomain=bob-0.bob", args);
         Assert.Contains("--rpclisten=0.0.0.0:10009", args);

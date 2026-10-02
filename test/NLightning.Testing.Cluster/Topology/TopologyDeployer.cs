@@ -78,7 +78,7 @@ public sealed class TopologyDeployer
             await chain.MineAsync(ConfirmationBlocks, cancellationToken).ConfigureAwait(false);
             await WaitAllAtTipAsync(chain, nodes.Values, _stepTimeout, cancellationToken).ConfigureAwait(false);
             foreach (var (name, amount) in expected)
-                await TopologyPoll.UntilAsync(async ct =>
+                await Poll.UntilDoneAsync(async ct =>
                 {
                     var balance = await nodes[name].GetConfirmedBalanceSatAsync(ct).ConfigureAwait(false);
                     return balance >= amount ? null : $"{balance} of {amount} sat confirmed";
@@ -133,7 +133,7 @@ public sealed class TopologyDeployer
     {
         var list = nodes.ToList();
         long tip = 0;
-        await TopologyPoll.UntilAsync(async ct =>
+        await Poll.UntilDoneAsync(async ct =>
         {
             tip = await chain.GetBlockCountAsync(ct).ConfigureAwait(false);
             var heights = await Task.WhenAll(list.Select(async n =>
@@ -158,7 +158,7 @@ public sealed class TopologyDeployer
     {
         ArgumentNullException.ThrowIfNull(node);
         string? lastError = null;
-        await TopologyPoll.UntilAsync(async ct =>
+        await Poll.UntilDoneAsync(async ct =>
         {
             using var attempt = CancellationTokenSource.CreateLinkedTokenSource(ct);
             attempt.CancelAfter(TimeSpan.FromSeconds(20));
@@ -179,7 +179,7 @@ public sealed class TopologyDeployer
     /// <summary>Waits until <paramref name="node"/> lists the channel with <paramref name="fundingTxId"/> as active.</summary>
     public static Task WaitChannelActiveAsync(ILightningTestPeer node, string remoteNodeId, string fundingTxId,
                                               TimeSpan timeout, CancellationToken cancellationToken) =>
-        TopologyPoll.UntilAsync(async ct =>
+        Poll.UntilDoneAsync(async ct =>
         {
             var channels = await node.ListChannelsAsync(ct).ConfigureAwait(false);
             var channel = channels.FirstOrDefault(c => c.FundingTxId == fundingTxId && c.RemoteNodeId == remoteNodeId);

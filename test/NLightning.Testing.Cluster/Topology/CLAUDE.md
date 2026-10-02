@@ -4,10 +4,10 @@ Plan: `docs/agents/TEST_HARNESS_PLAN.md` R8 (declarative topology), R9 (facade),
 
 ## Topology/
 
-- `TopologyBuilder`: `AddBitcoinCore(name)`, `AddCln(name)`, `AddNode(name, kind)`, `FundWallet(node, sat)`,
-  `AddChannel(from, to, capacitySat, pushMsat, announce)`, `UseDeployer(ILightningNodeDeployer)` (one per `NodeKind`;
-  CLN is registered by default), `UseChain(ChainFactory)` (default `TopologyBitcoind.DeployAsync`), `Log`,
-  `ReadyTimeout`, `StepTimeout`. `Build()` returns the validated `TopologySpec`; `BuildAsync(run, ct)` deploys it.
+- `TopologyBuilder`: `AddBitcoinCore(name)`, `AddLnd(name)`, `AddCln(name)`, `AddNode(name, kind)`,
+  `FundWallet(node, sat)`, `AddChannel(from, to, capacitySat, pushMsat, announce)`,
+  `UseDeployer(ILightningNodeDeployer)` (one per `NodeKind`; CLN and LND are registered by default),
+  `UseChain(ChainFactory)` (default `BitcoinCoreTopologyChain.DeployAsync`), `Log`, `ReadyTimeout`, `StepTimeout`. `Build()` returns the validated `TopologySpec`; `BuildAsync(run, ct)` deploys it.
 - `TopologySpec.Validate()` lists every problem: DNS-1123 names, exactly one `BitcoinCore`, fundings and channels
   between Lightning nodes only, no self channel, push within the capacity, and each funder funded with more than it
   opens.
@@ -24,15 +24,19 @@ Plan: `docs/agents/TEST_HARNESS_PLAN.md` R8 (declarative topology), R9 (facade),
 - Seams for the other lanes:
   - `ITopologyLightningNode` (`ILightningTestPeer` plus block height and confirmed balance);
   - `ILightningNodeDeployer`;
-  - `ITopologyChain` (RPC endpoint, mine, send, tip). `TopologyBitcoind` is the spike's own stopgap; the chain lane's
-    Bitcoin Core node replaces it through `UseChain`.
+  - `ITopologyChain` (RPC endpoint, ZMQ raw block/tx ports, mine, send, tip). `BitcoinCoreTopologyChain` is the
+    implementation: the chain lane's `BitcoinCoreNode` + `RegtestChain` (its `Chain` property has the reorgs, fee
+    seeding and tx waits). The CLN lane's stopgap `TopologyBitcoind` and the LND lane's `LndTopologyChain` were
+    replaced by it at the integration.
 - `StableNodeAddress`: a ClusterIP Service `<node>-p2p` in front of a node's p2p port. Peers dial this, not the
   headless name. Why:
   - A recreated pod gets another IP, and CLN stores the IP it resolved and redials it. A SYN to a vanished pod IP gets
     no answer, so CLN's redial hangs for minutes, and `connect` only adds the new address to that hung attempt.
   - The ClusterIP stays the same. kube-proxy refuses dials while the node has no ready endpoint and routes to the new
     pod once it is ready.
-  - Deployers of other kinds should create one too (`StableNodeAddress.EnsureAsync`).
+  - Deployers of other kinds should create one too (`StableNodeAddress.EnsureAsync`). `LndNodeDeployer` does not
+    yet: LND's readiness probe includes `synced_to_chain`, which flaps on new blocks and would take the node out of a
+    ClusterIP Service; LND peers redial by pod IP after a restart instead (`LndPairTopology.RestartAsync`).
 
 ## Nodes/Cln/
 
@@ -58,15 +62,14 @@ Plan: `docs/agents/TEST_HARNESS_PLAN.md` R8 (declarative topology), R9 (facade),
 - `ClnNodeDeployer`: deploys the workload and its `StableNodeAddress`, and returns a `ClnTestPeer` that dials the
   stable name.
 
-## Known problem in the scaffold (not fixed here)
+## Fixed at the integration: `KillAsync` overlapped two processes on one PVC
 
-`INodeHandle.KillAsync` deletes the pod with grace 0. That is a **force delete**:
-- The StatefulSet creates the new pod while the old container still runs on the same PVC.
-- CLN then refused to start ("lightningd already running? Error locking PID file").
-- Two processes on one data directory risk corrupting it.
-
-Use `ClnTestPeer.CrashAsync` for a CLN crash until the faults lane changes `KillAsync`. Options for that change: a
-small non-zero grace, or a kill of the process inside the pod.
+`INodeHandle.KillAsync` deleted the pod with grace 0, a **force delete**: the StatefulSet created the new pod while
+the old container still ran on the same PVC, and CLN refused to start ("lightningd already running? Error locking
+PID file"). It now deletes with a 1 s grace (`KubeNodeHandle.KillGracePeriodSeconds`): SIGTERM, SIGKILL after 1 s,
+and the replacement only once the old container is gone. It is still not a crash: `ClnTestPeer.CrashAsync` (SIGKILL
+to lightningd, no shared process namespace needed) or `FaultInjector.CrashAsync` (any node deployed
+`WithProcessFaults()`) are.
 
 ## Live tests
 

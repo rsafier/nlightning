@@ -3,6 +3,7 @@ using System.Diagnostics;
 namespace NLightning.Testing.Cluster.Topology.Lnd;
 
 using Nodes;
+using Nodes.BitcoinCore;
 using Nodes.Lnd;
 using Run;
 
@@ -13,7 +14,7 @@ using Run;
 /// </summary>
 public sealed class LndPairTopology : IDisposable
 {
-    private LndPairTopology(LndTopologyChain chain, LndNode alice, LndNode bob, TestChannel channel,
+    private LndPairTopology(BitcoinCoreTopologyChain chain, LndNode alice, LndNode bob, TestChannel channel,
                             IReadOnlyDictionary<string, TimeSpan> timings)
     {
         Chain = chain;
@@ -23,7 +24,8 @@ public sealed class LndPairTopology : IDisposable
         Timings = timings;
     }
 
-    public LndTopologyChain Chain { get; }
+    /// <summary>The bitcoind <c>miner</c> and its chain helpers (<see cref="BitcoinCoreTopologyChain.Chain"/>).</summary>
+    public BitcoinCoreTopologyChain Chain { get; }
 
     public LndNode Alice { get; }
 
@@ -44,8 +46,8 @@ public sealed class LndPairTopology : IDisposable
 
         public bool Announce { get; init; } = true;
 
-        /// <summary>BTC sent to alice's wallet before the open.</summary>
-        public decimal AliceFundingBtc { get; init; } = 1m;
+        /// <summary>Sent to alice's wallet before the open.</summary>
+        public long AliceFundingSat { get; init; } = 100_000_000;
 
         public TimeSpan ReadyTimeout { get; init; } = TimeSpan.FromMinutes(3);
 
@@ -75,13 +77,14 @@ public sealed class LndPairTopology : IDisposable
             watch.Restart();
         }
 
-        var chain = await LndTopologyChain.DeployAsync(run, settings.ReadyTimeout, cancellationToken)
-                                          .ConfigureAwait(false);
-        await chain.MineAsync(101, cancellationToken).ConfigureAwait(false);
+        // Mined past coinbase maturity at deploy
+        var chain = await BitcoinCoreTopologyChain.DeployAsync(run, new BitcoinCoreOptions(), settings.ReadyTimeout,
+                                                               cancellationToken)
+                                                  .ConfigureAwait(false);
         Phase("bitcoind");
 
         LndNodeOptions Lnd(string alias) =>
-            new(alias) { BitcoindHost = chain.Node.Name, ExtraArgs = settings.LndExtraArgs };
+            LndNodeDeployer.BuildOptions(chain, new TopologyNodeSpec(alias, NodeKind.Lnd, null, settings.LndExtraArgs));
         var aliceTask = LndNode.DeployAsync(run, Lnd("alice"), settings.ReadyTimeout, cancellationToken);
         var bobTask = LndNode.DeployAsync(run, Lnd("bob"), settings.ReadyTimeout, cancellationToken);
         try
@@ -92,8 +95,9 @@ public sealed class LndPairTopology : IDisposable
             Phase("lnd");
 
             var address = await alice.GetNewAddressAsync(cancellationToken).ConfigureAwait(false);
-            await chain.SendToAddressAsync(address, settings.AliceFundingBtc, cancellationToken).ConfigureAwait(false);
-            var height = await chain.MineAsync(1, cancellationToken).ConfigureAwait(false);
+            await chain.SendToAddressAsync(address, settings.AliceFundingSat, cancellationToken).ConfigureAwait(false);
+            await chain.MineAsync(1, cancellationToken).ConfigureAwait(false);
+            var height = await chain.GetBlockCountAsync(cancellationToken).ConfigureAwait(false);
             await alice.WaitSyncedToChainAsync(settings.ReadyTimeout, cancellationToken, (uint)height)
                        .ConfigureAwait(false);
             await WaitForBalanceAsync(alice, settings.CapacitySat, settings.ReadyTimeout, cancellationToken)
@@ -107,7 +111,7 @@ public sealed class LndPairTopology : IDisposable
                                                                                settings.PushMsat,
                                                                                settings.Announce),
                                                     cancellationToken).ConfigureAwait(false);
-            await chain.WaitForMempoolAsync(open.FundingTxId, settings.ReadyTimeout, cancellationToken)
+            await chain.Chain.WaitForMempoolAsync(open.FundingTxId, cancellationToken, settings.ReadyTimeout)
                        .ConfigureAwait(false);
             await chain.MineAsync(6, cancellationToken).ConfigureAwait(false);
             var channel = await alice.WaitForActiveChannelAsync(open.FundingTxId, settings.ReadyTimeout,
@@ -186,18 +190,11 @@ public sealed class LndPairTopology : IDisposable
         Bob.Dispose();
     }
 
-    private static async Task WaitForBalanceAsync(LndNode node, long atLeastSat, TimeSpan timeout,
-                                                  CancellationToken cancellationToken)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (await node.GetConfirmedBalanceSatAsync(cancellationToken).ConfigureAwait(false) <= atLeastSat)
-        {
-            if (DateTime.UtcNow >= deadline)
-                throw new TimeoutException($"{node.Alias}: no confirmed balance above {atLeastSat} sat after {timeout}");
-
-            await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken).ConfigureAwait(false);
-        }
-    }
+    private static Task WaitForBalanceAsync(LndNode node, long atLeastSat, TimeSpan timeout,
+                                            CancellationToken cancellationToken) =>
+        Poll.UntilAsync(async ct => await node.GetConfirmedBalanceSatAsync(ct).ConfigureAwait(false) > atLeastSat,
+                        timeout, TimeSpan.FromMilliseconds(500),
+                        $"{node.Alias}: a confirmed balance above {atLeastSat} sat", cancellationToken);
 
     private static void DisposeCompleted(Task<LndNode> task)
     {

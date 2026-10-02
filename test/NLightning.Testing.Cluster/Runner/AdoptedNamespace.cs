@@ -28,8 +28,9 @@ public static class AdoptedNamespace
     }
 
     /// <summary>
-    /// Deletes the nodes' StatefulSets (their PVCs go with them, retention <c>Delete</c>) and Services, then waits
-    /// until their pods are gone.
+    /// Deletes the nodes' StatefulSets (their PVCs go with them, retention <c>Delete</c>) and Services (the headless
+    /// one and a <see cref="Topology.StableNodeAddress"/> <c>&lt;node&gt;-p2p</c>), then waits until their pods are
+    /// gone.
     /// </summary>
     public static async Task DeleteNodesAsync(IKubernetes client, string ns, IEnumerable<string> nodes,
                                               TimeSpan timeout, CancellationToken cancellationToken)
@@ -43,6 +44,10 @@ public static class AdoptedNamespace
                .ConfigureAwait(false);
             await IgnoreNotFound(client.CoreV1.DeleteNamespacedServiceAsync(
                                      name, ns, cancellationToken: cancellationToken))
+               .ConfigureAwait(false);
+            await IgnoreNotFound(client.CoreV1.DeleteNamespacedServiceAsync(
+                                     name + Topology.StableNodeAddress.Suffix, ns,
+                                     cancellationToken: cancellationToken))
                .ConfigureAwait(false);
         }
 

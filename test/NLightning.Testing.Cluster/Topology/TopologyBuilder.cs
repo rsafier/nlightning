@@ -3,6 +3,7 @@ namespace NLightning.Testing.Cluster.Topology;
 using Images;
 using Nodes;
 using Nodes.Cln;
+using Nodes.Lnd;
 using Run;
 
 /// <summary>
@@ -27,10 +28,11 @@ public sealed class TopologyBuilder
     private readonly List<TopologyChannelSpec> _channels = [];
     private readonly Dictionary<NodeKind, ILightningNodeDeployer> _deployers = new()
     {
-        [NodeKind.Cln] = new ClnNodeDeployer()
+        [NodeKind.Cln] = new ClnNodeDeployer(),
+        [NodeKind.Lnd] = new LndNodeDeployer()
     };
 
-    private ChainFactory _chainFactory = TopologyBitcoind.DeployAsync;
+    private ChainFactory _chainFactory = BitcoinCoreTopologyChain.DeployAsync;
 
     /// <summary>Deploys the chain node of a topology and returns it ready, with a mature wallet.</summary>
     public delegate Task<ITopologyChain> ChainFactory(TestRun run, TopologyNodeSpec chainNode,
@@ -61,6 +63,10 @@ public sealed class TopologyBuilder
     public TopologyBuilder AddCln(string name, ImageRef? image = null, IReadOnlyList<string>? extraArgs = null) =>
         AddNode(name, NodeKind.Cln, image, extraArgs);
 
+    /// <summary>An LND node (<see cref="LndNode"/>).</summary>
+    public TopologyBuilder AddLnd(string name, ImageRef? image = null, IReadOnlyList<string>? extraArgs = null) =>
+        AddNode(name, NodeKind.Lnd, image, extraArgs);
+
     /// <summary>Sends <paramref name="amountSat"/> to <paramref name="node"/>'s wallet (confirmed before the opens).</summary>
     public TopologyBuilder FundWallet(string node, long amountSat)
     {
@@ -84,7 +90,7 @@ public sealed class TopologyBuilder
         return this;
     }
 
-    /// <summary>Replaces the chain backend (<see cref="TopologyBitcoind"/> by default).</summary>
+    /// <summary>Replaces the chain backend (<see cref="BitcoinCoreTopologyChain"/> by default).</summary>
     public TopologyBuilder UseChain(ChainFactory chainFactory)
     {
         _chainFactory = chainFactory ?? throw new ArgumentNullException(nameof(chainFactory));

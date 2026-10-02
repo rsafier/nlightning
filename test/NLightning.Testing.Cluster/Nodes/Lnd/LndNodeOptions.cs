@@ -1,5 +1,6 @@
 namespace NLightning.Testing.Cluster.Nodes.Lnd;
 
+using BitcoinCore;
 using Images;
 using Kube;
 
@@ -24,18 +25,19 @@ public sealed record LndNodeOptions
     /// <summary>The bitcoind Service the node follows (RPC and ZMQ).</summary>
     public string BitcoindHost { get; init; } = "miner";
 
-    /// <summary>bitcoind's RPC port (regtest default).</summary>
-    public int BitcoindRpcPort { get; init; } = 18443;
+    /// <summary>bitcoind's RPC port (<see cref="BitcoinCorePorts.Rpc"/>).</summary>
+    public int BitcoindRpcPort { get; init; } = BitcoinCorePorts.Rpc;
 
-    public string BitcoindRpcUser { get; init; } = "bitcoin";
+    /// <summary>bitcoind's RPC user (<see cref="BitcoinCoreOptions.RpcUser"/>'s default).</summary>
+    public string BitcoindRpcUser { get; init; } = "nltg";
 
-    public string BitcoindRpcPassword { get; init; } = "bitcoin";
+    public string BitcoindRpcPassword { get; init; } = "nltg";
 
-    /// <summary>bitcoind's <c>zmqpubrawblock</c> port (LNUnit's 28334).</summary>
-    public int ZmqRawBlockPort { get; init; } = 28334;
+    /// <summary>bitcoind's <c>zmqpubrawblock</c> port (<see cref="BitcoinCorePorts.ZmqRawBlock"/>).</summary>
+    public int ZmqRawBlockPort { get; init; } = BitcoinCorePorts.ZmqRawBlock;
 
-    /// <summary>bitcoind's <c>zmqpubrawtx</c> port (LNUnit's 28335).</summary>
-    public int ZmqRawTxPort { get; init; } = 28335;
+    /// <summary>bitcoind's <c>zmqpubrawtx</c> port (<see cref="BitcoinCorePorts.ZmqRawTx"/>).</summary>
+    public int ZmqRawTxPort { get; init; } = BitcoinCorePorts.ZmqRawTx;
 
     /// <summary>Whether LND accepts keysend payments (LNUnit's default, on).</summary>
     public bool AcceptKeysend { get; init; } = true;

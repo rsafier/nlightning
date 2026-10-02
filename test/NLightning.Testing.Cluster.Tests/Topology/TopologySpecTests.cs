@@ -100,27 +100,27 @@ public class TopologySpecTests
     public void Given_AKindWithoutADeployer_When_Built_Then_TheBuilderAsksForOne()
     {
         // Arrange
-        var builder = new TopologyBuilder().AddBitcoinCore("miner").AddNode("carol", NodeKind.Lnd);
+        var builder = new TopologyBuilder().AddBitcoinCore("miner").AddNode("carol", NodeKind.Eclair);
 
         // Act
         var exception = Assert.Throws<ArgumentException>(() => builder.Build());
 
         // Assert
-        Assert.Contains("No deployer for Lnd", exception.Message);
+        Assert.Contains("No deployer for Eclair", exception.Message);
     }
 
     [Fact]
     public void Given_ADeployerForAKind_When_Registered_Then_TheSpecBuilds()
     {
         // Arrange
-        var builder = new TopologyBuilder().AddBitcoinCore("miner").AddNode("carol", NodeKind.Lnd)
-                                           .UseDeployer(new NoDeployer(NodeKind.Lnd));
+        var builder = new TopologyBuilder().AddBitcoinCore("miner").AddNode("carol", NodeKind.Eclair)
+                                           .UseDeployer(new NoDeployer(NodeKind.Eclair));
 
         // Act
         var spec = builder.Build();
 
         // Assert
-        Assert.Equal(NodeKind.Lnd, Assert.Single(spec.LightningNodes).Kind);
+        Assert.Equal(NodeKind.Eclair, Assert.Single(spec.LightningNodes).Kind);
     }
 
     [Theory]

@@ -60,6 +60,10 @@ public interface INodeHandle
     /// </summary>
     Task RestartAsync(TimeSpan readyTimeout, CancellationToken cancellationToken);
 
-    /// <summary>A crash: the pod is deleted with grace 0 (the process gets SIGKILL); waits until the new pod is ready.</summary>
+    /// <summary>
+    /// A hard stop: the pod is deleted with a 1 s grace period (SIGTERM, SIGKILL after 1 s; the replacement starts only
+    /// once the old container is gone) and this waits until the new pod is ready. Not a crash (the process gets
+    /// SIGTERM first): use <c>FaultInjector.CrashAsync</c> for one.
+    /// </summary>
     Task KillAsync(TimeSpan readyTimeout, CancellationToken cancellationToken);
 }

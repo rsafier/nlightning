@@ -8,7 +8,7 @@ public enum FaultKind
     /// <summary>Graceful pod replacement: SIGTERM, the grace period, a new pod with the same name and PVC.</summary>
     Restart,
 
-    /// <summary>Pod deleted with grace 0 (see <see cref="FaultInjector.KillAsync"/> for what the kubelet still does).</summary>
+    /// <summary>Pod deleted with a 1 s grace period (see <see cref="FaultInjector.KillAsync"/>).</summary>
     Kill,
 
     /// <summary>SIGKILL to the node's processes: the container restarts in place, same pod, IP and PVC.</summary>

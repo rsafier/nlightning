@@ -29,10 +29,11 @@ using Run;
 /// <list type="bullet">
 ///   <item><see cref="CrashAsync"/> is the real crash (SIGKILL, no shutdown code runs, the container restarts in
 ///   place). Use it for crash-recovery proofs.</item>
-///   <item><see cref="KillAsync"/> deletes the pod with grace 0. The kubelet still sends SIGTERM and waits up to its
-///   2 s minimum before SIGKILL, and the API object goes at once, so the StatefulSet starts the replacement pod while
-///   the old container may still run on the same PVC (measured on OrbStack: about 1.6 s of overlap with a process
-///   that ignores SIGTERM). It is a fast forced replacement, not a crash.</item>
+///   <item><see cref="KillAsync"/> deletes the pod with a 1 s grace period
+///   (<see cref="KubeNodeHandle.KillGracePeriodSeconds"/>): SIGTERM, SIGKILL after 1 s, and the replacement starts
+///   only once the old container is gone. It is a fast forced replacement, not a crash. (A grace-0 delete, the first
+///   version, removed the API object at once, and the StatefulSet started the replacement while the old container
+///   still ran on the same PVC: about 1.6 s of overlap measured on OrbStack.)</item>
 ///   <item><see cref="RestartAsync"/> is the graceful replacement (SIGTERM and the workload's grace period).</item>
 /// </list>
 /// </para>
@@ -77,9 +78,8 @@ public sealed class FaultInjector : IAsyncDisposable
         ReplaceAsync(node, FaultKind.Restart, n => n.RestartAsync(readyTimeout, cancellationToken), cancellationToken);
 
     /// <summary>
-    /// Deletes the pod with grace 0 (<see cref="INodeHandle.KillAsync"/>) and waits until the replacement is ready.
-    /// See the class remarks: this still delivers SIGTERM and may overlap old and new process on the PVC; use
-    /// <see cref="CrashAsync"/> for a crash.
+    /// Deletes the pod with a 1 s grace period (<see cref="INodeHandle.KillAsync"/>) and waits until the replacement
+    /// is ready. See the class remarks: this still delivers SIGTERM; use <see cref="CrashAsync"/> for a crash.
     /// </summary>
     public Task<NodeReplacement> KillAsync(INodeHandle node, TimeSpan readyTimeout,
                                            CancellationToken cancellationToken) =>

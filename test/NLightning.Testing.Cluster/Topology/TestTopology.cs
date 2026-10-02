@@ -5,9 +5,9 @@ using Run;
 
 /// <summary>
 /// A deployed topology: its chain, its Lightning nodes by alias and the channels it opened. The run owns the objects;
-/// disposing the run deletes them.
+/// disposing the run deletes them. Disposing the topology closes the nodes' clients (LND's gRPC channels).
 /// </summary>
-public sealed class TestTopology
+public sealed class TestTopology : IDisposable
 {
     private readonly IReadOnlyDictionary<string, ITopologyLightningNode> _nodes;
 
@@ -96,6 +96,12 @@ public sealed class TestTopology
     /// <summary>Waits until every Lightning node has processed the chain's tip, and returns it.</summary>
     public Task<long> WaitAllAtTipAsync(CancellationToken cancellationToken) =>
         TopologyDeployer.WaitAllAtTipAsync(Chain, _nodes.Values, StepTimeout, cancellationToken);
+
+    public void Dispose()
+    {
+        foreach (var node in _nodes.Values.OfType<IDisposable>())
+            node.Dispose();
+    }
 }
 
 /// <summary>A channel the topology opened: its declaration and its funding outpoint.</summary>

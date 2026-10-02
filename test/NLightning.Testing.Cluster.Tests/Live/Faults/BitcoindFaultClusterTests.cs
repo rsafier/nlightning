@@ -4,9 +4,9 @@ using System.Globalization;
 namespace NLightning.Testing.Cluster.Tests.Live.Faults;
 
 using Cluster.Faults;
-using Cluster.Images;
 using Cluster.Kube;
 using Cluster.Nodes;
+using Cluster.Nodes.BitcoinCore;
 using Cluster.Run;
 using static FaultClusterTestSupport;
 
@@ -18,31 +18,22 @@ using static FaultClusterTestSupport;
 [Trait("Category", "Cluster")]
 public class BitcoindFaultClusterTests
 {
-    private const string DataDir = "/home/bitcoin/.bitcoin";
-
     // BIP 173's regtest P2WPKH test vector: a valid address with no wallet needed
     private const string MiningAddress = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
 
     private static readonly string[] s_cli =
         ["bitcoin-cli", "-regtest", "-rpcuser=nltg", "-rpcpassword=nltg"];
 
-    private static NodeWorkload Bitcoind(string name, params string[] extraArgs)
-    {
-        var workload = new NodeWorkload(name, NodeKind.BitcoinCore, ImageVersions.BitcoinCore)
+    /// <summary>The shared bitcoind workload, walletless, with the process faults (pause, crash) enabled.</summary>
+    private static NodeWorkload Bitcoind(string name, params string[] addNodes) =>
+        BitcoinCoreWorkload.Build(new BitcoinCoreOptions
         {
-            Data = new DataVolume(DataDir, "1Gi"),
-            ReadinessProbe = Probes.Exec([.. s_cli, "getblockchaininfo"], periodSeconds: 2, timeoutSeconds: 6),
-            TerminationGracePeriodSeconds = 30
-        };
-        foreach (var arg in (string[])
-                 [
-                     "bitcoind", "-regtest", "-server", "-printtoconsole", "-rpcuser=nltg", "-rpcpassword=nltg",
-                     "-fallbackfee=0.0002", "-dnsseed=0", "-listenonion=0", "-disablewallet", .. extraArgs
-                 ])
-            workload.Args.Add(arg);
-        workload.Ports.Add(new WorkloadPort("p2p", 18444));
-        return workload.WithProcessFaults();
-    }
+            Name = name,
+            Wallet = null,
+            DataSize = "1Gi",
+            AddNodes = addNodes,
+            ExtraArgs = ["-disablewallet", "-listenonion=0"]
+        }).WithProcessFaults();
 
     private static async Task<ExecResult> CliAsync(INodeHandle node, CancellationToken ct, params string[] args) =>
         await node.ExecAsync([.. s_cli, .. args], ct);
@@ -81,7 +72,7 @@ public class BitcoindFaultClusterTests
         await using var run = await TestRun.StartAsync(Options("faults-bitcoind"), ct);
         await using var faults = run.CreateFaultInjector(Log);
         var minerDeploy = run.DeployAsync(Bitcoind("miner"), ReadyTimeout, ct);
-        var peer = await run.DeployAsync(Bitcoind("peer", "-addnode=miner:18444"), ReadyTimeout, ct);
+        var peer = await run.DeployAsync(Bitcoind("peer", "miner"), ReadyTimeout, ct);
         var miner = await minerDeploy;
         await ReconnectAsync(peer, miner, "peer connected to miner", ct);
         await MineAsync(miner, 101, ct);

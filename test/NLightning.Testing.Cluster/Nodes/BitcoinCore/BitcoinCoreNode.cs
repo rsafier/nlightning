@@ -1,11 +1,10 @@
-using System.Diagnostics;
 using System.Net;
-using System.Net.Sockets;
 using NBitcoin.RPC;
 
 namespace NLightning.Testing.Cluster.Nodes.BitcoinCore;
 
 using Chain;
+using Reach;
 using Rpc;
 using Run;
 
@@ -145,24 +144,10 @@ public sealed class BitcoinCoreNode
     public async Task<HostRouteProbe> ProbeHostRouteAsync(CancellationToken cancellationToken)
     {
         var podIp = Handle.PodIp;
-        var podIpTime = podIp is null
-                            ? null
-                            : await TryConnectAsync(podIp, BitcoinCorePorts.Rpc, cancellationToken)
-                                 .ConfigureAwait(false);
-        string? dnsError = null;
-        TimeSpan? dnsTime = null;
-        try
-        {
-            dnsTime = await TryConnectAsync(Handle.ServiceDnsName, BitcoinCorePorts.Rpc, cancellationToken,
-                                            throwOnFailure: true).ConfigureAwait(false);
-        }
-        catch (Exception e) when (e is SocketException or TimeoutException)
-        {
-            dnsError = e.Message;
-        }
-
-        return new HostRouteProbe(podIp, podIpTime is not null, podIpTime, Handle.ServiceDnsName, dnsTime is not null,
-                                  dnsError);
+        var byIp = podIp is null ? null : await ProbeRpcAsync(podIp, cancellationToken).ConfigureAwait(false);
+        var byDns = await ProbeRpcAsync(Handle.ServiceDnsName, cancellationToken).ConfigureAwait(false);
+        return new HostRouteProbe(podIp, byIp?.Succeeded == true, byIp is { Succeeded: true } ? byIp.Elapsed : null,
+                                  Handle.ServiceDnsName, byDns.Succeeded, byDns.Error);
     }
 
     /// <summary>
@@ -184,7 +169,7 @@ public sealed class BitcoinCoreNode
         }
 
         var nextTry = DateTime.MinValue;
-        await ChainPoll.UntilAsync(async ct =>
+        await Poll.UntilAsync(async ct =>
                                    {
                                        if (await rpc.GetConnectionCountAsync(ct).ConfigureAwait(false) > 0)
                                            return true;
@@ -212,7 +197,7 @@ public sealed class BitcoinCoreNode
         var deadline = DateTime.UtcNow + window;
         while (true)
         {
-            if (await TryConnectAsync(host, BitcoinCorePorts.Rpc, cancellationToken).ConfigureAwait(false) is not null)
+            if ((await ProbeRpcAsync(host, cancellationToken).ConfigureAwait(false)).Succeeded)
                 return true;
             if (DateTime.UtcNow >= deadline)
                 return false;
@@ -221,28 +206,7 @@ public sealed class BitcoinCoreNode
         }
     }
 
-    /// <summary>The connect time, or null when the port did not answer within the probe timeout.</summary>
-    private static async Task<TimeSpan?> TryConnectAsync(string host, int port, CancellationToken cancellationToken,
-                                                         bool throwOnFailure = false)
-    {
-        using var tcp = new TcpClient();
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(s_probeConnectTimeout);
-        var watch = Stopwatch.StartNew();
-        try
-        {
-            await tcp.ConnectAsync(host, port, timeout.Token).ConfigureAwait(false);
-            return watch.Elapsed;
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            if (throwOnFailure)
-                throw new TimeoutException($"{host}:{port} did not answer within {s_probeConnectTimeout}");
-            return null;
-        }
-        catch (SocketException) when (!throwOnFailure)
-        {
-            return null;
-        }
-    }
+    /// <summary>One TCP connect to the RPC port (<see cref="TcpProbe"/>, never throws for a network failure).</summary>
+    private static Task<ProbeResult> ProbeRpcAsync(string host, CancellationToken cancellationToken) =>
+        TcpProbe.ProbeAsync(host, BitcoinCorePorts.Rpc, s_probeConnectTimeout, null, cancellationToken);
 }

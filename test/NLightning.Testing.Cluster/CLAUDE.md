@@ -48,7 +48,8 @@ every implementation, our own node included, is driven through the same seams.
 - `Nodes/`
   - `INodeHandle` (`KubeNodeHandle`): name/alias, namespace, `PodName` (`<name>-0`), `ServiceDnsName`,
     `PodDnsName`, `PodIp`, exec and file IO, logs, `RestartAsync` (graceful delete, same name + PVC) and `KillAsync`
-    (grace 0). Crash, pause and partition are in `Faults/`.
+    (a hard stop: delete with a 1 s grace, `KubeNodeHandle.KillGracePeriodSeconds`; a grace-0 delete let the
+    replacement start while the old container still ran on the PVC). Crash, pause and partition are in `Faults/`.
   - `ILightningTestPeer`: the facade shape (node id, address, connect/disconnect, new address, open channel, list
     channels, invoice, pay). Implementations live per kind (`Nodes/<Kind>/`), amounts in `Sat`/`Msat` longs, node ids
     lower-case hex.
@@ -72,23 +73,37 @@ every implementation, our own node included, is driven through the same seams.
     `NLTG_RUNNER_IMAGE` for a pushed image. Rebuild it after changing the tests.
 - `Images/ImageVersions`: the one version table (bitcoind 29.0 Polar and 31.1 official by digest, `custom_lnd:latest`
   Never, CLN v26.06.8 by digest, `nltg-eclair:0.14.3` Never, `nltg-ldk-server:dc02b76c` Never, postgres, busybox).
+- `Poll` (library root): the one deadline-bound wait (`UntilAsync` for a bool, `UntilDoneAsync` for a check that
+  says what is missing, `ForAsync<T>` for a value); every wait of the chain helpers, topologies and node adapters
+  goes through it. Do not add another poll loop.
+- `Nodes/BitcoinCore/` and `Chain/` (chain lane, details in `Chain/CLAUDE.md`): `BitcoinCoreNode` (the one bitcoind
+  of the harness: StatefulSet + PVC, `miner` wallet, ZMQ 28332/28333/28334, user/password `nltg`), the typed RPC
+  (`IBitcoinCoreRpc` over HTTP or `bitcoin-cli` exec, `RpcRoute.Auto`) and `RegtestChain` (mine, wait at the tip,
+  tx waits, reorgs, fee seeding).
+- `Topology/` and `Nodes/Cln/` (CLN lane, details in `Topology/CLAUDE.md`): the declarative `TopologyBuilder`
+  (`AddBitcoinCore`/`AddLnd`/`AddCln`, fundings, channels), its chain `BitcoinCoreTopologyChain` (the shared bitcoind
+  + `RegtestChain` as an `ITopologyChain`, the default `ChainFactory`), the deployers `ClnNodeDeployer` and
+  `LndNodeDeployer` (both registered by default), `StableNodeAddress` and the CLN node.
 - `Nodes/Lnd/` (LND lane): `LndNodeOptions` (alias, the bitcoind Service, extra flags) → `LndWorkload.Build`
   (`custom_lnd:latest` Never, LNUnit's `AddPolarLNDNode` flags, `lnddir` `/home/lnd/.lnd` on the PVC, readiness =
   `lncli getinfo` answers with `synced_to_chain`); `LndCredentials` (`tls.cert` + `admin.macaroon` read by exec);
   `LndGrpcConnection` (LNUnit.LND's generated `Lnrpc`/`Routerrpc`/`Walletrpc`/`Invoicesrpc` clients, the server
   certificate **pinned** to the node's `tls.cert`, macaroon header; pod IP from the host, pod DNS name in-cluster);
-  `LndNode.DeployAsync(run, options, timeout, ct)` implements `ILightningTestPeer` and reconnects after
-  `RestartAsync`/`KillAsync`; `LndMapping` (txids, `chan_id` → `BxTxO`, channel points).
-- `Topology/Lnd/` (LND lane): `LndPairTopology.BuildAsync` = bitcoind `miner` + `alice`/`bob` with an active
-  alice → bob channel; `PayAsync` retries a failed payment (NL-319); `RestartAsync(node, kill)` restarts or kills a node
-  and redials it **by its new pod IP**: LND stores the resolved IP of a peer it dialled by name, and the cluster DNS may
-  answer with the old IP for a while after a restart. `LndTopologyChain` is a stand-in bitcoind (Polar 29.0,
-  `bitcoin-cli` by exec) until the shared `BitcoinCore` node and `Chain/` helpers land.
+  `LndNode.DeployAsync(run, options, timeout, ct)` implements `ITopologyLightningNode` and reconnects after
+  `RestartAsync`/`KillAsync`; `LndNodeDeployer` puts LND in a declarative topology (`AddLnd`); `LndMapping` (txids,
+  `chan_id` → `BxTxO`, channel points). `LndNodeOptions` defaults follow the shared bitcoind (`miner`, `nltg`, ZMQ
+  28332/28333).
+- `Topology/Lnd/` (LND lane): `LndPairTopology.BuildAsync` = the shared bitcoind `miner`
+  (`BitcoinCoreTopologyChain`) + `alice`/`bob` with an active alice → bob channel; `PayAsync` retries a failed
+  payment (NL-319; any `ILightningTestPeer` pair); `RestartAsync(node, kill)` restarts or kills a node and redials it
+  **by its new pod IP**: LND stores the resolved IP of a peer it dialled by name, and the cluster DNS may answer with
+  the old IP for a while after a restart.
 - `Faults/`: `FaultInjector` (`run.CreateFaultInjector(log)`; disposing resumes and heals; `Events` is the
   timeline). Measured on OrbStack (k3s, flannel host-gw + k3s's kube-router policy controller):
-  - `RestartAsync` (graceful) and `KillAsync` (pod deleted with grace 0) replace the pod; PVC data stays, the DNS
-    names follow the new pod IP. `KillAsync` is **not** a crash: the kubelet still sends SIGTERM (2 s minimum grace)
-    and the StatefulSet's replacement can start before the old container got it (both on the PVC at once).
+  - `RestartAsync` (graceful) and `KillAsync` (pod deleted with a 1 s grace) replace the pod; PVC data stays, the DNS
+    names follow the new pod IP. `KillAsync` is **not** a crash: the node gets SIGTERM, then SIGKILL after 1 s, and
+    the replacement starts only once the old container is gone (the live test asserts TERM before the new START; with
+    grace 0 the StatefulSet started the replacement first, both on the PVC at once).
   - `CrashAsync` is the crash: SIGKILL to the main container's processes, restart in place (same pod, UID, IP and
     PVC; restart count +1; a second crash within 10 min waits for the kubelet back-off).
   - `PauseAsync`/`ResumeAsync`: SIGSTOP/SIGCONT through exec (POSIX `sh` builtins, the container's own cgroup).
@@ -100,6 +115,10 @@ every implementation, our own node included, is driven through the same seams.
     partitioning. DNS stays reachable by default; `PartitionOptions.AllowedIngressCidrs` (`NLTG_RUNNER_CIDRS`) lets
     the runner keep driving an isolated node (OrbStack host: `192.168.194.0/32`). `HealAsync` deletes the policy.
 - `deploy/runner-rbac.yaml`: the in-cluster runner's RBAC (ported from PR #10). Not applied by the spike.
+- Integration notes: an in-cluster runner's Job pod counts against the run's quota: size it with
+  `QuotaSizing.ForWorkloads(workloads, extraPods: 1, job.Resources)`. An adopted run (`TestRunOptions.AdoptNamespace`)
+  admits itself without the cap (the host already holds the slot) and its disposal also removes its nodes'
+  `StableNodeAddress` Services.
 
 ## Rules while batch work shares the machine
 
@@ -116,4 +135,6 @@ every implementation, our own node included, is driven through the same seams.
   `NLTG_KUBE_CONTEXT=orbstack dotnet run --project test/NLightning.Testing.Cluster.Tests -c Release -f net10.0 -- -explicit only -trait Category=Cluster`
   (or the built `bin/Release/net10.0/NLightning.Testing.Cluster.Tests` with the same arguments).
 - `Live/InClusterRunnerTests` need the runner image (`Runner/image/build.sh` first); `Live/ReachabilityTests` assert
-  OrbStack's matrix and only record it on another context.
+  OrbStack's matrix and only record it on another context. `Live/MixedTopologyTests` is the integration proof (LND +
+  CLN on the shared bitcoind through `TopologyBuilder`, a channel and a payment each way); `scripts/run-cluster.sh
+  -n 3 --class NLightning.Testing.Cluster.Tests.Live.MixedTopologyTests` runs it three times at once.

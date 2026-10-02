@@ -40,7 +40,7 @@ public class FaultInjectorClusterTests
                              async () => (await LookupAsync(watcher, keeper.PodDnsName, ct)).Contains(restart.PodIpAfter!),
                              TimeSpan.FromSeconds(60), "the pod DNS name resolving to the new pod", ct);
 
-        // Act / Assert: kill (grace 0)
+        // Act / Assert: kill (1 s grace)
         var kill = await faults.KillAsync(keeper, ReadyTimeout, ct);
         Assert.Equal(marker, await keeper.ReadFileAsync("/data/sub/marker.bin", ct));
         Assert.True(kill.NewPod);
@@ -57,22 +57,20 @@ public class FaultInjectorClusterTests
         Assert.Equal(crash.RestartCountBefore + 1, crash.RestartCountAfter);
         Assert.Equal("keeper-0", await ShAsync(keeper, "hostname", ct));
 
-        // Assert: the node saw SIGTERM on the restart and, through the kubelet's 2 s minimum grace, on the kill too
-        // (where the replacement may start before the old container even gets it: both run on the PVC at once), but
-        // nothing on the crash
+        // Assert: the node saw SIGTERM on the restart and on the kill, each before its replacement started (the kill's
+        // 1 s grace keeps the old pod until its container is gone: never two processes on the PVC), but nothing on the
+        // crash
         var eventLines = (await ShAsync(keeper, "cat /data/events", ct)).Split('\n');
         Log($"{run.Namespace}: /data/events: {string.Join(" | ", eventLines)}");
         var events = eventLines.Select(l => l.Split(' ')[0]).ToList();
         Assert.Equal(6, events.Count);
         Assert.Equal(["START", "TERM", "START"], events[..3]);
-        Assert.Equal(["START", "TERM"], events[3..5].Order(StringComparer.Ordinal));
+        Assert.Equal(["TERM", "START"], events[3..5]);
         Assert.Equal("START", events[5]);
-        var killOverlapped = events[3] == "START";
         Assert.Equal([FaultKind.Restart, FaultKind.Kill, FaultKind.Crash], faults.Events.Select(e => e.Kind));
         Log($"{run.Namespace}: restart {restart.Duration.TotalSeconds:F1} s (DNS +{restartDns.TotalSeconds:F1} s), "
           + $"kill {kill.Duration.TotalSeconds:F1} s (DNS +{killDns.TotalSeconds:F1} s), "
-          + $"crash {crash.Duration.TotalSeconds:F1} s; kill replacement started before the old pod's SIGTERM: "
-          + $"{killOverlapped}; IPs {restart.PodIpBefore} -> {restart.PodIpAfter} -> "
+          + $"crash {crash.Duration.TotalSeconds:F1} s; IPs {restart.PodIpBefore} -> {restart.PodIpAfter} -> "
           + $"{kill.PodIpAfter} -> {crash.PodIpAfter}");
     }
 

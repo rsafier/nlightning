@@ -4,8 +4,8 @@ using Nodes;
 
 /// <summary>
 /// The chain backend of a topology as the topology needs it: where the Lightning nodes reach its RPC, and mining,
-/// sending and the tip. <see cref="TopologyBitcoind"/> is the spike's own; the chain lane's Bitcoin Core node (and its
-/// <c>Chain/</c> helpers) plug in through <see cref="TopologyBuilder.UseChain"/>.
+/// sending and the tip. <see cref="BitcoinCoreTopologyChain"/> (the Bitcoin Core node and the <c>Chain/</c> helpers) is
+/// the default; another backend plugs in through <see cref="TopologyBuilder.UseChain"/>.
 /// </summary>
 public interface ITopologyChain
 {
@@ -20,6 +20,12 @@ public interface ITopologyChain
     string RpcUser { get; }
 
     string RpcPassword { get; }
+
+    /// <summary>bitcoind's <c>zmqpubrawblock</c> port on <see cref="RpcHost"/> (LND follows the chain over ZMQ).</summary>
+    int ZmqRawBlockPort { get; }
+
+    /// <summary>bitcoind's <c>zmqpubrawtx</c> port on <see cref="RpcHost"/>.</summary>
+    int ZmqRawTxPort { get; }
 
     /// <summary>The height of the tip.</summary>
     Task<long> GetBlockCountAsync(CancellationToken cancellationToken);

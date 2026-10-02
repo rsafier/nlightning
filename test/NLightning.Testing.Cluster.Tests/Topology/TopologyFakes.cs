@@ -78,6 +78,10 @@ internal sealed class FakeChain(INodeHandle node) : ITopologyChain
 
     public string RpcPassword => "secret";
 
+    public int ZmqRawBlockPort => 28332;
+
+    public int ZmqRawTxPort => 28333;
+
     public Task<long> GetBlockCountAsync(CancellationToken cancellationToken) => Task.FromResult(Tip);
 
     public Task<IReadOnlyList<string>> MineAsync(int blocks, CancellationToken cancellationToken)

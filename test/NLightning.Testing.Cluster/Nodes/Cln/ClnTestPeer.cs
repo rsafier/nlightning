@@ -124,8 +124,8 @@ public sealed class ClnTestPeer : ITopologyLightningNode
     /// <summary>
     /// A crash of the node process only: <c>lightningd</c> gets SIGKILL, the container exits and the kubelet restarts
     /// it in the same pod (same IP, same PVC); returns once the restarted container is ready. Unlike
-    /// <see cref="INodeHandle.KillAsync"/> (a force delete of the pod), the old process is gone before the new one
-    /// starts, so they never share the data directory.
+    /// <see cref="INodeHandle.KillAsync"/> (SIGTERM first, then a new pod), no shutdown code runs. Unlike
+    /// <c>FaultInjector.CrashAsync</c>, it needs no shared process namespace (lightningd is not PID 1 in the image).
     /// </summary>
     public async Task CrashAsync(TimeSpan readyTimeout, CancellationToken cancellationToken)
     {
@@ -135,7 +135,7 @@ public sealed class ClnTestPeer : ITopologyLightningNode
         var before = await ReadRestartCountAsync(kube, cancellationToken).ConfigureAwait(false);
         var kill = await Node.ExecAsync(CrashCommand, cancellationToken).ConfigureAwait(false);
         kill.EnsureSuccess($"kill -9 lightningd in {Node}");
-        await TopologyPoll.UntilAsync(async ct =>
+        await Poll.UntilDoneAsync(async ct =>
         {
             var count = await ReadRestartCountAsync(kube, ct).ConfigureAwait(false);
             return count > before ? null : $"restart count still {count}";

@@ -5,13 +5,15 @@ using Routerrpc;
 namespace NLightning.Testing.Cluster.Nodes.Lnd;
 
 using Run;
+using Topology;
 
 /// <summary>
 /// An LND node deployed in a run: its <see cref="KubeNodeHandle"/> (StatefulSet + PVC, see <see cref="LndWorkload"/>),
 /// its credentials, a pinned gRPC connection (<see cref="Grpc"/>) and the <see cref="ILightningTestPeer"/> facade.
-/// Restarts and kills go through the StatefulSet and reconnect: the node keeps its name, wallet and channels.
+/// Restarts and kills go through the StatefulSet and reconnect: the node keeps its name, wallet and channels. Also a
+/// topology node (<see cref="LndNodeDeployer"/>).
 /// </summary>
-public sealed class LndNode : ILightningTestPeer, IDisposable
+public sealed class LndNode : ITopologyLightningNode, IDisposable
 {
     private static readonly TimeSpan s_pollInterval = TimeSpan.FromMilliseconds(500);
 
@@ -141,7 +143,7 @@ public sealed class LndNode : ILightningTestPeer, IDisposable
         await ReconnectAsync(readyTimeout, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>A crash (grace 0, same pod name and PVC), then a new gRPC connection.</summary>
+    /// <summary>A hard stop (<see cref="INodeHandle.KillAsync"/>: 1 s grace, same pod name and PVC), then a new gRPC connection.</summary>
     public async Task KillAsync(TimeSpan readyTimeout, CancellationToken cancellationToken)
     {
         await _handle.KillAsync(readyTimeout, cancellationToken).ConfigureAwait(false);
@@ -181,14 +183,15 @@ public sealed class LndNode : ILightningTestPeer, IDisposable
             // Connected already: fall through to the init check
         }
 
-        await WaitAsync(async () =>
-                        {
-                            var peers = await Lightning.ListPeersAsync(new ListPeersRequest(),
-                                                                       cancellationToken: cancellationToken)
-                                                       .ResponseAsync.ConfigureAwait(false);
-                            return peers.Peers.Any(p => p.PubKey == peer.NodeId);
-                        }, TimeSpan.FromSeconds(30), $"{Alias} connected to {peer}", cancellationToken)
-           .ConfigureAwait(false);
+        await Poll.UntilAsync(async ct =>
+                              {
+                                  var peers = await Lightning.ListPeersAsync(new ListPeersRequest(),
+                                                                             cancellationToken: ct)
+                                                             .ResponseAsync.ConfigureAwait(false);
+                                  return peers.Peers.Any(p => p.PubKey == peer.NodeId);
+                              }, TimeSpan.FromSeconds(30), s_pollInterval, $"{Alias} connected to {peer}",
+                              cancellationToken)
+                  .ConfigureAwait(false);
     }
 
     public async Task DisconnectAsync(string nodeId, CancellationToken cancellationToken)
@@ -205,6 +208,14 @@ public sealed class LndNode : ILightningTestPeer, IDisposable
                                                        cancellationToken: cancellationToken)
                                       .ResponseAsync.ConfigureAwait(false);
         return response.Address;
+    }
+
+    /// <summary>The block height LND has processed (<c>GetInfo</c>).</summary>
+    public async Task<long> GetBlockHeightAsync(CancellationToken cancellationToken)
+    {
+        var info = await Lightning.GetInfoAsync(new GetInfoRequest(), cancellationToken: cancellationToken)
+                                  .ResponseAsync.ConfigureAwait(false);
+        return info.BlockHeight;
     }
 
     /// <summary>The wallet's confirmed balance in satoshis.</summary>
@@ -244,9 +255,9 @@ public sealed class LndNode : ILightningTestPeer, IDisposable
     /// <summary>Waits until the channel funded by <paramref name="fundingTxId"/> is listed and active.</summary>
     public Task<TestChannel> WaitForActiveChannelAsync(string fundingTxId, TimeSpan timeout,
                                                        CancellationToken cancellationToken) =>
-        WaitForAsync(async () => (await ListChannelsAsync(cancellationToken).ConfigureAwait(false))
-                                .FirstOrDefault(c => c.Active && c.FundingTxId == fundingTxId),
-                     timeout, $"{Alias}: channel {fundingTxId} active", cancellationToken);
+        Poll.ForAsync(async ct => (await ListChannelsAsync(ct).ConfigureAwait(false))
+                                 .FirstOrDefault(c => c.Active && c.FundingTxId == fundingTxId),
+                      timeout, s_pollInterval, $"{Alias}: channel {fundingTxId} active", cancellationToken);
 
     public async Task<TestInvoice> CreateInvoiceAsync(long? amountMsat, string description,
                                                       CancellationToken cancellationToken)
@@ -307,26 +318,5 @@ public sealed class LndNode : ILightningTestPeer, IDisposable
         var call = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         var cap = deadline + TimeSpan.FromSeconds(1);
         return call < cap ? call : cap;
-    }
-
-    private static Task WaitAsync(Func<Task<bool>> condition, TimeSpan timeout, string what,
-                                  CancellationToken cancellationToken) =>
-        WaitForAsync(async () => await condition().ConfigureAwait(false) ? what : null, timeout, what,
-                     cancellationToken);
-
-    private static async Task<T> WaitForAsync<T>(Func<Task<T?>> probe, TimeSpan timeout, string what,
-                                                 CancellationToken cancellationToken) where T : class
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (true)
-        {
-            var value = await probe().ConfigureAwait(false);
-            if (value is not null)
-                return value;
-            if (DateTime.UtcNow >= deadline)
-                throw new TimeoutException($"Timed out after {timeout}: {what}");
-
-            await Task.Delay(s_pollInterval, cancellationToken).ConfigureAwait(false);
-        }
     }
 }

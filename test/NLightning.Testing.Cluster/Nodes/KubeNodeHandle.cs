@@ -10,6 +10,15 @@ using Kube;
 /// </summary>
 public sealed class KubeNodeHandle : INodeHandle
 {
+    /// <summary>
+    /// The grace period of <see cref="KillAsync"/>. Not 0: a grace-0 delete removes the pod object at once, so the
+    /// StatefulSet started the replacement while the old container still ran on the same PVC (the kubelet still sends
+    /// SIGTERM and waits its 2 s minimum; CLN then refused to start on its PID file lock, and two processes on one data
+    /// directory risk corrupting it). With 1 s the pod object stays until its containers are gone: SIGTERM, SIGKILL
+    /// after 1 s, then the replacement.
+    /// </summary>
+    public const int KillGracePeriodSeconds = 1;
+
     private readonly IKubernetes _client;
     private readonly int _gracePeriodSeconds;
 
@@ -71,7 +80,7 @@ public sealed class KubeNodeHandle : INodeHandle
         ReplacePodAsync(_gracePeriodSeconds, readyTimeout, cancellationToken);
 
     public Task KillAsync(TimeSpan readyTimeout, CancellationToken cancellationToken) =>
-        ReplacePodAsync(0, readyTimeout, cancellationToken);
+        ReplacePodAsync(KillGracePeriodSeconds, readyTimeout, cancellationToken);
 
     public override string ToString() => $"{Namespace}/{Name}";
 

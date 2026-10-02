@@ -177,7 +177,7 @@ The current setup is slow but it works, so its behaviour is the requirements lis
 | R2 stable aliases | Each node is a **StatefulSet (replicas 1) + headless Service**. `alice`, `miner` and `cln` resolve inside the namespace, `alice-0.alice` is stable across restarts, and configs never contain the run id. |
 | R4 concurrency | Each pod declares CPU and memory **requests and limits**, and each namespace gets a **ResourceQuota**. When the node is full, pods wait in `Pending`: the scheduler is the semaphore. The runner only caps how many runs it starts. |
 | R5 ports | No host ports. Locally, the host-side test process reaches pod and service IPs directly (OrbStack routing). Anywhere else, the test process runs **in-cluster as a Job** in the run's namespace. NL-276 disappears either way. |
-| R11 lifecycle | **Restart** = delete the pod: the StatefulSet recreates it with the same name, DNS and PVC data, so the NL-262 address-hold trick goes away. **Kill/crash** = delete with grace 0. **Pause** = `kill -STOP` via exec. **Network partition** = a NetworkPolicy isolating the pod: a real disconnect test without killing the node, which Docker could not do cleanly. |
+| R11 lifecycle | **Restart** = delete the pod: the StatefulSet recreates it with the same name, DNS and PVC data, so the NL-262 address-hold trick goes away. **Kill** = delete with a 1 s grace (grace 0 let the StatefulSet start the replacement while the old container still ran on the PVC; fixed at the spike integration). **Crash** = SIGKILL in place through exec (the container restarts in the same pod; needs `shareProcessNamespace` unless the node's process is not PID 1). **Pause** = `kill -STOP` via exec. **Network partition** = a NetworkPolicy isolating the pod: a real disconnect test without killing the node, which Docker could not do cleanly. |
 | R12 images | One version table. Locally, `docker build` once (the cluster sees the image); multi-machine, push to a registry (an in-cluster registry or GHCR) under digests. |
 | Node data | A PVC per StatefulSet (the local-path provisioner locally) for data that must survive restarts; `emptyDir` where it need not. |
 
@@ -297,6 +297,44 @@ Conclusions:
   - allowed: StatefulSets and pod exec in its namespace, and `get` on its own namespace object;
   - denied: creating, listing or deleting namespaces, reading `default`, anything in `default` or `kube-system`,
     creating Roles, and deleting the ResourceQuota.
+
+### Spike integration record (2026-10-02, branch `wip/harness-spike`)
+
+The six lanes (chain, cln, lnd, faults, runner, reach) were merged onto the scaffold in that order and unified:
+
+- **One bitcoind.** The CLN lane's stopgap `TopologyBitcoind` and the LND lane's `LndTopologyChain` were removed. Every
+  topology now runs the chain lane's `BitcoinCoreNode` + `RegtestChain` through `Topology/BitcoinCoreTopologyChain`
+  (the default `TopologyBuilder.ChainFactory`; `LndPairTopology` uses it too). `ITopologyChain` gained the ZMQ raw
+  block/tx ports, and `LndNodeOptions` defaults follow the shared bitcoind (`nltg`, ZMQ 28332/28333).
+- **LND in the declarative topology.** `LndNode` is an `ITopologyLightningNode` and `LndNodeDeployer` is registered
+  by default next to the CLN one (`TopologyBuilder.AddLnd`), so LND and CLN mix in one topology.
+- **One poll helper.** `ChainPoll`, `TopologyPoll` and the LND lane's private wait loops became the library's `Poll`;
+  `BitcoinCoreNode` probes its RPC port with the reach lane's `TcpProbe`.
+- **`KillAsync` no longer overlaps two processes on a PVC** (found by the CLN and faults lanes): a grace-0 delete
+  removed the pod object at once, so the StatefulSet started the replacement while the old container still ran; CLN
+  then refused to start on its PID file. It is now a 1 s grace; the live fault test asserts the old pod's SIGTERM
+  comes before the new pod's start.
+- `TestRun.StartAsync` does both the runner lane's owner records, derived ids and admission cap and the reach lane's
+  namespace adoption (an adopted run skips the cap: the host holds the slot). An adopted run's disposal also removes
+  its nodes' `StableNodeAddress` Services.
+
+Live evidence on OrbStack after the integration (every `Category=Cluster` class, all green; machine shared with the
+batch Docker suites):
+
+| What | Result |
+|---|---|
+| CLN pair (`ClnTopologyTests`): build, pay | built in 25.2 s, paid in 0.2 s; 3 concurrent pairs built in 22-32 s, each deleted by 86-91 s |
+| CLN crash and restarts | channel active again 1.2 s after bob's lightningd crash, 5.9 s after bob's restart (new pod IP) |
+| LND pair (`LndPairTopologyTests`) | built in 25.7 s (bitcoind 13.3 s, LND 10.2 s, funding 0.9 s, channel 0.9 s); restart to channel active 5.3 s, kill 6.2 s; torn down in 20 s |
+| LND + CLN in one topology (`MixedTopologyTests`) | built in 25.3 s with a channel each way; both payments green; `scripts/run-cluster.sh -n 3` ran it 3 times at once: 55-83 s each, all green, nothing left behind |
+| Faults (`FaultInjectorClusterTests`, `BitcoindFaultClusterTests`) | restart 4.0 s, kill 4.0 s (TERM before the new START), crash 1.6 s in place; pause, partitions and the shared bitcoind workload with `WithProcessFaults()` green |
+| Runner (`RunLifecycleTests`, `InClusterRunnerTests`, `ReachabilityTests`, `ClusterSmokeTests`, `BitcoinCoreClusterTests`) | green; the runner image rebuilt from the integrated tests |
+
+Spike checks: (1) reachability, see the record above; (2) a restart keeps the DNS name and the PVC data (faults, CLN
+and LND lanes); (3) local images work without a registry (`custom_lnd:latest` and `nltg-spike-runner` with
+`imagePullPolicy: Never`, CLN and bitcoind by digest); (4) a 2-node topology with a channel is up in about 25 s. The
+Docker fixtures' times for the same topologies were not measured in the spike (the batch Docker suites held the
+machine); that comparison is left to the core phase.
 
 ## 6. Risks and open questions
 

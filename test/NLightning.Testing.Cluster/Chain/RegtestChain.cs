@@ -310,7 +310,7 @@ public sealed class RegtestChain
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(txId);
         TxStatus? last = null;
-        return await ChainPoll.ForAsync(async ct =>
+        return await Poll.ForAsync(async ct =>
                                         {
                                             last = await Rpc.GetTransactionStatusAsync(txId, ct)
                                                             .ConfigureAwait(false);
