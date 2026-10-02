@@ -164,3 +164,18 @@ dotnet run --project test/NLightning.Testing.Lnd.Tests -f net10.0 -- -explicit o
 ```
 
 It passed against `custom_lnd:0.21.4-beta` with a regtest bitcoind.
+
+`Docker/LndGrpcLiveTests` is `Explicit` and in category `LndGrpc`. It needs no environment: it starts its own regtest network through the `docker` command line, with unique names and its own Docker network (`nltg-lndgrpc-<id>-bitcoind`, `-a`, `-b`, `-net`, all labelled `nltg-lndgrpc=<id>`), from the local images `polarlightning/bitcoind:29.0` and `custom_lnd:0.21.4-beta` (`--pull=never`). It reads `tls.cert` and `admin.macaroon` out of the containers and reaches gRPC through ports published on 127.0.0.1. Then it drives both nodes through this client:
+
+1. `GetInfo` (version 0.21.4) and `NewAddress`, then funding by mining to that address.
+2. `ConnectPeer`, `OpenChannelSync` and a wait until the channel is active.
+3. `AddInvoice` on b, followed through `Invoices.SubscribeSingleInvoice`, and paid from a with `Router.SendPaymentV2`, streamed to `SUCCEEDED`.
+4. `Invoices.LookupInvoiceV2`, the `ListChannels` balances and `WalletKit.ListUnspent`.
+5. An `LndNodePool` round over both nodes: readiness, lookup by key, and `RebalanceNodePoolAsync`, which moves the channel to 50/50.
+
+It removes only its own containers and network, also on failure. It sits in a `Docker` namespace, so CI's `!~Docker` filter leaves it out too. Run it alone, under the machine's Docker lock where there is one:
+
+```bash
+dotnet build test/NLightning.Testing.Lnd.Tests -c Release -p:NltgTargetNet11=false
+dotnet run --project test/NLightning.Testing.Lnd.Tests -c Release -f net10.0 --no-build -- -explicit only -trait Category=LndGrpc
+```
