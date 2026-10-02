@@ -124,12 +124,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 55 | 58 |
+| open | 0 | 0 | 3 | 56 | 59 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 62 | 164 | 281 | 521 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **171** | **343** | **590** |
+| **Total** | **14** | **62** | **171** | **344** | **591** |
 
 ### Epics
 
@@ -6124,6 +6124,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Reproduce with the class in a loop; log the reservation id, its outpoints and what the signer's UTXO lookup sees when it returns false; then order the resume after the wallet load or retry the signing once the wallet is loaded.
 - **Blocks/Blocked-by:** Related NL-484 (restart mid-splice), NL-108
 - **Plan ref:** —
+
+### NL-601 On the peer's commitment our anchor is recorded `Ignored` although the anchor sweep spends it
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/Resolvers/RemoteCommitResolver.cs` (lines ~499-502: `PeerOutput`/`PeerAnchor`/`OurAnchor` rows set `Ignored`), `src/NLightning.Application/Onchain/Anchors/AnchorCpfpService.cs` (`PlanAnchorSweepAsync`, which sweeps every unspent anchor of a confirmed commitment, ours and the peer's)
+- **Evidence:** First live force close on Mutinynet (2026-10-02, channel `fede6471…`, FAFO broadcast commitment `c99b4521…`, confirmed at 3472215): FAFO2 (`RemoteCommitment`) listed `c99b4521…:1 OurAnchor Ignored 330 sat` in `pendingsweeps`, yet at +16 blocks its `AnchorCpfpService` swept both anchors (`:0` FAFO's, `:1` its own) in `725834f29af4a132388da97feed5da67ef795950d0983acc88011d521f1f0d92` (660 sat in, 146 sat fee, 514 sat to its wallet, confirmed 3472231). FAFO's own sweep of both anchors (`5b240252…`) was refused by bitcoind as a lower-fee replacement. Sweeping both anchors is by design (one 330-sat anchor never clears dust after the fee, `AnchorCpfpPolicy.DecideAnchorSweep`); only the bookkeeping disagrees: the resolver's row says nothing will spend that output while the sweep service does, so `pendingsweeps` misreports it and the row never shows the sweep.
+- **Fix sketch:** Let the resolver leave anchor rows `Waiting` (until +16 blocks) when `Anchors:SweepAnchors` is on and let the executor record the sweep (or the peer's/anyone's spend) as `Resolved`, as `LocalCommitResolver` does for the local commitment's anchors; or have `pendingsweeps` show such rows as "swept by the anchor sweep". Also consider whether both ends of a channel should race for the same anchors (harmless: the loser's sweep is refused and its rows see the spend).
+- **Blocks/Blocked-by:** Related NL-381 (CPFP through our anchor on the peer's commitment)
+- **Plan ref:** BOLT5 O7
 
 ## Docs
 
