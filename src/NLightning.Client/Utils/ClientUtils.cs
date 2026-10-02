@@ -187,6 +187,14 @@ public static class ClientUtils
         Console.WriteLine("  accounting rebuild           Clear the books and project the whole feed again");
         Console.WriteLine("  accounting verify            Walk the feed's hash chain and report the first break");
         Console.WriteLine();
+        Console.WriteLine("Labels and tags (createinvoice, payinvoice, keysend, createoffer, payoffer, withdraw,");
+        Console.WriteLine("openchannel):");
+        Console.WriteLine("  [--label <text>] [--tag <key>=<value>]...");
+        Console.WriteLine("                               Kept on the invoice, payment, offer, withdrawal or channel,");
+        Console.WriteLine("                               shown by the list commands and copied into the accounting");
+        Console.WriteLine("                               events; a label is at most 256 bytes, at most 16 tags, a");
+        Console.WriteLine("                               key is 1-32 of a-z 0-9 _ . - and a value at most 128 bytes");
+        Console.WriteLine();
         Console.WriteLine("Environment Variables:");
         Console.WriteLine("  NLTG_NETWORK               Network to use");
         Console.WriteLine("  NLTG_COOKIE                Path to cookie file");

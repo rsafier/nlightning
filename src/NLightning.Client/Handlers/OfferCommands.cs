@@ -68,7 +68,7 @@ internal static class OfferCommands
     /// Runs a validated offer command and prints its result.
     /// </summary>
     internal static async Task RunAsync(string cmd, string[] commandArgs, int maxListCount, NamedPipeIpcClient client,
-                                        CancellationToken cancellationToken)
+                                        CancellationToken cancellationToken, LabelArguments? labels = null)
     {
         switch (cmd)
         {
@@ -82,7 +82,9 @@ internal static class OfferCommands
                     Issuer = create.Issuer,
                     QuantityMax = create.QuantityMax,
                     AbsoluteExpiry = create.AbsoluteExpiry,
-                    ForcePaths = create.ForcePaths
+                    ForcePaths = create.ForcePaths,
+                    Label = labels?.Label,
+                    Tags = labels?.TagsOrNull
                 }, cancellationToken);
                 new CreateOfferPrinter().Print(created);
                 break;

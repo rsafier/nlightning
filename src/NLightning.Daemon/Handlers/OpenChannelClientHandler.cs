@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Handlers;
 
 using Application.Channels.Close;
+using Domain.Accounting.Labels;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
@@ -117,6 +118,9 @@ public sealed class OpenChannelClientHandler
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       "A channel can't be opened both dual-funded (--dual-fund) and v1 (--v1)");
 
+        // NL-602 A3-T1: refused before anything is sent; stored with the channel's first save
+        var labels = SourceLabelsGuard.Check(request.Label, request.Tags);
+
         // Check if either a PeerAddressInfo or a CompactPubKey was provided
         var isPeerAddressInfo = request.NodeInfo.Contains('@') && request.NodeInfo.Contains(':');
         CompactPubKey peerId;
@@ -133,13 +137,13 @@ public sealed class OpenChannelClientHandler
         // NL-551: it is the default when the peer supports it (Eclair refuses a v1 open once option_dual_fund is
         // negotiated; CLN and Eclair open v2 themselves then)
         if (request.IsDualFunded)
-            return await OpenDualFundedAsync(request, peerId, ct);
+            return await OpenDualFundedAsync(request, peerId, labels, ct);
         if (OpensDualFundedByDefault(request, peer))
         {
             if (_logger.IsEnabled(LogLevel.Information))
                 _logger.LogInformation("Opening a dual-funded channel with {PeerId}: option_dual_fund is negotiated "
                                      + "(openchannel --v1 opens v1)", peerId);
-            return await OpenDualFundedAsync(request, peerId, ct);
+            return await OpenDualFundedAsync(request, peerId, labels, ct);
         }
 
         // Let's check if we have enough funds to open this channel
@@ -150,6 +154,8 @@ public sealed class OpenChannelClientHandler
         // Since we're connected, let's open the channel
         var channel =
             await _channelFactory.CreateChannelV1AsInitiatorAsync(request, peer.NegotiatedFeatures, peerId);
+        channel.Label = labels.Label;
+        channel.Tags = labels.CanonicalTags;
 
         // Save the channelId for later
         _channelId = channel.ChannelId;
@@ -334,7 +340,8 @@ public sealed class OpenChannelClientHandler
     /// as our contribution (BOLT 2 "Channel Establishment v2"); completes once both <c>tx_signatures</c> were exchanged.
     /// </summary>
     private async Task<OpenChannelClientResponse> OpenDualFundedAsync(OpenChannelClientRequest request,
-                                                                     CompactPubKey peerId, CancellationToken ct)
+                                                                     CompactPubKey peerId, SourceLabels labels,
+                                                                     CancellationToken ct)
     {
         if (_dualFundedOpenService is null)
             throw new ClientException(ErrorCodes.InvalidOperation, "Dual-funded opens are not available on this node");
@@ -348,12 +355,15 @@ public sealed class OpenChannelClientHandler
             throw new ClientException(ErrorCodes.NotEnoughBalance, "We don't have enough balance to open this channel");
 
         DualFundedOpenResult result;
+        var openRequest = new DualFundedOpenRequest(peerId, request.FundingAmount,
+                                                    request.FeeRatePerKw is { } feerate ? (uint)feerate.Satoshi : null,
+                                                    null, request.IsPublic)
+        {
+            Labels = labels
+        };
         try
         {
-            result = await _dualFundedOpenService.OpenAsync(
-                         new DualFundedOpenRequest(peerId, request.FundingAmount,
-                                                   request.FeeRatePerKw is { } feerate ? (uint)feerate.Satoshi : null,
-                                                   null, request.IsPublic), ct);
+            result = await _dualFundedOpenService.OpenAsync(openRequest, ct);
         }
         catch (InvalidOperationException e)
         {

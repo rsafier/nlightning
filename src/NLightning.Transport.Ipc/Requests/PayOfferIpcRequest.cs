@@ -7,7 +7,7 @@ using Domain.Money;
 
 /// <summary>
 /// Request for PayOffer and FetchInvoice (ClientCommand 29 and 30); FetchInvoice
-/// ignores the payment limits (keys 4-6).
+/// ignores the payment limits (keys 4-6) and the label and tags (keys 7-8, NL-602 A3-T1).
 /// </summary>
 [MessagePackObject]
 public sealed class PayOfferIpcRequest
@@ -33,6 +33,16 @@ public sealed class PayOfferIpcRequest
     /// <summary>The most HTLCs in flight at once, or null for the daemon's default.</summary>
     [Key(6)] public uint? MaxParts { get; init; }
 
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, <c>--label</c>), or null; an older client sends none.
+    /// </summary>
+    [Key(7)] public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c> (NL-602 A3-T1, <c>--tag</c>), or null for none.
+    /// </summary>
+    [Key(8)] public List<string>? Tags { get; init; }
+
     public PayOfferClientRequest ToClientRequest() => new(Offer)
     {
         Amount = Amount,
@@ -40,6 +50,8 @@ public sealed class PayOfferIpcRequest
         PayerNote = PayerNote,
         TimeoutSeconds = TimeoutSeconds,
         MaxFee = MaxFee,
-        MaxParts = MaxParts
+        MaxParts = MaxParts,
+        Label = Label,
+        Tags = Tags ?? []
     };
 }

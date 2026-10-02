@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Offers.Models;
 
+using Accounting.Labels;
 using Money;
 
 /// <summary>
@@ -14,4 +15,11 @@ using Money;
 /// have none, B12-OFR-02).</param>
 public sealed record CreateOfferRequest(LightningMoney? Amount, string? Description, string? Issuer = null,
                                         ulong? QuantityMax = null, DateTimeOffset? AbsoluteExpiry = null,
-                                        bool ForcePaths = false);
+                                        bool ForcePaths = false)
+{
+    /// <summary>
+    /// The operator's label and tags (NL-602 A3-T1) the offer row carries (and every invoice issued for the offer, so
+    /// its <c>InvoiceSettled</c> event); <see cref="SourceLabels.None"/> for none.
+    /// </summary>
+    public SourceLabels Labels { get; init; } = SourceLabels.None;
+}

@@ -7,6 +7,7 @@ using Application.Channels.Handlers;
 using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Labels;
 using Domain.Accounting.Models;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
@@ -81,6 +82,32 @@ public class ChannelFundedAccountingPersistenceTests
         Assert.Equal(400_000_000, books[AccountRole.PushSent]);
         Assert.Equal(1_234_000, books[AccountRole.FeeFunding]);
         Assert.Equal(-1_001_234_000, books[AccountRole.Clearing]);
+    }
+
+    [Fact]
+    public async Task Given_AChannelOpenedWithALabelAndTags_When_ItsReloadedFundingConfirms_Then_FundedCarriesThem()
+    {
+        // Arrange (NL-602 A3-T1): openchannel --label/--tag stores them with the channel's first save; the funding
+        // confirms after a restart (the channel read back from the database)
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channel = SqliteDbTestContext.CreateChannel(true, state: ChannelState.V1FundingSigned);
+        var labels = SourceLabels.Create("routing", ["purpose=liquidity", "peer=acme"]);
+        channel.Label = labels.Label;
+        channel.Tags = labels.CanonicalTags;
+        await StoreChannelAsync(db, channel, LightningMoney.Zero, LightningMoney.Satoshis(1_234));
+        ChannelModel reloaded;
+        await using (var context = db.CreateDbContext())
+            reloaded = (await new ChannelDbRepository(context, db.Sha256).GetByIdAsync(channel.ChannelId))!;
+
+        // Act
+        await ConfirmAsync(db, reloaded);
+
+        // Assert
+        var funded = Assert.Single(await ReadEventsAsync(db), e => e.Kind == AccountingEventKind.ChannelFunded);
+        Assert.Equal("routing", funded.Details[AccountingDetailKeys.Label]);
+        Assert.Equal("acme", funded.Details["tag.peer"]);
+        Assert.Equal("liquidity", funded.Details["tag.purpose"]);
+        Assert.Equal("wallet", funded.Details["bucketFrom"]);
     }
 
     [Fact]

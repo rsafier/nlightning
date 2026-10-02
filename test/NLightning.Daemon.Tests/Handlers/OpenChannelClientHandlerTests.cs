@@ -257,6 +257,43 @@ public class OpenChannelClientHandlerTests
         Assert.Equal(pushAmount, sentPush);
     }
 
+    [Fact]
+    public async Task Given_ALabelAndTags_When_AV1OpenIsHandled_Then_TheChannelCarriesThemBeforeItsFirstSave()
+    {
+        // Arrange (NL-602 A3-T1): the open stops at the funding lock (a sentinel), after the channel was built
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(1_000_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount)
+        {
+            Label = "routing",
+            Tags = ["purpose=liquidity", "peer=acme"]
+        };
+        var peerModel = new PeerModel(peerId, "127.0.0.1", 9735, "ipv4");
+        var peerServiceMock = new Mock<IPeerService>();
+        peerServiceMock.Setup(x => x.Features).Returns(new FeatureOptions());
+        peerModel.SetPeerService(peerServiceMock.Object);
+        _peerManagerMock.Setup(x => x.GetPeer(peerId)).Returns(peerModel);
+        _blockchainMonitorMock.Setup(x => x.LastProcessedBlockHeight).Returns(100u);
+        _utxoMemoryRepositoryMock.Setup(x => x.GetConfirmedBalance(100u)).Returns(LightningMoney.Satoshis(2_000_000));
+        var localKeySet = new ChannelKeySetModel(0, peerId, peerId, peerId, peerId, peerId, peerId);
+        var channelModel = new ChannelModel(new ChannelParams(), CreateRandomChannelId(), null, null, true, null, null,
+                                            fundingAmount, localKeySet, 0, 0, LightningMoney.Zero, null, 0, peerId, 0,
+                                            ChannelState.V1Opening, ChannelVersion.V1);
+        _channelFactoryMock.Setup(x => x.CreateChannelV1AsInitiatorAsync(request, It.IsAny<FeatureOptions>(), peerId))
+                           .ReturnsAsync(channelModel);
+        _utxoMemoryRepositoryMock.Setup(x => x.LockUtxosToSpendOnChannel(fundingAmount, channelModel.ChannelId))
+                                 .Throws(new ArgumentException("lock sentinel"));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ArgumentException>(
+                            () => _handler.HandleAsync(request, TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal("lock sentinel", exception.Message);
+        Assert.Equal("routing", channelModel.Label);
+        Assert.Equal("peer=acme\npurpose=liquidity", channelModel.Tags);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

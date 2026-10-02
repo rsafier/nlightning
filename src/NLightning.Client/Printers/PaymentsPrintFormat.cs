@@ -50,6 +50,18 @@ internal static class PaymentsPrintFormat
         if (invoice.SettledAt is { } settledAt)
             output.WriteLine("  Settled:            {0}", FormatTime(settledAt));
         WriteCustomRecords(output, invoice.CustomRecords);
+        WriteLabels(output, invoice.Label, invoice.Tags);
+    }
+
+    /// <summary>
+    /// The operator's label and one line per tag (NL-602 A3-T1); nothing when there are none.
+    /// </summary>
+    internal static void WriteLabels(TextWriter output, string? label, IReadOnlyList<string>? tags)
+    {
+        if (!string.IsNullOrEmpty(label))
+            output.WriteLine("  Label:              {0}", label);
+        foreach (var tag in tags ?? [])
+            output.WriteLine("  Tag:                {0}", tag);
     }
 
     /// <summary>
@@ -88,6 +100,7 @@ internal static class PaymentsPrintFormat
         if (payment.IsKeysend)
             output.WriteLine("  Keysend:            yes");
         WriteCustomRecords(output, payment.CustomRecords);
+        WriteLabels(output, payment.Label, payment.Tags);
     }
 
     /// <summary>

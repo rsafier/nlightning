@@ -4,6 +4,7 @@ using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
+using Domain.Accounting.Labels;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
@@ -123,6 +124,22 @@ public class WalletSpendServiceTests
     private WalletSpendService CreateService() =>
         new(_selector, _anchorReserve.Object, _utxos, _signer, _monitor.Object, _feeService.Object, _scopeFactory,
             Microsoft.Extensions.Options.Options.Create(_nodeOptions), NullLogger<WalletSpendService>.Instance);
+
+    [Fact]
+    public async Task Given_ALabelAndTags_When_Withdrawing_Then_TheWalletSendRowCarriesThem()
+    {
+        // Arrange (NL-602 A3-T1, withdraw --label/--tag): the WalletSent event copies them at confirmation
+        AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+        var request = Request(40_000) with { Labels = SourceLabels.Create("cold storage", ["category=savings"]) };
+
+        // Act
+        await _service.WithdrawAsync(request, TestContext.Current.CancellationToken);
+
+        // Assert
+        var row = Assert.Single(_published);
+        Assert.Equal("cold storage", row.Label);
+        Assert.Equal("category=savings", row.Tags);
+    }
 
     [Fact]
     public async Task Given_OneP2WpkhOutput_When_WithdrawingAnAmount_Then_TheSignedSpendPaysTheAddressAndTheChange()

@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Channels.DualFunding.Models;
 
+using Accounting.Labels;
 using Crypto.ValueObjects;
 using Money;
 
@@ -20,4 +21,11 @@ public sealed record DualFundedOpenRequest(
     uint? FundingFeeratePerKw = null,
     uint? CommitmentFeeratePerKw = null,
     bool IsPublic = false,
-    bool RequireConfirmedInputs = false);
+    bool RequireConfirmedInputs = false)
+{
+    /// <summary>
+    /// The operator's label and tags (NL-602 A3-T1) the channel row (and its <c>ChannelFunded</c> event) carries;
+    /// <see cref="SourceLabels.None"/> for none.
+    /// </summary>
+    public SourceLabels Labels { get; init; } = SourceLabels.None;
+}

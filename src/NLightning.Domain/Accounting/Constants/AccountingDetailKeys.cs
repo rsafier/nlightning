@@ -45,6 +45,17 @@ public static class AccountingDetailKeys
 
     #endregion
 
+    #region Labels and tags at the source (A3-T1)
+
+    /// <summary>The operator's label of the row the event comes from (an invoice, its offer, a payment, a channel, a
+    /// withdrawal); see <c>Labels.SourceLabels</c>.</summary>
+    public const string Label = "label";
+
+    /// <summary>The prefix of an operator tag: the detail <c>tag.&lt;key&gt;</c> holds the tag's value.</summary>
+    public const string TagPrefix = "tag.";
+
+    #endregion
+
     #region Payments
 
     /// <summary>"true" on a payment that paid an invoice of ours (a rebalance).</summary>

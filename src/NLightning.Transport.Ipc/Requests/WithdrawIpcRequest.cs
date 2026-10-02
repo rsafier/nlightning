@@ -19,5 +19,19 @@ public sealed class WithdrawIpcRequest
     /// <summary>The fee rate in sat/vB; null for the node's estimate.</summary>
     [Key(2)] public ulong? SatPerVbyte { get; init; }
 
-    public WithdrawClientRequest ToClientRequest() => new(Address, AmountSat, SatPerVbyte);
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, <c>--label</c>), or null; an older client sends none.
+    /// </summary>
+    [Key(3)] public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c> (NL-602 A3-T1, <c>--tag</c>), or null for none.
+    /// </summary>
+    [Key(4)] public List<string>? Tags { get; init; }
+
+    public WithdrawClientRequest ToClientRequest() => new(Address, AmountSat, SatPerVbyte)
+    {
+        Label = Label,
+        Tags = Tags ?? []
+    };
 }

@@ -6,6 +6,7 @@ using Application.Payments.Send.Interfaces;
 using Bolt11.Models;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Labels;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Money;
@@ -69,6 +70,34 @@ public class PaymentHarnessTests : IDisposable
                      (await _harness.Carol.Invoices.GetByPaymentHashAsync(invoice.PaymentHash))!.Status);
         Assert.Contains(_harness.Bob.Switch.PaymentOutcomes, o => o is { Event: OutgoingHtlcFulfilled, Handled: true });
         AssertNoPendingHtlcs();
+    }
+
+    [Fact]
+    public async Task Given_ALabelAndTags_When_BobPaysAnInvoice_Then_ThePaymentRowAndItsEventCarryThem()
+    {
+        // Arrange (NL-602 A3-T1, payinvoice --label/--tag)
+        var ct = TestContext.Current.CancellationToken;
+        var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "labelled", null, ct);
+        var labels = SourceLabels.Create("supplier", ["category=supplies", "po=7"]);
+
+        // Act
+        var result = await _harness.RunAsync(
+                         _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null,
+                                                                     new PayInvoiceOptions
+                                                                     {
+                                                                         Timeout = s_timeout,
+                                                                         Labels = labels
+                                                                     }, ct));
+
+        // Assert
+        Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
+        Assert.Equal("supplier", result.Payment.Label);
+        Assert.Equal("category=supplies\npo=7", result.Payment.Tags);
+        var succeeded = Assert.Single(_harness.Bob.Accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentSucceeded, succeeded.Kind);
+        Assert.Equal("supplier", succeeded.Details[AccountingDetailKeys.Label]);
+        Assert.Equal("supplies", succeeded.Details["tag.category"]);
+        Assert.Equal("7", succeeded.Details["tag.po"]);
     }
 
     [Fact]

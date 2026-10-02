@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Client.Responses;
 
+using Accounting.Labels;
 using Crypto.ValueObjects;
 using Money;
 using Payments.Enums;
@@ -57,6 +58,16 @@ public sealed class InvoiceInfoClientResponse
     public IReadOnlyList<CustomRecord> CustomRecords { get; init; } = [];
 
     /// <summary>
+    /// The operator's label (NL-602 A3-T1), or null.
+    /// </summary>
+    public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c>, sorted by key (NL-602 A3-T1); empty for none.
+    /// </summary>
+    public IReadOnlyList<string> Tags { get; init; } = [];
+
+    /// <summary>
     /// Maps a stored invoice; <paramref name="now"/> decides <see cref="IsExpired"/>.
     /// </summary>
     public static InvoiceInfoClientResponse FromModel(InvoiceModel invoice, DateTimeOffset now)
@@ -76,7 +87,9 @@ public sealed class InvoiceInfoClientResponse
             SettledAt = invoice.SettledAt,
             Kind = invoice.Kind,
             OfferId = invoice.Bolt12?.OfferId,
-            CustomRecords = invoice.Keysend?.CustomRecords ?? []
+            CustomRecords = invoice.Keysend?.CustomRecords ?? [],
+            Label = invoice.Label,
+            Tags = SourceLabels.FromStored(null, invoice.Tags).TagStrings
         };
     }
 }

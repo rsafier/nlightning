@@ -4,6 +4,7 @@ namespace NLightning.Application.Tests.Payments.Invoices;
 
 using Bolt11.Models;
 using Bolt11.Services;
+using Domain.Accounting.Labels;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
@@ -98,6 +99,37 @@ public class InvoiceServiceTests : IDisposable
         // Assert
         Assert.Null(invoice.Amount);
         Assert.True(decoded.Amount.IsZero);
+    }
+
+    [Fact]
+    public async Task Given_ALabelAndTags_When_InvoiceCreated_Then_TheStoredRowCarriesThemAndTheStringDoesNot()
+    {
+        // Arrange (NL-602 A3-T1)
+        var ct = TestContext.Current.CancellationToken;
+        var labels = SourceLabels.Create("consulting", ["project=alpha", "customer=acme"]);
+
+        // Act
+        var invoice = await _node.InvoiceService.CreateInvoiceAsync(LightningMoney.Satoshis(10), "work", null, labels,
+                                                                    ct);
+        var stored = await _node.Invoices.GetByPaymentHashAsync(invoice.PaymentHash);
+
+        // Assert: on the row, never in the BOLT 11 string the payer sees
+        Assert.NotNull(stored);
+        Assert.Equal("consulting", stored.Label);
+        Assert.Equal("customer=acme\nproject=alpha", stored.Tags);
+        Assert.DoesNotContain("consulting", Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).Description);
+    }
+
+    [Fact]
+    public async Task Given_NoLabels_When_InvoiceCreated_Then_TheRowHasNone()
+    {
+        // Act
+        var invoice = await _node.InvoiceService.CreateInvoiceAsync(LightningMoney.Satoshis(10), "work", null,
+                                                                    TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Null(invoice.Label);
+        Assert.Null(invoice.Tags);
     }
 
     [Fact]

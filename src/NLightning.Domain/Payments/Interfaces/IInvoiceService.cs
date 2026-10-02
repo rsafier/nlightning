@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Payments.Interfaces;
 
+using Accounting.Labels;
 using Crypto.ValueObjects;
 using Models;
 using Money;
@@ -28,6 +29,18 @@ public interface IInvoiceService
     /// <param name="cancellationToken">Cancels before the invoice is persisted.</param>
     Task<InvoiceModel> CreateInvoiceAsync(LightningMoney? amount, string description, uint? expirySeconds,
                                           CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates, signs and persists an invoice that carries the operator's label and tags on its row (NL-602 A3-T1); its
+    /// <c>InvoiceSettled</c> accounting event copies them into its details.
+    /// </summary>
+    /// <param name="amount">The requested amount, or null for any amount.</param>
+    /// <param name="description">BOLT 11 <c>d</c>; may be empty.</param>
+    /// <param name="expirySeconds">BOLT 11 <c>x</c>, or null for <c>RoutingOptions.InvoiceExpirySeconds</c>.</param>
+    /// <param name="labels">The label and tags, already checked (<see cref="SourceLabels.Create"/>).</param>
+    /// <param name="cancellationToken">Cancels before the invoice is persisted.</param>
+    Task<InvoiceModel> CreateInvoiceAsync(LightningMoney? amount, string description, uint? expirySeconds,
+                                          SourceLabels labels, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The invoice for <paramref name="paymentHash"/>, or null when we never issued one.

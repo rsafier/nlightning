@@ -4,6 +4,7 @@ namespace NLightning.Application.Tests.Channels.DualFunding;
 
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Labels;
 using Domain.Accounting.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.DualFunding.Models;
@@ -308,6 +309,39 @@ public class DualFundHarnessTests
                      harness.Alice.Channel(result.ChannelId).ChannelParams.FeeRateAmountPerKw);
         Assert.Equal(LightningMoney.Satoshis(NodeOptions.DefaultMinCommitmentFeeRatePerKw),
                      harness.Bob.Channel(result.ChannelId).ChannelParams.FeeRateAmountPerKw);
+    }
+
+    [Fact]
+    public async Task Given_ALabelledDualFundedOpen_When_ItsFundingConfirms_Then_TheChannelRowAndChannelFundedCarryIt()
+    {
+        // Arrange (NL-602 A3-T1, openchannel --label/--tag on a v2 open): only the opener labelled the channel
+        await using var harness = await DualFundHarness.CreateAsync(BobShareSat);
+        harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
+        harness.Bob.Wallet.Utxos.Add(WalletUtxo.Create(700_000));
+        var labels = SourceLabels.Create("liquidity", ["peer=bob", "purpose=routing"]);
+
+        // Act
+        var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
+                                                new DualFundedOpenRequest(harness.Bob.NodeId, s_aliceShare, 2_500)
+                                                {
+                                                    Labels = labels
+                                                }, TestContext.Current.CancellationToken));
+        Assert.True(result.FailureReason is null, $"{result.FailureReason}\n{harness.Describe()}");
+        var channelId = result.ChannelId;
+        await harness.ConfirmFundingAsync(channelId, result.FundingTxId!.Value);
+
+        // Assert: Alice's row (SQLite) and her ChannelFunded carry the labels; Bob's carry none
+        var stored = await harness.Alice.InScopeAsync(u => u.ChannelDbRepository.GetByIdAsync(channelId));
+        Assert.Equal("liquidity", stored!.Label);
+        Assert.Equal(labels.CanonicalTags, stored.Tags);
+        var aliceFunded = await AssertChannelFundedAsync(harness.Alice, channelId, result.FundingTxId.Value,
+                                                         s_aliceShare);
+        Assert.Equal("liquidity", aliceFunded.Details[AccountingDetailKeys.Label]);
+        Assert.Equal("bob", aliceFunded.Details["tag.peer"]);
+        Assert.Equal("routing", aliceFunded.Details["tag.purpose"]);
+        var bobFunded = await AssertChannelFundedAsync(harness.Bob, channelId, result.FundingTxId.Value,
+                                                       LightningMoney.Satoshis(BobShareSat));
+        Assert.False(bobFunded.Details.ContainsKey(AccountingDetailKeys.Label));
     }
 
     private static async Task<DualFundedOpenResult> OpenAsync(DualFundHarness harness, uint feeratePerKw = 2_500)

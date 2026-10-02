@@ -50,6 +50,7 @@ public sealed class ListChannelsPrinter : IPrinter<ListChannelsIpcResponse>
             _output.WriteLine("  CLTV Delta:         {0}", Invariant(channel.CltvExpiryDelta));
             _output.WriteLine("  HTLC (min/max):     {0}/{1} msat", Invariant(channel.HtlcMinimumMsat),
                               Invariant(channel.HtlcMaximumMsat));
+            PaymentsPrintFormat.WriteLabels(_output, channel.Label, channel.Tags);
             PrintFundings(channel);
             if (channel.DataLossDetected)
                 _output.WriteLine("  DATA LOSS DETECTED: do not force-close this channel");

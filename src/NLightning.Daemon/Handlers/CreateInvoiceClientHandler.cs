@@ -39,11 +39,12 @@ public sealed class CreateInvoiceClientHandler
                                       "The invoice amount must be positive; leave it out for an any-amount invoice.");
         if (request.ExpirySeconds == 0)
             throw new ClientException(ErrorCodes.InvalidOperation, "The invoice expiry must be positive.");
+        var labels = SourceLabelsGuard.Check(request.Label, request.Tags);
 
         try
         {
             var invoice = await _invoiceService.CreateInvoiceAsync(request.Amount, request.Description ?? string.Empty,
-                                                                   request.ExpirySeconds, ct);
+                                                                   request.ExpirySeconds, labels, ct);
             return new CreateInvoiceClientResponse(
                 InvoiceInfoClientResponse.FromModel(invoice, _timeProvider.GetUtcNow()));
         }

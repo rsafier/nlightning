@@ -11,7 +11,9 @@ using Application.Offers.Send;
 using Application.OnionMessages;
 using Application.Payments.Send;
 using Channels.Harness;
+using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Labels;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
@@ -25,6 +27,7 @@ using Domain.Offers.Enums;
 using Domain.Offers.Interfaces;
 using Domain.Offers.Models;
 using Domain.Payments.Enums;
+using Domain.Payments.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.OnionMessages.Interfaces;
@@ -102,6 +105,51 @@ public class OfferHarnessTests
         Assert.Equal("bolt12", paid.Details["kind"]);
         Assert.Equal(offer.Bolt12, paid.Details["offer"]);
         Assert.Equal("from alice", paid.Details["payerNote"]);
+    }
+
+    [Fact]
+    public async Task Given_ALabelledOfferAndALabelledPayment_When_AlicePays_Then_RowsAndEventsCarryTheirLabels()
+    {
+        // Arrange (NL-602 A3-T1): Carol labels her offer (createoffer --label/--tag), Alice her payment (payoffer)
+        var links = new OnionMessageLinks();
+        await using var harness = await CreateAsync(links, payers: ["Alice"]);
+        var offerLabels = SourceLabels.Create("coffee shop", ["till=2", "branch=main"]);
+        var offer = await CreateOfferAsync(harness, LightningMoney.MilliSatoshis(AmountMsat), labels: offerLabels);
+        var paymentLabels = SourceLabels.Create("breakfast", ["category=food"]);
+
+        // Act
+        var result = await PayAsync(harness, harness.Alice, new PayOfferRequest(offer.Bolt12),
+                                    new PayOfferOptions { Payment = new PayInvoiceOptions { Labels = paymentLabels } });
+
+        // Assert: Carol's offer row and the BOLT 12 invoice she issued for it carry the offer's labels (SQLite)
+        Assert.True(result.Payment!.Payment.Status == PaymentStatus.Succeeded, result.Payment.Payment.FailureReason);
+        var storedOffer = await harness.Carol.InScopeAsync(u => u.OfferDbRepository.GetByIdAsync(offer.OfferId));
+        Assert.Equal("coffee shop", storedOffer!.Label);
+        Assert.Equal("branch=main\ntill=2", storedOffer.Tags);
+        var invoice = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
+                                                              .GetByPaymentHashAsync(result.Fetch.Invoice!.PaymentHash));
+        Assert.Equal("coffee shop", invoice!.Label);
+        Assert.Equal(offerLabels.CanonicalTags, invoice.Tags);
+
+        // Her InvoiceSettled copies them into its details
+        var received = Assert.Single(await harness.Carol.InScopeAsync(u => u.AccountingEventDbRepository
+                                                                           .GetUnsealedAsync(1_000)));
+        Assert.Equal(AccountingEventKind.InvoiceSettled, received.Kind);
+        Assert.Equal("coffee shop", received.Details[AccountingDetailKeys.Label]);
+        Assert.Equal("2", received.Details["tag.till"]);
+        Assert.Equal("main", received.Details["tag.branch"]);
+
+        // Alice's payment row and her PaymentSucceeded carry hers
+        var stored = await harness.Alice.InScopeAsync(u => u.PaymentDbRepository
+                                                             .GetByPaymentHashAsync(invoice.PaymentHash));
+        Assert.Equal("breakfast", stored!.Label);
+        Assert.Equal("category=food", stored.Tags);
+        var paid = Assert.Single(await harness.Alice.InScopeAsync(u => u.AccountingEventDbRepository
+                                                                       .GetUnsealedAsync(1_000)));
+        Assert.Equal(AccountingEventKind.PaymentSucceeded, paid.Kind);
+        Assert.Equal("breakfast", paid.Details[AccountingDetailKeys.Label]);
+        Assert.Equal("food", paid.Details["tag.category"]);
+        Assert.Equal(paymentLabels.CanonicalTags, SourceLabels.FromDetails(paid.Details).CanonicalTags);
     }
 
     [Fact]
@@ -211,15 +259,17 @@ public class OfferHarnessTests
     /// offer path introduced by Bob, her only onion-message peer.
     /// </summary>
     private static async Task<OfferModel> CreateOfferAsync(ThreeNodeHarness harness, LightningMoney? amount,
-                                                           ulong? quantityMax = null)
+                                                           ulong? quantityMax = null, SourceLabels? labels = null)
     {
         ShareBobsChannelUpdateWithCarol(harness);
         var offers = harness.Carol.Services.GetRequiredService<IOfferService>();
         Assert.True(offers.IsAvailable);
         // Bob has an open channel with Carol, so the reachability warning (NL-452) stays off
-        var offer = (await offers.CreateOfferAsync(new CreateOfferRequest(amount, "harness offer",
-                                                                          QuantityMax: quantityMax),
-                                                   TestContext.Current.CancellationToken)).Offer;
+        var request = new CreateOfferRequest(amount, "harness offer", QuantityMax: quantityMax)
+        {
+            Labels = labels ?? SourceLabels.None
+        };
+        var offer = (await offers.CreateOfferAsync(request, TestContext.Current.CancellationToken)).Offer;
         Assert.True(offer.HasPaths);
         return offer;
     }
@@ -237,10 +287,11 @@ public class OfferHarnessTests
     }
 
     private static async Task<PayOfferResult> PayAsync(ThreeNodeHarness harness, SwitchNode payer,
-                                                       PayOfferRequest request)
+                                                       PayOfferRequest request, PayOfferOptions? options = null)
     {
         var paying = payer.Services.GetRequiredService<IOfferPaymentService>()
-                          .PayOfferAsync(request, new PayOfferOptions(), TestContext.Current.CancellationToken);
+                          .PayOfferAsync(request, options ?? new PayOfferOptions(),
+                                         TestContext.Current.CancellationToken);
         var result = await PumpUntilDoneAsync(harness, paying);
         Assert.True(result.Fetch.Status == FetchInvoiceStatus.Received, result.Fetch.Error);
         Assert.NotNull(result.Payment);

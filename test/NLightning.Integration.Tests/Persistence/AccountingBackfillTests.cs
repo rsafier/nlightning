@@ -318,6 +318,11 @@ public sealed class AccountingBackfillTests : IAsyncLifetime
         Assert.Equal(250_000, invoice.AmountMsat);
         Assert.Equal(history.SettledAt, invoice.OccurredAt);
         Assert.False(invoice.Details.ContainsKey("parts"));
+        Assert.Equal("consulting", invoice.Details[AccountingDetailKeys.Label]); // NL-602 A3-T1, read back from SQLite
+        Assert.Equal("acme", invoice.Details["tag.customer"]);
+        Assert.Equal("alpha", invoice.Details["tag.project"]);
+        var unlabelled = memo[AccountingEventKeys.InvoiceSettled(history.KeysendHash)];
+        Assert.False(unlabelled.Details.ContainsKey(AccountingDetailKeys.Label));
         Assert.True(memo.ContainsKey(AccountingEventKeys.InvoiceSettled(history.KeysendHash)));
         Assert.False(memo.ContainsKey(AccountingEventKeys.InvoiceSettled(history.LiveInvoiceHash)));
         Assert.DoesNotContain(events, e => e.EventKey == AccountingEventKeys.InvoiceSettled(history.LateInvoiceHash));
@@ -325,8 +330,11 @@ public sealed class AccountingBackfillTests : IAsyncLifetime
         var succeeded = memo[AccountingEventKeys.PaymentSucceeded(history.SucceededHash)];
         Assert.Equal(-(100_000 + 1_000), succeeded.AmountMsat);
         Assert.Equal(1_000, succeeded.FeeMsat);
+        Assert.Equal("supplier", succeeded.Details[AccountingDetailKeys.Label]);
+        Assert.Equal("supplies", succeeded.Details["tag.category"]);
         var failed = memo[AccountingEventKeys.PaymentFailed(history.FailedHash, history.FailedCreatedAt.UtcTicks)];
         Assert.Equal(0, failed.AmountMsat);
+        Assert.Equal("retry later", failed.Details[AccountingDetailKeys.Label]);
 
         var forward = memo[AccountingEventKeys.ForwardSettled(fixture.Open.ChannelId, 3)];
         Assert.Equal(AccountingEventKind.ForwardSettled, forward.Kind);
@@ -502,7 +510,11 @@ public sealed class AccountingBackfillTests : IAsyncLifetime
         closed.SetClosingTransaction(new SignedTransaction(closingTxId, closingTx.ToBytes()));
 
         using var uow = CreateUnitOfWork();
-        await uow.InvoiceDbRepository.AddAsync(SettledInvoice(invoiceHash, 250_000, settledAt));
+        // NL-602 A3-T1: the invoice and the payments carry an operator label and tags on their rows
+        var labelled = SettledInvoice(invoiceHash, 250_000, settledAt);
+        labelled.Label = "consulting";
+        labelled.Tags = "customer=acme\nproject=alpha";
+        await uow.InvoiceDbRepository.AddAsync(labelled);
         await uow.InvoiceDbRepository.AddAsync(SettledInvoice(keysendHash, 3_000, settledAt.AddHours(1)));
         await uow.InvoiceDbRepository.AddAsync(SettledInvoice(liveHash, 7_000, settledAt.AddHours(2)));
         await uow.InvoiceDbRepository.AddAsync(SettledInvoice(lateHash, 9_000, s_cutoverAt.AddMinutes(5)));
@@ -512,11 +524,14 @@ public sealed class AccountingBackfillTests : IAsyncLifetime
                                          s_cutoverAt.AddDays(-4));
         succeeded.AddOutgoingHtlc(node.Open.ChannelId, 0);
         succeeded.Succeed(new Secret(Fill(0x15)), s_cutoverAt.AddDays(-4).AddSeconds(3));
+        succeeded.Label = "supplier";
+        succeeded.Tags = "category=supplies";
         await uow.PaymentDbRepository.AddAsync(succeeded);
         var failed = new PaymentModel(failedHash, "lnbcrt1failed", SqliteDbTestContext.RemoteNodeId,
                                       LightningMoney.MilliSatoshis(50_000), LightningMoney.MilliSatoshis(500),
                                       failedCreatedAt);
         failed.Fail(null, null, "no route", failedCreatedAt.AddSeconds(2));
+        failed.Label = "retry later";
         await uow.PaymentDbRepository.AddAsync(failed);
 
         var circuit = new ForwardCircuitModel(node.Open.ChannelId, 3, LightningMoney.MilliSatoshis(52_000), 600,

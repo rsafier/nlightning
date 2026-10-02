@@ -53,12 +53,16 @@ public sealed class CreateOfferClientHandler : IClientCommandHandler<CreateOffer
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       $"The absolute expiry {request.AbsoluteExpiry} is out of range.");
 
+        var labels = SourceLabelsGuard.Check(request.Label, request.Tags);
         var offerRequest = new CreateOfferRequest(request.Amount, request.Description, request.Issuer,
                                                   request.QuantityMax,
                                                   request.AbsoluteExpiry is { } expiry
                                                       ? DateTimeOffset.FromUnixTimeSeconds((long)expiry)
                                                       : null,
-                                                  request.ForcePaths);
+                                                  request.ForcePaths)
+        {
+            Labels = labels
+        };
         try
         {
             var created = await _offerService.CreateOfferAsync(offerRequest, ct);

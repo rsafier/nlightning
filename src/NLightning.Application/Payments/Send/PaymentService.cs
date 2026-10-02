@@ -262,7 +262,10 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                          options.MaxFee ?? sendOptions.GetMaxFee(paymentAmount),
                                          options.MaxParts ?? Math.Clamp(sendOptions.MaxParts, 1,
                                                                         PaymentSendOptions.MaxPartsLimit),
-                                         Math.Max(1, sendOptions.MaxAttempts), deadline, now);
+                                         Math.Max(1, sendOptions.MaxAttempts), deadline, now)
+        {
+            Labels = options.Labels
+        };
 
         return await RunSessionAsync(session, options.Timeout, cancellationToken);
     }
@@ -318,7 +321,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                          Math.Max(1, sendOptions.MaxAttempts), deadline, now)
         {
             BlindedPaths = paths,
-            Bolt12 = request.Bolt12
+            Bolt12 = request.Bolt12,
+            Labels = options.Labels
         };
 
         return await RunSessionAsync(session, options.Timeout, cancellationToken);
@@ -376,7 +380,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                          options.MaxFee ?? sendOptions.GetMaxFee(request.Amount), 1,
                                          Math.Max(1, sendOptions.MaxAttempts), deadline, now)
         {
-            Keysend = keysend
+            Keysend = keysend,
+            Labels = options.Labels
         };
 
         return await RunSessionAsync(session, options.Timeout, cancellationToken);
@@ -1254,7 +1259,11 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         var first = round[0];
         var fee = LightningMoney.MilliSatoshis(round.Aggregate(0UL, (sum, p) => sum + p.Route.Fee.MilliSatoshi));
         var row = new PaymentModel(session.PaymentHash, session.Bolt11, session.Target.PayeeNodeId, session.Amount,
-                                   fee, session.CreatedAt, first.Hops, session.Bolt12, session.KeysendDetails);
+                                   fee, session.CreatedAt, first.Hops, session.Bolt12, session.KeysendDetails)
+        {
+            Label = session.Labels.Label,
+            Tags = session.Labels.CanonicalTags
+        };
 
         using var scope = _serviceScopeFactory.CreateScope();
         var repository = scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>();
@@ -1538,7 +1547,11 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             {
                 payment = new PaymentModel(session.PaymentHash, session.Bolt11, session.Target.PayeeNodeId,
                                            session.Amount, LightningMoney.Zero, session.CreatedAt,
-                                           bolt12: session.Bolt12, keysend: session.KeysendDetails);
+                                           bolt12: session.Bolt12, keysend: session.KeysendDetails)
+                {
+                    Label = session.Labels.Label,
+                    Tags = session.Labels.CanonicalTags
+                };
                 payment.Fail(code, sourceIndex, reason, now);
                 await repository.AddAsync(payment);
                 session.RowCreated = true;

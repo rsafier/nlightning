@@ -64,7 +64,9 @@ public class ListChannelsIpcHandlerTests
                                  DataLossDetected = true,
                                  IsReestablished = true,
                                  FeeBaseMsat = 2_000,
-                                 FeePpm = 500
+                                 FeePpm = 500,
+                                 Label = "routing",
+                                 Tags = ["peer=acme"]
                              }
                          ]));
         var handler = new ListChannelsIpcHandler(NullLogger<ListChannelsIpcHandler>.Instance,
@@ -102,6 +104,8 @@ public class ListChannelsIpcHandlerTests
         Assert.True(channel.IsReestablished);
         Assert.Equal(2_000U, channel.FeeBaseMsat);
         Assert.Equal(500U, channel.FeePpm);
+        Assert.Equal("routing", channel.Label); // keys 25/26 (NL-602 A3-T1)
+        Assert.Equal(["peer=acme"], channel.Tags);
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Client.Responses;
 
+using Accounting.Labels;
 using Crypto.ValueObjects;
 using Money;
 using Offers.Enums;
@@ -48,6 +49,16 @@ public sealed class OfferInfoClientResponse
     public int? UnpaidInvoices { get; init; }
 
     /// <summary>
+    /// The operator's label (NL-602 A3-T1), or null.
+    /// </summary>
+    public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c>, sorted by key (NL-602 A3-T1); empty for none.
+    /// </summary>
+    public IReadOnlyList<string> Tags { get; init; } = [];
+
+    /// <summary>
     /// Maps a stored offer; <paramref name="now"/> decides <see cref="IsActive"/>.
     /// </summary>
     public static OfferInfoClientResponse FromModel(OfferModel offer, DateTimeOffset now,
@@ -69,7 +80,9 @@ public sealed class OfferInfoClientResponse
             CreatedAt = offer.CreatedAt,
             DisabledAt = offer.DisabledAt,
             PaidInvoices = counts?.Paid,
-            UnpaidInvoices = counts?.Unpaid
+            UnpaidInvoices = counts?.Unpaid,
+            Label = offer.Label,
+            Tags = SourceLabels.FromStored(null, offer.Tags).TagStrings
         };
     }
 }

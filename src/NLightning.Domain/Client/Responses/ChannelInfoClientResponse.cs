@@ -109,4 +109,14 @@ public sealed class ChannelInfoClientResponse
     /// Short channel ids retired by splice locks that still resolve (D12), oldest first (SP2-0; lane SP2-D).
     /// </summary>
     public IReadOnlyList<RetiredScidInfoClientResponse> RetiredShortChannelIds { get; init; } = [];
+
+    /// <summary>
+    /// The operator's label given at the open (NL-602 A3-T1, <c>openchannel --label</c>), or null.
+    /// </summary>
+    public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c>, sorted by key (NL-602 A3-T1); empty for none.
+    /// </summary>
+    public IReadOnlyList<string> Tags { get; init; } = [];
 }

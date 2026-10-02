@@ -174,7 +174,12 @@ public sealed class WalletSpendService : IWalletSpendService
             // The absolute fee rides on the row (NL-604): the accounting feed records it when the spend confirms
             var row = new BroadcastTransactionModel(signed.Signed, BroadcastPurpose.WalletSend, null,
                                                     _blockchainMonitor.LastProcessedBlockHeight,
-                                                    (uint)feeRatePerKw, fee: LightningMoney.Satoshis(feeSat));
+                                                    (uint)feeRatePerKw, fee: LightningMoney.Satoshis(feeSat))
+            {
+                // NL-602 A3-T1: the operator's label and tags, copied into the WalletSent event at confirmation
+                Label = request.Labels.Label,
+                Tags = request.Labels.CanonicalTags
+            };
             bool published;
             try
             {

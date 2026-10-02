@@ -36,6 +36,16 @@ public sealed class PayInvoiceIpcRequest
     /// </summary>
     [Key(4)] public uint? MaxParts { get; init; }
 
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, <c>--label</c>), or null; an older client sends none.
+    /// </summary>
+    [Key(5)] public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c> (NL-602 A3-T1, <c>--tag</c>), or null for none.
+    /// </summary>
+    [Key(6)] public List<string>? Tags { get; init; }
+
     public PayInvoiceClientRequest ToClientRequest()
     {
         return new PayInvoiceClientRequest(Bolt11)
@@ -43,7 +53,9 @@ public sealed class PayInvoiceIpcRequest
             Amount = Amount,
             TimeoutSeconds = TimeoutSeconds,
             MaxFee = MaxFee,
-            MaxParts = MaxParts
+            MaxParts = MaxParts,
+            Label = Label,
+            Tags = Tags ?? []
         };
     }
 }
