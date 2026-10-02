@@ -183,6 +183,10 @@ public sealed class ChannelFailureServiceTests : IDisposable
         Assert.Equal(500u, row.FirstBroadcastHeight);
         Assert.Equal(ChannelState.Failed, _channel.State);
         Assert.NotNull(_channel.ErrorSent);
+
+        // NL-604: the row carries the commitment's fee, the funding capacity minus its outputs
+        Assert.Equal((long)RealSigningCommitmentPair.FundingSatoshis - tx.Outputs.Sum(o => o.Value.Satoshi),
+                     row.Fee?.Satoshi);
     }
 
     [Fact]

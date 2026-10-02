@@ -70,6 +70,7 @@ public class RevokedResolutionTests
         var total = kit.RevokedCommitment.Outputs.Sum(o => o.Value.Satoshi);
         var fee = total - penalty.Outputs[0].Value.Satoshi;
         Assert.InRange(fee, 1, total / 100);
+        Assert.Equal(fee, broadcast.Fee?.Satoshi); // NL-604
 
         // Every output has a row pointing at the penalty, and is watched
         Assert.Equal(kit.RevokedCommitment.Outputs.Count, kit.Rows.Count);

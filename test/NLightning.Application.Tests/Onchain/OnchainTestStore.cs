@@ -1,5 +1,8 @@
 namespace NLightning.Application.Tests.Onchain;
 
+using Domain.Accounting.Enums;
+using Domain.Accounting.Interfaces;
+using Domain.Accounting.Models;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
@@ -28,6 +31,7 @@ internal sealed class OnchainTestStore
 {
     private readonly List<string> _pending = [];
     private readonly List<Action> _undo = [];
+    private readonly List<AccountingEventModel> _stagedEvents = [];
 
     public Dictionary<ChannelId, ChannelCloseModel> Closes { get; } = [];
     public Dictionary<(TxId, uint), OutputResolutionModel> Outputs { get; } = [];
@@ -58,6 +62,12 @@ internal sealed class OnchainTestStore
     /// </summary>
     public List<IReadOnlyList<string>> Saves { get; } = [];
 
+    /// <summary>
+    /// The accounting events committed by the saves (NL-602), each with the index in <see cref="Saves"/> of the save
+    /// that committed it (so a test proves an event went in the save of the state change it records).
+    /// </summary>
+    public List<(AccountingEventModel Event, int Save)> AccountingEvents { get; } = [];
+
     /// <summary>Called after every successful save (to order saves against other calls).</summary>
     public Action? OnSave { get; set; }
 
@@ -76,6 +86,7 @@ internal sealed class OnchainTestStore
         unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(CreateInteractiveTxSessions().Object);
         unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(CreateChannelState().Object);
         unitOfWork.SetupGet(u => u.ForwardCircuitDbRepository).Returns(CreateCircuits().Object);
+        unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(new AccountingRepository(this));
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             if (FailNextSave is { } failure)
@@ -83,6 +94,7 @@ internal sealed class OnchainTestStore
                 // Nothing of a failed save is kept
                 FailNextSave = null;
                 _pending.Clear();
+                _stagedEvents.Clear();
                 for (var i = _undo.Count - 1; i >= 0; i--)
                     _undo[i]();
                 _undo.Clear();
@@ -91,6 +103,9 @@ internal sealed class OnchainTestStore
 
             Saves.Add(_pending.ToList());
             _pending.Clear();
+            foreach (var staged in _stagedEvents)
+                AccountingEvents.Add((staged, Saves.Count - 1));
+            _stagedEvents.Clear();
             _undo.Clear();
             OnSave?.Invoke();
             return Task.CompletedTask;
@@ -305,6 +320,53 @@ internal sealed class OnchainTestStore
                 store.Outputs.Values.Where(o => o.State is not (OutputResolutionState.Irrevocable
                                                                 or OutputResolutionState.Ignored))
                      .ToList());
+    }
+
+    /// <summary>The committed accounting events (without their save index).</summary>
+    public IReadOnlyList<AccountingEventModel> Events => AccountingEvents.Select(e => e.Event).ToList();
+
+    /// <summary>
+    /// The accounting feed of the store (NL-602): staged until the save, committed with it, dropped by a failed one.
+    /// Only what the writers use is implemented.
+    /// </summary>
+    private sealed class AccountingRepository(OnchainTestStore store) : IAccountingEventDbRepository
+    {
+        private IEnumerable<AccountingEventModel> All =>
+            store.AccountingEvents.Select(e => e.Event).Concat(store._stagedEvents)
+                 .Where(e => (e.Flags & AccountingEventFlags.Duplicate) == 0);
+
+        public void Add(AccountingEventModel accountingEvent) => store._stagedEvents.Add(accountingEvent);
+
+        public Task<bool> ExistsAsync(string eventKey, CancellationToken cancellationToken = default) =>
+            Task.FromResult(All.Any(e => e.EventKey == eventKey));
+
+        public Task<AccountingEventModel?> GetByKeyAsync(string eventKey,
+                                                         CancellationToken cancellationToken = default) =>
+            Task.FromResult(All.FirstOrDefault(e => e.EventKey == eventKey));
+
+        public Task<IReadOnlyList<AccountingEventModel>> GetUnsealedAsync(int max,
+                                                                           CancellationToken cancellationToken =
+                                                                               default) =>
+            throw new NotSupportedException();
+
+        public Task<AccountingChainTip> GetChainTipAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlySet<string>> GetSealedKeysAsync(IReadOnlyCollection<string> eventKeys,
+                                                             CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task ApplySealsAsync(IReadOnlyList<AccountingSeal> seals,
+                                    CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<AccountingEventModel>> ListAsync(AccountingEventQuery query,
+                                                                   CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<IReadOnlyList<AccountingEventModel>> GetSealedRangeAsync(
+            long fromLedgerSeq, int take, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
     }
 
     /// <summary>A block hash for tests.</summary>

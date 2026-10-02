@@ -134,6 +134,38 @@ public class AccountingEventPersistenceTests
     }
 
     [Fact]
+    public async Task Given_EventsByKey_When_ReadBack_Then_StagedSavedAndFirstOfDuplicatesAreFound()
+    {
+        // Arrange: a key written twice (the second sealed as a duplicate), and a staged row
+        using var database = new SqliteTestDatabase();
+        var first = Event("dup");
+        await AddAsync(database, first, new AccountingEventModel
+        {
+            EventKey = "dup",
+            Kind = AccountingEventKind.InvoiceSettled,
+            OccurredAt = s_at,
+            AmountMsat = 2_000
+        });
+        await SealAllAsync(database);
+        await using var context = database.CreateContext();
+        var repository = new AccountingEventDbRepository(context);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        repository.Add(Event("staged"));
+        var staged = await repository.GetByKeyAsync("staged", ct);
+        var duplicate = await repository.GetByKeyAsync("dup", ct);
+        var unknown = await repository.GetByKeyAsync("unknown", ct);
+
+        // Assert
+        Assert.Equal("staged", staged?.EventKey);
+        Assert.Null(staged?.LedgerSeq);
+        Assert.Equal(first.AmountMsat, duplicate?.AmountMsat);
+        Assert.Equal(1, duplicate?.LedgerSeq);
+        Assert.Null(unknown);
+    }
+
+    [Fact]
     public async Task Given_SealedEvents_When_Listed_Then_TheQueryFiltersAndPagesInLedgerOrder()
     {
         // Arrange

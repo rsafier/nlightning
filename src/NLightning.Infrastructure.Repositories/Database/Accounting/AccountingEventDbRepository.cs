@@ -212,6 +212,23 @@ public class AccountingEventDbRepository : BaseDbRepository<AccountingEventEntit
                             && predicate(e))
              .ToList();
 
+    /// <inheritdoc />
+    public async Task<AccountingEventModel?> GetByKeyAsync(string eventKey,
+                                                           CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(eventKey);
+
+        var saved = await DbSet.AsNoTracking()
+                               .Where(e => e.EventKey == eventKey && (e.Flags & DuplicateFlag) == 0)
+                               .OrderBy(e => e.Id)
+                               .FirstOrDefaultAsync(cancellationToken);
+        if (saved is not null)
+            return MapEntityToDomain(saved);
+
+        var staged = DbSet.Local.FirstOrDefault(e => e.EventKey == eventKey && (e.Flags & DuplicateFlag) == 0);
+        return staged is null ? null : MapEntityToDomain(staged);
+    }
+
     private static AccountingEventModel MapEntityToDomain(AccountingEventEntity entity)
     {
         return new AccountingEventModel

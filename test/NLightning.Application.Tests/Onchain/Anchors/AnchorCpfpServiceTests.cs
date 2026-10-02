@@ -182,6 +182,7 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         // The package pays the estimate (and not much more)
         var package = PackageFeerate(commitmentTx, child);
         Assert.InRange(package, _estimate, _estimate + 50);
+        Assert.Equal((long)AnchorTx.ChildFee(child, _wallet), row.Fee?.Satoshi); // NL-604
         Assert.Equal(child.Inputs.Count - 1, _wallet.Reserved(_channel.ChannelId).Count);
         Assert.Equal(0, _wallet.ReleaseCount);
     }
@@ -259,6 +260,7 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         Assert.True(newFee >= oldFee * 5 / 4, $"{newFee} < 1.25 x {oldFee}");
         Assert.True(newFee >= oldFee + (ulong)newChild.GetVirtualSize(), $"{newFee} below the relay increment");
         Assert.True(PackageFeerate(commitmentTx, newChild) >= 20_000);
+        Assert.Equal((long)newFee, replacement.Fee?.Satoshi); // NL-604
         Assert.Equal([first, replacement], _published);
     }
 

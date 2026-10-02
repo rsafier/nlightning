@@ -490,6 +490,7 @@ public sealed class OnchainChannelWatcherTests : IDisposable
         Assert.Equal(saves, _store.Saves.Count);
         _errorSender.Verify(s => s.TrySendAsync(It.IsAny<CompactPubKey>(), It.IsAny<ErrorMessage>()), Times.Once);
         _outpointWatcher.Verify(w => w.TrackWatchedOutpoint(It.IsAny<WatchedOutpointModel>()), Times.Exactly(3));
+        Assert.Single(_store.Events); // NL-602: the close's accounting event once
     }
 
     [Fact]

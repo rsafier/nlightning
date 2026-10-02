@@ -205,6 +205,10 @@ public sealed class OnchainReorgTests : IDisposable
                                   _channel.FundingOutput.Index!.Value), Assert.Single(tx.Inputs).PrevOut);
         Assert.Equal(4, tx.Inputs[0].WitScript.PushCount);
         Assert.Equal(ChannelState.OnchainResolving, _channel.State);
+
+        // NL-604: with its fee, the funding capacity minus its outputs
+        Assert.Equal((long)(_channel.FundingOutput.Amount.MilliSatoshi / 1_000) - tx.Outputs.Sum(o => o.Value.Satoshi),
+                     ours.Fee?.Satoshi);
     }
 
     [Fact]

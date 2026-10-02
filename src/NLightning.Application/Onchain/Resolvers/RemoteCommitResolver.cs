@@ -18,6 +18,7 @@ using Domain.Channels.Models;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Factories;
 using Domain.Onchain.Fees;
@@ -716,7 +717,9 @@ public sealed class RemoteCommitResolver : IOutputResolver
                               ? BroadcastPurpose.Sweep
                               : BroadcastPurpose.HtlcClaim;
             actions.Add(new BroadcastAction(new BroadcastTransactionModel(signed, purpose, context.Channel.ChannelId,
-                                                                          context.Height, decision.FeeratePerKw)));
+                                                                          context.Height, decision.FeeratePerKw,
+                                                                          fee: LightningMoney.Satoshis(
+                                                                              decision.FeeSat))));
             _logger.LogInformation("Channel {ChannelId}: {Kind} of output {Vout} ({Requirement}) in {TxId}, fee {Fee} sat",
                                    context.Channel.ChannelId, input.SpendKind, row.OutputIndex, action.RequirementId,
                                    Display(signed.TxId), decision.FeeSat);

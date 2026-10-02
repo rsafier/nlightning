@@ -71,4 +71,14 @@ public static class AccountingEventKeys
     /// (<see cref="Services.AccountingConfirmations.NextConfirmationKey"/>).
     /// </summary>
     public static string Reconfirmed(string baseKey, int generation) => $"{baseKey}:c{generation}";
+
+    /// <summary>An output of a force close that was given up (worth less than its own sweep): its value is lost.
+    /// </summary>
+    public static string OutputIgnored(TxId txId, uint outputIndex) => $"out:{txId}:{outputIndex}:ignored";
+
+    /// <summary>
+    /// The same fact written again at <paramref name="height"/> after its first row was reversed (a reorg moved it to
+    /// another block): <paramref name="originalKey"/> alone would be sealed as a duplicate.
+    /// </summary>
+    public static string Reemitted(string originalKey, uint height) => $"{originalKey}:re:{height}";
 }

@@ -60,4 +60,12 @@ public interface IAccountingEventDbRepository
     /// </summary>
     Task<IReadOnlyList<AccountingEventModel>> GetByKeyPrefixAsync(string keyPrefix,
                                                                    CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The event with this key, staged in this unit of work or saved (sealed or not, duplicates excluded; the first
+    /// written when several are), or null. Writers of compensating entries read the original's amounts with it (a
+    /// reorg's <see cref="Enums.AccountingEventKind.Reversal"/>). The default (test doubles) knows none.
+    /// </summary>
+    Task<AccountingEventModel?> GetByKeyAsync(string eventKey, CancellationToken cancellationToken = default) =>
+        Task.FromResult<AccountingEventModel?>(null);
 }

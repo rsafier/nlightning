@@ -17,6 +17,7 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
+using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Events;
 using Domain.Onchain.Models;
@@ -972,7 +973,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
                            Display(signed.Value.Transaction.TxId), oldFeeLower, decision.FeeSat,
                            decision.PackageFeeratePerKw, target, decision.Capped ? ", capped" : "");
         var row = new BroadcastTransactionModel(signed.Value.Transaction, BroadcastPurpose.AnchorCpfp, channelId,
-                                                height, signed.Value.FeeratePerKw, latest.TransactionId);
+                                                height, signed.Value.FeeratePerKw, latest.TransactionId,
+                                                fee: LightningMoney.Satoshis(decision.FeeSat));
         return new PlannedChild(row, latest.TransactionId, false);
     }
 
@@ -1068,7 +1070,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
                            decision.TargetFeeratePerKw, deadline, Display(signed.Value.Transaction.TxId),
                            decision.FeeSat, decision.PackageFeeratePerKw, decision.Capped ? " (capped)" : "");
         var row = new BroadcastTransactionModel(signed.Value.Transaction, BroadcastPurpose.AnchorCpfp, channelId,
-                                                height, signed.Value.FeeratePerKw);
+                                                height, signed.Value.FeeratePerKw,
+                                                fee: LightningMoney.Satoshis(decision.FeeSat));
         return new PlannedChild(row, null, mayRelease);
     }
 
@@ -1401,7 +1404,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             }
 
             var row = new BroadcastTransactionModel(signed, BroadcastPurpose.WalletSend, null,
-                                                    _blockchainMonitor.LastProcessedBlockHeight);
+                                                    _blockchainMonitor.LastProcessedBlockHeight,
+                                                    fee: LightningMoney.Satoshis(feeSat));
             unitOfWork.BroadcastTransactionDbRepository.Add(row);
             result.Rescue = row;
             _logger.LogWarning("The anchor child(ren) of channel {ChannelId} never confirmed; their {Count} wallet "

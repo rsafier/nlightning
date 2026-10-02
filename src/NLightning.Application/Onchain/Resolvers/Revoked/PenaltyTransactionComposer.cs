@@ -6,6 +6,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Closing;
 using Domain.Channels.ValueObjects;
+using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Fees;
 using Domain.Onchain.Models;
@@ -311,7 +312,8 @@ public sealed class PenaltyTransactionComposer
             }));
 
         actions.Add(new BroadcastAction(new BroadcastTransactionModel(signed, purpose, channelId, height, feeratePerKw,
-                                                                      replaces)));
+                                                                      replaces,
+                                                                      fee: LightningMoney.Satoshis(unsigned.FeeSat))));
 
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation(

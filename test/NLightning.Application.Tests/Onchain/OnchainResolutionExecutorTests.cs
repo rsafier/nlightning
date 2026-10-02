@@ -208,6 +208,11 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
         Assert.Equal(SpentAt + 10, height);
         Assert.Equal(2, _resolver.Spends.Count);
         Assert.Single(_store.Saves);
+
+        // NL-602: one resolution event (another transaction took an output no close event counted: nothing lost)
+        var resolved = Assert.Single(_store.Events);
+        Assert.Equal(Domain.Accounting.Enums.AccountingEventKind.OutputResolved, resolved.Kind);
+        Assert.Equal(0, resolved.AmountMsat);
     }
 
     [Fact]

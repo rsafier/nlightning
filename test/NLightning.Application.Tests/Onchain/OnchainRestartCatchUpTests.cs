@@ -12,6 +12,8 @@ namespace NLightning.Application.Tests.Onchain;
 using Application.Channels.Services;
 using Application.Onchain;
 using Channels.Services;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
@@ -206,6 +208,16 @@ public sealed class OnchainRestartCatchUpTests : IDisposable
         var untouched = await InScopeAsync(provider, u => u.OnchainResolutionDbRepository.GetOutputAsync(commitmentTxId,
                                                                                                            0));
         Assert.Equal(OutputResolutionState.Pending, untouched?.State);
+
+        // NL-602: the resolution's accounting event was saved with it, once, through the real unit of work
+        using var scope = provider.CreateScope();
+        var key = AccountingEventKeys.OutputResolved(commitmentTxId, 1);
+        var events = scope.ServiceProvider.GetRequiredService<NLightningDbContext>().AccountingEvents
+                          .Where(e => e.EventKey == key).ToList();
+        var resolution = Assert.Single(events);
+        Assert.Equal((int)AccountingEventKind.OutputResolved, resolution.Kind);
+        Assert.Equal(SpentAt + 1, resolution.BlockHeight);
+        Assert.Null(resolution.LedgerSeq);
     }
 
     private ServiceProvider StartProcess()

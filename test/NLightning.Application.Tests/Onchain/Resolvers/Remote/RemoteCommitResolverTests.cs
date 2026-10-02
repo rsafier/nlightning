@@ -68,6 +68,8 @@ public sealed class RemoteCommitResolverTests : IDisposable
         var tx = Transaction.Load(sweep.RawTransaction, Network.Main);
         Assert.Equal(RemoteResolutionTestContext.Destination, tx.Outputs[0].ScriptPubKey.ToBytes());
         Assert.Equal(hasAnchors ? 1U : SweepFeePolicy.RbfSequence, tx.Inputs[0].Sequence.Value);
+        Assert.Equal((long)OutputDescriptorData.Decode(row.DescriptorData).AmountSat - tx.Outputs[0].Value.Satoshi,
+                     sweep.Fee?.Satoshi); // NL-604
         Assert.Contains(_context.Tracked, w => w.OutputIndex == row.OutputIndex);
         Assert.Empty(_context.Alerts);
         Assert.Empty(_context.SwitchEvents);
