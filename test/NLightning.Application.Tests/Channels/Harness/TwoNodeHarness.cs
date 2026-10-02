@@ -104,6 +104,12 @@ internal sealed class TwoNodeHarness : IDisposable
     /// <summary>How many times a node was restarted after a simulated crash.</summary>
     public int Restarts { get; private set; }
 
+    /// <summary>
+    /// Runs on a restarted node's freshly built channel model before it is restored (NL-496): a test kit puts on it what
+    /// production reads from the channel row and the harness's model does not carry (a locked splice's funding).
+    /// </summary>
+    public Action<HarnessNode, ChannelModel>? BeforeRestore { get; set; }
+
     /// <param name="hasAnchors">Anchor outputs.</param>
     /// <param name="localOnlySwitch">Hand events to the production <see cref="LocalOnlyHtlcSwitch"/>.</param>
     /// <param name="aliceState">Alice's channel state: Open (usable on this connection), or a state before Open
@@ -306,6 +312,7 @@ internal sealed class TwoNodeHarness : IDisposable
         };
         var channel = CreateChannelFor(restarted);
         restarted.Store.RestoreAnnouncement(channel);
+        BeforeRestore?.Invoke(restarted, channel);
         await restarted.RestoreAsync(channel);
         return restarted;
     }

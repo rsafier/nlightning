@@ -456,11 +456,27 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
                                             || fundings.Pending.Any(f => f.FundingTxId == txId);
         var host = CreateHost(negotiation);
         var driver = GetDriver();
+        var resumed = false;
         if (driver.GetInfo(channelId) is null)
+        {
             await driver.ResumeAsync(latest, CreateTerms(negotiation, latest.LocalContribution), host,
                                      cancellationToken, stored.Where(m => m.SessionId != latest.SessionId).ToList());
+            resumed = true;
+        }
 
         _negotiations[channelId] = negotiation;
+
+        // NL-698: the peer's commitment_signed is saved in the engine (SP-I2) one save before the session row records
+        // it (the driver's step, which also signs when we sign first). A crash between the two left the row saying it
+        // never came: that step runs now, so the session takes the peer's tx_signatures and, when we sign first, our
+        // tx_signatures exist for the next_funding retransmission (the channel_reestablish plan sends them)
+        if (resumed && negotiation.CommitmentSignedReceived && !latest.CommitmentSignedReceived)
+        {
+            _logger.LogInformation("Splice {TxId} of channel {ChannelId}: the peer's commitment_signed was saved but "
+                                 + "its negotiation step was not; completing it", txId, channelId);
+            await driver.OnCommitmentSignedReceivedAsync(channelId, unitOfWork, cancellationToken);
+        }
+
         _logger.LogInformation("Resumed splice {TxId} of channel {ChannelId} (peer's commitment_signed {Received})",
                                txId, channelId, negotiation.CommitmentSignedReceived ? "received" : "awaited");
     }

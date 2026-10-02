@@ -73,6 +73,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _newBlockSemaphore = new(1, 1);
     private readonly SemaphoreSlim _blockBacklogSemaphore = new(1, 1);
+    private readonly SemaphoreSlim _walletLoadSemaphore = new(1, 1);
     private readonly ConcurrentDictionary<uint256, WatchedTransactionModel> _watchedTransactions = new();
     private readonly ConcurrentDictionary<string, WalletAddressModel> _watchedAddresses = new();
     private readonly ConcurrentDictionary<OutPoint, ChannelId> _watchedOutpoints = new();
@@ -96,6 +97,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     private Task? _mempoolTask;
     private uint _lastProcessedBlockHeight;
     private uint _catchUpHeight;
+    private bool _walletLoaded;
+    private BlockchainState? _loadedState;
+    private IReadOnlyList<BroadcastTransactionModel>? _loadedPendingBroadcasts;
     private SubscriberSocket? _blockSocket;
     private SubscriberSocket? _txSocket;
 
@@ -168,22 +172,65 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
     }
 
+    /// <inheritdoc />
+    public async Task LoadWalletAsync(CancellationToken cancellationToken = default)
+    {
+        await _walletLoadSemaphore.WaitAsync(cancellationToken);
+        try
+        {
+            if (_walletLoaded)
+                return;
+
+            using var scope = _serviceProvider.CreateScope();
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            await LoadPendingWatchedTransactionsAsync(uow);
+            LoadBitcoinAddresses(uow);
+            var endedReservations = await LoadUtxoSetAsync(uow);
+
+            // The channel locks are restored from the pending funding broadcasts (NL-462)
+            var pendingBroadcasts = await uow.BroadcastTransactionDbRepository.GetPendingAsync();
+            await RestoreChannelUtxoLocksAsync(uow, pendingBroadcasts);
+
+            // The last processed height, so what runs before the start (the peers' first messages, the retired SCID
+            // map) does not see height 0. Only block processing changes the state, so StartAsync uses this read (or
+            // creates the state at the height of birth)
+            var state = await uow.BlockchainStateDbRepository.GetStateAsync();
+            if (state is not null)
+                _lastProcessedBlockHeight = state.LastProcessedHeight;
+
+            // The fee input reservations whose inputs are all spent are deleted in their own save
+            if (endedReservations)
+                await uow.SaveChangesAsync();
+
+            _loadedState = state;
+            _loadedPendingBroadcasts = pendingBroadcasts;
+            _walletLoaded = true;
+        }
+        finally
+        {
+            _walletLoadSemaphore.Release();
+        }
+    }
+
     public async Task StartAsync(uint heightOfBirth, CancellationToken cancellationToken)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // The host loads the wallet before the peers connect (NL-600); a host that did not gets it loaded here
+        var loadedByHost = _walletLoaded;
+        await LoadWalletAsync(cancellationToken);
 
         using (var scope = _serviceProvider.CreateScope())
         {
             using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-            await LoadPendingWatchedTransactionsAsync(uow);
-            LoadBitcoinAddresses(uow);
-            await LoadUtxoSetAsync(uow);
-
-            // Read once: the channel locks are restored from the funding ones (NL-462), and every still pending one is
-            // sent again after the start
-            var pendingBroadcasts = await uow.BroadcastTransactionDbRepository.GetPendingAsync();
-            await RestoreChannelUtxoLocksAsync(uow, pendingBroadcasts);
+            // Every still pending broadcast is sent again after the start: read again when the host loaded the wallet
+            // earlier (the peers may have stored some since)
+            var pendingBroadcasts = loadedByHost || _loadedPendingBroadcasts is null
+                                        ? await uow.BroadcastTransactionDbRepository.GetPendingAsync()
+                                        : _loadedPendingBroadcasts;
+            _loadedPendingBroadcasts = null;
 
             // Every channel past funding_created that is not closed gets its funding output watched (backfill for
             // channels stored before the watch existed, or whose watch was never saved)
@@ -192,8 +239,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 _logger.LogInformation("Watching the funding outputs of {Count} channels that had no watch",
                                        backfilled.Count);
 
-            // Get the current state or create a new one if it doesn't exist
-            var currentBlockchainState = await uow.BlockchainStateDbRepository.GetStateAsync();
+            // The current state (read by the wallet load; only block processing changes it) or a new one
+            var currentBlockchainState = _loadedState;
+            _loadedState = null;
             if (currentBlockchainState is null)
             {
                 _logger.LogInformation("No blockchain state found, starting from height {Height}", heightOfBirth);
@@ -271,6 +319,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             throw new InvalidOperationException("Service is not running");
 
         await _cts.CancelAsync();
+
+        // A later start on this instance loads the wallet again, as a new process does
+        _walletLoaded = false;
 
         foreach (var task in new[] { _monitoringTask, _mempoolTask })
         {
@@ -1883,7 +1934,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         }
     }
 
-    private async Task LoadUtxoSetAsync(IUnitOfWork uow)
+    /// <returns>True when reservations whose inputs are all spent were deleted (staged; the caller saves).</returns>
+    private async Task<bool> LoadUtxoSetAsync(IUnitOfWork uow)
     {
         _logger.LogInformation("Loading Utxo set");
 
@@ -1916,6 +1968,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             GetUtxoMemoryRepository().LoadFeeReservations(reserved);
             _logger.LogInformation("Restored {Count} reserved fee input(s)", reserved.Count);
         }
+
+        return ended.Count > 0;
 
         IUtxoMemoryRepository GetUtxoMemoryRepository() =>
             _serviceProvider.GetService<IUtxoMemoryRepository>()
