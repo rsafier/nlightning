@@ -416,7 +416,9 @@ public class FeeService : IFeeService
                 buckets[bucket] = FeeRateConverter.ToSatPerKw(bucketRate, _feeEstimationOptions.RateUnit);
         }
 
-        _httpBuckets = buckets;
+        // Under the state lock: the cache file read must not put older buckets over these (NL-763)
+        lock (_stateLock)
+            _httpBuckets = buckets;
 
         // From the API's unit (sat/vB for mempool.space) to sat/kw (NL-288)
         return FeeRateConverter.ToSatPerKw(feeRate, _feeEstimationOptions.RateUnit);
@@ -564,7 +566,9 @@ public class FeeService : IFeeService
 
                 Interlocked.Exchange(ref _cachedFeeRatePerKw, entry.FeeRatePerKw);
                 _lastFetchTime = fetchedAt;
-                if (entry.Buckets is not null && _feeEstimationOptions.IsSource(FeeEstimationOptions.SourceHttp))
+                // A fetch stores its buckets before it marks _fetchedOnce: buckets already there are newer (NL-763)
+                if (entry.Buckets is not null && _feeEstimationOptions.IsSource(FeeEstimationOptions.SourceHttp)
+                                              && _httpBuckets.Count == 0)
                     _httpBuckets = new Dictionary<string, long>(entry.Buckets);
             }
 
