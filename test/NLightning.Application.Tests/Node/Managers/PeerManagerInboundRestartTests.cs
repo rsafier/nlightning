@@ -1,5 +1,4 @@
 using System.Net.Sockets;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -32,6 +31,7 @@ using Infrastructure.Persistence.Contexts;
 using Infrastructure.Repositories;
 using Infrastructure.Transport.Events;
 using Infrastructure.Transport.Interfaces;
+using TestUtils;
 
 /// <summary>
 /// NL-497 across a restart, on a SQLite file with the real migrations, unit of work and repositories: a peer that
@@ -156,7 +156,7 @@ public sealed class PeerManagerInboundRestartTests : IDisposable
 
     public void Dispose()
     {
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         foreach (var path in new[] { _databasePath, _databasePath + "-wal", _databasePath + "-shm" })
         {
             try

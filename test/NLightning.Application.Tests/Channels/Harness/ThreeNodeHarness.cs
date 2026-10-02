@@ -2,7 +2,6 @@ using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -65,6 +64,7 @@ using Infrastructure.Persistence.Contexts;
 using Infrastructure.Protocol.Onion;
 using Infrastructure.Repositories;
 using Infrastructure.Serialization;
+using TestUtils;
 
 /// <summary>
 /// Three in-process nodes Alice → Bob → Carol (ABCD W2-B proof): each is a real <see cref="ChannelManager"/> with the
@@ -323,7 +323,8 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
         foreach (var node in Nodes)
             await node.StopAsync();
 
-        SqliteConnection.ClearAllPools();
+        foreach (var node in Nodes)
+            SqliteTestPools.Clear(node.DatabasePath);
         try
         {
             Directory.Delete(_directory, true);

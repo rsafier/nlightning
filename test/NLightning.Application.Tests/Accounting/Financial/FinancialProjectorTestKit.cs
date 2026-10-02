@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Text;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -35,6 +34,7 @@ using Infrastructure.Crypto.Hashes;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Repositories;
+using TestUtils;
 
 /// <summary>
 /// A node's accounting on a SQLite file for the financial projector (NL-602 A3-T4): the real sealer, the operational
@@ -249,7 +249,7 @@ internal sealed class FinancialProjectorTestKit : IAsyncDisposable
         await Books.DisposeAsync();
         await Sealer.DisposeAsync();
         await _provider.DisposeAsync();
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         foreach (var path in new[] { _databasePath, _databasePath + "-wal", _databasePath + "-shm" })
         {
             try

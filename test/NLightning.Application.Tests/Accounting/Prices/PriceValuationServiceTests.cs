@@ -1,4 +1,3 @@
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -22,6 +21,7 @@ using Infrastructure.Crypto.Hashes;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Repositories;
+using TestUtils;
 
 /// <summary>
 /// The back-valuation of the financial books (NL-602 A3-T2) over the production unit of work on a SQLite file, with
@@ -57,7 +57,7 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
         if (_provider is not null)
             await _provider.DisposeAsync();
 
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         foreach (var path in new[] { _databasePath, _databasePath + "-wal", _databasePath + "-shm" })
         {
             try

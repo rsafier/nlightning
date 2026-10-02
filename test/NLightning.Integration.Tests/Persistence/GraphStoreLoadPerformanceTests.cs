@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Globalization;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -37,7 +36,7 @@ public sealed class GraphStoreLoadPerformanceTests : IDisposable
 
     public void Dispose()
     {
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         File.Delete(_databasePath);
     }
 
@@ -104,7 +103,7 @@ public sealed class GraphStoreLoadPerformanceTests : IDisposable
             writtenEstimate = store.GetMemoryEstimate();
         }
 
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
 
         // A restart: a new provider and store, the bulk load measured (time and retained managed memory)
         await using var restarted = await CreateProviderAsync(migrate: false);

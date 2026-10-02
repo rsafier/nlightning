@@ -51,7 +51,7 @@ public sealed class OnionReplayPersistenceTests : IDisposable
 
     public void Dispose()
     {
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         File.Delete(_databasePath);
     }
 
