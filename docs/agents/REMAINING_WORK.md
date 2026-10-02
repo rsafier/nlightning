@@ -75,7 +75,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 
 ## Interop and testing
 
-- **More implementations.** Eclair and LDK interop suites (CLN done: 22/22; mainnet gossip already exercised against Eclair, CLN and LND peers). A CLN-funded ABCD-style multi-hop test.
+- **More implementations.** Eclair and LDK interop suites (CLN done: 22/22; mainnet gossip already exercised against Eclair, CLN and LND peers). Update (lane b10-eclair): the Eclair suite covers the day-0 shapes (splicing, dual-funded RBF, force and simple closes, public channels, gossip queries, offers); left against Eclair: attribution_data (NL-332) and HTLCs resolved on chain. A CLN-funded ABCD-style multi-hop test.
 - **CI.**
   - Run the Docker suites in CI. They are local only today, and NL-276 blocks the host process on macOS, so an in-container runner is needed.
   - Per-fixture container names, so suites can run in parallel.
