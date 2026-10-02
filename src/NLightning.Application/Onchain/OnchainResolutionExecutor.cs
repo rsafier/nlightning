@@ -10,7 +10,9 @@ using Accounting;
 using Channels.Safety;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Interfaces;
 using Domain.Accounting.Models;
+using Domain.Accounting.Services;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
@@ -22,12 +24,14 @@ using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
+using Domain.Onchain.Parsers;
 using Domain.Payments.Enums;
 using Domain.Persistence.Interfaces;
 using Fees;
 using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Payments;
 using Reorg;
 
 /// <summary>
@@ -1027,6 +1031,9 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                         break;
                     }
 
+                    // NL-608: the loss of a settled forward's incoming HTLC recorded with that spend
+                    await StageUpstreamForwardLossReversalAsync(accounting, channel.ChannelId, close, old!, now,
+                                                                cancellationToken);
                     continue;
                 }
 
@@ -1049,6 +1056,10 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
 
                 if (transition == AccountingTransition.Ignored)
                 {
+                    // NL-608: a settled forward's incoming HTLC we gave up is lost
+                    await StageUpstreamForwardLossAsync(unitOfWork, accounting, channel, close, row, data, null,
+                                                        height, now, cancellationToken);
+
                     var ignoredKey = AccountingEventKeys.OutputIgnored(row.TransactionId, row.OutputIndex);
                     if (!counted || await accounting.ExistsAsync(ignoredKey, cancellationToken))
                         continue;
@@ -1072,7 +1083,16 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                         || broadcast is { Purpose: not BroadcastPurpose.PeerCommitment };
                 var flows = ours
                                 ? OnchainAccounting.Ours(row, valueMsat, counted, spender, outputs,
-                                                         broadcast?.Purpose == BroadcastPurpose.HtlcTransaction)
+                                                         broadcast?.Purpose == BroadcastPurpose.HtlcTransaction,
+                                                         // NL-611: a stored sweep's other inputs (the peer's anchor)
+                                                         broadcast is
+                                                         {
+                                                             Purpose: BroadcastPurpose.Sweep
+                                                                   or BroadcastPurpose.AnchorSweep,
+                                                             Fee: { } fee
+                                                         }
+                                                             ? checked((long)fee.MilliSatoshi)
+                                                             : null)
                                 : OnchainAccounting.Lost(valueMsat, counted, AccountingDetailKeys.ResolvedByPeer);
                 if (data is null)
                     flows = flows with { Note = "the output's value is unknown" };
@@ -1088,16 +1108,21 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                                                                                      row.OutputIndex),
                     _ => AccountingEventKeys.OutputResolved(row.TransactionId, row.OutputIndex)
                 };
-                var eventKey = await OnchainAccounting.NewKeyAsync(accounting, baseEventKey, spent.BlockHeight,
+                var eventKey = await OnchainAccounting.NewKeyAsync(accounting, baseEventKey,
                                                                    cancellationToken);
                 if (eventKey is null)
                     continue;
 
                 var ownership = await GetHtlcValueOwnerAsync(unitOfWork, channel.ChannelId, data?.Htlc, ours,
-                                                             revoked);
+                                                             revoked, ClaimPathOf(data?.Htlc, ours, spender, row));
                 accounting.Add(OnchainAccounting.Resolution(channel, close, row, data, kind, eventKey, flows, counted,
                                                             spender.TxId, spent.BlockHeight, now,
                                                             broadcast?.ReplacesTransactionId is not null, ownership));
+
+                // NL-608: the peer took a settled forward's incoming HTLC (its timeout): we paid downstream for nothing
+                if (!ours && !revoked)
+                    await StageUpstreamForwardLossAsync(unitOfWork, accounting, channel, close, row, data,
+                                                        spender.TxId, spent.BlockHeight, now, cancellationToken);
             }
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -1116,7 +1141,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     /// (NL-602 A2).
     /// </summary>
     private async Task<IReadOnlyList<(string Key, string? Value)>> GetHtlcValueOwnerAsync(
-        IUnitOfWork unitOfWork, ChannelId channelId, SpecHtlc? htlc, bool ours, bool revoked)
+        IUnitOfWork unitOfWork, ChannelId channelId, SpecHtlc? htlc, bool ours, bool revoked, string? claimPath)
     {
         if (htlc is not { } spec)
             return [];
@@ -1133,12 +1158,23 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
 
             if (spec.Direction == HtlcDirection.Outgoing && !ours)
             {
+                // NL-612: only a claim with the preimage paid the payment or forward that booked the value; the peer
+                // taking it any other way (the revocation path of our own revoked commitment) is a loss of ours
+                if (claimPath != AccountingDetailKeys.ClaimPathPreimage)
+                    return
+                    [
+                        (OnchainAccounting.ClaimedByKey, AccountingDetailKeys.ResolvedByPeer),
+                        (AccountingDetailKeys.ClaimPath, claimPath),
+                        (OnchainAccounting.BucketKey, OnchainAccounting.PendingBucket)
+                    ];
+
                 var origin = unitOfWork.ChannelStateDbRepository is { } state
                                  ? await state.GetHtlcOriginAsync(channelId, new HtlcKey(spec.Direction, spec.Id))
                                  : null;
                 return
                 [
                     (OnchainAccounting.ClaimedByKey, AccountingDetailKeys.ResolvedByPeer),
+                    (AccountingDetailKeys.ClaimPath, claimPath),
                     (OnchainAccounting.ValueBookedByKey, origin?.Kind switch
                     {
                         HtlcOriginKind.Local => "payment",
@@ -1156,6 +1192,92 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         }
 
         return [];
+    }
+
+    /// <summary>
+    /// Stages the <see cref="AccountingEventKind.ForwardLostOnchain"/> of a forward booked as settled (its circuit
+    /// <see cref="ForwardCircuitStatus.Fulfilled"/>) whose incoming HTLC output of the close (<paramref name="row"/>) the
+    /// peer took or we gave up (NL-608): the incoming amount is lost (the upstream fulfill never got through). Keyed by
+    /// the forward (<see cref="AccountingEventKeys.ForwardLostOnchain"/>, by generation after a reorg's reversal).
+    /// </summary>
+    private static async Task StageUpstreamForwardLossAsync(IUnitOfWork unitOfWork,
+                                                            IAccountingEventDbRepository accounting,
+                                                            ChannelModel channel, ChannelCloseModel close,
+                                                            OutputResolutionModel row, OutputDescriptorData? data,
+                                                            TxId? spenderTxId, uint height, DateTimeOffset now,
+                                                            CancellationToken cancellationToken)
+    {
+        if (!IsIncomingHtlcOfTheClose(row, close) || data?.Htlc is not { Direction: HtlcDirection.Incoming } htlc
+                                                  || unitOfWork.ForwardCircuitDbRepository is not { } circuits)
+            return;
+
+        var circuit = await circuits.GetByIncomingAsync(channel.ChannelId, htlc.Id);
+        if (circuit is not { Status: ForwardCircuitStatus.Fulfilled })
+            return;
+
+        var key = await OnchainAccounting.NewKeyAsync(
+                      accounting, AccountingEventKeys.ForwardLostOnchain(channel.ChannelId, htlc.Id), cancellationToken);
+        if (key is null)
+            return;
+
+        accounting.Add(PaymentAccountingEvents.ForwardUpstreamLostOnchain(key, circuit, channel,
+                                                                          close.CommitmentTransactionId, spenderTxId,
+                                                                          now, height));
+    }
+
+    /// <summary>
+    /// Stages the reversal of the <see cref="StageUpstreamForwardLossAsync"/> event recorded with the resolution of
+    /// <paramref name="resolved"/> that a reorg undid (NL-608).
+    /// </summary>
+    internal static async Task StageUpstreamForwardLossReversalAsync(IAccountingEventDbRepository accounting,
+                                                                     ChannelId channelId, ChannelCloseModel close,
+                                                                     OutputResolutionModel resolved,
+                                                                     DateTimeOffset now,
+                                                                     CancellationToken cancellationToken)
+    {
+        if (!IsIncomingHtlcOfTheClose(resolved, close) || resolved.HtlcId is not { } htlcId)
+            return;
+
+        var baseKey = AccountingEventKeys.ForwardLostOnchain(channelId, htlcId);
+        var standing = AccountingConfirmations.FindStanding(
+            baseKey, await accounting.GetByKeyPrefixAsync(baseKey, cancellationToken));
+        if (standing is null
+         || !standing.Details.TryGetValue("cause", out var cause) || cause != PaymentAccountingEvents.UpstreamOnchainCause
+         || !standing.Details.TryGetValue(AccountingDetailKeys.CloseTxId, out var closeTxId)
+         || closeTxId != close.CommitmentTransactionId.ToString()
+         || (resolved.ResolvedHeight is { } height && standing.BlockHeight != height))
+            return;
+
+        await OnchainAccounting.StageReversalAsync(accounting, standing, standing.BlockHeight ?? 0, now,
+                                                   cancellationToken);
+    }
+
+    /// <summary>An incoming HTLC output of the close's commitment (ours or the peer's).</summary>
+    private static bool IsIncomingHtlcOfTheClose(OutputResolutionModel row, ChannelCloseModel close) =>
+        row.TransactionId == close.CommitmentTransactionId
+     && row.Descriptor is OutputDescriptorKind.LocalReceivedHtlc or OutputDescriptorKind.RemoteOfferedHtlc;
+
+    /// <summary>
+    /// How the peer took our offered HTLC <paramref name="htlc"/> (output <paramref name="row"/>) with
+    /// <paramref name="spender"/> (NL-612): the witness of the spending input carries the HTLC's preimage, takes the
+    /// revocation path, or neither. Null for any other output or a spend of ours.
+    /// </summary>
+    private static string? ClaimPathOf(SpecHtlc? htlc, bool ours, ChainTx spender, OutputResolutionModel row)
+    {
+        if (htlc is not { Direction: HtlcDirection.Outgoing } spec || ours)
+            return null;
+
+        var index = spender.IndexOfInputSpending(row.TransactionId, row.OutputIndex);
+        if (index < 0)
+            return AccountingDetailKeys.ClaimPathUnknown;
+
+        var witness = spender.Inputs[index].Witness;
+        if (HtlcWitnessParser.TryExtractPreimage(witness, spec.PaymentHash, out _))
+            return AccountingDetailKeys.ClaimPathPreimage;
+
+        return HtlcWitnessParser.Parse(witness).Path == HtlcSpendPath.Revocation
+                   ? AccountingDetailKeys.ClaimPathRevocation
+                   : AccountingDetailKeys.ClaimPathUnknown;
     }
 
     /// <summary>What a row's change in a round is, for the accounting feed.</summary>

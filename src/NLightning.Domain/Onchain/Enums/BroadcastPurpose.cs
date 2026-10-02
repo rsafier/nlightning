@@ -55,5 +55,12 @@ public enum BroadcastPurpose : byte
     /// <see cref="Funding"/>; every rule that keys off <see cref="Funding"/> treats both the same (rebroadcast, the
     /// abandonment rule NL-294, the discard of a splice a commitment conflicts with), so only the label differs.
     /// </summary>
-    Splice = 11
+    Splice = 11,
+
+    /// <summary>
+    /// Our sweep of a confirmed commitment's anchors after 16 blocks (NL-611): stored with its fee so the books see the
+    /// resolution of our anchor as ours. Anyone may take anchors first, so it is never bumped and the chain monitor may
+    /// abandon it after permanent refusals, like a wallet spend (nothing of the channel's safety depends on it).
+    /// </summary>
+    AnchorSweep = 12
 }

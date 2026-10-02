@@ -312,7 +312,10 @@ internal static class ChannelAccountingEvents
     /// <remarks>
     /// The fee we paid is what our balance lost on the way to our closing output: the closing fee when we paid it (the
     /// funder with <c>closing_signed</c>, the closer with <c>option_simple_close</c>), our output when it was too small
-    /// to exist, and otherwise only the msat our output could not carry.
+    /// to exist, and otherwise only the msat our output could not carry. Who paid the closing fee
+    /// (<c>feePaidByUs</c>, with <c>closeProtocol</c> and <c>closer</c>) comes from the protocol recorded with the
+    /// closing transaction (NL-610, <see cref="ChannelModel.CloseProtocol"/>); a close agreed before it was recorded
+    /// infers it from a loss of 1,000 msat or more (<c>feePayerInferred</c>).
     /// </remarks>
     public static void StageMutualClose(IUnitOfWork unitOfWork, ChannelModel channel, uint? blockHeight,
                                         DateTimeOffset occurredAt, ILogger logger)
@@ -326,6 +329,39 @@ internal static class ChannelAccountingEvents
         catch (Exception e) when (e is not OperationCanceledException)
         {
             logger.LogError(e, "Could not record the mutual close of channel {ChannelId} in the accounting feed",
+                            channel.ChannelId);
+        }
+    }
+
+    /// <summary>
+    /// Records <see cref="AccountingEventKind.ChannelClosedMutual"/> again for a Closed channel whose closing transaction
+    /// confirmed again at <paramref name="blockHeight"/> after a reorg (NL-607): the chain monitor reversed the first
+    /// one when it rewound the closing watch. Under the next confirmation key
+    /// (<see cref="AccountingConfirmations.NextConfirmationKey"/>), so nothing is written while a confirmation stands;
+    /// in its own save; never throws.
+    /// </summary>
+    public static async Task RecordMutualCloseAgainAsync(IUnitOfWork unitOfWork, ChannelModel channel,
+                                                         uint blockHeight, DateTimeOffset occurredAt, ILogger logger)
+    {
+        try
+        {
+            if (unitOfWork.AccountingEventDbRepository is not { } events
+             || BuildMutualClose(channel, blockHeight, occurredAt, logger) is not { } built)
+                return;
+
+            var existing = await events.GetByKeyPrefixAsync(built.EventKey);
+            if (existing.Count == 0
+             || AccountingConfirmations.NextConfirmationKey(built.EventKey, existing) is not { } key)
+                return;
+
+            events.Add(AccountingConfirmations.CreateReconfirmation(built, key, blockHeight, null, occurredAt));
+            await unitOfWork.SaveChangesAsync();
+            logger.LogInformation("Recorded the mutual close of channel {ChannelId} again: its closing transaction "
+                                + "confirmed again at block {Height}", channel.ChannelId, blockHeight);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            logger.LogError(e, "Could not record the mutual close of channel {ChannelId} again in the accounting feed",
                             channel.ChannelId);
         }
     }
@@ -373,6 +409,17 @@ internal static class ChannelAccountingEvents
         }
 
         long? feeMsat = ourOutputSat is { } output ? Math.Max(0, balanceMsat - checked(output * 1_000)) : null;
+
+        // NL-610: who paid the closing fee follows from the recorded protocol (the funder with closing_signed, the
+        // closer with option_simple_close); only a close agreed before it was recorded falls back to our loss
+        var feePaidByUs = channel.CloseProtocol switch
+        {
+            MutualCloseProtocol.Legacy => (bool?)channel.IsInitiator,
+            MutualCloseProtocol.Simple => channel.LocalIsCloser,
+            _ => null
+        };
+        var feePayerInferred = feePaidByUs is null && feeMsat is not null;
+        feePaidByUs ??= feeMsat is { } lost ? lost >= 1_000 : null;
         return new AccountingEventModel
         {
             EventKey = AccountingEventKeys.ChannelClosedMutual(channel.ChannelId, closingTransaction.TxId),
@@ -393,7 +440,20 @@ internal static class ChannelAccountingEvents
                 ("balanceMsat", Format(balanceMsat)),
                 ("ourOutputSat", ourOutputSat is { } ours ? Format(ours) : null),
                 ("closingFeeSat", closingFeeSat is { } fee ? Format(fee) : null),
-                ("feePaidByUs", feeMsat is { } paid ? Format(paid >= 1_000) : null),
+                ("feePaidByUs", feePaidByUs is { } paid ? Format(paid) : null),
+                ("feePayerInferred", feePayerInferred ? "true" : null),
+                ("closeProtocol", channel.CloseProtocol switch
+                {
+                    MutualCloseProtocol.Legacy => "legacy",
+                    MutualCloseProtocol.Simple => "simple",
+                    _ => null
+                }),
+                ("closer", channel.LocalIsCloser switch
+                {
+                    true => "us",
+                    false => "peer",
+                    null => null
+                }),
                 ("isInitiator", Format(channel.IsInitiator)),
                 ("feeUnknown", feeMsat is null ? "true" : null))
         };

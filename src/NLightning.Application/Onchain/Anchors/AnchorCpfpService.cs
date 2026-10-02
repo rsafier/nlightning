@@ -80,8 +80,9 @@ using Resolvers.Local;
 /// <see cref="IBitcoinChainService.GetUnspentOutputAsync"/>, mempool included; without a chain service the peer's,
 /// and ours only when no child was ever made) are swept to a wallet address with empty
 /// signatures when <see cref="AnchorCpfpPolicy.DecideAnchorSweep"/> says it pays for itself, else skipped (logged).
-/// The sweep is published once per commitment and process and never stored: anyone may take those outputs first, and a
-/// refused send is not retried.</para>
+/// The sweep is planned once per commitment and process, stored as a <see cref="BroadcastPurpose.AnchorSweep"/> row with its
+/// fee in the round's save (NL-611: the resolution of our anchor is then booked as ours), then published; anyone may
+/// take those outputs first, so a refused send marks the row abandoned and is not retried.</para>
 /// <para>Package relay (NL-380): a commitment below bitcoind's mempool minimum fee (a fee spike after the last
 /// <c>update_fee</c>) is refused alone, and its child as an orphan. When a new child is refused, and every round when the
 /// newest pending child is not in bitcoind's mempool (<see cref="IBitcoinChainService.GetTransactionAsync"/>, which
@@ -520,7 +521,35 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         // commitment can confirm any more (once per process: also a reservation a crash left without its child row)
         result.Release = (local == PathState.Done || peer == PathState.Done)
                       && local != PathState.Active && peer != PathState.Active;
+
+        if (result.Sweep is { } sweep)
+            await StoreSweepAsync(channel.ChannelId, unitOfWork, sweep, result);
+
         return result;
+    }
+
+    /// <summary>
+    /// Saves the anchor sweep's row before it is published (NL-611); a sweep whose save fails is not published (tried
+    /// again at a later process: the sweep is planned once per commitment and process).
+    /// </summary>
+    private async Task StoreSweepAsync(ChannelId channelId, IUnitOfWork unitOfWork, BroadcastTransactionModel sweep,
+                                       RoundResult result)
+    {
+        try
+        {
+            var repository = unitOfWork.BroadcastTransactionDbRepository;
+            if (await repository.GetByTransactionIdAsync(sweep.TransactionId) is null)
+            {
+                repository.Add(sweep);
+                await unitOfWork.SaveChangesAsync();
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            result.Sweep = null;
+            _logger.LogWarning(e, "Cannot store the anchor sweep {TxId} of channel {ChannelId}; it is not published",
+                               Display(sweep.TransactionId), channelId);
+        }
     }
 
     /// <summary>Our own commitment's part of the round (see the class remarks).</summary>
@@ -695,18 +724,37 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
         if (result.Sweep is { } sweep)
         {
-            try
+            if (await _blockchainMonitor.PublishAsync(sweep))
             {
-                await _blockchainMonitor.PublishTransactionAsync(sweep);
                 _logger.LogInformation("Swept the anchors of channel {ChannelId} in {TxId}", channelId,
-                                       Display(sweep.TxId));
+                                       Display(sweep.TransactionId));
             }
-            catch (Exception e) when (e is not OperationCanceledException)
+            else
             {
-                // Anyone may take anchors after 16 blocks; a refusal usually means someone did
-                _logger.LogInformation("Anchor sweep {TxId} of channel {ChannelId} was refused ({Reason}); not retried",
-                                       Display(sweep.TxId), channelId, e.Message);
+                // Anyone may take anchors after 16 blocks; a refusal usually means someone did: the row is given up
+                // (never rebroadcast). One that confirms anyway is still recorded (the block decides, NL-606).
+                await AbandonQuietlyAsync(sweep.TransactionId);
+                _logger.LogInformation("Anchor sweep {TxId} of channel {ChannelId} was refused; not retried",
+                                       Display(sweep.TransactionId), channelId);
             }
+        }
+    }
+
+    /// <summary>Marks a stored broadcast <see cref="BroadcastState.Abandoned"/> in its own save; a failure is logged.
+    /// </summary>
+    private async Task AbandonQuietlyAsync(TxId txId)
+    {
+        try
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            if (await unitOfWork.BroadcastTransactionDbRepository.MarkAbandonedAsync(txId))
+                await unitOfWork.SaveChangesAsync();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Cannot give up the refused anchor sweep {TxId}; it is sent again after every block",
+                               Display(txId));
         }
     }
 
@@ -1167,7 +1215,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     /// The anchor sweep of a confirmed commitment (ours or the peer's), once due and economical (and only once per
     /// process). <paramref name="anyChild"/>: a child of ours ever spent our anchor on it.
     /// </summary>
-    private async Task<SignedTransaction?> PlanAnchorSweepAsync(ChannelModel channel, TxId commitmentTxId,
+    private async Task<BroadcastTransactionModel?> PlanAnchorSweepAsync(ChannelModel channel, TxId commitmentTxId,
                                                                 byte[] commitmentTransaction, uint confirmedHeight,
                                                                 bool anyChild, uint height,
                                                                 CancellationToken cancellationToken)
@@ -1248,7 +1296,12 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             return null;
         }
 
-        return _builder.BuildAnchorSweep(anchors, destination, decision.FeeSat);
+        // NL-611: stored as a Sweep row with its fee (saved before it is published), so the resolution of our anchor
+        // is booked as ours, not as taken by the peer
+        return new BroadcastTransactionModel(_builder.BuildAnchorSweep(anchors, destination, decision.FeeSat),
+                                             BroadcastPurpose.AnchorSweep, channel.ChannelId, height,
+                                             decision.FeeratePerKw,
+                                             fee: LightningMoney.Satoshis(decision.FeeSat));
     }
 
     /// <summary>The next block can spend the anchors of a commitment confirmed at <paramref name="confirmedHeight"/>
@@ -1583,7 +1636,10 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         public bool PeerCommitmentInMempool { get; set; }
 
         public bool Release { get; set; }
-        public SignedTransaction? Sweep { get; set; }
+
+        /// <summary>The anchor sweep, a <see cref="BroadcastPurpose.AnchorSweep"/> row stored in the round's save (NL-611).
+        /// </summary>
+        public BroadcastTransactionModel? Sweep { get; set; }
     }
 
     /// <summary>The commitment a child pays for: its raw bytes, the deadline and our stake on it.</summary>

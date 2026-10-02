@@ -876,6 +876,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<bool?>("ChangeAddressIsChange")
                         .HasColumnType("INTEGER");
 
+                    b.Property<byte?>("CloseProtocol")
+                        .HasColumnType("INTEGER");
+
                     b.Property<byte[]>("ClosingTransaction")
                         .HasColumnType("BLOB");
 
@@ -933,6 +936,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<long?>("LocalFundingContributionSatoshis")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool?>("LocalIsCloser")
                         .HasColumnType("INTEGER");
 
                     b.Property<ulong>("LocalNextHtlcId")

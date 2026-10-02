@@ -58,6 +58,7 @@ public class BroadcastRefusalRulesTests
     [InlineData(BroadcastPurpose.AnchorCpfp, false)]
     [InlineData(BroadcastPurpose.PeerCommitment, false)]
     [InlineData(BroadcastPurpose.Splice, true)] // NL-626: as when splices were saved as Funding
+    [InlineData(BroadcastPurpose.AnchorSweep, true)] // NL-611: anyone may take anchors
     public void Given_APurpose_When_AskedIfTheMonitorMayAbandonIt_Then_OnlyWalletOnlySpendsMay(BroadcastPurpose purpose,
         bool expected)
     {

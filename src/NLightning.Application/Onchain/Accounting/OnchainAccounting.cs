@@ -69,14 +69,17 @@ using Domain.Onchain.Models;
 /// <c>PaymentSucceeded</c>, <c>ForwardSettled</c> or <c>ForwardLostOnchain</c>: its event writes the HTLC off the
 /// pending bucket (<c>AmountMsat</c> = −value, <see cref="BucketKey"/> = <see cref="PendingBucket"/>,
 /// <see cref="ClaimedByKey"/> = peer, <see cref="ValueBookedByKey"/> = payment or forward), which the books do not
-/// count as a second loss. (c) An offered HTLC that times out back to us is an ordinary movement into the wallet, with
+/// count as a second loss. Only a spend whose witness carries the HTLC's preimage is such a claim (NL-612,
+/// <see cref="AccountingDetailKeys.ClaimPath"/>): the peer taking it by the revocation path of our own revoked
+/// commitment (or any spend without the preimage) gets no <see cref="ValueBookedByKey"/>, so the books post a loss. (c) An offered HTLC that times out back to us is an ordinary movement into the wallet, with
 /// its fees: it was in our gross balance at the close. (d) An incoming HTLC that times out to the peer is 0,
 /// informational. The books match the HTLC by <see cref="PaymentHashKey"/>/<see cref="HtlcIdKey"/>.</para>
 /// <para><b>Reorgs.</b> A resolution whose spend was reorged out, and a close replaced by another transaction, are
 /// negated by <see cref="AccountingEventKind.Reversal"/> events (key
 /// <see cref="AccountingEventKeys.Reversal(string, uint)"/>, amount and fee negated, details
 /// <see cref="ReversesKey"/> and <see cref="OriginalKindKey"/>, the shape of the chain monitor's reversals). A fact
-/// written again after its reversal takes the key <see cref="AccountingEventKeys.Reemitted(string, uint)"/>.</para>
+/// written again after its reversal takes its next confirmation key (<see cref="AccountingEventKeys.Reconfirmed"/>,
+/// <see cref="AccountingConfirmations.NextConfirmationKey"/>, the wallet writers' scheme; NL-613).</para>
 /// <para><b>Fee bumps.</b> A resolution's <c>FeeMsat</c> is the whole fee its spender paid out of the output, also when
 /// the spender is an RBF replacement of an earlier sweep (<see cref="IncludesFeeBumpKey"/> = true): the books take the
 /// bump itself out of it against the <see cref="AccountingEventKind.SweepFeeBump"/> of the replacement.</para>
@@ -276,9 +279,13 @@ internal static class OnchainAccounting
     /// <param name="rows">Every row of the channel (after this round's changes), by outpoint.</param>
     /// <param name="isHtlcTransaction">The spender is our HTLC transaction (its output paired with the row's input is a
     /// second-level output, even before its row exists).</param>
+    /// <param name="externalInputsFeeMsat">The spender's whole fee, when it is a stored sweep of ours (never with wallet
+    /// inputs) whose fee we know: its inputs that are not rows (the peer's anchor in our anchor sweep, NL-611) are then
+    /// valued as the outputs plus the fee less the rows, and that value is a gain booked with the first row's event
+    /// (with its share of the fee), instead of merging the rows into the wallet events.</param>
     public static ResolutionFlows Ours(OutputResolutionModel row, long valueMsat, bool counted, ChainTx spender,
                                        IReadOnlyDictionary<(TxId, uint), OutputResolutionModel> rows,
-                                       bool isHtlcTransaction)
+                                       bool isHtlcTransaction, long? externalInputsFeeMsat = null)
     {
         var pendingOut = counted ? valueMsat : 0;
         var inputIndex = spender.IndexOfInputSpending(row.TransactionId, row.OutputIndex);
@@ -298,7 +305,10 @@ internal static class OnchainAccounting
         }
 
         // The rows the spender spends (its other inputs must be rows too, or the row's value is merged with them)
+        var merged = new ResolutionFlows(pendingOut, 0, 0, 0, -pendingOut, AccountingDetailKeys.ResolvedByUs,
+                                         AccountingDetailKeys.MergedNote);
         var shares = new List<(int Index, long ValueMsat)>();
+        var externalIndex = -1;
         for (var i = 0; i < spender.Inputs.Count; i++)
         {
             var input = spender.Inputs[i];
@@ -313,19 +323,39 @@ internal static class OnchainAccounting
 
             if (!rows.TryGetValue((input.PreviousTxId, input.PreviousVout), out var other)
              || OutputDescriptorData.TryDecode(other) is not { } data)
-                return new ResolutionFlows(pendingOut, 0, 0, 0, -pendingOut, AccountingDetailKeys.ResolvedByUs,
-                                           AccountingDetailKeys.MergedNote);
+            {
+                if (externalInputsFeeMsat is null)
+                    return merged;
+
+                if (externalIndex < 0)
+                    externalIndex = i;
+                continue;
+            }
 
             shares.Add((i, checked((long)data.AmountSat * 1_000)));
         }
 
         long walletMsat = 0;
+        long outputsMsat = 0;
         for (var vout = 0; vout < spender.Outputs.Count; vout++)
+        {
+            outputsMsat = checked(outputsMsat + (long)spender.Outputs[vout].AmountSat * 1_000);
             if (!IsPendingOutput(vout))
                 walletMsat = checked(walletMsat + (long)spender.Outputs[vout].AmountSat * 1_000);
+        }
 
-        var total = shares.Sum(s => s.ValueMsat);
+        long externalMsat = 0;
+        if (externalIndex >= 0)
+        {
+            // NL-611: the inputs that are not rows are what the outputs and the fee hold beyond the rows
+            externalMsat = outputsMsat + externalInputsFeeMsat!.Value - shares.Sum(s => s.ValueMsat);
+            if (externalMsat < 0 || walletMsat != outputsMsat)
+                return merged;
+        }
+
+        var total = shares.Sum(s => s.ValueMsat) + externalMsat;
         long ours = 0;
+        long externalWallet = 0;
         if (total > 0)
         {
             long allocated = 0;
@@ -337,14 +367,29 @@ internal static class OnchainAccounting
                     ours = part;
             }
 
-            // The rounding remainder goes to the first input
-            if (shares[0].Index == inputIndex)
+            externalWallet = (long)((Int128)walletMsat * externalMsat / total);
+            allocated += externalWallet;
+
+            // The rounding remainder goes to the first input (with external inputs, to the row that books them)
+            if (externalIndex < 0 && shares[0].Index == inputIndex)
                 ours += walletMsat - allocated;
+            else if (externalIndex >= 0)
+                externalWallet += walletMsat - allocated;
         }
 
         var fee = valueMsat - ours;
+        string? note = null;
+        if (externalIndex >= 0 && shares.Min(s => s.Index) == inputIndex)
+        {
+            // This row books the external inputs: their part of the wallet output and of the fee, so the gain is their
+            // whole value (the books post walletMsat + fee - pendingOut beyond the row's own flows to OnchainGain)
+            ours += externalWallet;
+            fee += externalMsat - externalWallet;
+            note = AccountingDetailKeys.ExternalInputsNote;
+        }
+
         return fee >= 0
-                   ? new ResolutionFlows(pendingOut, 0, ours, fee, ours, AccountingDetailKeys.ResolvedByUs)
+                   ? new ResolutionFlows(pendingOut, 0, ours, fee, ours, AccountingDetailKeys.ResolvedByUs, note)
                    : new ResolutionFlows(pendingOut, 0, ours, 0, ours, AccountingDetailKeys.ResolvedByUs,
                                          "pays out more than its value");
     }
@@ -413,35 +458,28 @@ internal static class OnchainAccounting
     ];
 
     /// <summary>
-    /// The key to write a new fact under: <paramref name="baseKey"/>, or, when a row already holds it (reversed by a
-    /// reorg), <see cref="AccountingEventKeys.Reemitted"/> at <paramref name="height"/>; null when that is taken too
-    /// (the fact is already written).
+    /// The key to write a new fact under (NL-613: the generation scheme of the wallet writers,
+    /// <see cref="AccountingConfirmations.NextConfirmationKey"/>): <paramref name="baseKey"/>, or after its reversal by a
+    /// reorg <see cref="AccountingEventKeys.Reconfirmed"/>(<paramref name="baseKey"/>, 2), 3 and so on; null when a
+    /// confirmation of the fact is written and stands.
     /// </summary>
-    public static async Task<string?> NewKeyAsync(IAccountingEventDbRepository repository, string baseKey, uint height,
+    public static async Task<string?> NewKeyAsync(IAccountingEventDbRepository repository, string baseKey,
                                                   CancellationToken cancellationToken)
     {
-        if (!await repository.ExistsAsync(baseKey, cancellationToken))
-            return baseKey;
-
-        var again = AccountingEventKeys.Reemitted(baseKey, height);
-        return await repository.ExistsAsync(again, cancellationToken) ? null : again;
+        var existing = await repository.GetByKeyPrefixAsync(baseKey, cancellationToken);
+        return AccountingConfirmations.NextConfirmationKey(baseKey, existing);
     }
 
     /// <summary>
-    /// The event of a fact written under <paramref name="baseKey"/> that a block at <paramref name="height"/> holds:
-    /// its re-emission at that height when there is one, else the first row.
+    /// The event of a fact written under <paramref name="baseKey"/> that a block at <paramref name="height"/> holds: its
+    /// confirmation at that height when there is one, else its latest standing one, else the first row
+    /// (<see cref="AccountingConfirmations.FindAt"/>).
     /// </summary>
     public static async Task<AccountingEventModel?> FindAsync(IAccountingEventDbRepository repository, string baseKey,
                                                               uint? height, CancellationToken cancellationToken)
     {
-        if (height is { } at)
-        {
-            var again = await repository.GetByKeyAsync(AccountingEventKeys.Reemitted(baseKey, at), cancellationToken);
-            if (again is not null)
-                return again;
-        }
-
-        return await repository.GetByKeyAsync(baseKey, cancellationToken);
+        var existing = await repository.GetByKeyPrefixAsync(baseKey, cancellationToken);
+        return AccountingConfirmations.FindAt(baseKey, height, existing);
     }
 
     /// <summary>
@@ -452,7 +490,8 @@ internal static class OnchainAccounting
                                                       AccountingEventModel original, uint height,
                                                       DateTimeOffset occurredAt, CancellationToken cancellationToken)
     {
-        var key = AccountingEventKeys.Reversal(original.EventKey, height);
+        // Keyed by the original's own block, as AccountingConfirmations.IsReversed reads it
+        var key = AccountingEventKeys.Reversal(original.EventKey, original.BlockHeight ?? height);
         if (key.Length > AccountingEventKeys.MaxLength || await repository.ExistsAsync(key, cancellationToken))
             return false;
 
@@ -461,7 +500,7 @@ internal static class OnchainAccounting
             EventKey = key,
             Kind = AccountingEventKind.Reversal,
             OccurredAt = occurredAt,
-            BlockHeight = height,
+            BlockHeight = original.BlockHeight ?? height,
             ChannelId = original.ChannelId,
             ShortChannelId = original.ShortChannelId,
             PaymentHash = original.PaymentHash,

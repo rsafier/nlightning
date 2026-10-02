@@ -524,6 +524,7 @@ public sealed class ChannelCloseCoordinator
         await PersistAsync(channel, m =>
         {
             m.SetClosingTransaction(closingTransaction);
+            m.SetCloseTerms(MutualCloseProtocol.Legacy, null); // NL-610: the funder pays the closing fee
             if (m.State < ChannelState.Closing)
                 m.UpdateState(ChannelState.Closing);
         });

@@ -190,6 +190,13 @@ public class ChannelEntity
     /// <summary>The fully signed mutual close transaction (persisted before it is broadcast), or null.</summary>
     public byte[]? ClosingTransaction { get; set; }
 
+    /// <summary>The protocol the mutual close was agreed with (<c>MutualCloseProtocol</c>: 1 legacy, 2 simple), or null
+    /// (migration <c>AddMutualCloseTerms</c>, NL-610).</summary>
+    public byte? CloseProtocol { get; set; }
+
+    /// <summary>For a simple close, whether we were the closer (we paid the fee), or null (NL-610).</summary>
+    public bool? LocalIsCloser { get; set; }
+
     /// <summary>
     /// The peer's <c>announcement_signatures</c> node signature for the channel's current short channel id, or null
     /// (migration <c>AddGossipGraph</c>, BOLT 7 plan G1).

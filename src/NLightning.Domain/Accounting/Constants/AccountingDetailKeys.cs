@@ -127,6 +127,20 @@ public static class AccountingDetailKeys
     /// <summary>Who claimed an HTLC output.</summary>
     public const string ClaimedBy = "claimedBy";
 
+    /// <summary>How the peer took one of our offered HTLC outputs, read from the spender's witness (NL-612):
+    /// <see cref="ClaimPathPreimage"/>, <see cref="ClaimPathRevocation"/> or <see cref="ClaimPathUnknown"/>. Only a
+    /// preimage claim leaves the value to the payment or forward that booked it.</summary>
+    public const string ClaimPath = "claimPath";
+
+    /// <summary>The peer's spend carries the HTLC's payment preimage.</summary>
+    public const string ClaimPathPreimage = "preimage";
+
+    /// <summary>The peer's spend takes the revocation path (our own revoked commitment's output).</summary>
+    public const string ClaimPathRevocation = "revocation";
+
+    /// <summary>The peer's spend carries no preimage of the HTLC and is no revocation spend we recognize.</summary>
+    public const string ClaimPathUnknown = "unknown";
+
     /// <summary>"true" when a resolution's fee includes the fee bumps of its RBF replacements.</summary>
     public const string IncludesFeeBump = "includesFeeBump";
 
@@ -141,6 +155,12 @@ public static class AccountingDetailKeys
     /// child): the output's value went into a transaction the wallet events book.
     /// </summary>
     public const string MergedNote = "merged with inputs that are not outputs of the channel";
+
+    /// <summary>
+    /// The note of a resolution by our stored sweep that also spent inputs that are not rows of the channel (the peer's
+    /// anchor in our anchor sweep, NL-611): this event books their value (as a gain) and their part of the fee.
+    /// </summary>
+    public const string ExternalInputsNote = "also books the sweep's inputs that are not outputs of the channel";
 
     #endregion
 

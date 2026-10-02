@@ -145,6 +145,54 @@ public class AccountingConfirmationsTests
         Assert.Throws<ArgumentException>(() => AccountingConfirmations.CreateReversal(offChain, s_at, 1));
     }
 
+    [Fact]
+    public void Given_ConfirmationsAndReversals_When_FindingTheStandingOne_Then_ItIsTheLatestNotReversed()
+    {
+        // Arrange (NL-613): confirmed at 101, reorged, confirmed again at 103
+        var first = Event(s_baseKey, 101);
+        var second = Event(AccountingEventKeys.Reconfirmed(s_baseKey, 2), 103);
+        var events = new List<AccountingEventModel> { first, AccountingConfirmations.CreateReversal(first, s_at, 100) };
+
+        // Act
+        var none = AccountingConfirmations.FindStanding(s_baseKey, events);
+        events.Add(second);
+        var standing = AccountingConfirmations.FindStanding(s_baseKey, events);
+        var atFirstHeight = AccountingConfirmations.FindAt(s_baseKey, 101, events);
+        var atOtherHeight = AccountingConfirmations.FindAt(s_baseKey, 107, events);
+
+        // Assert
+        Assert.Null(none);
+        Assert.Same(second, standing);
+        Assert.Same(first, atFirstHeight);
+        Assert.Same(second, atOtherHeight);
+    }
+
+    [Fact]
+    public void Given_AFormerReemissionThatStands_When_AskingForTheKey_Then_ThereIsNoneAndItIsTheStandingOne()
+    {
+        // Arrange (NL-613): a resolution writer's re-emission from before the generation scheme (`{key}:re:{height}`)
+        var first = Event(s_baseKey, 101);
+        var reemitted = Event(s_baseKey + ":re:103", 103);
+        var events = new List<AccountingEventModel>
+        {
+            first, AccountingConfirmations.CreateReversal(first, s_at, 100), reemitted
+        };
+
+        // Act
+        var key = AccountingConfirmations.NextConfirmationKey(s_baseKey, events);
+        var standing = AccountingConfirmations.FindStanding(s_baseKey, events);
+        events.Add(AccountingConfirmations.CreateReversal(reemitted, s_at, 102));
+        var afterReversal = AccountingConfirmations.NextConfirmationKey(s_baseKey, events);
+
+        // Assert
+        Assert.Null(key);
+        Assert.Same(reemitted, standing);
+        Assert.Equal(AccountingEventKeys.Reconfirmed(s_baseKey, 2), afterReversal);
+        Assert.False(AccountingConfirmations.IsConfirmationKey(s_baseKey, s_baseKey + ":rev:101"));
+        Assert.False(AccountingConfirmations.IsConfirmationKey(s_baseKey, s_baseKey + ":c"));
+        Assert.True(AccountingConfirmations.IsConfirmationKey(s_baseKey, s_baseKey + ":c12"));
+    }
+
     private static AccountingEventModel Event(string key, uint height) => new()
     {
         EventKey = key,
