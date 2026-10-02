@@ -6,6 +6,8 @@ namespace NLightning.Integration.Tests.Docker.Interop.Ldk;
 using Abcd;
 using Cln;
 using Domain.Bitcoin.Enums;
+using Domain.Channels.Commitments;
+using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
@@ -15,6 +17,7 @@ using Domain.Node.Options;
 using Domain.Node.ValueObjects;
 using Domain.Payments.Enums;
 using Fixtures;
+using Onchain.Anchors;
 using Utils;
 
 /// <summary>
@@ -147,12 +150,15 @@ public sealed class LdkChannelSession : IAsyncDisposable
     /// A node <paramref name="nodeName"/> that opens a private v1 channel of <paramref name="capacity"/> to LDK
     /// (<paramref name="push"/> pushed), followed until both ends are usable. LDK's wallet is funded first: it refuses
     /// an inbound anchors channel it cannot back with its on-chain reserve. <paramref name="configureNode"/> runs before
-    /// the node starts (e.g. to set <see cref="NLightningTestNode.ConfigureServices"/>).
+    /// the node starts (e.g. to set <see cref="NLightningTestNode.ConfigureServices"/>). <paramref name="isPublic"/>
+    /// opens a public channel (<c>openchannel --public</c>; LDK accepts it since the fixture gives LDK an alias,
+    /// NL-556).
     /// </summary>
     public static async Task<LdkChannelSession> BuildOurFundedAsync(LdkFixture fixture, string nodeName,
                                                                     LightningMoney capacity, LightningMoney? push,
                                                                     CancellationToken cancellationToken,
-                                                                    Action<NLightningTestNode>? configureNode = null)
+                                                                    Action<NLightningTestNode>? configureNode = null,
+                                                                    bool isPublic = false)
     {
         var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName);
         configureNode?.Invoke(node);
@@ -168,7 +174,11 @@ public sealed class LdkChannelSession : IAsyncDisposable
             await session.ConnectAsync(cancellationToken);
 
             var channel = await node.OpenChannelAsync(
-                              new OpenChannelClientRequest(fixture.LdkAddress, capacity) { PushAmount = push },
+                              new OpenChannelClientRequest(fixture.LdkAddress, capacity)
+                              {
+                                  PushAmount = push,
+                                  IsPublic = isPublic
+                              },
                               cancellationToken);
             session.ChannelId = channel.ChannelId;
             Console.WriteLine($"[ldk] {nodeName} opened {channel.ChannelId} ({channel.ChannelPoint()}), "
@@ -192,13 +202,15 @@ public sealed class LdkChannelSession : IAsyncDisposable
     /// <summary>
     /// A node <paramref name="nodeName"/> (listening on every interface) to which LDK opens a private channel of
     /// <paramref name="capacity"/> from its own wallet (v1: LDK has no dual funding), followed until both ends are
-    /// usable. <paramref name="configureNode"/> runs before the node starts.
+    /// usable. <paramref name="configureNode"/> runs before the node starts. <paramref name="announce"/> makes it a public
+    /// channel (<c>open-channel --announce-channel</c>, NL-556).
     /// </summary>
     public static async Task<LdkChannelSession> BuildLdkFundedAsync(LdkFixture fixture, string nodeName,
                                                                     LightningMoney capacity,
                                                                     CancellationToken cancellationToken,
                                                                     Action<NodeOptions>? configureNodeOptions = null,
-                                                                    Action<NLightningTestNode>? configureNode = null)
+                                                                    Action<NLightningTestNode>? configureNode = null,
+                                                                    bool announce = false)
     {
         var node = await NLightningTestNode.CreateAsync(
                        fixture.Bitcoin, nodeName, configureNodeOptions: o =>
@@ -217,9 +229,13 @@ public sealed class LdkChannelSession : IAsyncDisposable
             await fixture.FundLdkWalletAsync(LightningMoney.Satoshis(capacity.Satoshi * 2), [node],
                                              cancellationToken);
 
-            session.UserChannelId = await fixture.Ldk.OpenChannelAsync(
-                                        node.NodeIdHex, $"{ClnFixture.HostAddressFromContainers}:{node.Port}",
-                                        (long)capacity.Satoshi, null, cancellationToken);
+            var ourAddress = $"{ClnFixture.HostAddressFromContainers}:{node.Port}";
+            session.UserChannelId = announce
+                                        ? await fixture.Ldk.OpenAnnouncedChannelAsync(
+                                              node.NodeIdHex, ourAddress, (long)capacity.Satoshi, cancellationToken)
+                                        : await fixture.Ldk.OpenChannelAsync(node.NodeIdHex, ourAddress,
+                                                                             (long)capacity.Satoshi, null,
+                                                                             cancellationToken);
             Console.WriteLine($"[ldk] LDK opened to {nodeName}: user_channel_id {session.UserChannelId}");
             // LDK lists the final channel id once the funding is created (before, the temporary one)
             var ldkChannel = await Poll.ForAsync(async () =>
@@ -314,6 +330,41 @@ public sealed class LdkChannelSession : IAsyncDisposable
         await WaitUsableAsync(ct, requireNoHtlcs: true);
         var after = await GetOurChannelAsync(ct);
         Assert.Equal(before.LocalBalance.MilliSatoshi - amount.MilliSatoshi, after.LocalBalance.MilliSatoshi);
+    }
+
+    /// <summary>
+    /// We pay a hold invoice of LDK's (<c>bolt11-receive-for-hash</c>, <paramref name="amountSat"/>) and return once LDK
+    /// holds the HTLC (its inbound payment listed <c>PENDING</c>) and it is in both our commitments. LDK settles it on
+    /// <see cref="LdkClient.Bolt11ClaimForIdAsync"/> with <see cref="HeldHtlc.LdkPaymentId"/> (NL-556).
+    /// </summary>
+    public async Task<HeldHtlc> SendHeldHtlcAsync(string description, CancellationToken ct, long amountSat = 30_000)
+    {
+        var preimage = RandomNumberGenerator.GetBytes(32);
+        var hashHex = Convert.ToHexString(SHA256.HashData(preimage)).ToLowerInvariant();
+        var invoice = await Ldk.Bolt11ReceiveForHashAsync(hashHex, amountSat, description, ct);
+
+        var inFlight = await Node.PayInvoiceAsync(invoice, ct, timeoutSeconds: 2);
+        Assert.Equal(PaymentStatus.InFlight, inFlight.Status);
+        var htlc = await AnchorsHarness.WaitForHtlcInBothCommitmentsAsync(Node, ChannelId, HtlcDirection.Outgoing, ct);
+        var held = await Poll.ForAsync(async () =>
+        {
+            var payment = await Ldk.FindPaymentByHashAsync(hashHex, ct);
+            return string.Equals(payment?["direction"]?.ToString(), "INBOUND", StringComparison.OrdinalIgnoreCase)
+                       ? payment
+                       : null;
+        }, SettleTimeout, "LDK holds our HTLC", ct);
+        Console.WriteLine($"[ldk] LDK holds our HTLC {htlc.Id} (cltv_expiry {htlc.CltvExpiry}): "
+                        + held.ToJsonString());
+        return new HeldHtlc(preimage, hashHex, held["payment_id"]!.GetValue<string>(), htlc);
+    }
+
+    /// <summary>
+    /// An HTLC of ours that LDK holds: the preimage, the payment hash (hex), LDK Node's <c>payment_id</c> of the held
+    /// payment (not the hash for a hold invoice) and our HTLC record.
+    /// </summary>
+    public sealed record HeldHtlc(byte[] Preimage, string HashHex, string LdkPaymentId, HtlcRecord Htlc)
+    {
+        public Hash PaymentHash => new(SHA256.HashData(Preimage));
     }
 
     /// <summary>The first string property named <paramref name="name"/> anywhere in <paramref name="node"/>.</summary>

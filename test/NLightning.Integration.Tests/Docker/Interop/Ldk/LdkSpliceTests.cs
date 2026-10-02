@@ -782,13 +782,35 @@ public sealed class LdkSpliceTests : IAsyncLifetime
                                    (long)ours.LocalBalance.MilliSatoshi, ReadUInt64(ldk["short_channel_id"]));
     }
 
+    /// <summary>
+    /// No warning or error either way, except LDK's connection-level peer-storage size warning: since NL-433 our
+    /// backup goes to every peer that offers <c>option_provide_storage</c>, and LDK answers the first full-size blob
+    /// of each connection with it (NL-559: we then send one that fits), so a long test sees it.
+    /// </summary>
     private static void AssertNoWarningOrError(SpliceWireRecorder wire)
     {
         var sent = wire.Snapshot().Where(m => m.Type is SpliceWireRecorder.WarningType
-                                                     or SpliceWireRecorder.ErrorType).ToList();
+                                                     or SpliceWireRecorder.ErrorType
+                                           && !IsPeerStorageSizeWarning(m.Type, m.Hex)).ToList();
         Assert.True(sent.Count == 0,
                     "warnings/errors on the wire: "
                   + string.Join("; ", sent.Select(m => $"{(m.Inbound ? "received" : "sent")} {m.Type} {m.Hex}")));
+    }
+
+    /// <summary>
+    /// LDK's <c>warning</c> with an all-zero channel id and "Supports only data up to 1024 bytes in peer storage."
+    /// </summary>
+    private static bool IsPeerStorageSizeWarning(int type, string hex)
+    {
+        if (type != SpliceWireRecorder.WarningType || hex.Length < 2 * (2 + 32 + 2))
+            return false;
+
+        var bytes = Convert.FromHexString(hex);
+        if (bytes.AsSpan(2, 32).ContainsAnyExcept((byte)0))
+            return false;
+
+        var text = System.Text.Encoding.ASCII.GetString(bytes, 2 + 32 + 2, bytes.Length - (2 + 32 + 2));
+        return text.Contains("peer storage", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>The channel before the splice.</summary>

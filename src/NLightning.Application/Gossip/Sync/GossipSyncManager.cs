@@ -68,7 +68,9 @@ using Relay.Interfaces;
 /// <c>reply_channel_range</c> stream, recognized by the query's kept collector) and consumes it, so BOLT 7's
 /// one-outstanding-query rule holds and a late reply is never taken for the next query's (NL-365). A reply that breaks
 /// the rules ends the querying of that connection for good (the stream's position is then unknown); a sync peer whose
-/// range sync failed gets <c>gossip_timestamp_filter(now, 0xFFFFFFFF)</c>. With the ingress's queue known, each
+/// range sync failed gets <c>gossip_timestamp_filter(now, 0xFFFFFFFF)</c>, except one that answered the range query
+/// but left a <c>query_short_channel_ids</c> unanswered (LDK: rust-lightning does not implement it), which gets the
+/// backlog filter of a sync without timestamps instead, so its existing gossip still reaches us (NL-722). With the ingress's queue known, each
 /// <c>query_short_channel_ids</c> asks for at most a tenth of its per-peer capacity in channels and waits until the
 /// queue is at most half full (NL-353), so the answers of a large sync are not dropped. After a sync with timestamps
 /// the filter starts where the sync started (less <see cref="TimestampSyncFilterMarginSeconds"/>), since the sync
@@ -873,7 +875,15 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                 }
 
                 if (outcome == ScidQueryOutcome.Failed)
+                {
+                    // NL-722: a peer that answers the range query but not query_short_channel_ids (rust-lightning
+                    // 0.3 leaves it unimplemented and ignores it) is asked for its gossip by timestamp instead, as
+                    // after a sync without timestamps: LDK streams its whole graph to a filter that starts more than
+                    // 6 h ago, and nothing that started now would ever bring us its existing channels
+                    if (session.ScidQueryUnanswered)
+                        session.FallbackFilterStart = GetSyncFilterStart(false, startedAt);
                     return;
+                }
             }
 
             if (asked < wanted.Count)
@@ -922,7 +932,12 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         session.LiveFilterSent = true;
         try
         {
-            await SendFilterAsync(session, new GossipTimestampFilter(NowSeconds(), uint.MaxValue), cancellationToken);
+            var start = session.FallbackFilterStart ?? NowSeconds();
+            if (session.FallbackFilterStart is not null)
+                _logger.LogInformation("Peer {Peer} left our query_short_channel_ids unanswered; asking for its gossip "
+                                     + "since {Start} by gossip_timestamp_filter instead (NL-722)",
+                                       session.Peer.PeerPubKey, start);
+            await SendFilterAsync(session, new GossipTimestampFilter(start, uint.MaxValue), cancellationToken);
         }
         catch (Exception e)
         {
@@ -1091,6 +1106,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                 // so a late end never completes the wrong query
                 session.AbandonReplyWait(null);
                 abandoned = true;
+                session.ScidQueryUnanswered = true;
                 _logger.LogInformation("Peer {Peer} did not answer our query_short_channel_ids in {Timeout}; its "
                                      + "next query waits for the late end", session.Peer.PeerPubKey,
                                        _options.SyncReplyTimeout);
@@ -1370,6 +1386,15 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         public bool SyncFilterSent { get; set; }
         public bool LiveFilterSent { get; set; }
         public bool NeedsLiveFilter { get; set; }
+
+        /// <summary>
+        /// Where the filter after a failed range sync starts instead of now (NL-722): set when the peer answered our
+        /// range query but not our <c>query_short_channel_ids</c>.
+        /// </summary>
+        public uint? FallbackFilterStart { get; set; }
+
+        /// <summary>Our last <c>query_short_channel_ids</c> on this connection went unanswered (NL-722).</summary>
+        public bool ScidQueryUnanswered { get; set; }
 
         private int _failedQueries;
 

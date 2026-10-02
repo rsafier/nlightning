@@ -38,13 +38,15 @@ public sealed class OfferOptions
     /// <summary>
     /// Blocks added to the invoice's lifetime (its relative expiry at 10 minutes a block) for the paths'
     /// <c>max_cltv_expiry</c>, so a payment made just before the invoice expires still fits, and so does the random
-    /// delta a payer adds to the final expiry to hide the recipient's position (NL-719: Eclair adds 150 to 350 blocks,
-    /// <c>eclair.send.recipient-final-expiry</c>; with the former 144 every Eclair payment over our paths was refused as
-    /// above <c>max_cltv_expiry</c>). Default 1,008 (a week); BOLT 4 lets the recipient choose it.
+    /// delta a payer adds to the final expiry to hide the recipient's position: Eclair adds 150 to 350 blocks
+    /// (<c>eclair.send.recipient-final-expiry</c>, NL-719) and LDK a "shadow" CLTV offset of up to 432 blocks
+    /// (<c>MAX_SHADOW_CLTV_EXPIRY_DELTA_OFFSET</c>, NL-723); with the former 144 those payments over our paths were
+    /// refused as above <c>max_cltv_expiry</c> (<c>invalid_onion_blinding</c>). Default 1,008 (a week; LDK's own paths
+    /// allow 2016); BOLT 4 lets the recipient choose it.
     /// </summary>
     public uint PathLifetimeMarginBlocks { get; set; } = DefaultPathLifetimeMarginBlocks;
 
-    /// <summary>The default of <see cref="PathLifetimeMarginBlocks"/>.</summary>
+    /// <summary>The default of <see cref="PathLifetimeMarginBlocks"/> (NL-719, NL-723).</summary>
     public const uint DefaultPathLifetimeMarginBlocks = 1_008;
 
     /// <summary>
