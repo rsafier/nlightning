@@ -6,6 +6,7 @@ using NBitcoin;
 
 namespace NLightning.Application.Tests.Onchain.Resolvers.Remote;
 
+using Application.Onchain.Anchors;
 using Application.Onchain.Resolvers;
 using Application.Onchain.Resolvers.Remote;
 using Channels.Services;
@@ -63,6 +64,9 @@ internal sealed class RemoteResolutionTestContext : IDisposable
 
     /// <summary>The fee policy the resolver uses (a high floor makes every output uneconomic).</summary>
     public SweepFeePolicy? FeePolicy { get; set; }
+
+    /// <summary>The anchor sweep options for the resolver (null: the defaults, the sweep on).</summary>
+    public AnchorCpfpOptions? AnchorCpfpOptions { get; set; }
 
     /// <summary>How many scripts the sweep destination handed out.</summary>
     public int DestinationCalls { get; private set; }
@@ -129,7 +133,37 @@ internal sealed class RemoteResolutionTestContext : IDisposable
 
         return new RemoteCommitResolver(Mapper, _provider.GetRequiredService<ISweepTransactionBuilder>(),
                                         Pair.Alice.Signer, feeService.Object, destination.Object, source.Object,
-                                        _provider.GetRequiredService<IServiceScopeFactory>(), feePolicy: FeePolicy);
+                                        _provider.GetRequiredService<IServiceScopeFactory>(), feePolicy: FeePolicy,
+                                        anchorCpfpOptions: AnchorCpfpOptions is null
+                                                            ? null
+                                                            : Options.Create(AnchorCpfpOptions));
+    }
+
+    /// <summary>
+    /// The watcher's record of our anchor on the peer's commitment (<c>OnchainChannelWatcher.PersistAsync</c>): a
+    /// <see cref="OutputResolutionState.Pending"/> row and a watch, saved before the resolver's first round.
+    /// </summary>
+    public async Task<OutputResolutionModel> SeedAnchorRowAsync()
+    {
+        var commit = Pair.Alice.State.RemoteCommit;
+        var map = Mapper.Map(Channel, CommitmentTxSpec.FromCommitmentSpec(commit.Spec), CommitmentCase.Remote,
+                             commit.Number, commit.PerCommitmentPoint);
+        var anchor = Assert.Single(map.Outputs, o => o.Kind == OutputDescriptorKind.OurAnchor);
+        var row = new OutputResolutionModel
+        {
+            TransactionId = Close.CommitmentTransactionId,
+            OutputIndex = anchor.Vout,
+            ChannelId = Channel.ChannelId,
+            Descriptor = anchor.Kind,
+            DescriptorData = OutputDescriptorData.FromDescriptor(anchor, map.PerCommitmentPoint).Encode()
+        };
+        var (unitOfWork, save) = Store.CreateUnitOfWork();
+        await unitOfWork.OnchainResolutionDbRepository.UpsertOutputAsync(row);
+        unitOfWork.WatchedOutpointDbRepository.Add(new WatchedOutpointModel(row.TransactionId, row.OutputIndex,
+                                                                            row.ChannelId,
+                                                                            WatchedOutpointPurpose.ResolutionOutput));
+        await save();
+        return row;
     }
 
     /// <summary>The first round, right after the funding spend is classified at <paramref name="tip"/>.</summary>
