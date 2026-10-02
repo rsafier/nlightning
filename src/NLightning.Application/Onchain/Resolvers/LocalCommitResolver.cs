@@ -20,6 +20,7 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Factories;
 using Domain.Onchain.Fees;
@@ -686,6 +687,7 @@ public sealed class LocalCommitResolver : IOutputResolver
         var preimage = model.Type == HtlcTransactionType.Success ? action.Preimage : null;
         SignedTransaction signed;
         uint feeratePerKw;
+        LightningMoney fee;
         if (model.HasAnchors)
         {
             var anchored = await BuildAnchorHtlcTransactionAsync(context, descriptor, model, built, action, row,
@@ -694,7 +696,8 @@ public sealed class LocalCommitResolver : IOutputResolver
             if (anchored is null)
                 return row;
 
-            (signed, feeratePerKw) = anchored.Value;
+            (signed, feeratePerKw, var feeSat) = anchored.Value;
+            fee = LightningMoney.Satoshis(feeSat);
         }
         else
         {
@@ -704,6 +707,9 @@ public sealed class LocalCommitResolver : IOutputResolver
                                                         preimage);
             feeratePerKw = (uint)(context.OtherFundingLocalCommit?.Spec ?? context.Commitments!.LocalCommit.Spec)
                                     .FeeratePerKw;
+
+            // NL-604: the pre-signed transaction pays its fee from the HTLC (its value minus the output)
+            fee = model.Fee;
         }
 
         if (replacing is { } old)
@@ -714,7 +720,7 @@ public sealed class LocalCommitResolver : IOutputResolver
                                    Display(signed.TxId), feeratePerKw, descriptor.Htlc?.Id, context.Channel.ChannelId);
             actions.Add(new BroadcastAction(new BroadcastTransactionModel(signed, BroadcastPurpose.HtlcTransaction,
                                                                           context.Channel.ChannelId, context.Height,
-                                                                          feeratePerKw, oldTxId)));
+                                                                          feeratePerKw, oldTxId, fee: fee)));
             actions.Add(new StageWriteAction($"replaced {Display(oldTxId)}",
                                              (uow, _) => uow.BroadcastTransactionDbRepository
                                                             .MarkReplacedAsync(oldTxId)));
@@ -725,7 +731,7 @@ public sealed class LocalCommitResolver : IOutputResolver
                                    model.Type, Display(signed.TxId), descriptor.Htlc?.Id, context.Channel.ChannelId);
             actions.Add(new BroadcastAction(new BroadcastTransactionModel(signed, BroadcastPurpose.HtlcTransaction,
                                                                           context.Channel.ChannelId, context.Height,
-                                                                          feeratePerKw)));
+                                                                          feeratePerKw, fee: fee)));
         }
 
         return row with
@@ -831,7 +837,7 @@ public sealed class LocalCommitResolver : IOutputResolver
     /// old one's and the BIP 125 minimum at most the HTLC's value. Null (logged, the reservation released) when the
     /// wallet cannot pay or any step fails; the next block tries again.
     /// </summary>
-    private async Task<(SignedTransaction Signed, uint FeeratePerKw)?> BuildAnchorHtlcTransactionAsync(
+    private async Task<(SignedTransaction Signed, uint FeeratePerKw, ulong FeeSat)?> BuildAnchorHtlcTransactionAsync(
         LocalCommitContext context, CommitmentOutputDescriptor descriptor, HtlcTransactionModel model,
         HtlcTransactionBuildResult built, ResolutionAction action, OutputResolutionModel row,
         CompactSignature remoteSignature, byte[]? preimage, PendingAnchorHtlcTransaction? replacing,
@@ -927,7 +933,8 @@ public sealed class LocalCommitResolver : IOutputResolver
                 _logger.LogInformation("HTLC-{Type} of anchor channel {ChannelId} pays {FeeSat} sat from {Count} wallet "
                                      + "input(s), change {ChangeSat} sat", model.Type, channelId, combined.FeeSat,
                                        combined.FeeInputs.Count, combined.ChangeSat ?? 0);
-                return (signed, SweepFeePolicy.FeeratePerKw(combined.FeeSat, combined.EstimatedWeight));
+                return (signed, SweepFeePolicy.FeeratePerKw(combined.FeeSat, combined.EstimatedWeight),
+                        combined.FeeSat);
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -1055,7 +1062,8 @@ public sealed class LocalCommitResolver : IOutputResolver
                                context.Channel.ChannelId, Display(signed.TxId));
         actions.Add(new BroadcastAction(new BroadcastTransactionModel(signed, BroadcastPurpose.Sweep,
                                                                       context.Channel.ChannelId, context.Height,
-                                                                      feeratePerKw)));
+                                                                      feeratePerKw,
+                                                                      fee: LightningMoney.Satoshis(feeSat))));
         var swept = row with
         {
             ResolvingTransactionId = signed.TxId,

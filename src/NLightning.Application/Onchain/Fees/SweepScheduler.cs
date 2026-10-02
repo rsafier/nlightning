@@ -8,6 +8,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Closing;
 using Domain.Crypto.ValueObjects;
+using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Fees;
 using Domain.Onchain.Models;
@@ -264,7 +265,8 @@ public sealed class SweepScheduler : ISweepScheduler
                            broadcast.FirstBroadcastHeight, deadline, Display(newTxId), oldFee, decision.FeeSat,
                            decision.FeeratePerKw, target);
         return new BroadcastTransactionModel(new SignedTransaction(newTxId, replacement.ToBytes()), broadcast.Purpose,
-                                             close.ChannelId, height, decision.FeeratePerKw, txId);
+                                             close.ChannelId, height, decision.FeeratePerKw, txId,
+                                             fee: LightningMoney.Satoshis(decision.FeeSat));
     }
 
     private async Task<Secret?> LoadRevocationSecretAsync(ChannelCloseModel close, IUnitOfWork unitOfWork)

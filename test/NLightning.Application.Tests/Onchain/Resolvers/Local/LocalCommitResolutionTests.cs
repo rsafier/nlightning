@@ -63,6 +63,10 @@ public sealed class LocalCommitResolutionTests
         Assert.Equal(OutputResolutionState.Broadcast, row.State);
         Assert.Equal(new TxId(sweep.GetHash().ToBytes()), row.ResolvingTransactionId);
 
+        // NL-604: the stored sweep carries its fee (the output's value minus the sweep's output)
+        Assert.Equal((long)OutputDescriptorData.Decode(row.DescriptorData).AmountSat - sweep.Outputs[0].Value.Satoshi,
+                     Assert.Single(harness.Broadcasts.Values).Fee?.Satoshi);
+
         // Act: the next rounds, before and after the sweep confirms
         var again = await harness.ResolveAsync();
         await harness.MineAsync();
@@ -121,6 +125,10 @@ public sealed class LocalCommitResolutionTests
         await harness.MineToAsync(OfferedCltv);
         var timeout = Assert.Single(harness.Broadcast(BroadcastPurpose.HtlcTransaction));
         var timeoutTxId = new TxId(timeout.GetHash().ToBytes());
+
+        // NL-604: the pre-signed HTLC-timeout pays its fee from the HTLC (its value minus the output)
+        Assert.Equal((long)OfferedMsat / 1_000 - timeout.Outputs[0].Value.Satoshi,
+                     harness.Broadcasts[timeoutTxId].Fee?.Satoshi);
         await harness.MineAsync();
         var confirmedAt = harness.Height;
 

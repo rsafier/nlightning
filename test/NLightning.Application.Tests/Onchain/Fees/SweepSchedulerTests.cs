@@ -71,6 +71,7 @@ public sealed class SweepSchedulerTests
         var newFee = amount - (ulong)replacement.Outputs[0].Value.Satoshi;
         Assert.True(newFee >= new SweepFeePolicy().GetReplacementFee(oldFee, replacement.GetVirtualSize()),
                     $"replacement fee {newFee} sat must outbid {oldFee} sat by the BIP 125 rules");
+        Assert.Equal((long)newFee, replacementRow.Fee?.Satoshi); // NL-604
         harness.AssertAllInputsVerify(replacement);
 
         // Assert: old row replaced, the output row names the replacement, the mempool holds only the replacement

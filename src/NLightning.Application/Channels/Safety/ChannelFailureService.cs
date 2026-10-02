@@ -29,6 +29,7 @@ using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 using Onchain;
+using Onchain.Accounting;
 using Onchain.Anchors;
 using Onchain.Interfaces;
 using Services;
@@ -400,11 +401,14 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
                 await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(commitment.Transaction.TxId);
             if (prepared.Broadcast is null)
             {
+                // NL-604: the commitment's fee is the funding capacity minus its outputs (paid by the funder)
                 prepared.Broadcast = new BroadcastTransactionModel(commitment.Transaction,
                                                                    BroadcastPurpose.LocalCommitment,
                                                                    channel.ChannelId,
                                                                    _blockchainMonitor.LastProcessedBlockHeight,
-                                                                   commitmentNumber: commitment.CommitmentNumber);
+                                                                   commitmentNumber: commitment.CommitmentNumber,
+                                                                   fee: OnchainTransactionFees.ForCommitment(
+                                                                       commitment.Transaction, channel));
                 unitOfWork.BroadcastTransactionDbRepository.Add(prepared.Broadcast);
                 prepared.BroadcastStaged = true;
             }
@@ -666,7 +670,9 @@ public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommi
             staged = existing is null;
             row = existing ?? new BroadcastTransactionModel(commitment.Transaction, BroadcastPurpose.LocalCommitment,
                                                             channelId, _blockchainMonitor.LastProcessedBlockHeight,
-                                                            commitmentNumber: commitment.CommitmentNumber);
+                                                            commitmentNumber: commitment.CommitmentNumber,
+                                                            fee: OnchainTransactionFees.FromInputs(
+                                                                commitment.Transaction, funding.CapacitySatoshis));
             if (staged)
                 unitOfWork.BroadcastTransactionDbRepository.Add(row);
 
