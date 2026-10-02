@@ -17,7 +17,9 @@ using NLightning.Tests.Utils;
 /// NL-178: <c>TcpService</c> over real loopback sockets: the listener accepts a connection and raises its event, a
 /// connect to a listener works end to end (bytes both ways), a refused connect becomes a <c>ConnectionException</c>,
 /// a bad listen address is skipped, and stop closes the listeners. NL-107: IPv6 listen addresses
-/// (<c>[ipv6]:port</c>, a bare address on the default port) parse and bind, the wildcard <c>[::]</c> dual-stack.
+/// (<c>[ipv6]:port</c>, a bare address on the default port) parse and bind, the wildcard <c>[::]</c> dual-stack. Both
+/// directions have Nagle off (found by the cluster harness: our <c>stfu</c> reached CLN 40 ms after the
+/// <c>revoke_and_ack</c> before it, behind the peer's delayed ACK, and crossed CLN's fulfill, NL-477).
 /// </summary>
 public class TcpServiceTests
 {
@@ -45,6 +47,7 @@ public class TcpServiceTests
             Assert.Equal("127.0.0.1", eventArgs.Host);
             Assert.NotEqual((uint)port, eventArgs.Port);
             Assert.True(eventArgs.TcpClient.Connected);
+            Assert.True(eventArgs.TcpClient.NoDelay); // Nagle off: no delayed-ACK stall between two peer messages
             Assert.Single(service.ListeningTo);
         }
         finally
@@ -82,6 +85,7 @@ public class TcpServiceTests
             Assert.Equal((uint)port, connectedPeer.Port);
             Assert.Equal(peerAddress.PubKey, connectedPeer.CompactPubKey);
             Assert.True(connectedPeer.TcpClient.Connected);
+            Assert.True(connectedPeer.TcpClient.NoDelay);
             await connectedPeer.TcpClient.Client.SendAsync(new byte[] { 0x01, 0x02, 0x03, 0x04, 0x05 },
                                                            TestContext.Current.CancellationToken);
             var peer = await peerAccepted.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);

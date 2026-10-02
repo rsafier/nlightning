@@ -127,7 +127,9 @@ public class TcpService : ITcpService
         if (tor.UsesProxy(peerAddress.Type, peerAddress.IpAddress))
             return await ConnectThroughTorAsync(peerAddress, tor.ConnectTimeout);
 
-        var tcpClient = new TcpClient();
+        // Nagle off: a peer message is often followed at once by another (revoke_and_ack then commitment_signed or
+        // stfu), and Nagle would hold the second until the peer's delayed ACK of the first (about 40 ms)
+        var tcpClient = new TcpClient { NoDelay = true };
         try
         {
             using var timeout = new CancellationTokenSource(_nodeOptions.NetworkTimeout);
@@ -228,6 +230,7 @@ public class TcpService : ITcpService
                         continue;
 
                     var tcpClient = await listener.AcceptTcpClientAsync(cancellationToken);
+                    tcpClient.NoDelay = true; // as on our outbound connections
                     _ = Task.Run(() =>
                     {
                         try
