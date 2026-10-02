@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
 
@@ -16,6 +17,7 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Signers;
+using Infrastructure.Bitcoin.Wallet;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Repositories;
 using Infrastructure.Repositories.Memory;
@@ -36,7 +38,8 @@ public class ChainMonitorWalletLoadTests
     public async Task Given_AReservedWalletOutputAfterARestart_When_TheWalletIsLoadedBeforeTheStart_Then_TheSignerSignsIt()
     {
         // Arrange: a reserved wallet output and the last processed height stored by the previous process
-        await using var harness = new ChainMonitorHarness(tipHeight: 100);
+        var log = new LoadCountingLogger();
+        await using var harness = new ChainMonitorHarness(tipHeight: 100, log);
         var (utxo, txOut) = await SeedWalletOutputAsync(harness, 0, 500_000);
         var reservationId = await SeedReservationAsync(harness, utxo);
         await SeedStateAsync(harness, 95);
@@ -65,7 +68,10 @@ public class ChainMonitorWalletLoadTests
         // Act: the chain monitor starts after the peers
         await harness.StartAsync(0);
 
-        // Assert: nothing was loaded twice, and the start caught up to the tip
+        // Assert: nothing was loaded twice (the loads are idempotent, so they are counted: one UTXO set and one
+        // watched-transaction read across the load and the start), and the start caught up to the tip
+        Assert.Equal(1, log.Count("Loading Utxo set"));
+        Assert.Equal(1, log.Count("Loading watched transactions from database"));
         Assert.Equal(LightningMoney.Satoshis(500_000), memory.GetLockedBalance());
         Assert.Equal(LightningMoney.Satoshis(500_000), memory.GetConfirmedBalance(100));
         Assert.True(memory.TryGetFeeReservation(utxo.TxId, utxo.Index, out _));
@@ -188,4 +194,27 @@ public class ChainMonitorWalletLoadTests
     private static SignedTransaction ToSigned(Transaction tx) => new(tx.GetHash().ToBytes(), tx.ToBytes());
 
     private static ExtKey GetP2WpkhExtKey(uint index) => s_masterKey.Derive(0u).Derive(index);
+
+    /// <summary>Counts the monitor's log messages (the wallet load's steps each log one line).</summary>
+    private sealed class LoadCountingLogger : ILogger<BlockchainMonitorService>
+    {
+        private readonly List<string> _messages = [];
+
+        public int Count(string message)
+        {
+            lock (_messages)
+                return _messages.Count(m => m == message);
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                                Func<TState, Exception?, string> formatter)
+        {
+            lock (_messages)
+                _messages.Add(formatter(state, exception));
+        }
+    }
 }
