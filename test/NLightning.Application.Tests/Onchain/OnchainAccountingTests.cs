@@ -490,6 +490,95 @@ public sealed class OnchainAccountingTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ASettledForwardsIncomingHtlc_When_ThePeerTimesItOutOnChain_Then_ForwardLostOnchainAndReorgReversal()
+    {
+        // Arrange (NL-608): the peer's commitment confirmed with its HTLC to us still on it; that HTLC was forwarded and
+        // the forward booked as settled (the circuit is Fulfilled: our upstream fulfill never got through)
+        var remote = _pair.Alice.State.RemoteCommit;
+        var commitment = BuildCommitment(CommitmentSide.Remote, remote.Spec, remote.Number,
+                                         remote.PerCommitmentPoint);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        var theirHtlc = Row(OutputDescriptorKind.RemoteOfferedHtlc);
+        var circuit = new ForwardCircuitModel(_channel.ChannelId, theirHtlc.HtlcId!.Value,
+                                              LightningMoney.Satoshis(TheirHtlcSat), 700,
+                                              RealSigningCommitmentPair.Hash(RealSigningCommitmentPair.Preimage(2)),
+                                              new Secret(new byte[32]), new ShortChannelId(1, 2, 3),
+                                              LightningMoney.Satoshis(TheirHtlcSat - 1), 660, s_now);
+        circuit.AddOutgoingHtlc(new ChannelId(Enumerable.Repeat((byte)0x77, 32).ToArray()), 4);
+        circuit.MarkFulfilled(s_now);
+        _store.Circuits[(_channel.ChannelId, theirHtlc.HtlcId!.Value)] = circuit;
+        var executor = CreateExecutor();
+
+        // Act: the peer's HTLC-timeout transaction takes it
+        var timeout = Spend([(commitment.TxId, theirHtlc.OutputIndex)], TheirHtlcSat - 300);
+        await MineSpendAsync(executor, timeout, commitment.TxId, theirHtlc.OutputIndex, SpendHeight + 40);
+
+        // Assert: the resolution is informational (0) and the forward's incoming amount is lost, in the same save
+        var resolution = _store.Events.Single(e => e.Kind == AccountingEventKind.OutputResolved
+                                                && e.OutputIndex == theirHtlc.OutputIndex);
+        Assert.Equal(0, resolution.AmountMsat);
+        var lost = Assert.Single(_store.Events, e => e.Kind == AccountingEventKind.ForwardLostOnchain);
+        Assert.Equal(AccountingEventKeys.ForwardLostOnchain(_channel.ChannelId, theirHtlc.HtlcId!.Value), lost.EventKey);
+        Assert.Equal(-(long)TheirHtlcSat * 1_000, lost.AmountMsat);
+        Assert.Equal(_channel.ChannelId, lost.ChannelId);
+        Assert.Equal(SpendHeight + 40, lost.BlockHeight);
+        Assert.Equal(PaymentAccountingEvents.UpstreamOnchainCause, lost.Details["cause"]);
+        Assert.Equal(timeout.TxId.ToString(), lost.Details["spenderTxId"]);
+        var (_, lossSave) = _store.AccountingEvents.Single(a => a.Event.EventKey == lost.EventKey);
+        var (_, resolutionSave) = _store.AccountingEvents.Single(a => a.Event.EventKey == resolution.EventKey);
+        Assert.Equal(resolutionSave, lossSave);
+
+        // Assert (the books): the incoming amount the settled forward left in the channels is a loss
+        var books = BooksSimulator.Of([lost]);
+        Assert.Equal(-(long)TheirHtlcSat * 1_000, books[AccountRole.Channels]);
+        Assert.Equal((long)TheirHtlcSat * 1_000, books[AccountRole.LossOnchain]);
+
+        // Act: a reorg rolls the timeout back; then it confirms again
+        _store.Watches[(commitment.TxId, theirHtlc.OutputIndex)].ClearSpend();
+        await executor.RunRoundAsync(SpendHeight + 41, TestContext.Current.CancellationToken);
+        var reversals = _store.Events.Where(e => e.Kind == AccountingEventKind.Reversal).ToList();
+        await MineSpendAsync(executor, timeout, commitment.TxId, theirHtlc.OutputIndex, SpendHeight + 42);
+
+        // Assert: both reversed, then recorded again under their next confirmation keys
+        Assert.Contains(reversals, r => r.Details[OnchainAccounting.ReversesKey] == lost.EventKey);
+        Assert.Contains(reversals, r => r.Details[OnchainAccounting.ReversesKey] == resolution.EventKey);
+        var again = _store.Events.Where(e => e.Kind == AccountingEventKind.ForwardLostOnchain).ToList();
+        Assert.Equal([lost.EventKey, AccountingEventKeys.Reconfirmed(lost.EventKey, 2)], again.Select(e => e.EventKey));
+        Assert.Equal(-(long)TheirHtlcSat * 1_000,
+                     _store.Events.Where(e => e.Kind == AccountingEventKind.ForwardLostOnchain
+                                           || (e.Kind == AccountingEventKind.Reversal
+                                            && e.Details[OnchainAccounting.OriginalKindKey]
+                                            == nameof(AccountingEventKind.ForwardLostOnchain)))
+                                  .Sum(e => e.AmountMsat));
+    }
+
+    [Fact]
+    public async Task Given_AFailedForwardsIncomingHtlc_When_ThePeerTimesItOutOnChain_Then_NoLossIsRecorded()
+    {
+        // Arrange (NL-608): the forward failed downstream (the circuit is Failed): the timeout is the expected outcome
+        var remote = _pair.Alice.State.RemoteCommit;
+        var commitment = BuildCommitment(CommitmentSide.Remote, remote.Spec, remote.Number,
+                                         remote.PerCommitmentPoint);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        var theirHtlc = Row(OutputDescriptorKind.RemoteOfferedHtlc);
+        var circuit = new ForwardCircuitModel(_channel.ChannelId, theirHtlc.HtlcId!.Value,
+                                              LightningMoney.Satoshis(TheirHtlcSat), 700,
+                                              RealSigningCommitmentPair.Hash(RealSigningCommitmentPair.Preimage(2)),
+                                              new Secret(new byte[32]), new ShortChannelId(1, 2, 3),
+                                              LightningMoney.Satoshis(TheirHtlcSat - 1), 660, s_now);
+        circuit.MarkFailed(s_now);
+        _store.Circuits[(_channel.ChannelId, theirHtlc.HtlcId!.Value)] = circuit;
+        var executor = CreateExecutor();
+
+        // Act
+        var timeout = Spend([(commitment.TxId, theirHtlc.OutputIndex)], TheirHtlcSat - 300);
+        await MineSpendAsync(executor, timeout, commitment.TxId, theirHtlc.OutputIndex, SpendHeight + 40);
+
+        // Assert
+        Assert.DoesNotContain(_store.Events, e => e.Kind == AccountingEventKind.ForwardLostOnchain);
+    }
+
+    [Fact]
     public async Task Given_RevokedCommitment_When_PenalizedAndTheCheaterTakesOurHtlc_Then_PenaltyBreachAndZeroPending()
     {
         // Arrange: Bob's commitment with both HTLCs, revoked by the next rounds (in which we pay Bob 5,000 sat, so our

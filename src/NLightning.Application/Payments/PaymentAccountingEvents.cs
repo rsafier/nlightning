@@ -10,6 +10,7 @@ using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Labels;
 using Domain.Accounting.Models;
 using Domain.Accounting.Services;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Money;
@@ -240,6 +241,56 @@ internal static class PaymentAccountingEvents
             AmountMsat = -checked((long)circuit.OutgoingAmount.MilliSatoshi),
             FeeMsat = 0,
             Finality = AccountingFinality.Final,
+            Details = details
+        };
+    }
+
+    /// <summary>The detail <c>cause</c> of a <see cref="AccountingEventKind.ForwardLostOnchain"/> whose upstream HTLC we
+    /// lost on chain after the forward was settled (NL-608).</summary>
+    public const string UpstreamOnchainCause = "upstreamOnchain";
+
+    /// <summary>
+    /// A forward booked as settled (<see cref="ForwardSettled"/>) whose incoming HTLC we then lost on chain (NL-608): the
+    /// upstream fulfill was refused (link down, channel on chain) and the peer took the HTLC output by its timeout, or we
+    /// gave it up. We paid downstream and lost the incoming amount.
+    /// </summary>
+    /// <param name="key">The event key (the generation of <see cref="AccountingEventKeys.ForwardLostOnchain"/>).</param>
+    /// <param name="circuit">The forward's circuit, <c>Fulfilled</c>.</param>
+    /// <param name="incoming">The incoming channel.</param>
+    /// <param name="closeTxId">The commitment the HTLC output belongs to.</param>
+    /// <param name="spenderTxId">The peer's transaction that took it; null when we gave it up.</param>
+    /// <param name="occurredAt">When the resolution was recorded.</param>
+    /// <param name="blockHeight">The block of the spend (or of the round that gave it up).</param>
+    public static AccountingEventModel ForwardUpstreamLostOnchain(string key, ForwardCircuitModel circuit,
+                                                                  ChannelModel? incoming, TxId closeTxId,
+                                                                  TxId? spenderTxId, DateTimeOffset occurredAt,
+                                                                  uint blockHeight)
+    {
+        var details = AccountingDetailsCodec.Create(
+        [
+            .. ForwardDetails(circuit, incoming, null).Select(p => (p.Key, (string?)p.Value)),
+            ("cause", UpstreamOnchainCause),
+            (AccountingDetailKeys.CloseTxId, closeTxId.ToString()),
+            ("spenderTxId", spenderTxId?.ToString()),
+            (AccountingDetailKeys.Reason,
+             spenderTxId is null
+                 ? "The incoming HTLC of a settled forward was given up on chain"
+                 : "The incoming HTLC of a settled forward was taken by the peer on chain")
+        ]);
+
+        return new AccountingEventModel
+        {
+            EventKey = key,
+            Kind = AccountingEventKind.ForwardLostOnchain,
+            OccurredAt = occurredAt,
+            BlockHeight = blockHeight,
+            ChannelId = circuit.IncomingChannelId,
+            ShortChannelId = ScidOf(incoming),
+            PaymentHash = circuit.PaymentHash,
+            Counterparty = incoming?.RemoteNodeId,
+            AmountMsat = -checked((long)circuit.IncomingAmount.MilliSatoshi),
+            FeeMsat = 0,
+            Finality = AccountingFinality.Confirmed,
             Details = details
         };
     }
