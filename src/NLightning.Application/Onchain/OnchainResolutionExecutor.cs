@@ -1072,7 +1072,11 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                         || broadcast is { Purpose: not BroadcastPurpose.PeerCommitment };
                 var flows = ours
                                 ? OnchainAccounting.Ours(row, valueMsat, counted, spender, outputs,
-                                                         broadcast?.Purpose == BroadcastPurpose.HtlcTransaction)
+                                                         broadcast?.Purpose == BroadcastPurpose.HtlcTransaction,
+                                                         // NL-611: a stored sweep's other inputs (the peer's anchor)
+                                                         broadcast is { Purpose: BroadcastPurpose.Sweep, Fee: { } fee }
+                                                             ? checked((long)fee.MilliSatoshi)
+                                                             : null)
                                 : OnchainAccounting.Lost(valueMsat, counted, AccountingDetailKeys.ResolvedByPeer);
                 if (data is null)
                     flows = flows with { Note = "the output's value is unknown" };

@@ -592,6 +592,70 @@ public sealed class OnchainAccountingTests : IDisposable
     }
 
     [Fact]
+    public void Given_OurStoredAnchorSweepOfBothAnchors_When_Booked_Then_ThePeersAnchorIsAGainAndClearingNets()
+    {
+        // Arrange (NL-611): the anchor sweep of a commitment we fund spends our anchor (330 sat, a counted row) and the
+        // peer's (330 sat, no row) into one 500 sat wallet output; it is a stored Sweep row with its 160 sat fee
+        var commitmentTxId = new TxId(Enumerable.Repeat((byte)0xc1, 32).ToArray());
+        var data = new OutputDescriptorData(330, new byte[34], null, 16, true, null, null);
+        var ourAnchor = new OutputResolutionModel
+        {
+            TransactionId = commitmentTxId,
+            OutputIndex = 1,
+            ChannelId = _channel.ChannelId,
+            Descriptor = OutputDescriptorKind.OurAnchor,
+            DescriptorData = data.Encode()
+        };
+        var rows = new Dictionary<(TxId, uint), OutputResolutionModel> { [(commitmentTxId, 1)] = ourAnchor };
+        var sweep = new ChainTx(new TxId(Enumerable.Repeat((byte)0xc2, 32).ToArray()), 2, 0,
+                                [
+                                    new ChainTxInput(commitmentTxId, 0, 16, []),
+                                    new ChainTxInput(commitmentTxId, 1, 16, [])
+                                ],
+                                [new ChainTxOutput(500, new byte[22])]);
+        var close = new ChannelCloseModel(_channel.ChannelId, ChannelCloseKind.RemoteCommitment, commitmentTxId, 7,
+                                          SpendHeight, OnchainTestStore.BlockHash(1), s_now);
+
+        // Act
+        var flows = OnchainAccounting.Ours(ourAnchor, 330_000, true, sweep, rows, false, 160_000);
+        var unstored = OnchainAccounting.Ours(ourAnchor, 330_000, true, sweep, rows, false);
+        var resolved = OnchainAccounting.Resolution(_channel, close, ourAnchor, data, AccountingEventKind.OutputResolved,
+                                                    AccountingEventKeys.OutputResolved(commitmentTxId, 1), flows, true,
+                                                    sweep.TxId, SpendHeight + 16, s_now);
+        var received = new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.WalletReceived(sweep.TxId, 0),
+            Kind = AccountingEventKind.WalletReceived,
+            OccurredAt = s_now,
+            BlockHeight = SpendHeight + 16,
+            TxId = sweep.TxId,
+            OutputIndex = 0,
+            AmountMsat = 500_000,
+            Finality = AccountingFinality.Confirmed,
+            Details = new Dictionary<string, string>
+            {
+                [AccountingDetailKeys.Source] = AccountingDetailKeys.BroadcastSource,
+                [AccountingDetailKeys.Purpose] = nameof(BroadcastPurpose.Sweep)
+            }
+        };
+
+        // Assert: resolved by us, the whole wallet output and fee on our anchor's event, the peer's anchor a gain
+        Assert.Equal(AccountingDetailKeys.ResolvedByUs, flows.ResolvedBy);
+        Assert.Equal(AccountingDetailKeys.ExternalInputsNote, flows.Note);
+        Assert.Equal(330_000, flows.PendingOutMsat);
+        Assert.Equal(500_000, flows.WalletMsat);
+        Assert.Equal(160_000, flows.FeeMsat);
+        Assert.Equal(AccountingDetailKeys.MergedNote, unstored.Note);
+        var books = BooksSimulator.Of([resolved, received]);
+        Assert.Equal(-330_000, books[AccountRole.Pending]);
+        Assert.Equal(0, books[AccountRole.Clearing]);
+        Assert.Equal(500_000, books[AccountRole.Wallet]);
+        Assert.Equal(160_000, books[AccountRole.FeeSweep]);
+        Assert.Equal(-330_000, books[AccountRole.OnchainGain]);
+        Assert.Equal(0, books[AccountRole.LossOnchain]);
+    }
+
+    [Fact]
     public async Task Given_AResolutionReorgedBackToTheSameHeightTwice_When_ItReconfirms_Then_EachConfirmationIsRecorded()
     {
         // Arrange (NL-613): our to_local sweep resolved the output at SpendHeight + 150

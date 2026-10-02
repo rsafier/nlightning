@@ -429,7 +429,7 @@ public sealed partial class AnchorCpfpService
     /// The sweep of the anchors of the peer's confirmed commitment, once due: its bytes from the mempool reactor's
     /// hand-over, else from the block that holds it.
     /// </summary>
-    private async Task<SignedTransaction?> PlanPeerAnchorSweepAsync(ChannelModel channel, ChannelCloseModel close,
+    private async Task<BroadcastTransactionModel?> PlanPeerAnchorSweepAsync(ChannelModel channel, ChannelCloseModel close,
                                                                     bool anyChild, uint height,
                                                                     CancellationToken cancellationToken)
     {

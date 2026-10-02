@@ -142,6 +142,12 @@ public static class AccountingDetailKeys
     /// </summary>
     public const string MergedNote = "merged with inputs that are not outputs of the channel";
 
+    /// <summary>
+    /// The note of a resolution by our stored sweep that also spent inputs that are not rows of the channel (the peer's
+    /// anchor in our anchor sweep, NL-611): this event books their value (as a gain) and their part of the fee.
+    /// </summary>
+    public const string ExternalInputsNote = "also books the sweep's inputs that are not outputs of the channel";
+
     #endregion
 
     #region Wallet
