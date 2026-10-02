@@ -30,8 +30,9 @@ using static Interop.Cln.ClnSpliceReestablishTests;
 ///   (B2-RE-28) and keeps the HTLC; alice settles, our payment succeeds and only then is the fee negotiated and the
 ///   close completed.</item>
 ///   <item>Closing: the close is agreed and broadcast; our node restarts while the closing transaction is in the
-///   mempool (we re-send <c>shutdown</c> and the agreed <c>closing_signed</c>, NL-287, and LND neither errors nor
-///   force-closes), then stops while it confirms 6 deep, and after the next start the channel is Closed.</item>
+///   mempool (we re-send <c>shutdown</c>; LND 0.20 answers <c>channel_reestablish</c> without a <c>shutdown</c> of
+///   its own, so no negotiation restarts, and neither side errors nor force-closes), then stops while it confirms 6
+///   deep, and after the next start the channel is Closed.</item>
 /// </list>
 /// Each ends with LND listing a <c>COOPERATIVE_CLOSE</c> with our closing txid and alice's balance, our channel Closed
 /// and our wallet credited. Our traffic is recorded by an unarmed <see cref="SpliceLinkCutter"/> (it records across
@@ -195,11 +196,21 @@ public sealed class CloseRestartFlowTests : IAsyncLifetime
         await node.StartAsync(ct);
         await WaitReconnectedAsync(node, alice, ct);
 
-        // Assert 1: we re-send shutdown and the agreed closing_signed; LND neither errors nor force-closes
-        await Poll.UntilAsync(() => _wire.FirstOrDefault(false, MessageTypes.ClosingSigned, from) is not null,
-                              s_timeout, "our closing_signed re-sent", ct);
-        Assert.NotNull(_wire.FirstOrDefault(false, MessageTypes.Shutdown, from));
+        // Assert 1: reestablish both ways and our shutdown again (B2-RE-28). LND 0.20 keeps a channel whose mutual
+        // close it broadcast out of the negotiation: it re-sends channel_reestablish but no shutdown (seen in this
+        // proof), so there is nothing for us to answer; had it restarted the negotiation, we, the funder, would
+        // propose the agreed fee again (NL-725). Either way nobody errors and LND does not force-close
+        await Poll.UntilAsync(() => _wire.FirstOrDefault(true, MessageTypes.ChannelReestablish, from) is not null
+                                 && _wire.FirstOrDefault(false, MessageTypes.Shutdown, from) is not null,
+                              s_timeout, "reestablish and our shutdown again", ct);
         await Task.Delay(TimeSpan.FromSeconds(5), ct);
+        var lndShutdown = _wire.FirstOrDefault(true, MessageTypes.Shutdown, from);
+        Console.WriteLine($"[close] LND after our restart in Closing: shutdown {(lndShutdown is null ? "not " : "")}"
+                        + "re-sent");
+        if (lndShutdown is not null)
+            await Poll.UntilAsync(() => _wire.FirstOrDefault(false, MessageTypes.ClosingSigned, lndShutdown.Sequence)
+                                        is not null,
+                                  s_timeout, "our agreed closing_signed after LND's shutdown", ct);
         AssertNoErrorOrWarning(from);
         Assert.True(node.ChannelMemoryRepository.TryGetChannel(channelId, out var channel));
         Assert.Equal(ChannelState.Closing, channel.State);

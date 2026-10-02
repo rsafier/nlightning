@@ -180,7 +180,9 @@ public sealed class ClnCloseRestartTests : IAsyncLifetime
         Assert.Equal(ChannelState.Closing, closed.State);
         var closingTx = await WaitClosingAsync(session, ct);
         await WaitInMempoolAsync(closingTx.TxId, ct);
-        var agreedFee = AgreedFeeSat(cutter);
+        // The fee of the stored transaction (our echo of CLN's fee may still be on its way: read it from the tx)
+        var agreedFee = (ulong)(s_capacity.Satoshi - Transaction.Load(closingTx.RawTxBytes, Network.RegTest)
+                                                                .Outputs.Sum(o => o.Value.Satoshi));
 
         // Act 1: a restart with the closing transaction in the mempool
         var from = cutter.CurrentSequence;
@@ -330,12 +332,6 @@ public sealed class ClnCloseRestartTests : IAsyncLifetime
                         .ToList();
         Assert.True(bad.Count == 0, $"error/warning after the cut: {string.Join("; ", bad)}");
     }
-
-    /// <summary>The fee of the last <c>closing_signed</c> we sent before now (the agreed one once Closing).</summary>
-    private static ulong AgreedFeeSat(SpliceLinkCutter cutter) =>
-        ClosingSignedFeeSat(cutter.Snapshot()
-                                  .Last(m => !m.Message.Inbound
-                                          && m.Message.Type == (ushort)MessageTypes.ClosingSigned).Message);
 
     /// <summary><c>closing_signed</c>: type (2), channel_id (32), then the u64 <c>fee_satoshis</c>.</summary>
     private static ulong ClosingSignedFeeSat(ClnSpliceTests.SpliceWireMessage message) =>
