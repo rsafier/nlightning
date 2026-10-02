@@ -24,6 +24,12 @@ public static class ClusterChainEndpoint
     public const string DefaultWallet = "miner";
 
     /// <summary>
+    /// <see cref="RegtestBitcoinEndpoint.ZmqStartupGuard"/> of the cluster's endpoints: a block mined in the first
+    /// seconds after a node's start and lost by its ZMQ subscription (slow to connect to the pod) is handed in.
+    /// </summary>
+    public static readonly TimeSpan ZmqStartupGuard = TimeSpan.FromSeconds(20);
+
+    /// <summary>
     /// The endpoint of <paramref name="chain"/> for a node in this process (<see cref="KubeClientFactory.DetectSource"/>
     /// decides the placement).
     /// </summary>
@@ -38,7 +44,10 @@ public static class ClusterChainEndpoint
         var rpc = new RPCClient($"{chain.RpcUser}:{chain.RpcPassword}", $"http://{host}:{chain.RpcPort}",
                                 NBitcoin.Network.RegTest);
         return new RegtestBitcoinEndpoint(wallet is null ? rpc : rpc.SetWalletContext(wallet), host,
-                                          chain.ZmqRawBlockPort, chain.ZmqRawTxPort);
+                                          chain.ZmqRawBlockPort, chain.ZmqRawTxPort)
+        {
+            ZmqStartupGuard = ZmqStartupGuard
+        };
     }
 
     /// <summary>

@@ -114,6 +114,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
     private ServiceProvider? _serviceProvider;
     private bool _started;
     private bool _disposed;
+    private CancellationTokenSource? _zmqGuardCts;
+    private Task? _zmqGuard;
 
     /// <summary>
     /// The node's name, used as the prefix of its log lines (<c>[bob]</c>).
@@ -374,12 +376,92 @@ public sealed class NLightningTestNode : IAsyncDisposable
             // As the daemon does: the splice auto-bump (wave SPR); nothing while Splice:AutoBumpAfterBlocks is unset
             Services.GetService<SpliceAutoBumper>()?.Start();
             _started = true;
+            StartZmqStartupGuard();
         }
         catch
         {
             await AbortStartAsync(feeServiceStarted, peerManagerStarted, safetyStarted);
             throw;
         }
+    }
+
+    /// <summary>
+    /// How long the chain monitor may stay behind bitcoind's tip during the ZMQ startup guard before the guard hands
+    /// the tip in (<see cref="RegtestBitcoinEndpoint.ZmqStartupGuard"/>).
+    /// </summary>
+    public static readonly TimeSpan ZmqStartupGuardLag = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// With <see cref="RegtestBitcoinEndpoint.ZmqStartupGuard"/> set (the cluster backend), watches the chain monitor
+    /// for that long after the start: when it stays behind bitcoind's tip for <see cref="ZmqStartupGuardLag"/>, the
+    /// ZMQ subscription lost the block (it was published before the subscription reached bitcoind), so the guard hands
+    /// the tip in as ZMQ would have (the monitor fetches the blocks before it) and logs it. Nothing on Docker.
+    /// </summary>
+    private void StartZmqStartupGuard()
+    {
+        if (_bitcoinEndpoint.Value.ZmqStartupGuard is not { } window
+         || BlockchainMonitor is not Infrastructure.Bitcoin.Wallet.BlockchainMonitorService monitor)
+            return;
+
+        var cts = new CancellationTokenSource(window);
+        _zmqGuardCts = cts;
+        _zmqGuard = Task.Run(async () =>
+        {
+            var rpc = Bitcoin;
+            var behindSince = (DateTime?)null;
+            var lastSeen = monitor.LastProcessedBlockHeight;
+            try
+            {
+                while (!cts.Token.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(250), cts.Token);
+                    var tip = (uint)await rpc.GetBlockCountAsync(cts.Token);
+                    var processed = monitor.LastProcessedBlockHeight;
+                    if (tip <= processed || processed != lastSeen)
+                    {
+                        // At the tip, or the monitor is moving: ZMQ delivers
+                        behindSince = tip <= processed ? null : DateTime.UtcNow;
+                        lastSeen = processed;
+                        continue;
+                    }
+
+                    behindSince ??= DateTime.UtcNow;
+                    if (DateTime.UtcNow - behindSince < ZmqStartupGuardLag)
+                        continue;
+
+                    var block = await rpc.GetBlockAsync(await rpc.GetBlockHashAsync((int)tip, cts.Token), cts.Token);
+                    Console.WriteLine($"{DateTime.UtcNow:HH:mm:ss.fff} [{Name}] ZMQ startup guard: the monitor stayed at "
+                                    + $"{processed} behind the tip {tip} for {ZmqStartupGuardLag.TotalSeconds:F0} s "
+                                    + "after the start (a block lost before the subscription was up); handing the tip in");
+                    await monitor.ProcessNewBlockAsync(block, tip);
+                    behindSince = null;
+                    lastSeen = monitor.LastProcessedBlockHeight;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // The window ended or the node stops
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"{DateTime.UtcNow:HH:mm:ss.fff} [{Name}] ZMQ startup guard ended: {e.Message}");
+            }
+        });
+    }
+
+    private async Task StopZmqStartupGuardAsync()
+    {
+        var cts = _zmqGuardCts;
+        var guard = _zmqGuard;
+        _zmqGuardCts = null;
+        _zmqGuard = null;
+        if (cts is null)
+            return;
+
+        await cts.CancelAsync();
+        if (guard is not null)
+            await guard;
+        cts.Dispose();
     }
 
     /// <summary>
@@ -393,6 +475,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
 
         try
         {
+            await StopZmqStartupGuardAsync();
             if (_started)
             {
                 await StopSafetyServicesAsync();
