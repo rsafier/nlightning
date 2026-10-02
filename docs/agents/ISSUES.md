@@ -6,6 +6,8 @@ Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,
 
 Updated 2026-10-02 by the batch10 integrator (branch `wip/batch10` from `wip/fafo` at `44aeaf5f`; 13 lanes run in parallel worktrees on the owner decisions of 2026-10-02 and merged with `--no-ff` in lane order — lane branches `b10-*` hold the originals; the statuses carry the lane SHAs and the merge SHA): merges `a8bfc61a` (b10-plugin: NL-151 fixed, new NL-706, NL-707), `94d3e68e` (b10-chain: NL-012 fixed, testnet4), `666ec562` (b10-sec: NL-677, NL-678, NL-679 fixed, new NL-693), `d8ffd72e` (b10-acct-edges: NL-606, NL-607, NL-608, NL-610, NL-611, NL-612, NL-613, NL-645 fixed, new NL-688; migration `AddMutualCloseTerms`), `7b778718` (b10-lots: NL-674 (owner decision A, D-A12 amended), NL-657, NL-675, NL-680, NL-681, NL-658 fixed; migration `AddLotBuckets`), `f24b7ba3` (b10-splice-resume: NL-600 fixed, NL-698 new and fixed, NL-496 partial), `cb806664` (b10-attr: NL-332 fixed, `option_attribution_data` Optional by default), `a38caf6c` (b10-aot: NL-338 fixed, NL-300 partial, new NL-708, NL-709, NL-710 (fixed)), `1600d945` (b10-db-proofs: NL-662, NL-429, NL-347 fixed), `0419d687` (b10-eclair: NL-557, NL-407 fixed, NL-554 partial, NL-717, NL-718, NL-719 new and fixed), `4178186b` (b10-ldk: NL-556 fixed, NL-722, NL-723 new and fixed, new NL-721, NL-724), `9cabb01e` (b10-close-interop: NL-286 fixed, NL-725 new and fixed), `ee20aa9f` (b10-tor-interop: NL-572 fixed, new NL-729). Integration fixes: `5602e27b` (the later migration's Designers regenerated over both lanes' columns; `HasPendingModelChanges` false on all three providers), `08caba71` (the AOT MessagePack test after the plugin deletion). Review findings fixed with regression tests (each fails before its fix): NL-732 (`8be600e6`, a stalled HTTP body hung the fee/price/Esplora readers), NL-735 (`8be600e6`, LAN IP `http://` accepted), NL-733 and NL-734 (`1f956f72`), NL-736, NL-737, NL-738 (`290f3dcc`; plus `SetClosingTransaction`'s doc), NL-739 (`017d3ff0`, lots stranded by an unsettled claim), NL-740, NL-741 (`8a094fa9`, `2a26ac15`), NL-742, NL-743 (`fe957403`, route hints by the peer's alias; the template's old 144 margin raised on existing nodes), NL-744 (`3655e6f3`), and two test-strength findings without new IDs: the NL-600 wallet-load test now counts the loads (`41ab5a74`) and the NL-725 CLN proof asserts CLOSINGD_COMPLETE (`4e1f7763`, class 4/4 under the Docker lock). Rejected review findings: the BlindedPathBuilder scid choice "has no unit test" (the three arms are the `BlindedPaymentPathFactoryTests` alias theory), the blinded BOLT 11 margin "still 144" and the stale Application CLAUDE.md margin (both already 1,008 once b10-eclair and b10-ldk were merged). Owner decisions recorded: NL-161, NL-162, NL-169 wontfix (WASM/Blazor parked until there is a browser-wallet goal), NL-157 wontfix (layering left as is, do not make it worse), NL-437 wontfix (a .NET limitation; `SECURITY_REVIEW.md` SR-09 note), NL-180 stays open (interop stays local, no CI Docker). FAFO/FAFO2 (`~/.nltg`, not touched): NL-743 raises their pinned 144 margin at the next start with a warning. Gates on the merged tree: Release build `--no-incremental` 0 warnings, `dotnet format` clean, `check-sln-configs` OK, full non-Docker net10.0 suite green (see the final run in the integrator's report).
 
+Updated 2026-10-02 by the batch10 finalizer (branch `wip/batch10`, after the full Docker pass at `e84f43f6`: LND 87/87, on-chain all 47/47, CLN 78/81, Eclair 29/29, LDK 27/27, gossip 30/30, ABCD 10/10, Tor 3/3): NL-745 new and fixed (`b22d157f`, the three order-dependent `ClnCloseTests` failures of the pass: CLN took our own closing fee, B2-CLS-R02; full CLN rerun 81/81 + 4 `Explicit`), NL-676 fixed (`c9f2b083`, the A3 Docker smoke: bob and carol run `Profile=Financial` for the whole ABCD suite, `AbcdAccountingTests`; ABCD 11/11), and two loaded-run failures of the final non-Docker run root-caused: NL-746 new and fixed (`2c6475d9`, a banned gossip peer's in-flight invalid messages banned it twice; the NL-382 residual, regression test fails before the fix) and NL-747 new and fixed (`08fa0b0a`, `ClearAllPools` in parallel test teardowns disposed other tests' SQLite connections). All Docker runs under the machine-wide lock; no SQL Server container tests. Gates: Release `--no-incremental` build 0 CS warnings, `dotnet format` clean, `check-sln-configs` OK, full non-Docker net10.0 suite green (13,302 passed, 6 platform/explicit skips: Domain 4201, Application 3594, Infrastructure.Bitcoin 1577, Daemon 1268, Integration 1041, Infrastructure 656, Serialization 622, Bolt11 343).
+
 Updated 2026-10-02 by the A3 final integrator (branch `wip/acct-a3`, A3-T4 at `77f455b0`): merged lane `acct-a3-t7` with `--no-ff` (`c62d861b`: config template, `SECURITY_REVIEW.md` SR-20..SR-27, plan and CLAUDE.md docs), then fixed the confirmed findings of the two reviews (waves 1-2 and A3-T4): NL-670 (`94af679d`, one self-payment rule: we are the payee), NL-671, NL-672, NL-673 (`ecd983b1`: late facts rolled back and re-staged with the open period, valued at their own time; the reversal of a pre-feed wallet receive corrects the opening lots at cost). Ledger: NL-640 fixed (`77f455b0`), NL-641 fixed (`503b2a6b`), NL-667 fixed (partial, `77f455b0`), NL-659 fixed (`ecd983b1`, as NL-672), NL-602 closed (fixed); new open: NL-657, NL-658 (A3-T4 follow-ups), NL-674 (finding 4 of the T4 review: the lot kind ignores the classified account, a D-A12 owner decision), NL-675 (the closed-fact reversal's phantom gain the T4 review noted), NL-676 (the A3 Docker smoke), NL-677..NL-679 (SECURITY_REVIEW SR-21, SR-22, SR-26), NL-680 (a forced close of a still-unvalued late fact). No review finding was rejected. Gates: Release `--no-incremental` build 0 CS warnings, `dotnet format` clean, sln check OK, full non-Docker net10.0 suite green at `ecd983b1` (13,033 passed, 6 platform/explicit skips: Domain 4126, Application 3522, Infrastructure.Bitcoin 1532, Daemon 1232, Integration 1027, Infrastructure 635, Serialization 622, Bolt11 337; `HasPendingModelChanges` false on all three providers); no schema change. No Docker.
 
 Updated 2026-10-02 by the A3 integrator (branch `wip/acct-a3` from `wip/fafo` at `9873f3d3`, A3-T0 schema at `5e3ffb0b`; 8 lanes run in parallel worktrees and merged with `--no-ff` in lane order — lane branches `acct-a3-*` hold the originals): merges `42915f80` (fixes-a: NL-621, NL-624, NL-626), `64cb9db0` (fixes-b: NL-622, NL-623, NL-625, NL-627, NL-628), `5812ac5e` (NL-609 rebalances), `27e8cb95` (A3-T1 labels and tags), `214dd51b` (A3-T3 classification), `8b5b0f75` (A3-T2 prices), `d7a9d1f9` (A3-T5 period close), `53daea21` (A3-T6 financial reports), integration commit `afce146a`. Fixed: NL-609, NL-621..NL-628 (per-entry SHAs are the merge commits). New: NL-640, NL-641 (T2), NL-645, NL-646 (T3), NL-653 (fixes-b), NL-660..NL-662 (T5), NL-665..NL-667 (T6); of these NL-646 (by NL-609), NL-661 and NL-666 (both by T2) were already fixed in the merged tree. Integration decisions: one `IAccountingAdjustmentSink` (T5's, carrying T2's `AdjustLateValuationAsync`) registered by the new `AddAccountingPeriodServices`; T6's `IAccountingFinancialProjection` folded into T5's `IFinancialBooksProjector` (one seam for A3-T4; the off default now also refuses the financial reports and exports until T4); NL-609's Dr Rebalance (a + fee) is split in the financial lines into the transfer a and an `expenses:fees:routing` line of the fee (D-A12); IPC 45 actions 5 (classify), 10-12 (prices), 20-22 (close) and `PayInvoiceIpcRequest` keys 5/6 (labels) and 7/8 (pins) kept as the lanes numbered them (no collisions). Gates: Release `--no-incremental` build 0 CS warnings, `dotnet format` clean, sln check OK, full non-Docker net10.0 suite green at `afce146a` (12,948 passed, 6 platform/explicit skips: Domain 4094, Application 3495, Infrastructure.Bitcoin 1532, Daemon 1205, Integration 1024, Infrastructure 635, Serialization 622, Bolt11 337; `HasPendingModelChanges` false on all three providers); in the first run one T3 regex-timeout case (`ClassificationEngineTests` "label regex matches") failed once under load at 178 ms against its 100 ms budget and passed alone and in the second run. No Docker.
@@ -131,12 +133,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 40 | 41 |
+| open | 0 | 0 | 1 | 39 | 40 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 184 | 358 | 618 |
+| fixed | 14 | 62 | 184 | 362 | 622 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **191** | **408** | **675** |
+| **Total** | **14** | **62** | **191** | **411** | **678** |
 
 ### Epics
 
@@ -5553,12 +5555,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A3-T4, A3-T5 (D-A8)
 
 ### NL-676 The A3 Docker smoke (`Profile=Financial` on the ABCD or LND suite) has not run
-- **Status:** open
+- **Status:** fixed (c9f2b083)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/` (no test yet); plan ACCOUNTING_PLAN A3-T7
 - **Evidence:** A3-T7 (2026-10-02): skipped by owner decision (no Docker in the A3 lanes); the financial books are proven by the non-Docker suites only (SQLite harnesses, golden files, IPC round trips). `NLightningTestNode` already sets `Accounting:Prices:Source=None` (NL-641).
-- **Fix sketch:** In the next Docker pass, run the ABCD or LND suite with `Accounting:Profile=Financial` (through `ExtraConfiguration`), import fixture prices (`IAccountingPrices.ImportAsync`), and assert `reconcile` clean and the financial book balanced in fiat.
+- **Update (batch10 finalize, 2026-10-02):** `AbcdNetwork` gives bob and carol `Accounting:Profile=Financial` through `ExtraConfiguration` for the whole ABCD suite, and `Docker/Abcd/AbcdAccountingTests` forwards one more payment, asserts each node's operational books reconcile without drift (`IAccountingBooks.ReconcileAsync`), imports a fixture price for every hour that holds an unvalued posting of the financial book (`IAccountingPrices.ImportAsync`; `Prices:Source=None` kept) and asserts the financial balance sheet balanced in msat and in fiat with no unvalued posting and the routing income valued. ABCD 11/11 under the Docker lock (bob: assets 3,987,870,003 msat / 2,482.45 USD = equity 3,112.50 + earnings -630.05; carol balanced likewise; reconcile drift 0 on every bucket).
+- **Fix sketch:** Done.
 - **Blocks/Blocked-by:** Part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN A3-T7
 
@@ -6313,6 +6316,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Failed once in the wave O7 final Release run (7282 tests); passed 5 times alone and in 2 full project reruns, so a timing assumption under load, not an O7 regression (wave O7 integrator).
 - **Update (wave spr, integrated at `a0800ac2`):** failed once in a Release.Native full run, passed alone (reported by the integrator).
 - **Fix sketch:** Replace fixed waits with an awaited condition (ban recorded, valid gossip ingested) and a generous timeout. De-flaked: Each asserted condition (the ban; the honest gossip applied and the queue drained) is awaited on its own bounded wait; the per-message warning verify was dropped — under load the bounded queue backs up and the door scores the flood in a burst that crosses the ban threshold directly, so the asserted delivery is the ban's disconnect.
+- **Update (batch10 finalize, 2026-10-02):** failed again in a loaded full run with a second ban disconnect: a product bug, NL-746 (fixed in 2c6475d9).
 - **Blocks/Blocked-by:** Related NL-099
 - **Plan ref:** BOLT7 G5-T2
 
@@ -6765,6 +6769,36 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Evidence:** Batch10 review of lane b10-ldk: any `query_short_channel_ids` timeout set the two-week backlog filter, also for a peer that answered earlier batches and was only slow, which then streamed its whole graph past the NL-353 ingress pacing. Test: `GossipSyncManagerTests.Given_APeerThatAnsweredAScidQuery_*`.
 - **Fix sketch:** Done: only a peer that never answered a scid query on the connection (in time or late) gets it. Left as is: a peer whose very first scid query times out still gets the backlog filter.
 - **Blocks/Blocked-by:** Follows NL-722
+- **Plan ref:** —
+
+### NL-745 ClnCloseTests' "we funded" cases failed in the full CLN run when CLN took our own closing fee
+- **Status:** fixed (b22d157f)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnCloseTests.cs` (`Given_ChannelWeFunded_When_WeClose_*` both rows, `Given_ChannelWeFunded_When_ClnCloses_*`)
+- **Evidence:** Batch10 Docker pass (CLN 78/81, the class 4/4 alone): in the full run CLN answered our opening `closing_signed` (1,690 sat) with the same fee and a `fee_range` of [1,690, 500,000] sat, so our `LegacyClosingNegotiator` agreed under B2-CLS-R02 ("the fee we sent last came back") where the asserts expected R03 (inside our range) or R05 (no range of ours). Spec-valid on both sides: CLN may take our fee when it lies inside its own range, which depends on CLN's estimate that earlier classes (now incl. `ClnCloseRestartTests`) move. Same family as NL-486/NL-522.
+- **Fix sketch:** Done: the asserts accept R02 when CLN's fee equals the fee of our opening `closing_signed`, R03/R05 otherwise (`AssertAnsweredOrAccepted`). Full CLN run 81/81 (+4 `Explicit`) under the Docker lock after the fix. The R03/R05 receive path is still proven when CLN picks its own fee (the class alone) and in-process (`CloseHarness`).
+- **Blocks/Blocked-by:** Related NL-286, NL-486, NL-522
+- **Plan ref:** —
+
+### NL-746 A banned gossip peer's in-flight invalid messages banned it a second time
+- **Status:** fixed (2c6475d9)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.cs` (`ScoreMisbehaviour`)
+- **Evidence:** `GossipFloodTests.Given_APeerFloodingInvalidSignatures_*` failed in the batch10 finalize's loaded full run with two `Disconnect` calls carrying "Too much invalid gossip" (expected once). `GossipMisbehaviourTracker.Record` clears the peer's events when it crosses the threshold, and the worker's ban check runs before the validation, so five more invalid messages already past that check scored a fresh threshold: a second ban (renewed end), `peers.banned` counted twice and a second disconnect. Reproduced deterministically by `GossipIngressLimitsTests.Given_APeerJustBanned_When_ItsInFlightInvalidGossipIsProcessed_*` (five invalid signatures processed after the ban; fails before the fix).
+- **Fix sketch:** Done: `ScoreMisbehaviour` skips a peer that is banned already. The NL-382 flood test's residual is this bug.
+- **Blocks/Blocked-by:** Related NL-382, NL-370
+- **Plan ref:** BOLT7 G5-T2
+
+### NL-747 `SqliteConnection.ClearAllPools()` in test teardowns disposed other parallel tests' connections
+- **Status:** fixed (08fa0b0a)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests` (accounting kits, `ThreeNodeHarness`, `DualFundHarness`, `OnchainRestartCatchUpTests`, `PeerManagerInboundRestartTests`), `test/NLightning.Integration.Tests/Persistence/` (4 classes)
+- **Evidence:** `Bolt11BlindedInvoiceTests.Given_NoPeerUpdate_When_CarolCreatesABlindedInvoice_*` failed in the batch10 finalize's loaded full run (green alone 3/3): `ObjectDisposedException` on `SQLitePCL.sqlite3` in `SqliteConnection.Open` during `ThreeNodeHarness`'s migration. Test classes run in parallel and 16 teardowns called `ClearAllPools()`, which disposes the idle pooled connections of every database, including those another test is opening.
+- **Fix sketch:** Done: `SqliteTestPools.Clear(path)` clears only the pool of the test's own `Data Source=<path>` string. The Docker restore tests (`BackupRestoreFlowTests`, `ClnSpliceBackupRestoreTests`, `Day0UpgradeInPlaceTests`) keep `ClearAllPools` (their collections run alone).
+- **Blocks/Blocked-by:** —
 - **Plan ref:** —
 
 ### NL-723 Our BOLT 12 paths' margin refused LDK's shadow CLTV offset
