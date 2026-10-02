@@ -4,16 +4,28 @@ Plan: `docs/agents/TEST_HARNESS_PLAN.md` R8 (declarative topology), R9 (facade),
 
 ## Topology/
 
-- `TopologyBuilder`: `AddBitcoinCore(name)`, `AddLnd(name)`, `AddCln(name)`, `AddNode(name, kind)`,
-  `FundWallet(node, sat)`, `AddChannel(from, to, capacitySat, pushMsat, announce)`,
+- `TopologyBuilder`: `AddBitcoinCore(name)`, `AddLnd(name)`, `AddCln(name)`, `AddNode(name, kind)` (each with an
+  optional `storage:`), `FundWallet(node, sat)`, `AddChannel(from, to, capacitySat, pushMsat, announce)`,
   `UseDeployer(ILightningNodeDeployer)` (one per `NodeKind`; CLN and LND are registered by default),
-  `UseChain(ChainFactory)` (default `BitcoinCoreTopologyChain.DeployAsync`), `Log`, `ReadyTimeout`, `StepTimeout`. `Build()` returns the validated `TopologySpec`; `BuildAsync(run, ct)` deploys it.
+  `UseChain(ChainFactory, ChainEndpointFactory?)` (default `BitcoinCoreTopologyChain.DeployAsync` and `.EndpointFor`;
+  without an endpoint the nodes wait for the chain), `Storage` (nodes without their own; null = `NLTG_NODE_STORAGE`,
+  else PVC), `DeployNodesWithChain` (default true), `ChainAddressWait`, `Log`, `ReadyTimeout`, `StepTimeout`.
+  `Build()` returns the validated `TopologySpec` (every node's storage resolved); `BuildAsync(run, ct)` deploys it.
 - `TopologySpec.Validate()` lists every problem: DNS-1123 names, exactly one `BitcoinCore`, fundings and channels
   between Lightning nodes only, no self channel, push within the capacity, and each funder funded with more than it
   opens.
-- `TopologyDeployer` runs these steps, each logged with its time:
-  1. The chain: a mature `miner` wallet, `load_on_startup`.
-  2. Every Lightning node, deployed in parallel.
+- `TopologyDeployer` runs these steps, each logged with its time (and kept in `TestTopology.Timings`: `chain`,
+  `nodes`, `fundings`, `channels`):
+  1. The chain (a mature `miner` wallet, `load_on_startup`) and, **in the same wave**, every Lightning node whose
+     deployer says `DeploysWithChain` (phase 2): it gets `TopologyDeployContext.ChainEndpoint` at once and the started
+     `Chain` only through `WaitForChainAsync`; its pod waits for bitcoind in the chain's startup wait (init
+     container). The other deployers run once the chain is ready, as before. The first failure cancels the rest of
+     the wave and the first real error is thrown. When the chain node is on `emptyDir` storage the wave first waits
+     (up to `ChainAddressWait`, default 5 s) until the chain's name resolves: its pod has an IP within about a second,
+     and a node that looked the name up earlier would see CoreDNS's cached miss for 5 s. On a PVC it does not wait
+     (the chain's pod has an IP only after its claim, 6-15 s; the nodes' claims are provisioned meanwhile), so a node
+     may lose up to 5 s to that cache.
+  2. Every Lightning node ready (those deployed after the chain, in parallel).
   3. Wait until every node is at the tip.
   4. The fundings: sent, 6 blocks, then each wallet's confirmed balance polled.
   5. The channels: connect with retries, then open, one at a time.
@@ -21,10 +33,20 @@ Plan: `docs/agents/TEST_HARNESS_PLAN.md` R8 (declarative topology), R9 (facade),
 - `TestTopology` (the built topology):
   - `Node(name)` / `Node<T>(name)`, `Chain`, `Channels` (with their SCIDs);
   - `MineAndSyncAsync`, `WaitAllAtTipAsync`, `WaitChannelsActiveAsync`, `ReconnectChannelsAsync`.
+- `ClusterTopologyFixture` / `ClusterTopologyFixture<TDefinition>` (`IClusterTopologyDefinition`: static `Suite`
+  and `Configure(builder)`): an xunit collection (or class) fixture that starts its run and builds the topology once,
+  before the collection's first test, and disposes the run after its last (`OnBuiltAsync` for more setup, `StartLog`,
+  `StartTime`). Nothing is reset between tests. Isolation expectations (the XML docs have them in full): collections
+  are isolated (each its own namespace and slot); tests of one collection run one after another and see what the
+  earlier ones left (assert deltas, unique invoice labels, own channels when a fresh one is needed); a test that
+  restarts, kills, crashes, pauses or partitions a node restores the topology before it returns or runs in its own
+  collection; ephemeral nodes cannot be restarted at all.
 - Seams for the other lanes:
   - `ITopologyLightningNode` (`ILightningTestPeer` plus block height and confirmed balance);
-  - `ILightningNodeDeployer`;
-  - `ITopologyChain` (RPC endpoint, ZMQ raw block/tx ports, mine, send, tip). `BitcoinCoreTopologyChain` is the
+  - `ILightningNodeDeployer` (`DeploysWithChain`, default false) and `TopologyDeployContext` (`Run`,
+    `ChainEndpoint`, `Chain` once ready, `IsChainReady`, `WaitForChainAsync`, `ReadyTimeout`, `Log`);
+  - `ITopologyChainEndpoint` (RPC host/port/credentials, ZMQ ports, `CreateStartupWait()`) and `ITopologyChain` (the
+    endpoint plus the node, mine, send, tip). `BitcoinCoreTopologyChain` is the
     implementation: the chain lane's `BitcoinCoreNode` + `RegtestChain` (its `Chain` property has the reorgs, fee
     seeding and tx waits). The CLN lane's stopgap `TopologyBitcoind` and the LND lane's `LndTopologyChain` were
     replaced by it at the integration.
@@ -43,7 +65,8 @@ Plan: `docs/agents/TEST_HARNESS_PLAN.md` R8 (declarative topology), R9 (facade),
 - `ClnNode.Workload`:
   - `elementsproject/lightningd` v26.06.8 by digest, with the `ClnFixture` flags (`--developer --dev-bitcoind-poll=1`
     `--ignore-fee-limits=false`) and bitcoind reached by its alias;
-  - its data on a PVC at `/root/.lightning`;
+  - its data on a PVC at `/root/.lightning` (an `emptyDir` with `ClnNodeOptions.Storage = Ephemeral`);
+  - the chain's startup wait as its init container (`ClnNodeOptions.StartupWait`, set by `ClnNodeDeployer`);
   - readiness = not draining and `getinfo` answers. Chain sync is the topology's wait, so a new block never takes the
     node out of its Services.
 - `preStop` = drain, then stop:

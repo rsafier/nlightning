@@ -1,3 +1,5 @@
+using k8s.Models;
+
 namespace NLightning.Testing.Cluster.Nodes.Cln;
 
 using Images;
@@ -41,6 +43,18 @@ public sealed record ClnNodeOptions
 
     /// <summary>The size of the data PVC (<c>/root/.lightning</c>).</summary>
     public string DataSize { get; init; } = "1Gi";
+
+    /// <summary>
+    /// The data directory on a PVC (default) or in an <c>emptyDir</c> (<see cref="NodeStorage.Ephemeral"/>: faster to
+    /// start, but the node cannot be restarted or killed; a crash keeps it).
+    /// </summary>
+    public NodeStorage Storage { get; init; } = NodeStorage.Persistent;
+
+    /// <summary>
+    /// An init container that holds lightningd until bitcoind answers
+    /// (<see cref="Topology.ITopologyChainEndpoint.CreateStartupWait"/>), or null to start at once.
+    /// </summary>
+    public V1Container? StartupWait { get; init; }
 
     public WorkloadResources Resources { get; init; } = WorkloadResources.Default;
 }

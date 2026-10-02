@@ -2,13 +2,14 @@ using System.Diagnostics;
 
 namespace NLightning.Testing.Cluster.Tests.Live;
 
+using Cluster.Kube;
 using Cluster.Nodes.Cln;
 using Cluster.Run;
 using Cluster.Topology;
 
 /// <summary>
 /// The CLN topology against a real cluster: bitcoind + two CLN nodes with a pre-opened channel, a payment between
-/// them, and the run's namespace deleted. Explicit (see <see cref="ClusterSmokeTests"/> for how to run them).
+/// them, and the run's namespace deleted (in the background). Explicit (see <see cref="ClusterSmokeTests"/> for how to run them).
 /// </summary>
 [Trait("Category", "Cluster")]
 public class ClnTopologyTests
@@ -26,8 +27,8 @@ public class ClnTopologyTests
 
     private static void Log(string line) => TestContext.Current.TestOutputHelper?.WriteLine(line);
 
-    private static TopologyBuilder ClnPair() =>
-        new TopologyBuilder { Log = Log }
+    private static TopologyBuilder ClnPair(NodeStorage? storage = null) =>
+        new TopologyBuilder { Log = Log, Storage = storage }
            .AddBitcoinCore("miner")
            .AddCln("alice")
            .AddCln("bob")
@@ -80,12 +81,11 @@ public class ClnTopologyTests
         {
             watch.Restart();
             await run.DisposeAsync();
-            Log($"{ns}: deleted in {watch.Elapsed.TotalSeconds:F1} s");
+            Log($"{ns}: deletion issued in {watch.Elapsed.TotalSeconds:F1} s");
         }
 
-        // Assert: the namespace is gone
-        using var client = KubeClientFactory.Create();
-        Assert.Null(await RunNamespace.TryReadAsync(client, ns, ct));
+        // Assert: the namespace is going (in the background)
+        await RunAssertions.AssertDeletedOrTerminatingAsync(ns, ct);
     }
 
     /// <summary>
@@ -101,7 +101,7 @@ public class ClnTopologyTests
         var ct = TestContext.Current.CancellationToken;
         var readyTimeout = TimeSpan.FromMinutes(3);
         await using var run = await TestRun.StartAsync(Options("cln-restart"), ct);
-        var topology = await ClnPair().BuildAsync(run, ct);
+        var topology = await ClnPair(NodeStorage.Persistent).BuildAsync(run, ct);
         var alice = topology.Node<ClnTestPeer>("alice");
         var bob = topology.Node<ClnTestPeer>("bob");
         var aliceId = await alice.GetNodeIdAsync(ct);

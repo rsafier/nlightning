@@ -1,4 +1,5 @@
 using System.Globalization;
+using k8s.Models;
 
 namespace NLightning.Testing.Cluster.Nodes.BitcoinCore;
 
@@ -22,7 +23,7 @@ public static class BitcoinCoreWorkload
         var workload = new NodeWorkload(options.Name, NodeKind.BitcoinCore, options.Image)
         {
             Resources = options.Resources,
-            Data = new DataVolume(options.DataPath, options.DataSize, options.StorageClassName),
+            Data = new DataVolume(options.DataPath, options.DataSize, options.StorageClassName, options.Storage),
             ReadinessProbe = Probes.Exec(ReadinessCommand(options), options.ReadinessPeriodSeconds,
                                          timeoutSeconds: 5, failureThreshold: 3),
             // bitcoind flushes its chainstate and wallet on SIGTERM
@@ -73,6 +74,54 @@ public static class BitcoinCoreWorkload
             "bitcoin-cli", "-regtest", $"-rpcport={BitcoinCorePorts.Rpc}", $"-rpcuser={options.RpcUser}",
             $"-rpcpassword={options.RpcPassword}", "-rpcclienttimeout=4", "getblockchaininfo"
         ];
+
+    /// <summary>The name of <see cref="StartupWaitContainer"/>.</summary>
+    public const string StartupWaitContainerName = "wait-for-chain";
+
+    /// <summary>How long <see cref="StartupWaitContainer"/> waits before it lets the node start anyway.</summary>
+    public const int DefaultStartupWaitSeconds = 180;
+
+    /// <summary>
+    /// An init container (bitcoind's own image, so nothing new is pulled) that polls <c>getblockchaininfo</c> on
+    /// <paramref name="options"/>' node from another pod every 0.2 s until it answers (resolved, RPC up and out of
+    /// warmup), and after <paramref name="timeoutSeconds"/> exits 0 anyway, so a node restarted while bitcoind is
+    /// partitioned or paused still starts as it did without the wait.
+    /// </summary>
+    public static V1Container StartupWaitContainer(BitcoinCoreOptions options,
+                                                   int timeoutSeconds = DefaultStartupWaitSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(timeoutSeconds);
+
+        var cli = string.Join(' ', new[]
+        {
+            "bitcoin-cli", "-regtest", $"-rpcconnect={options.Name}", $"-rpcport={BitcoinCorePorts.Rpc}",
+            $"-rpcuser={options.RpcUser}", $"-rpcpassword={options.RpcPassword}", "-rpcclienttimeout=2",
+            "getblockchaininfo"
+        }.Select(ShellQuote));
+        var target = $"{options.Name}:{BitcoinCorePorts.Rpc}";
+        var timeout = timeoutSeconds.ToString(CultureInfo.InvariantCulture);
+        // Logs how long it waited, how many calls and the last error (the pod's init log, for diagnostics)
+        var script =
+            $"start=$(date +%s); end=$((start + {timeout})); n=0; "
+          + $"until err=$({cli} 2>&1 >/dev/null); do n=$((n + 1)); last=$err; "
+          + $"if [ \"$(date +%s)\" -ge \"$end\" ]; then echo \"wait-for-chain: {target} not answering after "
+          + $"{timeout} s ($n calls, last: $last), starting anyway\"; exit 0; fi; sleep 0.2; done; "
+          + $"echo \"wait-for-chain: {target} answers after $(($(date +%s) - start)) s, $n failed call(s)"
+          + "${last:+, last: $last}\"";
+        return new V1Container
+        {
+            Name = StartupWaitContainerName,
+            Image = options.Image.Reference,
+            ImagePullPolicy = options.Image.PullPolicyValue,
+            Command = ["sh", "-c", script],
+            Resources = WorkloadResources.Tiny.ToKubernetes()
+        };
+    }
+
+    /// <summary>Single-quotes <paramref name="value"/> for <c>sh</c>.</summary>
+    internal static string ShellQuote(string value) =>
+        "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 
     /// <summary>The bitcoin-cli command line of one RPC call in the node's container.</summary>
     public static IReadOnlyList<string> CliCommand(BitcoinCoreOptions options, string? wallet, string method,

@@ -72,11 +72,10 @@ public class MixedTopologyTests
         {
             watch.Restart();
             await run.DisposeAsync();
-            Log($"{ns}: deleted in {watch.Elapsed.TotalSeconds:F1} s");
+            Log($"{ns}: deletion issued in {watch.Elapsed.TotalSeconds:F1} s");
         }
 
-        // Assert: the namespace is gone
-        using var client = KubeClientFactory.Create();
-        Assert.Null(await RunNamespace.TryReadAsync(client, ns, ct));
+        // Assert: the namespace is going (in the background)
+        await RunAssertions.AssertDeletedOrTerminatingAsync(ns, ct);
     }
 }

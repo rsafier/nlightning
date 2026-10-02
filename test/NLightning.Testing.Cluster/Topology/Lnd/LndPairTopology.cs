@@ -2,6 +2,7 @@ using System.Diagnostics;
 
 namespace NLightning.Testing.Cluster.Topology.Lnd;
 
+using Kube;
 using Nodes;
 using Nodes.BitcoinCore;
 using Nodes.Lnd;
@@ -51,6 +52,18 @@ public sealed class LndPairTopology : IDisposable
 
         public TimeSpan ReadyTimeout { get; init; } = TimeSpan.FromMinutes(3);
 
+        /// <summary>
+        /// Start alice and bob in the same wave as bitcoind (default true; they wait for its RPC in an init container)
+        /// instead of once it is ready.
+        /// </summary>
+        public bool DeployNodesWithChain { get; init; } = true;
+
+        /// <summary>
+        /// Where the three nodes keep their data (default a PVC). <see cref="NodeStorage.Ephemeral"/> starts faster but
+        /// <see cref="LndPairTopology.RestartAsync"/> then refuses.
+        /// </summary>
+        public NodeStorage Storage { get; init; } = NodeStorage.Persistent;
+
         /// <summary>Extra LND flags for both nodes.</summary>
         public IReadOnlyList<string> LndExtraArgs { get; init; } = [];
 
@@ -58,9 +71,9 @@ public sealed class LndPairTopology : IDisposable
     }
 
     /// <summary>
-    /// Deploys bitcoind, mines past coinbase maturity (LND reports <c>synced_to_chain</c> only after a recent block),
-    /// deploys alice and bob in parallel, funds alice, connects, opens the channel, mines 6 blocks and waits until both
-    /// sides report it active.
+    /// Deploys bitcoind and mines past coinbase maturity (LND reports <c>synced_to_chain</c> only after a recent block)
+    /// while alice and bob start (with <see cref="Settings.DeployNodesWithChain"/>; else once bitcoind is ready), funds
+    /// alice, connects, opens the channel, mines 6 blocks and waits until both sides report it active.
     /// </summary>
     public static async Task<LndPairTopology> BuildAsync(TestRun run, Settings settings,
                                                          CancellationToken cancellationToken)
@@ -77,18 +90,35 @@ public sealed class LndPairTopology : IDisposable
             watch.Restart();
         }
 
-        // Mined past coinbase maturity at deploy
-        var chain = await BitcoinCoreTopologyChain.DeployAsync(run, new BitcoinCoreOptions(), settings.ReadyTimeout,
-                                                               cancellationToken)
-                                                  .ConfigureAwait(false);
-        Phase("bitcoind");
-
+        // Mined past coinbase maturity at deploy; alice and bob start in the same wave and wait for its RPC
+        var bitcoinOptions = new BitcoinCoreOptions { Storage = settings.Storage };
+        var endpoint = new BitcoinCoreChainEndpoint(bitcoinOptions);
         LndNodeOptions Lnd(string alias) =>
-            LndNodeDeployer.BuildOptions(chain, new TopologyNodeSpec(alias, NodeKind.Lnd, null, settings.LndExtraArgs));
-        var aliceTask = LndNode.DeployAsync(run, Lnd("alice"), settings.ReadyTimeout, cancellationToken);
-        var bobTask = LndNode.DeployAsync(run, Lnd("bob"), settings.ReadyTimeout, cancellationToken);
+            LndNodeDeployer.BuildOptions(endpoint, new TopologyNodeSpec(alias, NodeKind.Lnd, null,
+                                                                        settings.LndExtraArgs, settings.Storage));
+        using var abort = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var chainTask = BitcoinCoreTopologyChain.DeployAsync(run, bitcoinOptions, settings.ReadyTimeout, abort.Token);
+        Task<LndNode> StartLnd(string alias) =>
+            settings.DeployNodesWithChain
+                ? LndNode.DeployAsync(run, Lnd(alias), settings.ReadyTimeout, abort.Token)
+                : chainTask.ContinueWith(_ => LndNode.DeployAsync(run, Lnd(alias), settings.ReadyTimeout, abort.Token),
+                                         abort.Token, TaskContinuationOptions.OnlyOnRanToCompletion,
+                                         TaskScheduler.Default).Unwrap();
+        // On emptyDirs bitcoind's pod has an IP within about a second: let its name resolve before alice and bob look
+        // it up (CoreDNS caches a miss for 5 s)
+        if (settings.DeployNodesWithChain && settings.Storage == NodeStorage.Ephemeral)
+            await TopologyDeployer.WaitForChainAddressAsync(run, endpoint, TopologyDeployer.DefaultChainAddressWait,
+                                                            chainTask, abort.Token)
+                                  .ConfigureAwait(false);
+        var aliceTask = StartLnd("alice");
+        var bobTask = StartLnd("bob");
+        Task[] wave = [chainTask, aliceTask, bobTask];
+        foreach (var task in wave)
+            FailFast.CancelOnFault(task, abort);
         try
         {
+            var chain = await chainTask.ConfigureAwait(false);
+            Phase("bitcoind");
             await Task.WhenAll(aliceTask, bobTask).ConfigureAwait(false);
             var alice = aliceTask.Result;
             var bob = bobTask.Result;
@@ -122,10 +152,14 @@ public sealed class LndPairTopology : IDisposable
 
             return new LndPairTopology(chain, alice, bob, channel, timings);
         }
-        catch
+        catch (Exception e)
         {
+            await abort.CancelAsync().ConfigureAwait(false);
+            await FailFast.SettleAsync(wave).ConfigureAwait(false);
             DisposeCompleted(aliceTask);
             DisposeCompleted(bobTask);
+            if (FailFast.FirstRealError(wave) is { } error && !ReferenceEquals(error, e))
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
             throw;
         }
     }

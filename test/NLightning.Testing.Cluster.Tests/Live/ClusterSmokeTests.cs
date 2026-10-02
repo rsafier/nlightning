@@ -12,7 +12,7 @@ using Cluster.Runner;
 /// The harness against a real cluster (OrbStack's locally; the context is <c>NLTG_KUBE_CONTEXT</c> or the current
 /// one). Explicit: the normal test run never needs a cluster. Run them with
 /// <c>dotnet run --project test/NLightning.Testing.Cluster.Tests -f net10.0 -- -explicit only -trait Category=Cluster</c>.
-/// Each test owns a <c>nltg-spike-&lt;id&gt;</c> namespace and deletes it.
+/// Each test owns a <c>nltg-spike-&lt;id&gt;</c> namespace and deletes it (in the background).
 /// </summary>
 [Trait("Category", "Cluster")]
 public class ClusterSmokeTests
@@ -79,12 +79,13 @@ public class ClusterSmokeTests
             await run.DisposeAsync();
         }
 
-        // Assert: the namespace is gone, or, in a namespace adopted by the in-cluster runner, the run's node
+        // Assert: the namespace is going (in the background), or, in a namespace adopted by the in-cluster runner, the
+        // run's node is gone
         using var client = KubeClientFactory.Create();
         if (ownsNamespace)
         {
-            Assert.Null(await RunNamespace.TryReadAsync(client, ns, ct));
-            Log($"{ns}: created, ready and deleted in {watch.Elapsed.TotalSeconds:F1} s");
+            await RunAssertions.AssertDeletedOrTerminatingAsync(ns, ct);
+            Log($"{ns}: created, ready and its deletion issued in {watch.Elapsed.TotalSeconds:F1} s");
         }
         else
         {

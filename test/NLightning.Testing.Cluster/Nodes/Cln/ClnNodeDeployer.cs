@@ -1,6 +1,7 @@
 namespace NLightning.Testing.Cluster.Nodes.Cln;
 
 using Images;
+using Kube;
 using Topology;
 
 /// <summary>
@@ -11,13 +12,19 @@ public sealed class ClnNodeDeployer(Func<ClnNodeOptions, ClnNodeOptions>? custom
 {
     public NodeKind Kind => NodeKind.Cln;
 
+    /// <summary>
+    /// CLN is deployed with the chain: its pod (and PVC) start while bitcoind starts, and its init container holds
+    /// lightningd until bitcoind answers.
+    /// </summary>
+    public bool DeploysWithChain => true;
+
     public async Task<ITopologyLightningNode> DeployAsync(TopologyDeployContext context, TopologyNodeSpec node,
                                                           CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(node);
 
-        var options = BuildOptions(context.Chain, node);
+        var options = BuildOptions(context.ChainEndpoint, node);
         if (customize is not null)
             options = customize(options);
         var handle = await context.Run.DeployAsync(ClnNode.Workload(node.Name, options), context.ReadyTimeout,
@@ -32,8 +39,11 @@ public sealed class ClnNodeDeployer(Func<ClnNodeOptions, ClnNodeOptions>? custom
         return peer;
     }
 
-    /// <summary>The options of <paramref name="node"/> on <paramref name="chain"/>.</summary>
-    public static ClnNodeOptions BuildOptions(ITopologyChain chain, TopologyNodeSpec node)
+    /// <summary>
+    /// The options of <paramref name="node"/> on <paramref name="chain"/>, with the chain's startup wait and the node's
+    /// storage.
+    /// </summary>
+    public static ClnNodeOptions BuildOptions(ITopologyChainEndpoint chain, TopologyNodeSpec node)
     {
         ArgumentNullException.ThrowIfNull(chain);
         ArgumentNullException.ThrowIfNull(node);
@@ -44,7 +54,9 @@ public sealed class ClnNodeDeployer(Func<ClnNodeOptions, ClnNodeOptions>? custom
             BitcoindRpcPort = chain.RpcPort,
             BitcoindRpcUser = chain.RpcUser,
             BitcoindRpcPassword = chain.RpcPassword,
-            ExtraArgs = node.Args
+            ExtraArgs = node.Args,
+            Storage = node.Storage ?? NodeStorage.Persistent,
+            StartupWait = chain.CreateStartupWait()
         };
     }
 }

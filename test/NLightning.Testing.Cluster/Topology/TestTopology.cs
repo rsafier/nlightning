@@ -13,8 +13,10 @@ public sealed class TestTopology : IDisposable
 
     internal TestTopology(TopologySpec spec, TestRun run, ITopologyChain chain,
                           IReadOnlyDictionary<string, ITopologyLightningNode> nodes,
-                          IReadOnlyList<TopologyChannel> channels, TimeSpan stepTimeout)
+                          IReadOnlyList<TopologyChannel> channels, TimeSpan stepTimeout,
+                          IReadOnlyDictionary<string, TimeSpan>? timings = null)
     {
+        Timings = timings ?? new Dictionary<string, TimeSpan>();
         Spec = spec;
         Run = run;
         Chain = chain;
@@ -34,6 +36,12 @@ public sealed class TestTopology : IDisposable
 
     /// <summary>The pre-opened channels, active on both ends.</summary>
     public IReadOnlyList<TopologyChannel> Channels { get; }
+
+    /// <summary>
+    /// When each step of the build finished, from the start of the build: <c>chain</c>, <c>nodes</c> (every Lightning
+    /// node ready and at the tip), <c>fundings</c> and <c>channels</c> (the last two only when the topology has them).
+    /// </summary>
+    public IReadOnlyDictionary<string, TimeSpan> Timings { get; }
 
     /// <summary>How long each wait of the helpers below may take.</summary>
     public TimeSpan StepTimeout { get; }

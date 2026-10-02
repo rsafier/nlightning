@@ -440,6 +440,69 @@ shrink; the porting of fixtures and suites is the real remaining cost):
 
 Total to replace the Docker suites: about 9.5-10.5 working days (the plan's §5 had 9-13 plus the spike).
 
+### Phase 2 lane C record: startup and teardown cuts (2026-10-02, branch `hp2-startup` from b379b779)
+
+What changed in `test/NLightning.Testing.Cluster` (details in its `CLAUDE.md` and `Topology/CLAUDE.md`):
+
+- **One wave.** The Lightning nodes' StatefulSets are applied together with bitcoind's
+  (`ILightningNodeDeployer.DeploysWithChain`, true for CLN and LND; `TopologyBuilder.DeployNodesWithChain`, default
+  on; `LndPairTopology.Settings.DeployNodesWithChain`). They know the chain from `ITopologyChainEndpoint` (host, ports,
+  credentials) before it is up, and each pod waits for bitcoind in an init container from bitcoind's own image
+  (`BitcoinCoreWorkload.StartupWaitContainer`: `getblockchaininfo` every 0.2 s, starts anyway after 180 s). Checked
+  without it: **LND exits at once** when bitcoind does not answer ("unable to create partial chain control: lookup ...
+  no such host", pod `Failed`), **CLN after 30 s** ("The Bitcoin backend died").
+- **No PVC where none is needed.** `NodeStorage.Ephemeral` (an `emptyDir`; `TopologyBuilder.Storage`, per node, or
+  `NLTG_NODE_STORAGE`) for nodes a test never restarts or kills (`KubeNodeHandle` refuses both); PVC stays the default
+  and restart tests pin it. A pre-bound volume is not possible within the rules (a PV and an `Immediate`
+  StorageClass are cluster-scoped), and the provisioning, not the binding, is the cost: 6 s alone, 12-15 s with other
+  runs (events of kept runs: `ProvisioningSucceeded` 12-15 s after the claim).
+- **Fast maturity.** The 101 maturity blocks: 1 to the wallet, 100 to `BitcoinCoreTopologyChain.BurnAddress` (P2WSH of
+  `OP_RETURN`). 100 blocks to the wallet took 4.2 s, to a foreign address 0.12 s (same spendable 50 BTC at 101).
+- **No early DNS miss.** CoreDNS caches NXDOMAIN for 5 s (a Service created right after a miss resolved 5.0 s after the
+  miss). On `emptyDir` the wave waits (up to 5 s, `ChainAddressWait`) until the chain's Service has an address before
+  the nodes start (`KubernetesHelper.WaitForServiceAddressAsync`); before that, the startup wait logged "answers after
+  5 s, 24 failed call(s)". On a PVC it does not wait, so a node may lose up to 5 s to the cache.
+- **Teardown.** `TestRun.DisposeAsync` stops the pods first (StatefulSets deleted with `Orphan`, pods with a 1 s grace,
+  `TeardownGracePeriodSeconds`, wait until none runs), then deletes the namespace and returns
+  (`WaitForDeletion` default false). Pods first because the namespace controller, finding unfinished pods, waits for
+  their largest spec grace (bitcoind 30 s) before it looks again. The admission cap keeps counting terminating
+  namespaces (`RunAdmission.HoldsSlot`, unit test `Given_ATerminatingRunNamespace_When_Counted_Then_ItStillHoldsASlot`),
+  so a batch never has more than the cap's namespaces alive, terminating ones included; their slot frees when they
+  are gone.
+- **Warm topology.** `ClusterTopologyFixture<TDefinition>` (`IClusterTopologyDefinition`) builds once per xunit
+  collection and resets nothing; isolation expectations in its XML docs and `Topology/CLAUDE.md`.
+- Found on the way: an LND node of a declarative topology could be "at the tip" before its wallet had synced and
+  then refuse the open ("channels cannot be created before the wallet is fully synced"); `LndNode.GetBlockHeightAsync`
+  now counts the height only once `synced_to_chain`.
+
+Evidence (OrbStack k8s v1.35.6+orb1, Release, net10.0; machine shared with lanes A, B, D and the Docker batch the whole
+time, so the "other harness namespaces" column matters; logs under `TestResults/cluster/<batch>/`). Built = from the
+namespace to the channel active on both ends.
+
+| Topology | Before (b379b779, cluster otherwise empty) | After: one wave, PVC (default) | After: one wave, `emptyDir` |
+|---|---|---|---|
+| CLN pair alone (`ClnTopologyTests` build) | 25.5, 22.1, 22.2 s | 19.5, 26.0, 18.2, 20.5, 20.9 s (43.7 s once with 6 other namespaces) | 6.1 s (`f1-cln`), 10.0 s (`t2-cln`) |
+| LND pair alone (`LndPairTopologyTests`) | 31.8, 28.8, 21.3 s | 14.8, 25.1, 24.6, 22.1, 17.5 s | 8.6 s (`f1-lnd`, builder pair) |
+| Same run, rows side by side (`StartupTiming*Tests`, spike's two waves / one wave PVC / one wave `emptyDir`) | — | CLN 21.7 / 15.4 / 6.1 s, LND 18.0 / 17.7 / 8.6 s (`f1`); CLN 26.7 / 19.7 / 10.0 s (`t2`) | |
+| 6 at once, CLN + LND pairs (3 × 2) | CLN 27.7, 42.0, 32.4 s; LND 43.6, 37.6, 30.7 s | CLN 36.9, 41.6, 31.8 / 43.0, 27.0, 52.5 s; LND 39.8, 27.4, 43.9 / 39.2, 29.9, 44.3 s (`b-six`, `f2-six`): PVC provisioning is the bottleneck at this concurrency | 6 CLN pairs at once: 13.2, 19.5, 13.2, 19.4, 13.8, 13.5 s (`g6-cln`) |
+| 6 at once, rows (`d-six`, build without the slot wait; two waves / one wave PVC / `emptyDir`) | — | CLN 41.8, 37.2, 31.6 / 19.6, 14.0, 19.1 s; LND 26.1, 46.9, 38.7 / 17.4, 20.0, 17.0 s | CLN 9.6, 11.5, 7.9 s; LND 7.7, 9.3, 7.9 s |
+| Disposal as the test sees it | CLN 40.3-41.4 s, LND 16.1-29.7 s alone; 56-84 s 6 at once | 3.4-4.4 s (CLN: the 1 s grace plus the kubelet's 2 s minimum), 0.6-1.5 s (LND) | same |
+| Namespace gone after the delete (background) | = the disposal | 14-21 s alone (before the pods-first stop); 22-57 s 6 at once (`f2-six`) | 13 s alone (`w4`); 13-44 s with 6 at once (`g6-cln`) |
+
+Readings:
+- Target "≤ 12 s to a ready pair alone": met on `emptyDir` (6.1 s CLN, 8.6 s LND; the warm fixture's start incl.
+  namespace 11.1-13.8 s). On PVCs the one wave saves 5-10 s alone, and about half the build at 6 at once, but the
+  local-path provisioner then dominates both start and teardown.
+- With 6 at once the namespace controller is the teardown limit (no pods or PVCs left and still 13-44 s); with the cap
+  counting terminating namespaces, back-to-back batches wait for it (`d2-six`: up to 157 s in admission). Faster
+  turnover needs fewer namespaces per test (the warm fixture) more than faster deletion.
+- Warm topology (`TopologyFixtureTests`, CLN pair on `emptyDir`): started once in 11.1-13.8 s, each test 0.2 s, one
+  namespace for both tests.
+- All `Category=Cluster` tests on the final code (`full1`, every class at once, 32 tests, many runs over the cap): 29
+  green; 3 failed under that load and passed alone (`re-*`): the CLN pair's graceful restart (channel not active again
+  within 60 s), the reaper test (its live run waited for a slot past 30 s, and the admission's own reap removed the
+  orphan first) and the partition baseline connect. Unit tests 466/466.
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.

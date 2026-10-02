@@ -1,3 +1,5 @@
+using k8s.Models;
+
 namespace NLightning.Testing.Cluster.Nodes.Lnd;
 
 using BitcoinCore;
@@ -49,4 +51,16 @@ public sealed record LndNodeOptions
 
     /// <summary>The size of the PVC that holds <see cref="LndWorkload.LndDir"/>.</summary>
     public string DataSize { get; init; } = "1Gi";
+
+    /// <summary>
+    /// <see cref="LndWorkload.LndDir"/> on a PVC (default) or in an <c>emptyDir</c> (<see cref="NodeStorage.Ephemeral"/>:
+    /// faster to start, but the node cannot be restarted or killed).
+    /// </summary>
+    public NodeStorage Storage { get; init; } = NodeStorage.Persistent;
+
+    /// <summary>
+    /// An init container that holds LND until bitcoind answers (<see cref="Topology.ITopologyChainEndpoint.CreateStartupWait"/>;
+    /// LND exits when its chain backend does not answer at start), or null to start at once.
+    /// </summary>
+    public V1Container? StartupWait { get; init; }
 }

@@ -79,11 +79,11 @@ public class LndPairTopologyTests
         {
             var teardown = Stopwatch.StartNew();
             await run.DisposeAsync();
-            Log($"{ns}: torn down in {teardown.Elapsed.TotalSeconds:F1} s, total {total.Elapsed.TotalSeconds:F1} s");
+            Log($"{ns}: torn down in {teardown.Elapsed.TotalSeconds:F1} s (deletion issued), total "
+              + $"{total.Elapsed.TotalSeconds:F1} s");
         }
 
-        // Assert: the namespace is gone
-        using var client = KubeClientFactory.Create();
-        Assert.Null(await RunNamespace.TryReadAsync(client, ns, ct));
+        // Assert: the namespace is going (in the background)
+        await RunAssertions.AssertDeletedOrTerminatingAsync(ns, ct);
     }
 }

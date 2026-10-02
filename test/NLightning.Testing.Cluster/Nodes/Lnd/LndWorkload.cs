@@ -44,12 +44,14 @@ public static class LndWorkload
         var workload = new NodeWorkload(options.Alias, NodeKind.Lnd, options.Image)
         {
             Resources = options.Resources,
-            Data = new DataVolume(LndDir, options.DataSize),
+            Data = new DataVolume(LndDir, options.DataSize, Storage: options.Storage),
             // LND needs a few seconds to open its wallet; readiness failures never restart the pod
             ReadinessProbe = Probes.Exec(ReadinessCommand, periodSeconds: 2, timeoutSeconds: 10, failureThreshold: 3,
                                          initialDelaySeconds: 3),
             TerminationGracePeriodSeconds = 15
         };
+        if (options.StartupWait is { } wait)
+            workload.InitContainers.Add(wait);
         foreach (var arg in BuildArgs(options))
             workload.Args.Add(arg);
         workload.Ports.Add(new WorkloadPort("p2p", P2pPort));

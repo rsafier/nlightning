@@ -1,8 +1,11 @@
 namespace NLightning.Testing.Cluster.Tests.Nodes.Lnd;
 
 using Cluster.Images;
+using Cluster.Kube;
 using Cluster.Nodes;
+using Cluster.Nodes.BitcoinCore;
 using Cluster.Nodes.Lnd;
+using Cluster.Run;
 using Cluster.Topology;
 using Topology;
 
@@ -57,5 +60,39 @@ public class LndNodeDeployerTests
         // Assert
         Assert.Equal(NodeKind.Lnd, new LndNodeDeployer().Kind);
         Assert.Equal([NodeKind.Lnd, NodeKind.Cln], spec.LightningNodes.Select(n => n.Kind));
+    }
+
+    [Fact]
+    public void Given_AChainEndpointAndEphemeralStorage_When_TheWorkloadIsBuilt_Then_ItWaitsForTheChainOnAnEmptyDir()
+    {
+        // Arrange
+        var endpoint = BitcoinCoreTopologyChain.EndpointFor(new TopologyNodeSpec("miner", NodeKind.BitcoinCore));
+        var spec = new TopologyNodeSpec("alice", NodeKind.Lnd, Storage: NodeStorage.Ephemeral);
+
+        // Act
+        var options = LndNodeDeployer.BuildOptions(endpoint, spec);
+        var pod = LndWorkload.Build(options).Build(RunIdentity.Create(new TestRunOptions { RunId = "r1" }, DateTimeOffset.UnixEpoch))
+                     .StatefulSet.Spec.Template.Spec;
+
+        // Assert
+        Assert.Equal(NodeStorage.Ephemeral, options.Storage);
+        var wait = Assert.Single(pod.InitContainers);
+        Assert.Equal(BitcoinCoreWorkload.StartupWaitContainerName, wait.Name);
+        Assert.Contains(pod.Volumes, v => v.Name == DataVolume.VolumeName && v.EmptyDir is not null);
+        Assert.True(new LndNodeDeployer().DeploysWithChain);
+    }
+
+    [Fact]
+    public void Given_ANodeSpecWithoutStorage_When_TheOptionsAreBuilt_Then_TheDataIsOnAPvc()
+    {
+        // Arrange
+        var chain = new FakeChain(new FakeNodeHandle("miner", NodeKind.BitcoinCore));
+
+        // Act
+        var options = LndNodeDeployer.BuildOptions(chain, new TopologyNodeSpec("alice", NodeKind.Lnd));
+
+        // Assert
+        Assert.Equal(NodeStorage.Persistent, options.Storage);
+        Assert.Null(options.StartupWait);
     }
 }

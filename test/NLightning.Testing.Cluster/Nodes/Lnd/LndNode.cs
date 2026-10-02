@@ -211,11 +211,17 @@ public sealed class LndNode : ITopologyLightningNode, IDisposable
     }
 
     /// <summary>The block height LND has processed (<c>GetInfo</c>).</summary>
+    /// <summary>
+    /// The height LND has processed: <c>GetInfo</c>'s block height once it reports <c>synced_to_chain</c>, one less
+    /// before. <c>block_height</c> alone is the backend's tip, which LND's wallet may not have reached yet, and an open
+    /// then fails with "channels cannot be created before the wallet is fully synced" (seen when the topology's nodes
+    /// start with the chain).
+    /// </summary>
     public async Task<long> GetBlockHeightAsync(CancellationToken cancellationToken)
     {
         var info = await Lightning.GetInfoAsync(new GetInfoRequest(), cancellationToken: cancellationToken)
                                   .ResponseAsync.ConfigureAwait(false);
-        return info.BlockHeight;
+        return info.SyncedToChain ? info.BlockHeight : Math.Max(0, (long)info.BlockHeight - 1);
     }
 
     /// <summary>The wallet's confirmed balance in satoshis.</summary>

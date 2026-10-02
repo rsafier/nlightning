@@ -54,8 +54,22 @@ public sealed record TestRunOptions
     /// <summary>Keep the namespace when the run is disposed.</summary>
     public bool KeepNamespace { get; init; }
 
-    /// <summary>Wait until the namespace is gone when the run is disposed.</summary>
-    public bool WaitForDeletion { get; init; } = true;
+    /// <summary>
+    /// Wait until the namespace is gone when the run is disposed. Off by default: disposing issues the deletion and
+    /// returns, and the namespace finishes terminating in the background (19-62 s measured, the PVCs last). It still
+    /// holds its slot under <see cref="MaxConcurrentRuns"/> until it is gone (<see cref="RunAdmission.HoldsSlot"/>),
+    /// and the reaper deletes whatever a run that could not finish left behind.
+    /// </summary>
+    public bool WaitForDeletion { get; init; }
+
+    /// <summary>
+    /// The grace period, in seconds, the run's pods get when the run is disposed, instead of each pod's own (bitcoind
+    /// 30 s, LND and CLN 15 s, CLN's drain): the run is over, so a graceful stop only delays the namespace's deletion.
+    /// The disposal stops the pods first (about 3 s, <see cref="RunNamespace.StopPodsAsync"/>), then deletes the
+    /// namespace, which then goes in seconds. Null keeps each pod's own and deletes the namespace at once (it then
+    /// takes 30 s or more to go). Not for <see cref="AdoptNamespace"/> runs, whose nodes are removed one by one.
+    /// </summary>
+    public int? TeardownGracePeriodSeconds { get; init; } = 1;
 
     /// <summary>How long <see cref="WaitForDeletion"/> waits.</summary>
     public TimeSpan DeletionTimeout { get; init; } = TimeSpan.FromMinutes(2);

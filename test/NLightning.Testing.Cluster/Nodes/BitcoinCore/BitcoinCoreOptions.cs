@@ -49,6 +49,12 @@ public sealed record BitcoinCoreOptions
     /// <summary>The data PVC's storage class, or null for the cluster default.</summary>
     public string? StorageClassName { get; init; }
 
+    /// <summary>
+    /// The data directory on a PVC (default) or in an <c>emptyDir</c> (<see cref="NodeStorage.Ephemeral"/>: faster to
+    /// start, but the node cannot be restarted or killed).
+    /// </summary>
+    public NodeStorage Storage { get; init; } = NodeStorage.Persistent;
+
     /// <summary>The data directory (both images' <c>/home/bitcoin/.bitcoin</c>), the PVC's mount path.</summary>
     public string DataPath { get; init; } = "/home/bitcoin/.bitcoin";
 

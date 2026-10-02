@@ -1,6 +1,7 @@
 namespace NLightning.Testing.Cluster.Nodes.Lnd;
 
 using Images;
+using Kube;
 using Topology;
 
 /// <summary>
@@ -13,13 +14,19 @@ public sealed class LndNodeDeployer(Func<LndNodeOptions, LndNodeOptions>? custom
 {
     public NodeKind Kind => NodeKind.Lnd;
 
+    /// <summary>
+    /// LND is deployed with the chain: its pod (and PVC) start while bitcoind starts, its init container holds LND
+    /// until bitcoind answers, and it turns ready (<c>synced_to_chain</c>) once the chain has mined its first blocks.
+    /// </summary>
+    public bool DeploysWithChain => true;
+
     public async Task<ITopologyLightningNode> DeployAsync(TopologyDeployContext context, TopologyNodeSpec node,
                                                           CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(node);
 
-        var options = BuildOptions(context.Chain, node);
+        var options = BuildOptions(context.ChainEndpoint, node);
         if (customize is not null)
             options = customize(options);
         var lnd = await LndNode.DeployAsync(context.Run, options, context.ReadyTimeout, cancellationToken)
@@ -29,8 +36,11 @@ public sealed class LndNodeDeployer(Func<LndNodeOptions, LndNodeOptions>? custom
         return lnd;
     }
 
-    /// <summary>The options of <paramref name="node"/> on <paramref name="chain"/>.</summary>
-    public static LndNodeOptions BuildOptions(ITopologyChain chain, TopologyNodeSpec node)
+    /// <summary>
+    /// The options of <paramref name="node"/> on <paramref name="chain"/>, with the chain's startup wait and the node's
+    /// storage.
+    /// </summary>
+    public static LndNodeOptions BuildOptions(ITopologyChainEndpoint chain, TopologyNodeSpec node)
     {
         ArgumentNullException.ThrowIfNull(chain);
         ArgumentNullException.ThrowIfNull(node);
@@ -43,7 +53,9 @@ public sealed class LndNodeDeployer(Func<LndNodeOptions, LndNodeOptions>? custom
             BitcoindRpcPassword = chain.RpcPassword,
             ZmqRawBlockPort = chain.ZmqRawBlockPort,
             ZmqRawTxPort = chain.ZmqRawTxPort,
-            ExtraArgs = node.Args
+            ExtraArgs = node.Args,
+            Storage = node.Storage ?? NodeStorage.Persistent,
+            StartupWait = chain.CreateStartupWait()
         };
     }
 }
