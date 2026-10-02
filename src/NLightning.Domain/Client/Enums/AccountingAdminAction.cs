@@ -33,6 +33,10 @@ public enum AccountingAdminAction
     /// A3-T4).</summary>
     LotsImport = 13,
 
+    /// <summary>Replace a stored price the operator found wrong and re-value what it priced (<c>accounting prices
+    /// replace</c>, NL-693).</summary>
+    PricesReplace = 14,
+
     // A3-T5 (period close) takes 20-22 so the parallel A3 lanes never collide on a value
 
     /// <summary>Close a period of the financial book (<c>accounting close &lt;period&gt; [--force]</c>).</summary>

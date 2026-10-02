@@ -27,6 +27,11 @@ public static class AccountingEventKeys
     public static string ForwardLostOnchain(ChannelId incomingChannelId, ulong incomingHtlcId) =>
         $"fwd:{incomingChannelId}:{incomingHtlcId}:onchain";
 
+    /// <summary>The loss of one incoming HTLC of our settled invoice <paramref name="paymentHash"/> on chain
+    /// (NL-688): one key per HTLC, so the parts of a multi-part payment are told apart.</summary>
+    public static string InvoiceLostOnchain(Hash paymentHash, ChannelId incomingChannelId, ulong incomingHtlcId) =>
+        $"inv:{paymentHash}:{incomingChannelId}:{incomingHtlcId}:onchain";
+
     public static string ChannelFunded(ChannelId channelId, TxId fundingTxId) =>
         $"chan:{channelId}:funded:{fundingTxId}";
 

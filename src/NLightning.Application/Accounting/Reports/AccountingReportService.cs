@@ -409,6 +409,7 @@ public sealed class AccountingReportService : IAccountingReports
                     return;
                 }
             case AccountingEventKind.ForwardLostOnchain:
+            case AccountingEventKind.InvoiceLostOnchain:
                 {
                     if (GetOrAdd(channels, accountingEvent.ChannelId) is not { } channel)
                         return;
@@ -470,6 +471,11 @@ public sealed class AccountingReportService : IAccountingReports
                 return true;
             case AccountingEventKind.AnchorCpfpFee:
                 channel.CpfpFeeMsat += accountingEvent.FeeMsat;
+                return true;
+            case AccountingEventKind.ForwardLostOnchain:
+            case AccountingEventKind.InvoiceLostOnchain:
+                // Only a reorg's reversal comes here (NL-688): the loss comes off again
+                channel.OnchainLossMsat -= accountingEvent.AmountMsat;
                 return true;
             default:
                 return false;

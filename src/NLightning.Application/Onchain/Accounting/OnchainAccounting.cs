@@ -76,7 +76,8 @@ using Domain.Onchain.Models;
 /// <see cref="AccountingDetailKeys.ClaimPath"/>): the peer taking it by the revocation path of our own revoked
 /// commitment (or any spend without the preimage) gets no <see cref="ValueBookedByKey"/>, so the books post a loss. (c) An offered HTLC that times out back to us is an ordinary movement into the wallet, with
 /// its fees: it was in our gross balance at the close. (d) An incoming HTLC that times out to the peer is 0,
-/// informational. The books match the HTLC by <see cref="PaymentHashKey"/>/<see cref="HtlcIdKey"/>.</para>
+/// informational; when the off-chain side had booked it (a settled forward, NL-608, or a settled invoice of ours, NL-688)
+/// its own event (<c>ForwardLostOnchain</c>, <c>InvoiceLostOnchain</c>) books the loss in the same save. The books match the HTLC by <see cref="PaymentHashKey"/>/<see cref="HtlcIdKey"/>.</para>
 /// <para><b>Reorgs.</b> A resolution whose spend was reorged out, and a close replaced by another transaction, are
 /// negated by <see cref="AccountingEventKind.Reversal"/> events (key
 /// <see cref="AccountingEventKeys.Reversal(string, uint)"/>, amount and fee negated, details

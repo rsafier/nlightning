@@ -59,7 +59,8 @@ public static class AccountingPostingRules
                 AccountingEventKind.PaymentSucceeded => PostPaymentSucceeded(accountingEvent, lines),
                 AccountingEventKind.PaymentFailed => null,
                 AccountingEventKind.ForwardSettled => PostForwardSettled(accountingEvent, lines),
-                AccountingEventKind.ForwardLostOnchain => PostForwardLostOnchain(accountingEvent, lines),
+                AccountingEventKind.ForwardLostOnchain or AccountingEventKind.InvoiceLostOnchain =>
+                    PostForwardLostOnchain(accountingEvent, lines),
                 AccountingEventKind.ChannelFunded => PostWalletToChannel(accountingEvent, AccountRole.FeeFunding, lines),
                 AccountingEventKind.PushSent or AccountingEventKind.PushReceived => PostPush(accountingEvent, lines),
                 AccountingEventKind.SpliceLocked => PostWalletToChannel(accountingEvent, AccountRole.FeeSplice, lines),
@@ -112,6 +113,7 @@ public static class AccountingPostingRules
                                                             Text(accountingEvent, AccountingDetailKeys.Reason)),
             AccountingEventKind.ForwardSettled => WithDetail("Forward settled", Route(accountingEvent)),
             AccountingEventKind.ForwardLostOnchain => WithDetail("Forward lost on chain", Route(accountingEvent)),
+            AccountingEventKind.InvoiceLostOnchain => WithDetail("Invoice payment lost on chain", description),
             AccountingEventKind.ChannelFunded => IsSet(accountingEvent, AccountingDetailKeys.DualFunded)
                                                      ? "Channel funded (dual-funded)"
                                                      : "Channel funded",
@@ -185,7 +187,9 @@ public static class AccountingPostingRules
         return null;
     }
 
-    /// <summary>AmountMsat = −v: Cr Channels v; Dr LossOnchain v (a gain the other way round).</summary>
+    /// <summary>AmountMsat = −v: Cr Channels v; Dr LossOnchain v (a gain the other way round). Also the rule of an
+    /// <see cref="AccountingEventKind.InvoiceLostOnchain"/> (NL-688): the HTLC amount its <c>InvoiceSettled</c> left in
+    /// the channels, which the close never took out (an incoming HTLC is not in our balance at the close).</summary>
     private static string? PostForwardLostOnchain(AccountingEventModel e, Lines lines)
     {
         lines.Add(AccountRole.Channels, e.AmountMsat);

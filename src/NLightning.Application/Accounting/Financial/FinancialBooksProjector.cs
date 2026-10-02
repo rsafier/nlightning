@@ -572,6 +572,7 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
         IReadOnlyList<AccountingPosting>? fixedPostings = null;
         var fixedFlags = AccountingEntryFlags.None;
         long? correctionOf = null;
+        IReadOnlyList<AccountingPosting> repricingNegation = [];
 
         var reversedKey = operational.Kind == AccountingEventKind.Reversal
                        && accountingEvent.Details.TryGetValue(AccountingConfirmations.ReversesDetail, out var key)
@@ -594,8 +595,9 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             // takes back of the fact's acquisition is a correction at cost (NL-675)
             lines = closed.Lines;
             correctionOf = closed.LedgerSeq;
+            repricingNegation = closed.Repricings;
             extraFlags |= AccountingEntryFlags.Adjustment;
-            notes.Add($"reverses {reversedKey} of a closed period");
+            notes.Add(ClosedFactReversalNote(reversedKey));
         }
         else
         {
@@ -633,6 +635,10 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
                 Cancelled = cancelled,
                 CorrectionOf = correctionOf
             }, round.Pool, _chart);
+
+            // NL-693: the closed fact's corrections for a replaced price go back with it (they balance in fiat)
+            if (repricingNegation.Count > 0)
+                plan = plan with { Postings = [.. plan.Postings, .. repricingNegation] };
         }
 
         if (plan.ShortfallMsat > 0)
@@ -771,17 +777,27 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
         throw new RestartException(projected.LedgerSeq);
     }
 
+    /// <summary>The note of the reversal of a closed period's fact (the price replacement finds it, NL-693).</summary>
+    internal static string ClosedFactReversalNote(string reversedKey) => $"reverses {reversedKey} of a closed period";
+
     /// <summary>The negated lines (at their values) of a closed period's fact and its ledger sequence, or null when the
-    /// fact is not in a closed period of the book.</summary>
-    private static async Task<(IReadOnlyList<AccountingPosting> Lines, long LedgerSeq)?> ClosedFactLinesAsync(
-        IAccountingBooksDbRepository books, string reversedKey, CancellationToken cancellationToken)
+    /// fact is not in a closed period of the book; with the negated lines of its price-replacement corrections
+    /// (<c>PriceValuationService.ReplaceAsync</c>, NL-693), which the planner's correction at cost would not take back.
+    /// </summary>
+    private static async Task<(IReadOnlyList<AccountingPosting> Lines, long LedgerSeq,
+            IReadOnlyList<AccountingPosting> Repricings)?>
+        ClosedFactLinesAsync(IAccountingBooksDbRepository books, string reversedKey,
+                             CancellationToken cancellationToken)
     {
         var entries = await books.GetEntriesByKeyAsync(AccountingBook.Financial, reversedKey, cancellationToken);
         if (entries.Count == 0 || entries.Any(e => e.Adjustment == 0 && e.ClosedPeriodId is null))
             return null;
 
+        var repricings = entries.Where(PriceValuationService.IsRepricing).ToList();
+
         // Every entry of the fact (a late fact's adjustment, a reclassification) summed per account, msat lines only
-        var sums = entries.SelectMany(e => e.Postings)
+        var sums = entries.Where(e => !PriceValuationService.IsRepricing(e))
+                          .SelectMany(e => e.Postings)
                           .GroupBy(p => (p.Account, p.AccountName))
                           .Select(g => (g.Key.Account, g.Key.AccountName, Msat: g.Sum(p => p.AmountMsat),
                                         Valued: g.All(p => p.FiatAmount is not null),
@@ -795,7 +811,7 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             AccountName = s.AccountName,
             FiatAmount = valued ? -s.Fiat : null,
             FiatCurrency = valued ? s.Currency : null
-        }).ToList(), entries[0].LedgerSeq);
+        }).ToList(), entries[0].LedgerSeq, repricings.SelectMany(e => e.Postings).Select(Negate).ToList());
     }
 
     private static AccountingPosting Negate(AccountingPosting posting) =>

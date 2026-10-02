@@ -5,7 +5,7 @@ namespace NLightning.Client.Printers;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// Prints <c>accounting prices import|list|fetch</c> (NL-602 A3-T2). Prices arrive as invariant text and times are
+/// Prints <c>accounting prices import|list|fetch|replace</c> (NL-602 A3-T2, NL-693). Prices arrive as invariant text and times are
 /// printed in UTC, so the output does not depend on the client's culture (the counts are non-negative integers).
 /// </summary>
 public sealed class AccountingPricesPrinter : IPrinter<AccountingPricesIpcResponse>
@@ -48,6 +48,29 @@ public sealed class AccountingPricesPrinter : IPrinter<AccountingPricesIpcRespon
                             + $"{fetch.AlreadyCovered} already stored, {fetch.Requested} asked, "
                             + $"{fetch.Stored} stored, {fetch.Unavailable} unavailable");
             PrintValuation(fetch.Valuation);
+        }
+
+        if (item.Replace is { } replace)
+        {
+            var price = replace.Price;
+            if (!replace.Changed)
+            {
+                _output.WriteLine($"The {item.Currency} price of {Time(price.TimeUnixSeconds)} already is "
+                                + $"{price.Price}: nothing changed");
+                return;
+            }
+
+            _output.WriteLine($"Replaced the {item.Currency} price of {Time(price.TimeUnixSeconds)} (id {price.Id}): "
+                            + $"{replace.OldPrice} ({replace.OldSourceName}, stored "
+                            + $"{Time(replace.OldFetchedAtUnixSeconds)}) -> {price.Price} ({price.SourceName}, "
+                            + $"{Time(price.FetchedAtUnixSeconds)})");
+            _output.WriteLine(replace.ReplayFromLedgerSeq is { } from
+                                  ? $"{replace.OpenEntries} open-period entr(ies) valued with it are projected again "
+                                  + $"from ledger sequence {from}"
+                                  : "No open-period entry was valued with it");
+            _output.WriteLine($"{replace.ClosedEntries} entr(ies) of closed periods valued with it: "
+                            + $"{replace.Adjustments} price adjustment(s) in the open period, "
+                            + $"{replace.LinesRepriced} line(s) revalued");
         }
     }
 

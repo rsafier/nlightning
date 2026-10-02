@@ -116,6 +116,7 @@ Every row stores these fields:
 | `PaymentFailed` | `PaymentService` | 0 | Informational only; it never posts money. |
 | `ForwardSettled` | Circuit → Fulfilled (the incoming fulfill's save) | +fee = in − out | Records the in and out channels and amounts. |
 | `ForwardLostOnchain` | Resolver path where we paid downstream on chain but lost upstream, or the reverse | ± | Loss event. Rare but real. |
+| `InvoiceLostOnchain` | `OnchainResolutionExecutor`, in the resolution's save: an incoming HTLC of our settled invoice (its record carries the preimage) that the peer took by its timeout, or we gave up (NL-688) | −HTLC amount | Keyed per HTLC (`inv:{hash}:{channel}:{htlc}:onchain`); a reorg or a replaced close reverses it. The sale stays income (the payer holds the preimage). |
 | `ChannelFunded` | Funding confirmation (`ChannelFundings` lock save) | −our contribution; fee = our share of the funding tx fee | Records push (NL-605), dual-fund shares, public/private, and whether it is an anchors channel. The contribution moves wallet → channel; the push is a separate `PushSent`/`PushReceived`. |
 | `SpliceLocked` | `IChannelFundingDbRepository.ApplyLockAsync` save | ±delta; fee = our share | Splice in and out. RBF siblings that never lock emit nothing except the wallet release. |
 | `ChannelClosedMutual` | Close tx confirmation | channel → wallet; fee = closing fee if we pay it | Fees are settled on the closing tx, not on the commitment. |
@@ -195,6 +196,7 @@ A mismatch is a bug, never an adjustment.
 | `PaymentFailed` | none |
 | `ForwardSettled` | Dr Channels fee; Cr Routing fee |
 | `ForwardLostOnchain` | Cr Channels v; Dr LossOnchain v |
+| `InvoiceLostOnchain` | Cr Channels v; Dr LossOnchain v (the amount `InvoiceSettled` put in the channels, which the close never took out; NL-688) |
 | `ChannelFunded` | Dr Channels c; Dr FeeFunding fee; Cr Clearing (c + fee) |
 | `PushSent` / `PushReceived` | Cr Channels p; Dr PushSent p / Dr Channels p; Cr PushReceived p |
 | `SpliceLocked` (delta d, fee already out of d) | Dr Channels d; Dr FeeSplice fee; Cr Clearing (d + fee) |
@@ -382,6 +384,7 @@ Migration `AddAccountingFinancial` (`./scripts/add_migration.sh`, Postgres/Sqlit
 - IPC 45: `prices import <csv>` (client reads the file, sends rows), `prices list`, `prices fetch --since`.
 - Proof: the nearest-price rule at the `MaxAge` boundary, CSV parse errors reported by line, the HTTP source against a fake handler, back-valuation filling and never touching a closed period, and no request at all with `Source=None`.
 - As built (lane acct-a3-t2-prices): Domain `Accounting/Prices/` (`AccountingPriceOptions` bound from `Accounting:Prices`, `IPriceSource`, `AccountingPriceCsv`, `AccountingValuation`), Infrastructure.Bitcoin `Accounting/Prices/` (`CsvPriceSource`, `HttpPriceSource`, `CompositePriceSource`; `AddAccountingPriceSources()` next to `AddFeeServices`, the HTTP client through `TorHttpHandler` and built only when the HTTP source is configured), Application `Accounting/Prices/PriceValuationService` (also `IAccountingPrices`), IPC 45 actions 10-12 (request key 10), client `accounting prices import|list|fetch`. Readings of the plan: `Source` defaults to `Both` (the file first, then mempool.space); a posting waits for the price of its own UTC hour while a fetching source may still answer it, and takes D-A11's nearest price within `MaxAge` once that hour is two hours old (`RecentHourWait`); an imported or fetched time keeps its first price (reproducible reports); `prices fetch` asks at most 744 hours (31 days). The back-valuation holds the books' write lock from its closed-period check to its save (NL-661) and clears `Unvalued` (NL-666). Details: `src/NLightning.Application/CLAUDE.md` "Accounting financial profile: prices and back-valuation".
+- Later (batch11, NL-693): `prices replace <time> <price> [--currency] [--source] [--note]` (IPC 45 action 14) corrects a wrong stored price in place (id and time kept, source `Manual`, `FetchedAt` = the replacement) and re-values what it priced: the open period's entries are projected again from the earliest (as a rebuild would value them), the lines of closed periods get one `Price` adjustment per entry in the open period with the change of their value (the realized gain for a disposal's proceeds, `assets:cost-basis` for an acquisition, whose closed lots keep their cost, D-A8), and a closed fact's reversal takes its corrections back with it. No schema change; the audit trail is the log and the adjustments' notes (NL-758 for a table of its own).
 
 #### A3-T3: financial chart, classification and overrides
 

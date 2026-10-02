@@ -21,6 +21,13 @@ public enum AccountingEventKind
     /// <summary>A forward whose two sides resolved differently on chain (a gain or a loss).</summary>
     ForwardLostOnchain = 5,
 
+    /// <summary>
+    /// One of our invoices was settled (its <see cref="InvoiceSettled"/> booked the HTLC's amount) but an incoming HTLC
+    /// of it was then lost on chain: the peer took the output by its timeout, or we gave it up (NL-688). The HTLC's
+    /// amount is a loss.
+    /// </summary>
+    InvoiceLostOnchain = 6,
+
     /// <summary>A channel's funding confirmed: our contribution moved from the wallet into the channel.</summary>
     ChannelFunded = 10,
 

@@ -147,7 +147,8 @@ check "daemon --check-config (template)" 0 "Configuration OK" "$daemon" --networ
 
 config="$home/.nltg/regtest/appsettings.json"
 cp "$config" "$config.orig"
-sed -i.bak 's#"RpcEndpoint": "http://localhost:[0-9]*"#"RpcEndpoint": "localhost"#' "$config"
+# An ftp URL: a scheme-less "localhost" is a valid endpoint since NL-740 (NL-751)
+sed -i.bak 's#"RpcEndpoint": "http://localhost:[0-9]*"#"RpcEndpoint": "ftp://localhost"#' "$config"
 check "daemon --check-config (broken Bitcoin section)" 1 "Bitcoin:RpcEndpoint" \
   "$daemon" --network regtest --check-config
 cp "$config.orig" "$config"

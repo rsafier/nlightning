@@ -295,6 +295,62 @@ internal static class PaymentAccountingEvents
         };
     }
 
+    /// <summary>The detail <c>cause</c> of an <see cref="AccountingEventKind.InvoiceLostOnchain"/> (NL-688).</summary>
+    public const string InvoiceOnchainCause = "invoiceOnchain";
+
+    /// <summary>
+    /// One of our invoices booked as settled (<see cref="InvoiceSettled"/>) whose incoming HTLC we then lost on chain
+    /// (NL-688): the peer took the HTLC output by its timeout before our claim with the preimage confirmed, or we gave it
+    /// up. The payer holds the preimage (the invoice is paid), but the HTLC's amount never reached us.
+    /// </summary>
+    /// <param name="key">The event key (the generation of <see cref="AccountingEventKeys.InvoiceLostOnchain"/>).</param>
+    /// <param name="invoice">The invoice, <c>Settled</c>.</param>
+    /// <param name="htlcId">The incoming HTLC's id.</param>
+    /// <param name="htlcAmountMsat">The incoming HTLC's amount (the part of the settled set that is lost).</param>
+    /// <param name="channel">The channel the HTLC came in on.</param>
+    /// <param name="closeTxId">The commitment the HTLC output belongs to.</param>
+    /// <param name="spenderTxId">The peer's transaction that took it; null when we gave it up.</param>
+    /// <param name="occurredAt">When the resolution was recorded.</param>
+    /// <param name="blockHeight">The block of the spend (or of the round that gave it up).</param>
+    public static AccountingEventModel InvoiceLostOnchain(string key, InvoiceModel invoice, ulong htlcId,
+                                                          ulong htlcAmountMsat, ChannelModel channel, TxId closeTxId,
+                                                          TxId? spenderTxId, DateTimeOffset occurredAt,
+                                                          uint blockHeight)
+    {
+        var details = AccountingDetailsCodec.Create(
+        [
+            (AccountingDetailKeys.Kind, KindName(invoice.Kind)),
+            (AccountingDetailKeys.Description,
+             string.IsNullOrEmpty(invoice.Description) ? null : invoice.Description),
+            ("cause", InvoiceOnchainCause),
+            ("htlcId", htlcId.ToString(CultureInfo.InvariantCulture)),
+            (AccountingDetailKeys.CloseTxId, closeTxId.ToString()),
+            ("spenderTxId", spenderTxId?.ToString()),
+            ("settledKey", AccountingEventKeys.InvoiceSettled(invoice.PaymentHash)),
+            (AccountingDetailKeys.Reason,
+             spenderTxId is null
+                 ? "An incoming HTLC of a settled invoice was given up on chain"
+                 : "An incoming HTLC of a settled invoice was taken back by the peer on chain (its timeout)"),
+            .. SourceLabels.FromStored(invoice.Label, invoice.Tags).ToDetailPairs()
+        ]);
+
+        return new AccountingEventModel
+        {
+            EventKey = key,
+            Kind = AccountingEventKind.InvoiceLostOnchain,
+            OccurredAt = occurredAt,
+            BlockHeight = blockHeight,
+            ChannelId = channel.ChannelId,
+            ShortChannelId = ScidOf(channel),
+            PaymentHash = invoice.PaymentHash,
+            Counterparty = channel.RemoteNodeId,
+            AmountMsat = -checked((long)htlcAmountMsat),
+            FeeMsat = 0,
+            Finality = AccountingFinality.Confirmed,
+            Details = details
+        };
+    }
+
     private static IReadOnlyDictionary<string, string> ForwardDetails(ForwardCircuitModel circuit,
                                                                       ChannelModel? incoming, ChannelModel? outgoing)
     {

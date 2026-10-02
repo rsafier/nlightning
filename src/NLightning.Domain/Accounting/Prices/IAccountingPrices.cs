@@ -4,7 +4,7 @@ using Financial;
 
 /// <summary>
 /// The stored prices and the back-valuation of the financial books, for <c>nltg accounting prices
-/// import|list|fetch</c> (IPC 45, NL-602 A3-T2). Implemented by <c>PriceValuationService</c>.
+/// import|list|fetch|replace</c> (IPC 45, NL-602 A3-T2, NL-693). Implemented by <c>PriceValuationService</c>.
 /// </summary>
 public interface IAccountingPrices
 {
@@ -37,10 +37,68 @@ public interface IAccountingPrices
     Task<AccountingPriceFetchResult> FetchAsync(DateTimeOffset since, DateTimeOffset? until,
                                                 CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Replaces a stored price the operator found wrong (<c>prices replace</c>, NL-693) and re-values what it priced in
+    /// the financial book: the open period's entries valued with it are projected again from the earliest of them (the
+    /// financial projector's replay: lots, reliefs and gains as a rebuild would have them), and the lines of closed
+    /// periods valued with it get a <c>Price</c> adjustment each entry in the open period with the change of their
+    /// value (D-A8: a closed period is never rewritten). The row keeps its id and time; its source becomes
+    /// <see cref="AccountingPriceSource.Manual"/> and its <c>FetchedAt</c> the time of the replacement; the old price,
+    /// the operator's source and note are logged and written in the adjustments' notes.
+    /// </summary>
+    /// <exception cref="ArgumentException">A bad currency, price, source or note, or no stored price at that time (to
+    /// the second).</exception>
+    Task<AccountingPriceReplaceResult> ReplaceAsync(AccountingPriceReplacement replacement,
+                                                    CancellationToken cancellationToken = default);
+
     /// <summary>Runs one back-valuation round now (serialized with the background rounds), asking the sources for
     /// at most <c>MaxFetchesPerRound</c> prices.</summary>
     Task<AccountingValuationRoundResult> ValueNowAsync(CancellationToken cancellationToken = default);
 }
+
+/// <summary>The operator's correction of a stored price (<c>prices replace</c>, NL-693).</summary>
+/// <param name="Currency">The price's currency, or null for the configured one.</param>
+/// <param name="Time">The stored price's time (matched to the second).</param>
+/// <param name="Price">The right price of 1 BTC.</param>
+/// <param name="Source">Where the right price comes from (free text, the audit trail), or null.</param>
+/// <param name="Note">Why it is replaced (free text, the audit trail), or null.</param>
+public sealed record AccountingPriceReplacement(
+    string? Currency,
+    DateTimeOffset Time,
+    decimal Price,
+    string? Source = null,
+    string? Note = null)
+{
+    /// <summary>The longest <see cref="Source"/>.</summary>
+    public const int MaxSourceLength = 100;
+
+    /// <summary>The longest <see cref="Note"/>.</summary>
+    public const int MaxNoteLength = 300;
+}
+
+/// <summary>What a price replacement changed (NL-693).</summary>
+/// <param name="Price">The stored price after the replacement (its id and time kept).</param>
+/// <param name="OldPrice">The price it replaced.</param>
+/// <param name="OldSource">Where the replaced price came from.</param>
+/// <param name="OldFetchedAt">When the replaced price was stored.</param>
+/// <param name="Changed">False when the stored price already was the new one (nothing done).</param>
+/// <param name="ReplayFromLedgerSeq">The ledger sequence the financial projector projects the open period again
+/// from, or null when no open entry was valued with the price.</param>
+/// <param name="OpenEntries">Open-period entries valued with the price (projected again).</param>
+/// <param name="ClosedEntries">Entries of closed periods (and their adjustments) valued with the price.</param>
+/// <param name="Adjustments">Price adjustments staged for them in the open period.</param>
+/// <param name="LinesRepriced">Their lines whose value changed.</param>
+public sealed record AccountingPriceReplaceResult(
+    AccountingPrice Price,
+    decimal OldPrice,
+    AccountingPriceSource OldSource,
+    DateTimeOffset OldFetchedAt,
+    bool Changed,
+    long? ReplayFromLedgerSeq,
+    int OpenEntries,
+    int ClosedEntries,
+    int Adjustments,
+    int LinesRepriced);
 
 /// <summary>What an import stored.</summary>
 /// <param name="Currency">The prices' currency.</param>

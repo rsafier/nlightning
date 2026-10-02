@@ -34,7 +34,10 @@ public static class AccountingFinancialEntityConfiguration
             entity.Property(p => p.Price)
                   .HasPrecision(AccountingSchemaLimits.FiatPrecision, AccountingSchemaLimits.FiatScale)
                   .IsRequired();
-            entity.Property(p => p.Source).IsRequired();
+            // The column keeps the name it had when the property was called Source (NL-708)
+            entity.Property(p => p.PriceSource)
+                  .HasColumnName(databaseType == DatabaseType.PostgreSql ? "source" : "Source")
+                  .IsRequired();
             entity.Property(p => p.FetchedAt)
                   .HasConversion<UtcTicksConverter>()
                   .IsRequired();

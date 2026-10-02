@@ -11,9 +11,10 @@ using Books;
 /// <remarks>
 /// <para><b>The fact's lines.</b> The base entry (the fact's adjustment-0 entry, or its
 /// <see cref="AccountingEntryFlags.LateFact"/> adjustment when it reached the book late) and the
-/// <see cref="AccountingAdjustmentReason.Price"/> adjustments that valued its lines after the close are the lines the
-/// classification names; the earlier reclassifications (<see cref="DedupePrefix"/> adjustments) say where they are
-/// now. The move is the difference, per line role, account, currency and price, between the lines renamed by the new
+/// <see cref="AccountingAdjustmentReason.Price"/> adjustments that valued its lines after the close, with the price
+/// replacements' corrections of those (<c>[reprice:</c> adjustments, NL-765), are the lines the classification names;
+/// the earlier reclassifications (<see cref="DedupePrefix"/> adjustments) and the replacements' corrections of them say
+/// where they are now. The move is the difference, per line role, account, currency and price, between the lines renamed by the new
 /// classification and the lines as they are now, so it is empty when nothing changes and a reclassification back
 /// undoes the previous one exactly.</para>
 /// <para>Only the classifiable roles (<see cref="FinancialChart.IsClassifiable"/>) move: the asset, fee, cost-basis and
@@ -26,6 +27,7 @@ public static class AccountingReclassification
 
     private const string ReclassTag = "[" + DedupePrefix;
     private const string PriceTag = "[price:";
+    private const string RepriceTag = "[reprice:";
 
     /// <summary>The fact's base entry among the financial entries of its event key, or null.</summary>
     public static AccountingEntry? BaseEntry(IReadOnlyList<AccountingEntry> entries)
@@ -66,7 +68,7 @@ public static class AccountingReclassification
         var order = new List<LineKey>();
 
         // Where the lines are now (subtracted) and where the new classification puts them (added)
-        foreach (var line in baseLines.Concat(entries.Where(IsReclassification).SelectMany(Classifiable)))
+        foreach (var line in baseLines.Concat(HeldLines(entries)))
             Add(sums, order, line, line.AccountName ?? string.Empty, -1);
         var targets = new HashSet<LineKey>();
         foreach (var line in baseLines)
@@ -136,17 +138,48 @@ public static class AccountingReclassification
         if (!entries.Any(IsReclassification) || BaseEntry(entries) is not { } baseEntry)
             return true;
 
-        return FactLines(entries, baseEntry).Concat(entries.Where(IsReclassification).SelectMany(Classifiable))
+        return FactLines(entries, baseEntry).Concat(HeldLines(entries))
                                             .GroupBy(l => l.AccountName ?? string.Empty, StringComparer.Ordinal)
                                             .Any(g => g.Sum(l => l.AmountMsat) != 0 && chart.IsUnclassified(g.Key));
     }
 
-    // The base entry's classifiable lines and those of the price adjustments that valued them
+    // The base entry's classifiable lines, those of the price adjustments that valued them and the price replacements'
+    // corrections of either (NL-765: a correction staged before a reclassification moves with the fact)
     private static IEnumerable<AccountingPosting> FactLines(IReadOnlyList<AccountingEntry> entries,
                                                             AccountingEntry baseEntry) =>
         Classifiable(baseEntry).Concat(entries.Where(e => e.Adjustment > 0
                                                        && e.Note?.StartsWith(PriceTag, StringComparison.Ordinal) == true)
-                                              .SelectMany(Classifiable));
+                                              .SelectMany(Classifiable))
+                               .Concat(Repricings(entries, reclassifications: false).SelectMany(Classifiable));
+
+    // The lines the reclassifications moved, and the price replacements' corrections of them
+    private static IEnumerable<AccountingPosting> HeldLines(IReadOnlyList<AccountingEntry> entries) =>
+        entries.Where(IsReclassification).Concat(Repricings(entries, reclassifications: true)).SelectMany(Classifiable);
+
+    // The price replacements' corrections (tagged [reprice:{priceId}:{ticks}:{price}:{seq}:{adjustment}]) of the
+    // reclassification adjustments, or of the fact's other entries; their balancing lines (cost basis, realized gains)
+    // are not classifiable
+    private static IEnumerable<AccountingEntry> Repricings(IReadOnlyList<AccountingEntry> entries,
+                                                           bool reclassifications)
+    {
+        var reclassified = entries.Where(IsReclassification).Select(e => e.Adjustment).ToHashSet();
+        foreach (var entry in entries)
+        {
+            if (entry.Adjustment <= 0 || entry.Note?.StartsWith(RepriceTag, StringComparison.Ordinal) != true)
+                continue;
+
+            var end = entry.Note.IndexOf(']', StringComparison.Ordinal);
+            var colon = end > 0 ? entry.Note.LastIndexOf(':', end) : -1;
+            var corrects = colon > 0
+                        && int.TryParse(entry.Note.AsSpan(colon + 1, end - colon - 1),
+                                        System.Globalization.NumberStyles.None,
+                                        System.Globalization.CultureInfo.InvariantCulture, out var adjustment)
+                               ? adjustment
+                               : -1;
+            if (reclassified.Contains(corrects) == reclassifications)
+                yield return entry;
+        }
+    }
 
     private static IEnumerable<AccountingPosting> Classifiable(AccountingEntry entry) =>
         entry.Postings.Where(p => FinancialChart.IsClassifiable(p.Account));
