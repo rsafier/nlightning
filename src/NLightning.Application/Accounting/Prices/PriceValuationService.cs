@@ -500,8 +500,10 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             listed += postings.Count;
 
             // A late fact's lines (NL-671) are valued at the fact's time, never the adjustment's: they stand at the
-            // fact's time here, and a price found for them replays the fact (the projector stages it again)
+            // fact's time here; a price found for an open one replays the fact (the projector stages it again), and one
+            // closed unvalued by a forced close gets its price adjustment at the fact's price too (NL-680)
             var lateFacts = await LateFactTimesAsync(books, postings, cancellationToken);
+            var own = postings.ToDictionary(p => p.Key);
             if (lateFacts.Count > 0)
                 postings = postings.Select(p => lateFacts.TryGetValue(p.Key, out var factAt)
                                                     ? p with { OccurredAt = factAt }
@@ -562,7 +564,9 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                     continue;
                 }
 
-                if (lateFacts.ContainsKey(posting.Key))
+                var ownPosting = own[posting.Key];
+                var closedNowToo = IsClosed(ownPosting, closedNow);
+                if (lateFacts.ContainsKey(posting.Key) && !closedNowToo)
                 {
                     // Never filled in place: the projector stages the late fact again at this price
                     if (replayFrom is null || posting.Key.LedgerSeq < replayFrom)
@@ -571,14 +575,14 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                 }
 
                 var fiat = AccountingValuation.FiatValue(posting.AmountMsat, price.Price);
-                if (IsClosed(posting, closedNow))
+                if (closedNowToo)
                 {
                     // Never filled (D-A8): the adjustment rule carries the value into the open period
                     if (_adjusted.Contains(posting.Key))
                         continue;
 
                     if (await _adjustmentSink.AdjustLateValuationAsync(
-                            unitOfWork, new AccountingLateValuation(posting, price, fiat), cancellationToken))
+                            unitOfWork, new AccountingLateValuation(ownPosting, price, fiat), cancellationToken))
                     {
                         late++;
                         if (_adjusted.Count >= MaxRememberedAdjustments)
@@ -666,9 +670,10 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
     }
 
     /// <summary>
-    /// The fact's time of every posting of an open late fact waiting for its price (an adjustment flagged
-    /// <see cref="AccountingEntryFlags.LateFact"/> and <see cref="AccountingEntryFlags.PendingValuation"/>, NL-671):
-    /// the time of the operational entry it projects. Postings whose operational entry cannot be found are left out.
+    /// The fact's time of every posting of a late fact waiting for its price (an adjustment flagged
+    /// <see cref="AccountingEntryFlags.LateFact"/> and <see cref="AccountingEntryFlags.PendingValuation"/>, NL-671; open,
+    /// or closed by a forced close, NL-680): the time of the operational entry it projects. Postings whose operational
+    /// entry cannot be found are left out.
     /// </summary>
     private static async Task<Dictionary<AccountingPostingKey, DateTimeOffset>> LateFactTimesAsync(
         IAccountingBooksDbRepository books, IReadOnlyList<AccountingUnvaluedPosting> postings,
@@ -681,7 +686,6 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
         foreach (var posting in postings)
         {
             if (posting.Key is not { Book: AccountingBook.Financial, Adjustment: > 0 } key
-             || posting.ClosedPeriodId is not null
              || (posting.EntryFlags & pendingLateFact) != pendingLateFact)
                 continue;
 

@@ -49,8 +49,12 @@ public static class AccountingReclassification
     /// </summary>
     /// <param name="entries">Every financial entry of the fact's event key.</param>
     /// <param name="accountNameOf">The account of a classifiable line of a role under the new classification.</param>
+    /// <param name="unvaluedCurrency">When set, a move of a line left unvalued (a forced close) carries 0 in this
+    /// currency instead of no value (NL-681): it is never valued later, since the line's value, once found, is posted
+    /// by its price adjustment on the account the line is in then (<see cref="CurrentAccountOf"/>).</param>
     public static IReadOnlyList<AccountingPosting> PlanMove(IReadOnlyList<AccountingEntry> entries,
-                                                            Func<AccountRole, string> accountNameOf)
+                                                            Func<AccountRole, string> accountNameOf,
+                                                            string? unvaluedCurrency = null)
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentNullException.ThrowIfNull(accountNameOf);
@@ -79,13 +83,45 @@ public static class AccountingReclassification
             moves.Add(new AccountingPosting(key.Role, msat)
             {
                 AccountName = key.Name,
-                FiatAmount = key.Currency is null ? null : fiat,
-                FiatCurrency = key.Currency,
+                FiatAmount = key.Currency is null ? unvaluedCurrency is null ? null : 0m : fiat,
+                FiatCurrency = key.Currency ?? unvaluedCurrency,
                 PriceId = key.PriceId
             });
         }
 
         return moves;
+    }
+
+    /// <summary>
+    /// The account the reclassifications hold a line of the fact in now (NL-681): the account of
+    /// <paramref name="line"/>'s role whose msat, over the line itself and the reclassification adjustments, has the
+    /// line's sign and covers it; the line's own account when none does (or when it never moved).
+    /// </summary>
+    /// <param name="entries">Every financial entry of the fact's event key.</param>
+    /// <param name="line">A classifiable line of the fact's base entry.</param>
+    public static string? CurrentAccountOf(IReadOnlyList<AccountingEntry> entries, AccountingPosting line)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        ArgumentNullException.ThrowIfNull(line);
+        var moves = entries.Where(IsReclassification).SelectMany(Classifiable).Where(p => p.Account == line.Account)
+                           .ToList();
+        if (moves.Count == 0 || line.AmountMsat == 0)
+            return line.AccountName;
+
+        var held = new Dictionary<string, long>(StringComparer.Ordinal);
+        var order = new List<string>();
+        foreach (var posting in moves.Prepend(line))
+        {
+            var name = posting.AccountName ?? string.Empty;
+            if (held.TryAdd(name, 0))
+                order.Add(name);
+            held[name] = checked(held[name] + posting.AmountMsat);
+        }
+
+        var found = order.Where(n => Math.Sign(held[n]) == Math.Sign(line.AmountMsat)
+                                  && Math.Abs(held[n]) >= Math.Abs(line.AmountMsat))
+                         .ToList();
+        return found.Count == 1 ? found[0] : line.AccountName;
     }
 
     /// <summary>

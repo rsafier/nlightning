@@ -86,6 +86,29 @@ public class AccountingReclassificationTests
         Assert.Null(AccountingReclassification.BaseEntry([]));
     }
 
+    [Fact]
+    public void Given_AnUnvaluedClosedLine_When_MovedTwice_Then_TheMovesCarryZeroAndTheLineIsWhereTheLastMovePutIt()
+    {
+        // Arrange - NL-681: a fact left unvalued by a forced close
+        var fact = Fact() with
+        {
+            Postings = Fact().Postings.Select(p => p with { FiatAmount = null, FiatCurrency = null, PriceId = null })
+                             .ToList()
+        };
+
+        // Act
+        var first = Reclass(1, AccountingReclassification.PlanMove([fact], _ => "income:consulting", "USD"));
+        var second = Reclass(2, AccountingReclassification.PlanMove([fact, first], _ => "income:licences", "USD"));
+
+        // Assert: valued at 0 in the book's currency (never unvalued, never valued later); the line is now in licences
+        Assert.All(first.Postings.Concat(second.Postings), p => Assert.Equal((0m, "USD"), (p.FiatAmount!.Value,
+                                                                                         p.FiatCurrency!)));
+        Assert.Equal("income:consulting", AccountingReclassification.CurrentAccountOf([fact, first], fact.Postings[1]));
+        Assert.Equal("income:licences",
+                     AccountingReclassification.CurrentAccountOf([fact, first, second], fact.Postings[1]));
+        Assert.Equal("income:sales", AccountingReclassification.CurrentAccountOf([fact], fact.Postings[1]));
+    }
+
     private static AccountingEntry Fact(string account = "income:sales") =>
         new(1, "inv:1:settled", AccountingEventKind.InvoiceSettled, s_at, null, null,
         [
