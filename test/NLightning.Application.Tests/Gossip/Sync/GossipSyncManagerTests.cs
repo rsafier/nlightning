@@ -530,6 +530,36 @@ public class GossipSyncManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_APeerThatAnsweredAScidQuery_When_ALaterOneTimesOut_Then_OnlyTheLiveFilterIsSent()
+    {
+        // Arrange (NL-744): a peer that answered the first batch implements query_short_channel_ids and was only slow
+        // on the second (LND or CLN under load); the NL-722 backlog filter would stream it its whole graph unpaced
+        var manager = CreateManager(o =>
+        {
+            o.SyncReplyTimeout = s_replyTimeout;
+            o.MaxScidsPerQuery = 1;
+        });
+        var peer = new FakeGossipPeer(1);
+        var startedAt = Now;
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+        manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, new ShortChannelId(200, 1, 0),
+                                                                    new ShortChannelId(201, 1, 0)));
+        Assert.Equal([new ShortChannelId(200, 1, 0)], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+        manager.HandleMessage(peer, End());
+        Assert.Equal([new ShortChannelId(201, 1, 0)], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+
+        // Act: the second batch's reply timeout fires
+        AdvancePast(s_replyTimeout);
+
+        // Assert: a live filter from now, not the two-week backlog
+        var filter = await peer.NextAsync<GossipTimestampFilterMessage>();
+        Assert.True(filter.Payload.FirstTimestamp >= startedAt,
+                    $"filter starts at {filter.Payload.FirstTimestamp}, the sync started at {startedAt}");
+        Assert.Empty(peer.Warnings);
+    }
+
+    [Fact]
     public async Task Given_ATimedOutScidQuery_When_ItsLateEndArrives_Then_TheNextQueryWaitsForItAndRuns()
     {
         // Arrange (NL-365; BOLT 7: MUST NOT send query_short_channel_ids before the previous one's

@@ -724,6 +724,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
 
             if (session.OutstandingCollector is not { } collector)
             {
+                // A late reply_short_channel_ids_end: the peer implements the query after all (NL-744)
+                session.ScidQueryAnswered = true;
                 session.OutstandingReplyConsumed();
                 _logger.LogDebug("The late reply_short_channel_ids_end of peer {Peer} arrived; querying it again",
                                  session.Peer.PeerPubKey);
@@ -880,7 +882,10 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                     // 0.3 leaves it unimplemented and ignores it) is asked for its gossip by timestamp instead, as
                     // after a sync without timestamps: LDK streams its whole graph to a filter that starts more than
                     // 6 h ago, and nothing that started now would ever bring us its existing channels
-                    if (session.ScidQueryUnanswered)
+                    // Only for a peer that never answered one on this connection (NL-744): a peer that answered an
+                    // earlier batch implements the query and was only slow (LND or CLN under load), and the backlog
+                    // filter would stream it its whole graph past the ingress pacing (NL-353)
+                    if (session.ScidQueryUnanswered && !session.ScidQueryAnswered)
                         session.FallbackFilterStart = GetSyncFilterStart(false, startedAt);
                     return;
                 }
@@ -1114,6 +1119,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             }
 
             var end = (ReplyShortChannelIdsEndMessage)reply;
+            session.ScidQueryAnswered = true;
             if (end.Payload.ChainHash != OurChain)
                 throw new SyncViolationException(
                     new WarningException("reply_short_channel_ids_end: chain_hash is not the one we queried"));
@@ -1395,6 +1401,12 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
 
         /// <summary>Our last <c>query_short_channel_ids</c> on this connection went unanswered (NL-722).</summary>
         public bool ScidQueryUnanswered { get; set; }
+
+        /// <summary>
+        /// The peer answered a <c>query_short_channel_ids</c> of ours on this connection, in time or late (NL-744): it
+        /// implements the query, so a later timeout never brings the NL-722 backlog filter.
+        /// </summary>
+        public bool ScidQueryAnswered { get; set; }
 
         private int _failedQueries;
 
