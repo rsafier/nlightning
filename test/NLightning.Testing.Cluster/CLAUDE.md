@@ -134,6 +134,8 @@ every implementation, our own node included, is driven through the same seams.
 - Live tests carry `[Trait("Category", "Cluster")]` and `[Fact(Explicit = true)]`:
   `NLTG_KUBE_CONTEXT=orbstack dotnet run --project test/NLightning.Testing.Cluster.Tests -c Release -f net10.0 -- -explicit only -trait Category=Cluster`
   (or the built `bin/Release/net10.0/NLightning.Testing.Cluster.Tests` with the same arguments).
+- `Live/LightningDialBackTests`: LND and CLN in pods dial a loopback listener in the test process at
+  `host.orb.internal` and it receives their BOLT 8 act one (spike check 1 with real implementations).
 - `Live/InClusterRunnerTests` need the runner image (`Runner/image/build.sh` first); `Live/ReachabilityTests` assert
   OrbStack's matrix and only record it on another context. `Live/MixedTopologyTests` is the integration proof (LND +
   CLN on the shared bitcoind through `TopologyBuilder`, a channel and a payment each way); `scripts/run-cluster.sh

@@ -330,11 +330,47 @@ batch Docker suites):
 | Faults (`FaultInjectorClusterTests`, `BitcoindFaultClusterTests`) | restart 4.0 s, kill 4.0 s (TERM before the new START), crash 1.6 s in place; pause, partitions and the shared bitcoind workload with `WithProcessFaults()` green |
 | Runner (`RunLifecycleTests`, `InClusterRunnerTests`, `ReachabilityTests`, `ClusterSmokeTests`, `BitcoinCoreClusterTests`) | green; the runner image rebuilt from the integrated tests |
 
-Spike checks: (1) reachability, see the record above; (2) a restart keeps the DNS name and the PVC data (faults, CLN
-and LND lanes); (3) local images work without a registry (`custom_lnd:latest` and `nltg-spike-runner` with
-`imagePullPolicy: Never`, CLN and bitcoind by digest); (4) a 2-node topology with a channel is up in about 25 s. The
-Docker fixtures' times for the same topologies were not measured in the spike (the batch Docker suites held the
-machine); that comparison is left to the core phase.
+Spike checks: see the "Spike checks record" below (all four checks and the concurrency proof, re-run on the
+integrated branch).
+
+### Spike checks record (2026-10-02, integrated `wip/harness-spike` at 2a53cb14 plus `Live/LightningDialBackTests`)
+
+Re-run of the plan's checks on the integrated branch, OrbStack (k8s v1.35.6+orb1, one node, 28 CPUs, 64 GiB, no
+metrics-server). The machine was shared with the batch Docker suites (CLN, then Eclair interop) the whole time; the
+harness never touched their containers or images. Release build, net10.0; logs and xunit XML under
+`TestResults/spike-checks/` and `TestResults/cluster/chk5*/`.
+
+| Check | Evidence | Result |
+|---|---|---|
+| 1. Host ↔ pod both ways | `ReachabilityTests` (2) + `InClusterRunnerTests` (3): 5/5 green in 87 s. Host → pod IP 2 ms, pod DNS 123 ms, headless Service 129 ms, ClusterIP 1005 ms (routed 5.8 s after the Service was created); `k8s.orb.local` refused. Pod → `host.orb.internal` / `host.docker.internal` OK to a loopback listener (31-104 ms, listener sees 127.0.0.1); node and bridge IPs refused. 3 runs at once: 51.3 s, each its own pods. Job runner: pod running 2.3 s after the Job, exit 0 after 12.7 s; bad argument → non-zero exit; RBAC confined to the run's namespace | green |
+| 1b. Real LND/CLN dial-back | New `LightningDialBackTests`: LND and CLN in pods `connect` to `<G>@host.orb.internal:<port>`, a listener bound to 127.0.0.1 in the test process receives each one's BOLT 8 act one (50 bytes, `00 03 ...`) in 253 ms (LND) and 252 ms (CLN), peer seen as 127.0.0.1 | green: **decision: host-side tests on OrbStack** (in-process node on loopback, announced as `host.orb.internal`, our node dials out because peers show up as 127.0.0.1, NL-497); the in-cluster Job is the proven fallback for other clusters |
+| 2. Restart keeps DNS name and PVC data | 8 tests, 8/8 green in 156 s (5 classes in parallel). LND pair (real bitcoind + 2 LND): restart bob → channel active 5.6 s, kill alice → 6.2 s, new pod UIDs and IPs, same node ids, same funding txid and scid 103x1x0, bob's balance 29,000,000 msat after 3 payments. CLN pair: crash in place (same IP) → channel active 1.8 s; bob restart 9.6 s, IP .92 → .103, active 0.9 s later; alice restart 6.5 s; same `hsm_secret` ids, funding txid, 4 payments in bob's balance. Busybox node: restart 3.5 s, kill 4.0 s, crash 2.1 s, DNS follows the pod at +0.0 s, data file intact, TERM before the new START. bitcoind: restart 2.0 s, crash 2.3 s, height kept (101) | green |
+| 3. Local images, no registry | Pod specs and `imageID`s read during the concurrent batch: LND `custom_lnd:latest`, `imagePullPolicy: Never`, `sha256:9347d265...` (kubelet event "already present on machine"); CLN `elementsproject/lightningd:v26.06.8@sha256:56f1cebe...` and bitcoind `polarlightning/bitcoind:29.0@sha256:4521294a...`, `IfNotPresent`, served from the local store; runner `nltg-spike-runner:latest` `Never` | green |
+| 4. Startup time | See the table below | k8s ≈ 21-22 s alone, 25-44 s with 6 at once; Docker fixtures ≈ 4-11 s, serial only |
+| 5. Concurrency | `scripts/run-cluster.sh -n 3 --method '*ClnTopologyTests.Given_BitcoindAndTwoClnNodes*' --method '*LndPairTopologyTests.*'`, three batches (`chk5`, `chk5b`, `chk5c`): each 3 processes × (CLN pair + LND pair) = **6 namespaces at once** (watcher peak 6), 18/18 tests green, batch wall 112 s / 104 s / 110 s, runs 67-110 s each. No cross-talk: same aliases in every namespace, every chain independent (every CLN channel 108x1x0, every LND channel 103x1x0), each payment to its own invoice. Cleanup: every run deleted its own namespaces (reaper after the batch: 0 to delete, `nltg-cluster list`: none left). Resources (`docker stats` of the spike's `k8s_*` containers, 0.5 s frames, `chk5c`): peak 18 containers, CPU peak 2.28 cores (p95 1.57, mean 0.27), memory peak 1,173 MiB (mean 424 MiB) | green |
+
+Startup, wall time to ready (topology built = chain ready, nodes at the tip, wallets funded, channel active on both
+ends):
+
+| Topology | Alone | 6 topologies at once (3 batches) | Phases (alone) |
+|---|---|---|---|
+| bitcoind + 2 CLN + 1 channel (k8s) | 21.9 s (integration record: 25.2 s) | 30.3, 35.3, 40.1, 30.9, 41.4, 35.9, 43.8, 33.7, 33.0 s | chain 9.0 s, 2 CLN at the tip +5.6 s, funded +0.8 s, channel active +5.4 s |
+| bitcoind + 2 LND + 1 channel (k8s) | 20.8 s (integration record: 25.7 s) | 26.0, 32.4, 41.5, 41.2, 25.1, 30.7, 40.1, 28.7, 24.7 s | bitcoind 8.3 s, LND 10.2 s, funding 0.8 s, channel 0.7 s |
+| Docker `LightningRegtestNetworkFixture` (bitcoind + 4 LND + 4 channels, LNUnit) | 9.5-11.4 s | n/a (fixed container names: one per machine) | xunit XML `w4int-*.xml` (2026-09-26, 6 runs): assembly start to the `regtest` collection's first test |
+| Docker `ClnFixture` (bitcoind + 1 CLN, no channel) | 3.4-6.8 s | n/a | log file birth to the first test's node log line, 7 CLN suite logs (`lh1`, `sp1`, `spr`) |
+
+Existing evidence only (the Docker suites were not run): the LND suite logs give 10.6-26.7 s from the process start to
+the first test's node log (`lh1`, `sp1`, `b12`, `spr`, `m6`), consistent with the XML. Teardown is the larger cost
+under load: deleting a run namespace took 19-20 s at best (integration record: 20 s alone) and up to 62 s with 6 at
+once (graceful stops, the CLN drain, PVC removal by the local-path provisioner).
+
+Where the k8s time goes (events of a kept solo run): each StatefulSet wave waits about 6 s before its container starts
+(PVC `WaitForFirstConsumer`, one `FailedScheduling` "Operation cannot be fulfilled on persistentvolumeclaims" retry of
+about 2 s, local-path provisioning about 3 s), and the topology has two waves (bitcoind, then the Lightning nodes): about
+12 of the 21 s. bitcoind is ready about 2 s after its container starts, CLN about 1 s, LND about 4 s. Follow-ups
+for the core phase: start the Lightning nodes' StatefulSets together with bitcoind (LND and CLN wait for bitcoind themselves),
+keep a topology warm per collection as the fixtures do, and delete run namespaces in the background (the reaper owns
+cleanup) instead of awaiting the deletion in each test.
 
 ## 6. Risks and open questions
 
