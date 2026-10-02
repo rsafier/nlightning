@@ -1,4 +1,5 @@
 using System.Diagnostics.Metrics;
+using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -6,6 +7,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Accounting.Prices;
 
 using Domain.Accounting.Books;
+using Domain.Accounting.Enums;
 using Domain.Accounting.Financial;
 using Domain.Accounting.Prices;
 using Domain.Persistence.Interfaces;
@@ -100,6 +102,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
     private readonly Counter<long> _lateCounter;
     private readonly Counter<long> _failureCounter;
     private readonly Counter<long> _rejectedCounter;
+    private readonly Counter<long> _replacedCounter;
 
     private TaskCompletionSource _wake = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task? _loop;
@@ -142,6 +145,8 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                                                     "Back-valuation rounds that failed");
         _rejectedCounter = Meter.CreateCounter<long>("nlightning.accounting.prices.rejected", "{price}",
                                                      "Fetched prices refused by the sanity bound (NL-678)");
+        _replacedCounter = Meter.CreateCounter<long>("nlightning.accounting.prices.replaced", "{price}",
+                                                     "Stored prices the operator replaced (NL-693)");
     }
 
     /// <summary>Unvalued postings per page (one save each; <see cref="DefaultPageSize"/>, smaller in tests).</summary>
@@ -392,6 +397,83 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                 return new AccountingPriceFetchResult(currency, first, end, hours.Count, hours.Count - requested,
                                                       requested, stored, unavailable, valuation);
             }
+        }
+        finally
+        {
+            _roundGate.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<AccountingPriceReplaceResult> ReplaceAsync(AccountingPriceReplacement replacement,
+                                                                 CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(replacement);
+        EnsureValidOptions();
+        var code = NormalizeCurrency(replacement.Currency);
+        if (!AccountingPriceCsv.TryValidate(new AccountingPricePoint(replacement.Time, replacement.Price), out var error))
+            throw new ArgumentException($"The new price: {error}", nameof(replacement));
+
+        var source = AuditText(replacement.Source, AccountingPriceReplacement.MaxSourceLength, "--source");
+        var reason = AuditText(replacement.Note, AccountingPriceReplacement.MaxNoteLength, "--note");
+        var newPrice = RoundPrice(replacement.Price);
+
+        await _roundGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var scope = _scopeFactory.CreateAsyncScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var prices = unitOfWork.AccountingPriceDbRepository;
+
+            // The stored price of that second (prices list shows Unix seconds)
+            var second = new DateTimeOffset(replacement.Time.UtcTicks - replacement.Time.UtcTicks % TimeSpan.TicksPerSecond,
+                                            TimeSpan.Zero);
+            var matches = await prices.ListAsync(code, second, second.AddSeconds(1), 2, cancellationToken);
+            var stored = matches.Count switch
+            {
+                0 => throw new ArgumentException(
+                         $"No {code} price is stored at {second:O}: 'accounting prices list' shows the stored times, "
+                       + "'accounting prices import' adds a price", nameof(replacement)),
+                1 => matches[0],
+                _ => throw new ArgumentException($"More than one {code} price is stored in the second {second:O}",
+                                                 nameof(replacement))
+            };
+
+            if (stored.Price == newPrice)
+                return new AccountingPriceReplaceResult(stored, stored.Price, stored.Source, stored.FetchedAt, false,
+                                                        null, 0, 0, 0, 0);
+
+            // The period lock's write lock from the closed-period checks to the save (A3-T5)
+            using var writeLock = await _adjustmentSink.EnterAsync(cancellationToken);
+            var now = _timeProvider.GetUtcNow();
+            if (!await prices.ReplaceAsync(stored.Id, newPrice, AccountingPriceSource.Manual, now, cancellationToken))
+                throw new ArgumentException($"The {code} price at {second:O} is no longer stored", nameof(replacement));
+
+            var audit = $"{code} price of {stored.Time.UtcDateTime.ToString("O", CultureInfo.InvariantCulture)} "
+                      + $"replaced: {Format(stored.Price)} ({stored.Source}) -> {Format(newPrice)}"
+                      + (source is null ? string.Empty : $", source {source}")
+                      + (reason is null ? string.Empty : $": {reason}");
+            var revaluation = await RepriceAsync(unitOfWork, stored, newPrice, now, audit, cancellationToken);
+            if (revaluation.ReplayFrom is { } from)
+            {
+                // The projector values the open period again from just before it (the cursor commits with the price)
+                var books = unitOfWork.AccountingBooksDbRepository;
+                if (from - 1 < await books.GetCursorAsync(AccountingBook.Financial, cancellationToken))
+                    await books.SetCursorAsync(AccountingBook.Financial, from - 1, cancellationToken);
+            }
+
+            await unitOfWork.SaveChangesAsync();
+            _replacedCounter.Add(1);
+            _logger.LogWarning(
+                "Accounting: the operator replaced the {Audit} (price id {PriceId}); {Open} open entries projected "
+              + "again from ledger sequence {ReplayFrom}, {Adjustments} price adjustments for {Closed} entries of "
+              + "closed periods", audit, stored.Id, revaluation.OpenEntries, revaluation.ReplayFrom,
+                revaluation.Adjustments, revaluation.ClosedEntries);
+
+            return new AccountingPriceReplaceResult(
+                stored with { Price = newPrice, Source = AccountingPriceSource.Manual, FetchedAt = now }, stored.Price,
+                stored.Source, stored.FetchedAt, true, revaluation.ReplayFrom, revaluation.OpenEntries,
+                revaluation.ClosedEntries, revaluation.Adjustments, revaluation.LinesRepriced);
         }
         finally
         {
@@ -703,6 +785,215 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             Deferred = deferred
         };
     }
+
+    /// <summary>
+    /// Re-values what the replaced price <paramref name="stored"/> priced in the financial book (NL-693), staged on
+    /// <paramref name="unitOfWork"/> (the caller holds the period lock's write lock and saves). Every entry dated at or
+    /// after the price's time with a line valued with it (no other can use it: a price values what follows it):
+    /// <list type="bullet">
+    /// <item>an open entry the projector projected (adjustment 0 or a late fact): projected again, from the earliest
+    /// (the projector rolls the open period back to it: values, lots, reliefs and gains as a rebuild would have
+    /// them);</item>
+    /// <item>an entry of a closed period, or an adjustment of one in the open period: a <c>Price</c> adjustment in the
+    /// open period with the change of its lines' values (<see cref="AccountingRepricing"/>), once per entry and
+    /// replacement; a fact a reorg reversed after its close is left alone when its reversal is closed too (the pair
+    /// nets to zero), and its open reversal is projected again, so it takes the correction back with the fact (the
+    /// projector negates a closed fact's corrections in its reversal).</item>
+    /// </list>
+    /// </summary>
+    private async Task<Revaluation> RepriceAsync(IUnitOfWork unitOfWork, AccountingPrice stored, decimal newPrice,
+                                                 DateTimeOffset now, string audit,
+                                                 CancellationToken cancellationToken)
+    {
+        const int pageSize = 500;
+        var books = unitOfWork.AccountingBooksDbRepository;
+        var chart = _accountingOptions.GetFinancialChart();
+        long? replayFrom = null;
+        int open = 0, closed = 0, adjustments = 0, repriced = 0;
+        var factTimes = new Dictionary<long, DateTimeOffset?>();
+
+        // The reversals of closed facts (a reorg after the close): a closed one already took the fact's value back, so
+        // the fact is left as it is; an open one is projected again after the correction, so it takes the corrected
+        // value back (the projector negates the fact's corrections with it)
+        var reversals = new Dictionary<string, AccountingEntry>(StringComparer.Ordinal);
+        long afterSeq = 0;
+        while (true)
+        {
+            var page = await books.ListEntriesAsync(new AccountingEntryQuery(afterSeq, pageSize, stored.Time,
+                                                                             Kinds: [AccountingEventKind.Reversal])
+            {
+                Book = AccountingBook.Financial
+            }, cancellationToken);
+            foreach (var reversal in page.Where(r => r.Adjustment == 0))
+            {
+                const string prefix = "reverses ";
+                var at = reversal.Note?.IndexOf(prefix, StringComparison.Ordinal) ?? -1;
+                var end = at < 0 ? -1 : reversal.Note!.IndexOf(" of a closed period", at, StringComparison.Ordinal);
+                if (end > at)
+                    reversals[reversal.Note![(at + prefix.Length)..end]] = reversal;
+            }
+
+            if (page.Count < pageSize)
+                break;
+            afterSeq = page[^1].LedgerSeq;
+        }
+
+        afterSeq = 0;
+        var afterAdjustment = -1;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var page = await books.ListEntriesAsync(new AccountingEntryQuery(afterSeq, pageSize, stored.Time)
+            {
+                Book = AccountingBook.Financial,
+                AfterAdjustment = afterAdjustment
+            }, cancellationToken);
+            foreach (var entry in page)
+            {
+                if (IsRepricing(entry) || !entry.Postings.Any(p => p.PriceId == stored.Id))
+                    continue;
+
+                if (entry.ClosedPeriodId is null
+                 && (entry.Adjustment == 0 || entry.Flags.HasFlag(AccountingEntryFlags.LateFact)))
+                {
+                    open++;
+                    replayFrom = Math.Min(replayFrom ?? long.MaxValue, entry.LedgerSeq);
+                    continue;
+                }
+
+                closed++;
+                reversals.TryGetValue(entry.EventKey, out var reversedBy);
+                if (reversedBy is { ClosedPeriodId: not null })
+                    continue;
+
+                var lines = await RepricedLinesAsync(books, entry, stored.Id, cancellationToken);
+                var corrections = AccountingRepricing.Corrections(lines, entry.Postings, stored.Id, stored.Price,
+                                                                  newPrice, stored.Currency, chart);
+                if (corrections.Count == 0)
+                    continue;
+
+                if (!factTimes.TryGetValue(entry.LedgerSeq, out var factAt))
+                {
+                    // The fact's time: its operational entry's
+                    var operational = await books.ListEntriesAsync(new AccountingEntryQuery(entry.LedgerSeq - 1, 1),
+                                                                   cancellationToken);
+                    factAt = operational.Count == 1 && operational[0].LedgerSeq == entry.LedgerSeq
+                                 ? operational[0].OccurredAt
+                                 : null;
+                    factTimes[entry.LedgerSeq] = factAt;
+                }
+
+                try
+                {
+                    var staged = await _adjustmentSink.StageAdjustmentAsync(
+                                     unitOfWork,
+                                     new AccountingAdjustment(AccountingAdjustmentReason.Price, entry.LedgerSeq,
+                                                              entry.EventKey, entry.Kind, factAt ?? entry.OccurredAt,
+                                                              corrections)
+                                     {
+                                         ChannelId = entry.ChannelId,
+                                         PaymentHash = entry.PaymentHash,
+                                         // One per entry and replacement (the time and the price replaced)
+                                         DedupeKey = $"reprice:{stored.Id}:{now.UtcTicks}:{Format(stored.Price)}:"
+                                                   + $"{entry.LedgerSeq}:"
+                                                   + entry.Adjustment.ToString(CultureInfo.InvariantCulture),
+                                         Note = audit
+                                     }, cancellationToken);
+                    if (staged is null)
+                        continue;
+
+                    adjustments++;
+                    repriced += corrections.Count(c => c.PriceId == stored.Id);
+                    if (reversedBy is not null)
+                        replayFrom = Math.Min(replayFrom ?? long.MaxValue, reversedBy.LedgerSeq);
+                }
+                catch (ArgumentException e)
+                {
+                    // A fact the lock does not hold (its period is open after all): nothing to adjust, logged
+                    _logger.LogWarning(e, "Accounting: the price adjustment of {EventKey} for the replaced price could "
+                                        + "not be staged", entry.EventKey);
+                }
+            }
+
+            if (page.Count < pageSize)
+                break;
+
+            afterSeq = page[^1].LedgerSeq;
+            afterAdjustment = page[^1].Adjustment;
+        }
+
+        return new Revaluation(replayFrom, open, closed, adjustments, repriced);
+    }
+
+    /// <summary>The lines of <paramref name="entry"/> valued with the price <paramref name="priceId"/>, with the msat
+    /// their value is of: their own, or for a zero-msat <c>Price</c> adjustment line (a late valuation, tagged
+    /// <c>[price:{seq}:{adjustment}:{index}]</c>) the posting it valued.</summary>
+    private static async Task<IReadOnlyList<RepricedLine>> RepricedLinesAsync(IAccountingBooksDbRepository books,
+                                                                             AccountingEntry entry, long priceId,
+                                                                             CancellationToken cancellationToken)
+    {
+        var lines = new List<RepricedLine>();
+        IReadOnlyList<AccountingEntry>? siblings = null;
+        foreach (var line in entry.Postings.Where(p => p.PriceId == priceId))
+        {
+            if (line.AmountMsat != 0)
+            {
+                lines.Add(new RepricedLine(line, line.AmountMsat, line.Account));
+                continue;
+            }
+
+            if (LateValuationOf(entry.Note) is not { } valued)
+                continue;
+
+            siblings ??= await books.GetEntriesByKeyAsync(AccountingBook.Financial, entry.EventKey, cancellationToken);
+            if (siblings.FirstOrDefault(e => e.Adjustment == valued.Adjustment)?.Postings.ElementAtOrDefault(valued.Index)
+                    is { AmountMsat: not 0 } posting)
+                lines.Add(new RepricedLine(line, posting.AmountMsat, posting.Account));
+        }
+
+        return lines;
+    }
+
+    /// <summary>The posting a late valuation's adjustment valued, from its note's tag
+    /// (<c>[price:{seq}:{adjustment}:{index}] ...</c>, <c>AccountingPeriodService.AdjustLateValuationAsync</c>).</summary>
+    private static (int Adjustment, int Index)? LateValuationOf(string? note)
+    {
+        if (note is null || !note.StartsWith("[price:", StringComparison.Ordinal))
+            return null;
+
+        var end = note.IndexOf(']', StringComparison.Ordinal);
+        var parts = end > 0 ? note[1..end].Split(':') : [];
+        return parts.Length == 4
+            && int.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var adjustment)
+            && int.TryParse(parts[3], NumberStyles.None, CultureInfo.InvariantCulture, out var index)
+                   ? (adjustment, index)
+                   : null;
+    }
+
+    private static string? AuditText(string? text, int maxLength, string what)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        var trimmed = text.Trim();
+        if (trimmed.Length > maxLength || trimmed.Any(char.IsControl))
+            throw new ArgumentException($"{what} must be at most {maxLength} printable characters", nameof(text));
+
+        return trimmed;
+    }
+
+    /// <summary>The note tag of a price replacement's correction (<c>[reprice:{priceId}:...]</c>).</summary>
+    internal const string RepricingTag = "[reprice:";
+
+    /// <summary>Whether <paramref name="entry"/> is a price replacement's correction (NL-693).</summary>
+    internal static bool IsRepricing(AccountingEntry entry) =>
+        entry.Adjustment > 0 && entry.Note?.StartsWith(RepricingTag, StringComparison.Ordinal) == true;
+
+    private static string Format(decimal price) => price.ToString("0.########", CultureInfo.InvariantCulture);
+
+    /// <summary>What a price replacement re-valued.</summary>
+    private sealed record Revaluation(long? ReplayFrom, int OpenEntries, int ClosedEntries, int Adjustments,
+                                      int LinesRepriced);
 
     /// <summary>
     /// The fact's time of every posting of a late fact waiting for its price (an adjustment flagged

@@ -275,6 +275,7 @@ public sealed class AccountingAdminClientHandler
             case AccountingAdminAction.PricesImport:
             case AccountingAdminAction.PricesList:
             case AccountingAdminAction.PricesFetch:
+            case AccountingAdminAction.PricesReplace:
                 return response with { Prices = await AccountingPricesAdmin.HandleAsync(_prices, request, ct) };
             case AccountingAdminAction.LotsImport:
                 return response with { LotImport = await ImportLotsAsync(request, ct) };
