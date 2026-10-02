@@ -274,7 +274,7 @@ The journal is a projection of the feed plus the overrides, so `nltg accounting 
 | 45 | `accountingadmin` | built (A2): `nltg accounting reconcile|rebuild|verify` (verify walks the feed's hash chain and reports the first break; works with the books off); `close` and `classify` come with A3 (A3-T3 classify 5, A3-T2 prices 10-12, A3-T4 `lots import` 13, A3-T5 close 20-22) |
 
   The client gets the `nltg accounting <sub>` verb family. Every command uses the existing cookie authentication.
-- **The old plugin stub is deleted (NL-151).** This removes:
+- **The old plugin stub is deleted (NL-151; done in lane b10-plugin, batch10).** This removes:
   - `NLightning.Daemon.Plugins` (project, sln entries, Daemon reference)
   - `PluginLoaderService` and `PluginEntry`
   - `IControlClient`

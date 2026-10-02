@@ -379,26 +379,12 @@ public class FeeService : IFeeService
         }
     }
 
+    // The fee rate cache file is not written or read yet (NL-706): both methods only log.
     private Task SaveToFileAsync()
     {
         _logger.LogDebug("Saving fee rate to file {filePath}", _cacheFilePath);
 
         return Task.CompletedTask;
-        // try
-        // {
-        //     var cacheData = new FeeRateCacheData
-        //     {
-        //         FeeRate = _cachedFeeRate,
-        //         LastFetchTime = _lastFetchTime
-        //     };
-        //
-        //     await using var fileStream = File.OpenWrite(_cacheFilePath);
-        //     await MessagePackSerializer.SerializeAsync(fileStream, cacheData, cancellationToken: CancellationToken.None);
-        // }
-        // catch (Exception e)
-        // {
-        //     _logger.LogError(e, "Error saving fee rate to file");
-        // }
     }
 
     private Task LoadFromFileAsync()
@@ -406,36 +392,6 @@ public class FeeService : IFeeService
         _logger.LogDebug("Loading fee rate from file {filePath}", _cacheFilePath);
 
         return Task.CompletedTask;
-        // try
-        // {
-        //     if (!File.Exists(_cacheFilePath))
-        //     {
-        //         _logger.LogDebug("Fee rate cache file does not exist. Skipping load.");
-        //         return;
-        //     }
-        //
-        //     await using var fileStream = File.OpenRead(_cacheFilePath);
-        //     var cacheData =
-        //         await MessagePackSerializer.DeserializeAsync<FeeRateCacheData?>(fileStream,
-        //             cancellationToken: cancellationToken);
-        //
-        //     if (cacheData == null)
-        //     {
-        //         _logger.LogDebug("Fee rate cache file is empty. Skipping load.");
-        //         return;
-        //     }
-        //
-        //     _cachedFeeRate = cacheData.FeeRate;
-        //     _lastFetchTime = cacheData.LastFetchTime;
-        // }
-        // catch (OperationCanceledException)
-        // {
-        //     // Ignore cancellation
-        // }
-        // catch (Exception e)
-        // {
-        //     _logger.LogError(e, "Error loading fee rate from file");
-        // }
     }
 
     private bool IsCacheValid()

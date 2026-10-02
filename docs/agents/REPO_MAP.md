@@ -70,8 +70,7 @@ Baseline observed on macOS arm64 with SDK 10.0.103 (`wip/fafo` @ `1a38360`):
 | `src/NLightning.Application` | net10.0 | 1.0.0 | `PeerManager`, `ChannelManager`, BOLT 2 v1 open handlers, `MessageFactory` |
 | `src/NLightning.Bolt11` | net10.0 | 5.0.0 | BOLT 11 invoice library (only test projects consume it) |
 | `src/NLightning.Daemon` | net10.0 | 0.0.1 | Executable host and composition root, IPC server |
-| `src/NLightning.Daemon.Contracts` | **net9.0** | — | Paths, CLI parsing helpers, `IControlClient` (unused) |
-| `src/NLightning.Daemon.Plugins` | **net9.0** | — | Plugin API (`IDaemonPlugin`, `IDaemonContext`), not wired up |
+| `src/NLightning.Daemon.Contracts` | **net9.0** | — | Paths, CLI parsing helpers (`IControlClient` deleted, NL-151) |
 | `src/NLightning.Transport.Ipc` | net10.0 | — | IPC envelope, DTOs, MessagePack formatters |
 | `src/NLightning.Client` | net10.0 | — | CLI (`nltg` per the usage text; the assembly is `NLightning.Client`) |
 
@@ -91,7 +90,6 @@ graph TD
   App[NLightning.Application]
   B11[NLightning.Bolt11]
   Contracts["NLightning.Daemon.Contracts (net9)"]
-  Plugins["NLightning.Daemon.Plugins (net9)"]
   Ipc[NLightning.Transport.Ipc]
   Client[NLightning.Client]
   Daemon[NLightning.Daemon]
@@ -111,7 +109,6 @@ graph TD
   App --> Btc
   B11 --> Infra
   B11 --> Btc
-  Plugins --> Contracts
   Ipc --> Contracts
   Ipc --> Domain
   Client --> Contracts
@@ -119,7 +116,6 @@ graph TD
   Client --> Domain
   Daemon --> App
   Daemon --> Client
-  Daemon --> Plugins
   Daemon --> Repo
   Daemon --> Btc
   Daemon --> PPg
@@ -150,7 +146,7 @@ graph TD
 | `AddNltgNodeServices` (Daemon) | `NodeServiceExtensions.cs` | All of the above, plus `IConfiguration`, the `ISecureKeyManager` instance, `FeeService` (HttpClient), options, client handlers, IPC router and command handlers. Used by `ConfigureNltgServices` and by the Docker tests (`NLightningTestNode`) |
 | Daemon host only | `NodeServiceExtensions.ConfigureNltgServices` | `NltgDaemonService`, `NamedPipeIpcService`, `CookieFileAuthenticator` (need `configPath`) |
 
-Not registered anywhere: `DustService`, `PluginLoaderService`, `RevocationWatchDbRepository`. Individual `*DbRepository` classes are also not registered; reach them only through `IUnitOfWork`.
+Not registered anywhere: `DustService`, `RevocationWatchDbRepository` (`PluginLoaderService` was deleted, NL-151). Individual `*DbRepository` classes are also not registered; reach them only through `IUnitOfWork`.
 
 ---
 
@@ -171,7 +167,7 @@ Not registered anywhere: `DustService`, `PluginLoaderService`, `RevocationWatchD
 | `Protocol/Models` | `TlvStream` (file `TLVStream.cs`; SortedDictionary, rejects duplicates, no even/odd rule). `CommitmentNumber` (BOLT 3 obscuring, locktime/sequence) |
 | `Protocol/ValueObjects` | `BigSize`, `ChainHash`, `BitcoinNetwork` |
 | `Protocol/Interfaces` | `IMessage`, `IChannelMessage`, `IMessageFactory`, `IMessageService(+Factory)`, `IPingPongService`, `ITlvConverter(+Factory)`, `ITransportServiceFactory`. The same folder also holds non-wire services: `IKeyDerivationService`, `ICommitmentKeyDerivationService`, `ISecureKeyManager`, `ISecretStorageService(+Factory)`, `IChannelKeySetFactory`, `IChannelIdFactory`, `IDustService` |
-| `Protocol/Enums` | `BasepointType`, `HtlcType` (unused) |
+| `Protocol/Enums` | `BasepointType` (`HtlcType` deleted, NL-151) |
 | `Channels` | `ChannelModel` (aggregate). `ChannelState` (the numeric order **is** the state machine: None 0, V1Opening 1, V1FundingCreated 2, V1FundingSigned 3, V2Opening 10, ReadyForThem 20, ReadyForUs 21, Open 22, Closing 30, Failed 35, Closed 40, Stale 50). `ChannelKeySetModel`, `ChannelFactory`, `ChannelOpenValidator`, `ChannelParams` (`Local`/`Remote` `ChannelParty`, NL-194), `ChannelId`, `ShortChannelId`, `Htlc`, `HtlcState`, `HtlcDirection`, `CommitmentKeys`. `Commitments/` is the BOLT 2 engine (`ChannelCommitments`, events in `Commitments/Events`, engine ports in `Commitments/Interfaces`). Repository ports: `IChannelMemoryRepository`, `IChannelDbRepository`, `IChannelStateDbRepository` (engine snapshot, one save per transition; `IHtlcDbRepository` was removed in N5), and others. `IHtlcSwitch`, `IChannelOperations` (contracts, ABCD W0). `Domain/Payments/` holds invoice/payment/forward-circuit models, their repository/service ports, `IForwardingPolicy` and `ForwardingFee` (contracts only) |
 | `Bitcoin` | Value objects (`TxId`, `BitcoinScript`, `Witness`, `SignedTransaction`, `BlockchainState`, ...). Ports: `ILightningSigner`, `IFeeService`, `IUtxoMemoryRepository`, DB repositories, `ISignatureValidator` (unused). `Transactions/`: `CommitmentTransactionModelFactory`, `FundingTransactionModelFactory`, the `*Model` classes, `*OutputInfo`, and `WeightConstants`/`TransactionConstants`. `PenaltyTransactionModel` is empty |
 | `Money` | `LightningMoney` (msat, **mutable reference class**; implicit `long/ulong` means **msat**) |
@@ -218,7 +214,7 @@ Not registered anywhere: `DustService`, `PluginLoaderService`, `RevocationWatchD
 | Crypto | `Crypto/Functions/Ecdh.cs` (`IEcdh` = SHA256(compressed(k*P)), which is the BOLT 4 shared-secret definition), `Crypto/Contexts/NLightningCryptoContext.cs`, `Crypto/Hashes/Ripemd160.cs` |
 | Wallet/chain | `Wallet/BitcoinChainService.cs` (RPC; its constructor makes a **blocking** RPC call), `Wallet/BitcoinWalletService.cs`, `Wallet/BlockchainMonitorService.cs` (ZMQ `rawblock`) |
 | Other | `Services/FeeService.cs`, `DustService.cs`. `InteractiveTx/{PrevTxInspector,InteractiveTxBuilder}` (wave qit; the old `InteractiveTransactionService` is deleted). `Encoders/Bech32Encoder.cs` (internal, used by Bolt11). `Options/{BitcoinOptions,FeeEstimationOptions}.cs` |
-| Dead code | `Transactions/*` (commented out; `PenaltyTransaction` is empty). `Adapters/OutputAdapters/*` (interfaces with no implementations) |
+| Dead code | `Transactions/*` (commented out; `PenaltyTransaction` is empty). `Adapters/OutputAdapters/*` deleted (NL-151) |
 
 **Tests:** `test/NLightning.Infrastructure.Bitcoin.Tests` (247 tests: builders, outputs, signer, onion, blockchain monitor, interactive-tx inspector and builder). BOLT 3 vectors are in `test/NLightning.Integration.Tests/BOLT3/Bolt3IntegrationTests.cs`.
 
@@ -278,7 +274,7 @@ Not registered anywhere: `DustService`, `PluginLoaderService`, `RevocationWatchD
 
 **Tests:** `test/NLightning.Application.Tests` (78: the five open handlers, ChannelReady, FundingConfirmed, ChannelManager, PeerManager).
 
-### 3.7 NLightning.Daemon / Daemon.Contracts / Daemon.Plugins
+### 3.7 NLightning.Daemon / Daemon.Contracts
 
 - `src/NLightning.Daemon/Program.cs`: top-level statements. Order: config, the `--stop`/`--status`/`--help` commands, password, key create/load (`SecureKeyManager`), daemonize, then the host with Serilog, migrations (only if `Database:RunMigrations=true`), then run.
 - `Extensions/NodeConfigurationExtensions.cs`: config path defaults to `~/.nltg/{network}/appsettings.json`. Precedence is JSON < env `NLTG_*` < CLI. It also holds the default config template.
@@ -288,9 +284,8 @@ Not registered anywhere: `DustService`, `PluginLoaderService`, `RevocationWatchD
   - `Services/Ipc/{NamedPipeIpcService,IpcFraming,IpcRouting,CookieFileAuthenticator}.cs`
   - `Ipc/Handlers/*IpcHandler.cs` (one per `ClientCommand`)
   - `Handlers/OpenChannelClientHandler.cs` and `OpenChannelClientSubscriptionHandler.cs` (scoped business flows)
-- `Utilities/DaemonUtils.cs` handles daemonization and the PID file. `Services/PluginLoaderService.cs` is **not registered**.
+- `Utilities/DaemonUtils.cs` handles daemonization and the PID file. The plugin loader stub (`PluginLoaderService`, the `NLightning.Daemon.Plugins` project) is deleted: no runtime plugin loading (NL-151).
 - `src/NLightning.Daemon.Contracts`: `NodeConstants` (nltg.key.json, nltg.pid, nltg.ipc, nltg.cookie), `NodeUtils`, `CommandLineHelper` (shared with the client; has bugs, see §10).
-- `src/NLightning.Daemon.Plugins`: API only.
 
 **Tests:** `test/NLightning.Daemon.Tests` (109: open-channel client/IPC handlers, FeeService, CLI and daemon argument parsing, password handling, IPC formatters and `NamedPipeIpcService`).
 
