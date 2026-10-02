@@ -14,6 +14,7 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
@@ -50,7 +51,8 @@ using Routing;
 /// an <c>r</c> field. Each <c>Open</c> channel whose link is up (<see cref="IPeerLivenessProbe"/>, as LND skips
 /// inactive channels) and whose peer sent us its <c>channel_update</c>
 /// (<see cref="IChannelUpdateService.TryGetRemoteChannelUpdate"/>, not disabled) gets a one-hop hint: the peer's node
-/// id, the channel's short channel id (the peer's alias <c>RemoteAlias</c> for an <c>option_scid_alias</c> channel)
+/// id, the channel's short channel id (<see cref="GetInboundShortChannelId"/>: the peer's alias <c>RemoteAlias</c> for an
+/// unannounced channel whenever the peer sent one, NL-742)
 /// and the <b>peer's</b> fee and <c>cltv_expiry_delta</c>. BOLT 11 describes each entry as the channel from its
 /// <c>pubkey</c> towards the payee, which the peer forwards over and charges for under its own policy; our policy
 /// never applies to that direction. For an invoice with an amount, channels whose peer cannot send it (the peer's
@@ -307,9 +309,7 @@ public sealed class InvoiceService : IInvoiceService
              || update is null || update.IsDisabled)
                 continue;
 
-            var shortChannelId = channel.ChannelParams.UseScidAlias > FeatureSupport.No
-                                     ? channel.RemoteAlias ?? default
-                                     : channel.ShortChannelId;
+            var shortChannelId = GetInboundShortChannelId(channel);
             if (shortChannelId == default)
                 continue;
 
@@ -379,6 +379,23 @@ public sealed class InvoiceService : IInvoiceService
 
         return _graphStore.TryGetChannelReceivedAt(scid, out var receivedAt)
             && _timeProvider.GetUtcNow() - receivedAt >= _publicChannelGracePeriod;
+    }
+
+    /// <summary>
+    /// The short channel id the peer forwards an incoming HTLC over (NL-717, NL-742): an announced channel by its real
+    /// one; an unannounced channel by the alias the peer gave us in <c>channel_ready</c> whenever it gave one (BOLT 2:
+    /// its sender MUST always recognize it; Eclair resolves a private channel by nothing else), else by the real one
+    /// unless the channel type (<c>option_scid_alias</c>) forbids it. <c>default</c> when there is none to use. One rule
+    /// for route hints, blinded paths and a circular payment's incoming candidates.
+    /// </summary>
+    internal static ShortChannelId GetInboundShortChannelId(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (ChannelAnnouncementService.IsAnnounced(channel))
+            return channel.ShortChannelId;
+
+        return channel.RemoteAlias
+            ?? (channel.ChannelParams.UseScidAlias > FeatureSupport.No ? default : channel.ShortChannelId);
     }
 
     /// <summary>

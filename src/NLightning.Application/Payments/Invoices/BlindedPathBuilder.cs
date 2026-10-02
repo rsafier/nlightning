@@ -146,12 +146,7 @@ public sealed class BlindedPathBuilder
             // The peer resolves the short_channel_id among its own (NL-717): an unannounced channel by the alias the
             // peer gave us whenever it gave one (BOLT 2: its sender MUST always recognize it; Eclair resolves a private
             // channel by nothing else), else by the real short channel id unless the channel type forbids it
-            var shortChannelId = announced
-                                     ? channel.ShortChannelId
-                                     : channel.RemoteAlias
-                                    ?? (channel.ChannelParams.UseScidAlias > FeatureSupport.No
-                                            ? default
-                                            : channel.ShortChannelId);
+            var shortChannelId = InvoiceService.GetInboundShortChannelId(channel);
             if (shortChannelId == default)
                 continue;
 

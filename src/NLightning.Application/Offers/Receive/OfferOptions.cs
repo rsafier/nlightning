@@ -50,6 +50,26 @@ public sealed class OfferOptions
     public const uint DefaultPathLifetimeMarginBlocks = 1_008;
 
     /// <summary>
+    /// The default before NL-719/NL-723, which the <c>appsettings.json</c> template wrote into every node's file: a bound
+    /// value equal to it is taken as that old default and raised to <see cref="DefaultPathLifetimeMarginBlocks"/> with a
+    /// warning (NL-743), so existing nodes get the margin their payers need. Pin a small margin with another value.
+    /// </summary>
+    public const uint FormerDefaultPathLifetimeMarginBlocks = 144;
+
+    /// <summary>True when <see cref="PathLifetimeMarginBlocks"/> was raised from the former template default (NL-743).</summary>
+    internal bool PathLifetimeMarginRaisedFromFormerDefault { get; private set; }
+
+    /// <summary>Raises a bound <see cref="FormerDefaultPathLifetimeMarginBlocks"/> to the default (NL-743).</summary>
+    internal void UpgradeFormerDefaults()
+    {
+        if (PathLifetimeMarginBlocks != FormerDefaultPathLifetimeMarginBlocks)
+            return;
+
+        PathLifetimeMarginBlocks = DefaultPathLifetimeMarginBlocks;
+        PathLifetimeMarginRaisedFromFormerDefault = true;
+    }
+
+    /// <summary>
     /// How often <see cref="ExpiredBolt12InvoicePruner"/> deletes expired unpaid BOLT 12 invoices (NL-448); zero turns
     /// the pruning off.
     /// </summary>
