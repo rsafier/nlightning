@@ -31,7 +31,7 @@ every implementation, our own node included, is driven through the same seams.
 - `Nodes/`
   - `INodeHandle` (`KubeNodeHandle`): name/alias, namespace, `PodName` (`<name>-0`), `ServiceDnsName`,
     `PodDnsName`, `PodIp`, exec and file IO, logs, `RestartAsync` (graceful delete, same name + PVC) and `KillAsync`
-    (grace 0). Pause and partition belong to a later `Faults/`.
+    (grace 0). Crash, pause and partition are in `Faults/`.
   - `ILightningTestPeer`: the facade shape (node id, address, connect/disconnect, new address, open channel, list
     channels, invoice, pay). Implementations live per kind (`Nodes/<Kind>/`), amounts in `Sat`/`Msat` longs, node ids
     lower-case hex.
@@ -50,6 +50,21 @@ every implementation, our own node included, is driven through the same seams.
   and redials it **by its new pod IP**: LND stores the resolved IP of a peer it dialled by name, and the cluster DNS may
   answer with the old IP for a while after a restart. `LndTopologyChain` is a stand-in bitcoind (Polar 29.0,
   `bitcoin-cli` by exec) until the shared `BitcoinCore` node and `Chain/` helpers land.
+- `Faults/`: `FaultInjector` (`run.CreateFaultInjector(log)`; disposing resumes and heals; `Events` is the
+  timeline). Measured on OrbStack (k3s, flannel host-gw + k3s's kube-router policy controller):
+  - `RestartAsync` (graceful) and `KillAsync` (pod deleted with grace 0) replace the pod; PVC data stays, the DNS
+    names follow the new pod IP. `KillAsync` is **not** a crash: the kubelet still sends SIGTERM (2 s minimum grace)
+    and the StatefulSet's replacement can start before the old container got it (both on the PVC at once).
+  - `CrashAsync` is the crash: SIGKILL to the main container's processes, restart in place (same pod, UID, IP and
+    PVC; restart count +1; a second crash within 10 min waits for the kubelet back-off).
+  - `PauseAsync`/`ResumeAsync`: SIGSTOP/SIGCONT through exec (POSIX `sh` builtins, the container's own cgroup).
+    Pause and crash need `NodeWorkload.WithProcessFaults()` (`shareProcessNamespace`): Linux ignores SIGSTOP/SIGKILL
+    sent to PID 1 from inside its namespace; without it they throw `FaultNotSupportedException`.
+  - `PartitionAsync(side, others, options)` / `IsolateAsync`: a NetworkPolicy (`nltg-partition-<n>`, label
+    `nltg.fault=partition`). Enforced for **new** connections both ways (pod-to-pod dropped, host-to-pod refused);
+    **established TCP connections survive** (conntrack), so disconnect the peers (node command or restart) after
+    partitioning. DNS stays reachable by default; `PartitionOptions.AllowedIngressCidrs` (`NLTG_RUNNER_CIDRS`) lets
+    the runner keep driving an isolated node (OrbStack host: `192.168.194.0/32`). `HealAsync` deletes the policy.
 - `deploy/runner-rbac.yaml`: the in-cluster runner's RBAC (ported from PR #10). Not applied by the spike.
 
 ## Rules while batch work shares the machine
