@@ -127,6 +127,17 @@ public class AccountingFinancialRollbackTests
         Assert.All(postings, p => Assert.True(p.EntryFlags.HasFlag(AccountingEntryFlags.PendingValuation)));
     }
 
+    [Fact]
+    public async Task Given_LateFactsAroundTheRollbackPoint_When_RolledBack_Then_TheSharedRoundTripHolds()
+    {
+        // Arrange (NL-662, NL-671: the SQLite run of the round trip the Docker Postgres/SQL Server tests share)
+        using var database = new SqliteTestDatabase();
+
+        // Act & Assert
+        await AccountingBulkStatementsRoundTrip.AssertRollbackAsync(() => database.CreateContext(),
+                                                                    TestContext.Current.CancellationToken);
+    }
+
     /// <summary>
     /// Financial book: 1/0 (September, closed), 2/0 and 3/0 (October, open), 3/1 (an adjustment of 40 msat), cursor 3;
     /// lots 1 (closed, by 1/0, 1,000), 2 (imported, 500), 3 (by 2/0, 300), 4 (by 3/0, 200), 5 (by 3/1, 40); reliefs 100

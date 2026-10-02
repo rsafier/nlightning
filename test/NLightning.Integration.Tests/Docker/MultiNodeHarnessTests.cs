@@ -173,11 +173,21 @@ public class MultiNodeHarnessTests : IAsyncLifetime
         await ChainSync.WaitAllAtTipAsync(_fixture, [bob, carol], ct);
     }
 
-    [Theory]
-    [InlineData(TestDatabaseProvider.Postgres)]
-    [InlineData(TestDatabaseProvider.SqlServer)]
-    public async Task Given_ServerDatabase_When_NodeRestarts_Then_ItReconnectsToTheStoredPeer(
-        TestDatabaseProvider provider)
+    /// <summary>The Postgres case of the server-database restart (NL-347, NL-429: a fact of its own, so the standard
+    /// cycle runs it without the SQL Server case, which it filters out by name or by its <c>Database</c> trait).</summary>
+    [Fact]
+    [Trait("Database", "Postgres")]
+    public Task Given_PostgresDatabase_When_NodeRestarts_Then_ItReconnectsToTheStoredPeer() =>
+        AssertServerDatabaseRestartAsync(TestDatabaseProvider.Postgres);
+
+    /// <summary>The SQL Server case of the server-database restart; not run in the standard cycle (owner rule: no SQL
+    /// Server containers), excluded with <c>!~SqlServer</c> or <c>-notrait Database=SqlServer</c>.</summary>
+    [Fact]
+    [Trait("Database", "SqlServer")]
+    public Task Given_SqlServerDatabase_When_NodeRestarts_Then_ItReconnectsToTheStoredPeer() =>
+        AssertServerDatabaseRestartAsync(TestDatabaseProvider.SqlServer);
+
+    private async Task AssertServerDatabaseRestartAsync(TestDatabaseProvider provider)
     {
         // Arrange: a container of our own, so the postgres/sqlserver collections can run at the same time
         var ct = TestContext.Current.CancellationToken;
