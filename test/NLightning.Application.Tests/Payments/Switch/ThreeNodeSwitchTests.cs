@@ -5,6 +5,9 @@ namespace NLightning.Application.Tests.Payments.Switch;
 using Application.Payments;
 using Application.Payments.Routing;
 using Channels.Harness;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Models;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
@@ -75,6 +78,61 @@ public class ThreeNodeSwitchTests
         Assert.Equal(ThreeNodeHarness.BobCarolChannelId, circuit.OutgoingChannelId);
         await AssertNoSettledRowsAsync(harness);
         AssertNeverTwoLocks(harness);
+    }
+
+    [Fact]
+    public async Task Given_InvoiceAtCarol_When_AlicePaysThroughBob_Then_CarolRecordsTheSettleAndBobTheForwardFee()
+    {
+        // Arrange - NL-602: the settle and the circuit's fulfill each stage one accounting event in their own save
+        await using var harness = await ThreeNodeHarness.CreateAsync();
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "coffee", null,
+                                                                      TestContext.Current.CancellationToken);
+        var route = harness.RouteToCarol(s_amount, invoice.PaymentHash, invoice.PaymentSecret);
+        var fee = ThreeNodeHarness.ForwardingFeeOf(ThreeNodeHarness.BobRouting, s_amount);
+
+        // Act
+        await harness.AlicePaysAsync(route);
+        await harness.PumpAsync();
+
+        // Assert: Carol's invoice, settled for what the HTLC carried, from Bob over the Bob-Carol channel
+        var settled = Assert.Single(await AccountingEventsAsync(harness.Carol));
+        Assert.Equal(AccountingEventKind.InvoiceSettled, settled.Kind);
+        Assert.Equal(AccountingEventKeys.InvoiceSettled(invoice.PaymentHash), settled.EventKey);
+        Assert.Equal((long)s_amount.MilliSatoshi, settled.AmountMsat);
+        Assert.Equal(0, settled.FeeMsat);
+        Assert.Equal(AccountingFinality.Final, settled.Finality);
+        Assert.Equal(ThreeNodeHarness.BobCarolChannelId, settled.ChannelId);
+        Assert.Equal(ThreeNodeHarness.BobCarolScid, settled.ShortChannelId);
+        Assert.Equal(harness.Bob.NodeId, settled.Counterparty);
+        Assert.Equal(invoice.PaymentHash, settled.PaymentHash);
+        Assert.Equal(ThreeNodeHarness.BlockHeight, settled.BlockHeight);
+        Assert.Equal("bolt11", settled.Details["kind"]);
+        Assert.Equal("coffee", settled.Details["description"]);
+        Assert.Equal("1", settled.Details["parts"]);
+        Assert.Equal("fulfill", settled.Details["settledBy"]);
+        Assert.False(settled.Details.ContainsKey("requestedMsat"));
+        var storedInvoice = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
+                                                                   .GetByPaymentHashAsync(invoice.PaymentHash));
+        Assert.Equal(storedInvoice!.SettledAt, settled.OccurredAt);
+
+        // Bob earned the fee on the Alice-Bob channel; the amounts in and out are in the details
+        var forward = Assert.Single(await AccountingEventsAsync(harness.Bob));
+        Assert.Equal(AccountingEventKind.ForwardSettled, forward.Kind);
+        Assert.Equal(AccountingEventKeys.ForwardSettled(ThreeNodeHarness.AliceBobChannelId, 0), forward.EventKey);
+        Assert.Equal((long)fee.MilliSatoshi, forward.AmountMsat);
+        Assert.Equal(0, forward.FeeMsat);
+        Assert.Equal(ThreeNodeHarness.AliceBobChannelId, forward.ChannelId);
+        Assert.Equal(ThreeNodeHarness.AliceBobScid, forward.ShortChannelId);
+        Assert.Equal(harness.Alice.NodeId, forward.Counterparty);
+        Assert.Equal(invoice.PaymentHash, forward.PaymentHash);
+        Assert.Equal(ThreeNodeHarness.BobCarolChannelId.ToString(), forward.Details["outgoingChannelId"]);
+        Assert.Equal(ThreeNodeHarness.BobCarolScid.ToString(), forward.Details["outgoingScid"]);
+        Assert.Equal((s_amount + fee).MilliSatoshi.ToString(), forward.Details["incomingAmountMsat"]);
+        Assert.Equal(s_amount.MilliSatoshi.ToString(), forward.Details["outgoingAmountMsat"]);
+        Assert.Equal("0", forward.Details["outgoingHtlcId"]);
+
+        // Alice's payment goes through her payment service (a recorder here): nothing at the switch
+        Assert.Empty(await AccountingEventsAsync(harness.Alice));
     }
 
     [Theory]
@@ -168,6 +226,10 @@ public class ThreeNodeSwitchTests
         Assert.Equal(ForwardCircuitStatus.Failed, (await GetCircuitAsync(harness, 0))!.Status);
         await AssertNoSettledRowsAsync(harness);
         AssertNeverTwoLocks(harness);
+
+        // NL-602: a failed forward and a refused HTLC move no money: nothing recorded
+        Assert.Empty(await AccountingEventsAsync(harness.Bob));
+        Assert.Empty(await AccountingEventsAsync(harness.Carol));
     }
 
     [Fact]
@@ -348,6 +410,11 @@ public class ThreeNodeSwitchTests
         Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
         AssertCommitmentNumbersMirror(harness);
         AssertNeverTwoLocks(harness);
+
+        // NL-602: the replays and restarts recorded the forward and the settle once
+        var forward = Assert.Single(await AccountingEventsAsync(harness.Bob));
+        Assert.Equal(AccountingEventKind.ForwardSettled, forward.Kind);
+        Assert.Equal(AccountingEventKind.InvoiceSettled, Assert.Single(await AccountingEventsAsync(harness.Carol)).Kind);
     }
 
     [Fact]
@@ -630,6 +697,12 @@ public class ThreeNodeSwitchTests
         Assert.Equal(InvoiceStatus.Settled, settled!.Status);
         AssertNoHtlcs(harness);
         await AssertNoSettledRowsAsync(harness);
+
+        // NL-602: the settle was recorded in the mark's save while away, and the fulfill's replay added nothing
+        var settledEvent = Assert.Single(await AccountingEventsAsync(harness.Carol));
+        Assert.Equal(AccountingEventKind.InvoiceSettled, settledEvent.Kind);
+        Assert.Equal((long)s_amount.MilliSatoshi, settledEvent.AmountMsat);
+        Assert.Equal(whileAway.SettledAt, settledEvent.OccurredAt);
     }
 
     [Fact]
@@ -663,6 +736,10 @@ public class ThreeNodeSwitchTests
         AssertNoHtlcs(harness);
         await AssertNoSettledRowsAsync(harness);
         AssertNeverTwoLocks(harness);
+
+        // NL-602: the forward was recorded when its circuit was fulfilled (Act 1); the upstream fulfill's replay
+        // added nothing
+        Assert.Equal(AccountingEventKind.ForwardSettled, Assert.Single(await AccountingEventsAsync(harness.Bob)).Kind);
     }
 
     [Fact]
@@ -777,6 +854,10 @@ public class ThreeNodeSwitchTests
         Assert.NotNull(decrypted);
         return decrypted;
     }
+
+    /// <summary>The accounting events <paramref name="node"/> saved (NL-602; none is sealed in these tests).</summary>
+    private static Task<IReadOnlyList<AccountingEventModel>> AccountingEventsAsync(SwitchNode node) =>
+        node.InScopeAsync(u => u.AccountingEventDbRepository.GetUnsealedAsync(1_000));
 
     private static Task<ForwardCircuitModel?> GetCircuitAsync(ThreeNodeHarness harness, ulong incomingHtlcId) =>
         harness.Bob.InScopeAsync(u => u.ForwardCircuitDbRepository.GetByIncomingAsync(

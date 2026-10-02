@@ -11,6 +11,7 @@ using Blinded;
 using Bolt11.Exceptions;
 using Bolt11.Models;
 using Channels.Interfaces;
+using Domain.Accounting.Constants;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
@@ -544,9 +545,11 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             }
 
             await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
+            var parts = await CountSettledPartsAsync(scope, payment.PaymentHash);
             await UpdateStoredPartAsync(scope, payment.PaymentHash, fulfilled.ChannelId, fulfilled.HtlcId,
                                         PaymentPartState.Succeeded,
                                         verification is { } verified ? ToDurations(verified) : null);
+            await StagePaymentSucceededAsync(scope, payment, parts);
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
             LogSucceeded(payment);
         }
@@ -648,6 +651,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
 
             payment.Fail(code, sourceIndex, reason, _timeProvider.GetUtcNow());
             await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
+            StagePaymentFailed(scope, payment);
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
             LogFailed(payment);
         }
@@ -764,6 +768,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         payment.Fail(null, null, "No part of the payment was still in flight after the restart; its stored parts' "
                                + "HTLCs are gone and their outcomes are unknown.", _timeProvider.GetUtcNow());
         await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
+        StagePaymentFailed(scope, payment);
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
         LogFailed(payment);
         if (_sessions.TryGetValue(payment.PaymentHash, out var session) && !session.HasPartsInFlight)
@@ -1526,6 +1531,9 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         {
             var repository = scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>();
             PaymentModel payment;
+            // A row already Failed was failed by an attempt that was retried ("Retrying", no event) or, after a race,
+            // for good by another path (its event exists): the final failure is recorded once
+            var recordFailure = true;
             if (!session.RowCreated)
             {
                 payment = new PaymentModel(session.PaymentHash, session.Bolt11, session.Target.PayeeNodeId,
@@ -1558,10 +1566,14 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                                    stored.OutgoingChannelId, stored.OutgoingHtlcId, null, code,
                                                    sourceIndex, reason, now, stored.Route, stored.Bolt12,
                                                    stored.Keysend);
+                    recordFailure = !await PaymentFailedRecordedAsync(scope, payment);
                 }
 
                 await repository.UpdateAsync(payment);
             }
+
+            if (recordFailure)
+                StagePaymentFailed(scope, payment);
 
             // No outcome of the payment's remaining parts is waited for any more; their rows are settled here (NL-321)
             var partRepository = scope.ServiceProvider.GetRequiredService<IPaymentPartDbRepository>();
@@ -1722,6 +1734,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             await UpdateStoredPartAsync(scope, session.PaymentHash, fulfilled.ChannelId, fulfilled.HtlcId,
                                         PaymentPartState.Succeeded,
                                         verification is { } verified ? ToDurations(verified) : null);
+        // The parts still in flight (this one included) are the ones the payee settles
+        await StagePaymentSucceededAsync(scope, payment, session.InFlightParts.Count());
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
         part?.Status = PaymentPartStatus.Succeeded;
         if (part is not null)
@@ -2078,6 +2092,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         }
 
         await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
+        if (payment.Status == PaymentStatus.Failed)
+            StagePaymentFailed(scope, payment);
         await unitOfWork.SaveChangesAsync();
         if (payment.Status != PaymentStatus.InFlight)
         {
@@ -2263,6 +2279,111 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // Stop waiting, as with the timeout
+        }
+    }
+
+    /// <summary>
+    /// Stages the payment's <c>PaymentSucceeded</c> accounting event (NL-602) on the scope's unit of work, in the save
+    /// that marks it <c>Succeeded</c> (the callers return early for a payment already <c>Succeeded</c>). A payment of
+    /// one of our own invoices is flagged as a self-payment (a rebalance). Never throws.
+    /// </summary>
+    private async Task StagePaymentSucceededAsync(IServiceScope scope, PaymentModel payment, int parts)
+    {
+        try
+        {
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var selfPayment = await IsOurInvoiceAsync(unitOfWork, payment.PaymentHash);
+            PaymentAccountingEvents.TryStage(unitOfWork, () =>
+                                                 PaymentAccountingEvents.PaymentSucceeded(
+                                                     payment, parts, selfPayment, DescribeInvoice(payment)), _logger);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "Could not record the accounting event of payment {PaymentHash}", payment.PaymentHash);
+        }
+    }
+
+    /// <summary>Whether <paramref name="paymentHash"/> is one of our own invoices (a self-payment); false when that
+    /// cannot be read.</summary>
+    private async Task<bool> IsOurInvoiceAsync(IUnitOfWork unitOfWork, Hash paymentHash)
+    {
+        try
+        {
+            return await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(paymentHash) is not null;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Could not check whether payment {PaymentHash} pays one of our invoices",
+                               paymentHash);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Stages the payment's <c>PaymentFailed</c> accounting event (NL-602) in the save that fails it for good (never
+    /// for an attempt that is retried). Never throws.
+    /// </summary>
+    private void StagePaymentFailed(IServiceScope scope, PaymentModel payment)
+    {
+        try
+        {
+            PaymentAccountingEvents.TryStage(scope.ServiceProvider.GetRequiredService<IUnitOfWork>(),
+                                             () => PaymentAccountingEvents.PaymentFailed(payment), _logger);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not record the accounting event of payment {PaymentHash}", payment.PaymentHash);
+        }
+    }
+
+    /// <summary>Whether the final failure of <paramref name="payment"/>'s attempt is already in the feed.</summary>
+    private async Task<bool> PaymentFailedRecordedAsync(IServiceScope scope, PaymentModel payment)
+    {
+        try
+        {
+            return await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().AccountingEventDbRepository
+                              .ExistsAsync(AccountingEventKeys.PaymentFailed(payment.PaymentHash,
+                                                                             payment.CreatedAt.UtcTicks));
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Could not check the accounting feed for payment {PaymentHash}", payment.PaymentHash);
+            return false;
+        }
+    }
+
+    /// <summary>The stored parts of a payment that were not failed (at least 1): the parts the payee settles.</summary>
+    private async Task<int> CountSettledPartsAsync(IServiceScope scope, Hash paymentHash)
+    {
+        try
+        {
+            var parts = await scope.ServiceProvider.GetRequiredService<IPaymentPartDbRepository>()
+                                   .GetForPaymentAsync(paymentHash);
+            return Math.Max(1, parts.Count(p => p.State != PaymentPartState.Failed));
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Could not count the parts of payment {PaymentHash}", paymentHash);
+            return 1;
+        }
+    }
+
+    /// <summary>The description of the BOLT 11 invoice a payment paid, when it can be read.</summary>
+    private string? DescribeInvoice(PaymentModel payment)
+    {
+        if (payment.Bolt11 is null)
+            return null;
+
+        try
+        {
+            return Invoice.Decode(payment.Bolt11.Trim(), _nodeOptions.Value.BitcoinNetwork).Description;
+        }
+        catch (Exception e)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug(e, "Could not read the description of the invoice of payment {PaymentHash}",
+                                 payment.PaymentHash);
+            return null;
         }
     }
 

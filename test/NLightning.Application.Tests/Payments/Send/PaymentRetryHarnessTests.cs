@@ -1,6 +1,7 @@
 namespace NLightning.Application.Tests.Payments.Send;
 
 using Application.Payments.Send;
+using Domain.Accounting.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Models;
 using Domain.Money;
@@ -87,6 +88,12 @@ public class PaymentRetryHarnessTests
         Assert.Equal(s_amount.MilliSatoshi + HintFee(s_amount.MilliSatoshi), forwards[0].IncomingAmountMsat);
         Assert.Equal(s_amount.MilliSatoshi + newFee, forwards[1].IncomingAmountMsat);
         AssertNoPendingHtlcs(harness);
+
+        // NL-602: the failed first attempt ("Retrying") recorded nothing; the success records the new fee
+        var succeeded = Assert.Single(harness.Bob.Accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentSucceeded, succeeded.Kind);
+        Assert.Equal(-(long)(s_amount.MilliSatoshi + newFee), succeeded.AmountMsat);
+        Assert.Equal((long)newFee, succeeded.FeeMsat);
     }
 
     [Fact]
@@ -239,6 +246,11 @@ public class PaymentRetryHarnessTests
         Assert.Contains("failed earlier", result.Payment.FailureReason);
         Assert.Equal(1, result.Attempts);
         AssertNoPendingHtlcs(harness);
+
+        // NL-602: one PaymentFailed for the final failure
+        var failed = Assert.Single(harness.Bob.Accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentFailed, failed.Kind);
+        Assert.Equal(result.Payment.FailureReason, failed.Details["reason"]);
     }
 
     [Fact]
@@ -269,6 +281,12 @@ public class PaymentRetryHarnessTests
         Assert.True(spent1 > 0 && spent2 > 0);
         Assert.Equal(amount.MilliSatoshi, spent1 + spent2);
         AssertNoPendingHtlcs(harness);
+
+        // NL-602: one PaymentSucceeded for both parts
+        var succeeded = Assert.Single(harness.Bob.Accounting.Saved);
+        Assert.Equal(-(long)amount.MilliSatoshi, succeeded.AmountMsat);
+        Assert.Equal(0, succeeded.FeeMsat);
+        Assert.Equal("2", succeeded.Details["parts"]);
     }
 
     [Fact]
@@ -337,6 +355,15 @@ public class PaymentRetryHarnessTests
         Assert.Equal(harness.Bob.Channel(result.Payment.OutgoingChannelId!.Value).ShortChannelId,
                      result.Payment.Route[0].ShortChannelId);
         AssertNoPendingHtlcs(harness);
+
+        // NL-602: one event for the whole payment, equal to what left Bob's channels; the refused part's "Retrying"
+        // and the replaced rows recorded nothing
+        var succeeded = Assert.Single(harness.Bob.Accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentSucceeded, succeeded.Kind);
+        Assert.Equal(-(long)spent, succeeded.AmountMsat);
+        Assert.Equal((long)result.Payment.Fee.MilliSatoshi, succeeded.FeeMsat);
+        Assert.Equal(result.Payment.OutgoingChannelId, succeeded.ChannelId);
+        Assert.True(int.Parse(succeeded.Details["parts"]) >= 2, succeeded.Details["parts"]);
     }
 
     [Fact]

@@ -4,6 +4,8 @@ namespace NLightning.Application.Tests.Payments.Send;
 
 using Application.Payments.Send.Interfaces;
 using Bolt11.Models;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Money;
@@ -114,6 +116,20 @@ public class PaymentHarnessTests : IDisposable
         Assert.Equal(carolCd - s_amount, _harness.Carol.Channel(_harness.CarolDavid).LocalBalance);
         Assert.Equal(davidCd + s_amount, _harness.David.Channel(_harness.CarolDavid).LocalBalance);
         AssertNoPendingHtlcs();
+
+        // NL-602: Bob recorded the payment once: the amount and Carol's fee left his channel, the fee apart
+        var succeeded = Assert.Single(_harness.Bob.Accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentSucceeded, succeeded.Kind);
+        Assert.Equal(AccountingEventKeys.PaymentSucceeded(invoice.PaymentHash), succeeded.EventKey);
+        Assert.Equal(-(long)(s_amount.MilliSatoshi + feeCarol), succeeded.AmountMsat);
+        Assert.Equal((long)feeCarol, succeeded.FeeMsat);
+        Assert.Equal(_harness.David.NodeId, succeeded.Counterparty);
+        Assert.Equal(_harness.BobCarol, succeeded.ChannelId);
+        Assert.Equal(invoice.PaymentHash, succeeded.PaymentHash);
+        Assert.Equal(payment.CompletedAt, succeeded.OccurredAt);
+        Assert.Equal("bolt11", succeeded.Details["kind"]);
+        Assert.Equal("via carol", succeeded.Details["description"]);
+        Assert.Equal("1", succeeded.Details["parts"]);
     }
 
     [Fact]
@@ -165,6 +181,16 @@ public class PaymentHarnessTests : IDisposable
         Assert.Equal(bobBc, _harness.Bob.Channel(_harness.BobCarol).LocalBalance);
         Assert.Contains(_harness.Bob.Switch.PaymentOutcomes, o => o is { Event: OutgoingHtlcFailed, Handled: true });
         AssertNoPendingHtlcs();
+
+        // NL-602: one PaymentFailed for the final failure, with no money moved
+        var failed = Assert.Single(_harness.Bob.Accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentFailed, failed.Kind);
+        Assert.Equal(AccountingEventKeys.PaymentFailed(invoice.PaymentHash, payment.CreatedAt.UtcTicks), failed.EventKey);
+        Assert.Equal((0L, 0L), (failed.AmountMsat, failed.FeeMsat));
+        Assert.Equal(_harness.David.NodeId, failed.Counterparty);
+        Assert.Equal(payment.FailureReason, failed.Details["reason"]);
+        Assert.Equal(nameof(FailureCode.IncorrectOrUnknownPaymentDetails), failed.Details["failureCode"]);
+        Assert.Equal("1", failed.Details["failureSourceIndex"]);
     }
 
     [Fact]
@@ -228,6 +254,14 @@ public class PaymentHarnessTests : IDisposable
         Assert.Null(second.FailureCode);
         Assert.Single(_harness.Bob.Payments.Payments);
         AssertNoPendingHtlcs();
+
+        // NL-602: the first payment's failure and the retry's success, each once and under its own key
+        var events = _harness.Bob.Accounting.Saved;
+        Assert.Equal(2, events.Count);
+        Assert.Equal(AccountingEventKeys.PaymentFailed(invoice.PaymentHash, first.CreatedAt.UtcTicks),
+                     Assert.Single(events, e => e.Kind == AccountingEventKind.PaymentFailed).EventKey);
+        Assert.Equal(AccountingEventKeys.PaymentSucceeded(invoice.PaymentHash),
+                     Assert.Single(events, e => e.Kind == AccountingEventKind.PaymentSucceeded).EventKey);
     }
 
     [Fact]
@@ -252,6 +286,12 @@ public class PaymentHarnessTests : IDisposable
         Assert.Contains("even split over every path", payment.FailureReason);
         Assert.Empty(_harness.Carol.Switch.Events);
         AssertNoPendingHtlcs();
+
+        // NL-602: a payment that never offered an HTLC still ends with one PaymentFailed
+        var failed = Assert.Single(_harness.Bob.Accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentFailed, failed.Kind);
+        Assert.Null(failed.ChannelId);
+        Assert.False(failed.Details.ContainsKey("failureCode"));
     }
 
     [Fact]

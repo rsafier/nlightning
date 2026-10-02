@@ -9,6 +9,8 @@ using Application.Payments.Routing;
 using Application.Payments.Send;
 using Application.Payments.Send.Interfaces;
 using Bolt11.Models;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
@@ -49,6 +51,8 @@ public class PaymentServiceTests : IDisposable
     private readonly TestNodeKeyManager _payee = new(0x0c);
     private readonly InMemoryPaymentDbRepository _payments = new();
     private readonly InMemoryPaymentPartDbRepository _parts = new();
+    private readonly InMemoryInvoiceDbRepository _invoices = new();
+    private readonly RecordingAccountingEvents _accounting = new();
     private readonly Mock<IChannelStateDbRepository> _channelState = new();
     private readonly Mock<IChannelOperations> _channelOperations = new();
     private readonly Mock<IChannelMemoryRepository> _channels = new();
@@ -63,7 +67,14 @@ public class PaymentServiceTests : IDisposable
 
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(_channelState.Object);
-        unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(Task.CompletedTask);
+        unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(_invoices);
+        var accounting = _accounting.Begin();
+        unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(accounting.Repository);
+        unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
+        {
+            accounting.Commit();
+            return Task.CompletedTask;
+        });
 
         var services = new ServiceCollection();
         services.AddLogging();
@@ -283,6 +294,11 @@ public class PaymentServiceTests : IDisposable
         Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
         Assert.Equal(preimage, stored.Preimage);
         Assert.Null(stored.FailureReason);
+
+        // NL-602: the payment did leave: PaymentSucceeded is recorded even though the row was Failed
+        var succeeded = Assert.Single(_accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentSucceeded, succeeded.Kind);
+        Assert.Equal(-(long)s_amount.MilliSatoshi, succeeded.AmountMsat);
     }
 
     [Fact]
@@ -327,6 +343,14 @@ public class PaymentServiceTests : IDisposable
         Assert.Null(stored.FailureCode);
         Assert.Contains("one part of the payment", stored.FailureReason);
         Assert.Equal(3UL, stored.OutgoingHtlcId);
+
+        // NL-602: the final failure staged in the save that failed the payment
+        var failed = Assert.Single(_accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentFailed, failed.Kind);
+        Assert.Equal(AccountingEventKeys.PaymentFailed(hash, stored.CreatedAt.UtcTicks), failed.EventKey);
+        Assert.Equal((0L, 0L), (failed.AmountMsat, failed.FeeMsat));
+        Assert.Equal(_payee.NodeId, failed.Counterparty);
+        Assert.Equal(stored.FailureReason, failed.Details["reason"]);
     }
 
     [Fact]
@@ -480,6 +504,7 @@ public class PaymentServiceTests : IDisposable
         var fulfilled = new OutgoingHtlcFulfilled(s_channelId, 3, hash, preimage);
         Assert.True(await Service.HandleOutgoingHtlcFulfilledAsync(fulfilled, TestContext.Current.CancellationToken));
         var updates = _payments.UpdateCalls;
+        Assert.Single(_accounting.Saved);
 
         // Act
         var handled = await Service.HandleOutgoingHtlcFulfilledAsync(fulfilled, TestContext.Current.CancellationToken);
@@ -488,6 +513,55 @@ public class PaymentServiceTests : IDisposable
         Assert.False(handled);
         Assert.Equal(updates, _payments.UpdateCalls);
         Assert.Equal(preimage, (await _payments.GetByPaymentHashAsync(hash))!.Preimage);
+        Assert.Single(_accounting.Saved); // NL-602: the replay stages nothing
+    }
+
+    [Fact]
+    public async Task Given_InFlightPaymentWithoutASession_When_ItsFulfillArrives_Then_PaymentSucceededIsRecordedInItsSave()
+    {
+        // Arrange - NL-602: the outcome of a payment after a restart (no session) goes through the stored row
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+
+        // Act
+        Assert.True(await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 3, hash,
+                                                                       preimage),
+                                                                   TestContext.Current.CancellationToken));
+
+        // Assert: the whole amount (and the route fee, none here) left our channel
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        var succeeded = Assert.Single(_accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentSucceeded, succeeded.Kind);
+        Assert.Equal(AccountingEventKeys.PaymentSucceeded(hash), succeeded.EventKey);
+        Assert.Equal(-(long)s_amount.MilliSatoshi, succeeded.AmountMsat);
+        Assert.Equal(0, succeeded.FeeMsat);
+        Assert.Equal(_payee.NodeId, succeeded.Counterparty);
+        Assert.Equal(s_channelId, succeeded.ChannelId);
+        Assert.Equal(hash, succeeded.PaymentHash);
+        Assert.Equal(stored!.CompletedAt, succeeded.OccurredAt);
+        Assert.Equal(AccountingFinality.Final, succeeded.Finality);
+        Assert.Equal("blinded", succeeded.Details["kind"]); // no invoice string, offer or keysend on the row
+        Assert.False(succeeded.Details.ContainsKey("selfPayment"));
+    }
+
+    [Fact]
+    public async Task Given_APaymentOfOurOwnInvoice_When_ItSucceeds_Then_ItIsFlaggedAsASelfPayment()
+    {
+        // Arrange - a rebalance: the hash is one of our invoices
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+        await _invoices.AddAsync(new InvoiceModel(hash, preimage, Preimage(), s_amount, "rebalance", "lnbcrt1self",
+                                                  DateTimeOffset.UtcNow, 3_600, 18));
+
+        // Act
+        Assert.True(await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 3, hash,
+                                                                       preimage),
+                                                                   TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal("true", Assert.Single(_accounting.Saved).Details["selfPayment"]);
     }
 
     [Fact]
