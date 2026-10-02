@@ -124,12 +124,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 58 | 61 |
+| open | 0 | 0 | 3 | 65 | 68 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 62 | 164 | 282 | 522 |
+| fixed | 14 | 62 | 164 | 285 | 525 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **172** | **347** | **595** |
+| **Total** | **14** | **62** | **172** | **357** | **605** |
 
 ### Epics
 
@@ -4572,6 +4572,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Includes NL-151, NL-603, NL-604, NL-605
 - **Plan ref:** ACCOUNTING_PLAN A0-A3
 - **Update (A1-T1, 2026-10-02):** Domain `Accounting/` (event model, kinds, keys, canonical hasher, sealer, details codec, `IAccountingEventDbRepository` with a null default on `IUnitOfWork`), table `AccountingEvents` with migration `AddAccountingEvents` on all three providers (also `Channels.PushAmountMsat` for NL-605 and `BroadcastTransactions.FeeSat` for NL-604, no writers yet); SQLite round trip and sealer tests.
+- **Update (A1-T2, A1-T4, A1-T5, 2026-10-02):** writers in the saves of every money transition: `InvoiceSettled`, `PaymentSucceeded`/`PaymentFailed`, `ForwardSettled`, `ForwardLostOnchain` (Application `Payments/PaymentAccountingEvents`); `ChannelFunded` with push and our fee share, `SpliceLocked`, `ChannelClosedMutual` (`Channels/Accounting/ChannelAccountingEvents`); `ChannelForceClosed`, `OutputResolved`/`PenaltyClaimed`/`BreachLoss`/`OutputIgnored` and reversals of a replaced close or a reorged resolution (`Onchain/Accounting/`); wallet deposits and spends, `AnchorCpfpFee`, `SweepFeeBump`, `WalletSent` and rewind reversals in the chain monitor (NL-603, NL-604, NL-605 fixed). The sealer service (`Application/Accounting/AccountingEventSealerService`, `Accounting` options), the live balance snapshot (`INodeSnapshotSource`) and IPC `listaccountingevents` (41) / `accountingsnapshot` (42). Remaining in A1: the backfill (A1-T6; closes recorded before the feed have no `ChannelForceClosed`, so their sweeps would read as gains), the flat-startup proof, and follow-ups NL-606..NL-613. Notes for A2: wallet events overlap the channel and fee events (the books use `source` and kind), a pending funding is in both the channel and the wallet buckets of a snapshot until it confirms, a splice-out to an outside address shows as wallet outputs in the details.
 
 ### NL-152 Missing IPC commands: close, list channels, invoice, pay, disconnect
 - **Status:** fixed (5611156, 2ede2ee, 6cfbcd1, c10a78e, c50fc7b, f2f1ef6, 6d81ecd, c2ae40a, d60c4be5, aa9d67e0)
@@ -4963,7 +4964,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-603 Wallet UTXO rows are deleted on spend, so the node keeps no on-chain wallet history
-- **Status:** open
+- **Status:** fixed (5624e46)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `UtxoDbRepository.Spend` via `UnitOfWork.TrySpendUtxo`; `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`StageWalletMovements`, `StageWalletRollbackAsync`)
@@ -4971,9 +4972,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Keep a `WalletTransactions` history (or mark rows spent with the spending txid and height instead of deleting, with reorg rollback restoring them); feeds the accounting events `WalletReceived`/`WalletSent`.
 - **Blocks/Blocked-by:** Part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN A1-T3
+- **Update (A1-T2):** the chain monitor writes `WalletReceived`/`WalletOutputSpent` accounting events in the block's unit of work (source classified: external, our broadcast with its purpose, channel, wallet), with reversals in the rewind save; the feed is the wallet history. The UTXO rows are still deleted on spend.
 
 ### NL-604 Absolute on-chain fees are not persisted for our transactions
-- **Status:** open
+- **Status:** fixed (1c71534, 1902798, 5624e46)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `BroadcastTransactions` (`FeeratePerKw`, `RawTransaction` only); `SpliceService.GetTotalFee` (computed, not stored); funding, close, sweep, CPFP and withdraw builders
@@ -4981,9 +4983,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Store `FeeSat` (and our input total) on `BroadcastTransactions` when we build the transaction, all three providers.
 - **Blocks/Blocked-by:** Part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN A1-T3
+- **Update (A1-T2):** `BroadcastTransactionModel.Fee` (column `FeeSat`, migration `AddAccountingEvents`) is set at every builder that knows its inputs: v1, dual-funded and splice fundings (the total), local commitments, HTLC transactions, sweeps, claims, penalties and their RBF, anchor CPFP children and the reclaim, and withdrawals. Mutual closes have no broadcast row; their fee is computed from the closing tx in the `ChannelClosedMutual` event.
 
 ### NL-605 The push amount of a channel open is not persisted
-- **Status:** open
+- **Status:** fixed (1c71534)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `Channels` (`FundingAmountSatoshis`, initial balances); `openchannel` push (NL-301)
@@ -4991,6 +4994,107 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Persist `PushAmountMsat` (and the side that pushed) on the channel, all three providers; record it in `ChannelFunded`.
 - **Blocks/Blocked-by:** Part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN A1-T3
+- **Update (A1-T2):** both sides record the push (0 when none) in the channel's first save (`FundingCreatedMessageHandler`, `FundingSignedMessageHandler`); `ChannelFunded` carries it and a `PushSent`/`PushReceived` event goes with it.
+
+### NL-606 A replaced broadcast that confirms anyway is never marked Confirmed
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Repositories/Database/Onchain/BroadcastTransactionDbRepository.cs` (`MarkConfirmedAsync`, ~:121-130, returns for Replaced/Abandoned rows), `BroadcastTransactionModel.MarkConfirmed`, `BlockchainMonitorService` (`_pendingBroadcasts`, `DropSettledBroadcastsAsync`)
+- **Evidence:** Found by the accounting writers (NL-602 A1-T2): when the original of an RBF chain (sweep, claim, penalty, anchor CPFP) confirms instead of its replacement, its row stays `Replaced` and no row of the chain becomes `Confirmed`; the confirmed transaction's fee is then never classified (`AnchorCpfpFee`/`SweepFeeBump`) and only the wallet events record the money. `pendingsweeps` keeps showing the chain as replaced.
+- **Fix sketch:** Mark the row of whichever chain member the block holds `Confirmed` (decide from the spender, not from row state), and its siblings `Replaced`.
+- **Blocks/Blocked-by:** Related NL-602
+- **Plan ref:** ACCOUNTING_PLAN A1
+
+### NL-607 Funding and mutual-close accounting events are not reversed by a reorg
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Onchain/Reorg/FundingReconfirmationHandler.cs` (moves the SCID, writes no accounting event), `ChannelManager.CompleteCloseAsync`, `src/NLightning.Application/Channels/Accounting/ChannelAccountingEvents.cs`
+- **Evidence:** NL-602 A1-T2: `ChannelFunded`/`PushSent`/`PushReceived` keep the height and SCID of a funding block that a reorg disconnected, and a `ChannelClosedMutual` whose block is reorged out after the channel went Closed has no `Reversal`. The wallet and on-chain resolution writers already reverse and re-emit (`AccountingConfirmations`, `AccountingEventKeys.Reconfirmed`/`Reemitted`).
+- **Fix sketch:** Reverse in the reconfirmation handler's save and re-emit with `Reconfirmed`; for a mutual close, reverse when the closing watch is reset by the rewind.
+- **Blocks/Blocked-by:** Related NL-602
+- **Plan ref:** ACCOUNTING_PLAN A1
+
+### NL-608 A forward booked as settled whose upstream HTLC later times out on chain records no loss
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs` (`FulfillForwardLockedAsync`: the circuit is marked Fulfilled even when the upstream fulfill is refused), on-chain resolvers of the incoming channel
+- **Evidence:** NL-602 A1-T2: `ForwardSettled` (+fee) is written when the circuit turns Fulfilled; if the upstream fulfill was refused (link down, channel on chain) and the incoming HTLC then times out to the peer on chain, we paid downstream and lost the incoming amount, but no event records it (the resolution event of that output is informational under the HTLC ownership rule).
+- **Fix sketch:** When an incoming HTLC whose circuit is Fulfilled times out to the peer on chain, write a `ForwardLostOnchain` (−incoming amount) in the resolution save.
+- **Blocks/Blocked-by:** Related NL-602, NL-316
+- **Plan ref:** ACCOUNTING_PLAN A1
+
+### NL-609 Rebalances cannot be recorded: the node refuses to pay its own invoices
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`PayInvoiceAsync` "a node cannot pay itself", keysend and blinded payee checks)
+- **Evidence:** NL-602 A1-T2 wires `selfPayment=true` on `PaymentSucceeded` when the hash is one of our invoices, but a circular rebalance is refused before it starts, so the operational books' rebalance cost (plan §6.1) stays empty.
+- **Fix sketch:** A rebalance command (or allowing self-payment over an explicit route out one channel and in another), recorded with `selfPayment`.
+- **Blocks/Blocked-by:** Related NL-602
+- **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-610 Who paid a mutual close's fee is inferred, not recorded
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Accounting/ChannelAccountingEvents.cs` (`ChannelClosedMutual`), `ChannelModel`
+- **Evidence:** NL-602 A1-T2: the channel does not record whether the close was legacy `closing_signed` (funder pays) or `option_simple_close` and which side was the closer, so `feePaidByUs` is inferred from our balance minus our output (loss of 1,000 msat or more).
+- **Fix sketch:** Persist the close protocol and the closer when the close completes.
+- **Blocks/Blocked-by:** Related NL-602
+- **Plan ref:** ACCOUNTING_PLAN A1
+
+### NL-611 Our own anchor sweep is not stored, so its resolution is booked as taken by the peer
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Onchain/Anchors/AnchorCpfpService.cs` (the 16-block anchor sweep is published once and never stored), `OnchainAccounting` resolution events
+- **Evidence:** NL-602 A1-T2: with no `BroadcastTransactions` row for our anchor sweep, the resolution of our anchor output is recorded as `resolvedBy=peer` (−330 sat when counted) and the wallet receipt balances it; the books cannot tell our sweep from the peer's. Related to the bookkeeping of NL-601.
+- **Fix sketch:** Save the anchor sweep as a `Sweep` row (with its fee) before publishing it.
+- **Blocks/Blocked-by:** Related NL-601, NL-602
+- **Plan ref:** ACCOUNTING_PLAN A1
+
+### NL-612 The peer's spend of our offered HTLC output is assumed to be a preimage claim
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (resolution events, ownership rule (b))
+- **Evidence:** NL-602 A1-T2: the executor does not parse the spender's witness, so a revocation spend of our own (revoked) commitment's offered HTLC output is tagged `claimedBy=peer`/`valueBookedBy=payment|forward` like a preimage claim.
+- **Fix sketch:** Classify the witness (preimage vs revocation key) when the peer spends one of our HTLC outputs.
+- **Blocks/Blocked-by:** Related NL-602
+- **Plan ref:** ACCOUNTING_PLAN A1
+
+### NL-613 Two key schemes for re-recorded on-chain facts (Reconfirmed and Reemitted)
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Domain/Accounting/Constants/AccountingEventKeys.cs` (`Reconfirmed(baseKey, n)` from the wallet writers, `Reemitted(key, height)` from the resolution writers), `AccountingConfirmations`
+- **Evidence:** NL-602 A1-T2 integration: the two writer groups solved "the same fact recorded again after a reorg" differently; `Reemitted` keyed by height can collide when a fact is reorged back to the same height twice.
+- **Fix sketch:** Use `AccountingConfirmations.NextConfirmationKey` (generation counter) for the resolution writers too and drop `Reemitted`.
+- **Blocks/Blocked-by:** Related NL-602
+- **Plan ref:** ACCOUNTING_PLAN A1
+
+### NL-614 `OnionMessageChannelTests` alias case failed once in a full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/OnionMessages/OnionMessageChannelTests.cs` (`Given_ABobHopNamingHisChannelToCarol_When_Forwarding_Then_ResolvedByRealScidOrLocalAlias(byAlias: True)`)
+- **Evidence:** Failed once in the full non-Docker run of the NL-602 A1 integration (2026-10-02, linux-x64, 4 cores shared with other builds); the class passed 7/7 alone right after. Timing-sensitive like NL-500.
+- **Fix sketch:** Find the wait it races and make it event-driven; rerun alone before treating it as a regression.
+- **Blocks/Blocked-by:** Related NL-500
+- **Plan ref:** —
+
+### NL-615 The IPv6 `TcpServiceTests` fail on a host without IPv6
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Infrastructure.Tests/Transport/Services/TcpServiceTests.cs` (`Given_AWildcardV6ListenAddress_*`, `Given_AnIPv6LoopbackListenAddress_*`)
+- **Evidence:** In a cloud container without an IPv6 stack (`/proc/net/if_inet6` absent) both cases fail in every run (NL-602 A1 integration, 2026-10-02); the run is otherwise hermetic.
+- **Fix sketch:** Skip them (xUnit v3 `Assert.Skip`) when `Socket.OSSupportsIPv6` is false or binding `::1` fails, as the platform skips in Infrastructure.Bitcoin do.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
 
 ## Crypto providers and key management
 

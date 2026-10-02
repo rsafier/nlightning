@@ -7,6 +7,7 @@ using Serilog;
 
 namespace NLightning.Daemon.Extensions;
 
+using Application.Accounting;
 using Application.Offers.Receive;
 using Application.OnionMessages;
 using Domain.Node.Options;
@@ -337,6 +338,7 @@ public static class NodeConfigurationExtensions
         var fees = new FeeEstimationOptions();
         var onionMessages = new OnionMessageOptions();
         var offers = new OfferOptions();
+        var accounting = new AccountingOptions();
         // Regtest and signets switch HTLCs on explicitly; mainnet and testnet leave the switch to NodeOptions' code
         // default (null binds as unset), so the BOLT 5 O6-T4 gate decides both
         var enableHtlcs = resolved == BitcoinNetwork.Regtest || isSignet ? "true" : "null";
@@ -549,6 +551,12 @@ public static class NodeConfigurationExtensions
                    "ExpiredInvoicePruneBatchSize": {{OF_PRUNE_BATCH}},
                    "ExpiredInvoicePruneGrace": "{{OF_PRUNE_GRACE}}"
                  },
+                 "Accounting": {
+                   "Enabled": true,
+                   "SealInterval": "{{AC_SEAL_INTERVAL}}",
+                   "SealBatchSize": {{AC_SEAL_BATCH}},
+                   "SnapshotInterval": "{{AC_SNAPSHOT_INTERVAL}}"
+                 },
                  "FeeEstimation": {
                    "Source": "{{FEE_SOURCE}}",
                    "Url": "{{FEE_URL}}",
@@ -637,6 +645,9 @@ public static class NodeConfigurationExtensions
                   .Replace("{{OF_PATH_MARGIN}}", Invariant(offers.PathLifetimeMarginBlocks))
                   .Replace("{{OF_PRUNE_INTERVAL}}", Invariant(offers.ExpiredInvoicePruneInterval))
                   .Replace("{{OF_PRUNE_BATCH}}", Invariant(offers.ExpiredInvoicePruneBatchSize))
+                  .Replace("{{AC_SEAL_INTERVAL}}", Invariant(accounting.SealInterval))
+                  .Replace("{{AC_SEAL_BATCH}}", Invariant(accounting.SealBatchSize))
+                  .Replace("{{AC_SNAPSHOT_INTERVAL}}", Invariant(accounting.SnapshotInterval))
                   .Replace("{{OF_PRUNE_GRACE}}", Invariant(offers.ExpiredInvoicePruneGrace))
                   .Replace("{{FEE_SOURCE}}", feeSource)
                   .Replace("{{FEE_URL}}", feeUrl)

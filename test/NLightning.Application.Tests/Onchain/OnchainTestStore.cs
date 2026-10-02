@@ -367,6 +367,17 @@ internal sealed class OnchainTestStore
         public Task<IReadOnlyList<AccountingEventModel>> GetSealedRangeAsync(
             long fromLedgerSeq, int take, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
+        public Task<IReadOnlyList<AccountingEventModel>> GetAtOrAboveHeightAsync(
+            uint height, IReadOnlyCollection<AccountingEventKind> kinds,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<AccountingEventModel>>(
+                All.Where(e => e.BlockHeight >= height && kinds.Contains(e.Kind)).ToList());
+
+        public Task<IReadOnlyList<AccountingEventModel>> GetByKeyPrefixAsync(
+            string keyPrefix, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<AccountingEventModel>>(
+                All.Where(e => e.EventKey.StartsWith(keyPrefix, StringComparison.Ordinal)).ToList());
     }
 
     /// <summary>A block hash for tests.</summary>
