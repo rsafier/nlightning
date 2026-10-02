@@ -125,9 +125,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 57 | 60 |
+| open | 0 | 0 | 3 | 52 | 55 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 62 | 164 | 298 | 538 |
+| fixed | 14 | 62 | 164 | 303 | 543 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
 | **Total** | **14** | **62** | **172** | **362** | **610** |
@@ -5090,7 +5090,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-615 The IPv6 `TcpServiceTests` fail on a host without IPv6
-- **Status:** open
+- **Status:** fixed (4bdcf598)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Infrastructure.Tests/Transport/Services/TcpServiceTests.cs` (`Given_AWildcardV6ListenAddress_*`, `Given_AnIPv6LoopbackListenAddress_*`)
@@ -5100,7 +5100,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-616 A revoked close books the revoked state's balance, not the one the books hold
-- **Status:** open
+- **Status:** fixed (4bdcf598)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Onchain/Accounting/OnchainAccounting.cs` (`ForceClosed`: B from the confirmed commitment's spec)
@@ -5110,7 +5110,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A2
 
 ### NL-617 A channel failed before its funding confirmed never records ChannelFunded
-- **Status:** open
+- **Status:** fixed (4bdcf598)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Handlers/FundingConfirmedMessageHandler.cs` (~:51, only V1FundingSigned/ReadyForThem), `Channels/Accounting/ChannelAccountingEvents.cs`
@@ -5120,7 +5120,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A1
 
 ### NL-618 Reconcile compares Pending against outputs the books never counted
-- **Status:** open
+- **Status:** fixed (4bdcf598)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/NodeSnapshotSource.cs` (`IsOurs`), `Accounting/Books/AccountingBooksService.BuildReconcileLines`
@@ -5130,7 +5130,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A2
 
 ### NL-619 A failed cutover followed by live events leaves the books without opening balances
-- **Status:** open
+- **Status:** fixed (4bdcf598)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/Backfill/AccountingBackfillService.cs` (`EnsureCutoverAsync`), `src/NLightning.Daemon/Services/NltgDaemonService.cs`
