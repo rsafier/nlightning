@@ -8,9 +8,14 @@ namespace NLightning.Application.Accounting.Reports;
 using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
+using Domain.Accounting.Financial;
+using Domain.Accounting.Financial.Export;
+using Domain.Accounting.Financial.Reports;
 using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Export;
+using Export.Financial;
+using Financial;
 
 /// <summary>
 /// The books' reports and exports (NL-602 A2, plan §6.1, IPC 43/44).
@@ -40,6 +45,25 @@ public static class AccountingReportServiceCollectionExtensions
                                                          sp.GetRequiredService<ILogger<AccountingExportService>>(),
                                                          sp.GetService<IOptions<AccountingOptions>>(),
                                                          sp.GetService<IAccountingEventSealer>()));
+
+        // The financial book's reports and exports (NL-602 A3-T6): IPC 43/44 with --book financial
+        services.TryAddSingleton<IAccountingFinancialReports>(sp => new AccountingFinancialReportService(
+                                                                   sp.GetRequiredService<IServiceScopeFactory>(),
+                                                                   sp.GetService<IAccountingBooks>(),
+                                                                   sp.GetRequiredService<
+                                                                       ILogger<AccountingFinancialReportService>>(),
+                                                                   sp.GetService<IOptions<AccountingOptions>>(),
+                                                                   sp.GetService<IAccountingEventSealer>(),
+                                                                   sp.GetService<IFinancialBooksProjector>(),
+                                                                   sp.GetService<INodeSnapshotSource>(),
+                                                                   sp.GetService<TimeProvider>()));
+        services.TryAddSingleton<IAccountingFinancialExports>(sp => new AccountingFinancialExportService(
+                                                                   sp.GetRequiredService<IServiceScopeFactory>(),
+                                                                   sp.GetService<IAccountingBooks>(),
+                                                                   sp.GetRequiredService<
+                                                                       ILogger<AccountingFinancialExportService>>(),
+                                                                   sp.GetService<IAccountingEventSealer>(),
+                                                                   sp.GetService<IFinancialBooksProjector>()));
 
         return services;
     }

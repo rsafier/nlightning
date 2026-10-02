@@ -17,4 +17,7 @@ public sealed record AccountingReportClientResponse(AccountingReportKind Kind, A
     public AccountingChannelsReport? Channels { get; init; }
     public AccountingFeesReport? Fees { get; init; }
     public AccountingRegister? Register { get; init; }
+
+    /// <summary>A report of the financial book (NL-602 A3-T6), or the risk-weighted capital.</summary>
+    public AccountingFinancialReportResult? Financial { get; init; }
 }

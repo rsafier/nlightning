@@ -47,6 +47,7 @@
   <ItemGroup>
     <!-- The accounting export golden files (NL-602 A2) -->
     <None Include="Accounting\Export\Golden\*" CopyToOutputDirectory="PreserveNewest"/>
+    <None Include="Accounting\Financial\Golden\*" CopyToOutputDirectory="PreserveNewest"/>
   </ItemGroup>
 
   <ItemGroup>

@@ -78,6 +78,10 @@ public sealed record AccountingSnapshot(
 /// <param name="PendingUncountedMsat">Unresolved outputs we may still take that the books book only once claimed
 /// (the peer's HTLCs, a revoked commitment's outputs, a fundee's anchor; NL-618): a possible gain, not part of
 /// <see cref="AccountingSnapshot.TotalMsat"/>.</param>
+/// <param name="LocalInFlightFulfilledMsat">The part of <paramref name="LocalInFlightMsat"/> the peer fulfilled (we know
+/// the preimage, so the money is paid; NL-602 A3-T6, the risk-weighted view).</param>
+/// <param name="RemoteInFlightPreimageMsat">The part of <paramref name="RemoteInFlightMsat"/> whose preimage we hold (we
+/// fulfilled it, or accepted it as the final node; A3-T6).</param>
 public sealed record ChannelBalanceBucket(
     ChannelId ChannelId,
     ShortChannelId? ShortChannelId,
@@ -92,7 +96,9 @@ public sealed record ChannelBalanceBucket(
     long PendingHtlcOnchainMsat,
     int PendingSweepCount,
     bool IsLoaded,
-    long PendingUncountedMsat = 0);
+    long PendingUncountedMsat = 0,
+    long LocalInFlightFulfilledMsat = 0,
+    long RemoteInFlightPreimageMsat = 0);
 
 /// <summary>
 /// The on-chain wallet in an <see cref="AccountingSnapshot"/> (the <c>walletbalance</c> numbers).

@@ -1,12 +1,12 @@
 namespace NLightning.Domain.Accounting.Financial;
 
 /// <summary>
-/// The financial book's projector (A3-T4, D-A7) as the period close (A3-T5) uses it: it projects the operational
-/// entries after the financial cursor into the financial book.
+/// The financial book's projector (A3-T4, D-A7) as the period close (A3-T5) and the financial reports and exports
+/// (A3-T6) use it: it projects the operational entries after the financial cursor into the financial book.
 /// </summary>
 /// <remarks>
 /// <para>Until A3-T4 registers its projector, the default (<see cref="NullFinancialBooksProjector"/>) is off, so a
-/// close and a financial rebuild are refused.</para>
+/// close, a financial rebuild and the financial reports and exports are refused.</para>
 /// <para><b>Contract with the close.</b> The projector holds <see cref="IAccountingAdjustmentSink.EnterAsync"/> from
 /// its closed-period check to its save, and for every operational entry dated in a locked period
 /// (<see cref="IAccountingAdjustmentSink.GetLockingPeriodAsync"/>) it hands the entry it would have posted to

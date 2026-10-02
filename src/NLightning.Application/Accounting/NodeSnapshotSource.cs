@@ -115,6 +115,8 @@ public sealed class NodeSnapshotSource : INodeSnapshotSource
 
         long localInFlight = 0;
         long remoteInFlight = 0;
+        long localFulfilled = 0;
+        long remoteWithPreimage = 0;
         if (channel.Commitments is { } commitments)
         {
             foreach (var htlc in commitments.Htlcs.Values)
@@ -122,17 +124,29 @@ public sealed class NodeSnapshotSource : INodeSnapshotSource
                 if (HtlcStateTable.IsFinal(htlc.State))
                     continue;
 
+                // The preimage is known once a fulfill was sent or received, or the switch committed to an incoming
+                // HTLC as its final node (A3-T6, the risk-weighted view)
+                var preimageKnown = htlc.KnownPreimage is not null || htlc.Removal?.PaymentPreimage is not null;
                 if (htlc.Direction == HtlcDirection.Outgoing)
+                {
                     localInFlight += ToMsat(htlc.AmountMsat);
+                    if (preimageKnown)
+                        localFulfilled += ToMsat(htlc.AmountMsat);
+                }
                 else
+                {
                     remoteInFlight += ToMsat(htlc.AmountMsat);
+                    if (preimageKnown)
+                        remoteWithPreimage += ToMsat(htlc.AmountMsat);
+                }
             }
         }
 
         return new ChannelBalanceBucket(channel.ChannelId, scid, channel.State, channel.RemoteNodeId, capacity,
                                         ToMsat(channel.LocalBalance.MilliSatoshi),
                                         ToMsat(channel.RemoteBalance.MilliSatoshi), localInFlight, remoteInFlight,
-                                        pendingOnchain, pendingHtlcs, count, true, uncounted);
+                                        pendingOnchain, pendingHtlcs, count, true, uncounted, localFulfilled,
+                                        remoteWithPreimage);
     }
 
     private static (long Ours, long Htlcs, long Uncounted, int Count) Sum(List<OutputResolutionModel>? outputs,

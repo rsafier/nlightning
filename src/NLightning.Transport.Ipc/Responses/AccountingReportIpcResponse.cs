@@ -43,6 +43,10 @@ public sealed class AccountingReportIpcResponse
     /// <summary>The time the yields' open periods end at (channels and peers), Unix milliseconds.</summary>
     [Key(11)] public long? AsOfUnixMilliseconds { get; init; }
 
+    /// <summary>A report of the financial book or the risk-weighted capital (NL-602 A3-T6); the other report fields are
+    /// null then.</summary>
+    [Key(12)] public AccountingFinancialReportIpcResponse? Financial { get; init; }
+
     public static AccountingReportIpcResponse FromClientResponse(AccountingReportClientResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -91,6 +95,14 @@ public sealed class AccountingReportIpcResponse
             register = AccountingRegisterIpcResponse.From(page, response.Names);
         }
 
+        AccountingFinancialReportIpcResponse? financial = null;
+        if (response.Financial is { } financialReport)
+        {
+            financial = AccountingFinancialReportIpcResponse.From(financialReport);
+            cursor = financial.ProjectedLedgerSeq;
+            (since, until) = FinancialPeriod(financialReport);
+        }
+
         return new AccountingReportIpcResponse
         {
             Kind = (int)response.Kind,
@@ -104,9 +116,17 @@ public sealed class AccountingReportIpcResponse
             Channels = channels,
             Peers = peers,
             Fees = fees,
-            Register = register
+            Register = register,
+            Financial = financial
         };
     }
+
+    // The period of a financial report (the balance sheet's time as its end)
+    private static (long? Since, long? Until) FinancialPeriod(AccountingFinancialReportResult report) =>
+        report.BalanceSheet is { } sheet ? (null, Milliseconds(sheet.At))
+        : report.IncomeStatement is { } statement ? (Milliseconds(statement.Since), Milliseconds(statement.Until))
+        : report.RealizedGains is { } gains ? (Milliseconds(gains.Since), Milliseconds(gains.Until))
+        : (null, null);
 
     internal static long? Milliseconds(DateTimeOffset? time) => time?.ToUnixTimeMilliseconds();
 }

@@ -15,6 +15,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Onchain.Enums;
@@ -196,6 +197,38 @@ public class NodeSnapshotSourceTests
         // Act & Assert
         Assert.Equal(ours, NodeSnapshotSource.IsOurs(kind));
         Assert.Equal(htlc, NodeSnapshotSource.IsHtlc(kind));
+    }
+
+    [Fact]
+    public async Task Given_HtlcsWhosePreimageIsKnown_When_Snapshotted_Then_TheyAreReportedApart()
+    {
+        // Arrange: our 10k sat HTLC the peer fulfilled and our 3k sat one still open; their 5k sat HTLC we accepted as
+        // the final node, their 2k sat one we fulfilled and their 4k sat one we know nothing about (NL-602 A3-T6)
+        var preimage = new Secret(Enumerable.Repeat((byte)0x5a, 32).ToArray());
+        var channel = Channel(FeeTestKit.ChannelId, ChannelState.Open, 1_000_000);
+        channel.UpdateCommitments(FeeTestKit.Create(600_000, 400_000, 2_500,
+                                                    htlcs:
+                                                    [
+                                                        FeeTestKit.Outgoing(0, 10_000) with { KnownPreimage = preimage },
+                                                        FeeTestKit.Outgoing(1, 3_000),
+                                                        FeeTestKit.Incoming(0, 5_000) with { KnownPreimage = preimage },
+                                                        FeeTestKit.Incoming(1, 2_000, HtlcState.SentRemoveHtlc) with
+                                                        {
+                                                            Removal = HtlcRemoval.Fulfill(preimage)
+                                                        },
+                                                        FeeTestKit.Incoming(2, 4_000)
+                                                    ]));
+        _loaded.Add(channel);
+
+        // Act
+        var snapshot = await CreateSource().TakeSnapshotAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var bucket = Assert.Single(snapshot.Channels);
+        Assert.Equal(13_000_000, bucket.LocalInFlightMsat);
+        Assert.Equal(10_000_000, bucket.LocalInFlightFulfilledMsat);
+        Assert.Equal(11_000_000, bucket.RemoteInFlightMsat);
+        Assert.Equal(7_000_000, bucket.RemoteInFlightPreimageMsat);
     }
 
     private NodeSnapshotSource CreateSource()

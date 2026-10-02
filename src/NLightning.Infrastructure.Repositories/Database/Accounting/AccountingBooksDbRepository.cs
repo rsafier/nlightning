@@ -232,6 +232,59 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The msat sums and the unvalued counts are grouped in SQL; the fiat amounts are summed in memory (SQLite stores a
+    /// <c>decimal</c> as TEXT, so no SQL sum of them is exact on every provider), streamed one row per valued posting.
+    /// </remarks>
+    public async Task<IReadOnlyList<AccountingAccountSum>> SumAccountPostingsAsync(
+        AccountingBook book, DateTimeOffset? since, DateTimeOffset? until, string? fiatCurrency,
+        CancellationToken cancellationToken = default)
+    {
+        var bookValue = (byte)book;
+        var postings = _context.AccountingPostings.AsNoTracking().Where(p => p.Book == bookValue);
+        if (since is { } from)
+            postings = postings.Where(p => p.OccurredAt >= from);
+        if (until is { } to)
+            postings = postings.Where(p => p.OccurredAt < to);
+
+        var currency = fiatCurrency;
+        var groups = await postings.GroupBy(p => new { p.Account, p.AccountName })
+                                   .Select(g => new
+                                   {
+                                       g.Key.Account,
+                                       g.Key.AccountName,
+                                       Sum = g.Sum(p => p.AmountMsat),
+                                       Unvalued = g.Sum(p => p.AmountMsat != 0
+                                                          && (p.FiatAmount == null
+                                                           || (currency != null && p.FiatCurrency != currency))
+                                                                 ? 1
+                                                                 : 0)
+                                   })
+                                   .ToListAsync(cancellationToken);
+
+        var valued = postings.Where(p => p.FiatAmount != null);
+        if (currency is not null)
+            valued = valued.Where(p => p.FiatCurrency == currency);
+
+        var fiat = new Dictionary<(int, string), decimal>();
+        await foreach (var row in valued.Select(p => new { p.Account, p.AccountName, p.FiatAmount })
+                                        .AsAsyncEnumerable()
+                                        .WithCancellation(cancellationToken))
+        {
+            var key = (row.Account, row.AccountName ?? string.Empty);
+            fiat[key] = fiat.GetValueOrDefault(key) + row.FiatAmount!.Value;
+        }
+
+        return groups.OrderBy(g => g.Account)
+                     .ThenBy(g => g.AccountName ?? string.Empty, StringComparer.Ordinal)
+                     .Select(g => new AccountingAccountSum(book, (AccountRole)g.Account, g.AccountName, g.Sum,
+                                                           fiat.GetValueOrDefault((g.Account,
+                                                                                   g.AccountName ?? string.Empty)),
+                                                           g.Unvalued))
+                     .ToList();
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<AccountingEntry>> ListEntriesAsync(AccountingEntryQuery query,
                                                                        CancellationToken cancellationToken = default)
     {
