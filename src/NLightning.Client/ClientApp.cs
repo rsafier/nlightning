@@ -328,6 +328,9 @@ internal static class ClientApp
                 case "accounting-snapshot":
                     await AccountingCommands.RunAsync(cmd, commandArgs, client, Console.Out, cancellationToken);
                     break;
+                case AccountingBooksCommands.Verb:
+                    await AccountingBooksCommands.RunAsync(commandArgs, client, Console.Out, cancellationToken);
+                    break;
                 case "listforwards":
                 case "list-forwards":
                     var forwards = ParseListForwardsOptions(commandArgs);
@@ -549,6 +552,8 @@ internal static class ClientApp
             case "accountingsnapshot":
             case "accounting-snapshot":
                 return AccountingCommands.Validate(cmd, commandArgs);
+            case AccountingBooksCommands.Verb:
+                return AccountingBooksCommands.Validate(commandArgs);
             default:
                 return $"Unknown command: {cmd}";
         }

@@ -45,6 +45,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The accounting export golden files (NL-602 A2) -->
+    <None Include="Accounting\Export\Golden\*" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\NLightning.Application\NLightning.Application.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Domain\NLightning.Domain.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Serialization\NLightning.Infrastructure.Serialization.csproj"/>

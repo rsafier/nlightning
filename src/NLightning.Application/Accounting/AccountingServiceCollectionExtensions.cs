@@ -12,6 +12,7 @@ using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Reports;
 
 /// <summary>
 /// The accounting feed's services (NL-602, plan <c>docs/agents/ACCOUNTING_PLAN.md</c> §7).
@@ -23,7 +24,8 @@ public static class AccountingServiceCollectionExtensions
     /// <see cref="IAccountingEventSealer"/>, one instance; the host starts it after the chain monitor and stops it
     /// before), the balance snapshot source (<see cref="INodeSnapshotSource"/>) and the operational books
     /// (<see cref="AccountingBooksService"/> as itself and as <see cref="IAccountingBooks"/>, one instance; the host
-    /// starts it after the sealer and stops it before). Idempotent (TryAdd). The host binds
+    /// starts it after the sealer and stops it before) with its reports and exports
+    /// (<see cref="AccountingReportServiceCollectionExtensions.AddAccountingReportServices"/>). Idempotent (TryAdd). The host binds
     /// <see cref="AccountingOptions"/> from <see cref="AccountingOptions.SectionName"/>; without a binding the
     /// defaults apply. Also the backfill (<see cref="AccountingBackfillService"/> as itself and as
     /// <see cref="IAccountingBackfill"/>: the host awaits its cutover before the peers start and starts its memo pass
@@ -54,6 +56,7 @@ public static class AccountingServiceCollectionExtensions
                                      sp.GetService<IAccountingEventSealer>(), sp.GetService<INodeSnapshotSource>(),
                                      sp.GetService<TimeProvider>()));
         services.TryAddSingleton<IAccountingBooks>(sp => sp.GetRequiredService<AccountingBooksService>());
+        services.AddAccountingReportServices();
 
         return services;
     }

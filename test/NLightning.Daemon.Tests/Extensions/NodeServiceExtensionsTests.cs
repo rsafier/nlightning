@@ -37,6 +37,8 @@ using Daemon.Extensions;
 using Daemon.Interfaces;
 using Daemon.Ipc.Interfaces;
 using Domain.Accounting.Books;
+using Domain.Accounting.Books.Export;
+using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
@@ -363,6 +365,22 @@ public class NodeServiceExtensionsTests
         Assert.NotNull(scope.ServiceProvider
                             .GetRequiredService<IClientCommandHandler<AccountingSnapshotClientRequest,
                                  AccountingSnapshotClientResponse>>());
+
+        // NL-602 A2: the books' commands 43-45 and the report and export services
+        Assert.Single(commands, c => c == ClientCommand.AccountingReport);
+        Assert.Single(commands, c => c == ClientCommand.AccountingExport);
+        Assert.Single(commands, c => c == ClientCommand.AccountingAdmin);
+        Assert.NotNull(provider.GetRequiredService<IAccountingReports>());
+        Assert.NotNull(provider.GetRequiredService<IAccountingExports>());
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<AccountingReportClientRequest,
+                                 AccountingReportClientResponse>>());
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<AccountingExportClientRequest,
+                                 AccountingExportClientResponse>>());
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<AccountingAdminClientRequest,
+                                 AccountingAdminClientResponse>>());
     }
 
     [Fact]

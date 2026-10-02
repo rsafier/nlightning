@@ -1,0 +1,70 @@
+; NLightning accounting export (hledger journal, amounts in millisatoshi)
+commodity 1 msat
+account assets:lightning:channels
+account assets:onchain:pending
+account assets:onchain:wallet
+account assets:onchain:clearing
+account income:lightning:received
+account income:lightning:routing
+account income:lightning:push
+account income:onchain:gain
+account expenses:lightning:sent
+account expenses:lightning:routing-fees
+account expenses:lightning:rebalance
+account expenses:lightning:push
+account expenses:onchain:fees:funding
+account expenses:onchain:fees:splice
+account expenses:onchain:fees:close
+account expenses:onchain:fees:commitment
+account expenses:onchain:fees:sweep
+account expenses:onchain:fees:cpfp
+account expenses:onchain:fees:withdraw
+account expenses:losses:onchain
+account equity:transfers:in
+account equity:transfers:out
+account equity:opening-balances
+
+2026-01-01 WalletReceived
+    ; key: wallet:aa:0:in
+    ; seq: 1
+    ; time: 2026-01-01T09:30:00.123Z
+    assets:onchain:wallet                             1000000000 msat
+    equity:transfers:in                              -1000000000 msat
+
+2026-01-02 ChannelFunded
+    ; key: chan:01:funded
+    ; seq: 2
+    ; time: 2026-01-02T09:30:00.123Z
+    assets:lightning:channels                          500000000 msat
+    expenses:onchain:fees:funding                        1234567 msat
+    assets:onchain:clearing                           -501234567 msat
+
+2026-01-02 WalletOutputSpent
+    ; key: wallet:aa:0:spent
+    ; seq: 3
+    ; time: 2026-01-02T09:30:00.123Z
+    assets:onchain:wallet                             -501234567 msat
+    assets:onchain:clearing                            501234567 msat
+
+2026-01-03 InvoiceSettled: coffee, "large", \ été
+    ; key: inv:01:settled
+    ; seq: 4
+    ; time: 2026-01-03T09:30:00.123Z
+    assets:lightning:channels                           12345678 msat
+    income:lightning:received                          -12345678 msat
+
+2026-01-04 ForwardSettled
+    ; key: fwd:01:0:settled
+    ; seq: 5
+    ; time: 2026-01-04T09:30:00.123Z
+    assets:lightning:channels                               1001 msat
+    income:lightning:routing                               -1001 msat
+
+2026-01-05 PaymentSucceeded: =HYPERLINK("x")
+    ; key: pay:02:succeeded
+    ; seq: 6
+    ; time: 2026-01-05T09:30:00.123Z
+    assets:lightning:channels                           -5000051 msat
+    expenses:lightning:sent                              5000000 msat
+    expenses:lightning:routing-fees                           51 msat
+

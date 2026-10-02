@@ -50,3 +50,66 @@ internal sealed class AccountingSnapshotIpcHandler
     protected override AccountingSnapshotIpcResponse ToIpcResponse(AccountingSnapshotClientResponse response) =>
         AccountingSnapshotIpcResponse.FromClientResponse(response);
 }
+
+/// <summary>
+/// Serves <c>accounting report</c> (ClientCommand 43, NL-602 A2): one report of the operational books.
+/// </summary>
+internal sealed class AccountingReportIpcHandler
+    : ClientCommandIpcHandler<AccountingReportIpcRequest, AccountingReportClientRequest,
+        AccountingReportClientResponse, AccountingReportIpcResponse>
+{
+    public override ClientCommand Command => ClientCommand.AccountingReport;
+
+    public AccountingReportIpcHandler(ILogger<AccountingReportIpcHandler> logger, IServiceProvider serviceProvider)
+        : base(logger, serviceProvider)
+    {
+    }
+
+    protected override AccountingReportClientRequest ToClientRequest(AccountingReportIpcRequest request) =>
+        request.ToClientRequest();
+
+    protected override AccountingReportIpcResponse ToIpcResponse(AccountingReportClientResponse response) =>
+        AccountingReportIpcResponse.FromClientResponse(response);
+}
+
+/// <summary>
+/// Serves <c>accounting export</c> (ClientCommand 44, NL-602 A2): one page of an export, streamed back.
+/// </summary>
+internal sealed class AccountingExportIpcHandler
+    : ClientCommandIpcHandler<AccountingExportIpcRequest, AccountingExportClientRequest,
+        AccountingExportClientResponse, AccountingExportIpcResponse>
+{
+    public override ClientCommand Command => ClientCommand.AccountingExport;
+
+    public AccountingExportIpcHandler(ILogger<AccountingExportIpcHandler> logger, IServiceProvider serviceProvider)
+        : base(logger, serviceProvider)
+    {
+    }
+
+    protected override AccountingExportClientRequest ToClientRequest(AccountingExportIpcRequest request) =>
+        request.ToClientRequest();
+
+    protected override AccountingExportIpcResponse ToIpcResponse(AccountingExportClientResponse response) =>
+        AccountingExportIpcResponse.FromClientResponse(response);
+}
+
+/// <summary>
+/// Serves <c>accounting reconcile|rebuild|verify</c> (ClientCommand 45, NL-602 A2).
+/// </summary>
+internal sealed class AccountingAdminIpcHandler
+    : ClientCommandIpcHandler<AccountingAdminIpcRequest, AccountingAdminClientRequest,
+        AccountingAdminClientResponse, AccountingAdminIpcResponse>
+{
+    public override ClientCommand Command => ClientCommand.AccountingAdmin;
+
+    public AccountingAdminIpcHandler(ILogger<AccountingAdminIpcHandler> logger, IServiceProvider serviceProvider)
+        : base(logger, serviceProvider)
+    {
+    }
+
+    protected override AccountingAdminClientRequest ToClientRequest(AccountingAdminIpcRequest request) =>
+        request.ToClientRequest();
+
+    protected override AccountingAdminIpcResponse ToIpcResponse(AccountingAdminClientResponse response) =>
+        AccountingAdminIpcResponse.FromClientResponse(response);
+}
