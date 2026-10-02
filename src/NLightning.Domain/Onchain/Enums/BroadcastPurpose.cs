@@ -8,7 +8,7 @@ public enum BroadcastPurpose : byte
     /// <summary>Not recorded (a caller that predates the purpose, such as <c>PublishAndWatchTransactionAsync</c>).</summary>
     Unspecified = 0,
 
-    /// <summary>A channel funding transaction we funded.</summary>
+    /// <summary>A channel funding transaction we funded (and, before <see cref="Splice"/> existed, a splice, NL-626).</summary>
     Funding = 1,
 
     /// <summary>A mutual close transaction.</summary>
@@ -47,5 +47,13 @@ public enum BroadcastPurpose : byte
     /// it), but the monitor sends it again after every block until it confirms, which helps it propagate. Only the
     /// anchor CPFP service abandons one (evicted everywhere, or replaced by ours): the refusal rules never do.
     /// </summary>
-    PeerCommitment = 10
+    PeerCommitment = 10,
+
+    /// <summary>
+    /// A splice transaction (or one of its RBF attempts) we signed: it spends the channel's current funding output plus
+    /// wallet inputs and creates the new funding output (NL-626). Rows saved before this value existed carry
+    /// <see cref="Funding"/>; every rule that keys off <see cref="Funding"/> treats both the same (rebroadcast, the
+    /// abandonment rule NL-294, the discard of a splice a commitment conflicts with), so only the label differs.
+    /// </summary>
+    Splice = 11
 }

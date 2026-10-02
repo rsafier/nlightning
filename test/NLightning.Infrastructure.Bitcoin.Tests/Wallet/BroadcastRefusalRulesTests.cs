@@ -56,10 +56,26 @@ public class BroadcastRefusalRulesTests
     [InlineData(BroadcastPurpose.HtlcClaim, false)]
     [InlineData(BroadcastPurpose.Penalty, false)]
     [InlineData(BroadcastPurpose.AnchorCpfp, false)]
+    [InlineData(BroadcastPurpose.PeerCommitment, false)]
+    [InlineData(BroadcastPurpose.Splice, true)] // NL-626: as when splices were saved as Funding
     public void Given_APurpose_When_AskedIfTheMonitorMayAbandonIt_Then_OnlyWalletOnlySpendsMay(BroadcastPurpose purpose,
         bool expected)
     {
         // Act / Assert
         Assert.Equal(expected, BroadcastRefusalRules.MayAbandon(purpose));
+    }
+
+    [Theory]
+    [InlineData(BroadcastPurpose.Funding, true)]
+    [InlineData(BroadcastPurpose.Unspecified, true)]
+    [InlineData(BroadcastPurpose.Splice, true)]
+    [InlineData(BroadcastPurpose.WalletSend, false)]
+    [InlineData(BroadcastPurpose.LocalCommitment, false)]
+    [InlineData(BroadcastPurpose.AnchorCpfp, false)]
+    public void Given_APurpose_When_AskedIfItIsAFunding_Then_ASpliceCountsAsOneLikeBeforeItHadItsOwnPurpose(
+        BroadcastPurpose purpose, bool expected)
+    {
+        // Act / Assert (NL-626: the splice purpose changes the label only, not the abandonment and lock rules)
+        Assert.Equal(expected, BroadcastRefusalRules.IsFunding(purpose));
     }
 }

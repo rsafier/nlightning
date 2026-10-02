@@ -168,6 +168,37 @@ public class ChainMonitorAccountingTests
     }
 
     [Fact]
+    public async Task Given_OurSplice_When_ItConfirms_Then_ItsWalletEventsCarryTheSplicePurpose()
+    {
+        // Arrange (NL-626): a splice row spending a wallet output (the new funding output stands in for the external
+        // output), saved by SpliceService with the Splice purpose
+        await using var harness = new ChainMonitorHarness();
+        var wallet = await SeedWalletAsync(harness, 2);
+        await harness.StartAsync(95);
+        var deposit = CreateDeposit(0x0d, wallet[0], DepositSat);
+        await harness.MineAndDeliverAsync(deposit);
+        var newFunding = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var splice = CreateWithdrawal(deposit, 1, wallet[0], newFunding, wallet[1]);
+        var channelId = ChannelIdOf(0x0d);
+        await harness.Monitor.SaveAndPublishAsync(new BroadcastTransactionModel(
+                                                       ToSigned(splice), BroadcastPurpose.Splice, channelId, 101, 253,
+                                                       fee: LightningMoney.Satoshis(WithdrawFeeSat)));
+
+        // Act
+        await harness.MineAndDeliverAsync();
+
+        // Assert: the spend and the change say Splice, and a splice is no withdrawal (its lock books it)
+        var inBlock = (await LoadEventsAsync(harness)).Where(e => e.BlockHeight == 102).ToList();
+        var spent = Assert.Single(inBlock, e => e.Kind == AccountingEventKind.WalletOutputSpent);
+        Assert.Equal("broadcast", spent.Details["source"]);
+        Assert.Equal(nameof(BroadcastPurpose.Splice), spent.Details["purpose"]);
+        Assert.Equal(channelId, spent.ChannelId);
+        var change = Assert.Single(inBlock, e => e.Kind == AccountingEventKind.WalletReceived);
+        Assert.Equal(nameof(BroadcastPurpose.Splice), change.Details["purpose"]);
+        Assert.DoesNotContain(inBlock, e => e.Kind == AccountingEventKind.WalletSent);
+    }
+
+    [Fact]
     public async Task Given_AnAnchorCpfpChild_When_ItConfirms_Then_ItsFeeIsRecordedOnce()
     {
         // Arrange

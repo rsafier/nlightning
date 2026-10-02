@@ -383,13 +383,16 @@ public sealed class OnchainSpliceWatcherTests : IDisposable
                     "our to_remote must carry the splice-in");
     }
 
-    [Fact]
-    public async Task Given_OurCommitmentOnTheCurrentFunding_When_ASpliceIsPending_Then_TheSpliceIsDiscarded()
+    [Theory]
+    [InlineData(BroadcastPurpose.Splice)]
+    [InlineData(BroadcastPurpose.Funding)] // a splice row saved before NL-626 gave splices their own purpose
+    public async Task Given_OurCommitmentOnTheCurrentFunding_When_ASpliceIsPending_Then_TheSpliceIsDiscarded(
+        BroadcastPurpose splicePurpose)
     {
         // Arrange (§3.6: "a commitment of the current funding confirms while a splice is pending")
         var spliceTx = BuildSpliceTransaction();
         var splice = AddPendingSplice(spliceTx.TxId, 0);
-        var spliceBroadcast = new BroadcastTransactionModel(spliceTx, BroadcastPurpose.Funding, _channel.ChannelId,
+        var spliceBroadcast = new BroadcastTransactionModel(spliceTx, splicePurpose, _channel.ChannelId,
                                                             SpendHeight - 5);
         _store.Broadcasts.Add(spliceBroadcast);
         var local = _pair.Alice.State.LocalCommit;

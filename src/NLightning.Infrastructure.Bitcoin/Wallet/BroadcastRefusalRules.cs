@@ -79,12 +79,18 @@ internal static class BroadcastRefusalRules
     /// True when the chain monitor may abandon a transaction of this purpose after permanent refusals: it spends wallet
     /// outputs only.
     /// </summary>
+    /// <remarks>A <see cref="BroadcastPurpose.Splice"/> is treated as a funding, as it was while splices were saved as
+    /// <see cref="BroadcastPurpose.Funding"/> (NL-626 changed only the label).</remarks>
     public static bool MayAbandon(BroadcastPurpose purpose) =>
-        purpose is BroadcastPurpose.Funding or BroadcastPurpose.Unspecified or BroadcastPurpose.WalletSend;
+        IsFunding(purpose) || purpose is BroadcastPurpose.WalletSend;
 
-    /// <summary>True when abandoning a transaction of this purpose releases its channel's wallet UTXO locks.</summary>
+    /// <summary>
+    /// True when abandoning a transaction of this purpose releases its channel's wallet UTXO locks: a funding, the legacy
+    /// funding path (<see cref="BroadcastPurpose.Unspecified"/>) and a splice (NL-626: same rule as before the splice
+    /// got a purpose of its own).
+    /// </summary>
     public static bool IsFunding(BroadcastPurpose purpose) =>
-        purpose is BroadcastPurpose.Funding or BroadcastPurpose.Unspecified;
+        purpose is BroadcastPurpose.Funding or BroadcastPurpose.Unspecified or BroadcastPurpose.Splice;
 
     private static bool Contains(string message, string reason) =>
         message.Contains(reason, StringComparison.OrdinalIgnoreCase);
