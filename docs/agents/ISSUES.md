@@ -133,12 +133,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 39 | 40 |
+| open | 0 | 0 | 1 | 40 | 41 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 62 | 184 | 362 | 622 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **191** | **411** | **678** |
+| **Total** | **14** | **62** | **191** | **412** | **679** |
 
 ### Epics
 
@@ -5139,6 +5139,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A1
 - **Update (A2 lane B1):** books impact: a counted anchor (a channel we fund) swept alone by our unstored sweep resolves as taken by the peer and is booked as a loss, while the sweep's deposit to our wallet posts to Clearing, which then does not net to zero.
 - **Update (batch10, 2026-10-02):** Lane b10-acct-edges: our anchor sweep is saved before it is published as `BroadcastPurpose.AnchorSweep = 12` with its fee; its resolution is booked as ours and the peer's anchor in the same sweep as a gain, so the clearing account nets to zero (the -514,000 msat clearing drift seen live on FAFO/FAFO2 on 2026-10-02); a refused sweep is abandoned, and the chain monitor may abandon it after permanent refusals.
+- **Update (live, 2026-10-02, after the 7e104f0c upgrade):** the fix applies to sweeps made from now on. The −514,000 msat on FAFO (#178, tx 85c2a202) and on FAFO2 (#154, tx 98a191d4) are two anchors (2 × 330 sat − 146 sat fee) swept by the old binary before the fix; the feed is append-only, so they stay in the reconcile as drift. An operational rebuild does not change them. FAFO2's other +268,000 msat is NL-748.
 
 ### NL-612 The peer's spend of our offered HTLC output is assumed to be a preimage claim
 - **Status:** fixed (41473b6f; merged d8ffd72e)
@@ -6800,6 +6801,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done: `SqliteTestPools.Clear(path)` clears only the pool of the test's own `Data Source=<path>` string. The Docker restore tests (`BackupRestoreFlowTests`, `ClnSpliceBackupRestoreTests`, `Day0UpgradeInPlaceTests`) keep `ClearAllPools` (their collections run alone).
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
+
+### NL-748 The wallet fee input of an anchors HTLC transaction is not booked as a fee, so its cost stays in the clearing account
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Onchain/Accounting/OnchainAccounting.cs` (the `OutputResolved` of an HTLC output spent by our second-level transaction), `OnchainTransactionFees.cs`
+- **Evidence:** FAFO2 live, 2026-10-02, after the batch10 upgrade (7e104f0c) and an operational rebuild. The HTLC-timeout dad94b77 of the force-closed anchors channel d1565a00 spent the HTLC output plus a 500,000 sat wallet input and returned 499,732 sat change. The feed books #160 `WalletReceived` 499,732 and #161 `WalletOutputSpent` 500,000 against `assets:onchain:clearing`, and #162 `OutputResolved` (the HTLC output, `out:d1565a00…:2`) has no postings. The 268 sat fee is never expensed, and clearing keeps +268,000 msat. FAFO2's reconcile shows a drift of −246,000 msat = +268,000 (this gap) − 514,000 (the anchor sweep below).
+- **Fix sketch:** When our HTLC-timeout/success transaction carries wallet fee inputs (O7, `IFeeInputSelector`), book its fee (inputs − outputs) as `expenses:onchain:fees:htlc` against `assets:onchain:clearing` in the resolution's event, as the CPFP and sweep fees are. Proof: an anchors force-close test with an HTLC, and the books' reconcile shows 0 drift.
+- **Blocks/Blocked-by:** Related NL-611, NL-602
+- **Plan ref:** ACCOUNTING_PLAN A2
 
 ### NL-723 Our BOLT 12 paths' margin refused LDK's shadow CLTV offset
 - **Status:** fixed (43deb91a)
