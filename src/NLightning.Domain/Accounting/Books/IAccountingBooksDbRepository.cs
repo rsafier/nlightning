@@ -76,7 +76,8 @@ public interface IAccountingBooksDbRepository
 
     /// <summary>
     /// Stages the fiat value of one posting (A3-T2's back-valuation) and adds it to its account's running fiat balance.
-    /// Returns false when the posting does not exist or is already valued.
+    /// Returns false when the posting does not exist, is already valued or belongs to an entry of a closed period (the
+    /// lock, A3-T5: post an adjustment through <c>IAccountingAdjustmentSink</c> instead).
     /// </summary>
     Task<bool> SetPostingValueAsync(AccountingPostingKey posting, decimal fiatAmount, string fiatCurrency, long priceId,
                                     CancellationToken cancellationToken = default) =>
@@ -97,6 +98,27 @@ public interface IAccountingBooksDbRepository
     /// <summary>Deletes the book's entries, postings, balances and cursor at once, like <see cref="ClearAsync"/>.</summary>
     Task ClearAsync(AccountingBook book, CancellationToken cancellationToken = default) =>
         book == AccountingBook.Operational ? ClearAsync(cancellationToken) : throw NotSupported(book);
+
+    /// <summary>
+    /// How many postings of the book have no fiat value and belong to an entry that occurred before
+    /// <paramref name="end"/> and is in no closed period (A3-T5: a close is refused while its period has any).
+    /// </summary>
+    Task<int> CountOpenUnvaluedPostingsAsync(AccountingBook book, DateTimeOffset end,
+                                             CancellationToken cancellationToken = default) =>
+        throw NotSupported(book);
+
+    /// <summary>
+    /// Resets the book to its state at the last close (A3-T5, D-A8) at once, in one database transaction (not staged):
+    /// deletes the book's entries in no closed period except the adjustments (<see cref="AccountingEntry.Adjustment"/>
+    /// &gt; 0) with their postings; rolls the lots back (deletes the reliefs of the deleted entries and gives their
+    /// amounts back to the lots that stay, deletes the lots those entries opened, imported lots and lots of a closed
+    /// period kept); sets the book's balances to <see cref="AccountingBookReset.ClosingBalances"/> plus the kept open
+    /// adjustments' postings; and sets the book's cursor to <see cref="AccountingBookReset.CursorLedgerSeq"/>. A crash
+    /// leaves the book as it was before the call.
+    /// </summary>
+    Task ResetToCloseAsync(AccountingBook book, AccountingBookReset reset,
+                           CancellationToken cancellationToken = default) =>
+        throw NotSupported(book);
 
     private static NotSupportedException NotSupported(AccountingBook book) =>
         new($"This repository does not store the {book} book.");

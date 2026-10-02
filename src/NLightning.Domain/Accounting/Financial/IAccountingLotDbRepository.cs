@@ -43,6 +43,25 @@ public interface IAccountingLotDbRepository
     /// </summary>
     Task<int> MarkClosedAsync(string periodId, DateTimeOffset end, CancellationToken cancellationToken = default);
 
+    /// <summary>A page of the saved lots acquired before <paramref name="end"/>, whatever is left of them, in id order
+    /// after <paramref name="afterId"/> (A3-T5: the lots open at a close).</summary>
+    Task<IReadOnlyList<AccountingLot>> ListLotsAcquiredBeforeAsync(DateTimeOffset end, long afterId, int take,
+                                                                   CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// A page of the saved reliefs, in id order after <paramref name="afterId"/> (A3-T5): with
+    /// <paramref name="periodId"/>, the ones that closed period holds; without it, the ones in no closed period made
+    /// before <paramref name="end"/> (what a close of a period ending there takes in).
+    /// </summary>
+    Task<IReadOnlyList<AccountingLotRelief>> ListPeriodReliefsAsync(string? periodId, DateTimeOffset end, long afterId,
+                                                                    int take,
+                                                                    CancellationToken cancellationToken = default);
+
+    /// <summary>The msat relieved per lot by the saved reliefs made at or after <paramref name="since"/> (A3-T5: a lot's
+    /// remaining amount at a close is its current one plus these).</summary>
+    Task<IReadOnlyDictionary<long, long>> SumReliefsSinceAsync(DateTimeOffset since,
+                                                               CancellationToken cancellationToken = default);
+
     /// <summary>Deletes every lot and relief at once (a rebuild before any close; not staged).</summary>
     Task ClearAsync(CancellationToken cancellationToken = default);
 }

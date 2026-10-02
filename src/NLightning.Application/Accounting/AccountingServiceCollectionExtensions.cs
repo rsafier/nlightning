@@ -8,10 +8,12 @@ namespace NLightning.Application.Accounting;
 using Backfill;
 using Books;
 using Domain.Accounting.Books;
+using Domain.Accounting.Financial;
 using Domain.Accounting.Interfaces;
 using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
+using Financial;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Reports;
 
@@ -30,7 +32,10 @@ public static class AccountingServiceCollectionExtensions
     /// <see cref="AccountingOptions"/> from <see cref="AccountingOptions.SectionName"/>; without a binding the
     /// defaults apply. Also the backfill (<see cref="AccountingBackfillService"/> as itself and as
     /// <see cref="IAccountingBackfill"/>: the host awaits its cutover before the peers start and starts its memo pass
-    /// after the chain monitor).
+    /// after the chain monitor). And the period close (A3-T5): <see cref="AccountingPeriodService"/> as itself, as
+    /// <see cref="IAccountingPeriods"/> and as the lock's <see cref="IAccountingAdjustmentSink"/> (one instance), with
+    /// the off <see cref="NullFinancialBooksProjector"/> as <see cref="IFinancialBooksProjector"/> until A3-T4 registers
+    /// its own.
     /// </summary>
     public static IServiceCollection AddAccountingServices(this IServiceCollection services)
     {
@@ -60,6 +65,19 @@ public static class AccountingServiceCollectionExtensions
                                      sp.GetService<TimeProvider>()));
         services.TryAddSingleton<IAccountingBooks>(sp => sp.GetRequiredService<AccountingBooksService>());
         services.AddAccountingReportServices();
+
+        // Period close, lock and signed digests (A3-T5). The financial projector is A3-T4's: until it registers its
+        // own (before this call, or with Replace), the default is off and closes are refused
+        services.TryAddSingleton<IFinancialBooksProjector, NullFinancialBooksProjector>();
+        services.TryAddSingleton(sp => new AccountingPeriodService(
+                                     sp.GetRequiredService<IServiceScopeFactory>(),
+                                     sp.GetRequiredService<ILogger<AccountingPeriodService>>(),
+                                     sp.GetService<IAccountingBooks>(), sp.GetService<IFinancialBooksProjector>(),
+                                     sp.GetService<ILightningSigner>(), sp.GetService<TimeProvider>()));
+        services.TryAddSingleton<IAccountingPeriods>(sp => sp.GetRequiredService<AccountingPeriodService>());
+        // Replace, not TryAdd: the lock must win over the off NullAccountingAdjustmentSink default whatever the order
+        services.Replace(ServiceDescriptor.Singleton<IAccountingAdjustmentSink>(
+                             sp => sp.GetRequiredService<AccountingPeriodService>()));
 
         return services;
     }

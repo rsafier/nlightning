@@ -186,6 +186,16 @@ public static class ClientUtils
         Console.WriteLine("  accounting reconcile         Compare the books with the node's live balances");
         Console.WriteLine("  accounting rebuild           Clear the books and project the whole feed again");
         Console.WriteLine("  accounting verify            Walk the feed's hash chain and report the first break");
+        Console.WriteLine("                               and check every period close's digest and signature");
+        Console.WriteLine("  accounting rebuild --book financial");
+        Console.WriteLine("                               Rebuild the financial book from the last period close");
+        Console.WriteLine("  accounting close <period> [--force]");
+        Console.WriteLine("                               Close and sign a period of the financial book (YYYY-MM or");
+        Console.WriteLine("                               YYYY-MM-DD..YYYY-MM-DD); refused with unvalued or");
+        Console.WriteLine("                               unclassified rows unless --force");
+        Console.WriteLine("  accounting close list        List the periods and their closes");
+        Console.WriteLine("  accounting close show <period>");
+        Console.WriteLine("                               Show a close: digest, signature, balances");
         Console.WriteLine();
         Console.WriteLine("Environment Variables:");
         Console.WriteLine("  NLTG_NETWORK               Network to use");

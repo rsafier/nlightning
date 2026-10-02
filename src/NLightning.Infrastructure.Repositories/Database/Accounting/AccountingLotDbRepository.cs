@@ -198,6 +198,46 @@ public class AccountingLotDbRepository : IAccountingLotDbRepository
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<AccountingLot>> ListLotsAcquiredBeforeAsync(
+        DateTimeOffset end, long afterId, int take, CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
+
+        var entities = await _context.AccountingLots.AsNoTracking()
+                                     .Where(l => l.AcquiredAt < end && l.Id > afterId)
+                                     .OrderBy(l => l.Id)
+                                     .Take(take)
+                                     .ToListAsync(cancellationToken);
+        return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<AccountingLotRelief>> ListPeriodReliefsAsync(
+        string? periodId, DateTimeOffset end, long afterId, int take, CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
+
+        var reliefs = _context.AccountingLotReliefs.AsNoTracking().Where(r => r.Id > afterId);
+        reliefs = periodId is null
+                      ? reliefs.Where(r => r.ClosedPeriodId == null && r.RelievedAt < end)
+                      : reliefs.Where(r => r.ClosedPeriodId == periodId);
+        var entities = await reliefs.OrderBy(r => r.Id).Take(take).ToListAsync(cancellationToken);
+        return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyDictionary<long, long>> SumReliefsSinceAsync(
+        DateTimeOffset since, CancellationToken cancellationToken = default)
+    {
+        var sums = await _context.AccountingLotReliefs.AsNoTracking()
+                                 .Where(r => r.RelievedAt >= since)
+                                 .GroupBy(r => r.LotId)
+                                 .Select(g => new { LotId = g.Key, Msat = g.Sum(r => r.Msat) })
+                                 .ToListAsync(cancellationToken);
+        return sums.ToDictionary(s => s.LotId, s => s.Msat);
+    }
+
+    /// <inheritdoc />
     /// <remarks>Runs at once (see the class remarks), not at the unit of work's save.</remarks>
     public async Task ClearAsync(CancellationToken cancellationToken = default)
     {

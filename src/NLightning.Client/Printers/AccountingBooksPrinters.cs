@@ -236,5 +236,74 @@ public sealed class AccountingAdminPrinter : IPrinter<AccountingAdminIpcResponse
                                                 verification.BreakReason, verification.VerifiedCount,
                                                 verification.TipLedgerSeq, verification.TipHash));
         }
+
+        if (item.PeriodVerifications is { } closes)
+        {
+            if (closes.Count == 0)
+                _output.WriteLine("Period closes: none");
+            foreach (var close in closes)
+                _output.WriteLine(close.IsIntact
+                                      ? string.Format(s_inv, "Close {0} OK: digest, signature and chain hash verified "
+                                                           + "({1} entries, {2} reliefs, {3} open lots)",
+                                                      close.PeriodId, close.EntryCount, close.ReliefCount,
+                                                      close.OpenLotCount)
+                                      : string.Format(s_inv, "Close {0} BROKEN: {1}", close.PeriodId, close.Problem));
+        }
+
+        if (item.Periods is { } periods)
+        {
+            if (periods.Count == 0)
+                _output.WriteLine("No accounting periods closed yet");
+            foreach (var period in periods)
+                _output.WriteLine(string.Format(s_inv, "{0}  {1}  {2} to {3}  {4}  through #{5}  digest {6}{7}",
+                                                period.PeriodId.PadRight(22), State(period.State),
+                                                Day(period.StartUnixSeconds), LastDay(period.EndUnixSeconds),
+                                                period.ClosedAtUnixMilliseconds is { } at
+                                                    ? "closed " + AccountingReportPrinter.Time(at)
+                                                    : "open",
+                                                period.LastLedgerSeq, period.Digest ?? "-",
+                                                period.Forced ? "  FORCED" : string.Empty));
+        }
+
+        if (item.Period is { } shown)
+            PrintPeriod(shown);
     }
+
+    private void PrintPeriod(AccountingPeriodIpcResponse period)
+    {
+        _output.WriteLine(string.Format(s_inv, "Period {0} ({1}): {2} to {3}{4}", period.PeriodId,
+                                        State(period.State), Day(period.StartUnixSeconds),
+                                        LastDay(period.EndUnixSeconds), period.Forced ? ", closed with --force" : ""));
+        if (period.ClosedAtUnixMilliseconds is { } closedAt)
+            _output.WriteLine(string.Format(s_inv, "  closed at      {0}", AccountingReportPrinter.Time(closedAt)));
+        _output.WriteLine(string.Format(s_inv, "  through        #{0} (chain hash {1})", period.LastLedgerSeq,
+                                        period.ChainHash ?? "-"));
+        _output.WriteLine(string.Format(s_inv, "  digest         {0}", period.Digest ?? "-"));
+        _output.WriteLine(string.Format(s_inv, "  signature      {0}", period.Signature ?? "-"));
+        _output.WriteLine(string.Format(s_inv, "  node id        {0}", period.NodeId ?? "-"));
+        if (period.EntryCount is { } entries)
+            _output.WriteLine(string.Format(s_inv, "  covers         {0} entries, {1} reliefs, {2} lots open at its end",
+                                            entries, period.ReliefCount ?? 0, period.OpenLotCount ?? 0));
+        if (period.UnvaluedPostings is > 0 || period.UnclassifiedEntries is > 0)
+            _output.WriteLine(string.Format(s_inv, "  left open      {0} unvalued postings, {1} unclassified entries",
+                                            period.UnvaluedPostings ?? 0, period.UnclassifiedEntries ?? 0));
+        if (period.ReplayAfterLedgerSeq is { } replayAfter)
+            _output.WriteLine(string.Format(s_inv, "  rebuild from   after #{0}", replayAfter));
+        if (period.Balances is not { Count: > 0 } balances)
+            return;
+
+        _output.WriteLine("  balances at the close:");
+        foreach (var balance in balances)
+            _output.WriteLine(string.Format(s_inv, "    {0}  {1} msat  {2}",
+                                            (balance.AccountName ?? balance.Account.ToString(s_inv)).PadRight(40),
+                                            balance.BalanceMsat.ToString(s_inv).PadLeft(20), balance.FiatAmount));
+    }
+
+    private static string State(int state) => state == 1 ? "closed" : "open";
+
+    /// <summary>The last day of a period that ends (exclusive) at <paramref name="endUnixSeconds"/>.</summary>
+    private static string LastDay(long endUnixSeconds) => Day(endUnixSeconds - 1);
+
+    private static string Day(long unixSeconds) =>
+        DateTimeOffset.FromUnixTimeSeconds(unixSeconds).UtcDateTime.ToString("yyyy-MM-dd", s_inv);
 }
