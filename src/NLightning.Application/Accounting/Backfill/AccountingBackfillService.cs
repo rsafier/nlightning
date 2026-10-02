@@ -14,6 +14,7 @@ using Domain.Accounting.Services;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing.Enums;
+using Domain.Onchain.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
 using Domain.Persistence.Interfaces;
@@ -299,6 +300,7 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
     public async Task<AccountingMemoResult> RunMemoBackfillAsync(CancellationToken cancellationToken = default)
     {
         DateTimeOffset cutoverAt;
+        uint? cutoverHeight;
         bool openingSkipped;
         using (var scope = _scopeFactory.CreateScope())
         {
@@ -311,6 +313,7 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
                 return new AccountingMemoResult(false, 0, 0, 0, 0, 0);
 
             cutoverAt = AccountingCutoverEvents.ReadCutoverAt(marker) ?? marker.OccurredAt;
+            cutoverHeight = marker.BlockHeight;
             openingSkipped = marker.Details.ContainsKey(AccountingCutoverEvents.SkippedOpeningKey);
         }
 
@@ -318,7 +321,7 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
         await MemoInvoicesAsync(cutoverAt, tally, cancellationToken);
         await MemoPaymentsAsync(cutoverAt, tally, cancellationToken);
         await MemoForwardsAsync(cutoverAt, tally, cancellationToken);
-        await MemoChannelsAsync(openingSkipped, tally, cancellationToken);
+        await MemoChannelsAsync(openingSkipped, cutoverHeight, tally, cancellationToken);
 
         var result = new AccountingMemoResult(true, tally.Invoices, tally.Payments, tally.Forwards, tally.Channels,
                                               tally.Skipped);
@@ -489,9 +492,14 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
     /// <summary>
     /// The funding of every channel the cutover gave an opening balance (or that was closed) and the mutual close of
     /// every closed channel. A channel confirmed after the cutover is left out: its live <c>ChannelFunded</c> is the
-    /// fact, and a memo row racing it would make the live one the duplicate.
+    /// fact, and a memo row racing it would make the live one the duplicate. A force close recorded before the cutover
+    /// (NL-624, <see cref="ForceCloseMemoEvents"/>): for a channel closed at the cutover its
+    /// <c>ChannelForceClosed</c>, the resolution of every final output and its anchor CPFP fees; for a channel still
+    /// resolving at the cutover (its close already has the cutover's synthetic event) only what was resolved or
+    /// confirmed at or below the cutover's block.
     /// </summary>
-    private async Task MemoChannelsAsync(bool openingSkipped, MemoTally tally, CancellationToken cancellationToken)
+    private async Task MemoChannelsAsync(bool openingSkipped, uint? cutoverHeight, MemoTally tally,
+                                         CancellationToken cancellationToken)
     {
         List<ChannelModel> channels;
         using (var scope = _scopeFactory.CreateScope())
@@ -509,14 +517,16 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
             foreach (var channel in batch)
             {
                 var closed = channel.State is ChannelState.Closed;
+                var resolvingAtCutover = !openingSkipped
+                                      && await events.ExistsAsync(
+                                             AccountingEventKeys.OpeningBalance(
+                                                 AccountingCutoverEvents.PendingBucket(channel.ChannelId)),
+                                             cancellationToken);
                 var hadOpening = !openingSkipped
-                              && (await events.ExistsAsync(
-                                      AccountingEventKeys.OpeningBalance(
-                                          AccountingCutoverEvents.ChannelBucket(channel.ChannelId)),
-                                      cancellationToken)
+                              && (resolvingAtCutover
                                || await events.ExistsAsync(
                                       AccountingEventKeys.OpeningBalance(
-                                          AccountingCutoverEvents.PendingBucket(channel.ChannelId)),
+                                          AccountingCutoverEvents.ChannelBucket(channel.ChannelId)),
                                       cancellationToken));
                 if (!closed && !hadOpening)
                     continue;
@@ -548,8 +558,14 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
                 }
 
                 // Closed at the cutover: a channel that held an opening balance closed after it (a live fact)
-                if (closed && !hadOpening && channel.ClosingTransaction is { } closingTransaction
-                 && await unitOfWork.OnchainResolutionDbRepository.GetCloseAsync(channel.ChannelId) is null)
+                var close = closed && !hadOpening || resolvingAtCutover
+                                ? await unitOfWork.OnchainResolutionDbRepository.GetCloseAsync(channel.ChannelId)
+                                : null;
+                if (close is not null)
+                    written += await MemoForceCloseAsync(unitOfWork, events, channel, close,
+                                                         resolvingAtCutover ? cutoverHeight ?? 0 : null, tally,
+                                                         cancellationToken);
+                else if (closed && !hadOpening && channel.ClosingTransaction is { } closingTransaction)
                 {
                     var height = (await unitOfWork.WatchedTransactionDbRepository
                                                   .GetByTransactionIdAsync(closingTransaction.TxId))
@@ -564,6 +580,59 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
 
             await SaveBatchAsync(unitOfWork, "channel", written, tally.Channels += written);
         }
+    }
+
+    /// <summary>
+    /// Stages the memo history of a force close recorded before the cutover (NL-624): the close itself unless
+    /// <paramref name="resolvedAtOrBelow"/> is set (a close resolving at the cutover, whose close event is the cutover's
+    /// synthetic one), then the resolutions of its final outputs and its anchor CPFP fees, only those at or below
+    /// <paramref name="resolvedAtOrBelow"/> when it is set (0: the cutover's height is unknown, nothing). Returns how
+    /// many were staged.
+    /// </summary>
+    private async Task<int> MemoForceCloseAsync(IUnitOfWork unitOfWork, IAccountingEventDbRepository events,
+                                                ChannelModel channel, ChannelCloseModel close, uint? resolvedAtOrBelow,
+                                                MemoTally tally, CancellationToken cancellationToken)
+    {
+        if (resolvedAtOrBelow == 0)
+            return 0;
+
+        IReadOnlyList<OutputResolutionModel> rows;
+        IReadOnlyList<BroadcastTransactionModel> broadcasts;
+        try
+        {
+            rows = await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(channel.ChannelId);
+            broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channel.ChannelId);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Accounting memo backfill: the force close of channel {ChannelId} could not be read",
+                               channel.ChannelId);
+            return 0;
+        }
+
+        var built = new List<AccountingEventModel>();
+        if (resolvedAtOrBelow is null
+         && Build("channel", channel.ChannelId.ToString(),
+                  () => ForceCloseMemoEvents.ForceClosed(channel, close, rows, broadcasts)) is { } closeEvent)
+            built.Add(closeEvent);
+
+        try
+        {
+            built.AddRange(ForceCloseMemoEvents.Resolutions(channel, close, rows, broadcasts, resolvedAtOrBelow));
+            built.AddRange(ForceCloseMemoEvents.AnchorCpfpFees(channel.ChannelId, broadcasts, resolvedAtOrBelow));
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Accounting memo backfill: the on-chain resolution of channel {ChannelId} could not "
+                                + "be recorded", channel.ChannelId);
+        }
+
+        var written = 0;
+        foreach (var accountingEvent in built)
+            if (await TryAddMemoAsync(events, accountingEvent, tally, cancellationToken))
+                written++;
+
+        return written;
     }
 
     private async Task<bool> TryAddMemoAsync(IAccountingEventDbRepository events, AccountingEventModel built,

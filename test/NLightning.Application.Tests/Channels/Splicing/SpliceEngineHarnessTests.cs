@@ -75,6 +75,9 @@ public class SpliceEngineHarnessTests
         }
 
         Assert.Equal(harness.Alice.Broadcasts.Single().RawTransaction, harness.Bob.Broadcasts.Single().RawTransaction);
+        // NL-626: the splice's broadcast row is labeled Splice on both sides, not Funding
+        Assert.All([harness.Alice.Broadcasts.Single(), harness.Bob.Broadcasts.Single()],
+                   b => Assert.Equal(BroadcastPurpose.Splice, b.Purpose));
 
         // Act: an HTLC from Alice to Bob while the splice is unconfirmed (the spec's update_add_htlc, then the batch)
         var mark = harness.Transcript.Count;

@@ -211,14 +211,21 @@ public sealed class AccountingAdminPrinter : IPrinter<AccountingAdminIpcResponse
         ArgumentNullException.ThrowIfNull(item);
         if (item.Reconcile is { } reconcile)
         {
+            // NL-621: amounts that transactions in flight explain are outstanding, never DRIFT
+            var outstanding = reconcile.Lines.Sum(l => l.OutstandingMsat);
             _output.WriteLine(string.Format(s_inv, "Reconcile at {0}, block {1}, books through #{2}: {3}",
                                             AccountingReportPrinter.Time(reconcile.TakenAtUnixMilliseconds),
                                             reconcile.BlockHeight, reconcile.LedgerSeq,
-                                            reconcile.IsClean ? "clean" : "DRIFT"));
+                                            !reconcile.IsClean ? "DRIFT"
+                                            : outstanding != 0 ? $"clean, {outstanding} msat outstanding (in flight)"
+                                            : "clean"));
             foreach (var line in reconcile.Lines)
-                _output.WriteLine(string.Format(s_inv, "  {0}  books {1} msat, node {2} msat, drift {3} msat{4}",
-                                                line.Name.PadRight(32), line.BooksMsat, line.NodeMsat, line.DriftMsat,
-                                                line.Note is null ? string.Empty : $" ({line.Note})"));
+                _output.WriteLine(string.Format(s_inv, "  {0}  books {1} msat, node {2} msat, {3}drift {4} msat{5}",
+                                                line.Name.PadRight(32), line.BooksMsat, line.NodeMsat,
+                                                line.OutstandingMsat == 0
+                                                    ? string.Empty
+                                                    : $"outstanding {line.OutstandingMsat} msat, ",
+                                                line.DriftMsat, line.Note is null ? string.Empty : $" ({line.Note})"));
         }
 
         if (item.RebuiltEntries is { } rebuilt)

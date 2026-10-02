@@ -630,8 +630,9 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         var fundings = _statePort.AddPending(_statePort.GetFundings(channel), funding);
         await _statePort.StageFundingsAsync(channel, fundings, [], unitOfWork, cancellationToken);
         // The row carries the splice transaction's whole fee (every input's value is known: the shared input is the
-        // current capacity, NL-604); our share of it is the accounting feed's, at the lock
-        var broadcast = new BroadcastTransactionModel(completion.SignedTransaction, BroadcastPurpose.Funding,
+        // current capacity, NL-604); our share of it is the accounting feed's, at the lock. Its purpose is Splice
+        // (NL-626; rows saved before it are Funding, and every rule treats both the same)
+        var broadcast = new BroadcastTransactionModel(completion.SignedTransaction, BroadcastPurpose.Splice,
                                                       channel.ChannelId, GetTip(), completion.FeeratePerKw,
                                                       negotiation.Model.RbfOf,
                                                       fee: LightningMoney.Satoshis(

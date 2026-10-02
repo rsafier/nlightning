@@ -1027,7 +1027,8 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                                                       IReadOnlyList<BroadcastTransactionModel> broadcasts)
     {
         foreach (var conflicting in broadcasts.Where(b => b.State == BroadcastState.Pending
-                                                       && b.Purpose == BroadcastPurpose.Funding
+                                                       && b.Purpose is BroadcastPurpose.Splice
+                                                                        or BroadcastPurpose.Funding
                                                        && b.TransactionId != spend.TxId
                                                        && SpendsOutpoint(b, spentFunding)))
         {

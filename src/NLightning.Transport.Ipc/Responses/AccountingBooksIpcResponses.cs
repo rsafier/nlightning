@@ -75,7 +75,8 @@ public sealed class AccountingAdminIpcResponse
                     BooksMsat = l.BooksMsat,
                     NodeMsat = l.NodeMsat,
                     DriftMsat = l.DriftMsat,
-                    Note = l.Note
+                    Note = l.Note,
+                    OutstandingMsat = l.OutstandingMsat
                 }).ToList()
             };
         }
@@ -129,10 +130,13 @@ public sealed class AccountingReconcileLineIpcResponse
     [Key(2)] public required long BooksMsat { get; init; }
     [Key(3)] public required long NodeMsat { get; init; }
 
-    /// <summary>Books less node.</summary>
+    /// <summary>Books less node less <see cref="OutstandingMsat"/>: what nothing explains.</summary>
     [Key(4)] public required long DriftMsat { get; init; }
 
     [Key(5)] public string? Note { get; init; }
+
+    /// <summary>What transactions in flight explain (expected, not a drift; NL-621). 0 from a daemon before it.</summary>
+    [Key(6)] public long OutstandingMsat { get; init; }
 }
 
 /// <summary>The feed's hash chain walked (NL-602 A2).</summary>
