@@ -54,6 +54,8 @@ every implementation, our own node included, is driven through the same seams.
     channels, invoice, pay). Implementations live per kind (`Nodes/<Kind>/`), amounts in `Sat`/`Msat` longs, node ids
     lower-case hex.
   - `NodeKind` (also the `nltg.kind` label value, lower case).
+  - Our own node in-process (`NodeKind.NLightning`) is deployed by `InProcessNodeDeployer` in
+    `test/NLightning.Integration.Tests/Cluster/` (the glue needs the product, so it stays out of this library).
 - `Reach/` (spike check 1; matrix in the plan's "Spike check 1 record")
   - `HostEndpoints.ForPods()`: the name pods dial to reach a listener in the test process (`host.orb.internal`, or
     `NLTG_HOST_ADDRESS`); `BindAddressFor` says what to bind (loopback for OrbStack's names). On OrbStack the peer

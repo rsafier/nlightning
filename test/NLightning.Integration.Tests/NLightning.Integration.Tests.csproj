@@ -38,6 +38,9 @@
     <ProjectReference Include="..\..\src\NLightning.Daemon\NLightning.Daemon.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Repositories\NLightning.Infrastructure.Repositories.csproj"/>
     <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
+    <!-- The Kubernetes harness, for Cluster/ (our in-process node in a cluster topology); it references no product
+         project, so the glue lives here, next to NLightningTestNode -->
+    <ProjectReference Include="..\NLightning.Testing.Cluster\NLightning.Testing.Cluster.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Serialization\NLightning.Infrastructure.Serialization.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Bolt11\NLightning.Bolt11.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Domain\NLightning.Domain.csproj"/>

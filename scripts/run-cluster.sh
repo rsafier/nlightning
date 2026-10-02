@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs Kubernetes-harness test classes (test/NLightning.Testing.Cluster.Tests, Category=Cluster, Explicit) N times
+# Runs Kubernetes-harness test classes (Category=Cluster, Explicit; --project picks the test project) N times
 # concurrently against a cluster (OrbStack's locally), each run in its own test process with its own
 # NLTG_TEST_RUN_ID, so every run gets its own namespaces (nltg-spike-<run>[-<n>]). Plan
 # docs/agents/TEST_HARNESS_PLAN.md R4, R13, R14; spike runner, not yet the full matrix runner of §5 step 5.
@@ -13,6 +13,9 @@
 #   -j, --jobs J          runs in flight at once (default N; never more than 6)
 #   -c, --config C        build configuration (default Release)
 #   -f, --framework F     target framework (default net10.0)
+#   -p, --project P       the test project: cluster (default, test/NLightning.Testing.Cluster.Tests), integration
+#                         (test/NLightning.Integration.Tests: our in-process node in cluster topologies, the
+#                         NLightning.Integration.Tests.Cluster namespace) or a path to a test project directory
 #       --class X         a test class to run (repeatable; default: every Category=Cluster test)
 #       --method X        a test method (repeatable; xunit v3 wildcards allowed)
 #       --context C       kubeconfig context (default $NLTG_KUBE_CONTEXT, else orbstack)
@@ -23,6 +26,8 @@
 #
 # Example: the scaffold's namespace test 3 times at once
 #   scripts/run-cluster.sh -n 3 --method '*ARunDeploysABusyboxStatefulSet*'
+# Example: our in-process node against CLN and LND pods, 3 runs at once
+#   scripts/run-cluster.sh -n 3 -p integration --class NLightning.Integration.Tests.Cluster.Live.InProcessNodeClusterTests
 #
 # Never runs Docker suites and never touches namespaces outside nltg-spike-*: the test processes create only their
 # own namespaces, and the reaper only deletes harness run namespaces (nltg-cluster reap, RunReaper).
@@ -33,6 +38,7 @@ runs=3
 jobs=""
 config=Release
 framework=net10.0
+project=cluster
 context="${NLTG_KUBE_CONTEXT:-orbstack}"
 batch=""
 build=1
@@ -49,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     -j|--jobs) jobs="${2:?}"; shift 2 ;;
     -c|--config) config="${2:?}"; shift 2 ;;
     -f|--framework) framework="${2:?}"; shift 2 ;;
+    -p|--project) project="${2:?}"; shift 2 ;;
     --class) filters+=(-class "${2:?}"); shift 2 ;;
     --method) filters+=(-method "${2:?}"); shift 2 ;;
     --context) context="${2:?}"; shift 2 ;;
@@ -56,7 +63,7 @@ while [[ $# -gt 0 ]]; do
     --no-build) build=0; shift ;;
     --reap-orphans) reap_orphans=1; shift ;;
     --keep) keep=1; shift ;;
-    -h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; extra=("$@"); break ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
@@ -70,9 +77,13 @@ batch="${batch:-rc-$(date -u +%Y%m%d%H%M%S)}"
 batch="$(echo "$batch" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/^-*//; s/-*$//')"
 [[ -n "$batch" && ${#batch} -le 34 ]] || die "--id must leave 1-34 characters of [a-z0-9-]"
 
-test_project="$repo_root/test/NLightning.Testing.Cluster.Tests"
+case "$project" in
+  cluster) test_project="$repo_root/test/NLightning.Testing.Cluster.Tests" ;;
+  integration) test_project="$repo_root/test/NLightning.Integration.Tests" ;;
+  *) test_project="$(cd "$project" 2> /dev/null && pwd)" || die "--project $project: no such directory" ;;
+esac
 cli_project="$repo_root/test/NLightning.Testing.Cluster.Cli"
-test_dll="$test_project/bin/$config/$framework/NLightning.Testing.Cluster.Tests.dll"
+test_dll="$test_project/bin/$config/$framework/$(basename "$test_project").dll"
 cli_dll="$cli_project/bin/$config/$framework/nltg-cluster.dll"
 results="$repo_root/TestResults/cluster/$batch"
 mkdir -p "$results"
