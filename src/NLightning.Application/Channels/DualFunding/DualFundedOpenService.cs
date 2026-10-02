@@ -1749,9 +1749,14 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
     private static LightningMoney Max(LightningMoney a, LightningMoney b) => a > b ? a : b;
 
+    /// <summary>
+    /// The open deadline of <see cref="OpenAsync"/>/<see cref="BumpAsync"/> (BOLT 2: the initiator gives up on a
+    /// stalled negotiation) on the service's <see cref="TimeProvider"/>, like the accepter's watchdog, so a test can
+    /// fire it deterministically (NL-512).
+    /// </summary>
     private async Task<DualFundedOpenResult> WaitAsync(Task<DualFundedOpenResult> task,
                                                        CancellationToken cancellationToken) =>
-        await task.WaitAsync(_options.OpenTimeout, cancellationToken);
+        await task.WaitAsync(_options.OpenTimeout, _timeProvider, cancellationToken);
 
     private void ReleaseAnchorReserve(DualFundNegotiation negotiation)
     {

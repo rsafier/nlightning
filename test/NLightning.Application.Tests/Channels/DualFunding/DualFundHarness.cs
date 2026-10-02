@@ -58,6 +58,7 @@ using Infrastructure.Protocol.Onion;
 using Infrastructure.Repositories;
 using Infrastructure.Serialization;
 using InteractiveTx.TestDoubles;
+using NLightning.Tests.Utils;
 
 /// <summary>
 /// Two in-process nodes for the dual-funded open (splicing plan wave DF): each a real <see cref="ChannelManager"/> with
@@ -91,6 +92,10 @@ internal sealed class DualFundHarness : IAsyncDisposable
 
     /// <summary>How long <c>OpenAsync</c>/<c>BumpAsync</c> wait (the nodes' <c>Node:DualFund:OpenTimeout</c>).</summary>
     public TimeSpan OpenTimeout { get; }
+
+    /// <summary>The nodes' clock (stepped): tests advance it to fire the open watchdog deterministically (NL-512).
+    /// </summary>
+    public SteppedClockProvider Clock { get; } = new();
 
     /// <summary>The nodes' <c>Node:DualFund:AllowRbf</c>.</summary>
     public bool AllowRbf { get; }
@@ -466,6 +471,9 @@ internal sealed class DualFundNode
 
         var services = new ServiceCollection();
         services.AddLogging();
+        // Before every TryAdd(TimeProvider.System) of the service extensions below: the nodes' clock is stepped, so a
+        // test owns when the open watchdog and the open deadline fire (NL-512)
+        services.AddSingleton<TimeProvider>(_harness.Clock);
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(Options));
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new DualFundingOptions
         {
