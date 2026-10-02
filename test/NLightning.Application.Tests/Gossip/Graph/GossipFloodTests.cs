@@ -9,6 +9,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Metrics;
+using NLightning.Tests.Utils;
 
 /// <summary>
 /// BOLT 7 plan G5-T2 proof (fuzz-style): a peer flooding gossip with invalid signatures and bad encodings through the
@@ -59,7 +60,16 @@ public class GossipFloodTests
         var sending = Task.Run(() => valid.Count(m => kit.Ingress.TryEnqueue(honest.Object, m)),
                                TestContext.Current.CancellationToken);
         await Task.WhenAll(flooding, sending);
-        await WaitUntilAsync(() => AllValidApplied(kit) && kit.Ingress.QueuedCount == 0);
+        // The ban is what the door checks below, and the queue's count drops at the dequeue, before a message's
+        // validation finished — so each condition the asserts read is awaited on its own (NL-382), not on a shared
+        // drain that can pass while the ban and the last rejects are still in flight
+        await WaitFor.TrueAsync(() => kit.Ingress.IsBannedForMisbehaviour(flooder.Object.PeerPubKey),
+                                TimeSpan.FromSeconds(30), "the flooder to be banned for its invalid gossip",
+                                TestContext.Current.CancellationToken);
+        await WaitFor.TrueAsync(() => AllValidApplied(kit) && kit.Ingress.QueuedCount == 0,
+                                TimeSpan.FromSeconds(30),
+                                "the honest peer's gossip to be applied and the ingress queue to drain",
+                                TestContext.Current.CancellationToken);
         // A late message of the flooder (a new connection after the ban) is refused at the door
         var reconnected = GraphTestKit.CreatePeer(0x66);
         var afterBan = kit.Ingress.TryEnqueue(reconnected.Object, FuzzMessage(random, FloodSize));
@@ -175,12 +185,5 @@ public class GossipFloodTests
         var bytes = new byte[length];
         random.NextBytes(bytes);
         return bytes;
-    }
-
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        for (var i = 0; i < 400 && !condition(); i++)
-            await Task.Delay(25, TestContext.Current.CancellationToken);
-        Assert.True(condition(), "the ingress did not finish in time");
     }
 }
