@@ -81,6 +81,12 @@ public sealed class FinancialLotPool
     /// <summary>The open lot or debt, or null.</summary>
     public AccountingLot? Find(long id) => _byId.GetValueOrDefault(id);
 
+    /// <summary>The fingerprint of the open lots and debts the pool holds (NL-658), comparable with the saved ones'
+    /// (<see cref="IAccountingLotDbRepository.GetOpenLotsFingerprintAsync"/>).</summary>
+    public AccountingLotsFingerprint Fingerprint =>
+        new(_byId.Count, _byId.Count == 0 ? 0 : _byId.Keys.Max(), _byId.Values.Sum(l => l.RemainingMsat),
+            _byId.Values.Count(l => l.ClosedPeriodId is not null));
+
     /// <summary>The open lots <paramref name="bucket"/> holds (null: the lots of no bucket), in the method's order.</summary>
     public IReadOnlyCollection<AccountingLot> LotsOf(AccountingLotBucket? bucket) =>
         _byBucket.TryGetValue(Key(bucket), out var lots) ? lots : [];

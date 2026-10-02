@@ -110,6 +110,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
     private bool _reportedClosedLeft;
     private long _totalValued;
     private long _totalFetched;
+    private volatile bool _catchingUp;
 
     public PriceValuationService(IServiceScopeFactory scopeFactory, ILogger<PriceValuationService> logger,
                                  IOptions<AccountingOptions>? accountingOptions = null,
@@ -162,6 +163,13 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
 
     /// <summary>Prices asked of the sources since the process started.</summary>
     public long TotalFetched => Interlocked.Read(ref _totalFetched);
+
+    /// <summary>
+    /// Whether the last round used its whole fetch budget and still had hours to ask (NL-658): the back-valuation is
+    /// catching up over old unpriced history, and the financial projector's background rounds wait with the replays it
+    /// asks for (<see cref="Financial.FinancialBooksProjector.MaxReplayDeferral"/>).
+    /// </summary>
+    public bool IsCatchingUp => _catchingUp;
 
     /// <summary>The meter, for tests that assert the instruments.</summary>
     internal Meter Meter { get; }
@@ -482,6 +490,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
         var canFetch = _priceOptions.HasSource && _priceSource is not null && _priceOptions.MaxFetchesPerRound > 0;
         var fetchBudget = canFetch ? Math.Max(0, maxFetches) : 0;
         int listed = 0, valued = 0, fetched = 0, stored = 0, late = 0, closedLeft = 0, unpriced = 0, deferred = 0;
+        var budgetLeftOver = false;
 
         for (var page = 0; page < MaxPagesPerRound; page++)
         {
@@ -522,7 +531,11 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                 foreach (var (hour, at) in missing)
                 {
                     if (fetchBudget == 0)
+                    {
+                        // More hours to ask than this round may: a catch-up over old history
+                        budgetLeftOver = true;
                         break;
+                    }
 
                     fetchBudget--;
                     fetched++;
@@ -636,6 +649,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                 break;
         }
 
+        _catchingUp = budgetLeftOver;
         if (valued > 0)
         {
             _valuedCounter.Add(valued);

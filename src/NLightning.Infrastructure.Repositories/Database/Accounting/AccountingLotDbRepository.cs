@@ -132,6 +132,27 @@ public class AccountingLotDbRepository : IAccountingLotDbRepository
     }
 
     /// <inheritdoc />
+    /// <remarks>The saved rows only (what this unit of work staged is not counted): one aggregate query.</remarks>
+    public async Task<AccountingLotsFingerprint?> GetOpenLotsFingerprintAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var sums = await _context.AccountingLots.AsNoTracking()
+                                 .Where(l => l.RemainingMsat > 0)
+                                 .GroupBy(_ => 1)
+                                 .Select(g => new
+                                 {
+                                     Count = g.Count(),
+                                     MaxId = g.Max(l => l.Id),
+                                     Msat = g.Sum(l => l.RemainingMsat),
+                                     Closed = g.Count(l => l.ClosedPeriodId != null)
+                                 })
+                                 .FirstOrDefaultAsync(cancellationToken);
+        return sums is null
+                   ? new AccountingLotsFingerprint(0, 0, 0, 0)
+                   : new AccountingLotsFingerprint(sums.Count, sums.MaxId, sums.Msat, sums.Closed);
+    }
+
+    /// <inheritdoc />
     public void AddRelief(AccountingLotRelief relief)
     {
         ArgumentNullException.ThrowIfNull(relief);

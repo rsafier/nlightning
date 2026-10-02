@@ -74,7 +74,7 @@ internal sealed class FinancialProjectorTestKit : IAsyncDisposable
         Books = new AccountingBooksService(scopeFactory, NullLogger<AccountingBooksService>.Instance, options, Sealer);
         Signer = CreateSigner();
         Projector = new FinancialBooksProjector(scopeFactory, NullLogger<FinancialBooksProjector>.Instance, options,
-                                                priceOptions, () => Periods, false, Clock);
+                                                priceOptions, () => Periods, false, Clock, () => CatchingUp);
         Periods = new AccountingPeriodService(scopeFactory, NullLogger<AccountingPeriodService>.Instance, Books,
                                               Projector, Signer, Clock);
         Valuation = new PriceValuationService(scopeFactory, NullLogger<PriceValuationService>.Instance, options,
@@ -85,6 +85,9 @@ internal sealed class FinancialProjectorTestKit : IAsyncDisposable
     }
 
     public SettableTimeProvider Clock { get; }
+
+    /// <summary>What the projector is told of the back-valuation (NL-658): catching up over old history.</summary>
+    public bool CatchingUp { get; set; }
     public AccountingEventSealerService Sealer { get; }
     public AccountingBooksService Books { get; }
     public ILightningSigner Signer { get; }

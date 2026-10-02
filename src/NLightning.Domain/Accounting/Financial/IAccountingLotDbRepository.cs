@@ -24,6 +24,14 @@ public interface IAccountingLotDbRepository
     Task<IReadOnlyList<AccountingLot>> ListOpenLotsAsync(AccountingLotBucket? bucket = null,
                                                          CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// What identifies the saved open lots and debts cheaply (NL-658): one aggregate read, so the financial projector can
+    /// keep its pool across rounds and read every open lot again only when the saved ones changed. The default (test
+    /// doubles) returns null: no fingerprint, the pool is read every round.
+    /// </summary>
+    Task<AccountingLotsFingerprint?> GetOpenLotsFingerprintAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<AccountingLotsFingerprint?>(null);
+
     /// <summary>Stages a relief (its <see cref="AccountingLotRelief.Id"/> is ignored and assigned by the save).</summary>
     void AddRelief(AccountingLotRelief relief);
 
@@ -85,3 +93,9 @@ public interface IAccountingLotDbRepository
                                                               CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("This repository does not list reliefs by time.");
 }
+
+/// <summary>
+/// The saved open lots and debts in a few numbers (NL-658): how many, the highest id, the msat they hold and how many of
+/// them a close recorded. Equal fingerprints mean the financial projector's pool is the saved one.
+/// </summary>
+public sealed record AccountingLotsFingerprint(int OpenLots, long MaxId, long RemainingMsat, int ClosedLots);
