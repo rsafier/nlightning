@@ -153,6 +153,46 @@ public class AccountingExportServiceTests
     }
 
     /// <summary>
+    /// NL-665: hledger 1.52 refuses a commodity directive without a decimal mark (<c>commodity 1 msat</c>); the
+    /// operational journal declares <c>msat</c> as hledger requires for a commodity with no decimals.
+    /// </summary>
+    [Fact]
+    public async Task Given_TheHledgerExport_When_Written_Then_TheCommodityDirectiveHasADecimalMark()
+    {
+        // Act
+        var chunk = await _kit.CreateExports().ExportAsync(new AccountingExportQuery(AccountingExportFormat.Hledger,
+                                                               0, 1_000), TestContext.Current.CancellationToken);
+
+        // Assert
+        var directives = chunk.Text.Split('\n').Where(l => l.StartsWith("commodity ", StringComparison.Ordinal))
+                              .ToList();
+        Assert.Equal(["commodity 1. msat"], directives);
+    }
+
+    /// <summary>
+    /// The golden journal through the real hledger (<c>Explicit</c>: not installed in CI): <c>NLTG_HLEDGER</c> names
+    /// the binary (else <c>hledger</c> on the PATH). Run with <c>-- xUnit.Explicit=only</c>.
+    /// </summary>
+    [Fact(Explicit = true)]
+    public async Task Given_TheRealHledger_When_TheGoldenJournalIsChecked_Then_ItAccepts()
+    {
+        // Arrange
+        var journal = Path.Combine(AppContext.BaseDirectory, "Accounting", "Export", "Golden", "books.journal");
+        var hledger = Environment.GetEnvironmentVariable("NLTG_HLEDGER") is { Length: > 0 } h ? h : "hledger";
+        var start = new System.Diagnostics.ProcessStartInfo(hledger) { RedirectStandardError = true };
+        foreach (var argument in new[] { "-f", journal, "check", "--strict" })
+            start.ArgumentList.Add(argument);
+
+        // Act
+        using var process = System.Diagnostics.Process.Start(start)!;
+        var errors = await process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(process.ExitCode == 0, errors);
+    }
+
+    /// <summary>
     /// Seven entries over five days: a deposit, a funding with its wallet spend, an invoice whose description carries
     /// a line break, a semicolon and quotes, a forward, a payment to a description starting with '=', and a failed
     /// payment that posts nothing. Amounts are odd msat on purpose (no rounding anywhere).

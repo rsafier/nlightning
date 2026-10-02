@@ -97,7 +97,7 @@ internal abstract class AccountingExportFormatter
                                          IReadOnlyCollection<AccountRole> accounts)
         {
             builder.Append("; ").Append(Header).Append(" (hledger journal, amounts in millisatoshi)\n");
-            builder.Append("commodity 1 msat\n");
+            builder.Append("commodity 1. msat\n");
             foreach (var role in Enum.GetValues<AccountRole>())
                 builder.Append("account ").Append(AccountName(role)).Append('\n');
             builder.Append('\n');

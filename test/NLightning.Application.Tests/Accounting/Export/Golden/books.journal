@@ -1,5 +1,5 @@
 ; NLightning accounting export (hledger journal, amounts in millisatoshi)
-commodity 1 msat
+commodity 1. msat
 account assets:lightning:channels
 account assets:onchain:pending
 account assets:onchain:wallet
