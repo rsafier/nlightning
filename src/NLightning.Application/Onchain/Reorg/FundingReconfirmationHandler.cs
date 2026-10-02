@@ -154,7 +154,10 @@ public sealed class FundingReconfirmationHandler
             {
                 var existing = (await accounting.GetByKeyPrefixAsync(baseKey, cancellationToken)).ToList();
                 var standing = AccountingConfirmations.FindStanding(baseKey, existing);
-                if (standing is null || standing.BlockHeight is not { } recordedHeight || recordedHeight == height
+                // Same block and position: nothing moved. The same height at another index (a stale short channel
+                // id) moves the events too (NL-738)
+                if (standing is null || standing.BlockHeight is not { } recordedHeight
+                 || (recordedHeight == height && Equals(standing.ShortChannelId, moved))
                  || standing.TxId != fundingTxId
                  || standing.Details.ContainsKey(AccountingDetailKeys.Memo))
                     continue;

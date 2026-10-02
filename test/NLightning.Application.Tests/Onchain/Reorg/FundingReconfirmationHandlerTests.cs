@@ -148,6 +148,36 @@ public sealed class FundingReconfirmationHandlerTests
         Assert.Equal(95_000_000, books[AccountRole.Channels]);
     }
 
+    [Fact]
+    public async Task Given_TheFundingsAccountingEvents_When_TheFundingConfirmedAgainAtTheSameHeightElsewhere_Then_TheyMoveToo()
+    {
+        // Arrange (NL-738): recorded at 800x1; the funding confirmed again at the same height, index 5
+        var memory = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var fundingTxId = TxIdOf(0x01);
+        var channelId = ChannelIdOf(0x02);
+        memory.AddChannel(CreateChannel(channelId, Peer(3), fundingTxId));
+        var funded = Event(AccountingEventKeys.ChannelFunded(channelId, fundingTxId), AccountingEventKind.ChannelFunded,
+                           channelId, fundingTxId, 100_000_000, 800);
+        var feed = new List<AccountingEventModel> { funded };
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.ChannelDbRepository)
+                  .Returns(ChannelDbRepositoryOf(CreateChannel(channelId, Peer(3), fundingTxId)));
+        unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(FeedOf(feed));
+        var handler = new FundingReconfirmationHandler(new ChannelLockProvider(), memory, NullLogger.Instance,
+                                                       ScopeFactoryOf(unitOfWork.Object));
+        var watch = new WatchedTransactionModel(channelId, fundingTxId, 6);
+        watch.SetHeightAndIndex(800, 5);
+
+        // Act
+        await handler.HandleAsync(watch, TestContext.Current.CancellationToken);
+
+        // Assert: reversed and recorded again with the new short channel id
+        Assert.Single(feed, e => e.Kind == AccountingEventKind.Reversal);
+        var again = Assert.Single(feed, e => e.EventKey == AccountingEventKeys.Reconfirmed(funded.EventKey, 2));
+        Assert.Equal(new ShortChannelId(800, 5, 0), again.ShortChannelId);
+        Assert.Equal(funded.AmountMsat, BooksSimulator.Of(feed)[AccountRole.Channels]);
+    }
+
     private static AccountingEventModel Event(string key, AccountingEventKind kind, ChannelId channelId, TxId txId,
                                               long amountMsat, uint height) => new()
                                               {

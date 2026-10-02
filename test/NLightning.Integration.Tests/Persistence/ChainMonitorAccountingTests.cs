@@ -320,6 +320,39 @@ public class ChainMonitorAccountingTests
         Assert.DoesNotContain(harness.Chain.SendAttempts.Skip(sentBefore), t => t.GetHash() == bump.GetHash());
     }
 
+    [Theory]
+    [InlineData(BroadcastPurpose.Splice)]
+    [InlineData(BroadcastPurpose.Funding)]
+    public async Task Given_ASpliceRbfAttempt_When_TheAttemptItBumpsConfirms_Then_TheBumpStaysPendingAndIsSentAgain(
+        BroadcastPurpose purpose)
+    {
+        // Arrange (NL-736): a splice RBF keeps every attempt Pending on purpose (wave SPR): the bump names the attempt
+        // it bumps in ReplacesTransactionId but never marks it Replaced, and the splice lock abandons the losers. The
+        // NL-606 voiding marked the bump Replaced when the first attempt confirmed, so after a reorg of that block the
+        // splice had no attempt left to send
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        var channelId = ChannelIdOf(0x1C);
+        var first = CreateTransaction(0x1C);
+        var bump = CreateTransaction(0x1D);
+        await harness.Monitor.SaveAndPublishAsync(new BroadcastTransactionModel(
+                                                      ToSigned(first), purpose, channelId, 100, 1_000,
+                                                      fee: LightningMoney.Satoshis(500)));
+        await harness.Monitor.SaveAndPublishAsync(new BroadcastTransactionModel(
+                                                      ToSigned(bump), purpose, channelId, 100, 1_500, TxIdOf(first),
+                                                      fee: LightningMoney.Satoshis(900)));
+
+        // Act: the first attempt confirms, then another block
+        await MineOnlyAsync(harness, first);
+        var sentBefore = harness.Chain.SendAttempts.Count;
+        await MineOnlyAsync(harness);
+
+        // Assert: the bump is still Pending and still sent each round, until the splice lock abandons it
+        Assert.Equal(BroadcastState.Confirmed, (await LoadBroadcastAsync(harness, TxIdOf(first))).State);
+        Assert.Equal(BroadcastState.Pending, (await LoadBroadcastAsync(harness, TxIdOf(bump))).State);
+        Assert.Contains(harness.Chain.SendAttempts.Skip(sentBefore), t => t.GetHash() == bump.GetHash());
+    }
+
     [Fact]
     public async Task Given_ASweepBumpedTwice_When_TheMiddleAttemptConfirms_Then_ItsBumpOverTheOriginalIsRecorded()
     {
@@ -547,6 +580,43 @@ public class ChainMonitorAccountingTests
         Assert.Equal(-above.FeeMsat, reversal.FeeMsat);
         var books = BooksSimulator.Of(events.Where(e => e.EventKey != below.EventKey));
         Assert.All(books.Balances.Values, balance => Assert.Equal(0, balance));
+    }
+
+    [Fact]
+    public async Task Given_AMemoMutualCloseAboveTheFork_When_TheChainRewinds_Then_ItIsNotReversed()
+    {
+        // Arrange (NL-737): the backfill's memo close of a channel closed before the cutover, confirmed at 102
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        await harness.MineAndDeliverAsync();
+        await harness.MineAndDeliverAsync();
+        var closing = CreateTransaction(0x33);
+        var memo = new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.ChannelClosedMutual(ChannelIdOf(0x33), TxIdOf(closing)),
+            Kind = AccountingEventKind.ChannelClosedMutual,
+            OccurredAt = DateTimeOffset.UnixEpoch,
+            BlockHeight = 102,
+            ChannelId = ChannelIdOf(0x33),
+            TxId = TxIdOf(closing),
+            AmountMsat = -500_000_000,
+            FeeMsat = 1_000_000,
+            Finality = AccountingFinality.Confirmed,
+            Details = new Dictionary<string, string> { [AccountingDetailKeys.Memo] = "true" }
+        };
+        using (var scope = harness.Services.CreateScope())
+        {
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            uow.AccountingEventDbRepository.Add(memo);
+            await uow.SaveChangesAsync();
+        }
+
+        // Act
+        harness.Chain.Reorg(100, 3);
+        await harness.DeliverTipAsync();
+
+        // Assert: nothing reversed, so the close is never recorded again as a real, posting event
+        Assert.DoesNotContain(await LoadEventsAsync(harness), e => e.Kind == AccountingEventKind.Reversal);
     }
 
     [Fact]

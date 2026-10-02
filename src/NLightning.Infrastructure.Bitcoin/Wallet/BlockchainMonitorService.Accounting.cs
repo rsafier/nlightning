@@ -334,8 +334,11 @@ public partial class BlockchainMonitorService
                 Reverse(confirmed);
 
             // NL-607: a mutual close confirmed in the disconnected blocks (its watch is pending again; the channel
-            // manager records it again when it confirms again)
-            foreach (var closed in standingAbove.Where(e => e.Kind == AccountingEventKind.ChannelClosedMutual))
+            // manager records it again when it confirms again). A memo close of the backfill posts nothing and is left
+            // alone: reversed, it was recorded again as a real, posting event for a balance the books never held
+            // (NL-737)
+            foreach (var closed in standingAbove.Where(e => e.Kind == AccountingEventKind.ChannelClosedMutual
+                                                         && !e.Details.ContainsKey(AccountingDetailKeys.Memo)))
                 Reverse(closed);
 
             // The deposits the rollback removed (whatever height they were recorded at)

@@ -349,8 +349,10 @@ internal static class ChannelAccountingEvents
              || BuildMutualClose(channel, blockHeight, occurredAt, logger) is not { } built)
                 return;
 
+            // A memo close of the backfill (a channel closed before the cutover) is never recorded again as a real
+            // one: the opening balances left that channel out (NL-737)
             var existing = await events.GetByKeyPrefixAsync(built.EventKey);
-            if (existing.Count == 0
+            if (existing.Count == 0 || existing.Any(e => e.Details.ContainsKey(AccountingDetailKeys.Memo))
              || AccountingConfirmations.NextConfirmationKey(built.EventKey, existing) is not { } key)
                 return;
 

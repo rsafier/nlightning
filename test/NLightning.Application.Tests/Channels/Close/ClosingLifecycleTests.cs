@@ -216,6 +216,45 @@ public class ClosingLifecycleTests
     }
 
     [Fact]
+    public async Task Given_AReversedMemoMutualClose_When_ItsClosingTransactionConfirmsAgain_Then_NothingIsRecorded()
+    {
+        // Arrange (NL-737): the backfill's memo close of a channel closed before the cutover, reversed by an older
+        // build's rewind; the opening balances left the channel out, so a real close would post a balance never held
+        var channel = CreateClosingChannel(ChannelState.Closing);
+        var closing = ClosingTx(channel, 999_000, null);
+        channel.SetClosingTransaction(closing);
+        channel.UpdateState(ChannelState.Closed);
+        var channelId = channel.ChannelId;
+        _channelDb.Setup(r => r.GetByIdAsync(channelId)).ReturnsAsync(channel);
+        var memo = new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.ChannelClosedMutual(channelId, closing.TxId),
+            Kind = AccountingEventKind.ChannelClosedMutual,
+            OccurredAt = DateTimeOffset.UnixEpoch,
+            BlockHeight = 590,
+            ChannelId = channelId,
+            TxId = closing.TxId,
+            AmountMsat = -1_000_000_000,
+            FeeMsat = 1_000_000,
+            Finality = AccountingFinality.Confirmed,
+            Details = new Dictionary<string, string> { [AccountingDetailKeys.Memo] = "true" }
+        };
+        var read = false;
+        _accounting.Setup(a => a.GetByKeyPrefixAsync(memo.EventKey, It.IsAny<CancellationToken>()))
+                   .Callback(() => read = true)
+                   .ReturnsAsync([memo, AccountingConfirmations.CreateReversal(memo, DateTimeOffset.UnixEpoch, 580)]);
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, closing.TxId));
+        await WaitUntilAsync(() => read);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(_accountingEvents);
+    }
+
+    [Fact]
     public async Task Given_ThePeerPaidTheClosingFee_When_ClosingTransactionConfirmed_Then_OnlyTheMsatWeCouldNotCarryAreOurFee()
     {
         // Arrange: 600,000.5 sat ours, the peer funded and pays the fee: our output carries the whole satoshis

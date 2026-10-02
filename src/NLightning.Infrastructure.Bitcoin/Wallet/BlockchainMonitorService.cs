@@ -1543,7 +1543,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
     /// <summary>
     /// The earlier members of every pending RBF replacement's chain (NL-606): each row a pending broadcast replaced,
-    /// followed back through <see cref="BroadcastTransactionModel.ReplacesTransactionId"/>, mapped to the pending head.
+    /// followed back through <see cref="BroadcastTransactionModel.ReplacesTransactionId"/>, mapped to the pending head;
+    /// splice and funding attempts are left out (siblings kept Pending until the lock, NL-736).
     /// A chain is read once per head and kept while the head is pending; a failed read is logged and retried at the next
     /// block.
     /// </summary>
@@ -1556,7 +1557,11 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
         foreach (var (headId, head) in _pendingBroadcasts)
         {
-            if (head.ReplacesTransactionId is null)
+            // A splice RBF (or funding) attempt names the attempt it bumps but keeps it Pending on purpose (wave SPR):
+            // every attempt is sent until the splice lock abandons the losers, so a confirmed sibling never voids it
+            // (NL-736: voided, a reorg of the sibling's block left the splice without an attempt to send)
+            if (head.ReplacesTransactionId is null
+             || head.Purpose is BroadcastPurpose.Splice or BroadcastPurpose.Funding)
                 continue;
 
             if (!_replacementChains.TryGetValue(headId, out var chain))

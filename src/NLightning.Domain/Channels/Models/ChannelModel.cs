@@ -511,7 +511,6 @@ public class ChannelModel
         RemoteShutdownScript = script;
     }
 
-    /// <summary>Records the agreed, fully signed mutual close transaction.</summary>
     /// <summary>Records how the closing transaction was agreed (NL-610): the protocol and, for a simple close, whether
     /// we were the closer.</summary>
     public void SetCloseTerms(MutualCloseProtocol? protocol, bool? localIsCloser)
@@ -520,6 +519,7 @@ public class ChannelModel
         LocalIsCloser = protocol == MutualCloseProtocol.Simple ? localIsCloser : null;
     }
 
+    /// <summary>Records the agreed, fully signed mutual close transaction.</summary>
     public void SetClosingTransaction(SignedTransaction closingTransaction)
     {
         ArgumentNullException.ThrowIfNull(closingTransaction);
