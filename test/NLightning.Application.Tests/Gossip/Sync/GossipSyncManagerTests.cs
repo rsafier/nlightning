@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Tests.Utils;
 
 namespace NLightning.Application.Tests.Gossip.Sync;
 
@@ -26,17 +27,37 @@ public class GossipSyncManagerTests : IDisposable
     private static readonly ChainHash s_chain = ChainConstants.Regtest;
     private static readonly TimeSpan s_quiet = TimeSpan.FromMilliseconds(200);
 
+    /// <summary>The reply timeout of every timeout test (NL-501: fired on the stepped clock, not the wall clock).</summary>
+    private static readonly TimeSpan s_replyTimeout = TimeSpan.FromMilliseconds(150);
+
     private readonly SyncTestGraph _graph = new();
     private readonly Mock<IGossipIngress> _ingress = new();
     private readonly List<GossipSyncManager> _managers = [];
+    private readonly SteppedClockProvider _syncClock = new();
     private List<ShortChannelId> _missed = [];
 
     public GossipSyncManagerTests()
     {
         _ingress.SetupGet(i => i.IsEnabled).Returns(true);
+
+        // Land the stepped clock at a half-second boundary: the filter assertions compare seconds read from this
+        // clock at send time and at assert time, so half a second of margin keeps them in the same second
+        var millis = _syncClock.GetUtcNow().TimeOfDay.TotalMilliseconds;
+        _syncClock.Advance(TimeSpan.FromMilliseconds(500 - millis % 500));
     }
 
-    private uint Now => (uint)_graph.Kit.Clock.GetUtcNow().ToUnixTimeSeconds();
+    private uint Now => (uint)_syncClock.GetUtcNow().ToUnixTimeSeconds();
+
+    /// <summary>
+    /// Advances the stepped sync clock past <paramref name="by"/>, landing at a half-second boundary again so a
+    /// <see cref="Now"/> read cannot tick over between the manager's send and the assertion.
+    /// </summary>
+    private void AdvancePast(TimeSpan by)
+    {
+        var millis = _syncClock.GetUtcNow().TimeOfDay.TotalMilliseconds;
+        _syncClock.Advance(TimeSpan.FromMilliseconds(Math.Ceiling((millis + by.TotalMilliseconds) / 500.0) * 500
+                                                     - millis));
+    }
 
     [Fact]
     public async Task Given_AGossipQueriesPeer_When_Initialized_Then_RangeQueryDiffScidQueryThenBacklogFilter()
@@ -360,15 +381,15 @@ public class GossipSyncManagerTests : IDisposable
         var manager = CreateManager(o =>
         {
             o.SyncPeers = 1;
-            o.SyncReplyTimeout = TimeSpan.FromMilliseconds(150);
+            o.SyncReplyTimeout = s_replyTimeout;
         });
         var slow = new FakeGossipPeer(1);
         manager.OnPeerInitialized(slow);
         await slow.NextAsync<QueryChannelRangeMessage>();
-        await Task.Delay(300, TestContext.Current.CancellationToken);
-        await manager.WhenIdleAsync(slow, TestContext.Current.CancellationToken);
 
-        // Act
+        // Act (NL-501): the reply timeout fires on the stepped clock
+        AdvancePast(s_replyTimeout);
+        await IdleAsync(manager, slow);
         var fresh = new FakeGossipPeer(2);
         manager.OnPeerInitialized(fresh);
 
@@ -400,14 +421,14 @@ public class GossipSyncManagerTests : IDisposable
     public async Task Given_ANonAnsweringPeer_When_TheReplyTimeoutPasses_Then_TheSyncEndsWithoutAWarning()
     {
         // Arrange
-        var manager = CreateManager(o => o.SyncReplyTimeout = TimeSpan.FromMilliseconds(150));
+        var manager = CreateManager(o => o.SyncReplyTimeout = s_replyTimeout);
         var peer = new FakeGossipPeer(1);
         manager.OnPeerInitialized(peer);
         await peer.NextAsync<QueryChannelRangeMessage>();
 
-        // Act
-        await Task.Delay(300, TestContext.Current.CancellationToken);
-        await manager.WhenIdleAsync(peer, TestContext.Current.CancellationToken);
+        // Act (NL-501): the reply timeout fires on the stepped clock
+        AdvancePast(s_replyTimeout);
+        await IdleAsync(manager, peer);
         manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true)); // too late: unsolicited
 
         // Assert: the failed sync peer still asks for new gossip (LND/CLN relay nothing before a filter)
@@ -426,7 +447,7 @@ public class GossipSyncManagerTests : IDisposable
         // reply_short_channel_ids_end): the peer answers the scid query after our timeout
         var manager = CreateManager(o =>
         {
-            o.SyncReplyTimeout = TimeSpan.FromMilliseconds(150);
+            o.SyncReplyTimeout = s_replyTimeout;
             o.SyncPeers = 0;
         });
         var slow = new FakeGossipPeer(1);
@@ -434,7 +455,10 @@ public class GossipSyncManagerTests : IDisposable
         await slow.NextAsync<GossipTimestampFilterMessage>();
         var first = manager.QueryScidAsync(new ShortChannelId(200, 1, 0), TestContext.Current.CancellationToken);
         Assert.Equal([new ShortChannelId(200, 1, 0)], Ids(await slow.NextAsync<QueryShortChannelIdsMessage>()));
-        Assert.False(await first); // not answered in time
+
+        // The timeout fires on the stepped clock (NL-501): nothing was asked again meanwhile
+        AdvancePast(s_replyTimeout);
+        Assert.False(await first.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
 
         // Act: the next query waits for the outstanding end; nothing goes out until it arrives
         var waiting = manager.QueryScidAsync(new ShortChannelId(300, 1, 0), TestContext.Current.CancellationToken);
@@ -455,14 +479,17 @@ public class GossipSyncManagerTests : IDisposable
         // Arrange (NL-365): the peer answers the range query after our timeout
         var manager = CreateManager(o =>
         {
-            o.SyncReplyTimeout = TimeSpan.FromMilliseconds(150);
+            o.SyncReplyTimeout = s_replyTimeout;
             o.SyncPeers = 1;
         });
         var slow = new FakeGossipPeer(1);
         manager.OnPeerInitialized(slow);
         await slow.NextAsync<QueryChannelRangeMessage>();
-        await slow.NextAsync<GossipTimestampFilterMessage>(); // the timeout passed: the live filter
-        await manager.WhenIdleAsync(slow, TestContext.Current.CancellationToken);
+
+        // The timeout fires on the stepped clock (NL-501): the live filter follows the abandoned wait
+        AdvancePast(s_replyTimeout);
+        await slow.NextAsync<GossipTimestampFilterMessage>();
+        await IdleAsync(manager, slow);
 
         // Act: the rotation asks the same connection again; its querier first consumes the late replies, which
         // complete the abandoned collector, then runs the new range query
@@ -493,15 +520,18 @@ public class GossipSyncManagerTests : IDisposable
         await peer.NextAsync<QueryChannelRangeMessage>();
         var ids = Enumerable.Range(0, 15).Select(i => new ShortChannelId(100 + (uint)i, 0, 0)).ToArray();
 
-        // Act / Assert
+        // Act / Assert: nothing goes out while the queue is full (the querier waits on the stepped clock); the
+        // query goes out once the queue has drained to half the capacity
         manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, ids));
         Assert.True(await peer.NothingSentWithinAsync(TimeSpan.FromMilliseconds(400)));
         Volatile.Write(ref depth, 50);
+        _syncClock.Advance(TimeSpan.FromMilliseconds(150)); // the ingress poll wakes
         Assert.Equal(ids[..10], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
         Volatile.Write(ref depth, 51);
         manager.HandleMessage(peer, End());
         Assert.True(await peer.NothingSentWithinAsync(TimeSpan.FromMilliseconds(400)));
         Volatile.Write(ref depth, 0);
+        _syncClock.Advance(TimeSpan.FromMilliseconds(150)); // the ingress poll wakes
         Assert.Equal(ids[10..], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
         manager.HandleMessage(peer, End());
         await peer.NextAsync<GossipTimestampFilterMessage>();
@@ -513,7 +543,7 @@ public class GossipSyncManagerTests : IDisposable
         // Arrange (NL-412): capacity 100 → queries of 10 channels while the peer's own queue is at most 50; the whole
         // queue (other peers' gossip) is far fuller, and the peer's own queue stays full past the reply timeout
         var ownDepth = 0;
-        var manager = CreateManager(o => o.SyncReplyTimeout = TimeSpan.FromMilliseconds(150),
+        var manager = CreateManager(o => o.SyncReplyTimeout = s_replyTimeout,
                                     getIngressQueueDepth: () => 10_000, ingressQueueCapacity: 100,
                                     getPeerQueueDepth: _ => Volatile.Read(ref ownDepth));
         var peer = new FakeGossipPeer(1);
@@ -525,11 +555,14 @@ public class GossipSyncManagerTests : IDisposable
         manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, ids));
         Assert.Equal(ids[..10], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
 
-        // Its answer fills the peer's own queue: the next query waits, also past the reply timeout
+        // Its answer fills the peer's own queue: the next query waits on the stepped clock, also past the reply
+        // timeout
         Volatile.Write(ref ownDepth, 51);
         manager.HandleMessage(peer, End());
         Assert.True(await peer.NothingSentWithinAsync(TimeSpan.FromMilliseconds(600)));
+        _syncClock.Advance(TimeSpan.FromMilliseconds(300)); // past the reply timeout: still waiting
         Volatile.Write(ref ownDepth, 50);
+        _syncClock.Advance(TimeSpan.FromMilliseconds(150)); // the ingress poll wakes
         Assert.Equal(ids[10..], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
         manager.HandleMessage(peer, End());
         await peer.NextAsync<GossipTimestampFilterMessage>();
@@ -831,8 +864,8 @@ public class GossipSyncManagerTests : IDisposable
         var answered = manager.QueryScidAsync(new ShortChannelId(123, 4, 5),
                                               TestContext.Current.CancellationToken);
 
-        // Act / Assert: offered three times, delivered on the third
-        await WaitForAsync(() => sender.OfferedCount == 4, TestContext.Current.CancellationToken);
+        // Act / Assert: offered three times, delivered on the third (each retry waits on the stepped clock)
+        await AdvanceUntilAsync(() => sender.OfferedCount == 4, "the query to fit the outbox");
         var query = await peer.NextAsync<QueryShortChannelIdsMessage>();
         manager.HandleMessage(peer, End());
         Assert.True(await answered);
@@ -855,7 +888,8 @@ public class GossipSyncManagerTests : IDisposable
         manager.HandleMessage(peer, new QueryChannelRangeMessage(new QueryChannelRangePayload(s_chain, 0, 10)));
 
         // Assert: our range query and our reply to the peer's query both went out once the connection was current
-        await WaitForAsync(() => peer.Sent.Count >= 2, TestContext.Current.CancellationToken);
+        // (the Gone offers are retried on the stepped clock)
+        await AdvanceUntilAsync(() => peer.Sent.Count >= 2, "the connection to be installed");
         var sent = peer.Sent;
         Assert.Single(sent, m => m is QueryChannelRangeMessage);
         Assert.Single(sent, m => m is ReplyChannelRangeMessage { Payload.SyncComplete: true });
@@ -873,7 +907,7 @@ public class GossipSyncManagerTests : IDisposable
         await peer.NextAsync<GossipTimestampFilterMessage>();
         sender.ScriptNext(int.MaxValue / 2, GossipEnqueueResult.Gone);
         var answered = manager.QueryScidAsync(new ShortChannelId(123, 4, 5), TestContext.Current.CancellationToken);
-        await WaitForAsync(() => sender.OfferedCount >= 2, TestContext.Current.CancellationToken);
+        await AdvanceUntilAsync(() => sender.OfferedCount >= 2, "the query to be offered again");
 
         // Act
         peer.Disconnect();
@@ -901,7 +935,7 @@ public class GossipSyncManagerTests : IDisposable
                                             Microsoft.Extensions.Options.Options.Create(new NodeOptions
                                             {
                                                 BitcoinNetwork = BitcoinNetwork.Resolve("regtest")
-                                            }), NullLogger<GossipSyncManager>.Instance, _graph.Kit.Clock,
+                                            }), NullLogger<GossipSyncManager>.Instance, _syncClock,
                                             _ingress.Object, () =>
                                             {
                                                 var taken = _missed;
@@ -914,16 +948,21 @@ public class GossipSyncManagerTests : IDisposable
         return manager;
     }
 
-    private static async Task WaitForAsync(Func<bool> condition, CancellationToken ct)
+    /// <summary>Waits, advancing the stepped clock so the manager's parked waits (ingress polls, outbox retries)
+    /// proceed, until <paramref name="condition"/> holds.</summary>
+    private async Task AdvanceUntilAsync(Func<bool> condition, string description)
     {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (!condition())
+        await WaitFor.TrueAsync(() =>
         {
-            if (DateTime.UtcNow > deadline)
-                throw new TimeoutException("condition not met");
-            await Task.Delay(10, ct);
-        }
+            _syncClock.Advance(TimeSpan.FromMilliseconds(100));
+            return condition();
+        }, TimeSpan.FromSeconds(10), description, TestContext.Current.CancellationToken);
     }
+
+    /// <summary>Bounded settle: after a stepped-clock advance the loops finish asynchronously.</summary>
+    private async Task IdleAsync(GossipSyncManager manager, FakeGossipPeer peer) =>
+        await manager.WhenIdleAsync(peer, TestContext.Current.CancellationToken)
+                     .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
     private static ReplyShortChannelIdsEndMessage End() => new(new ReplyShortChannelIdsEndPayload(s_chain, true));
 
