@@ -213,11 +213,11 @@ public class DaemonArgsTests : IDisposable
 
         // Act
         var exception = Assert.Throws<ArgumentException>(() => NodeConfigurationExtensions
-                                                                  .ReadInitialConfiguration(["-n", "testnet4"]));
+                                                                  .ReadInitialConfiguration(["-n", "testnet5"]));
 
         // Assert: no fallback to mainnet and nothing written for the typo
-        Assert.Contains("testnet4", exception.Message);
-        Assert.False(Directory.Exists(Path.Combine(_tempHome, ".nltg", "testnet4")));
+        Assert.Contains("testnet5", exception.Message);
+        Assert.False(Directory.Exists(Path.Combine(_tempHome, ".nltg", "testnet5")));
     }
 
     [Fact]

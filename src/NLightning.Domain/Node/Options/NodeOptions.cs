@@ -11,8 +11,8 @@ public class NodeOptions
     // private FeatureOptions _features;
 
     /// <summary>
-    /// The network to connect to: "mainnet", "testnet", "regtest" or "signet" (a custom signet such as Mutinynet is
-    /// "signet" here, named by <see cref="CustomSignet"/>). Set it from configuration through
+    /// The network to connect to: "mainnet", "testnet", "testnet4", "regtest" or "signet" (a custom signet such as
+    /// Mutinynet is "signet" here, named by <see cref="CustomSignet"/>). Set it from configuration through
     /// <see cref="BitcoinNetwork.Resolve"/>, which fails on an unknown name.
     /// </summary>
     public BitcoinNetwork BitcoinNetwork { get; set; } = NetworkConstants.Mainnet;

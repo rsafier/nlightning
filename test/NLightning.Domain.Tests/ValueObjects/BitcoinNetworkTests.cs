@@ -50,6 +50,7 @@ public class BitcoinNetworkTests
     [Theory]
     [InlineData(NetworkConstants.Mainnet)]
     [InlineData(NetworkConstants.Testnet)]
+    [InlineData(NetworkConstants.Testnet4)]
     [InlineData(NetworkConstants.Regtest)]
     [InlineData(NetworkConstants.Signet)]
     public void Given_NetworkInstance_When_ChainHashAccessed_Then_ReturnsCorrectHash(string networkName)
@@ -60,6 +61,7 @@ public class BitcoinNetworkTests
         {
             NetworkConstants.Mainnet => ChainConstants.Main,
             NetworkConstants.Testnet => ChainConstants.Testnet,
+            NetworkConstants.Testnet4 => ChainConstants.Testnet4,
             NetworkConstants.Regtest => ChainConstants.Regtest,
             NetworkConstants.Signet => ChainConstants.Signet,
             _ => throw new InvalidOperationException("Chain not supported.")
@@ -252,6 +254,7 @@ public class BitcoinNetworkTests
     [Theory]
     [InlineData(NetworkConstants.Mainnet, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f")]
     [InlineData(NetworkConstants.Testnet, "000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943")]
+    [InlineData(NetworkConstants.Testnet4, "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043")]
     [InlineData(NetworkConstants.Regtest, "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206")]
     [InlineData(NetworkConstants.Signet, "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6")]
     public void Given_BuiltInNetwork_When_ChainHashAccessed_Then_ItIsTheReversedGenesisHash(string name,
@@ -265,6 +268,45 @@ public class BitcoinNetworkTests
 
         // Assert
         Assert.Equal(expected, chainHash.Value);
+    }
+
+    [Fact]
+    public void Given_Testnet4_When_ChainHashAccessed_Then_ItIsTheBip94GenesisHashInWireOrder()
+    {
+        // Arrange: the testnet4 genesis block hash as BIP 94 and block explorers show it (big-endian)
+        const string genesisHashHex = "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043";
+        var expected = Convert.FromHexString(genesisHashHex).Reverse().ToArray();
+
+        // Act
+        var chainHash = BitcoinNetwork.Resolve("Testnet4").ChainHash;
+
+        // Assert: its own chain, not testnet3's and not signet's (NL-012)
+        Assert.Equal(expected, chainHash.Value);
+        Assert.Equal(ChainConstants.Testnet4, chainHash);
+        Assert.Equal(BitcoinNetwork.Testnet4, BitcoinNetwork.Resolve(" TESTNET4 "));
+        Assert.NotEqual(ChainConstants.Testnet, chainHash);
+        Assert.NotEqual(BitcoinNetwork.Testnet, BitcoinNetwork.Testnet4);
+        Assert.False(BitcoinNetwork.Testnet4.IsSignet);
+        Assert.True(BitcoinNetwork.IsBuiltIn(NetworkConstants.Testnet4));
+    }
+
+    [Fact]
+    public void Given_Testnet4_When_RegisteredAsCustomNetwork_Then_ItIsRefusedAsBuiltIn()
+    {
+        // Act / Assert: the BOLT 10 plumbing used to suggest a custom registration of the name (NL-545)
+        Assert.Throws<InvalidOperationException>(() => BitcoinNetwork.Register(NetworkConstants.Testnet4,
+                                                                                ChainConstants.Testnet4));
+        Assert.Throws<InvalidOperationException>(() => BitcoinNetwork.RegisterCustomSignet(NetworkConstants.Testnet4));
+    }
+
+    [Fact]
+    public void Given_AnUnknownName_When_Resolved_Then_TheMessageListsTestnet4()
+    {
+        // Act
+        var exception = Assert.Throws<ArgumentException>(() => BitcoinNetwork.Resolve("bitcoin-unknown"));
+
+        // Assert
+        Assert.Contains(NetworkConstants.Testnet4, exception.Message);
     }
 
     [Theory]
@@ -314,6 +356,7 @@ public class BitcoinNetworkTests
     [Theory]
     [InlineData(NetworkConstants.Mainnet)]
     [InlineData(NetworkConstants.Testnet)]
+    [InlineData(NetworkConstants.Testnet4)]
     [InlineData(NetworkConstants.Regtest)]
     [InlineData(NetworkConstants.Signet)]
     public void Given_BuiltInName_When_Resolved_Then_ItIsThatNetwork(string name)
@@ -328,7 +371,7 @@ public class BitcoinNetworkTests
 
     [Theory]
     [InlineData("bitcoin-unknown")]
-    [InlineData("testnet4")]
+    [InlineData("testnet5")]
     [InlineData("")]
     [InlineData("   ")]
     [InlineData(null)]

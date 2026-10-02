@@ -865,9 +865,46 @@ public class NodeServiceExtensionsTests
         Assert.Equal(28333, bitcoin.ZmqTxPort);
     }
 
+    [Fact]
+    public void Given_Testnet4DefaultConfigJson_When_Bound_Then_Testnet4ChainHashSeedsFeeSourceAndRpcPort()
+    {
+        // Arrange (NL-012)
+        var json = NodeConfigurationExtensions.CreateDefaultConfigJson("testnet4");
+        var configuration = new ConfigurationBuilder()
+                           .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                           .Build();
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+        var fees = provider.GetRequiredService<IOptions<FeeEstimationOptions>>().Value;
+        var bitcoin = provider.GetRequiredService<IOptions<BitcoinOptions>>().Value;
+
+        // Assert: its own chain hash in init, LND's testnet4 seed (off by default), mempool.space's testnet4 fees and
+        // bitcoind's testnet4 RPC port
+        Assert.Equal("testnet4", configuration["Node:Network"]);
+        Assert.Equal(BitcoinNetwork.Testnet4, options.BitcoinNetwork);
+        Assert.Equal([ChainConstants.Testnet4], options.Features.ChainHashes);
+        Assert.Null(options.CustomSignet);
+        Assert.Empty(options.GetValidationErrors());
+        Assert.Equal(["test4.nodes.lightning.wiki"],
+                     configuration.GetSection("Node:Bootstrap:Seeds").GetChildren()
+                                 .Select(s => s.Value!).ToArray());
+        Assert.False(options.Bootstrap.IsEnabledOn(options.BitcoinNetwork));
+        Assert.Equal(FeeEstimationOptions.SourceHttp, fees.Source);
+        Assert.Equal("https://mempool.space/testnet4/api/v1/fees/recommended", fees.Url);
+        Assert.Empty(fees.GetValidationErrors());
+        Assert.Equal("http://localhost:48332", bitcoin.RpcEndpoint);
+        Assert.Null(configuration["Node:EnableHtlcs"]);
+        Assert.True(options.HtlcsEnabled);
+    }
+
     [Theory]
     [InlineData("regtest", "Fixed", "http://localhost:18443")]
     [InlineData("testnet", "Http", "http://localhost:18332")]
+    [InlineData("testnet4", "Http", "http://localhost:48332")]
     [InlineData("mainnet", "Http", "http://localhost:8332")]
     public void Given_DefaultConfigJson_When_Bound_Then_FeeSourceAndRpcPortFitTheNetwork(string network,
         string feeSource, string rpcEndpoint)

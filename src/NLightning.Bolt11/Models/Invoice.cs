@@ -613,6 +613,12 @@ public partial class Invoice
             Bech32Encoder.DecodeLightningInvoice(invoiceString, out var data, out var signature, out var hrp);
 
             var network = GetNetwork(invoiceString);
+
+            // Testnet3 and testnet4 share the `tb` prefix (as in LND and CLN), so `lntb` is testnet4's when the
+            // caller runs on testnet4 (NL-012)
+            if (expectedNetwork == BitcoinNetwork.Testnet4 && network == BitcoinNetwork.Testnet)
+                network = BitcoinNetwork.Testnet4;
+
             if (expectedNetwork is not null && network != expectedNetwork)
                 throw new InvoiceSerializationException("Expected network does not match");
 
@@ -825,6 +831,7 @@ public partial class Invoice
         {
             NetworkConstants.Mainnet => InvoiceConstants.PrefixMainet,
             NetworkConstants.Testnet => InvoiceConstants.PrefixTestnet,
+            NetworkConstants.Testnet4 => InvoiceConstants.PrefixTestnet,
             NetworkConstants.Regtest => InvoiceConstants.PrefixRegtest,
             NetworkConstants.Signet => InvoiceConstants.PrefixSignet,
             _ => throw new ArgumentException("Unsupported network type", nameof(bitcoinNetwork)),

@@ -10,7 +10,8 @@ public class NBitcoinNetworkResolverTests
 {
     public static TheoryData<string> BuiltInNetworks =>
     [
-        NetworkConstants.Mainnet, NetworkConstants.Testnet, NetworkConstants.Regtest, NetworkConstants.Signet
+        NetworkConstants.Mainnet, NetworkConstants.Testnet, NetworkConstants.Testnet4, NetworkConstants.Regtest,
+        NetworkConstants.Signet
     ];
 
     [Theory]
@@ -40,6 +41,38 @@ public class NBitcoinNetworkResolverTests
                      resolved.GenesisHash.ToString());
     }
 
+    [Fact]
+    public void Given_Testnet4_When_Resolved_Then_ItIsNBitcoinTestnet4WithTheBip94Genesis()
+    {
+        // Act
+        var resolved = NBitcoinNetworkResolver.Resolve(NetworkConstants.Testnet4);
+
+        // Assert (NL-012): its own genesis block, not testnet3's
+        Assert.Same(NBitcoin.Bitcoin.Instance.Testnet4, resolved);
+        Assert.NotSame(Network.TestNet, resolved);
+        Assert.Equal("00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043",
+                     resolved.GenesisHash.ToString());
+    }
+
+    [Fact]
+    public void Given_Testnet4_When_DerivingAddresses_Then_TheyAreBech32TbAndValidOnTestnet3()
+    {
+        // Arrange
+        var network = BitcoinNetwork.Testnet4.ToNBitcoinNetwork();
+        var pubKey = new Key(Convert.FromHexString("0101010101010101010101010101010101010101010101010101010101010101"))
+           .PubKey;
+
+        // Act
+        var p2Wpkh = pubKey.GetAddress(ScriptPubKeyType.Segwit, network).ToString();
+        var p2Tr = pubKey.GetAddress(ScriptPubKeyType.TaprootBIP86, network).ToString();
+
+        // Assert
+        Assert.StartsWith("tb1q", p2Wpkh);
+        Assert.StartsWith("tb1p", p2Tr);
+        Assert.Equal(p2Wpkh, BitcoinAddress.Create(p2Wpkh, Network.TestNet).ToString());
+        Assert.Equal(p2Wpkh, BitcoinAddress.Create(p2Wpkh, network).ToString());
+    }
+
     [Theory]
     [InlineData("mutinynet")]
     [InlineData("MUTINYNET")]
@@ -56,7 +89,7 @@ public class NBitcoinNetworkResolverTests
 
     [Theory]
     [InlineData("unknown-net")]
-    [InlineData("testnet4")]
+    [InlineData("testnet5")]
     [InlineData("")]
     public void Given_UnknownNetwork_When_Resolved_Then_ItThrowsInsteadOfFallingBackToMainnet(string name)
     {

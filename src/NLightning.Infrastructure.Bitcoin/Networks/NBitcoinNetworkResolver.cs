@@ -12,7 +12,8 @@ using Domain.Protocol.ValueObjects;
 /// <remarks>
 /// A custom signet (Mutinynet or any registered with <see cref="BitcoinNetwork.RegisterCustomSignet"/>) maps to
 /// NBitcoin's signet: the same genesis block, <c>tb</c> addresses and testnet key versions. NBitcoin's signet carries
-/// the default block challenge, which only matters for validating blocks; we let bitcoind do that.
+/// the default block challenge, which only matters for validating blocks; we let bitcoind do that. Testnet4 maps to
+/// NBitcoin's testnet4 (BIP 94 genesis, <c>tb</c> addresses, testnet key versions; NL-012).
 /// </remarks>
 public static class NBitcoinNetworkResolver
 {
@@ -26,6 +27,7 @@ public static class NBitcoinNetworkResolver
         {
             NetworkConstants.Mainnet => Network.Main,
             NetworkConstants.Testnet => Network.TestNet,
+            NetworkConstants.Testnet4 => NBitcoin.Bitcoin.Instance.Testnet4,
             NetworkConstants.Regtest => Network.RegTest,
             NetworkConstants.Signet => NBitcoin.Bitcoin.Instance.Signet,
             _ when network.IsSignet => NBitcoin.Bitcoin.Instance.Signet,

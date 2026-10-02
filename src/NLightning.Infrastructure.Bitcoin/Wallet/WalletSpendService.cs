@@ -235,7 +235,8 @@ public sealed class WalletSpendService : IWalletSpendService
             // Tell the operator which network the address belongs to
             foreach (var other in new[]
                      {
-                         Network.Main, Network.TestNet, Network.RegTest, NBitcoin.Bitcoin.Instance.Signet
+                         Network.Main, Network.TestNet, NBitcoin.Bitcoin.Instance.Testnet4, Network.RegTest,
+                         NBitcoin.Bitcoin.Instance.Signet
                      })
             {
                 if (other == network)
