@@ -8,7 +8,7 @@ using Fixtures;
 using Utils;
 
 /// <summary>
-/// BOLT 7 plan Proof G3 (gossip sync and relay) against LND 0.20 and a second NLightning node: (a) connected only to
+/// BOLT 7 plan Proof G3 (gossip sync and relay) against LND 0.21 and a second NLightning node: (a) connected only to
 /// bob, who is not a channel peer, our node syncs the fixture's graph by queries (<c>query_channel_range</c> sent,
 /// <c>reply_channel_range</c> received, the channels announced before our first <c>gossip_timestamp_filter</c>) within
 /// 60 s; (b) while our node is down carol changes her fee on bob-carol, the restarted node reloads the old graph before

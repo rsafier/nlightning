@@ -37,7 +37,7 @@ public class FeeUpdateFlowTests : IAsyncLifetime
 {
     private const uint OpeningFeeratePerKw = 10_000;
 
-    /// <summary>LND 0.20 asks for a <c>to_self_delay</c> that grows with the capacity; accept it (see AbcdNetwork; not
+    /// <summary>LND 0.21 asks for a <c>to_self_delay</c> that grows with the capacity; accept it (see AbcdNetwork; not
     /// needed since NL-550, kept as proven).</summary>
     private const ushort ToSelfDelay = 240;
 
@@ -285,7 +285,9 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         {
             var ours = (await node.ListChannelsAsync(ct)).Channels.FirstOrDefault(c => c.ChannelId == channelId);
             var theirs = await LndTestHelpers.GetChannelByPointAsync(lnd, channelPoint, ct);
-            if (ours is not null && ours.IsUsable() && theirs is { Active: true })
+            // LND's router also needs the edge before it sends over the channel (NL-768)
+            if (ours is not null && ours.IsUsable() && theirs is { Active: true }
+             && await LndTestHelpers.HasOwnChannelEdgeAsync(lnd, theirs.ChanId, ct))
                 return true;
 
             await ChainSync.MineAndWaitAsync(_fixture, 1, [lnd], [node], ct);

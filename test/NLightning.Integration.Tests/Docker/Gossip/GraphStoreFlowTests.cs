@@ -14,7 +14,7 @@ using Fixtures;
 using Utils;
 
 /// <summary>
-/// BOLT 7 plan Proof G2 (validation and graph store) against LND 0.20: (a) connected to alice, our graph gets the
+/// BOLT 7 plan Proof G2 (validation and graph store) against LND 0.21: (a) connected to alice, our graph gets the
 /// fixture's LND-LND channels with both policies and the alice, bob and carol node announcements; (b) they are still
 /// there after a restart before any connection; (c) a public channel closed cooperatively is marked spent one block
 /// after the close, still stored (and spent) 70 blocks after the spend, and removed 72 blocks after it; (d) with

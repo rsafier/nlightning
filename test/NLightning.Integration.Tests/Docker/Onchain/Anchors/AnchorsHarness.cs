@@ -43,7 +43,7 @@ using Utils;
 /// on-chain executor persists (<c>ChannelCloses</c>, <c>OutputResolutions</c>), never the O7 services themselves
 /// (<c>IFeeInputSelector</c>, <c>IAnchorCpfpService</c>, the resolvers' anchors paths), so they hold whatever shape
 /// those take. The CPFP child is found as the mempool transaction that spends our anchor.</para>
-/// <para>LND 0.20 negotiates anchors by default. An LND node keeps an on-chain reserve for the fee bumping of its
+/// <para>LND 0.21 negotiates anchors by default. An LND node keeps an on-chain reserve for the fee bumping of its
 /// anchors channels, so <see cref="EnsureLndWalletFundedAsync"/> gives the peer coins before an open.</para>
 /// </remarks>
 internal sealed class AnchorsHarness

@@ -549,7 +549,7 @@ Register it in the layer's `DependencyInjection.cs` (`AddApplicationServices`, `
 
 *Counts are executed test cases from `dotnet test` on `wip/fafo` @ `1a38360` (2146 non-Docker in total).
 
-Docker E2E: `test/NLightning.Integration.Tests/Fixtures/LightningRegtestNetworkFixture.cs` builds the image from `test/Docker/custom_lnd` (lnd v0.20.0-beta) and starts containers named miner/alice/bob/carol, **force-removing any existing containers with those names**. Run with `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Docker"`. Inbound tests use `HOST_ADDRESS` (default `host.docker.internal`).
+Docker E2E: `test/NLightning.Integration.Tests/Fixtures/LightningRegtestNetworkFixture.cs` runs the image `custom_lnd:0.21.4-beta` built from `test/Docker/custom_lnd` (lnd v0.21.4-beta since NL-768, v0.20.0-beta before; built only when the tag is missing) and starts containers named miner/alice/bob/carol, **force-removing any existing containers with those names**. Run with `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Docker"`. Inbound tests use `HOST_ADDRESS` (default `host.docker.internal`).
 
 Missing entirely: BOLT 12 tests, BOLT 7 hardening (G5) tests, and HTLC second-stage vector assertions (skipped until NL-056).
 
