@@ -68,7 +68,13 @@ public class MissionControlTests
         Assert.Equal((1_000_000UL, (ulong?)null), (minCd, maxCd));
         Assert.True(missionControl.TryGetBounds(s_scidDe, s_david, s_erin, out var minDe, out _));
         Assert.Equal(1_000_000UL, minDe);
-        Assert.Equal(1.0, Probability(missionControl, s_scidCd, s_carol, s_david, 999_999));
+
+        // The bounds' probability is exact given the decay weight: below the fresh lower bound it is the prior-free
+        // 1.0, a hair under at a 1 h half-life (the unix-seconds age of the seconds the test itself spent, NL-434);
+        // one half-life later it has faded exactly halfway to the 0.6 prior
+        Assert.Equal(1.0, Probability(missionControl, s_scidCd, s_carol, s_david, 999_999), 2);
+        _time.Advance(TimeSpan.FromHours(1));
+        Assert.Equal(0.8, Probability(missionControl, s_scidCd, s_carol, s_david, 999_999), 2);
         Assert.Equal(2, missionControl.ChannelRecordCount);
     }
 
@@ -84,8 +90,19 @@ public class MissionControlTests
         // Assert
         Assert.True(missionControl.TryGetBounds(s_scidDe, s_david, s_erin, out _, out var max));
         Assert.Equal(1_000_000UL, max);
-        Assert.Equal(0.0, Probability(missionControl, s_scidDe, s_david, s_erin, 1_000_000));
-        Assert.True(Probability(missionControl, s_scidDe, s_david, s_erin, 500_000) > 0);
+
+        // The bounds' probability is the exact uniform formula on [0, 1,000,000) once decayed (weight w: half of
+        // the interval is 0.5·w + (1−w)·0.6, the refused amount only the complement (1−w)·0.6 above 0); fresh the
+        // weight is a hair under 1 (the unix-seconds age of the test's own seconds, NL-434: the old `> 0` proved
+        // nothing and an exact 0 flaked on a second boundary under load), and one half-life later both have faded
+        // exactly halfway to the 0.6 prior
+        var half = Probability(missionControl, s_scidDe, s_david, s_erin, 500_000);
+        Assert.Equal(0.5, half, 2);
+        Assert.True(Probability(missionControl, s_scidDe, s_david, s_erin, 1_000_000) < half);
+        _time.Advance(TimeSpan.FromHours(1));
+        Assert.Equal(0.55, Probability(missionControl, s_scidDe, s_david, s_erin, 500_000), 2);
+        Assert.Equal(0.3, Probability(missionControl, s_scidDe, s_david, s_erin, 1_000_000), 2);
+
         Assert.True(missionControl.TryGetBounds(s_scidCd, s_carol, s_david, out var carried, out _));
         Assert.Equal(1_000_000UL, carried);
     }
@@ -102,8 +119,13 @@ public class MissionControlTests
         // Act
         missionControl.RecordFailure(Route(), 0, code);
 
-        // Assert: nothing goes through now; after many half-lives the prior is back
-        Assert.Equal(0.0, Probability(missionControl, s_scidCd, s_carol, s_david, 1));
+        // Assert: at a 10 minutes half-life the fresh bound weighs almost everything, so the unusable channel sits
+        // near 0 and is back at exactly halfway to the prior after one half-life and at the prior after many
+        // (NL-434: the exact fresh read flaked on the unix-seconds boundary under a loaded run)
+        Assert.True(Probability(missionControl, s_scidCd, s_carol, s_david, 1) < 0.05);
+        _time.Advance(TimeSpan.FromMinutes(10));
+        // A loose digit on purpose: the weight of the test's own real seconds may fall a little below 0.5
+        Assert.Equal(0.3, Probability(missionControl, s_scidCd, s_carol, s_david, 1), 1);
         _time.Advance(TimeSpan.FromHours(10));
         Assert.Equal(0.6, Probability(missionControl, s_scidCd, s_carol, s_david, 1), 3);
     }

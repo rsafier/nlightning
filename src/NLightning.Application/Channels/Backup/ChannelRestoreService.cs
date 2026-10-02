@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -120,6 +119,7 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
     private readonly ConcurrentDictionary<ChannelId, SpliceWait> _spliceWaits = new();
     private readonly IBlockchainMonitor? _blockchainMonitor;
     private readonly Lock _spliceWaitGate = new();
+    private readonly TimeProvider _timeProvider;
     private Task? _resume;
     private Task? _spliceWaitRound;
     private bool _spliceWaitRoundRequested;
@@ -159,7 +159,8 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                  IGraphStore? graphStore = null,
                                  IChannelMemoryRepository? channelMemoryRepository = null,
                                  IChannelFundingKeySource? fundingKeySource = null,
-                                 IChannelLockProvider? channelLockProvider = null)
+                                 IChannelLockProvider? channelLockProvider = null,
+                                 TimeProvider? timeProvider = null)
     {
         _graphStore = graphStore;
         _fundingKeySource = fundingKeySource ?? new SignerChannelFundingKeySource(signer);
@@ -187,6 +188,7 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
         _blockchainMonitor = outpointWatcher as IBlockchainMonitor;
         if (_blockchainMonitor is not null)
             _blockchainMonitor.OnNewBlockDetected += HandleNewBlock;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>Stops the background spend searches and reconnections.</summary>
@@ -1390,12 +1392,12 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
         // The restore holds its lock while it connects: the first address is always tried, the next ones only within
         // ConnectBudget; those left go to the background reconnection at once
         var errors = new List<string>(addresses.Count);
-        var started = Stopwatch.StartNew();
+        var started = _timeProvider.GetUtcNow();
         var tried = 0;
         foreach (var address in addresses)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (tried > 0 && started.Elapsed >= ConnectBudget)
+            if (tried > 0 && _timeProvider.GetUtcNow() - started >= ConnectBudget)
                 break;
 
             tried++;
