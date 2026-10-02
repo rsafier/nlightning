@@ -36,12 +36,21 @@ public class DualFundSafetyTests
         // Pump with Bob's TxSignatures never delivered, until Alice's own tx_signatures is in the
         // transcript: one pump pass can stop at Bob's outbox head before the scheduler flushed
         // Alice's signature under load, so the transcript check is awaited on the pump, not raced (NL-512)
-        await WaitFor.TrueAsync(async () =>
+        try
         {
-            await harness.PumpAsync((from, message) => from == "Bob" && message is TxSignaturesMessage);
-            return harness.Transcript.Any(t => t is { From: "Alice", Message: TxSignaturesMessage });
-        }, TimeSpan.FromSeconds(30), "alice's tx_signatures (she signs first, IT-SIG-01)",
-                                  TestContext.Current.CancellationToken);
+            await WaitFor.TrueAsync(async () =>
+            {
+                await harness.PumpAsync((from, message) => from == "Bob" && message is TxSignaturesMessage);
+                return harness.Transcript.Any(t => t is { From: "Alice", Message: TxSignaturesMessage });
+            }, TimeSpan.FromSeconds(30), "alice's tx_signatures (she signs first, IT-SIG-01)",
+                                      TestContext.Current.CancellationToken);
+        }
+        catch (TimeoutException e)
+        {
+            System.IO.File.WriteAllText("/tmp/nl512-transcript.txt",
+                                        $"{e.Message}\n\n{harness.Describe()}");
+            throw;
+        }
         Assert.Contains(harness.Transcript, t => t is { From: "Alice", Message: TxSignaturesMessage });
         var channelId = SingleChannel(harness.Alice);
 
