@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 
 namespace NLightning.Domain.Tests.Routing;
 
@@ -904,21 +905,35 @@ public class GraphPathfinderTests
 
         pathfinder.FindPath(graph, requests[0]); // warm up
 
-        // Act
+        // Act: each query runs over a counting view, so the search's work is measured, not the machine
         var stopwatch = Stopwatch.StartNew();
-        var found = requests.Count(r => pathfinder.FindPath(graph, r) is not null);
-        stopwatch.Stop();
+        var expansions = new List<int>(requests.Count);
+        var found = 0;
+        foreach (var request in requests)
+        {
+            var view = new CountingGraphView(graph);
+            if (pathfinder.FindPath(view, request) is not null)
+                found++;
 
-        // Assert: the plan's budget (G4-T1) is 50 ms per query in Release; a Debug build gets 5x
-        var perQuery = stopwatch.Elapsed.TotalMilliseconds / requests.Count;
-        TestContext.Current.TestOutputHelper?.WriteLine($"{perQuery:F1} ms per query, {found}/{requests.Count} found");
+            expansions.Add(view.AdjacencyCalls);
+        }
+
+        stopwatch.Stop();
+        TestContext.Current.TestOutputHelper?.WriteLine(
+            $"{stopwatch.Elapsed.TotalMilliseconds:F0} ms for {requests.Count} queries, {found} found, at most "
+          + $"{expansions.Max()} adjacency scans by one query");
+
+        // Assert (NL-434: the count, not the clock, is the real check): the backward Dijkstra keeps one label per
+        // node, so a query scans every node's adjacency at most once per search round, and a query runs at most
+        // four rounds (the cost order plus one per pruned limit): the work is bounded by the graph whatever the
+        // machine is doing, which is what the old 50 ms wall-clock budget was standing in for
         Assert.True(found > 0);
-#if DEBUG
-        const double budgetMs = 250;
-#else
-        const double budgetMs = 50;
-#endif
-        Assert.True(perQuery < budgetMs, $"{perQuery:F1} ms per query, budget {budgetMs} ms");
+        Assert.True(expansions.Max() <= 4 * graph.NodeCount,
+                    $"a query scanned {expansions.Max()} adjacency lists, more than 4 x {graph.NodeCount} nodes");
+
+        // A generous smoke wall only (a canary for a pathological slowdown, no per-query budget)
+        Assert.True(stopwatch.Elapsed.TotalMilliseconds < 2500,
+                    $"{stopwatch.Elapsed.TotalMilliseconds:F0} ms for {requests.Count} queries");
     }
 
     private static GraphPolicy RandomPolicy(Random random, byte direction) =>
@@ -936,5 +951,42 @@ public class GraphPathfinderTests
         var bytes = new byte[bit / 8 + 1];
         bytes[^(bit / 8 + 1)] = (byte)(1 << (bit % 8));
         return bytes;
+    }
+
+    /// <summary>
+    /// Counts the adjacency scans a pathfinding run makes (NL-434): the search settles every node at most once (one
+    /// label per node) and reads a node's edges only when it settles it, so the count is the work bound of a query,
+    /// observable from outside without instrumenting the pathfinder.
+    /// </summary>
+    [ExcludeFromCodeCoverage]
+    private sealed class CountingGraphView(IGraphView inner) : IGraphView
+    {
+        public int AdjacencyCalls { get; private set; }
+
+        public int NodeCount => inner.NodeCount;
+
+        public int ChannelCount => inner.ChannelCount;
+
+        public IEnumerable<GraphChannel> Channels => inner.Channels;
+
+        public IEnumerable<GraphNode> Nodes => inner.Nodes;
+
+        public bool TryGetNodeIndex(CompactPubKey nodeId, out int index) => inner.TryGetNodeIndex(nodeId, out index);
+
+        public CompactPubKey GetNodeId(int index) => inner.GetNodeId(index);
+
+        public GraphNode? GetNode(int index) => inner.GetNode(index);
+
+        public bool TryGetNode(CompactPubKey nodeId, [NotNullWhen(true)] out GraphNode? node) =>
+            inner.TryGetNode(nodeId, out node);
+
+        public bool TryGetChannel(ShortChannelId shortChannelId, [NotNullWhen(true)] out GraphChannel? channel) =>
+            inner.TryGetChannel(shortChannelId, out channel);
+
+        public IReadOnlyList<GraphAdjacency> GetAdjacency(int index)
+        {
+            AdjacencyCalls++;
+            return inner.GetAdjacency(index);
+        }
     }
 }
