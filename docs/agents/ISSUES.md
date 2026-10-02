@@ -124,12 +124,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 54 | 57 |
+| open | 0 | 0 | 3 | 55 | 58 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 62 | 164 | 281 | 521 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **171** | **342** | **589** |
+| **Total** | **14** | **62** | **171** | **343** | **590** |
 
 ### Epics
 
@@ -6113,6 +6113,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Evidence:** batch9 integration (2026-10-01, tree `3249b45c`): failed once in the full solution `dotnet test` run (net10.0 Release); green alone 3/3 and in 5 consecutive full runs of the Infrastructure.Bitcoin.Tests project. The test asserts every byte of the extended key handed to the signer is zero after signing; batch9 did not touch the signer or this test (NL-083 pools Sphinx key buffers, a possible but unconfirmed interaction). Message not captured.
 - **Fix sketch:** Capture the assertion message on the next occurrence; check whether a pooled buffer (NL-083 `SphinxKeyGenerator.Rent()`) or another test can share the handed-out array.
 - **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-600 A splice resumed after our restart failed once signing our wallet input ("The signer found no wallet input in the transaction")
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/InteractiveTx/WalletInteractiveTxContributor.cs` (`SignAsync`, line ~348), `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs` (`SignWalletTransaction`)
+- **Evidence:** batch9 integration Docker CLN run (2026-10-01, tree `7e54edb9`): `ClnSpliceReestablishTests.Given_ASpliceCutMidway_*(cut: AfterClnCommitmentSigned, restartOurNode: True)` — after our restart the resumed splice received CLN's `tx_signatures`; `LocalLightningSigner` logged "Transaction bcd9830e… has no wallet input to sign", `SignAsync` threw `InvalidOperationException: The signer found no wallet input in the transaction`, and we sent `warning` "Sorry, we had an internal error" and disconnected. The class passed 11/11 alone right after, and the same case passed in batch8's run. Cause not confirmed: `ReleaseOrphanedReservationsAsync` keeps reservations a stored negotiation holds, so it is not the obvious startup release; a startup ordering where the signer runs before the restarted node's wallet UTXO set (or the reservation's rows) is loaded is a candidate, possibly exposed by NL-108's read-loop change (messages dispatched sooner after connect).
+- **Fix sketch:** Reproduce with the class in a loop; log the reservation id, its outpoints and what the signer's UTXO lookup sees when it returns false; then order the resume after the wallet load or retry the signing once the wallet is loaded.
+- **Blocks/Blocked-by:** Related NL-484 (restart mid-splice), NL-108
 - **Plan ref:** —
 
 ## Docs
