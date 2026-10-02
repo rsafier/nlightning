@@ -76,7 +76,8 @@ using Domain.Onchain.Models;
 /// negated by <see cref="AccountingEventKind.Reversal"/> events (key
 /// <see cref="AccountingEventKeys.Reversal(string, uint)"/>, amount and fee negated, details
 /// <see cref="ReversesKey"/> and <see cref="OriginalKindKey"/>, the shape of the chain monitor's reversals). A fact
-/// written again after its reversal takes the key <see cref="AccountingEventKeys.Reemitted(string, uint)"/>.</para>
+/// written again after its reversal takes its next confirmation key (<see cref="AccountingEventKeys.Reconfirmed"/>,
+/// <see cref="AccountingConfirmations.NextConfirmationKey"/>, the wallet writers' scheme; NL-613).</para>
 /// <para><b>Fee bumps.</b> A resolution's <c>FeeMsat</c> is the whole fee its spender paid out of the output, also when
 /// the spender is an RBF replacement of an earlier sweep (<see cref="IncludesFeeBumpKey"/> = true): the books take the
 /// bump itself out of it against the <see cref="AccountingEventKind.SweepFeeBump"/> of the replacement.</para>
@@ -413,35 +414,28 @@ internal static class OnchainAccounting
     ];
 
     /// <summary>
-    /// The key to write a new fact under: <paramref name="baseKey"/>, or, when a row already holds it (reversed by a
-    /// reorg), <see cref="AccountingEventKeys.Reemitted"/> at <paramref name="height"/>; null when that is taken too
-    /// (the fact is already written).
+    /// The key to write a new fact under (NL-613: the generation scheme of the wallet writers,
+    /// <see cref="AccountingConfirmations.NextConfirmationKey"/>): <paramref name="baseKey"/>, or after its reversal by a
+    /// reorg <see cref="AccountingEventKeys.Reconfirmed"/>(<paramref name="baseKey"/>, 2), 3 and so on; null when a
+    /// confirmation of the fact is written and stands.
     /// </summary>
-    public static async Task<string?> NewKeyAsync(IAccountingEventDbRepository repository, string baseKey, uint height,
+    public static async Task<string?> NewKeyAsync(IAccountingEventDbRepository repository, string baseKey,
                                                   CancellationToken cancellationToken)
     {
-        if (!await repository.ExistsAsync(baseKey, cancellationToken))
-            return baseKey;
-
-        var again = AccountingEventKeys.Reemitted(baseKey, height);
-        return await repository.ExistsAsync(again, cancellationToken) ? null : again;
+        var existing = await repository.GetByKeyPrefixAsync(baseKey, cancellationToken);
+        return AccountingConfirmations.NextConfirmationKey(baseKey, existing);
     }
 
     /// <summary>
-    /// The event of a fact written under <paramref name="baseKey"/> that a block at <paramref name="height"/> holds:
-    /// its re-emission at that height when there is one, else the first row.
+    /// The event of a fact written under <paramref name="baseKey"/> that a block at <paramref name="height"/> holds: its
+    /// confirmation at that height when there is one, else its latest standing one, else the first row
+    /// (<see cref="AccountingConfirmations.FindAt"/>).
     /// </summary>
     public static async Task<AccountingEventModel?> FindAsync(IAccountingEventDbRepository repository, string baseKey,
                                                               uint? height, CancellationToken cancellationToken)
     {
-        if (height is { } at)
-        {
-            var again = await repository.GetByKeyAsync(AccountingEventKeys.Reemitted(baseKey, at), cancellationToken);
-            if (again is not null)
-                return again;
-        }
-
-        return await repository.GetByKeyAsync(baseKey, cancellationToken);
+        var existing = await repository.GetByKeyPrefixAsync(baseKey, cancellationToken);
+        return AccountingConfirmations.FindAt(baseKey, height, existing);
     }
 
     /// <summary>
@@ -452,7 +446,8 @@ internal static class OnchainAccounting
                                                       AccountingEventModel original, uint height,
                                                       DateTimeOffset occurredAt, CancellationToken cancellationToken)
     {
-        var key = AccountingEventKeys.Reversal(original.EventKey, height);
+        // Keyed by the original's own block, as AccountingConfirmations.IsReversed reads it
+        var key = AccountingEventKeys.Reversal(original.EventKey, original.BlockHeight ?? height);
         if (key.Length > AccountingEventKeys.MaxLength || await repository.ExistsAsync(key, cancellationToken))
             return false;
 
@@ -461,7 +456,7 @@ internal static class OnchainAccounting
             EventKey = key,
             Kind = AccountingEventKind.Reversal,
             OccurredAt = occurredAt,
-            BlockHeight = height,
+            BlockHeight = original.BlockHeight ?? height,
             ChannelId = original.ChannelId,
             ShortChannelId = original.ShortChannelId,
             PaymentHash = original.PaymentHash,

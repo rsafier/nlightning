@@ -29,6 +29,10 @@ public static class AccountingConfirmations
     /// <summary>The key suffix of a reversal of a fact the feed never recorded.</summary>
     private const string UnrecordedKeySuffix = ":unrecorded";
 
+    /// <summary>The infix of the on-chain resolution writers' former re-emission keys (<c>{key}:re:{height}</c>, written
+    /// before NL-613): a feed may still hold them, and they count as confirmations of their fact.</summary>
+    private const string LegacyReemittedInfix = ":re:";
+
     /// <summary>
     /// Whether <paramref name="accountingEvent"/> was reversed: <paramref name="eventKeys"/> (the keys of the feed
     /// around it) hold its reversal.
@@ -57,6 +61,12 @@ public static class AccountingConfirmations
         ArgumentNullException.ThrowIfNull(existing);
 
         var keys = existing.Select(e => e.EventKey).ToHashSet(StringComparer.Ordinal);
+
+        // NL-613: a re-emission written under the former height key that still stands is the fact's confirmation
+        if (existing.Any(e => e.Kind != AccountingEventKind.Reversal && IsLegacyReemission(baseKey, e.EventKey)
+                           && !IsReversed(e, keys)))
+            return null;
+
         for (var generation = 1; ; generation++)
         {
             var key = generation == 1 ? baseKey : AccountingEventKeys.Reconfirmed(baseKey, generation);
@@ -69,6 +79,78 @@ public static class AccountingConfirmations
             if (recorded.Any(e => !IsReversed(e, keys)))
                 return null;
         }
+    }
+
+    /// <summary>
+    /// The latest confirmation of the fact named by <paramref name="baseKey"/> that still stands (not reversed), or null:
+    /// what a reorg's rewind reverses.
+    /// </summary>
+    /// <param name="baseKey">The fact's key (its first confirmation's).</param>
+    /// <param name="existing">Every event whose key starts with <paramref name="baseKey"/>, as for
+    /// <see cref="NextConfirmationKey"/>.</param>
+    public static AccountingEventModel? FindStanding(string baseKey, IReadOnlyCollection<AccountingEventModel> existing)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(baseKey);
+        ArgumentNullException.ThrowIfNull(existing);
+
+        var keys = existing.Select(e => e.EventKey).ToHashSet(StringComparer.Ordinal);
+        return existing.Where(e => e.Kind != AccountingEventKind.Reversal && IsConfirmationKey(baseKey, e.EventKey)
+                                && !IsReversed(e, keys))
+                       .OrderBy(e => e.BlockHeight)
+                       .LastOrDefault();
+    }
+
+    /// <summary>
+    /// The latest confirmation of the fact named by <paramref name="baseKey"/> at <paramref name="height"/> (reversed or
+    /// not), else its latest standing one, else its first: the event a block at that height recorded.
+    /// </summary>
+    public static AccountingEventModel? FindAt(string baseKey, uint? height,
+                                               IReadOnlyCollection<AccountingEventModel> existing)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(baseKey);
+        ArgumentNullException.ThrowIfNull(existing);
+
+        var confirmations = existing.Where(e => e.Kind != AccountingEventKind.Reversal
+                                             && IsConfirmationKey(baseKey, e.EventKey))
+                                    .ToList();
+        return (height is { } at ? confirmations.LastOrDefault(e => e.BlockHeight == at) : null)
+            ?? FindStanding(baseKey, confirmations)
+            ?? confirmations.FirstOrDefault(e => string.Equals(e.EventKey, baseKey, StringComparison.Ordinal));
+    }
+
+    /// <summary>Whether <paramref name="eventKey"/> names a confirmation of the fact <paramref name="baseKey"/>: the key
+    /// itself, a <see cref="AccountingEventKeys.Reconfirmed"/> generation or a former re-emission (NL-613).</summary>
+    public static bool IsConfirmationKey(string baseKey, string eventKey)
+    {
+        ArgumentNullException.ThrowIfNull(baseKey);
+        ArgumentNullException.ThrowIfNull(eventKey);
+
+        if (string.Equals(eventKey, baseKey, StringComparison.Ordinal))
+            return true;
+        if (!eventKey.StartsWith(baseKey, StringComparison.Ordinal))
+            return false;
+
+        var rest = eventKey.AsSpan(baseKey.Length);
+        return (rest.Length > 2 && rest.StartsWith(":c") && IsDigits(rest[2..]))
+            || IsLegacyReemission(baseKey, eventKey);
+    }
+
+    private static bool IsLegacyReemission(string baseKey, string eventKey)
+    {
+        if (!eventKey.StartsWith(baseKey, StringComparison.Ordinal))
+            return false;
+
+        var rest = eventKey.AsSpan(baseKey.Length);
+        return rest.Length > LegacyReemittedInfix.Length && rest.StartsWith(LegacyReemittedInfix)
+                                                         && IsDigits(rest[LegacyReemittedInfix.Length..]);
+    }
+
+    private static bool IsDigits(ReadOnlySpan<char> text)
+    {
+        foreach (var c in text)
+            if (c is < '0' or > '9')
+                return false;
+        return text.Length > 0;
     }
 
     /// <summary>

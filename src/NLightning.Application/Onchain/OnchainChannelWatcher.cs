@@ -414,7 +414,7 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                 return;
 
             var key = await OnchainAccounting.NewKeyAsync(
-                          accounting, AccountingEventKeys.ChannelForceClosed(channel.ChannelId, spend.TxId), height,
+                          accounting, AccountingEventKeys.ChannelForceClosed(channel.ChannelId, spend.TxId),
                           CancellationToken.None);
             if (key is null)
                 return;

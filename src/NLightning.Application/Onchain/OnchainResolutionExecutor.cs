@@ -1088,7 +1088,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                                                                                      row.OutputIndex),
                     _ => AccountingEventKeys.OutputResolved(row.TransactionId, row.OutputIndex)
                 };
-                var eventKey = await OnchainAccounting.NewKeyAsync(accounting, baseEventKey, spent.BlockHeight,
+                var eventKey = await OnchainAccounting.NewKeyAsync(accounting, baseEventKey,
                                                                    cancellationToken);
                 if (eventKey is null)
                     continue;

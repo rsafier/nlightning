@@ -397,10 +397,7 @@ public partial class BlockchainMonitorService
         IAccountingEventDbRepository repository, string baseKey)
     {
         var events = await repository.GetByKeyPrefixAsync(baseKey);
-        var keys = events.Select(e => e.EventKey).ToHashSet(StringComparer.Ordinal);
-        return events.Where(e => e.Kind != AccountingEventKind.Reversal && !AccountingConfirmations.IsReversed(e, keys)
-                              && (e.EventKey == baseKey || e.EventKey.StartsWith(baseKey + ":c", StringComparison.Ordinal)))
-                     .MaxBy(e => e.BlockHeight);
+        return AccountingConfirmations.FindStanding(baseKey, events);
     }
 
     private AccountingEventModel NewOnchainEvent(string key, AccountingEventKind kind, uint height, TxId txId,

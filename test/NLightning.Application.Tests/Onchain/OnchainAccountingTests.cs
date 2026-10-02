@@ -572,10 +572,10 @@ public sealed class OnchainAccountingTests : IDisposable
         var count = _store.Events.Count;
         await MineSpendAsync(executor, sweep, commitment.TxId, toLocal.OutputIndex, SpendHeight + 153);
 
-        // Assert: recorded again under its re-emission key
+        // Assert: recorded again under its next confirmation key (NL-613, the wallet writers' scheme)
         Assert.Equal(count + 1, _store.Events.Count);
         var again = _store.Events[^1];
-        Assert.Equal(AccountingEventKeys.Reemitted(resolved.EventKey, SpendHeight + 153), again.EventKey);
+        Assert.Equal(AccountingEventKeys.Reconfirmed(resolved.EventKey, 2), again.EventKey);
         Assert.Equal(resolved.AmountMsat, again.AmountMsat);
         Assert.Equal(Msat(_store.Events[0], OnchainAccounting.PendingKey) - ValueMsat(toLocal), PendingBalance());
 
@@ -589,6 +589,41 @@ public sealed class OnchainAccountingTests : IDisposable
         var reversalEntry = books.Entry(reversal.EventKey)!;
         Assert.Equal(books.Entry(resolved.EventKey)!.Postings.Select(p => (p.Account, -p.AmountMsat)),
                      reversalEntry.Postings.Select(p => (p.Account, p.AmountMsat)));
+    }
+
+    [Fact]
+    public async Task Given_AResolutionReorgedBackToTheSameHeightTwice_When_ItReconfirms_Then_EachConfirmationIsRecorded()
+    {
+        // Arrange (NL-613): our to_local sweep resolved the output at SpendHeight + 150
+        var local = _pair.Alice.State.LocalCommit;
+        var commitment = BuildCommitment(CommitmentSide.Local, local.Spec, local.Number, null);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        var toLocal = Row(OutputDescriptorKind.DelayedToLocal);
+        var executor = CreateExecutor();
+        var sweep = Stored(Spend([(commitment.TxId, toLocal.OutputIndex)], Sat(toLocal) - 500), BroadcastPurpose.Sweep);
+        await MineSpendAsync(executor, sweep, commitment.TxId, toLocal.OutputIndex, SpendHeight + 150);
+        var resolved = _store.Events[^1];
+
+        // Act: twice, a reorg rolls the spend back and the sweep confirms again at the same height
+        for (var round = 0; round < 2; round++)
+        {
+            _store.Watches[(commitment.TxId, toLocal.OutputIndex)].ClearSpend();
+            await executor.RunRoundAsync(SpendHeight + 151, TestContext.Current.CancellationToken);
+            await MineSpendAsync(executor, sweep, commitment.TxId, toLocal.OutputIndex, SpendHeight + 150);
+        }
+
+        // Assert: three confirmations under their generation keys, the first two reversed, the pending bucket as after
+        // one sweep (a height key collided here: the third confirmation was never recorded)
+        var confirmations = _store.Events.Where(e => e.Kind == AccountingEventKind.OutputResolved).ToList();
+        Assert.Equal([resolved.EventKey, AccountingEventKeys.Reconfirmed(resolved.EventKey, 2),
+                      AccountingEventKeys.Reconfirmed(resolved.EventKey, 3)],
+                     confirmations.Select(e => e.EventKey));
+        Assert.Equal(2, _store.Events.Count(e => e.Kind == AccountingEventKind.Reversal));
+        Assert.Equal(Msat(_store.Events[0], OnchainAccounting.PendingKey) - ValueMsat(toLocal), PendingBalance());
+        var books = BooksSimulator.Of(_store.Events);
+        Assert.Equal(PendingBalance(), books[AccountRole.Pending]);
+        Assert.Equal(resolved.AmountMsat, books[AccountRole.Clearing]);
+        Assert.Equal(resolved.FeeMsat, books[AccountRole.FeeSweep]);
     }
 
     [Fact]
