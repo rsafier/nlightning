@@ -80,7 +80,7 @@ using Resolvers.Local;
 /// <see cref="IBitcoinChainService.GetUnspentOutputAsync"/>, mempool included; without a chain service the peer's,
 /// and ours only when no child was ever made) are swept to a wallet address with empty
 /// signatures when <see cref="AnchorCpfpPolicy.DecideAnchorSweep"/> says it pays for itself, else skipped (logged).
-/// The sweep is planned once per commitment and process, stored as a <see cref="BroadcastPurpose.Sweep"/> row with its
+/// The sweep is planned once per commitment and process, stored as a <see cref="BroadcastPurpose.AnchorSweep"/> row with its
 /// fee in the round's save (NL-611: the resolution of our anchor is then booked as ours), then published; anyone may
 /// take those outputs first, so a refused send marks the row abandoned and is not retried.</para>
 /// <para>Package relay (NL-380): a commitment below bitcoind's mempool minimum fee (a fee spike after the last
@@ -1299,7 +1299,8 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         // NL-611: stored as a Sweep row with its fee (saved before it is published), so the resolution of our anchor
         // is booked as ours, not as taken by the peer
         return new BroadcastTransactionModel(_builder.BuildAnchorSweep(anchors, destination, decision.FeeSat),
-                                             BroadcastPurpose.Sweep, channel.ChannelId, height, decision.FeeratePerKw,
+                                             BroadcastPurpose.AnchorSweep, channel.ChannelId, height,
+                                             decision.FeeratePerKw,
                                              fee: LightningMoney.Satoshis(decision.FeeSat));
     }
 
@@ -1636,7 +1637,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
         public bool Release { get; set; }
 
-        /// <summary>The anchor sweep, a <see cref="BroadcastPurpose.Sweep"/> row stored in the round's save (NL-611).
+        /// <summary>The anchor sweep, a <see cref="BroadcastPurpose.AnchorSweep"/> row stored in the round's save (NL-611).
         /// </summary>
         public BroadcastTransactionModel? Sweep { get; set; }
     }

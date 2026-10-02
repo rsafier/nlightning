@@ -90,11 +90,11 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         _memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
                .Returns((Func<ChannelModel, bool> predicate) => predicate(_channel) ? [_channel] : []);
         _monitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(500);
-        // NL-611: an anchor sweep is a stored Sweep row published like a child; the tests keep it apart
+        // NL-611: an anchor sweep is a stored AnchorSweep row published like a child; the tests keep it apart
         _monitor.Setup(m => m.PublishAsync(It.IsAny<BroadcastTransactionModel>()))
                 .Callback<BroadcastTransactionModel>(row =>
                  {
-                     if (row.Purpose == BroadcastPurpose.Sweep)
+                     if (row.Purpose == BroadcastPurpose.AnchorSweep)
                          _sweeps.Add(row.ToSignedTransaction());
                      else
                          _published.Add(row);
@@ -729,8 +729,8 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         Assert.Equal(_walletScript, sweep.Outputs.Single().ScriptPubKey.ToBytes());
         Assert.Empty(_store.Children);
 
-        // NL-611: the sweep was stored as a Sweep row of the channel, with its fee, before it was published
-        var row = Assert.Single(_store.Rows, r => r.Purpose == BroadcastPurpose.Sweep);
+        // NL-611: the sweep was stored as an AnchorSweep row of the channel, with its fee, before it was published
+        var row = Assert.Single(_store.Rows, r => r.Purpose == BroadcastPurpose.AnchorSweep);
         Assert.Equal(new TxId(sweep.GetHash().ToBytes()), row.TransactionId);
         Assert.Equal(_channel.ChannelId, row.ChannelId);
         Assert.Equal(BroadcastState.Pending, row.State);
@@ -745,7 +745,7 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         var commitment = BroadcastCommitment();
         commitment.MarkConfirmed(500, OnchainTestStore.BlockHash(1));
         _estimate = 253;
-        _monitor.Setup(m => m.PublishAsync(It.Is<BroadcastTransactionModel>(r => r.Purpose == BroadcastPurpose.Sweep)))
+        _monitor.Setup(m => m.PublishAsync(It.Is<BroadcastTransactionModel>(r => r.Purpose == BroadcastPurpose.AnchorSweep)))
                 .Callback<BroadcastTransactionModel>(r => _sweeps.Add(r.ToSignedTransaction()))
                 .ReturnsAsync(false);
 
@@ -756,7 +756,7 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         // Assert
         Assert.Single(_sweeps);
         Assert.Equal(BroadcastState.Abandoned,
-                     Assert.Single(_store.Rows, r => r.Purpose == BroadcastPurpose.Sweep).State);
+                     Assert.Single(_store.Rows, r => r.Purpose == BroadcastPurpose.AnchorSweep).State);
     }
 
     [Fact]

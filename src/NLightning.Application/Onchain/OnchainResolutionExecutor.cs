@@ -1074,7 +1074,12 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                                 ? OnchainAccounting.Ours(row, valueMsat, counted, spender, outputs,
                                                          broadcast?.Purpose == BroadcastPurpose.HtlcTransaction,
                                                          // NL-611: a stored sweep's other inputs (the peer's anchor)
-                                                         broadcast is { Purpose: BroadcastPurpose.Sweep, Fee: { } fee }
+                                                         broadcast is
+                                                         {
+                                                             Purpose: BroadcastPurpose.Sweep
+                                                                   or BroadcastPurpose.AnchorSweep,
+                                                             Fee: { } fee
+                                                         }
                                                              ? checked((long)fee.MilliSatoshi)
                                                              : null)
                                 : OnchainAccounting.Lost(valueMsat, counted, AccountingDetailKeys.ResolvedByPeer);
