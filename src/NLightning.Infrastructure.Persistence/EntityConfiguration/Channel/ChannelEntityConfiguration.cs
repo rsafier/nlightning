@@ -77,6 +77,9 @@ public static class ChannelEntityConfiguration
                   .HasConversion<TxIdConverter>()
                   .IsRequired(false);
             entity.Property(e => e.ClosingTransaction).IsRequired(false);
+            // NL-610 (migration AddMutualCloseTerms)
+            entity.Property(e => e.CloseProtocol).IsRequired(false);
+            entity.Property(e => e.LocalIsCloser).IsRequired(false);
             entity.Property(e => e.RemoteAnnouncementNodeSig).IsRequired(false);
             entity.Property(e => e.RemoteAnnouncementBitcoinSig).IsRequired(false);
             entity.Property(e => e.LocalAnnouncementSigsSentAt)

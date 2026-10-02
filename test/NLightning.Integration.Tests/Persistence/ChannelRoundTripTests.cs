@@ -455,6 +455,7 @@ public class ChannelRoundTripTests
         channel.SetFirstRemoteHtlcIdAfterLocalShutdown(0x1_0000_0007UL); // NL-279
         channel.SetClosingTransaction(new SignedTransaction(new TxId(Enumerable.Repeat((byte)0x5c, 32).ToArray()),
                                                             [0x02, 0x00, 0x00, 0x00, 0x01]));
+        channel.SetCloseTerms(MutualCloseProtocol.Simple, true); // NL-610
         // Announcement state (BOLT 7 plan G1, migration AddGossipGraph)
         channel.SetRemoteAnnouncementSignatures(
             new ChannelAnnouncementSignatures(new CompactSignature(Enumerable.Repeat((byte)0x41, 64).ToArray()),
@@ -531,6 +532,8 @@ public class ChannelRoundTripTests
         Assert.NotNull(actual.ClosingTransaction);
         Assert.Equal(expected.ClosingTransaction!.TxId, actual.ClosingTransaction.TxId);
         Assert.Equal(expected.ClosingTransaction.RawTxBytes, actual.ClosingTransaction.RawTxBytes);
+        Assert.Equal(expected.CloseProtocol, actual.CloseProtocol);
+        Assert.Equal(expected.LocalIsCloser, actual.LocalIsCloser);
 
         // Announcement state (BOLT 7 plan G1)
         Assert.Equal(expected.AnnounceChannel, actual.AnnounceChannel);

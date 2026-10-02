@@ -246,6 +246,50 @@ public class ClosingLifecycleTests
     }
 
     [Fact]
+    public async Task Given_ASimpleCloseThePeerClosedWithoutOurDustOutput_When_Confirmed_Then_TheFeeIsNotOurs()
+    {
+        // Arrange (NL-610): the peer funded and closed (option_simple_close); our 400 sat balance was below dust, so
+        // the closing transaction has the peer's output only. Without the recorded terms the lost 400 sat read as a
+        // closing fee we paid
+        var channel = CreateClosingChannel(ChannelState.Closing, LightningMoney.Satoshis(400));
+        var closing = SimpleClose(channel, false, new Script((byte[])channel.RemoteShutdownScript!));
+        channel.SetClosingTransaction(closing);
+        channel.SetCloseTerms(MutualCloseProtocol.Simple, false);
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, closing.TxId));
+
+        // Assert
+        await WaitUntilAsync(() => channel.State == ChannelState.Closed);
+        var closed = Assert.Single(_accountingEvents);
+        Assert.Equal(-400_000, closed.AmountMsat);
+        Assert.Equal("false", closed.Details["feePaidByUs"]);
+        Assert.False(closed.Details.ContainsKey("feePayerInferred"));
+        Assert.Equal("simple", closed.Details["closeProtocol"]);
+        Assert.Equal("peer", closed.Details["closer"]);
+    }
+
+    [Fact]
+    public void Given_MutualClosesFoundOnChain_When_TheirTermsAreRead_Then_ProtocolFromTheShapeAndCloserFromOurOutput()
+    {
+        // Arrange (NL-610): our whole 1,000,000 sat balance; a legacy close, and a simple close paying us 600,000 sat
+        var channel = CreateClosingChannel(ChannelState.Closing);
+
+        // Act
+        var legacy = ChannelManager.CloseTermsOf(channel, MutualClose(channel));
+        var simple = ChannelManager.CloseTermsOf(channel, SimpleClose(channel, true, new Script([0x51])));
+        var withoutOurs = ChannelManager.CloseTermsOf(channel, SimpleClose(channel, false, new Script([0x51])));
+
+        // Assert
+        Assert.Equal((MutualCloseProtocol.Legacy, (bool?)null), legacy);
+        Assert.Equal((MutualCloseProtocol.Simple, (bool?)true), simple);
+        Assert.Equal((MutualCloseProtocol.Simple, (bool?)null), withoutOurs);
+    }
+
+    [Fact]
     public async Task Given_ClosingAtStartupWithCompletedWatch_When_Registered_Then_OneMutualCloseEventAtTheWatchHeight()
     {
         // Arrange

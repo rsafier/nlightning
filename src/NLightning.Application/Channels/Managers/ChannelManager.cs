@@ -1000,6 +1000,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 channelId, Enum.GetName(channel.State), spend.TxId,
                 channel.ClosingTransaction?.TxId.ToString() ?? "none");
             channel.SetClosingTransaction(spend);
+            // NL-610: the protocol from the transaction's shape; the closer of a simple close from our output
+            var (protocol, localIsCloser) = CloseTermsOf(channel, spend);
+            channel.SetCloseTerms(protocol, localIsCloser);
             if (channel.State < ChannelState.Closing)
                 channel.UpdateState(ChannelState.Closing);
             await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
@@ -1064,6 +1067,45 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             var script = o.ScriptPubKey.ToBytes();
             return script.AsSpan().SequenceEqual(local) || script.AsSpan().SequenceEqual(remote);
         });
+    }
+
+    /// <summary>
+    /// The close terms of a mutual close of <paramref name="channel"/> we did not record (NL-610): the protocol from the
+    /// input's sequence (0xFFFFFFFF and lock time 0: legacy; <c>SimpleCloseSequence</c>: simple), and for a simple close
+    /// the closer from our output (the closee's output is exactly its balance in whole satoshis; ours below that means
+    /// we paid the fee; null when we have no output).
+    /// </summary>
+    internal static (MutualCloseProtocol? Protocol, bool? LocalIsCloser) CloseTermsOf(ChannelModel channel,
+                                                                                     SignedTransaction spend)
+    {
+        Transaction transaction;
+        try
+        {
+            transaction = Transaction.Load(spend.RawTxBytes, Network.Main);
+        }
+        catch (Exception)
+        {
+            return (null, null);
+        }
+
+        if (transaction.Inputs.Count != 1)
+            return (null, null);
+
+        var sequence = (uint)transaction.Inputs[0].Sequence;
+        if (sequence == Sequence.Final && transaction.LockTime == LockTime.Zero)
+            return (MutualCloseProtocol.Legacy, null);
+        if (sequence != Infrastructure.Bitcoin.Builders.ClosingTransactionBuilder.SimpleCloseSequence)
+            return (null, null);
+
+        if (channel.LocalShutdownScript is not { } localScript)
+            return (MutualCloseProtocol.Simple, null);
+
+        byte[] local = localScript;
+        var ourOutput = transaction.Outputs.FirstOrDefault(o => o.ScriptPubKey.ToBytes().AsSpan().SequenceEqual(local));
+        return ourOutput is null
+                   ? (MutualCloseProtocol.Simple, null)
+                   : (MutualCloseProtocol.Simple,
+                      (ulong)ourOutput.Value.Satoshi < channel.LocalBalance.MilliSatoshi / 1_000);
     }
 
     /// <summary>Asks the commit scheduler to sign what is pending (it checks the link and D7 itself).</summary>

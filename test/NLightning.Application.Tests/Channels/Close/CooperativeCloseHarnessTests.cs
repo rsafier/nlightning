@@ -65,6 +65,11 @@ public class CooperativeCloseHarnessTests
         Assert.NotNull(aliceSigned[0].FeeRangeTlv);
         var bobSigned = Assert.Single(close.Alice.Received.OfType<ClosingSignedMessage>());
         Assert.Equal(aliceSigned[0].Payload.FeeAmount, bobSigned.Payload.FeeAmount);
+
+        // NL-610: both record the legacy protocol (the funder paid the fee), no closer
+        Assert.Equal(MutualCloseProtocol.Legacy, close.Alice.Channel.CloseProtocol);
+        Assert.Equal(MutualCloseProtocol.Legacy, close.Bob.Channel.CloseProtocol);
+        Assert.Null(close.Alice.Channel.LocalIsCloser);
     }
 
     [Fact]
