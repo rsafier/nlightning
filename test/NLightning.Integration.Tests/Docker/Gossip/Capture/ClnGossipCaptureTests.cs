@@ -1,6 +1,7 @@
 
 namespace NLightning.Integration.Tests.Docker.Gossip.Capture;
 
+using Domain.Bitcoin.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.ValueObjects;
@@ -104,6 +105,8 @@ public sealed class ClnGossipCaptureTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         var node = _node!;
         var cln = _fixture.Cln;
+        // The on-chain reserve we keep as fundee of an anchors channel (NL-379), CLN's default type with us
+        await node.FundWalletAsync(LightningMoney.Satoshis(200_000), AddressType.P2Wpkh, ct);
         await _fixture.FundClnWalletAsync(LightningMoney.Satoshis(2_000_000), [node], ct);
         await node.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(_fixture.ClnAddress)).WaitAsync(ct);
         await Poll.UntilAsync(async () => await cln.IsConnectedAsync(node.NodeIdHex, ct), s_captureTimeout,
