@@ -16,6 +16,8 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -374,71 +376,8 @@ public sealed class AccountingBackfillTests : IAsyncLifetime
         // to_local swept by us, our offered HTLC taken by the peer, our anchor given up, a CPFP child confirmed; and
         // the channel still resolving at the cutover with one output resolved before it and one after
         var node = await SeedNodeAsync();
-        var closed = SqliteDbTestContext.CreateChannel(true, state: ChannelState.Closed, channelTag: 5);
-        closed.ShortChannelId = new ShortChannelId(650, 4, 0);
-
-        var anchorScript = new Key().PubKey.WitHash.ScriptPubKey;
-        var commitment = Network.RegTest.CreateTransaction();
-        commitment.Inputs.Add(new OutPoint(new uint256(closed.FundingOutput!.TransactionId!.Value), 1));
-        commitment.Outputs.Add(Money.Satoshis(578_000), new Key().PubKey.WitHash.ScriptPubKey);
-        commitment.Outputs.Add(Money.Satoshis(20_000), new Key().PubKey.WitHash.ScriptPubKey);
-        commitment.Outputs.Add(Money.Satoshis(330), anchorScript);
-        commitment.Outputs.Add(Money.Satoshis(330), new Key().PubKey.WitHash.ScriptPubKey);
-        commitment.Outputs.Add(Money.Satoshis(400_000), new Key().PubKey.WitHash.ScriptPubKey);
-        var commitmentTxId = new TxId(commitment.GetHash().ToBytes());
-        var sweep = Network.RegTest.CreateTransaction();
-        sweep.Inputs.Add(new OutPoint(commitment.GetHash(), 0));
-        sweep.Outputs.Add(Money.Satoshis(577_000), new Key().PubKey.WitHash.ScriptPubKey);
-        var sweepTxId = new TxId(sweep.GetHash().ToBytes());
-        var child = Network.RegTest.CreateTransaction();
-        child.Inputs.Add(new OutPoint(new uint256(Fill(0x77)), 0));
-        child.Outputs.Add(Money.Satoshis(10_000), new Key().PubKey.WitHash.ScriptPubKey);
-        var childTxId = new TxId(child.GetHash().ToBytes());
-        var close = new ChannelCloseModel(closed.ChannelId, ChannelCloseKind.LocalCommitment, commitmentTxId, 9, 700,
-                                          new Hash(Fill(0x70)), s_cutoverAt.AddDays(-20));
-        var secondLevelOfResolving = new TxId(Fill(0xC1));
-
-        using (var uow = CreateUnitOfWork())
-        {
-            await uow.ChannelDbRepository.AddAsync(closed);
-            var onchain = uow.OnchainResolutionDbRepository;
-            await onchain.UpsertCloseAsync(close);
-            await onchain.UpsertOutputAsync(Row(closed, commitmentTxId, 0, OutputDescriptorKind.DelayedToLocal,
-                                                578_000, OutputResolutionState.Irrevocable) with
-            {
-                ResolvedHeight = 760,
-                ResolvingTransactionId = sweepTxId
-            });
-            await onchain.UpsertOutputAsync(Row(closed, commitmentTxId, 1, OutputDescriptorKind.LocalOfferedHtlc,
-                                                20_000, OutputResolutionState.Irrevocable, HtlcDirection.Outgoing) with
-            {
-                ResolvedHeight = 720
-            });
-            await onchain.UpsertOutputAsync(Row(closed, commitmentTxId, 2, OutputDescriptorKind.OurAnchor, 330,
-                                                OutputResolutionState.Ignored));
-            var resolvedBefore = Row(node.Resolving, secondLevelOfResolving, 4, OutputDescriptorKind.DelayedToLocal,
-                                     9_000, OutputResolutionState.Resolved);
-            await onchain.UpsertOutputAsync(resolvedBefore with { ResolvedHeight = 806 });
-            var resolvedAfter = Row(node.Resolving, secondLevelOfResolving, 5, OutputDescriptorKind.DelayedToLocal,
-                                    7_000, OutputResolutionState.Resolved);
-            await onchain.UpsertOutputAsync(resolvedAfter with { ResolvedHeight = 830 });
-
-            var broadcasts = uow.BroadcastTransactionDbRepository;
-            broadcasts.Add(new BroadcastTransactionModel(new SignedTransaction(commitmentTxId, commitment.ToBytes()),
-                                                         BroadcastPurpose.LocalCommitment, closed.ChannelId, 699,
-                                                         commitmentNumber: 9, fee: LightningMoney.Satoshis(1_340)));
-            broadcasts.Add(new BroadcastTransactionModel(new SignedTransaction(sweepTxId, sweep.ToBytes()),
-                                                         BroadcastPurpose.Sweep, closed.ChannelId, 755,
-                                                         fee: LightningMoney.Satoshis(1_000)));
-            broadcasts.Add(new BroadcastTransactionModel(new SignedTransaction(childTxId, child.ToBytes()),
-                                                         BroadcastPurpose.AnchorCpfp, closed.ChannelId, 699,
-                                                         fee: LightningMoney.Satoshis(2_000)));
-            await uow.SaveChangesAsync();
-            await broadcasts.MarkConfirmedAsync(commitmentTxId, 700, new Hash(Fill(0x70)));
-            await broadcasts.MarkConfirmedAsync(sweepTxId, 760, new Hash(Fill(0x76)));
-            await broadcasts.MarkConfirmedAsync(childTxId, 700, new Hash(Fill(0x70)));
-            await uow.SaveChangesAsync();
-        }
+        var seeded = await SeedForceCloseAsync(node);
+        var (closed, close, commitmentTxId, sweepTxId, childTxId, secondLevelOfResolving) = seeded;
 
         await using var backfill = CreateBackfill();
         await backfill.EnsureCutoverAsync(TestContext.Current.CancellationToken);
@@ -469,6 +408,18 @@ public sealed class AccountingBackfillTests : IAsyncLifetime
         Assert.Equal("330000", forceClosed.Details["lostMsat"]);
         Assert.Equal("0,1,2", forceClosed.Details["countedVouts"]);
         Assert.Equal(nameof(ChannelCloseKind.LocalCommitment), forceClosed.Details["closeKind"]);
+        // NL-682: what the report needs of a spliced channel no ChannelFunded tells: its capacity and original block
+        Assert.Equal(closed.FundingOutput!.Amount.Satoshi.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                     forceClosed.Details["capacitySat"]);
+        Assert.Equal("640", forceClosed.Details["openedAtHeight"]);
+        Assert.False(memo.ContainsKey(AccountingEventKeys.ChannelFunded(closed.ChannelId,
+                                                                        closed.FundingOutput.TransactionId!.Value)));
+
+        // The first pass covers the force-close source: both markers
+        Assert.Single(events, e => e.EventKey == AccountingEventKeys.MemoComplete());
+        var sourceMarker = Assert.Single(events, e => e.EventKey == AccountingEventKeys.MemoSourceComplete(
+                                                          AccountingBackfillService.ForceCloseMemoSource));
+        Assert.Empty(AccountingPostingRules.Evaluate(sourceMarker, _ => null).Postings);
 
         // The sweep's fee, the HTLC the peer took, the anchor given up, the CPFP child's fee
         var swept = memo[AccountingEventKeys.OutputResolved(commitmentTxId, 0)];
@@ -497,6 +448,98 @@ public sealed class AccountingBackfillTests : IAsyncLifetime
         // Assert: nothing more
         Assert.Equal(0, again.Written);
         Assert.Equal(events.Count, (await ReadEventsAsync()).Count);
+    }
+
+    [Fact]
+    public async Task Given_AMemoPassCompletedBeforeTheForceCloseSource_When_TheNodeStarts_Then_OnlyItsEventsAreWritten()
+    {
+        // Arrange (NL-682): a node whose memo pass completed before NL-624 added the force-close source: the old
+        // completion marker, history the first pass would write, and a force close from before the cutover
+        var node = await SeedNodeAsync();
+        await SeedHistoryAsync(node);
+        var seeded = await SeedForceCloseAsync(node);
+        await using (var first = CreateBackfill())
+            await first.EnsureCutoverAsync(TestContext.Current.CancellationToken);
+        using (var uow = CreateUnitOfWork())
+        {
+            uow.AccountingEventDbRepository.Add(
+OldMemoCompleteMarker());
+            await uow.SaveChangesAsync();
+        }
+
+        var before = (await ReadEventsAsync()).Select(e => e.EventKey).ToHashSet(StringComparer.Ordinal);
+
+        // Act: the next start
+        await using var backfill = CreateBackfill();
+        var result = await backfill.RunMemoBackfillAsync(TestContext.Current.CancellationToken);
+
+        // Assert: exactly the force-close memo events and the source's marker, nothing of the first pass again
+        var events = await ReadEventsAsync();
+        var added = events.Where(e => !before.Contains(e.EventKey)).Select(e => e.EventKey).Order(StringComparer.Ordinal)
+                          .ToList();
+        string[] expected =
+        [
+            AccountingEventKeys.ChannelForceClosed(seeded.Closed.ChannelId, seeded.CommitmentTxId),
+            AccountingEventKeys.OutputResolved(seeded.CommitmentTxId, 0),
+            AccountingEventKeys.OutputResolved(seeded.CommitmentTxId, 1),
+            AccountingEventKeys.OutputIgnored(seeded.CommitmentTxId, 2),
+            AccountingEventKeys.AnchorCpfpFee(seeded.ChildTxId),
+            AccountingEventKeys.OutputResolved(seeded.SecondLevelOfResolving, 4),
+            AccountingEventKeys.MemoSourceComplete(AccountingBackfillService.ForceCloseMemoSource)
+        ];
+        Assert.Equal(expected.Order(StringComparer.Ordinal), added);
+        Assert.True(result.Completed);
+        Assert.Equal(0, result.Invoices + result.Payments + result.Forwards);
+        Assert.Equal(6, result.Channels);
+        Assert.Equal("6", events.Single(e => e.EventKey == AccountingEventKeys.MemoSourceComplete(
+                                                 AccountingBackfillService.ForceCloseMemoSource)).Details["written"]);
+        Assert.Single(events, e => e.EventKey == AccountingEventKeys.MemoComplete());
+
+        // Act: a second start
+        await using var restarted = CreateBackfill();
+        var again = await restarted.RunMemoBackfillAsync(TestContext.Current.CancellationToken);
+
+        // Assert: nothing more
+        Assert.True(again.Completed);
+        Assert.Equal(0, again.Written);
+        Assert.Equal(events.Count, (await ReadEventsAsync()).Count);
+    }
+
+    [Fact]
+    public async Task Given_AForceCloseRecordedAfterTheCutover_When_TheLateSourceRuns_Then_ItIsLeftToTheLiveWriters()
+    {
+        // Arrange (NL-682): a channel the node opened and force-closed after the cutover (no opening balance, Closed
+        // when the upgraded node starts): its close is a live fact
+        var node = await SeedNodeAsync();
+        await using (var first = CreateBackfill())
+            await first.EnsureCutoverAsync(TestContext.Current.CancellationToken);
+        var late = SqliteDbTestContext.CreateChannel(true, state: ChannelState.Closed, channelTag: 6);
+        late.ShortChannelId = new ShortChannelId(815, 1, 0);
+        var lateCommitment = new TxId(Fill(0xD1));
+        using (var uow = CreateUnitOfWork())
+        {
+            await uow.ChannelDbRepository.AddAsync(late);
+            await uow.OnchainResolutionDbRepository.UpsertCloseAsync(
+                new ChannelCloseModel(late.ChannelId, ChannelCloseKind.LocalCommitment, lateCommitment, 2, 820,
+                                      new Hash(Fill(0xD2)), s_cutoverAt.AddDays(1)));
+            uow.AccountingEventDbRepository.Add(
+OldMemoCompleteMarker());
+            await uow.SaveChangesAsync();
+        }
+
+        // Act
+        await using var backfill = CreateBackfill();
+        var result = await backfill.RunMemoBackfillAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the resolving channel's output resolved before the cutover's block is the only thing to write here
+        // (none seeded), never the late close
+        Assert.True(result.Completed);
+        var events = await ReadEventsAsync();
+        Assert.DoesNotContain(events, e => e.EventKey == AccountingEventKeys.ChannelForceClosed(late.ChannelId,
+                                                                                                 lateCommitment));
+        Assert.Single(events, e => e.EventKey == AccountingEventKeys.MemoSourceComplete(
+                                       AccountingBackfillService.ForceCloseMemoSource));
+        Assert.DoesNotContain(events, e => e.ChannelId == node.Open.ChannelId && e.Details.ContainsKey("memo"));
     }
 
     [Fact]
@@ -609,6 +652,116 @@ public sealed class AccountingBackfillTests : IAsyncLifetime
         await AddWalletUtxoAsync(1, 100_000);
         await AddWalletUtxoAsync(2, 50_000);
         return new NodeFixture(open, awaiting, resolving, close);
+    }
+
+    /// <summary>The completion marker as a version before NL-624 wrote it (no source markers).</summary>
+    private static AccountingEventModel OldMemoCompleteMarker() =>
+        new()
+        {
+            EventKey = AccountingEventKeys.MemoComplete(),
+            Kind = AccountingEventKind.OpeningBalance,
+            OccurredAt = s_cutoverAt.AddMinutes(5),
+            Finality = AccountingFinality.Final,
+            Flags = AccountingEventFlags.Backfilled,
+            Details = AccountingDetailsCodec.Create(("memo", "true"), ("invoices", "0"), ("payments", "0"),
+                                                    ("forwards", "0"), ("channels", "0"))
+        };
+
+    private sealed record ForceCloseFixture(ChannelModel Closed, ChannelCloseModel Close, TxId CommitmentTxId,
+                                            TxId SweepTxId, TxId ChildTxId, TxId SecondLevelOfResolving);
+
+    /// <summary>
+    /// A channel we funded, spliced once (its original funding confirmed at block 640), force-closed with our
+    /// commitment and Closed before the cutover: its to_local swept by us, our offered HTLC taken by the peer, our
+    /// anchor given up, a CPFP child confirmed; and <paramref name="node"/>'s resolving channel with one output resolved
+    /// before the cutover's block and one after (NL-624).
+    /// </summary>
+    private async Task<ForceCloseFixture> SeedForceCloseAsync(NodeFixture node)
+    {
+        var closed = SqliteDbTestContext.CreateChannel(true, state: ChannelState.Closed, channelTag: 5);
+        closed.ShortChannelId = new ShortChannelId(650, 4, 0);
+
+        var anchorScript = new Key().PubKey.WitHash.ScriptPubKey;
+        var commitment = Network.RegTest.CreateTransaction();
+        commitment.Inputs.Add(new OutPoint(new uint256(closed.FundingOutput!.TransactionId!.Value), 1));
+        commitment.Outputs.Add(Money.Satoshis(578_000), new Key().PubKey.WitHash.ScriptPubKey);
+        commitment.Outputs.Add(Money.Satoshis(20_000), new Key().PubKey.WitHash.ScriptPubKey);
+        commitment.Outputs.Add(Money.Satoshis(330), anchorScript);
+        commitment.Outputs.Add(Money.Satoshis(330), new Key().PubKey.WitHash.ScriptPubKey);
+        commitment.Outputs.Add(Money.Satoshis(400_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var commitmentTxId = new TxId(commitment.GetHash().ToBytes());
+        var sweep = Network.RegTest.CreateTransaction();
+        sweep.Inputs.Add(new OutPoint(commitment.GetHash(), 0));
+        sweep.Outputs.Add(Money.Satoshis(577_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var sweepTxId = new TxId(sweep.GetHash().ToBytes());
+        var child = Network.RegTest.CreateTransaction();
+        child.Inputs.Add(new OutPoint(new uint256(Fill(0x77)), 0));
+        child.Outputs.Add(Money.Satoshis(10_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var childTxId = new TxId(child.GetHash().ToBytes());
+        var close = new ChannelCloseModel(closed.ChannelId, ChannelCloseKind.LocalCommitment, commitmentTxId, 9, 700,
+                                          new Hash(Fill(0x70)), s_cutoverAt.AddDays(-20));
+        var secondLevelOfResolving = new TxId(Fill(0xC1));
+
+        using (var uow = CreateUnitOfWork())
+        {
+            await uow.ChannelDbRepository.AddAsync(closed);
+            await uow.SaveChangesAsync();
+
+            // Spliced once: the original funding (block 640) replaced by the current one (block 650)
+            var funding = closed.FundingOutput!;
+            var remoteKey = closed.RemoteFundingPubKey!.Value;
+            await uow.ChannelFundingDbRepository.UpsertAsync(
+                closed.ChannelId,
+                new ChannelFunding(new TxId(Fill(0x64)), 0, 500_000, closed.LocalFundingPubKey, remoteKey, 0, 0, 0,
+                                   ChannelFundingKind.Initial, ChannelFundingStatus.Replaced,
+                                   ShortChannelId: new ShortChannelId(640, 2, 0)));
+            await uow.ChannelFundingDbRepository.UpsertAsync(
+                closed.ChannelId,
+                new ChannelFunding(funding.TransactionId!.Value, funding.Index!.Value,
+                                   (ulong)funding.Amount.Satoshi, closed.LocalFundingPubKey, remoteKey, 1, 0, 0,
+                                   ChannelFundingKind.Splice, ChannelFundingStatus.Current, ConfirmedHeight: 650,
+                                   ShortChannelId: closed.ShortChannelId));
+
+            var onchain = uow.OnchainResolutionDbRepository;
+            await onchain.UpsertCloseAsync(close);
+            await onchain.UpsertOutputAsync(Row(closed, commitmentTxId, 0, OutputDescriptorKind.DelayedToLocal,
+                                                578_000, OutputResolutionState.Irrevocable) with
+            {
+                ResolvedHeight = 760,
+                ResolvingTransactionId = sweepTxId
+            });
+            await onchain.UpsertOutputAsync(Row(closed, commitmentTxId, 1, OutputDescriptorKind.LocalOfferedHtlc,
+                                                20_000, OutputResolutionState.Irrevocable, HtlcDirection.Outgoing) with
+            {
+                ResolvedHeight = 720
+            });
+            await onchain.UpsertOutputAsync(Row(closed, commitmentTxId, 2, OutputDescriptorKind.OurAnchor, 330,
+                                                OutputResolutionState.Ignored));
+            var resolvedBefore = Row(node.Resolving, secondLevelOfResolving, 4, OutputDescriptorKind.DelayedToLocal,
+                                     9_000, OutputResolutionState.Resolved);
+            await onchain.UpsertOutputAsync(resolvedBefore with { ResolvedHeight = 806 });
+            var resolvedAfter = Row(node.Resolving, secondLevelOfResolving, 5, OutputDescriptorKind.DelayedToLocal,
+                                    7_000, OutputResolutionState.Resolved);
+            await onchain.UpsertOutputAsync(resolvedAfter with { ResolvedHeight = 830 });
+
+            var broadcasts = uow.BroadcastTransactionDbRepository;
+            broadcasts.Add(new BroadcastTransactionModel(new SignedTransaction(commitmentTxId, commitment.ToBytes()),
+                                                         BroadcastPurpose.LocalCommitment, closed.ChannelId, 699,
+                                                         commitmentNumber: 9, fee: LightningMoney.Satoshis(1_340)));
+            broadcasts.Add(new BroadcastTransactionModel(new SignedTransaction(sweepTxId, sweep.ToBytes()),
+                                                         BroadcastPurpose.Sweep, closed.ChannelId, 755,
+                                                         fee: LightningMoney.Satoshis(1_000)));
+            broadcasts.Add(new BroadcastTransactionModel(new SignedTransaction(childTxId, child.ToBytes()),
+                                                         BroadcastPurpose.AnchorCpfp, closed.ChannelId, 699,
+                                                         fee: LightningMoney.Satoshis(2_000)));
+            await uow.SaveChangesAsync();
+            await broadcasts.MarkConfirmedAsync(commitmentTxId, 700, new Hash(Fill(0x70)));
+            await broadcasts.MarkConfirmedAsync(sweepTxId, 760, new Hash(Fill(0x76)));
+            await broadcasts.MarkConfirmedAsync(childTxId, 700, new Hash(Fill(0x70)));
+            await uow.SaveChangesAsync();
+        }
+
+        return new ForceCloseFixture(closed, close, commitmentTxId, sweepTxId, childTxId, secondLevelOfResolving);
     }
 
     private sealed record HistoryFixture(Hash InvoiceHash, Hash KeysendHash, Hash LiveInvoiceHash,
