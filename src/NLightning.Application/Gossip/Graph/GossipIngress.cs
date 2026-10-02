@@ -1375,7 +1375,9 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
     /// </summary>
     private bool ScoreMisbehaviour(CompactPubKey? peerId, IPeerService? connection, string why, bool disconnect)
     {
-        if (peerId is not { } peer || peer == _ourNodeId || !_misbehaviour.Record(peer))
+        // A peer banned already is not scored again: its messages that were past the door before the ban (in flight
+        // in other workers) would otherwise ban it a second time, extend the ban and disconnect it twice (NL-746)
+        if (peerId is not { } peer || peer == _ourNodeId || IsPeerBanned(peer) || !_misbehaviour.Record(peer))
             return false;
 
         var until = _timeProvider.GetUtcNow() + _options.MisbehaviourBanDuration;
