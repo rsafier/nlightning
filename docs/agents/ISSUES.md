@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-02 by the A3 integrator (branch `wip/acct-a3` from `wip/fafo` at `9873f3d3`, A3-T0 schema at `5e3ffb0b`; 8 lanes run in parallel worktrees and merged with `--no-ff` in lane order — lane branches `acct-a3-*` hold the originals): merges `42915f80` (fixes-a: NL-621, NL-624, NL-626), `64cb9db0` (fixes-b: NL-622, NL-623, NL-625, NL-627, NL-628), `5812ac5e` (NL-609 rebalances), `27e8cb95` (A3-T1 labels and tags), `214dd51b` (A3-T3 classification), `8b5b0f75` (A3-T2 prices), `d7a9d1f9` (A3-T5 period close), `53daea21` (A3-T6 financial reports), integration commit `afce146a`. Fixed: NL-609, NL-621..NL-628 (per-entry SHAs are the merge commits). New: NL-640, NL-641 (T2), NL-645, NL-646 (T3), NL-653 (fixes-b), NL-660..NL-662 (T5), NL-665..NL-667 (T6); of these NL-646 (by NL-609), NL-661 and NL-666 (both by T2) were already fixed in the merged tree. Integration decisions: one `IAccountingAdjustmentSink` (T5's, carrying T2's `AdjustLateValuationAsync`) registered by the new `AddAccountingPeriodServices`; T6's `IAccountingFinancialProjection` folded into T5's `IFinancialBooksProjector` (one seam for A3-T4; the off default now also refuses the financial reports and exports until T4); NL-609's Dr Rebalance (a + fee) is split in the financial lines into the transfer a and an `expenses:fees:routing` line of the fee (D-A12); IPC 45 actions 5 (classify), 10-12 (prices), 20-22 (close) and `PayInvoiceIpcRequest` keys 5/6 (labels) and 7/8 (pins) kept as the lanes numbered them (no collisions). Gates: Release `--no-incremental` build 0 CS warnings, `dotnet format` clean, sln check OK, full non-Docker net10.0 suite green at `afce146a` (12,948 passed, 6 platform/explicit skips: Domain 4094, Application 3495, Infrastructure.Bitcoin 1532, Daemon 1205, Integration 1024, Infrastructure 635, Serialization 622, Bolt11 337; `HasPendingModelChanges` false on all three providers); in the first run one T3 regex-timeout case (`ClassificationEngineTests` "label regex matches") failed once under load at 178 ms against its 100 ms budget and passed alone and in the second run. No Docker.
+
 Updated 2026-09-25 after the fix swarm and its follow-ups were integrated into `wip/fafo` (at `1a38360`): statuses carry the `wip/fafo` SHAs (the swarm commits were cherry-picked with `-x`), and NL-203..NL-225 record the cross-batch review findings and the follow-ups the batches reported.
 
 Updated 2026-09-25 after the four-lane work (l1 runtime, l2 BOLT 3/signer, l3 state machine, l4 onion M3) was integrated into `wip/fafo` (at `3c625e1`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `integrate:` commits have no lane counterpart), and NL-226..NL-238 record the lanes' new findings and open items.
@@ -125,16 +127,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 60 | 63 |
+| open | 0 | 0 | 6 | 56 | 62 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 62 | 164 | 303 | 543 |
+| fixed | 14 | 62 | 164 | 315 | 555 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **172** | **370** | **618** |
+| **Total** | **14** | **62** | **175** | **378** | **629** |
 
 ### Epics
 
-- NL-602: Accounting: core event feed and built-in books (in-progress, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3; data gaps NL-603..NL-605; the plugin stub NL-151 is deleted in A2)
+- NL-602: Accounting: core event feed and built-in books (in-progress, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3; data gaps NL-603..NL-605; the plugin stub NL-151 is deleted in A2; A3-T0..T3, T5, T6 integrated on `wip/acct-a3`, A3-T4 and A3-T7 left; A3 follow-ups NL-640, NL-641, NL-645, NL-660, NL-662, NL-665, NL-667)
 - NL-569: Tor: onion peers, our onion service, Tor-only mode (fixed, medium; lane tor, branch `wip/tor`: `Node:Tor` Off/Hybrid/TorOnly, SOCKS5 with isolation, control port with SAFECOOKIE, persisted v3 onion service announced in `node_announcement`, NL-542 and NL-178 fixed; `docs/agents/TOR.md`; follow-ups NL-571..NL-573; review fixes NL-575..NL-590)
 - NL-426: Static channel backup and restore (fixed, high; wave rf1: encrypted SCB, export/verify/restore IPC 21-23, recovery channels and the data-loss reestablish, proven against LND; wave lh1: NL-430, NL-431 old spends and every peer address, NL-432 persisted peer-storage retrievals with `listpeerstorage` (32); follow-up NL-435)
 - NL-031: HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee) (fixed, critical; N6 in wave 1, reestablish and switch in wave 2; the fail-the-channel broadcast is N9-T4 under NL-094)
@@ -5029,7 +5031,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A1
 
 ### NL-609 Rebalances cannot be recorded: the node refuses to pay its own invoices
-- **Status:** open
+- **Status:** fixed (5812ac5e)
+- **Fix:** An Open invoice of our own is paid over a circular route (out one channel, back in another; same-peer or graph paths to the incoming peer, last hop priced with the peer's `channel_update`), `payinvoice --out/--in` (IPC `PayInvoiceIpcRequest` keys 7/8); both halves flagged `selfPayment` and only the route fee stays in `expenses:lightning:rebalance` (the A3 integration also splits it into `expenses:fees:routing` in the financial book, D-A12). Proof `RebalanceHarnessTests`, `CircularRoutePlannerTests`.
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`PayInvoiceAsync` "a node cannot pay itself", keysend and blinded payee checks)
@@ -5150,7 +5153,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-621 `accounting reconcile` reports an expected in-flight clearing balance as `DRIFT`
-- **Status:** open
+- **Status:** fixed (42915f80)
+- **Fix:** `ClearingOutstandingReader` reads the clearing held by transactions the node knows in flight (pending broadcasts, incomplete watches, pending fundings) by exact key and reports it as `AccountingReconcileLine.OutstandingMsat` (IPC 45 line key 6, gauge `reconcile.outstanding_msat`); drift is only the unexplained remainder. Lane commit 97a57ee4.
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Accounting/Books/AccountingBooksService.cs` (reconcile), `src/NLightning.Client/Printers/AccountingBooksPrinters.cs`
@@ -5160,7 +5164,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-622 `accounting report channels` shows `Capacity: unknown` and no scid or peer for channels without a `ChannelFunded` event
-- **Status:** open
+- **Status:** fixed (64cb9db0)
+- **Fix:** `OpeningBalance` joins the channels view's lifecycle kinds: its scid, counterparty, `capacitySat` and `isInitiator` are the fallback when no `ChannelFunded`/`SpliceLocked` gives them. Lane commit 385dd9c8.
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Accounting/Reports/AccountingReportService.cs`
@@ -5170,7 +5175,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-623 `accounting report channels` shows the feed's cutover time as a backfilled channel's open time
-- **Status:** open
+- **Status:** fixed (64cb9db0)
+- **Fix:** Memo/backfilled fundings and opening balances set `TrackedSince` and `OpenedAtBlockHeight`, never `OpenedAt`; `OpenedAt` comes from the funding block's header time through the new optional Domain port `IBlockTimeSource` (`ChainBlockTimeSource`), else "before the feed began"; yields are annualized only over a window inside the tracked time (IPC keys 32/33). Lane commits 385dd9c8, 3ecaa65d.
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Accounting/Reports/AccountingReportService.cs`
@@ -5180,7 +5186,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-624 A force close from before the accounting cutover has no memo history (close and sweep fees missing, channel shown open)
-- **Status:** open
+- **Status:** fixed (42915f80)
+- **Fix:** `ForceCloseMemoEvents` writes memo `ChannelForceClosed`, the final outputs' resolution events and confirmed CPFP fees from `ChannelCloses`/`OutputResolutions`/`BroadcastTransactions` for channels Closed (or still resolving) at the cutover, under the live keys, resumable. Lane commit cab1c9b0.
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/Backfill/AccountingBackfillService.cs`
@@ -5190,7 +5197,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-625 The channel report's yield ignores on-chain fees, so a negative Net shows a positive yield
-- **Status:** open
+- **Status:** fixed (64cb9db0)
+- **Fix:** `NetYieldOnCapacity`/`NetAnnualizedYield` (Net over capacity) print on the Net line; the routing yield is labelled "routing out only, before costs" (IPC keys 34/35). Lane commits 385dd9c8, 3ecaa65d.
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Accounting/Reports/AccountingReportService.cs`
@@ -5200,7 +5208,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-626 A splice's wallet events carry `purpose=Funding`
-- **Status:** open
+- **Status:** fixed (42915f80)
+- **Fix:** `BroadcastPurpose.Splice = 11` (appended) for every splice and splice RBF row; `BroadcastRefusalRules.IsFunding`/`MayAbandon` and `DiscardConflictingSplicesAsync` include it, so abandonment and lock release are unchanged; old rows stay `Funding`. Lane commit 052fa218.
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Splicing/SpliceService.cs` (~634: the splice broadcast row is saved as `BroadcastPurpose.Funding`)
@@ -5210,7 +5219,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-627 `accounting report balance --at <past time>` prints "books through #N" of the present
-- **Status:** open
+- **Status:** fixed (64cb9db0)
+- **Fix:** `AccountingBalanceSheet.LastLedgerSeqAt` (IPC key 8): a past balance prints "last entry #M; books through #N". Lane commits 385dd9c8, 3ecaa65d.
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Client/Printers/AccountingBooksPrinters.cs`
@@ -5220,7 +5230,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-628 An unknown `--kind` prints the error followed by the whole client help
-- **Status:** open
+- **Status:** fixed (64cb9db0)
+- **Fix:** `ClientApp.WriteUsageError`: an error carrying the command's own usage ends with a pointer to `nltg --help`; `accounting report register --kind` lists the valid kinds. Lane commit 3ecaa65d.
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Client/Handlers/AccountingCommands.cs` (~132), `AccountingBooksCommands.cs` (~246)
@@ -5228,6 +5239,116 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Return after the command's own usage, as other argument errors do.
 - **Blocks/Blocked-by:** Part of NL-602 (accounting); related NL-609 (rebalances, the review's point 6)
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
+
+### NL-640 Lots opened by an acquisition valued late keep a null fiat cost
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (fills postings only); A3-T4 financial projector / `IAccountingLotDbRepository`
+- **Evidence:** Lane A3-T2 (2026-10-02): the valuation job fills `AccountingPostings.FiatAmount`/`PriceId` of financial postings after the fact, but the `AccountingLots` row A3-T4 opens for the same acquisition keeps `FiatCost`/`PriceId` null and reliefs that used it keep a null `FiatCostRelieved`, so their gains stay "pending valuation" although the price is known.
+- **Fix sketch:** A3-T4: when the projector meets unvalued lots whose source entry now has valued postings, set the lot's cost (`UpdateLotAsync`) and recompute its open-period reliefs; for a closed period raise an adjustment through `IAccountingAdjustmentSink`. Or the valuation job calls an optional hook in the same save.
+- **Blocks/Blocked-by:** Part of NL-602; A3-T4
+- **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T4
+
+### NL-641 The Docker test node would query mempool.space for prices under `Profile=Financial`
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs`; `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs` (`AddAccountingPriceSources`)
+- **Evidence:** Lane A3-T2: `Accounting:Prices:Source` defaults to `Both` and the test node builds through `AddNltgNodeServices`, so an A3-T7 Docker smoke with `Profile=Financial` would make real HTTP requests to mempool.space (not hermetic; Tor-only hosts and offline CI would log failures and leave postings unvalued).
+- **Fix sketch:** Set `Accounting:Prices:Source=None` in `NLightningTestNode` (and import fixture prices), or re-register `AddAccountingPriceSources(_ => new FakePriceHttpHandler())` after `AddNltgNodeServices`.
+- **Blocks/Blocked-by:** Part of NL-602; A3-T7
+- **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T7
+
+### NL-645 Offer-id classification rules match only received payments: payment events carry the offer string, not its id
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/PaymentAccountingEvents.cs` (`PaymentSucceeded`/`PaymentFailed` detail `offer`)
+- **Evidence:** Lane A3-T3: `InvoiceSettled` writes detail `offerId` (hex), but `PaymentSucceeded`/`PaymentFailed` write only `offer` (the `lno...` string); `ClassificationEngine` matches `AccountingRule.OfferId` against `offerId`, so a rule on an offer we paid never matches.
+- **Fix sketch:** Have the payment writers also write `offerId` (computed from the offer TLVs as `OfferService` does); the engine needs no change.
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN A3-T3
+
+### NL-646 The incoming half of a rebalance (InvoiceSettled) did not say it is a self-payment, so the financial book would book it as `income:sales`
+- **Status:** fixed (5812ac5e)
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/PaymentAccountingEvents.cs` `InvoiceSettled`; the `HtlcSwitch` final-hop settle
+- **Evidence:** Lane A3-T3 (found on a base without NL-609): only `PaymentSucceeded` carried `selfPayment`; the financial default sends a Received line to `equity:transfers:rebalance` only with that detail.
+- **Fix sketch:** Mark `InvoiceSettled` `selfPayment` when the hash is one of our own outgoing payments.
+- **Blocks/Blocked-by:** Part of NL-602; blocked by NL-609 (fixed)
+- **Plan ref:** ACCOUNTING_PLAN A3-T3
+
+### NL-653 `PeerManagerBatchTests.Given_BatchSizeAtMostOne_*(batchSize: 1)` failed once under a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Node/Managers/PeerManagerBatchTests.cs`
+- **Evidence:** Lane acct-a3-fixes-b (2026-10-02, several lanes building and testing on the machine): failed once in the full non-Docker run; the class passed 15/15 three times alone. The failure message was not captured. The test waits on `WaitForHandledAsync` and a disconnect `TaskCompletionSource` with `s_timeout`. Not hit in the A3 integration runs.
+- **Fix sketch:** Find the wait it races (as in the de-timing pass, NL-620 style); rerun alone before treating it as a regression.
+- **Blocks/Blocked-by:** Related NL-620
+- **Plan ref:** —
+
+### NL-660 A reclassification of a closed period's entry posts no adjustment (`classify set` / rule changes vs the lock)
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Accounting/Financial/AccountingClassificationService.cs` (`SetAsync` and the rule add/remove/enable/disable paths)
+- **Evidence:** Lane A3-T5: `SetAsync` stores the override and only warns that "the financial book posts the change as an adjustment in the open period"; nothing calls `IAccountingAdjustmentSink.StageAdjustmentAsync` (Reason `Override`/`RuleChange`), and the projector never re-projects closed entries, so the override of a closed fact is silently missing from the financial book.
+- **Fix sketch:** In `SetAsync` (and for rule changes) when the event's financial entry has a `ClosedPeriodId`: under `sink.EnterAsync`, build the reclassification delta (the old account name reversed, the new one posted, same msat and fiat) and stage it with `DedupeKey = override:{key}:{account}` in the same save; for rules, scan closed entries whose classification changes or add an explicit `classify apply`.
+- **Blocks/Blocked-by:** Part of NL-602; A3-T3/A3-T4 owner, A3-T7
+- **Plan ref:** ACCOUNTING_PLAN A3-T3, A3-T5 (D-A8)
+
+### NL-661 The back-valuation did not hold the books' write lock: a close committing between its read and its save could let a closed posting be valued
+- **Status:** fixed (8b5b0f75)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs` (the page loop that calls `SetPostingValueAsync`)
+- **Evidence:** Lane A3-T5, against an early A3-T2: if T2 staged a value before a close committed and saved after it, `FiatAmount` landed in a closed posting, the close's digest no longer matched and verify reported a broken close.
+- **Fix sketch:** Each page holds `IAccountingAdjustmentSink.EnterAsync` from its closed-period check to its save (A3-T2 lane commit 6966719b).
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T5
+
+### NL-662 `ResetToCloseAsync`'s bulk statements are not yet proven on Postgres and SQL Server
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `src/NLightning.Infrastructure.Repositories/Database/Accounting/AccountingBooksDbRepository.cs` `ResetToCloseAsync`
+- **Evidence:** Lane A3-T5: the method uses `Database.BeginTransactionAsync`, correlated `ExecuteDelete` (WHERE EXISTS) and `ExecuteUpdate` of `RemainingMsat + n`; proven on SQLite only (Integration `AccountingPeriodPersistenceTests`, Application `AccountingPeriodServiceTests`); no Docker run.
+- **Fix sketch:** Add a Postgres case to `Docker/PostgresTests` (seed the `AccountingPeriodPersistenceTests` rows, reset, assert the same outcome) in the next Docker pass; write the SQL Server case without running it, per the test cycle.
+- **Blocks/Blocked-by:** Part of NL-602; A3-T7
+- **Plan ref:** ACCOUNTING_PLAN A3-T5
+
+### NL-665 The operational hledger export's header `commodity 1 msat` is rejected by hledger 1.52
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Accounting/Export/AccountingExportFormatter.cs` (`HledgerFormatter.WriteHeader`); golden `test/NLightning.Application.Tests/Accounting/Export/Golden/books.journal`
+- **Evidence:** Lane A3-T6: hledger 1.52.4 (mac-arm64) fails `hledger -f books.journal check` at 2:11 with "Please include a decimal point or decimal comma in commodity directives"; with `commodity 1. msat` the file passes. bean-check 3.2.3 accepts `books.beancount`. Left unfixed by the lane because the operational exports had to stay byte-for-byte unchanged.
+- **Fix sketch:** Write `commodity 1. msat` (as the A3-T6 financial formatter does) and regenerate `books.journal`.
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN A2-T5, A3-T6
+
+### NL-666 `AccountingEntryFlags.Unvalued` was never cleared when the back-valuation filled a posting
+- **Status:** fixed (8b5b0f75)
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure.Repositories/Database/Accounting/AccountingBooksDbRepository.cs` `SetPostingValueAsync`
+- **Evidence:** Lane A3-T6, against the T0 base: `SetPostingValueAsync` updated the posting and the running balance but not `AccountingEntries.Flags`, so `WithFlags = Unvalued` listed fully valued entries.
+- **Fix sketch:** `SetPostingValueAsync` clears the entry's `Unvalued` bit once none of its postings is left unvalued (A3-T2 lane commit b2532c5d).
+- **Blocks/Blocked-by:** Part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T6
+
+### NL-667 An unclassified entry reclassified by a later adjustment stays in the unclassified listing
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** A3-T6 report kind `Unclassified` (`AccountingFinancialReportDispatcher`, `WithFlags = Unclassified`); A3-T3 `classify list --unclassified`
+- **Evidence:** Lane A3-T6: under D-A8 a reclassification posts an adjustment and leaves the original entry and its `Unclassified` flag unchanged, so the listing still shows it after an override or rule fixed it (the fixture's entry 7 shows this). T3's `classify list --unclassified` (IPC 45) and T6's report kind (IPC 43) both list unclassified rows.
+- **Fix sketch:** Leave out entries whose event key has a later adjustment with classification Override or Rule, or have A3-T4 clear the flag on open-period entries it re-projects; T3 and T4 agree on one approach (and on which listing stays).
+- **Blocks/Blocked-by:** Part of NL-602; related NL-660
+- **Plan ref:** ACCOUNTING_PLAN A3-T3, A3-T6
 
 ## Crypto providers and key management
 
