@@ -6,9 +6,14 @@ using NBitcoin;
 
 namespace NLightning.Application.Onchain;
 
+using Accounting;
 using Channels.Safety;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Models;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -17,6 +22,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
+using Domain.Payments.Enums;
 using Domain.Persistence.Interfaces;
 using Fees;
 using Infrastructure.Bitcoin.Onchain;
@@ -89,6 +95,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     private readonly RecordedFundingSpendReplay _recordedFundingSpendReplay;
     private readonly FundingReconfirmGraceMonitor _fundingReconfirmGrace;
     private readonly ConcurrentDictionary<ChannelId, byte> _noCloseLogged = new();
+    private readonly TimeProvider _timeProvider;
 
     private readonly Lock _gate = new();
     private Task _loop = Task.CompletedTask;
@@ -99,8 +106,9 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                                      IChannelMemoryRepository channelMemoryRepository,
                                      ILogger<OnchainResolutionExecutor> logger, IOutpointWatcher outpointWatcher,
                                      IServiceScopeFactory serviceScopeFactory,
-                                     IOptions<OnchainOptions>? options = null)
+                                     IOptions<OnchainOptions>? options = null, TimeProvider? timeProvider = null)
     {
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _chainBroadcaster = chainBroadcaster;
         _channelLockProvider = channelLockProvider;
         _channelMemoryRepository = channelMemoryRepository;
@@ -584,6 +592,9 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
 
             var outputs = (await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(channelId))
                          .ToDictionary(o => (o.TransactionId, o.OutputIndex));
+
+            // NL-602: the rows as they were, to tell this round's transitions (rows are immutable records)
+            var before = new Dictionary<(TxId, uint), OutputResolutionModel>(outputs);
             var actions = new List<OutputResolverAction>();
             var revived = new List<TxId>();
             var resolver = GetResolver(scope, close.Kind);
@@ -596,7 +607,10 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 if (!await IsFundingSpendOnChainAsync(scope, close))
                 {
                     var paused = await HandleFundingSpendGoneAsync(scope, unitOfWork, channel, close, height, actions,
-                                                                   revived, cancellationToken);
+                                                                   revived,
+                                                                   AccountingStage(unitOfWork, channel, close, before,
+                                                                       outputs, null, height, cancellationToken),
+                                                                   cancellationToken);
                     applied = paused.Applied;
                     rewatch = paused.FundingWatch;
                     goto afterLock;
@@ -696,6 +710,11 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                     await unitOfWork.InteractiveTxSessionDbRepository.DeleteByChannelIdAsync(channelId);
                 });
             }
+
+            // NL-602: the accounting events of this round's resolutions, in its save
+            if (AccountingStage(unitOfWork, channel, close, before, outputs, spent, height, cancellationToken) is
+                { } accountingStage)
+                stageMore.Add(accountingStage);
 
             applied = await StageAndSaveAsync(unitOfWork, actions,
                                               stageMore.Count == 0
@@ -807,7 +826,8 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     /// </summary>
     private async Task<(Applied Applied, WatchedOutpointModel? FundingWatch)> HandleFundingSpendGoneAsync(
         IServiceScope scope, IUnitOfWork unitOfWork, ChannelModel channel, ChannelCloseModel close, uint height,
-        List<OutputResolverAction> actions, List<TxId> revived, CancellationToken cancellationToken)
+        List<OutputResolverAction> actions, List<TxId> revived, Func<Task>? stageMore,
+        CancellationToken cancellationToken)
     {
         var channelId = channel.ChannelId;
         var first = false;
@@ -858,7 +878,9 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                     var signed = builder.Build(channel);
                     actions.Add(new BroadcastAction(new BroadcastTransactionModel(
                                                         signed.Transaction, BroadcastPurpose.LocalCommitment,
-                                                        channelId, height, commitmentNumber: signed.CommitmentNumber)));
+                                                        channelId, height, commitmentNumber: signed.CommitmentNumber,
+                                                        fee: OnchainTransactionFees.ForCommitment(signed.Transaction,
+                                                                                                  channel))));
                     _graceBroadcastDone[channelId] = 0;
                     _logger.LogCritical("The peer's commitment {TxId} of channel {ChannelId} has been out of the chain "
                                       + "for {Blocks} blocks; broadcasting our latest commitment {Number} ({OurTxId})",
@@ -878,7 +900,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             actions.Add(new StageWriteAction($"revive {Display(txId)}",
                                              (uow, _) => uow.BroadcastTransactionDbRepository.MarkPendingAsync(txId)));
 
-        var applied = await StageAndSaveAsync(unitOfWork, actions, null, cancellationToken);
+        var applied = await StageAndSaveAsync(unitOfWork, actions, stageMore, cancellationToken);
         return (await WithRevivedAsync(unitOfWork, applied, revived.Concat(revive)), fundingWatch);
     }
 
@@ -941,6 +963,219 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         }
 
         return resolver;
+    }
+
+    /// <summary>
+    /// The accounting stage of a round (NL-602, <see cref="OnchainAccounting"/>): null when no row made a transition
+    /// that is a money fact (resolved by a spend, given up while counted, or unresolved by a reorg).
+    /// </summary>
+    private Func<Task>? AccountingStage(IUnitOfWork unitOfWork, ChannelModel channel, ChannelCloseModel close,
+                                        IReadOnlyDictionary<(TxId, uint), OutputResolutionModel> before,
+                                        IReadOnlyDictionary<(TxId, uint), OutputResolutionModel> outputs,
+                                        OutpointSpentEventArgs? spent, uint height,
+                                        CancellationToken cancellationToken)
+    {
+        var any = outputs.Any(o => GetTransition(before.GetValueOrDefault(o.Key), o.Value, spent)
+                                != AccountingTransition.None);
+        return any
+                   ? () => StageAccountingAsync(unitOfWork, channel, close, before, outputs, spent, height,
+                                                cancellationToken)
+                   : null;
+    }
+
+    /// <summary>
+    /// Stages the round's accounting events in its unit of work: an <see cref="AccountingEventKind.OutputResolved"/>,
+    /// <see cref="AccountingEventKind.PenaltyClaimed"/> or <see cref="AccountingEventKind.BreachLoss"/> for the row a
+    /// spend resolved (only on its move to <see cref="OutputResolutionState.Resolved"/>, so a replay writes nothing),
+    /// a loss for a counted row given up, and a reversal for a resolution a reorg undid. Never throws: a failure is
+    /// logged and the round saves without them.
+    /// </summary>
+    private async Task StageAccountingAsync(IUnitOfWork unitOfWork, ChannelModel channel, ChannelCloseModel close,
+                                            IReadOnlyDictionary<(TxId, uint), OutputResolutionModel> before,
+                                            IReadOnlyDictionary<(TxId, uint), OutputResolutionModel> outputs,
+                                            OutpointSpentEventArgs? spent, uint height,
+                                            CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (unitOfWork.AccountingEventDbRepository is not { } accounting)
+                return;
+
+            var now = _timeProvider.GetUtcNow();
+            AccountingEventModel? closeEvent = null;
+            var closeEventRead = false;
+            foreach (var (key, row) in outputs.OrderBy(o => o.Value.TransactionId.ToString(), StringComparer.Ordinal)
+                                              .ThenBy(o => o.Value.OutputIndex))
+            {
+                var old = before.GetValueOrDefault(key);
+                var transition = GetTransition(old, row, spent);
+                if (transition == AccountingTransition.None)
+                    continue;
+
+                if (transition == AccountingTransition.Unresolved)
+                {
+                    // O6-T3: the spend that resolved it was reorged out
+                    foreach (var baseKey in OnchainAccounting.ResolutionKeys(row.TransactionId, row.OutputIndex))
+                    {
+                        var original = await OnchainAccounting.FindAsync(accounting, baseKey, old!.ResolvedHeight,
+                                                                         cancellationToken);
+                        if (original is null)
+                            continue;
+
+                        await OnchainAccounting.StageReversalAsync(accounting, original, old.ResolvedHeight ?? height,
+                                                                   now, cancellationToken);
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if (!closeEventRead)
+                {
+                    closeEvent = await accounting.GetByKeyAsync(
+                                     AccountingEventKeys.ChannelForceClosed(channel.ChannelId,
+                                                                            close.CommitmentTransactionId),
+                                     cancellationToken);
+                    closeEventRead = true;
+                }
+
+                var counted = closeEvent is not null
+                           && (row.TransactionId == close.CommitmentTransactionId
+                                   ? OnchainAccounting.CountedVouts(closeEvent).Contains(row.OutputIndex)
+                                   : row.Descriptor == OutputDescriptorKind.DelayedToLocal);
+                var data = OutputDescriptorData.TryDecode(row);
+                var valueMsat = data is null ? 0 : checked((long)data.AmountSat * 1_000);
+                var revoked = OnchainAccounting.IsRevoked(row.Descriptor);
+
+                if (transition == AccountingTransition.Ignored)
+                {
+                    var ignoredKey = AccountingEventKeys.OutputIgnored(row.TransactionId, row.OutputIndex);
+                    if (!counted || await accounting.ExistsAsync(ignoredKey, cancellationToken))
+                        continue;
+
+                    accounting.Add(OnchainAccounting.Resolution(
+                                       channel, close, row, data,
+                                       revoked ? AccountingEventKind.BreachLoss : AccountingEventKind.OutputResolved,
+                                       ignoredKey, OnchainAccounting.Lost(valueMsat, true, "ignored"), counted, null,
+                                       height, now));
+                    continue;
+                }
+
+                // Resolved by the spend this round handles
+                if (!ChainTxMapper.TryParse(spent!.SpendingTransaction.RawTxBytes, out var spender)
+                 || spender is null)
+                    continue;
+
+                var broadcast = await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(spender.TxId);
+                var ours = row.ResolvingTransactionId == spender.TxId
+                        || broadcast is { Purpose: not BroadcastPurpose.PeerCommitment };
+                var flows = ours
+                                ? OnchainAccounting.Ours(row, valueMsat, counted, spender, outputs,
+                                                         broadcast?.Purpose == BroadcastPurpose.HtlcTransaction)
+                                : OnchainAccounting.Lost(valueMsat, counted, "peer");
+                if (data is null)
+                    flows = flows with { Note = "the output's value is unknown" };
+
+                var kind = revoked
+                               ? ours ? AccountingEventKind.PenaltyClaimed : AccountingEventKind.BreachLoss
+                               : AccountingEventKind.OutputResolved;
+                var baseEventKey = kind switch
+                {
+                    AccountingEventKind.PenaltyClaimed =>
+                        AccountingEventKeys.PenaltyClaimed(row.TransactionId, row.OutputIndex),
+                    AccountingEventKind.BreachLoss => AccountingEventKeys.BreachLoss(row.TransactionId,
+                                                                                     row.OutputIndex),
+                    _ => AccountingEventKeys.OutputResolved(row.TransactionId, row.OutputIndex)
+                };
+                var eventKey = await OnchainAccounting.NewKeyAsync(accounting, baseEventKey, spent.BlockHeight,
+                                                                   cancellationToken);
+                if (eventKey is null)
+                    continue;
+
+                var ownership = await GetHtlcValueOwnerAsync(unitOfWork, channel.ChannelId, data?.Htlc, ours);
+                accounting.Add(OnchainAccounting.Resolution(channel, close, row, data, kind, eventKey, flows, counted,
+                                                            spender.TxId, spent.BlockHeight, now,
+                                                            broadcast?.ReplacesTransactionId is not null, ownership));
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Channel {ChannelId}: the accounting events of the on-chain round at height {Height} "
+                                + "could not be staged", channel.ChannelId, height);
+        }
+    }
+
+    /// <summary>
+    /// The details that tell the books which off-chain event already owns an HTLC output's value (the coordinator rule
+    /// in <see cref="OnchainAccounting"/>): an incoming HTLC we claimed (invoice or forward) and an offered HTLC of ours
+    /// the peer took (payment or forward, written off the pending bucket). Empty for any other output, or when the
+    /// lookup fails (logged).
+    /// </summary>
+    private async Task<IReadOnlyList<(string Key, string? Value)>> GetHtlcValueOwnerAsync(
+        IUnitOfWork unitOfWork, ChannelId channelId, SpecHtlc? htlc, bool ours)
+    {
+        if (htlc is not { } spec)
+            return [];
+
+        try
+        {
+            if (spec.Direction == HtlcDirection.Incoming && ours)
+            {
+                var circuit = unitOfWork.ForwardCircuitDbRepository is { } circuits
+                                  ? await circuits.GetByIncomingAsync(channelId, spec.Id)
+                                  : null;
+                return [(OnchainAccounting.ValueBookedByKey, circuit is null ? "invoice" : "forward")];
+            }
+
+            if (spec.Direction == HtlcDirection.Outgoing && !ours)
+            {
+                var origin = unitOfWork.ChannelStateDbRepository is { } state
+                                 ? await state.GetHtlcOriginAsync(channelId, new HtlcKey(spec.Direction, spec.Id))
+                                 : null;
+                return
+                [
+                    (OnchainAccounting.ClaimedByKey, "peer"),
+                    (OnchainAccounting.ValueBookedByKey, origin?.Kind switch
+                    {
+                        HtlcOriginKind.Local => "payment",
+                        HtlcOriginKind.Forwarded => "forward",
+                        _ => null
+                    }),
+                    (OnchainAccounting.BucketKey, OnchainAccounting.PendingBucket)
+                ];
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogDebug(e, "Channel {ChannelId}: the owner of HTLC {HtlcId}'s value could not be read",
+                             channelId, spec.Id);
+        }
+
+        return [];
+    }
+
+    /// <summary>What a row's change in a round is, for the accounting feed.</summary>
+    private static AccountingTransition GetTransition(OutputResolutionModel? before, OutputResolutionModel after,
+                                                      OutpointSpentEventArgs? spent)
+    {
+        if (before is { State: OutputResolutionState.Resolved }
+         && after.State is OutputResolutionState.Pending or OutputResolutionState.Waiting
+                                                         or OutputResolutionState.Broadcast)
+            return AccountingTransition.Unresolved;
+
+        // Only a row still open before the round: a replayed spend or a resolution moved by a reorg is no new fact
+        if (before is not null && before.State is not (OutputResolutionState.Pending or OutputResolutionState.Waiting
+                                                                                      or OutputResolutionState.Broadcast))
+            return AccountingTransition.None;
+
+        if (after.State == OutputResolutionState.Resolved && spent is not null
+                                                          && spent.SpentTransactionId == after.TransactionId
+                                                          && spent.SpentOutputIndex == after.OutputIndex)
+            return AccountingTransition.Resolved;
+
+        return after.State == OutputResolutionState.Ignored
+                   ? AccountingTransition.Ignored
+                   : AccountingTransition.None;
     }
 
     /// <summary>Stages every action in the round's unit of work and saves once (nothing is saved when nothing changed).
@@ -1095,6 +1330,14 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     private static uint Depth(uint tip, uint height) => tip >= height ? tip - height + 1 : 0;
 
     private static string Display(TxId txId) => new uint256(txId).ToString();
+
+    private enum AccountingTransition
+    {
+        None,
+        Resolved,
+        Ignored,
+        Unresolved
+    }
 
     private sealed record Applied(
         bool Saved,

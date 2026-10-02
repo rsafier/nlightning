@@ -42,4 +42,12 @@ public interface IAccountingEventDbRepository
     /// <summary>Sealed events from <paramref name="fromLedgerSeq"/> on, in ledger order, for a chain check.</summary>
     Task<IReadOnlyList<AccountingEventModel>> GetSealedRangeAsync(long fromLedgerSeq, int take,
                                                                   CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The event with this key, staged in this unit of work or saved (sealed or not, duplicates excluded; the first
+    /// written when several are), or null. Writers of compensating entries read the original's amounts with it (a
+    /// reorg's <see cref="Enums.AccountingEventKind.Reversal"/>). The default (test doubles) knows none.
+    /// </summary>
+    Task<AccountingEventModel?> GetByKeyAsync(string eventKey, CancellationToken cancellationToken = default) =>
+        Task.FromResult<AccountingEventModel?>(null);
 }

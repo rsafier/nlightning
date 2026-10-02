@@ -4,7 +4,11 @@ using NBitcoin;
 
 namespace NLightning.Application.Onchain;
 
+using Accounting;
 using Channels.Safety.Interfaces;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Models;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.ValueObjects;
@@ -69,13 +73,15 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
     private readonly ILogger<OnchainChannelWatcher> _logger;
     private readonly IOutpointWatcher _outpointWatcher;
     private readonly IServiceScopeFactory _serviceScopeFactory;
+    private readonly TimeProvider _timeProvider;
 
     public OnchainChannelWatcher(IChannelErrorSender channelErrorSender, IChannelLockProvider channelLockProvider,
                                  IChannelMemoryRepository channelMemoryRepository,
                                  ICommitmentOutputMapper commitmentOutputMapper, IOnchainResolutionExecutor executor,
                                  ILogger<OnchainChannelWatcher> logger, IOutpointWatcher outpointWatcher,
-                                 IServiceScopeFactory serviceScopeFactory)
+                                 IServiceScopeFactory serviceScopeFactory, TimeProvider? timeProvider = null)
     {
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _channelErrorSender = channelErrorSender;
         _channelLockProvider = channelLockProvider;
         _channelMemoryRepository = channelMemoryRepository;
@@ -181,12 +187,12 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                                             spentFunding.Status);
 
                     var closeKind = ToCloseKind(classification.Kind);
-                    var (descriptors, point, unmapped) =
+                    var (descriptors, point, unmapped, spec) =
                         await MapOutputsAsync(scope, channel, classification, spend, spentFunding, fundings, factory);
                     if (existing is not null)
                         await RetireReplacedCloseAsync(unitOfWork, channelId, existing, spend.TxId);
                     recorded = await PersistAsync(scope, channel, args, spend, classification, closeKind, descriptors,
-                                                  point, unmapped, spentFunding, fundings);
+                                                  point, unmapped, spentFunding, fundings, spec);
                     break;
             }
         }
@@ -385,9 +391,93 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                                                  && !SpendsFrom(b, newSpend)))
             await unitOfWork.BroadcastTransactionDbRepository.MarkAbandonedAsync(stale.TransactionId);
 
+        // NL-602: the old close and the resolutions of its outputs are negated in the same save
+        await StageRetiredCloseReversalsAsync(unitOfWork, channelId, old, rows, newSpend);
+
         _logger.LogWarning("Channel {ChannelId}: the {Count} output(s) of the reorged-out close {TxId} are ignored and "
                          + "its pending transactions abandoned", channelId, rows.Count,
                            Display(old.CommitmentTransactionId));
+    }
+
+    /// <summary>
+    /// Stages the <see cref="AccountingEventKind.ChannelForceClosed"/> event of a close being recorded (see
+    /// <see cref="OnchainAccounting"/>). Never throws: a failure is logged and the close is recorded without it.
+    /// </summary>
+    private async Task StageForceClosedEventAsync(IUnitOfWork unitOfWork, ChannelModel channel,
+                                                  ChannelCloseKind closeKind, ChainTx spend, ulong? commitmentNumber,
+                                                  uint height, IReadOnlyList<CommitmentOutputDescriptor> descriptors,
+                                                  CommitmentTxSpec? spec, ChannelFunding spentFunding)
+    {
+        try
+        {
+            if (unitOfWork.AccountingEventDbRepository is not { } accounting)
+                return;
+
+            var key = await OnchainAccounting.NewKeyAsync(
+                          accounting, AccountingEventKeys.ChannelForceClosed(channel.ChannelId, spend.TxId), height,
+                          CancellationToken.None);
+            if (key is null)
+                return;
+
+            accounting.Add(OnchainAccounting.ForceClosed(channel, key, closeKind, spend, commitmentNumber, height,
+                                                         descriptors, spec, LocalSource(channel)?.Spec, spentFunding,
+                                                         _timeProvider.GetUtcNow()));
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Channel {ChannelId}: the accounting event of close {TxId} could not be staged",
+                               channel.ChannelId, Display(spend.TxId));
+        }
+    }
+
+    /// <summary>
+    /// Stages the <see cref="AccountingEventKind.Reversal"/>s of a close another transaction replaced: the
+    /// resolutions of its outputs (resolved or given up) and the close itself. Never throws.
+    /// </summary>
+    private async Task StageRetiredCloseReversalsAsync(IUnitOfWork unitOfWork, ChannelId channelId,
+                                                       ChannelCloseModel old,
+                                                       IReadOnlyList<OutputResolutionModel> rows, TxId newSpend)
+    {
+        try
+        {
+            if (unitOfWork.AccountingEventDbRepository is not { } accounting)
+                return;
+
+            var now = _timeProvider.GetUtcNow();
+            foreach (var row in rows.Where(r => r.TransactionId != newSpend))
+            {
+                AccountingEventModel? resolution = null;
+                if (row.State == OutputResolutionState.Resolved)
+                {
+                    foreach (var key in OnchainAccounting.ResolutionKeys(row.TransactionId, row.OutputIndex))
+                        if ((resolution = await OnchainAccounting.FindAsync(accounting, key, row.ResolvedHeight,
+                                                                           CancellationToken.None)) is not null)
+                            break;
+                }
+                else if (row.State == OutputResolutionState.Ignored)
+                {
+                    resolution = await accounting.GetByKeyAsync(
+                                     AccountingEventKeys.OutputIgnored(row.TransactionId, row.OutputIndex));
+                }
+
+                if (resolution is not null)
+                    await OnchainAccounting.StageReversalAsync(accounting, resolution,
+                                                               row.ResolvedHeight ?? old.SpentAtHeight, now,
+                                                               CancellationToken.None);
+            }
+
+            var close = await OnchainAccounting.FindAsync(
+                            accounting, AccountingEventKeys.ChannelForceClosed(channelId, old.CommitmentTransactionId),
+                            old.SpentAtHeight, CancellationToken.None);
+            if (close is not null)
+                await OnchainAccounting.StageReversalAsync(accounting, close, old.SpentAtHeight, now,
+                                                           CancellationToken.None);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Channel {ChannelId}: the accounting reversals of the replaced close {TxId} could not "
+                                + "be staged", channelId, Display(old.CommitmentTransactionId));
+        }
     }
 
     /// <summary>
@@ -619,7 +709,8 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
     /// commitment that can't be mapped still yields our <c>to_remote</c> (static_remotekey: found by script whatever
     /// the number, B5-RMT-03).
     /// </summary>
-    private async Task<(IReadOnlyList<CommitmentOutputDescriptor> Outputs, CompactPubKey? Point, string? Unmapped)>
+    private async Task<(IReadOnlyList<CommitmentOutputDescriptor> Outputs, CompactPubKey? Point, string? Unmapped,
+            CommitmentTxSpec? Spec)>
         MapOutputsAsync(IServiceScope scope, ChannelModel channel, FundingSpendClassification classification,
                         ChainTx spend, ChannelFunding funding, IReadOnlyList<ChannelFunding> fundings,
                         ICommitmentTransactionModelFactory? factory)
@@ -638,24 +729,28 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                                                    sources.Remote ?? RemoteSource(channel),
                                                    sources.RemoteNext ?? RemoteNextSource(channel));
             CommitmentOutputMap? map = null;
+            CommitmentTxSpec? balanceSpec = null;
             var predatesLog = false;
             switch (classification.Kind)
             {
                 case FundingSpendKind.LocalCommit when current.Local is var (spec, _, _):
                     map = OnchainFundings.Map(_commitmentOutputMapper, factory, channel, funding, spec,
                                               CommitmentCase.Local, number, null, spend);
+                    balanceSpec = spec;
                     break;
                 case FundingSpendKind.RemoteCommit when current.Remote is var (spec, _, point):
                     map = OnchainFundings.Map(_commitmentOutputMapper, factory, channel, funding, spec,
                                               CommitmentCase.Remote, number, point, spend);
+                    balanceSpec = spec;
                     break;
                 case FundingSpendKind.RemoteNextCommit when current.RemoteNext is var (spec, _, point):
                     map = OnchainFundings.Map(_commitmentOutputMapper, factory, channel, funding, spec,
                                               CommitmentCase.Remote, number, point, spend);
+                    balanceSpec = spec;
                     break;
                 case FundingSpendKind.Revoked:
-                    (map, predatesLog) = await MapRevokedAsync(scope, channel, number, spend, funding, fundings,
-                                                               factory);
+                    (map, predatesLog, balanceSpec) = await MapRevokedAsync(scope, channel, number, spend, funding,
+                                                                            fundings, factory);
                     break;
             }
 
@@ -665,15 +760,16 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                 outputs.AddRange(FindToRemote(channel, spend).Where(r => outputs.All(o => o.Vout != r.Vout)));
 
             var ordered = outputs.OrderBy(o => o.Vout).ToList();
-            return (ordered, map?.PerCommitmentPoint, DescribeUnmapped(spend, map, ordered, predatesLog));
+            return (ordered, map?.PerCommitmentPoint, DescribeUnmapped(spend, map, ordered, predatesLog),
+                    map is null ? null : balanceSpec);
         }
         catch (Exception e)
         {
             _logger.LogCritical(e, "Could not map the outputs of {Kind} {TxId} of channel {ChannelId}",
                                 classification.Kind, Display(spend.TxId), channel.ChannelId);
             return classification.Kind is FundingSpendKind.LocalCommit or FundingSpendKind.Unknown
-                       ? ([], null, null)
-                       : (FindToRemote(channel, spend), null, null);
+                       ? ([], null, null, null)
+                       : (FindToRemote(channel, spend), null, null, null);
         }
     }
 
@@ -710,16 +806,17 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
     /// A revoked commitment: the point is <c>secret * G</c> with the peer's secret from our shachain; the spec comes
     /// from the revocation log of the funding it spends (NL-479, SP-I5; only commitments with HTLCs have an entry).
     /// Without an entry the outputs are mapped by script from a stand-in spec without HTLCs at that funding's
-    /// capacity: <c>to_local</c> and <c>to_remote</c> scripts do not depend on the amounts.
+    /// capacity: <c>to_local</c> and <c>to_remote</c> scripts do not depend on the amounts. The spec is returned only
+    /// when it came from the log (the stand-in's balances are not the commitment's).
     /// </summary>
-    private async Task<(CommitmentOutputMap? Map, bool PredatesLog)> MapRevokedAsync(
+    private async Task<(CommitmentOutputMap? Map, bool PredatesLog, CommitmentTxSpec? Spec)> MapRevokedAsync(
         IServiceScope scope, ChannelModel channel, ulong number, ChainTx spend, ChannelFunding funding,
         IReadOnlyList<ChannelFunding> fundings, ICommitmentTransactionModelFactory? modelFactory)
     {
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var factory = scope.ServiceProvider.GetService<ISecretStorageServiceFactory>();
         if (factory is null)
-            return (null, false);
+            return (null, false, null);
 
         CompactPubKey point;
         using (var shachain = factory.CreatePerCommitmentStorage())
@@ -739,7 +836,8 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                        : new CommitmentTxSpec(fundingMsat / 2, fundingMsat / 2,
                                               (ulong)channel.ChannelParams.FeeRateAmountPerKw.Satoshi);
         return (OnchainFundings.Map(_commitmentOutputMapper, modelFactory, channel, funding, spec,
-                                    CommitmentCase.Revoked, number, point, spend), predatesLog);
+                                    CommitmentCase.Revoked, number, point, spend), predatesLog,
+                logged is not null ? spec : null);
     }
 
     /// <summary>
@@ -800,7 +898,7 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                                               ChannelCloseKind closeKind,
                                               IReadOnlyList<CommitmentOutputDescriptor> descriptors,
                                               CompactPubKey? point, string? unmapped, ChannelFunding spentFunding,
-                                              IReadOnlyList<ChannelFunding> fundings)
+                                              IReadOnlyList<ChannelFunding> fundings, CommitmentTxSpec? spec)
     {
         var channelId = channel.ChannelId;
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -879,6 +977,10 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         if (stored.State < ChannelState.OnchainResolving)
             stored.UpdateState(ChannelState.OnchainResolving);
         await unitOfWork.ChannelDbRepository.UpdateAsync(stored);
+
+        // NL-602: our channel balance moves to pending on-chain funds in the save that records the close
+        await StageForceClosedEventAsync(unitOfWork, channel, closeKind, spend, classification.CommitmentNumber,
+                                         args.BlockHeight, descriptors, spec, spentFunding);
         await unitOfWork.SaveChangesAsync();
 
         if (errorBytes is not null)

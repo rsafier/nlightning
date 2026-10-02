@@ -63,4 +63,14 @@ public static class AccountingEventKeys
     /// <summary>The reversal of <paramref name="originalKey"/> when the block at <paramref name="height"/> was
     /// disconnected.</summary>
     public static string Reversal(string originalKey, uint height) => $"{originalKey}:rev:{height}";
+
+    /// <summary>An output of a force close that was given up (worth less than its own sweep): its value is lost.
+    /// </summary>
+    public static string OutputIgnored(TxId txId, uint outputIndex) => $"out:{txId}:{outputIndex}:ignored";
+
+    /// <summary>
+    /// The same fact written again at <paramref name="height"/> after its first row was reversed (a reorg moved it to
+    /// another block): <paramref name="originalKey"/> alone would be sealed as a duplicate.
+    /// </summary>
+    public static string Reemitted(string originalKey, uint height) => $"{originalKey}:re:{height}";
 }
