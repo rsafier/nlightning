@@ -4,12 +4,14 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Infrastructure.Repositories;
 
+using Database.Accounting;
 using Database.Bitcoin;
 using Database.Channel;
 using Database.Gossip;
 using Database.Node;
 using Database.Onchain;
 using Database.Payment;
+using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
@@ -84,6 +86,9 @@ public class UnitOfWork : IUnitOfWork
     // BOLT 12 offers
     private OfferDbRepository? _offerDbRepository;
 
+    // Accounting feed (NL-602)
+    private AccountingEventDbRepository? _accountingEventDbRepository;
+
     public IBlockchainStateDbRepository BlockchainStateDbRepository =>
         _blockchainStateDbRepository ??= new BlockchainStateDbRepository(_context);
 
@@ -156,6 +161,9 @@ public class UnitOfWork : IUnitOfWork
         _onionReplayDbRepository ??= new OnionReplayDbRepository(_context);
 
     public IOfferDbRepository OfferDbRepository => _offerDbRepository ??= new OfferDbRepository(_context);
+
+    public IAccountingEventDbRepository AccountingEventDbRepository =>
+        _accountingEventDbRepository ??= new AccountingEventDbRepository(_context);
 
     public IInteractiveTxSessionDbRepository InteractiveTxSessionDbRepository =>
         _interactiveTxSessionDbRepository ??= new InteractiveTxSessionDbRepository(_context);

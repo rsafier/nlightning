@@ -217,6 +217,13 @@ public class ChannelEntity
     public long? RemoteFundingContributionSatoshis { get; set; }
 
     /// <summary>
+    /// The amount the opener pushed to the other side at the open, in msat (NL-605, migration AddAccountingEvents): set
+    /// once by the open flow through <c>ChannelFundingDbRepository.SetPushAmountAsync</c>; null for channels opened
+    /// before it was recorded.
+    /// </summary>
+    public long? PushAmountMsat { get; set; }
+
+    /// <summary>
     /// The (Index, IsChange, AddressType) foreign key to the change address used by the funding transaction, if
     /// there's one (NL-134: the IsChange and AddressType legs used to exist only as EF shadow properties).
     /// </summary>

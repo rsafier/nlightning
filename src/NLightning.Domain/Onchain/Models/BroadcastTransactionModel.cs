@@ -4,6 +4,7 @@ using Bitcoin.ValueObjects;
 using Channels.ValueObjects;
 using Crypto.ValueObjects;
 using Enums;
+using Money;
 
 /// <summary>
 /// A transaction we broadcast, stored with its raw bytes so it can be rebroadcast after a failed send, a restart, a
@@ -54,19 +55,27 @@ public sealed class BroadcastTransactionModel
     /// </summary>
     public ulong? CommitmentNumber { get; }
 
+    /// <summary>
+    /// The absolute fee of the transaction, when the code that built it knew every input value (NL-604); null for rows
+    /// saved before it was recorded or built without the input values.
+    /// </summary>
+    public LightningMoney? Fee { get; }
+
     public BroadcastTransactionModel(SignedTransaction transaction, BroadcastPurpose purpose, ChannelId? channelId,
                                      uint firstBroadcastHeight, uint feeratePerKw = 0,
-                                     TxId? replacesTransactionId = null, ulong? commitmentNumber = null)
+                                     TxId? replacesTransactionId = null, ulong? commitmentNumber = null,
+                                     LightningMoney? fee = null)
         : this(transaction?.TxId ?? throw new ArgumentNullException(nameof(transaction)), transaction.RawTxBytes,
                purpose, channelId, feeratePerKw, replacesTransactionId, firstBroadcastHeight, BroadcastState.Pending,
-               null, null, DateTimeOffset.UtcNow, commitmentNumber)
+               null, null, DateTimeOffset.UtcNow, commitmentNumber, fee)
     {
     }
 
     private BroadcastTransactionModel(TxId transactionId, byte[] rawTransaction, BroadcastPurpose purpose,
                                       ChannelId? channelId, uint feeratePerKw, TxId? replacesTransactionId,
                                       uint firstBroadcastHeight, BroadcastState state, uint? confirmedHeight,
-                                      Hash? confirmedBlockHash, DateTimeOffset createdAt, ulong? commitmentNumber)
+                                      Hash? confirmedBlockHash, DateTimeOffset createdAt, ulong? commitmentNumber,
+                                      LightningMoney? fee)
     {
         ArgumentNullException.ThrowIfNull(rawTransaction);
         if (rawTransaction.Length == 0)
@@ -86,6 +95,7 @@ public sealed class BroadcastTransactionModel
         ConfirmedBlockHash = confirmedBlockHash;
         CreatedAt = createdAt;
         CommitmentNumber = commitmentNumber;
+        Fee = fee;
     }
 
     /// <summary>Rebuilds a stored broadcast (persistence only).</summary>
@@ -94,11 +104,12 @@ public sealed class BroadcastTransactionModel
                                                     uint feeratePerKw, TxId? replacesTransactionId,
                                                     uint firstBroadcastHeight, BroadcastState state,
                                                     uint? confirmedHeight, Hash? confirmedBlockHash,
-                                                    DateTimeOffset createdAt, ulong? commitmentNumber = null)
+                                                    DateTimeOffset createdAt, ulong? commitmentNumber = null,
+                                                    LightningMoney? fee = null)
     {
         return new BroadcastTransactionModel(transactionId, rawTransaction, purpose, channelId, feeratePerKw,
                                              replacesTransactionId, firstBroadcastHeight, state, confirmedHeight,
-                                             confirmedBlockHash, createdAt, commitmentNumber);
+                                             confirmedBlockHash, createdAt, commitmentNumber, fee);
     }
 
     /// <summary>The transaction as a <see cref="SignedTransaction"/>.</summary>

@@ -105,4 +105,17 @@ public interface IChannelFundingDbRepository
 
     /// <summary>The contributions of a dual-funded channel, or null for a v1 channel.</summary>
     Task<(LightningMoney Local, LightningMoney Remote)?> GetDualFundedContributionsAsync(ChannelId channelId);
+
+    /// <summary>
+    /// Records the amount the opener pushed to the other side at the open (NL-605). The channel may be staged in this
+    /// unit of work. The default is for test doubles that store none.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The channel does not exist.</exception>
+    Task SetPushAmountAsync(ChannelId channelId, LightningMoney pushAmount) => Task.CompletedTask;
+
+    /// <summary>
+    /// The amount the opener pushed at the open, or null when it was not recorded (channels opened before NL-605). The
+    /// default is for test doubles that store none.
+    /// </summary>
+    Task<LightningMoney?> GetPushAmountAsync(ChannelId channelId) => Task.FromResult<LightningMoney?>(null);
 }

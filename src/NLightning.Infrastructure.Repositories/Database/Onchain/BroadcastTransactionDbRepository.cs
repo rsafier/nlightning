@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Repositories.Database.Onchain;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
@@ -42,7 +43,8 @@ public class BroadcastTransactionDbRepository
             ConfirmedHeight = transaction.ConfirmedHeight,
             ConfirmedBlockHash = transaction.ConfirmedBlockHash,
             CreatedAt = transaction.CreatedAt,
-            CommitmentNumber = transaction.CommitmentNumber is { } number ? (long)number : null
+            CommitmentNumber = transaction.CommitmentNumber is { } number ? (long)number : null,
+            FeeSat = transaction.Fee is { } fee ? checked((long)fee.Satoshi) : null
         });
     }
 
@@ -150,6 +152,7 @@ public class BroadcastTransactionDbRepository
                                                  entity.FirstBroadcastHeight, (BroadcastState)entity.State,
                                                  entity.ConfirmedHeight, entity.ConfirmedBlockHash,
                                                  entity.CreatedAt,
-                                                 entity.CommitmentNumber is { } number ? (ulong)number : null);
+                                                 entity.CommitmentNumber is { } number ? (ulong)number : null,
+                                                 entity.FeeSat is { } feeSat ? LightningMoney.Satoshis(feeSat) : null);
     }
 }

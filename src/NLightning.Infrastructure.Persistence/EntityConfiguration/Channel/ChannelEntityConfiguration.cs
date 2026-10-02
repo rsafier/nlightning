@@ -86,6 +86,7 @@ public static class ChannelEntityConfiguration
             entity.Property(e => e.IsDualFunded).IsRequired();
             entity.Property(e => e.LocalFundingContributionSatoshis).IsRequired(false);
             entity.Property(e => e.RemoteFundingContributionSatoshis).IsRequired(false);
+            entity.Property(e => e.PushAmountMsat).IsRequired(false);
 
             // Configure the relationship with the funding change address (optional, many-to-one from the wallet
             // address keyed by (Index, IsChange, AddressType)). Configured explicitly (NL-134): the IsChange and

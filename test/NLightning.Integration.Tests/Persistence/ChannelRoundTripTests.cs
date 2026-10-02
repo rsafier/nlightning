@@ -291,6 +291,32 @@ public class ChannelRoundTripTests
         Assert.Equal(3U, info.LocalFundingKeyIndex);
     }
 
+    [Fact]
+    public async Task Given_APushAmountSetWithTheNewChannel_When_TheChannelIsUpdatedAndReloaded_Then_ItIsKept()
+    {
+        // Arrange: NL-605: the open flow records the push in the channel's first save
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        await AddChangeAddressAsync(db);
+        var channel = CreateFullChannel(true);
+        await using (var writeContext = db.CreateDbContext())
+        {
+            await new ChannelDbRepository(writeContext, db.Sha256).AddAsync(channel);
+            await new ChannelFundingDbRepository(writeContext)
+                 .SetPushAmountAsync(channel.ChannelId, LightningMoney.MilliSatoshis(12_345_678UL));
+            await writeContext.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Act: a later model update must not clear the column
+        await UpdateAndReloadAsync(db, channel);
+        await using var readContext = db.CreateDbContext();
+        var push = await new ChannelFundingDbRepository(readContext).GetPushAmountAsync(channel.ChannelId);
+        var unknown = await new ChannelFundingDbRepository(readContext).GetPushAmountAsync(ChannelId.Zero);
+
+        // Assert
+        Assert.Equal(LightningMoney.MilliSatoshis(12_345_678UL), push);
+        Assert.Null(unknown);
+    }
+
     private static TxId TxIdOf(byte seed) => new(Enumerable.Repeat(seed, 32).ToArray());
 
     private static async Task<ChannelModel> SaveAndReloadAsync(SqliteDbTestContext db, ChannelModel channel)

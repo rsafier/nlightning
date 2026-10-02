@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Persistence.Interfaces;
 
+using Accounting.Interfaces;
 using Bitcoin.Interfaces;
 using Bitcoin.ValueObjects;
 using Bitcoin.Wallet.Models;
@@ -90,6 +91,10 @@ public interface IUnitOfWork : IDisposable
     // AddSpliceFundings); the default is for test doubles that store none
     IChannelFundingDbRepository ChannelFundingDbRepository =>
         throw new NotSupportedException("This unit of work does not store channel fundings.");
+
+    // The accounting feed (NL-602, migration AddAccountingEvents); the default is for test doubles that store none:
+    // writes go nowhere
+    IAccountingEventDbRepository AccountingEventDbRepository => NullAccountingEventDbRepository.Instance;
 
     /// <summary>
     /// Every saved peer with its channels, plus a peer marked <see cref="PeerModel.IsInboundOnly"/> for every channel

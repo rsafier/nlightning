@@ -181,6 +181,21 @@ public class ChannelFundingDbRepository : IChannelFundingDbRepository
                 LightningMoney.Satoshis(channel.RemoteFundingContributionSatoshis ?? 0));
     }
 
+    /// <inheritdoc />
+    public async Task SetPushAmountAsync(ChannelId channelId, LightningMoney pushAmount)
+    {
+        ArgumentNullException.ThrowIfNull(pushAmount);
+        var channel = await FindChannelAsync(channelId);
+        channel.PushAmountMsat = checked((long)pushAmount.MilliSatoshi);
+    }
+
+    /// <inheritdoc />
+    public async Task<LightningMoney?> GetPushAmountAsync(ChannelId channelId)
+    {
+        var channel = await _context.Channels.FindAsync(channelId);
+        return channel?.PushAmountMsat is { } pushMsat ? LightningMoney.MilliSatoshis(pushMsat) : null;
+    }
+
     /// <summary>
     /// The funding rows of a channel, saved and staged (not the ones this unit of work deleted), in creation order.
     /// </summary>

@@ -52,7 +52,10 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         // Written only through ChannelFundingDbRepository (migration AddSpliceFundings, splicing plan wave DF)
         nameof(ChannelEntity.IsDualFunded),
         nameof(ChannelEntity.LocalFundingContributionSatoshis),
-        nameof(ChannelEntity.RemoteFundingContributionSatoshis)
+        nameof(ChannelEntity.RemoteFundingContributionSatoshis),
+
+        // Written only through ChannelFundingDbRepository.SetPushAmountAsync (NL-605, migration AddAccountingEvents)
+        nameof(ChannelEntity.PushAmountMsat)
     ];
 
     /// <summary>

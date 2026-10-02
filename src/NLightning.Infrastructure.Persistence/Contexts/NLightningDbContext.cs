@@ -2,12 +2,14 @@ using Microsoft.EntityFrameworkCore;
 
 namespace NLightning.Infrastructure.Persistence.Contexts;
 
+using Entities.Accounting;
 using Entities.Bitcoin;
 using Entities.Channel;
 using Entities.Gossip;
 using Entities.Node;
 using Entities.Onchain;
 using Entities.Payment;
+using EntityConfiguration.Accounting;
 using EntityConfiguration.Bitcoin;
 using EntityConfiguration.Channel;
 using EntityConfiguration.Gossip;
@@ -71,6 +73,9 @@ public class NLightningDbContext : DbContext
     public DbSet<OnionReplayEntryEntity> OnionReplayEntries { get; set; }
     public DbSet<OfferEntity> Offers { get; set; }
 
+    // Accounting feed (NL-602)
+    public DbSet<AccountingEventEntity> AccountingEvents { get; set; }
+
     // Gossip graph DbSets (BOLT 7 plan G2-T3)
     public DbSet<GraphNodeEntity> GraphNodes { get; set; }
     public DbSet<GraphChannelEntity> GraphChannels { get; set; }
@@ -121,6 +126,9 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureForwardCircuitEntity(_databaseType);
         modelBuilder.ConfigureOnionReplayEntryEntity(_databaseType);
         modelBuilder.ConfigureOfferEntity(_databaseType);
+
+        // Accounting feed (NL-602)
+        modelBuilder.ConfigureAccountingEventEntity(_databaseType);
 
         // Gossip graph entities
         modelBuilder.ConfigureGraphNodeEntity(_databaseType);

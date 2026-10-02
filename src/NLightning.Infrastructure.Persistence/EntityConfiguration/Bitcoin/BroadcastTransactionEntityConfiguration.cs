@@ -41,6 +41,7 @@ public static class BroadcastTransactionEntityConfiguration
                   .HasConversion<UtcTicksConverter>()
                   .IsRequired();
             entity.Property(e => e.CommitmentNumber).IsRequired(false);
+            entity.Property(e => e.FeeSat).IsRequired(false);
 
             // Every block reads the pending set; a reorg unconfirms the ones above the fork
             entity.HasIndex(e => e.State);

@@ -33,6 +33,11 @@ public class BroadcastTransactionEntity
     /// </summary>
     public long? CommitmentNumber { get; set; }
 
+    /// <summary>
+    /// The absolute fee in satoshis when the builder knew every input value (NL-604, migration AddAccountingEvents).
+    /// </summary>
+    public long? FeeSat { get; set; }
+
     // Default constructor for EF Core
     internal BroadcastTransactionEntity() { }
 }

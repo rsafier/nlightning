@@ -3,6 +3,7 @@ using NBitcoin;
 namespace NLightning.Integration.Tests.Persistence;
 
 using Domain.Bitcoin.ValueObjects;
+using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
 using Infrastructure.Repositories.Database.Onchain;
@@ -42,6 +43,34 @@ public class BroadcastCommitmentNumberTests
         var local = Assert.Single(stored, b => b.Purpose == BroadcastPurpose.LocalCommitment);
         Assert.Equal(0xFFFF_FFFF_FFFFUL, local.CommitmentNumber);
         Assert.Null(Assert.Single(stored, b => b.Purpose == BroadcastPurpose.Funding).CommitmentNumber);
+    }
+
+    [Fact]
+    public async Task Given_ABroadcastWithItsFee_When_Reloaded_Then_TheFeeIsKept()
+    {
+        // Arrange: NL-604: the builder records the absolute fee when it knows every input value
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        var withFee = ChainMonitorPersistenceTests.CreateTransaction(0x61);
+        var withoutFee = ChainMonitorPersistenceTests.CreateTransaction(0x62);
+        await using (var context = harness.Context())
+        {
+            var repository = new BroadcastTransactionDbRepository(context);
+            repository.Add(new BroadcastTransactionModel(ToSigned(withFee), BroadcastPurpose.WalletSend, null, 100,
+                                                         fee: LightningMoney.Satoshis(1_234L)));
+            repository.Add(new BroadcastTransactionModel(ToSigned(withoutFee), BroadcastPurpose.Sweep, null, 100));
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Act
+        await using var readContext = harness.Context();
+        var repositoryAfter = new BroadcastTransactionDbRepository(readContext);
+        var reloadedWithFee = await repositoryAfter.GetByTransactionIdAsync(new TxId(withFee.GetHash().ToBytes()));
+        var reloadedWithout = await repositoryAfter.GetByTransactionIdAsync(new TxId(withoutFee.GetHash().ToBytes()));
+
+        // Assert
+        Assert.Equal(LightningMoney.Satoshis(1_234L), reloadedWithFee!.Fee);
+        Assert.Null(reloadedWithout!.Fee);
     }
 
     [Fact]

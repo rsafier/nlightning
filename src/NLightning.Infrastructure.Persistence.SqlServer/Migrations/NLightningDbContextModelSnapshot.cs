@@ -22,6 +22,80 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingEventEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<long>("AmountMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("BlockHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("Counterparty")
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<string>("Details")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("EventKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<long>("FeeMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Finality")
+                        .HasColumnType("tinyint");
+
+                    b.Property<int>("Flags")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("Hash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("int");
+
+                    b.Property<long?>("LedgerSeq")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("OccurredAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("OutputIndex")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("ShortChannelId")
+                        .HasColumnType("varbinary(8)");
+
+                    b.Property<byte[]>("TxId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChannelId");
+
+                    b.HasIndex("EventKey");
+
+                    b.HasIndex("LedgerSeq");
+
+                    b.HasIndex("OccurredAt");
+
+                    b.ToTable("AccountingEvents");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.BlockHeaderEntity", b =>
                 {
                     b.Property<long>("Height")
@@ -79,6 +153,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .HasColumnType("bigint");
 
                     b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("FeeSat")
                         .HasColumnType("bigint");
 
                     b.Property<long>("FeeratePerKw")
@@ -457,6 +534,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<decimal?>("MaxDustHtlcExposureMsat")
                         .HasColumnType("decimal(20,0)");
+
+                    b.Property<long?>("PushAmountMsat")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("RemoteAlias")
                         .HasColumnType("varbinary(8)");
