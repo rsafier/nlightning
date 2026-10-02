@@ -26,11 +26,13 @@ Framework=${EF_FRAMEWORK:-net10.0}
 DesignProject='../NLightning.Infrastructure.Persistence.Design'
 unset NLIGHTNING_POSTGRES NLIGHTNING_SQLITE NLIGHTNING_SQLSERVER
 
-# The old models go first (a removed entity's files would otherwise stay), and the context is loaded from a build
-# without them (NltgNoCompiledModels): after a model change they may no longer compile
-for provider in Sqlite Postgres SqlServer; do
-  rm -f CompiledModels/"$provider"/*.cs
-done
+# The new models are generated into a temporary folder and replace the committed ones only when the three providers
+# succeeded; the context is loaded from a build without the committed ones (NltgNoCompiledModels): after a model
+# change they may no longer compile. A failure at any step (dotnet-ef missing, a generator or build error) leaves the
+# committed models in place, so the solution still builds as before (the final build's failure restores them too).
+work="$(mktemp -d "${TMPDIR:-/tmp}/nltg-compiled-models.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
 echo "Building the design-time project without compiled models (Debug, $Framework)..."
 dotnet build -c Debug "$DesignProject" --framework "$Framework" -p:NltgNoCompiledModels=true \
   -p:MSBuildWarningsAsMessages=MSB4121 -nologo -v quiet
@@ -40,11 +42,12 @@ generate() {
   echo "Compiled model: $provider"
   env "$variable=$connection" dotnet ef dbcontext optimize --no-build --framework "$Framework" \
     --project . --startup-project "$DesignProject" \
-    --output-dir "CompiledModels/$provider" --namespace "NLightning.Infrastructure.Persistence.CompiledModels.$provider" \
+    --output-dir "$work/new/$provider" --namespace "NLightning.Infrastructure.Persistence.CompiledModels.$provider" \
     --nativeaot
   # The assembly attribute makes EF pick this model for every NLightningDbContext, whatever its provider; with three
   # models in one assembly each is chosen explicitly instead (CompiledModelCatalog, UseModel)
-  rm -f "CompiledModels/$provider/NLightningDbContextAssemblyAttributes.cs"
+  rm -f "$work/new/$provider/NLightningDbContextAssemblyAttributes.cs"
+  compgen -G "$work/new/$provider/*.cs" > /dev/null || { echo "dotnet ef wrote no $provider model" >&2; exit 1; }
 }
 
 generate Sqlite NLIGHTNING_SQLITE 'Data Source=:memory:'
@@ -52,7 +55,22 @@ generate Postgres NLIGHTNING_POSTGRES 'Host=localhost;Database=nlightning'
 generate SqlServer NLIGHTNING_SQLSERVER 'Server=localhost;Database=nlightning'
 
 # The generator writes a BOM and CRLF in places; the repository wants plain UTF-8 and LF (.editorconfig)
-find CompiledModels -name '*.cs' -exec perl -0777 -pi -e 's/\A\xEF\xBB\xBF//; s/\r\n/\n/g' {} +
+find "$work/new" -name '*.cs' -exec perl -0777 -pi -e 's/\A\xEF\xBB\xBF//; s/\r\n/\n/g' {} +
+
+# Every provider succeeded: the old models go (a removed entity's files would otherwise stay), kept aside until the
+# new ones build
+restore() {
+  for provider in Sqlite Postgres SqlServer; do
+    rm -f CompiledModels/"$provider"/*.cs
+    cp "$work/old/$provider"/*.cs CompiledModels/"$provider"/
+  done
+}
+for provider in Sqlite Postgres SqlServer; do
+  mkdir -p "$work/old/$provider" CompiledModels/"$provider"
+  cp CompiledModels/"$provider"/*.cs "$work/old/$provider"/ 2> /dev/null || true
+  rm -f CompiledModels/"$provider"/*.cs
+  cp "$work/new/$provider"/*.cs CompiledModels/"$provider"/
+done
 
 # EF writes a new random modelId every time; when nothing else changed, keep the committed one so a regeneration
 # without a model change leaves the tree clean
@@ -67,7 +85,11 @@ for provider in Sqlite Postgres SqlServer; do
 done
 
 echo "Building with the new compiled models..."
-dotnet build -c Debug . --framework "$Framework" -p:MSBuildWarningsAsMessages=MSB4121 -nologo -v quiet
+if ! dotnet build -c Debug . --framework "$Framework" -p:MSBuildWarningsAsMessages=MSB4121 -nologo -v quiet; then
+  restore
+  echo "The new compiled models do not build; the previous ones were put back." >&2
+  exit 1
+fi
 
 if $check_queries; then
   # Query precompilation (dotnet ef dbcontext optimize --precompile-queries) is all or nothing: one query it cannot
