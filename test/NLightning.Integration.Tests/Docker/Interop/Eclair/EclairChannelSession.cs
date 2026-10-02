@@ -57,6 +57,8 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
 
     public CompactPubKey EclairPubKey => Convert.FromHexString(_fixture.EclairNodeId);
 
+    public string EclairPubKeyHex => _fixture.EclairNodeId;
+
     /// <summary>The shared channel we fund, built once per fixture on its own token.</summary>
     public static Task<EclairChannelSession> GetAsync(EclairFixture fixture, CancellationToken cancellationToken) =>
         ClnChannelSession.GetOrBuildDetachedAsync(factory => fixture.GetOrCreateAsync(CacheKey, factory),

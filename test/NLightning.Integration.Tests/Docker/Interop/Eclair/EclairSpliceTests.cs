@@ -760,16 +760,30 @@ public sealed class EclairSpliceTests : IAsyncLifetime
         Assert.True(counts[0] > 0 && counts[1] > 0, "no batch from one side while the splice was pending");
     }
 
-    private static async Task<ChannelSnapshot> SnapshotAsync(EclairChannelSession session, CancellationToken ct)
+    private async Task<ChannelSnapshot> SnapshotAsync(EclairChannelSession session, CancellationToken ct)
     {
         await session.WaitUsableAsync(ct, requireNoHtlcs: true);
         var ours = await session.GetOurChannelAsync(ct);
-        // Eclair can be NORMAL a moment before its funding status shows the confirmation (and the short channel id)
-        var eclair = await Poll.ForAsync(async () =>
+        // Eclair, as the funder of a dual-funded channel, is NORMAL before its funding status shows the confirmation
+        // (and the short channel id): that comes with a later block
+        JsonNode? eclair = null;
+        for (var block = 0; block < MaxLockBlocks; block++)
         {
-            var channel = await session.GetEclairChannelAsync(ct);
-            return EclairShortChannelId(channel) is not null ? channel : null;
-        }, s_stepTimeout, "Eclair lists the funding's short channel id", ct);
+            eclair = await session.GetEclairChannelAsync(ct);
+            if (EclairShortChannelId(eclair) is not null)
+                break;
+
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+            eclair = await session.GetEclairChannelAsync(ct);
+            if (EclairShortChannelId(eclair) is not null)
+                break;
+
+            await _fixture.MineAndWaitAsync(1, [session.Node], ct);
+        }
+
+        Assert.NotNull(eclair);
+        Assert.True(EclairShortChannelId(eclair) is not null,
+                    $"Eclair lists no short channel id: {EclairJson.DescribeActive(eclair)}");
         Assert.NotNull(ours.FundingTxId);
         Assert.NotNull(ours.FundingOutputIndex);
         var funding = new uint256((byte[])ours.FundingTxId.Value);

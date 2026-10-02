@@ -86,9 +86,10 @@ public sealed class InvoiceService : IInvoiceService
 
     /// <summary>
     /// Blocks added to a blinded BOLT 11 invoice's expiry (at 10 minutes a block) for its paths' lifetime, as BOLT 12
-    /// invoices get <c>Offers:PathLifetimeMarginBlocks</c>.
+    /// invoices get <c>Offers:PathLifetimeMarginBlocks</c> (1,008 since NL-719: payers add a random delta to the final
+    /// expiry, Eclair up to 350 blocks).
     /// </summary>
-    public const uint BlindedPathLifetimeMarginBlocks = 144;
+    public const uint BlindedPathLifetimeMarginBlocks = Offers.Receive.OfferOptions.DefaultPathLifetimeMarginBlocks;
 
     private const uint SecondsPerBlock = 600;
 

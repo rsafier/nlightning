@@ -37,9 +37,15 @@ public sealed class OfferOptions
 
     /// <summary>
     /// Blocks added to the invoice's lifetime (its relative expiry at 10 minutes a block) for the paths'
-    /// <c>max_cltv_expiry</c>, so a payment made just before the invoice expires still fits.
+    /// <c>max_cltv_expiry</c>, so a payment made just before the invoice expires still fits, and so does the random
+    /// delta a payer adds to the final expiry to hide the recipient's position (NL-719: Eclair adds 150 to 350 blocks,
+    /// <c>eclair.send.recipient-final-expiry</c>; with the former 144 every Eclair payment over our paths was refused as
+    /// above <c>max_cltv_expiry</c>). Default 1,008 (a week); BOLT 4 lets the recipient choose it.
     /// </summary>
-    public uint PathLifetimeMarginBlocks { get; set; } = 144;
+    public uint PathLifetimeMarginBlocks { get; set; } = DefaultPathLifetimeMarginBlocks;
+
+    /// <summary>The default of <see cref="PathLifetimeMarginBlocks"/>.</summary>
+    public const uint DefaultPathLifetimeMarginBlocks = 1_008;
 
     /// <summary>
     /// How often <see cref="ExpiredBolt12InvoicePruner"/> deletes expired unpaid BOLT 12 invoices (NL-448); zero turns

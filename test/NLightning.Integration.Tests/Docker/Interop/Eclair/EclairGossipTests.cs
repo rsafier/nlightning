@@ -126,7 +126,30 @@ public sealed class EclairGossipTests : IAsyncLifetime
                             GossipGraphProbe.PollInterval);
 
         await session.AssertWePayEclairAsync(LightningMoney.Satoshis(30_000), ct);
+        await LogEclairRoutingAsync(session, ct);
         await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(10_000), ct);
+    }
+
+    /// <summary>What Eclair's router knows of the way to us: its usable balances, its own updates and a route.</summary>
+    private static async Task LogEclairRoutingAsync(EclairChannelSession session, CancellationToken ct)
+    {
+        foreach (var (method, args) in new (string, (string, object?)[])[]
+                 {
+                     ("usablebalances", []),
+                     ("allupdates", [("nodeId", (object?)session.EclairPubKeyHex)]),
+                     ("findroutetonode", [("nodeId", session.Node.NodeIdHex), ("amountMsat", 10_000_000)])
+                 })
+        {
+            try
+            {
+                Console.WriteLine($"[eclair] {method}: {(await session.Eclair.CallAsync(method, ct, args))
+                   ?.ToJsonString()}");
+            }
+            catch (EclairRpcException e)
+            {
+                Console.WriteLine($"[eclair] {method} failed: {e.Message}");
+            }
+        }
     }
 
     /// <summary>
