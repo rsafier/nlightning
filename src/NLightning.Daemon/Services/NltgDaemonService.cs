@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Services;
 
+using Application.Accounting;
 using Application.Channels.Fees;
 using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
@@ -62,6 +63,7 @@ public class NltgDaemonService : BackgroundService
     private readonly INodeBusyStateMonitor? _busyStateMonitor;
     private readonly INodeDrainState? _nodeDrainState;
     private readonly ShutdownDrainWaiter? _drainWaiter;
+    private readonly AccountingEventSealerService? _accountingEventSealer;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
                              IConfiguration configuration, IFeeService feeService,
@@ -83,8 +85,10 @@ public class NltgDaemonService : BackgroundService
                              IOptions<FeeEstimationOptions>? feeEstimationOptions = null,
                              INodeBusyStateMonitor? busyStateMonitor = null,
                              INodeDrainState? nodeDrainState = null,
-                             ShutdownDrainWaiter? drainWaiter = null)
+                             ShutdownDrainWaiter? drainWaiter = null,
+                             AccountingEventSealerService? accountingEventSealer = null)
     {
+        _accountingEventSealer = accountingEventSealer;
         _feeEstimationOptions = feeEstimationOptions?.Value;
         _busyStateMonitor = busyStateMonitor;
         _nodeDrainState = nodeDrainState;
@@ -199,6 +203,9 @@ public class NltgDaemonService : BackgroundService
             // Prune the onion replay set on every block (NL-327)
             _onionReplayBlockPruner.Start();
 
+            // Seal the accounting events committed so far and every SealInterval from now on (NL-602)
+            _accountingEventSealer?.Start();
+
             // Bump stale splices of ours (wave SPR, SPR-T3); does nothing while Splice:AutoBumpAfterBlocks is unset
             _spliceAutoBumper?.Start();
 
@@ -254,7 +261,8 @@ public class NltgDaemonService : BackgroundService
 
         // The replay pruner and the mempool reactor stop before the chain monitor that drives them
         await Task.WhenAll(_onionReplayBlockPruner.StopAsync(), _mempoolReactor.StopAsync(),
-                           _spliceAutoBumper?.StopAsync() ?? Task.CompletedTask);
+                           _spliceAutoBumper?.StopAsync() ?? Task.CompletedTask,
+                           _accountingEventSealer?.StopAsync() ?? Task.CompletedTask);
 
         // The bootstrap dials through the peer manager, so it stops first (NL-113)
         if (_peerBootstrapService is not null)

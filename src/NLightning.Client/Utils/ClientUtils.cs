@@ -161,6 +161,16 @@ public static class ClientUtils
         Console.WriteLine("                               default 100; time is Unix seconds or an ISO date; channel");
         Console.WriteLine("                               is a channel id or short_channel_id] (alias:");
         Console.WriteLine("                               list-forwards)");
+        Console.WriteLine("  listaccountingevents [--after <seq>] [--limit <n>] [--kind <kind>[,<kind>...]]");
+        Console.WriteLine("                       [--channel <channel>] [--since <time>] [--until <time>]");
+        Console.WriteLine("                               List the accounting feed's sealed events in ledger order");
+        Console.WriteLine("                               after a sequence (alias: list-accounting-events): signed");
+        Console.WriteLine("                               msat from our side, fee, channel, hash, outpoint, peer,");
+        Console.WriteLine("                               finality and details; prints the --after of the next");
+        Console.WriteLine("                               page [limit 1-1000, default 100; kind is a name such as");
+        Console.WriteLine("                               InvoiceSettled or its number]");
+        Console.WriteLine("  accountingsnapshot           Show the live balances by bucket: each channel, pending");
+        Console.WriteLine("                               on-chain funds and the wallet (alias: accounting-snapshot)");
         Console.WriteLine();
         Console.WriteLine("Environment Variables:");
         Console.WriteLine("  NLTG_NETWORK               Network to use");

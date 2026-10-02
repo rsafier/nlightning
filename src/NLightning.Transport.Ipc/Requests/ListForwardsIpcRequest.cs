@@ -2,9 +2,6 @@ using MessagePack;
 
 namespace NLightning.Transport.Ipc.Requests;
 
-using Domain.Channels.ValueObjects;
-using Domain.Client.Constants;
-using Domain.Client.Exceptions;
 using Domain.Client.Requests;
 
 /// <summary>
@@ -40,38 +37,7 @@ public sealed class ListForwardsIpcRequest
 
     public ListForwardsClientRequest ToClientRequest()
     {
-        ChannelId? channelId = null;
-        ShortChannelId? channelScid = null;
-        if (!string.IsNullOrWhiteSpace(Channel))
-        {
-            // A channel id is 64 hex characters; a short channel id is block x tx x output (or its decimal form)
-            if (Channel.Length == 64)
-            {
-                try
-                {
-                    channelId = new ChannelId(Convert.FromHexString(Channel));
-                }
-                catch (FormatException)
-                {
-                    throw InvalidChannel();
-                }
-            }
-            else if (ulong.TryParse(Channel, out var scidValue))
-            {
-                channelScid = new ShortChannelId(scidValue);
-            }
-            else
-            {
-                try
-                {
-                    channelScid = ShortChannelId.Parse(Channel);
-                }
-                catch (FormatException)
-                {
-                    throw InvalidChannel();
-                }
-            }
-        }
+        var (channelId, channelScid) = ChannelFilterText.Parse(Channel);
 
         return new ListForwardsClientRequest
         {
@@ -88,8 +54,4 @@ public sealed class ListForwardsIpcRequest
             ChannelScid = channelScid
         };
     }
-
-    private static ClientException InvalidChannel() =>
-        new(ErrorCodes.InvalidOperation,
-            "Invalid channel: expected a 64-hex channel id or a short_channel_id like 800000x1234x0.");
 }

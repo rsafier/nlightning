@@ -79,5 +79,17 @@ public enum ClientCommand
     /// <summary>
     /// Lists the forwarded payments (NL-597), newest first, paged, filterable.
     /// </summary>
-    ListForwards = 40
+    ListForwards = 40,
+
+    /// <summary>
+    /// Lists the sealed accounting events (<c>listaccountingevents</c>, NL-602), in ledger order after a cursor,
+    /// filterable; the events committed so far are sealed first.
+    /// </summary>
+    ListAccountingEvents = 41,
+
+    /// <summary>
+    /// The node's live balances by bucket (<c>accountingsnapshot</c>, NL-602): each channel, pending on-chain funds and
+    /// the wallet.
+    /// </summary>
+    AccountingSnapshot = 42
 }

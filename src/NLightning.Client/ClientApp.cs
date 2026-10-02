@@ -322,6 +322,12 @@ internal static class ClientApp
                     var payments = await client.ListPaymentsAsync(paymentSkip, paymentTake, cancellationToken);
                     new ListPaymentsPrinter().Print(payments);
                     break;
+                case "listaccountingevents":
+                case "list-accounting-events":
+                case "accountingsnapshot":
+                case "accounting-snapshot":
+                    await AccountingCommands.RunAsync(cmd, commandArgs, client, Console.Out, cancellationToken);
+                    break;
                 case "listforwards":
                 case "list-forwards":
                     var forwards = ParseListForwardsOptions(commandArgs);
@@ -538,6 +544,11 @@ internal static class ClientApp
             case "listforwards":
             case "list-forwards":
                 return ValidateListForwardsOptions(commandArgs);
+            case "listaccountingevents":
+            case "list-accounting-events":
+            case "accountingsnapshot":
+            case "accounting-snapshot":
+                return AccountingCommands.Validate(cmd, commandArgs);
             default:
                 return $"Unknown command: {cmd}";
         }
@@ -1642,7 +1653,7 @@ internal static class ClientApp
     private static ListForwardsArguments ParseListForwardsOptions(string[] commandArgs) =>
         ParseListForwardsOptions(commandArgs, out _)!;
 
-    private static long? ParseTime(string value) =>
+    internal static long? ParseTime(string value) =>
         long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds)
             ? seconds
             : DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal
