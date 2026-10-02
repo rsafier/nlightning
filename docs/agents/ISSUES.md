@@ -124,12 +124,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 55 | 58 |
+| open | 0 | 0 | 3 | 42 | 45 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 164 | 281 | 521 |
+| fixed | 14 | 62 | 164 | 294 | 534 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **171** | **343** | **590** |
+| **Total** | **14** | **62** | **171** | **341** | **590** |
 
 ### Epics
 
@@ -5519,13 +5519,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-382 GossipFloodTests flake under a loaded full run
-- **Status:** open
+- **Status:** fixed (74438cca, 8dc65b47)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Gossip/Graph/GossipFloodTests.cs` (`Given_APeerFloodingInvalidSignatures_When_AnotherPeerSendsValidGossip_Then_TheFlooderIsBannedAndTheOtherUnaffected`)
 - **Evidence:** Failed once in the wave O7 final Release run (7282 tests); passed 5 times alone and in 2 full project reruns, so a timing assumption under load, not an O7 regression (wave O7 integrator).
 - **Update (wave spr, integrated at `a0800ac2`):** failed once in a Release.Native full run, passed alone (reported by the integrator).
-- **Fix sketch:** Replace fixed waits with an awaited condition (ban recorded, valid gossip ingested) and a generous timeout.
+- **Fix sketch:** Replace fixed waits with an awaited condition (ban recorded, valid gossip ingested) and a generous timeout. De-flaked: Each asserted condition (the ban; the honest gossip applied and the queue drained) is awaited on its own bounded wait; the per-message warning verify was dropped — under load the bounded queue backs up and the door scores the flood in a burst that crosses the ban threshold directly, so the asserted delivery is the ban's disconnect.
 - **Blocks/Blocked-by:** Related NL-099
 - **Plan ref:** BOLT7 G5-T2
 
@@ -5540,12 +5540,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O7-T3
 
 ### NL-394 GossipSyncManagerTests timed-out SCID query test flakes under a loaded full run
-- **Status:** open
+- **Status:** fixed (b099240a)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Gossip/Sync/GossipSyncManagerTests.cs` (`Given_ATimedOutScidQuery_When_ItsLateEndArrivesDuringAnotherQuery_Then_NothingMoreIsAskedOfThatPeer`)
 - **Evidence:** Failed once in lane Y2's full non-Docker run (7326 tests) and passed 3 of 3 times alone; not related to the lane's change, so a timing assumption under load like NL-382 (reported by lane Y2 in wave O7b; the integrator's final runs were green).
-- **Fix sketch:** Replace fixed waits and timeouts with awaited conditions and a fake time provider.
+- **Fix sketch:** Replace fixed waits and timeouts with awaited conditions and a fake time provider. De-flaked: The SCID-reply timeout test drives a SteppedClockProvider on half-second sync-timestamp boundaries; the late reply lands strictly after the timeout fired. Same test as NL-501.
 - **Blocks/Blocked-by:** Related NL-382, NL-099
 - **Plan ref:** BOLT7 G3
 
@@ -5560,23 +5560,23 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-434 Timing-bound tests in MissionControl and GraphPathfinder fail under a loaded full run
-- **Status:** open
+- **Status:** fixed (47d811df)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Payments/Routing/MissionControlTests.cs`, `test/NLightning.Domain.Tests/Routing/GraphPathfinderTests.cs` (50 ms budget)
 - **Evidence:** Both failed once in a full run under load and passed alone: a lower-bound assertion affected by clock decay and a 50 ms search budget (reported by lane R2).
 - **Update (wave spr, integrated at `a0800ac2`):** the `GraphPathfinderTests` 50,000-channel budget case failed once in a Release full run, passed alone (reported by the integrator).
-- **Fix sketch:** Use the fake clock in the MissionControl assertion and a generous or count-based budget in the pathfinder test.
+- **Fix sketch:** Use the fake clock in the MissionControl assertion and a generous or count-based budget in the pathfinder test. De-flaked: MissionControl: the probabilistic lower-bound asserts were replaced with the deterministic decay formula (fresh weight 0.5 blend) after a fixed Advance. GraphPathfinder: the 50 ms Stopwatch budget was replaced with a count bound (<= 4 x NodeCount adjacency scans per query; measured 6112 vs 40,000) plus a 2500 ms smoke canary.
 - **Blocks/Blocked-by:** Related NL-382
 - **Plan ref:** —
 
 ### NL-445 GossipIngressTests retry case failed once under a loaded full run
-- **Status:** open
+- **Status:** fixed (2b9fd41d)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Gossip/Graph/GossipIngressTests.cs` (`Given_AnAnnouncementGivenUpAfterItsRetries_When_ItsUpdateArrivesAgainLater_Then_ItIsMissedUntilStored`, `Assert.Empty` at line 549)
 - **Evidence:** Failed once in a full non-Docker run (collection `[110x1x0]` not empty) and passed when its class ran alone (36/36); not reproduced in the integrator's runs (reported by lane M6-C).
-- **Fix sketch:** Look for a wall-clock or scheduling dependency in the retry give-up path and drive it with the fake clock.
+- **Fix sketch:** Look for a wall-clock or scheduling dependency in the retry give-up path and drive it with the fake clock. De-flaked: Root cause: the kit's SettableTimeProvider left CreateTimer at the base implementation — the retry re-queue and the write-behind round ran on real threadpool timers. SettableTimeProvider gained an opt-in steppedTimers mode; the give-up and transient-retry tests drive the retry window by Advance.
 - **Blocks/Blocked-by:** Related NL-434, NL-382
 - **Plan ref:** —
 
@@ -5601,12 +5601,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-465 PaymentHarnessTests short-timeout case fails under a loaded Release.Native run
-- **Status:** open
+- **Status:** fixed (7e45dca2)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Payments/Send/PaymentHarnessTests.cs` (`Given_ShortTimeout_When_TheOutcomeIsLate_*`)
 - **Evidence:** Failed once in the wave lh1 integration (Release.Native, full run): the outcome was Failed instead of InFlight with its 50 ms timeout under load; 5 reruns passed (reported by the integrator). Seen again in wave qit by lane IT-A (a loaded full Release run; passed alone).
-- **Fix sketch:** Drive the timeout from a controllable clock or widen the gap between the timeout and the late outcome.
+- **Fix sketch:** Drive the timeout from a controllable clock or widen the gap between the timeout and the late outcome. De-flaked: PaymentService.WaitAsync awaits through the node's TimeProvider and the harness registers a stepped clock: the test advances past the 50 ms deadline, asserts InFlight, then delivers the late outcome.
 - **Blocks/Blocked-by:** Related NL-434
 - **Plan ref:** —
 
@@ -5635,23 +5635,23 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-471 OnionMessageServiceTests next-path-key override case failed once in a full solution run
-- **Status:** open
+- **Status:** fixed (e309f475)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/OnionMessages/OnionMessageServiceTests.cs` (`Given_ANextPathKeyOverride_When_BobForwards_Then_HeSendsThatPathKey`)
 - **Evidence:** Failed once in a full solution run of lane Q-A (wave qit) and passed alone and on a project re-run; the failure text was not captured.
-- **Fix sketch:** Loop the class under load to reproduce; look for a wait on the forwarded message without a bounded, event-driven condition.
+- **Fix sketch:** Loop the class under load to reproduce; look for a wait on the forwarded message without a bounded, event-driven condition. De-flaked: The forward is waited for itself on the link (bounded, descriptive timeout) instead of racing the pump that moves the message.
 - **Blocks/Blocked-by:** Related NL-449
 - **Plan ref:** —
 
 ### NL-472 ChannelRestoreServiceTests connect-budget case fails under a loaded Application.Tests run
-- **Status:** open
+- **Status:** fixed (5389f332)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Channels/Backup/ChannelRestoreServiceTests.cs` (`Given_TheConnectBudgetSpent_When_Restored_Then_TheOtherAddressesAreTriedInTheBackgroundAtOnce`)
 - **Evidence:** Failed under a loaded full Application.Tests run of lane Q-B (wave qit) and passed alone.
 - **Update (wave sp2, `31950b81`):** failed again in an earlier full run of the sp2 integration and passed alone; the integrator filed it as NL-485, a duplicate of this entry.
-- **Fix sketch:** Drive the connect budget from a controllable `TimeProvider` instead of wall-clock waits.
+- **Fix sketch:** Drive the connect budget from a controllable `TimeProvider` instead of wall-clock waits. De-flaked: ChannelRestoreService takes the repo-standard optional TimeProvider and routes its connect budget through it; the test advances the clock instead of sleeping 300 ms.
 - **Blocks/Blocked-by:** Related NL-434, NL-465
 - **Plan ref:** —
 
@@ -5669,13 +5669,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` Proof Q
 
 ### NL-482 PeerManagerConnectTests two-node connect case fails under a loaded full run
-- **Status:** open
+- **Status:** fixed (de3898ac)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Node/Managers/PeerManagerConnectTests.cs` (`Given_TwoNodes_When_OneConnectsToTheOther_*`)
 - **Evidence:** Failed once in a full run of the wave sp1 integration with "Expected init as the first message" and passed with its class alone (reported by the integrator).
 - **Update (wave spr, integrated at `a0800ac2`):** failed once in the first Release full run, passed alone (reported by the integrator).
-- **Fix sketch:** Loop the class under load; look for a read that races the init exchange.
+- **Fix sketch:** Loop the class under load; look for a read that races the init exchange. De-flaked: The connect-completion check is event-driven/bounded (init exchanged + connection stable) instead of racing the init exchange.
 - **Blocks/Blocked-by:** Related NL-434
 - **Plan ref:** —
 
@@ -5722,32 +5722,32 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` SP2-A-T3, Proof SP2 (c), (d)
 
 ### NL-499 DualFundRefusalTests first-commitment case fails under a loaded Application.Tests run
-- **Status:** open
+- **Status:** fixed (acca0592)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Channels/DualFunding/DualFundRefusalTests.cs` (`Given_AFirstCommitmentSignedWithAnHtlcSignature_*`)
 - **Evidence:** Failed in all three full Application runs on lane SP2-A's branch (the channel was gone from Alice's memory at line 102, apparently the harness's 2 s open timeout under load) and passed alone and in its namespace; it passed in the one full run on the contracts base (reported by lane SP2-A; probable, not proven, load flake).
-- **Fix sketch:** Loop under load; replace the 2 s open timeout with an event-driven wait.
+- **Fix sketch:** Loop under load; replace the 2 s open timeout with an event-driven wait. De-flaked: The dual-fund harness now fires its nodes' stepped clock in RunAsync/PumpAsync (the NL-512 watchdog clock had left it dead), so debounced commits and the opens' deadlines fire deterministically; the tx_abort test waits for the whole forgotten state.
 - **Blocks/Blocked-by:** Related NL-434
 - **Plan ref:** —
 
 ### NL-500 OnionMessageHarnessTests graph-path case failed once in a full run
-- **Status:** open
+- **Status:** fixed (e309f475)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/OnionMessages/OnionMessageHarnessTests.cs` (`Given_AGraphPathToCarol_*`)
 - **Evidence:** Failed once in a full run of lane SP2-A (wave sp2); not reproduced (reported by lane SP2-A).
-- **Fix sketch:** Loop the class under load.
+- **Fix sketch:** Loop the class under load. De-flaked: The graph-path test waits for the forwarded messages on the harness links.
 - **Blocks/Blocked-by:** Related NL-449, NL-471
 - **Plan ref:** —
 
 ### NL-501 GossipSyncManagerTests late-end case failed once in a full run
-- **Status:** open
+- **Status:** fixed (b099240a)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Gossip/Sync/GossipSyncManagerTests.cs` (`Given_ATimedOutScidQuery_When_ItsLateEndArrivesDuringAnotherQuery_Then_NothingMoreIsAskedOfThatPeer`)
 - **Evidence:** Failed once in lane SP2-C's full loaded run and passed 3 of 3 with its class alone (reported by lane SP2-C).
-- **Fix sketch:** Drive the query timeout from a controllable `TimeProvider`.
+- **Fix sketch:** Drive the query timeout from a controllable `TimeProvider`. De-flaked: Same test as NL-394; the reply timeout is stepped-clock driven.
 - **Blocks/Blocked-by:** Related NL-434
 - **Plan ref:** —
 
@@ -5786,28 +5786,28 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Channels/DualFunding/DualFundSafetyTests.cs` (`Given_WeSignedFirst_When_TheOpenTimesOutWithoutThePeersTxSignatures_Then_TheChannelIsKept`)
-- **Evidence:** Failed once (13 s) in lane SPR-B's loaded full run and passed alone. Lane SPR-E raised the harness's default open timeout to 60 s for the same wall-clock watchdog cause in `Given_TheDefaultOptions_*` (7c4bbde5), which may cover this case too (reported by lanes SPR-B and SPR-E).
+- **Evidence:** Failed once (13 s) in lane SPR-B's loaded full run and passed alone. Lane SPR-E raised the harness's default open timeout to 60 s for the same wall-clock watchdog cause in `Given_TheDefaultOptions_*` (7c4bbde5), which may cover this case too (reported by lanes SPR-B and SPR-E). De-flaked partially (aef4a7c8, and the batch9 de-timing pass): the open deadline and the accepter's watchdog run on the harness's stepped clock and the IT-SIG-01 transcript check is awaited on the pump, but under a loaded full SOLUTION run the scheduler still flushes Alice's tx_signatures late enough to race the assertion; the class runs in the serial `timing-serial` collection as a containment.
 - **Fix sketch:** Drive the open watchdog from a controllable `TimeProvider`.
 - **Blocks/Blocked-by:** Related NL-499
 - **Plan ref:** —
 
 ### NL-513 SpliceConformanceTests one-side commitment_signed reconnect case failed once in a loaded run
-- **Status:** open
+- **Status:** fixed (08be25c5)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Channels/Splicing/SpliceConformanceTests.cs` (`Given_OnlyOneSideSentCommitSig_When_Reconnected_Then_TheSpliceIsAbortedOnBothSides`)
 - **Evidence:** Failed once in lane SPR-D's full loaded Application run; the class passed alone twice and the full project rerun was green (reported by lane SPR-D).
-- **Fix sketch:** Capture the failure on the next occurrence; check for a wall-clock wait in the harness pump.
+- **Fix sketch:** Capture the failure on the next occurrence; check for a wall-clock wait in the harness pump. De-flaked: The reconnect conformance test waits on the recorded aborts instead of the quiet-round delay loop.
 - **Blocks/Blocked-by:** Related NL-496
 - **Plan ref:** —
 
 ### NL-561 AnnouncementHarnessTests public update and node_announcement case failed once in a loaded run
-- **Status:** open
+- **Status:** fixed (4582ebd8)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Gossip/Announcements/AnnouncementHarnessTests.cs` (`Given_TheAnnouncementAssembled_When_HandedOn_Then_PublicUpdateAndNodeAnnouncementFollow`)
 - **Evidence:** Failed once in lane nl560's full loaded Application run on net10.0 Release (with the known NL-382 `GossipFloodTests` flake); the class passed alone on reruns (reported by lane nl560, 2026-09-30). Seen again twice on 2026-09-30 in full loaded Application runs (the batch4 integration and the NL-567/NL-568 check); the class passed alone each time (7/7).
-- **Fix sketch:** Capture the failure on the next occurrence; check for a wall-clock wait in the harness.
+- **Fix sketch:** Capture the failure on the next occurrence; check for a wall-clock wait in the harness. De-flaked: TwoNodeHarness gained PumpUntilAsync (bounded, named timeout); the public-update/node-announcement test waits on each recorded message instead of racing the send task's continuation.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
 
@@ -5816,7 +5816,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Node/Managers/PeerManagerTests.cs` (`Given_EventAndReplyInterleave_When_Processed_Then_FifoPreserved`)
-- **Evidence:** Failed once in lane nl562's full Application run on net10.0 Debug (2026-09-30); the class passed alone (83/83) on the rerun. The lane's change (open policy and commitment feerate floor) does not touch the peer manager.
+- **Evidence:** Failed once in lane nl562's full Application run on net10.0 Debug (2026-09-30); the class passed alone (83/83) on the rerun. The lane's change (open policy and commitment feerate floor) does not touch the peer manager. De-flaked partially (ed5ecf95): sleeps replaced with watched counters (AssertStaysAtAsync) and Task.Yield instead of sleeps, but the FIFO interleave still raced once under a loaded full SOLUTION run; the class runs in the serial `timing-serial` collection as a containment.
 - **Fix sketch:** Capture the failure on the next occurrence; check for a wall-clock wait in the test.
 - **Blocks/Blocked-by:** Related NL-482
 - **Plan ref:** —
