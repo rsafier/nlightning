@@ -56,7 +56,7 @@ using Options;
 /// outpoint, or an output of a transaction it reported before. Nothing is saved or marked spent for it: only a
 /// processed block confirms a spend.</para>
 /// </remarks>
-public class BlockchainMonitorService : IBlockchainMonitor
+public partial class BlockchainMonitorService : IBlockchainMonitor
 {
     // bitcoind rejections that mean it already has the transaction (mempool or chain)
     private static readonly string[] s_alreadyKnownRejections =
@@ -70,6 +70,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
     private readonly ILogger<BlockchainMonitorService> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly Network _network;
+    private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _newBlockSemaphore = new(1, 1);
     private readonly SemaphoreSlim _blockBacklogSemaphore = new(1, 1);
     private readonly ConcurrentDictionary<uint256, WatchedTransactionModel> _watchedTransactions = new();
@@ -153,8 +154,9 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
     public BlockchainMonitorService(IOptions<BitcoinOptions> bitcoinOptions, IBitcoinChainService bitcoinChainService,
                                     ILogger<BlockchainMonitorService> logger, IOptions<NodeOptions> nodeOptions,
-                                    IServiceProvider serviceProvider)
+                                    IServiceProvider serviceProvider, TimeProvider? timeProvider = null)
     {
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _bitcoinOptions = bitcoinOptions.Value;
         _bitcoinChainService = bitcoinChainService;
         _logger = logger;
@@ -964,13 +966,18 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
             if (_pendingBroadcasts.ContainsKey(txId))
             {
+                // The stored row as it was before this block (the accounting feed records a confirmation once, NL-602)
+                var stored = await TryGetBroadcastForAccountingAsync(uow, new TxId(txId.ToBytes()));
                 await uow.BroadcastTransactionDbRepository.MarkConfirmedAsync(new TxId(txId.ToBytes()), height,
                                                                                blockHash);
                 effects.ConfirmedBroadcasts.Add(txId);
+                if (stored is { State: BroadcastState.Pending })
+                    await CollectBroadcastConfirmedAsync(uow, stored, transactions[index], effects);
             }
         }
 
         StageWalletMovements(transactions, height, uow, effects);
+        await StageAccountingAsync(uow, effects);
         await StageWatchedSpendsAsync(transactions, height, blockHash, uow, effects);
         StageWatchedTransactionDepths(height, uow, effects);
 
@@ -1039,9 +1046,11 @@ public class BlockchainMonitorService : IBlockchainMonitor
             _logger.LogDebug("Checking {AddressCount} watched addresses for deposits/spends in block {Height}",
                              _watchedAddresses.Count, blockHeight);
 
+        var utxoMemoryRepository = _serviceProvider.GetService<IUtxoMemoryRepository>();
         foreach (var transaction in transactions)
         {
             var txId = transaction.GetHash();
+            WalletTransactionSource? source = null;
 
             // Check each output for deposits
             for (var i = 0; i < transaction.Outputs.Count; i++)
@@ -1061,7 +1070,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
                 // A block can be processed again (the last processed block is replayed on start, and a failed block is
                 // retried), so a deposit we already track must not be added twice (NL-097).
-                var utxoMemoryRepository = _serviceProvider.GetRequiredService<IUtxoMemoryRepository>();
+                utxoMemoryRepository ??= _serviceProvider.GetRequiredService<IUtxoMemoryRepository>();
                 if (utxoMemoryRepository.TryGetUtxo(new TxId(txId.ToBytes()), (uint)i, out _))
                 {
                     if (_logger.IsEnabled(LogLevel.Debug))
@@ -1074,6 +1083,11 @@ public class BlockchainMonitorService : IBlockchainMonitor
                 var utxo = new UtxoModel(txId.ToBytes(), (uint)i, LightningMoney.Satoshis(output.Value.Satoshi),
                                          blockHeight, watchedAddress);
                 uow.AddUtxo(utxo);
+                effects.StagedDeposits[new OutPoint(txId, i)] = utxo;
+
+                // NL-602/NL-603: the deposit in the accounting feed (memory guard above: once per output)
+                source ??= ClassifyWalletTransaction(transaction, utxoMemoryRepository, effects);
+                CollectWalletReceived(utxo, watchedAddress, source, effects);
 
                 // The address stays watched (as after a restart, which reloads every wallet address): the wallet hands
                 // an address out again once its deposits are spent, and two channels closing at once can get the
@@ -1085,7 +1099,24 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
             // Check each input for spent utxos
             foreach (var input in transaction.Inputs)
-                uow.TrySpendUtxo(new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N);
+            {
+                var spentTxId = new TxId(input.PrevOut.Hash.ToBytes());
+
+                // What the spend removes (TrySpendUtxo is a no-op for an output we do not hold): the wallet output in
+                // memory, or one this block deposited
+                UtxoModel? spent = null;
+                if (utxoMemoryRepository?.TryGetUtxo(spentTxId, input.PrevOut.N, out var known) == true)
+                    spent = known;
+                else if (effects.StagedDeposits.TryGetValue(input.PrevOut, out var deposited))
+                    spent = deposited;
+
+                uow.TrySpendUtxo(spentTxId, input.PrevOut.N);
+                if (spent is null)
+                    continue;
+
+                source ??= ClassifyWalletTransaction(transaction, utxoMemoryRepository, effects);
+                CollectWalletOutputSpent(spent, transaction, source, utxoMemoryRepository, effects);
+            }
         }
     }
 
@@ -1236,7 +1267,8 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
             // NL-293: wallet outputs spent in the disconnected blocks that are unspent in the active chain again (a
             // failed lookup restores nothing: the rewind itself must not fail over it)
-            List<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address)> restoredUtxos;
+            List<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address, uint SpentHeight)>
+                restoredUtxos;
             try
             {
                 restoredUtxos = await FindWalletOutputsUnspentAgainAsync(disconnected);
@@ -1265,6 +1297,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
                 var clearedSpends = await uow.WatchedOutpointDbRepository.ClearSpendsAboveAsync(forkHeight);
                 var unconfirmed = await uow.BroadcastTransactionDbRepository.UnconfirmAboveAsync(forkHeight);
                 var (removedDeposits, restoredSpends) = await StageWalletRollbackAsync(uow, forkHeight, restoredUtxos);
+                await StageReorgReversalsAsync(uow, forkHeight, removedDeposits, restoredSpends);
                 await uow.BlockHeaderDbRepository.DeleteAboveAsync(forkHeight);
                 uow.BlockchainStateDbRepository.Update(rewoundState);
                 await uow.SaveChangesAsync();
@@ -1272,7 +1305,8 @@ public class BlockchainMonitorService : IBlockchainMonitor
                 _logger.LogWarning(
                     "Reorg: rewound from block {From} to fork point {Fork} ({Count} blocks disconnected); reset {Watches} watched transactions ({Completed} of them completed), {Spends} outpoint spends and {Broadcasts} broadcast confirmations; removed {Deposits} wallet deposits and restored {Restored} wallet outputs",
                     _lastProcessedBlockHeight, forkHeight, disconnected.Count, resetWatches + completedInDisconnected.Count,
-                    completedInDisconnected.Count, clearedSpends, unconfirmed, removedDeposits, restoredSpends);
+                    completedInDisconnected.Count, clearedSpends, unconfirmed, removedDeposits.Count,
+                    restoredSpends.Count);
             }
 
             foreach (var watch in completedInDisconnected)
@@ -1323,10 +1357,10 @@ public class BlockchainMonitorService : IBlockchainMonitor
     /// that spend confirming again. Candidates: P2WPKH inputs whose key is a wallet address, and every taproot key-path
     /// input (its witness names no key); bitcoind confirms the script.
     /// </summary>
-    private async Task<List<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address)>>
+    private async Task<List<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address, uint SpentHeight)>>
         FindWalletOutputsUnspentAgainAsync(IReadOnlyList<BlockHeaderModel> disconnected)
     {
-        var found = new List<(OutPoint, TxOut, uint, WalletAddressModel)>();
+        var found = new List<(OutPoint, TxOut, uint, WalletAddressModel, uint)>();
         if (_watchedAddresses.IsEmpty)
             return found;
 
@@ -1356,7 +1390,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
                      || !_watchedAddresses.TryGetValue(address.ToString(), out var walletAddress))
                         continue;
 
-                    found.Add((input.PrevOut, output.Output, output.Height, walletAddress));
+                    found.Add((input.PrevOut, output.Output, output.Height, walletAddress, header.Height));
                 }
             }
         }
@@ -1390,11 +1424,13 @@ public class BlockchainMonitorService : IBlockchainMonitor
     /// Stages the wallet rollback of a reorg (NL-293): deposits confirmed above the fork are removed (they come back when
     /// their transaction is mined on the new branch), outputs a disconnected block spent are added back.
     /// </summary>
-    private async Task<(int Removed, int Restored)> StageWalletRollbackAsync(
-        IUnitOfWork uow, uint forkHeight,
-        IReadOnlyList<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address)> restored)
+    private async Task<(List<UtxoModel> Removed, List<(UtxoModel Utxo, uint SpentHeight)> Restored)>
+        StageWalletRollbackAsync(
+            IUnitOfWork uow, uint forkHeight,
+            IReadOnlyList<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address, uint SpentHeight)>
+                restored)
     {
-        var removed = 0;
+        var removed = new List<UtxoModel>();
         var unspent = await uow.UtxoDbRepository.GetUnspentAsync() ?? [];
         foreach (var deposit in unspent.Where(u => u.BlockHeight > forkHeight))
         {
@@ -1403,12 +1439,12 @@ public class BlockchainMonitorService : IBlockchainMonitor
                                  + "disconnected block; it is removed until its transaction confirms again",
                                    deposit.TxId, deposit.Index, channelId);
             uow.TrySpendUtxo(deposit.TxId, deposit.Index);
-            removed++;
+            removed.Add(deposit);
         }
 
         var utxoMemoryRepository = _serviceProvider.GetService<IUtxoMemoryRepository>();
-        var count = 0;
-        foreach (var (outPoint, output, height, address) in restored)
+        var restoredUtxos = new List<(UtxoModel, uint)>();
+        foreach (var (outPoint, output, height, address, spentHeight) in restored)
         {
             var txId = new TxId(outPoint.Hash.ToBytes());
             if (utxoMemoryRepository?.TryGetUtxo(txId, outPoint.N, out _) == true)
@@ -1417,12 +1453,12 @@ public class BlockchainMonitorService : IBlockchainMonitor
             if (_logger.IsEnabled(LogLevel.Warning))
                 _logger.LogWarning("Wallet output {OutPoint} ({Amount}) was spent in a disconnected block; it is "
                                  + "spendable again", outPoint, output.Value);
-            uow.AddUtxo(new UtxoModel(txId, outPoint.N, LightningMoney.Satoshis(output.Value.Satoshi), height,
-                                      address));
-            count++;
+            var utxo = new UtxoModel(txId, outPoint.N, LightningMoney.Satoshis(output.Value.Satoshi), height, address);
+            uow.AddUtxo(utxo);
+            restoredUtxos.Add((utxo, spentHeight));
         }
 
-        return (removed, count);
+        return (removed, restoredUtxos);
     }
 
     /// <summary>
@@ -1837,5 +1873,11 @@ public class BlockchainMonitorService : IBlockchainMonitor
         public List<uint256> ConfirmedBroadcasts { get; } = [];
         public List<WalletMovementEventArgs> Movements { get; } = [];
         public List<OutpointSpentEventArgs> Spends { get; } = [];
+
+        /// <summary>The wallet outputs this block deposited (a later transaction of the block may spend one).</summary>
+        public Dictionary<OutPoint, UtxoModel> StagedDeposits { get; } = [];
+
+        /// <summary>The accounting events this block records, keyed when staged (NL-602).</summary>
+        public List<AccountingCandidate> Accounting { get; } = [];
     }
 }

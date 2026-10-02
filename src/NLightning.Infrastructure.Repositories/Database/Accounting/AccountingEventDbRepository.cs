@@ -170,6 +170,48 @@ public class AccountingEventDbRepository : BaseDbRepository<AccountingEventEntit
         return entities.Select(MapEntityToDomain).ToList();
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<AccountingEventModel>> GetAtOrAboveHeightAsync(
+        uint height, IReadOnlyCollection<AccountingEventKind> kinds, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(kinds);
+        if (kinds.Count == 0)
+            return [];
+
+        var kindValues = kinds.Select(k => (int)k).Distinct().ToList();
+        var saved = await DbSet.AsNoTracking()
+                               .Where(e => e.BlockHeight != null && e.BlockHeight >= height
+                                        && kindValues.Contains(e.Kind) && (e.Flags & DuplicateFlag) == 0)
+                               .OrderBy(e => e.Id)
+                               .ToListAsync(cancellationToken);
+        var staged = GetStaged(e => e.BlockHeight is { } blockHeight && blockHeight >= height
+                                 && kindValues.Contains(e.Kind));
+        return saved.Concat(staged).Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<AccountingEventModel>> GetByKeyPrefixAsync(
+        string keyPrefix, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(keyPrefix);
+
+        // LIKE is case-insensitive on SQLite: the ordinal check runs again on what comes back
+        var saved = await DbSet.AsNoTracking()
+                               .Where(e => e.EventKey.StartsWith(keyPrefix) && (e.Flags & DuplicateFlag) == 0)
+                               .OrderBy(e => e.Id)
+                               .ToListAsync(cancellationToken);
+        var staged = GetStaged(e => e.EventKey.StartsWith(keyPrefix, StringComparison.Ordinal));
+        return saved.Where(e => e.EventKey.StartsWith(keyPrefix, StringComparison.Ordinal)).Concat(staged)
+                    .Select(MapEntityToDomain).ToList();
+    }
+
+    /// <summary>The rows added in this unit of work and not saved yet that match <paramref name="predicate"/>,
+    /// duplicates excluded.</summary>
+    private List<AccountingEventEntity> GetStaged(Func<AccountingEventEntity, bool> predicate) =>
+        DbSet.Local.Where(e => DbSet.Entry(e).State == EntityState.Added && (e.Flags & DuplicateFlag) == 0
+                            && predicate(e))
+             .ToList();
+
     private static AccountingEventModel MapEntityToDomain(AccountingEventEntity entity)
     {
         return new AccountingEventModel

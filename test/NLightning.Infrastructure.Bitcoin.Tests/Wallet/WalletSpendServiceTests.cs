@@ -160,6 +160,11 @@ public class WalletSpendServiceTests
         Assert.Null(row.ChannelId);
         Assert.Equal((uint)FeeRatePerKw, row.FeeratePerKw);
         Assert.Equal(BroadcastState.Pending, row.State);
+
+        // The absolute fee is stored with the row (NL-604; the accounting feed records it at confirmation, NL-602)
+        Assert.NotNull(row.Fee);
+        Assert.Equal(result.Fee.MilliSatoshi, row.Fee.MilliSatoshi);
+        Assert.Equal(100_000 - 40_000 - result.Change.Satoshi, row.Fee.Satoshi);
     }
 
     [Fact]

@@ -171,9 +171,10 @@ public sealed class WalletSpendService : IWalletSpendService
             var feeSat = reservation.Total.Satoshi - amountSat - reservation.ChangeAmount.Satoshi;
             var weight = GetWeight(signed.Transaction);
 
+            // The absolute fee rides on the row (NL-604): the accounting feed records it when the spend confirms
             var row = new BroadcastTransactionModel(signed.Signed, BroadcastPurpose.WalletSend, null,
                                                     _blockchainMonitor.LastProcessedBlockHeight,
-                                                    (uint)feeRatePerKw);
+                                                    (uint)feeRatePerKw, fee: LightningMoney.Satoshis(feeSat));
             bool published;
             try
             {

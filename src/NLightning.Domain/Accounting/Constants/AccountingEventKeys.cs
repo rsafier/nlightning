@@ -63,4 +63,12 @@ public static class AccountingEventKeys
     /// <summary>The reversal of <paramref name="originalKey"/> when the block at <paramref name="height"/> was
     /// disconnected.</summary>
     public static string Reversal(string originalKey, uint height) => $"{originalKey}:rev:{height}";
+
+    /// <summary>
+    /// The key of the <paramref name="generation"/>th confirmation (2 and up) of the on-chain fact named by
+    /// <paramref name="baseKey"/>: a fact whose block a reorg disconnected (its event reversed) is recorded again under a
+    /// new key when its transaction confirms again, so the sealer does not take it for a duplicate
+    /// (<see cref="Services.AccountingConfirmations.NextConfirmationKey"/>).
+    /// </summary>
+    public static string Reconfirmed(string baseKey, int generation) => $"{baseKey}:c{generation}";
 }
