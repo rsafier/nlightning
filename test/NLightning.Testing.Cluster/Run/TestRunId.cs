@@ -59,4 +59,23 @@ public static class TestRunId
 
         return id;
     }
+
+    /// <summary>
+    /// The <paramref name="n"/>-th id derived from <paramref name="id"/> (<c>&lt;id&gt;-&lt;n&gt;</c>, <paramref name="id"/>
+    /// shortened to keep <see cref="MaxLength"/>): a process that starts several runs under one
+    /// <see cref="EnvironmentVariable"/> gives them distinct namespaces. <paramref name="n"/> 1 is <paramref name="id"/>.
+    /// </summary>
+    public static string WithSuffix(string id, int n)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(n, 1);
+        id = Normalize(id);
+        if (n == 1)
+            return id;
+
+        var suffix = "-" + n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (id.Length + suffix.Length > MaxLength)
+            id = id[..(MaxLength - suffix.Length)].TrimEnd('-');
+
+        return id + suffix;
+    }
 }

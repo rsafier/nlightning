@@ -50,10 +50,25 @@ public sealed record TestRunOptions
     /// <summary>Where the run writes what it does (namespace created, deleted, kept); null for nowhere.</summary>
     public Action<string>? Log { get; init; }
 
+    /// <summary>The owner recorded on the namespace for the reaper; null for this process.</summary>
+    public RunOwner? Owner { get; init; }
+
+    /// <summary>The run's own TTL for the reaper (instead of <see cref="ReaperOptions.Ttl"/>); null for the reaper's.</summary>
+    public TimeSpan? Ttl { get; init; }
+
+    /// <summary>
+    /// The cap on live run namespaces under the prefix (all processes, <see cref="RunAdmission"/>); null for none.
+    /// </summary>
+    public int? MaxConcurrentRuns { get; init; }
+
+    /// <summary>How long a run waits for a slot under <see cref="MaxConcurrentRuns"/>.</summary>
+    public TimeSpan AdmissionTimeout { get; init; } = TimeSpan.FromMinutes(15);
+
     /// <summary>
     /// Options for <paramref name="suite"/> with the environment applied: <see cref="TestRunId.EnvironmentVariable"/>,
-    /// <see cref="NamespacePrefixVariable"/>, <see cref="KubeClientFactory.ContextVariable"/> and
-    /// <see cref="KeepNamespaceVariable"/>.
+    /// <see cref="NamespacePrefixVariable"/>, <see cref="KubeClientFactory.ContextVariable"/>,
+    /// <see cref="KeepNamespaceVariable"/> and <see cref="RunAdmission.MaxRunsVariable"/> (default
+    /// <see cref="RunAdmission.DefaultMaxRuns"/>).
     /// </summary>
     public static TestRunOptions FromEnvironment(string suite, Func<string, string?>? environment = null)
     {
@@ -66,7 +81,8 @@ public sealed record TestRunOptions
             RunId = environment(TestRunId.EnvironmentVariable),
             NamespacePrefix = string.IsNullOrWhiteSpace(prefix) ? SpikeNamespacePrefix : prefix.Trim(),
             KubeContext = environment(KubeClientFactory.ContextVariable),
-            KeepNamespace = keep is not null && (keep == "1" || keep.Equals("true", StringComparison.OrdinalIgnoreCase))
+            KeepNamespace = keep is not null && (keep == "1" || keep.Equals("true", StringComparison.OrdinalIgnoreCase)),
+            MaxConcurrentRuns = RunAdmission.ParseMaxRuns(environment(RunAdmission.MaxRunsVariable))
         };
     }
 }

@@ -17,6 +17,23 @@ every implementation, our own node included, is driven through the same seams.
     `nltg.spike`, `nltg.node`, `nltg.kind`, `app.kubernetes.io/managed-by=nltg-test-harness`), `RunNamespace`
     (build/create/delete with the ownership check `IsOwnedBy`), `KubeClientFactory` (in-cluster when
     `KUBERNETES_SERVICE_HOST` is set, else kubeconfig; TLS always verified).
+  - Lifecycle (lane runner): every run namespace records its owner (`RunOwner`: annotations `nltg.owner-host`,
+    `nltg.owner-pid`, `nltg.owner-start`; `TestRunOptions.Owner` overrides) plus `nltg.keep` / `nltg.ttl-seconds`
+    (`RunAnnotations`, from `KeepNamespace`/`Ttl`). A taken name (a second run of one process under one
+    `NLTG_TEST_RUN_ID`, or one still terminating) moves to `<id>-2`, `<id>-3` (`TestRunId.WithSuffix`).
+    `RunAdmission` caps live run namespaces under the prefix across all processes (`NLTG_MAX_CONCURRENT_RUNS`,
+    default 6, `0`/`off` none): wait while full, create, rank by creation time then name, give the slot back if two
+    raced past the cap. `QuotaSizing.ForWorkloads(workloads, extraPods)` sizes `TestRunOptions.Quota` from the
+    topology's pod specs (sidecars and init containers included; a container without requests/limits is refused).
+  - `RunReaper` (`ListAsync`/`ReapAsync`, pure `Evaluate`): only namespaces named `<prefix>-<nltg.run>` with the
+    managed-by label (and `nltg.spike=true` unless `RequireSpikeLabel=false`), prefix must start with `nltg`;
+    reaps runs older than their TTL (default 6 h) or whose owner process on this host is gone (pid reuse checked by
+    start time); an owner on another host, a run without an owner, or a kept one only by TTL; re-checks right
+    before each delete. CLI: `nltg-cluster list|reap [--prefix] [--ttl] [--run <id> [--force]] [--all]
+    [--dry-run] [--wait] [--context]` (project `test/NLightning.Testing.Cluster.Cli`, logic in `Run/ClusterCli`).
+  - `scripts/run-cluster.sh`: builds once, runs the Category=Cluster tests (`--class`/`--method`) N times
+    concurrently (`-n`, `-j` ≤ 6), each with `NLTG_TEST_RUN_ID=<batch>-<i>`, logs and xunit XML under
+    `TestResults/cluster/<batch>/<run>/`, reaps each run's leftovers, prints a summary table (`summary.txt`).
 - `Kube/`
   - `NodeWorkload`: one node = StatefulSet (1 replica, `Parallel`) + headless Service of the same name
     (`publishNotReadyAddresses`) + optional PVC template (`Data = new DataVolume(mountPath, size)`), resources
