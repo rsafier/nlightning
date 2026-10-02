@@ -441,6 +441,54 @@ public class FinancialEntryPlannerTests
     }
 
     [Fact]
+    public void Given_TheClearingAccountSpentFirstOnANodeWithAChannel_When_ThenSpent_Then_TheWalletLotsReachTheChannels()
+    {
+        // Arrange (NL-739): as above, but the node already has a channel (C, 1e9 for 700 in the channels bucket). The
+        // short clearing account claimed C (a debt to the channels nobody pays back), so W's lots were stranded in the
+        // clearing bucket and the channels' later disposals relieved C before the older W
+        var pool = new FinancialLotPool([
+            Lot(1, new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), 500m, AccountingLotBucket.Wallet) with
+            {
+                OriginalMsat = 1_000_000_000, RemainingMsat = 1_000_000_000
+            },
+            Lot(2, new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero), 700m, AccountingLotBucket.Channels) with
+            {
+                OriginalMsat = 1_000_000_000, RemainingMsat = 1_000_000_000
+            }
+        ], AccountingCostBasisMethod.Fifo, Usd);
+        var funding = new[]
+        {
+            Line(AccountRole.Channels, "assets:lightning:channels", 899_000_000),
+            Line(AccountRole.FeeFunding, "expenses:fees:funding", 1_000_000),
+            Line(AccountRole.Clearing, "assets:onchain:clearing", -900_000_000)
+        };
+
+        // Act
+        var funded = FinancialEntryPlanner.Plan(new FinancialEntryPlanInput(funding, s_price60K, s_april), pool,
+                                                s_chart);
+        Apply(pool, funded, 20);
+        var spent = FinancialEntryPlanner.Plan(new FinancialEntryPlanInput(
+                                                   [
+                                                       Line(AccountRole.Wallet, "assets:onchain:wallet",
+                                                            -1_000_000_000),
+                                                       Line(AccountRole.Clearing, "assets:onchain:clearing",
+                                                            1_000_000_000)
+                                                   ], s_price60K, s_april), pool, s_chart);
+
+        // Assert: the funding borrows W from the wallet (C untouched), exactly as on a node without a channel
+        Assert.Equal([449.5m, 0.6m, -450m, -0.1m], funded.Postings.Select(p => p.FiatAmount!.Value).ToArray());
+        var debt = Assert.Single(funded.Debts);
+        Assert.Equal((AccountingLotBucket.Clearing, AccountingLotBucket.Wallet, 900_000_000L, (decimal?)450m),
+                     (debt.Bucket!.Value, debt.Lender!.Value, debt.Msat, debt.Cost));
+        var moved = Assert.Single(funded.Moved);
+        Assert.Equal((AccountingLotBucket.Channels, 899_000_000L, (decimal?)449.5m, (long?)1),
+                     (moved.Bucket!.Value, moved.Msat, moved.Cost, moved.ParentLotId));
+        Assert.Equal([(AccountingLotReliefKind.Settlement, 900_000_000L, (decimal?)450m),
+                      (AccountingLotReliefKind.Move, 100_000_000L, 50m)],
+                     spent.Reliefs.Select(r => (r.Kind, r.Msat, r.Cost)).ToArray());
+    }
+
+    [Fact]
     public void Given_NoUsablePrice_When_APaymentIsPlanned_Then_TheEntryIsUnvaluedAndWaitsForItsPrice()
     {
         // Arrange

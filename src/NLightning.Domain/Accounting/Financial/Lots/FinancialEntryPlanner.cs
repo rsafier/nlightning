@@ -112,8 +112,9 @@ public sealed record FinancialEntryPlan(
 /// <para><b>A bucket short of lots</b> (the clearing account spent before the wallet's own event, a rebalance received
 /// before it was paid): a debt the destination owes the source is settled first (no lot moves; valued at the debt's
 /// cost); then the source's own lots; then the lots of no bucket (an older book's node-wide pool, imported lots left),
-/// taken over without a debt; then the destination's own lots as a claim (nothing moves: the source owes the destination,
-/// valued at the cost of the destination's lots in the method's order); then the other buckets' lots in the source's
+/// taken over without a debt; then, for a rebalance in transit only (its other half pays the destination back, NL-739),
+/// the destination's own lots as a claim (nothing moves: the source owes the destination, valued at the cost of the
+/// destination's lots in the method's order); then the other buckets' lots in the source's
 /// order (<see cref="LendersOf"/>), moved or disposed of, the source owing the lender. The sats held outside the node
 /// never lend: a deposit classified as a transfer back beyond what is held outside acquires the rest at market. What no
 /// lot covers is a shortfall: valued at market (a disposal's cost is taken as its proceeds) and noted.</para>
@@ -401,8 +402,12 @@ public static class FinancialEntryPlanner
             // The lots of no bucket are taken over, without a debt
             left -= Take(null, source, demand, left, preferred).Msat;
 
-            // The destination's own lots: a claim on the source, nothing moves
-            if (left > 0 && demand.Bucket is { } claimant && claimant != AccountingLotBucket.HeldOutside)
+            // The destination's own lots: a claim on the source, nothing moves. Only for a rebalance in transit,
+            // whose other half sends the msat back from the destination and settles the claim; any other short bucket
+            // (the clearing account spent before the wallet's event, a sweep recorded before the force close) is paid
+            // back by another bucket, so a claim there was never settled and stranded the lots (NL-739): it borrows
+            if (left > 0 && source == AccountingLotBucket.Rebalance && demand.Bucket is { } claimant
+             && claimant != AccountingLotBucket.HeldOutside)
                 left -= Claim(source, claimant, left);
 
             foreach (var lender in LendersOf(source))
