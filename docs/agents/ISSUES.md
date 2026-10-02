@@ -125,12 +125,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 52 | 55 |
+| open | 0 | 0 | 3 | 53 | 56 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 62 | 164 | 298 | 538 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **172** | **357** | **605** |
+| **Total** | **14** | **62** | **172** | **358** | **606** |
 
 ### Epics
 
@@ -5056,6 +5056,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Save the anchor sweep as a `Sweep` row (with its fee) before publishing it.
 - **Blocks/Blocked-by:** Related NL-601, NL-602
 - **Plan ref:** ACCOUNTING_PLAN A1
+- **Update (A2 lane B1):** books impact: a counted anchor (a channel we fund) swept alone by our unstored sweep resolves as taken by the peer and is booked as a loss, while the sweep's deposit to our wallet posts to Clearing, which then does not net to zero.
 
 ### NL-612 The peer's spend of our offered HTLC output is assumed to be a preimage claim
 - **Status:** open
@@ -5096,6 +5097,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Skip them (xUnit v3 `Assert.Skip`) when `Socket.OSSupportsIPv6` is false or binding `::1` fails, as the platform skips in Infrastructure.Bitcoin do.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
+
+### NL-616 A revoked close books the revoked state's balance, not the one the books hold
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/Accounting/OnchainAccounting.cs` (`ForceClosed`: B from the confirmed commitment's spec)
+- **Evidence:** NL-602 A2 lane B1: for a revoked commitment B is our balance in the revoked state, while the books' Channels account holds our latest balance L (every payment since was booked). When L differs from B (HTLCs settled after the revoked state) Channels keeps L - B after the close. The proof scenarios have L = B, so it is not reproduced, only derived.
+- **Fix sketch:** For `RevokedCommitment` closes, take our latest local commitment's balance as the amount leaving Channels and put L - B into `lostMsat` (gain or loss against the penalty outcome), so every case nets.
+- **Blocks/Blocked-by:** Related NL-602
+- **Plan ref:** ACCOUNTING_PLAN A2
 
 ## Crypto providers and key management
 

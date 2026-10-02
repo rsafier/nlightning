@@ -21,7 +21,7 @@ using Domain.Persistence.Interfaces;
 /// <para><b>Projection.</b> Every <see cref="Interval"/> (once at <see cref="Start"/>), and on
 /// <see cref="ProjectNowAsync"/>, a round reads the sealed events after the cursor in pages of
 /// <see cref="AccountingOptions.SealBatchSize"/>, posts each through the rules
-/// (<see cref="AccountingPostingRules.Post"/> by default), stages the entries (an event that posts nothing still gets
+/// (<see cref="AccountingPostingRules.Evaluate"/> by default, with its note kept on the entry), stages the entries (an event that posts nothing still gets
 /// one) and the new cursor, and commits them in one save per page: the projection is exactly-once (a save that fails
 /// commits nothing, and the next round projects the same events again). Rounds never overlap (one gate for the loop,
 /// <see cref="ProjectNowAsync"/>, <see cref="RebuildAsync"/> and <see cref="ReconcileAsync"/>).</para>
@@ -49,8 +49,7 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
     private readonly SemaphoreSlim _roundGate = new(1, 1);
     private readonly ILogger<AccountingBooksService> _logger;
     private readonly AccountingOptions _options;
-    private readonly Func<AccountingEventModel, Func<string, AccountingEntry?>, IReadOnlyList<AccountingPosting>>
-        _rules;
+    private readonly Func<AccountingEventModel, Func<string, AccountingEntry?>, AccountingPostingResult> _rules;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IAccountingEventSealer? _sealer;
     private readonly INodeSnapshotSource? _snapshotSource;
@@ -80,7 +79,9 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
         _sealer = sealer;
         _snapshotSource = snapshotSource;
         _timeProvider = timeProvider ?? TimeProvider.System;
-        _rules = rules ?? AccountingPostingRules.Post;
+        _rules = rules is null
+                     ? AccountingPostingRules.Evaluate
+                     : (accountingEvent, find) => new AccountingPostingResult(rules(accountingEvent, find) ?? []);
 
         Meter = new Meter(AccountingEventSealerService.MeterName);
         _projectedCounter = Meter.CreateCounter<long>("nlightning.accounting.entries.projected", "{entry}",
@@ -452,12 +453,14 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
     {
         var ledgerSeq = accountingEvent.LedgerSeq
                      ?? throw new InvalidOperationException($"The event {accountingEvent.EventKey} is not sealed");
-        var postings = _rules(accountingEvent, find) ?? [];
-        accountingEvent.Details.TryGetValue(NoteDetail, out var note);
+        var result = _rules(accountingEvent, find);
+        var postings = result.Postings;
+        accountingEvent.Details.TryGetValue(NoteDetail, out var eventNote);
+        var note = string.Join("; ", new[] { eventNote, result.Note }.Where(n => !string.IsNullOrEmpty(n)));
         var entry = new AccountingEntry(ledgerSeq, accountingEvent.EventKey, accountingEvent.Kind,
                                         accountingEvent.OccurredAt, accountingEvent.ChannelId,
                                         accountingEvent.PaymentHash, postings,
-                                        string.IsNullOrEmpty(note) ? null : note);
+                                        note.Length == 0 ? null : note);
         if (!entry.IsBalanced)
             throw new InvalidOperationException(
                 $"The postings of {accountingEvent.EventKey} do not balance ({postings.Sum(p => p.AmountMsat)} msat)");
