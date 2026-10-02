@@ -14,10 +14,12 @@ using Domain.Accounting.Services;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing.Enums;
+using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Interfaces;
 using Payments;
 
 /// <summary>
@@ -392,7 +394,7 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
                     continue;
 
                 // NL-609: an invoice we paid ourselves (a rebalance) is flagged as the live writer flags it
-                var paidByUs = await IsPaidByUsAsync(unitOfWork, invoice);
+                var paidByUs = await IsPaidByUsAsync(unitOfWork, invoice, OurNodeId(scope));
                 var built = Build("invoice", invoice.PaymentHash.ToString(), () =>
                                       PaymentAccountingEvents.InvoiceSettled(
                                           invoice, invoice.AmountReceived ?? invoice.Amount
@@ -432,7 +434,7 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
                 switch (payment.Status)
                 {
                     case PaymentStatus.Succeeded:
-                        var selfPayment = await IsOurInvoiceAsync(unitOfWork, payment);
+                        var selfPayment = await IsOurInvoiceAsync(unitOfWork, payment, OurNodeId(scope));
                         built = Build("payment", payment.PaymentHash.ToString(), () =>
                                           PaymentAccountingEvents.PaymentSucceeded(payment, 1, selfPayment, null));
                         break;
@@ -676,15 +678,22 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
                              source, total);
     }
 
-    /// <summary>Whether one of our own payments of <paramref name="invoice"/> succeeded (a rebalance, NL-609).</summary>
-    private async Task<bool> IsPaidByUsAsync(IUnitOfWork unitOfWork, InvoiceModel invoice)
+    /// <summary>Our node id, or null when the scope has no key manager (then nothing is a self-payment).</summary>
+    private static CompactPubKey? OurNodeId(IServiceScope scope) =>
+        scope.ServiceProvider.GetService<ISecureKeyManager>()?.GetNodePubKey();
+
+    /// <summary>Whether one of our own payments of <paramref name="invoice"/> succeeded (a rebalance, NL-609), by the
+    /// live writers' <see cref="SelfPaymentRule"/> (NL-670).</summary>
+    private async Task<bool> IsPaidByUsAsync(IUnitOfWork unitOfWork, InvoiceModel invoice, CompactPubKey? ourNodeId)
     {
+        if (ourNodeId is null || invoice is not { Bolt11: not null, Keysend: null, Bolt12: null })
+            return false;
+
         try
         {
-            return await unitOfWork.PaymentDbRepository.GetByPaymentHashAsync(invoice.PaymentHash) is
-            {
-                Status: PaymentStatus.Succeeded
-            };
+            var payment = await unitOfWork.PaymentDbRepository.GetByPaymentHashAsync(invoice.PaymentHash);
+            return payment is { Status: PaymentStatus.Succeeded }
+                && SelfPaymentRule.IsSelfPayment(payment, invoice, ourNodeId);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -694,11 +703,15 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
         }
     }
 
-    private async Task<bool> IsOurInvoiceAsync(IUnitOfWork unitOfWork, PaymentModel payment)
+    private async Task<bool> IsOurInvoiceAsync(IUnitOfWork unitOfWork, PaymentModel payment, CompactPubKey? ourNodeId)
     {
+        if (ourNodeId is null || payment.PayeeNodeId != ourNodeId.Value)
+            return false;
+
         try
         {
-            return await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(payment.PaymentHash) is not null;
+            return SelfPaymentRule.IsSelfPayment(
+                payment, await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(payment.PaymentHash), ourNodeId);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {

@@ -31,6 +31,7 @@ using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Extensions;
 using Domain.Protocol.Onion.Factories;
@@ -161,6 +162,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _timedOutParts = new();
     private readonly ConcurrentDictionary<Task, byte> _backgroundTasks = new();
     private readonly CancellationTokenSource _disposeCts = new();
+    private readonly ISecureKeyManager? _secureKeyManager;
     private volatile bool _disposed;
 
     public HtlcSwitch(IChannelLockProvider channelLockProvider, IChannelMemoryRepository channelMemoryRepository,
@@ -175,8 +177,9 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                       IAttributionDataService? attributionDataService = null,
                       IOptions<OnchainOptions>? onchainOptions = null, IRetiredScidMap? retiredScidMap = null,
                       INodeDrainState? nodeDrainState = null,
-                      IRefusedHtlcCounter? refusedHtlcCounter = null)
+                      IRefusedHtlcCounter? refusedHtlcCounter = null, ISecureKeyManager? secureKeyManager = null)
     {
+        _secureKeyManager = secureKeyManager;
         _refusedHtlcCounter = refusedHtlcCounter;
         _nodeDrainState = nodeDrainState;
         _attributionDataService = attributionDataService;
@@ -1010,7 +1013,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         invoice.Accept(amount);
         invoice.Settle(_timeProvider.GetUtcNow());
         await unitOfWork.InvoiceDbRepository.UpdateAsync(invoice);
-        var selfPayment = await IsOurOwnPaymentAsync(unitOfWork, paymentHash);
+        var selfPayment = await IsOurOwnPaymentAsync(unitOfWork, invoice);
         PaymentAccountingEvents.TryStage(unitOfWork, () =>
         {
             _channelMemoryRepository.TryGetChannel(channelId, out var channel);
@@ -1020,17 +1023,22 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Whether one of our own payments is paying <paramref name="paymentHash"/> (NL-609): its row is <c>InFlight</c> or
-    /// <c>Succeeded</c>. False when that cannot be read (logged; the settle goes on).
+    /// Whether one of our own payments is paying <paramref name="invoice"/> (NL-609): its row is <c>InFlight</c> or
+    /// <c>Succeeded</c> and <see cref="SelfPaymentRule"/> holds (a BOLT 11 invoice of ours, never a keysend record, and
+    /// we are the payment's payee, NL-670). False when that cannot be read (logged; the settle goes on) or when our node
+    /// id is unknown (no <see cref="ISecureKeyManager"/>).
     /// </summary>
-    private async Task<bool> IsOurOwnPaymentAsync(IUnitOfWork unitOfWork, Hash paymentHash)
+    private async Task<bool> IsOurOwnPaymentAsync(IUnitOfWork unitOfWork, InvoiceModel invoice)
     {
+        var paymentHash = invoice.PaymentHash;
+        if (_secureKeyManager is null || invoice is not { Bolt11: not null, Keysend: null, Bolt12: null })
+            return false;
+
         try
         {
-            return await unitOfWork.PaymentDbRepository.GetByPaymentHashAsync(paymentHash) is
-            {
-                Status: PaymentStatus.InFlight or PaymentStatus.Succeeded
-            };
+            return SelfPaymentRule.IsSettledBySelfPayment(
+                invoice, await unitOfWork.PaymentDbRepository.GetByPaymentHashAsync(paymentHash),
+                _secureKeyManager.GetNodePubKey());
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {

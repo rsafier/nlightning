@@ -2407,7 +2407,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         try
         {
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            var selfPayment = await IsOurInvoiceAsync(unitOfWork, payment.PaymentHash);
+            var selfPayment = await IsOurInvoiceAsync(unitOfWork, payment);
             PaymentAccountingEvents.TryStage(unitOfWork, () =>
                                                  PaymentAccountingEvents.PaymentSucceeded(
                                                      payment, parts, selfPayment, DescribeInvoice(payment)), _logger);
@@ -2418,13 +2418,19 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         }
     }
 
-    /// <summary>Whether <paramref name="paymentHash"/> is one of our own invoices (a self-payment); false when that
-    /// cannot be read.</summary>
-    private async Task<bool> IsOurInvoiceAsync(IUnitOfWork unitOfWork, Hash paymentHash)
+    /// <summary>Whether <paramref name="payment"/> paid one of our own invoices (a self-payment,
+    /// <see cref="SelfPaymentRule"/>: we are its payee, NL-670); false when that cannot be read.</summary>
+    private async Task<bool> IsOurInvoiceAsync(IUnitOfWork unitOfWork, PaymentModel payment)
     {
+        var paymentHash = payment.PaymentHash;
         try
         {
-            return await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(paymentHash) is not null;
+            var ourNodeId = _secureKeyManager.GetNodePubKey();
+            if (payment.PayeeNodeId != ourNodeId)
+                return false;
+
+            return SelfPaymentRule.IsSelfPayment(
+                payment, await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(paymentHash), ourNodeId);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {

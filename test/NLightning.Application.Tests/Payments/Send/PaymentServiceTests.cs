@@ -548,10 +548,10 @@ public class PaymentServiceTests : IDisposable
     [Fact]
     public async Task Given_APaymentOfOurOwnInvoice_When_ItSucceeds_Then_ItIsFlaggedAsASelfPayment()
     {
-        // Arrange - a rebalance: the hash is one of our invoices
+        // Arrange - a rebalance: the hash is one of our invoices and we are the payee
         var preimage = Preimage();
         var hash = HashOf(preimage);
-        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3, payee: _us.NodeId));
         await _invoices.AddAsync(new InvoiceModel(hash, preimage, Preimage(), s_amount, "rebalance", "lnbcrt1self",
                                                   DateTimeOffset.UtcNow, 3_600, 18));
 
@@ -562,6 +562,25 @@ public class PaymentServiceTests : IDisposable
 
         // Assert
         Assert.Equal("true", Assert.Single(_accounting.Saved).Details["selfPayment"]);
+    }
+
+    [Fact]
+    public async Task Given_AnotherNodesInvoiceOnTheHashOfOurInvoice_When_OurPaymentSucceeds_Then_ItIsNoSelfPayment()
+    {
+        // Arrange - NL-670: Mallory learned the preimage of our invoice (she paid it) and billed us on the same hash
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+        await _invoices.AddAsync(new InvoiceModel(hash, preimage, Preimage(), s_amount, "ours", "lnbcrt1ours",
+                                                  DateTimeOffset.UtcNow, 3_600, 18));
+
+        // Act
+        Assert.True(await Service.HandleOutgoingHtlcFulfilledAsync(new OutgoingHtlcFulfilled(s_channelId, 3, hash,
+                                                                       preimage),
+                                                                   TestContext.Current.CancellationToken));
+
+        // Assert: an ordinary payment (Sent and RoutingFees in the books), not a rebalance
+        Assert.False(Assert.Single(_accounting.Saved).Details.ContainsKey("selfPayment"));
     }
 
     [Fact]
@@ -677,12 +696,14 @@ public class PaymentServiceTests : IDisposable
         return (invoice.Encode(), hash);
     }
 
-    private PaymentModel StoredPayment(Hash hash, PaymentStatus status, ulong? htlcId = null)
+    private PaymentModel StoredPayment(Hash hash, PaymentStatus status, ulong? htlcId = null,
+                                       CompactPubKey? payee = null)
     {
-        var hop = new PaymentHop(_payee.NodeId, new ShortChannelId(400, 1, 0), s_amount, Height + 21,
+        var payeeNodeId = payee ?? _payee.NodeId;
+        var hop = new PaymentHop(payeeNodeId, new ShortChannelId(400, 1, 0), s_amount, Height + 21,
                                  new Secret(RandomNumberGenerator.GetBytes(32)));
         var now = DateTimeOffset.UtcNow;
-        return PaymentModel.Restore(hash, null, _payee.NodeId, s_amount, LightningMoney.Zero, now, status,
+        return PaymentModel.Restore(hash, null, payeeNodeId, s_amount, LightningMoney.Zero, now, status,
                                     htlcId is null ? (ChannelId?)null : s_channelId, htlcId,
                                     status == PaymentStatus.Succeeded ? Preimage() : (Secret?)null, null, null, null,
                                     status == PaymentStatus.InFlight ? null : now, [hop]);
