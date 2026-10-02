@@ -215,7 +215,8 @@ public static class NodeConfigurationExtensions
 
     /// <summary>
     /// The file's relative database, log and fee-cache paths (the template's <c>nltg.db</c>, <c>logs/log-.txt</c> and
-    /// <c>fee_estimation_cache.bin</c>), resolved against the configuration directory (NL-306). Absolute paths and
+    /// <c>fee_estimation_cache.bin</c>, also when the file names no cache file, NL-706), resolved against the
+    /// configuration directory (NL-306). Absolute paths and
     /// SQLite's special <c>Data Source</c> values (<c>:memory:</c>, a <c>file:</c> URI) are left out, i.e. kept as the
     /// file wrote them.
     /// </summary>
@@ -238,10 +239,13 @@ public static class NodeConfigurationExtensions
             }
         }
 
-        if (fileConfiguration[FeeCacheFileKey] is { } cacheFile && cacheFile.Length > 0
-            && !Path.IsPathRooted(cacheFile))
+        // The fee rate cache sits in the configuration directory, also when the file does not name it (NL-706); an
+        // empty value turns it off and is kept
+        var cacheFile = fileConfiguration[FeeCacheFileKey] ?? FeeEstimationOptions.DefaultCacheFile;
+        if (cacheFile.Trim().Length > 0 && !Path.IsPathRooted(cacheFile))
             yield return new KeyValuePair<string, string?>(FeeCacheFileKey,
-                                                           Path.GetFullPath(Path.Combine(configPath, cacheFile)));
+                                                           Path.GetFullPath(Path.Combine(configPath,
+                                                                                cacheFile.Trim())));
 
         // The onion service key sits next to the node key, also when the file does not name it (Node:Tor)
         var onionKeyFile = fileConfiguration[OnionKeyFileKey];
@@ -604,7 +608,8 @@ public static class NodeConfigurationExtensions
                    "FixedFeeRatePerKw": {{FEE_FIXED}},
                    "FallbackFeeRatePerKw": {{FEE_FALLBACK}},
                    "CacheExpiration": "5m",
-                   "CacheFile": "fee_estimation_cache.bin"
+                   "CacheFile": "fee_estimation_cache.bin",
+                   "CacheMaxAge": "1h"
                  },
                  "Database": {
                    "Provider": "Sqlite",

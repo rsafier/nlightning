@@ -79,8 +79,30 @@ public class FeeEstimationOptions
     /// </summary>
     public uint FallbackFeeRatePerKw { get; set; } = 2_500;
 
-    public string CacheFile { get; set; } = "fee_estimation_cache.bin";
+    /// <summary>The cache file name the daemon's template writes (and uses when its file names none).</summary>
+    public const string DefaultCacheFile = "fee_estimation_cache.bin";
+
+    /// <summary>
+    /// Where the last good estimate is saved (NL-706): written after every successful fetch, off the caller's path, and
+    /// read at the start, so after a restart the node has a recent estimate instead of
+    /// <see cref="FallbackFeeRatePerKw"/> while the first fetch is still running or failing (an API not reachable yet,
+    /// Tor still building circuits). A relative path is taken from the working directory; the daemon anchors the
+    /// file's relative path, or <see cref="DefaultCacheFile"/> when the file names none, to the configuration directory
+    /// (NL-306). Empty (the library default) turns the cache off. <see cref="SourceFixed"/> never uses it.
+    /// </summary>
+    public string CacheFile { get; set; } = string.Empty;
+
+    /// <summary>
+    /// How long an estimate is fresh (<c>30s</c>, <c>5m</c>, <c>1h</c>, <c>1d</c>; default 5 minutes): the refresh
+    /// interval, and a saved estimate younger than this is used at the start without waiting for a fetch.
+    /// </summary>
     public string CacheExpiration { get; set; } = "5m"; // 5 minutes
+
+    /// <summary>
+    /// The oldest saved estimate used at the start (same format as <see cref="CacheExpiration"/>; default 1 hour). An
+    /// older one is ignored and logged: <see cref="FallbackFeeRatePerKw"/> applies until the first fetch succeeds.
+    /// </summary>
+    public string CacheMaxAge { get; set; } = "1h";
 
     /// <summary>
     /// Returns every configuration error; empty when valid.
@@ -113,10 +135,43 @@ public class FeeEstimationOptions
             errors.Add(
                 $"FeeEstimation:FallbackFeeRatePerKw must be at least {FeeRateConverter.FeeratePerKwFloor} sat/kw.");
 
+        if (!string.IsNullOrWhiteSpace(CacheFile) && !TryParseDuration(CacheMaxAge, out _))
+            errors.Add($"FeeEstimation:CacheMaxAge '{CacheMaxAge}' is not a positive duration such as 30m, 1h or 1d.");
+
         if (IsSource(SourceFixed) && FixedFeeRatePerKw < FeeRateConverter.FeeratePerKwFloor)
             errors.Add($"FeeEstimation:FixedFeeRatePerKw must be at least {FeeRateConverter.FeeratePerKwFloor} sat/kw.");
 
         return errors;
+    }
+
+    /// <summary>
+    /// Parses a positive duration written as a number and a unit: <c>s</c>/<c>second(s)</c>, <c>m</c>/<c>minute(s)</c>,
+    /// <c>h</c>/<c>hour(s)</c> or <c>d</c>/<c>day(s)</c>, case-insensitive (<c>30s</c>, <c>5m</c>, <c>1h</c>).
+    /// </summary>
+    internal static bool TryParseDuration(string? text, out TimeSpan duration)
+    {
+        duration = TimeSpan.Zero;
+        var trimmed = text?.Trim() ?? string.Empty;
+        var digits = 0;
+        while (digits < trimmed.Length && char.IsAsciiDigit(trimmed[digits]))
+            digits++;
+
+        if (digits == 0 || !int.TryParse(trimmed.AsSpan(0, digits), out var value) || value <= 0)
+            return false;
+
+        double? seconds = trimmed[digits..].Trim().ToLowerInvariant() switch
+        {
+            "s" or "second" or "seconds" => value,
+            "m" or "minute" or "minutes" => value * 60.0,
+            "h" or "hour" or "hours" => value * 3_600.0,
+            "d" or "day" or "days" => value * 86_400.0,
+            _ => null
+        };
+        if (seconds is not { } total || total >= TimeSpan.MaxValue.TotalSeconds)
+            return false;
+
+        duration = TimeSpan.FromSeconds(total);
+        return true;
     }
 
     /// <summary>
