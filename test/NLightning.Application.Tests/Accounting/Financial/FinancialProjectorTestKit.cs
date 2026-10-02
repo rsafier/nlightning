@@ -49,15 +49,16 @@ internal sealed class FinancialProjectorTestKit : IAsyncDisposable
     private static readonly byte[] s_nodePrivateKey =
         Convert.FromHexString("3333333333333333333333333333333333333333333333333333333333333333");
 
-    private readonly string _databasePath =
-        Path.Combine(Path.GetTempPath(), $"nltg-financial-projector-{Guid.NewGuid():N}.db");
+    private readonly string _databasePath;
 
     private readonly ServiceProvider _provider;
     private int _txCounter;
 
     private FinancialProjectorTestKit(DateTimeOffset now, AccountingCostBasisMethod method, AccountingProfile profile,
-                                      int pageSize)
+                                      int pageSize, string? databasePath, ILightningSigner? signer)
     {
+        _databasePath = databasePath
+                     ?? Path.Combine(Path.GetTempPath(), $"nltg-financial-projector-{Guid.NewGuid():N}.db");
         Clock = new SettableTimeProvider(now);
         _provider = BuildProvider(_databasePath);
         var scopeFactory = _provider.GetRequiredService<IServiceScopeFactory>();
@@ -72,7 +73,7 @@ internal sealed class FinancialProjectorTestKit : IAsyncDisposable
         Sealer = new AccountingEventSealerService(scopeFactory, NullLogger<AccountingEventSealerService>.Instance,
                                                   options);
         Books = new AccountingBooksService(scopeFactory, NullLogger<AccountingBooksService>.Instance, options, Sealer);
-        Signer = CreateSigner();
+        Signer = signer ?? CreateSigner();
         Projector = new FinancialBooksProjector(scopeFactory, NullLogger<FinancialBooksProjector>.Instance, options,
                                                 priceOptions, () => Periods, false, Clock, () => CatchingUp);
         Periods = new AccountingPeriodService(scopeFactory, NullLogger<AccountingPeriodService>.Instance, Books,
@@ -98,9 +99,10 @@ internal sealed class FinancialProjectorTestKit : IAsyncDisposable
 
     public static async Task<FinancialProjectorTestKit> CreateAsync(
         DateTimeOffset now, AccountingCostBasisMethod method = AccountingCostBasisMethod.Fifo,
-        AccountingProfile profile = AccountingProfile.Financial, int pageSize = 500)
+        AccountingProfile profile = AccountingProfile.Financial, int pageSize = 500, string? databasePath = null,
+        ILightningSigner? signer = null)
     {
-        var kit = new FinancialProjectorTestKit(now, method, profile, pageSize);
+        var kit = new FinancialProjectorTestKit(now, method, profile, pageSize, databasePath, signer);
         using var scope = kit._provider.CreateScope();
         await scope.ServiceProvider.GetRequiredService<NLightningDbContext>().Database
                    .MigrateAsync(TestContext.Current.CancellationToken);
@@ -332,7 +334,7 @@ internal sealed class FinancialProjectorTestKit : IAsyncDisposable
 
     #endregion
 
-    private static ILightningSigner CreateSigner()
+    internal static ILightningSigner CreateSigner()
     {
         using var key = new Key(s_nodePrivateKey);
         CompactPubKey nodeId = key.PubKey.ToBytes();

@@ -109,15 +109,24 @@ public sealed record FinancialEntryPlan(
 /// in the method's order and realizes proceeds − cost; a bucket takes them as moved parts at their cost (a relief of
 /// kind <see cref="AccountingLotReliefKind.Move"/> and a new lot of the destination that keeps the part's cost, origin
 /// and acquisition time); an acquisition opens one lot per receiving bucket at the market value.</para>
-/// <para><b>A bucket short of lots</b> (the clearing account spent before the wallet's own event, a rebalance received
-/// before it was paid): a debt the destination owes the source is settled first (no lot moves; valued at the debt's
-/// cost); then the source's own lots; then the lots of no bucket (an older book's node-wide pool, imported lots left),
-/// taken over without a debt; then, for a rebalance in transit only (its other half pays the destination back, NL-739),
-/// the destination's own lots as a claim (nothing moves: the source owes the destination, valued at the cost of the
-/// destination's lots in the method's order); then the other buckets' lots in the source's
-/// order (<see cref="LendersOf"/>), moved or disposed of, the source owing the lender. The sats held outside the node
-/// never lend: a deposit classified as a transfer back beyond what is held outside acquires the rest at market. What no
-/// lot covers is a shortfall: valued at market (a disposal's cost is taken as its proceeds) and noted.</para>
+/// <para><b>Debts are repaid first.</b> msat reaching a bucket that owes (moved from any bucket, or acquired) settle its
+/// debts before they stay: a debt to the giving bucket itself is settled where it is (no lot moves; valued at the debt's
+/// cost), a debt to any other lender by delivering the part to that lender (the giving bucket's lots moved there, or the
+/// acquisition's lot opened there), its cost less the debt's carried by a fiat-only line on the lender's account when the
+/// lender has no line in the entry (NL-749). So a bucket that owes never holds a lot.</para>
+/// <para><b>A bucket short of lots</b> (the clearing account spent before the wallet's own event, a sweep received
+/// before its resolution, a rebalance received before it was paid): after the source's own lots, the lots of no bucket
+/// (an older book's node-wide pool, imported lots left) are taken over without a debt; then a rebalance in transit
+/// claims the destination's own lots (nothing moves: the source owes the destination, valued at the cost of the
+/// destination's lots in the method's order); then the source borrows from the buckets in its order
+/// (<see cref="LendersOf"/>): the destination among them by such a claim, any other by moving (or disposing of) its lots,
+/// the source owing the lender. The sats held outside the node never lend: a deposit classified as a transfer back beyond
+/// what is held outside acquires the rest at market. What no lot covers is a shortfall: valued at market (a disposal's
+/// cost is taken as its proceeds) and noted.</para>
+/// <para><b>The invariant</b> after every entry, per bucket: its open lots, plus what other buckets owe it, less what it
+/// owes, equal its account's balance, in msat and in fiat (the cost of the lots and debts). A bucket whose account went
+/// below zero (a clearing account a fee nobody booked left negative) holds no lot and owes its lender that much, and the
+/// lender holds that much less than its balance.</para>
 /// <para><b>Valuation.</b> The acquisition lines carry their market value (<see cref="AccountingValuation.FiatValue"/>
 /// at the entry's price), the disposal lines their proceeds (market value; 0 for a loss, D-A12; the cost relieved for a
 /// correction), and every bucket line the cost of the lots it moved (the common part of a bucket's debits and credits at
@@ -382,7 +391,11 @@ public static class FinancialEntryPlanner
         {
             var left = msat;
             if (demand.Bucket is { } destination)
+            {
                 left -= Settle(destination, source, left);
+                left -= Repay(destination, source, left,
+                              (lender, part) => FromBucket(source, new Demand(lender, -1, part), part));
+            }
 
             var preferred = demand.IsDisposal ? CorrectionPreference(demand.Line) : null;
             left -= Take(source, source, demand, left, preferred).Msat;
@@ -402,20 +415,25 @@ public static class FinancialEntryPlanner
             // The lots of no bucket are taken over, without a debt
             left -= Take(null, source, demand, left, preferred).Msat;
 
-            // The destination's own lots: a claim on the source, nothing moves. Only for a rebalance in transit,
-            // whose other half sends the msat back from the destination and settles the claim; any other short bucket
-            // (the clearing account spent before the wallet's event, a sweep recorded before the force close) is paid
-            // back by another bucket, so a claim there was never settled and stranded the lots (NL-739): it borrows
+            // A rebalance in transit claims the destination's own lots first (its other half sends the msat back from
+            // the destination and settles the claim); nothing moves
             if (left > 0 && source == AccountingLotBucket.Rebalance && demand.Bucket is { } claimant
              && claimant != AccountingLotBucket.HeldOutside)
                 left -= Claim(source, claimant, left);
 
+            // Then the lenders in the source's order; the destination among them lends by a claim (nothing moves): the
+            // clearing account spent into the wallet before the wallet's own spend owes the wallet and the spend
+            // settles it, instead of moving a third bucket's lots into the wallet (NL-749). A claim or a debt is
+            // settled by msat reaching the debtor from any bucket (Repay; NL-739's stranded lots, NL-749)
             foreach (var lender in LendersOf(source))
             {
                 if (left == 0)
                     break;
                 if (lender == demand.Bucket)
+                {
+                    left -= Claim(source, lender, left);
                     continue;
+                }
 
                 var (lent, cost) = Take(lender, source, demand, left, null);
                 if (lent > 0)
@@ -506,6 +524,42 @@ public static class FinancialEntryPlanner
             return total;
         }
 
+        // msat reaching a debtor repay its debts (oldest first; except the one to paidBy, settled already) before they
+        // stay: each part is delivered to the lender (lots moved from the source, or the acquisition's lot opened there)
+        // and settles the debt, so a debtor never holds lots while it owes, wherever its msat come from (NL-749).
+        // Returns the msat repaid
+        private long Repay(AccountingLotBucket debtor, AccountingLotBucket? paidBy, long msat,
+                           Action<AccountingLotBucket, long> deliver)
+        {
+            var left = msat;
+            foreach (var debt in _pool.Debts.Where(d => d.Bucket == debtor && d.Lender != paidBy).ToList())
+            {
+                if (left == 0)
+                    break;
+
+                var before = _taken.GetValueOrDefault(debt.Id);
+                var available = debt.RemainingMsat - before;
+                if (available <= 0)
+                    continue;
+
+                var part = Math.Min(left, available);
+                var lender = debt.Lender!.Value;
+                var cost = FinancialLotPool.CostOf(debt, before, part, _currency);
+                _taken[debt.Id] = before + part;
+                _reliefs.Add(new FinancialLotTake(debt.Id, part, cost)
+                {
+                    Kind = AccountingLotReliefKind.Settlement,
+                    Proceeds = cost
+                });
+                Out(lender, part, cost);
+                In(debtor, part, cost);
+                deliver(lender, part);
+                left -= part;
+            }
+
+            return msat - left;
+        }
+
         // The claimant lends msat of its own lots: nothing moves, the source owes it; returns what it lent
         private long Claim(AccountingLotBucket source, AccountingLotBucket claimant, long msat)
         {
@@ -514,9 +568,13 @@ public static class FinancialEntryPlanner
             if (lent == 0)
                 return 0;
 
+            // The claimed parts stay with the claimant, but no other demand of the entry may take them too
             decimal? cost = 0m;
             foreach (var take in takes)
+            {
+                _taken[take.LotId] = _taken.GetValueOrDefault(take.LotId) + take.Msat;
                 cost = Add(cost, take.Cost);
+            }
 
             AddDebt(source, claimant, lent, cost);
             Out(source, lent, cost);
@@ -567,6 +625,19 @@ public static class FinancialEntryPlanner
                 disposed.Msat += msat;
                 disposed.Cost = Add(disposed.Cost, value);
                 return;
+            }
+
+            // A debtor's acquisition opens its lot with the lender first (NL-749)
+            var share = new Sharer(value, msat);
+            var repaid = Repay(destination, null, msat,
+                               (lender, part) => FromAcquisition(new Demand(lender, -1, part), part,
+                                                                 share.Next(part)));
+            if (repaid == msat)
+                return;
+            if (repaid > 0)
+            {
+                msat -= repaid;
+                value = share.Next(msat);
             }
 
             In(destination, msat, value);
@@ -751,8 +822,23 @@ public static class FinancialEntryPlanner
             foreach (var bucket in _buckets.OfType<AccountingLotBucket>().Distinct())
                 ValueBucket(bucket, values);
 
-            if (gain is not null && values.All(v => v is not null))
-                return Exact(values, gain.Value);
+            // A lender repaid through another bucket (NL-749) has no line: the cost of the lots it got back less the
+            // debt's cost is a fiat-only line on its account, so it keeps the cost of its lots and claims
+            var lenderLines = new List<AccountingPosting>();
+            var lendersValued = true;
+            foreach (var (bucket, flow) in _flows.OrderBy(f => f.Key))
+            {
+                if (_buckets.Contains(bucket))
+                    continue;
+
+                if (Add(flow.InCost, flow.OutCost is { } outCost ? -outCost : null) is not { } net)
+                    lendersValued = false;
+                else if (net != 0m)
+                    lenderLines.Add(FiatLine(RoleOf(bucket), NameOf(bucket), net, _currency));
+            }
+
+            if (gain is not null && lendersValued && values.All(v => v is not null))
+                return Exact(values, gain.Value, lenderLines);
 
             return Pending(flags);
         }
@@ -763,9 +849,13 @@ public static class FinancialEntryPlanner
             var flow = _flows.GetValueOrDefault(bucket) ?? new Flow();
             var debits = indexes.Where(i => _lines[i].AmountMsat > 0).ToHashSet();
             var credits = indexes.Where(i => _lines[i].AmountMsat < 0).ToHashSet();
-            if (flow.OutMsat > 0)
+
+            // The cost the bucket's lines carry in all: what came in less what went out (a lender repaid in the same
+            // entry has both, NL-749)
+            var net = Add(flow.InCost, flow.OutCost is { } outCost ? -outCost : null);
+            if (indexes.Sum(i => _lines[i].AmountMsat) < 0)
             {
-                // A giving bucket: its debits stay (at market), its credits carry them and the cost of what went out
+                // A giving bucket: its debits stay (at market), its credits carry them and the net cost of its flows
                 decimal? stay = 0m;
                 foreach (var i in debits)
                 {
@@ -773,10 +863,9 @@ public static class FinancialEntryPlanner
                     stay = Add(stay, _market[i]);
                 }
 
-                var total = Add(stay, flow.OutCost) is { } sum ? -sum : (decimal?)null;
-                ShareOver(values, credits.Contains, total);
+                ShareOver(values, credits.Contains, Add(net, stay is { } kept ? -kept : null));
             }
-            else if (flow.InMsat > 0)
+            else if (indexes.Sum(i => _lines[i].AmountMsat) > 0)
             {
                 decimal? stay = 0m;
                 foreach (var i in credits)
@@ -785,7 +874,7 @@ public static class FinancialEntryPlanner
                     stay = Add(stay, _market[i] is { } m ? -m : null);
                 }
 
-                ShareOver(values, debits.Contains, Add(stay, flow.InCost));
+                ShareOver(values, debits.Contains, Add(stay, net));
             }
             else
             {
@@ -804,7 +893,7 @@ public static class FinancialEntryPlanner
         }
 
         // Every line valued: the bucket lines at cost, the rest at market (or proceeds), the gain on its own line
-        private FinancialEntryPlan Exact(decimal?[] values, decimal gain)
+        private FinancialEntryPlan Exact(decimal?[] values, decimal gain, List<AccountingPosting> lenderLines)
         {
             var priceId = _input.Price is { } price && string.Equals(price.Currency, _currency, StringComparison.Ordinal)
                               ? price.Id
@@ -822,6 +911,7 @@ public static class FinancialEntryPlanner
                 });
             }
 
+            postings.AddRange(lenderLines);
             var role = PrimaryAssetRole(_lines);
             if (gain > 0m)
                 postings.Add(FiatLine(role, _chart[FinancialAccount.RealizedGains], -gain, _currency));
@@ -888,6 +978,14 @@ public static class FinancialEntryPlanner
                                       _currency));
             return new FinancialEntryPlan(postings, flags, [], []);
         }
+
+        private static AccountRole RoleOf(AccountingLotBucket bucket) =>
+            bucket == AccountingLotBucket.Rebalance ? AccountRole.Rebalance : (AccountRole)(int)bucket;
+
+        private string NameOf(AccountingLotBucket bucket) =>
+            bucket == AccountingLotBucket.Rebalance
+                ? _chart[FinancialAccount.Rebalance]
+                : _chart[FinancialChart.DefaultAccountOf(RoleOf(bucket))];
 
         private string? Note()
         {

@@ -135,10 +135,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 40 | 41 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 184 | 362 | 622 |
+| fixed | 14 | 62 | 185 | 362 | 623 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **191** | **412** | **679** |
+| **Total** | **14** | **62** | **192** | **412** | **680** |
 
 ### Epics
 
@@ -6811,6 +6811,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** When our HTLC-timeout/success transaction carries wallet fee inputs (O7, `IFeeInputSelector`), book its fee (inputs − outputs) as `expenses:onchain:fees:htlc` against `assets:onchain:clearing` in the resolution's event, as the CPFP and sweep fees are. Proof: an anchors force-close test with an HTLC, and the books' reconcile shows 0 drift.
 - **Blocks/Blocked-by:** Related NL-611, NL-602
 - **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-749 Cost-basis lots landed in the wrong bucket when the clearing account was spent before the event that pays it
+- **Status:** fixed (this commit on `wip/nl749`)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Accounting/Financial/Lots/FinancialEntryPlanner.cs` (`FromBucket`, `FromAcquisition`, the new `Repay`, `ValueBucket`)
+- **Evidence:** FAFO2 (Mutinynet) after the batch10 upgrade (7e104f0c) and `accounting rebuild --book financial`: `report lots` held 27 open lots of 1,620,785.938 sat (the node's total) but by bucket Wallet 1,123,786.938, Clearing 496,999, Channels 0, against `assets:onchain:wallet` 1,265,062, `assets:lightning:channels` 355,969.938 and `assets:onchain:clearing` −246 sat. Reproduced by replaying a copy of FAFO2's pre-upgrade database (the `Explicit` `FinancialNodeReplayTests`). Root cause, three parts of the planner's short-bucket logic: (1) a short source skipped the destination among its lenders and borrowed a third bucket's lots: the splice-in's change (#140, clearing → wallet before the wallet's spend #141) moved the **channels'** opening lots into the wallet with a debt Clearing → Channels; (2) a debt was settled only by msat flowing straight from the lender to the debtor, so the wallet's spend (#141) and the sweeps' resolutions (#157, #159, pending → clearing after the sweep's receipt) moved lots **into** the clearing bucket while its debts to the channels stayed open; (3) once every lender was empty, #160 (the HTLC-timeout's change of 499,732 sat, before the spend of its 500,000 sat wallet input, NL-748) moved 141,275.062 sat into the wallet as a shortfall (msat without lots or a debt), so the per-bucket identity broke (the node-wide total still matched). Opening balances do go to their buckets (the channels' six opening lots at 08:11:30 were in Channels); they were borrowed away by (1). FAFO (same shape, no shortfall): Channels 192,101.782 sat of lots against 549,955.782, Clearing 357,340 sat of lots against −514.
+- **Fix:** msat reaching a bucket that owes repay its debts first, from whichever bucket they come: a debt to the giver is settled where it is, a debt to another lender by delivering the part there (the giver's lots moved to the lender, or an acquisition's lot opened there; a lender without a line in the entry gets a fiat-only line on its asset account for the part's cost less the debt's), so a bucket that owes never holds a lot; and a short source borrows in `LendersOf` order with the destination included as a claim (nothing moves), so the clearing account spent into the wallet before the wallet's spend owes the wallet and the spend settles it. The invariant, after every entry and per bucket: open lots + owed to it − owed by it = the account's balance, in msat and fiat; a negative clearing account holds no lot and owes its lender (the wallet) that much. Replay of both pre-upgrade databases, FIFO/LIFO/HIFO alike: FAFO2 Channels 355,969.938 sat of lots = balance, Wallet 1,264,816 sat of lots + 246 sat owed by Clearing = 1,265,062, Clearing 0 lots and owes 246 sat = −246, Pending 0, no shortfall; FAFO Channels 549,955.782 = balance, Wallet 1,403,503 + 514 owed = 1,404,017, Clearing owes 514 = −514; each asset account's fiat equals its lots' and debts' cost; both nodes' closes (2026-09, 2026-10-01) verify (digest, chain hash, closing state, signature with the node's id). Tests (each fails before the fix): Domain `FinancialLotBucketInvariantTests` (FAFO2's shape: opening balances in the wallet and a channel, the splice change before the spend, a sweep received before its resolution, an anchor sweep with nothing booked against clearing, the HTLC-timeout change before its input's spend with the unbooked fee; and six seeded simulations of transfers through the clearing and pending accounts in any order, under FIFO/LIFO/HIFO; the invariant after every entry and no shortfall), Application `FinancialBooksProjectorTests.Given_TheStoryInAnyOrder_*` (the A3-T4 story projected entry by entry, as told and with every half before the half that pays it, FIFO/LIFO/HIFO).
+- **Blocks/Blocked-by:** Follows NL-657 and NL-739; the live clearing residue is NL-748 and NL-611
+- **Plan ref:** ACCOUNTING_PLAN D-A12, A3 record "Lots per bucket"
 
 ### NL-723 Our BOLT 12 paths' margin refused LDK's shadow CLTV offset
 - **Status:** fixed (43deb91a)

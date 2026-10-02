@@ -6,6 +6,7 @@ using Application.Accounting.Export.Financial;
 using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Financial;
+using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Financial.Lots;
 using Domain.Accounting.Models;
 using Domain.Accounting.Prices;
@@ -289,6 +290,68 @@ public sealed class FinancialBooksProjectorTests
         Assert.Equal(incremental, await kit.SnapshotFinancialAsync());
     }
 
+    [Theory]
+    [InlineData(AccountingCostBasisMethod.Fifo, false)]
+    [InlineData(AccountingCostBasisMethod.Lifo, false)]
+    [InlineData(AccountingCostBasisMethod.Hifo, false)]
+    [InlineData(AccountingCostBasisMethod.Fifo, true)]
+    [InlineData(AccountingCostBasisMethod.Lifo, true)]
+    [InlineData(AccountingCostBasisMethod.Hifo, true)]
+    public async Task Given_TheStoryInAnyOrder_When_ProjectedEntryByEntry_Then_EachAssetAccountHoldsItsBucketsCostBasis(
+        AccountingCostBasisMethod method, bool receivedFirst)
+    {
+        // Arrange (NL-749): the story, or the story with every half that pays into a bucket before the half that pays
+        // for it (the change and the close's output before the wallet's spend and the close, the funding before the
+        // spend, the rebalance received before it is paid)
+        await using var kit = await FinancialProjectorTestKit.CreateAsync(s_now, method);
+        await kit.AddPricesAsync(s_prices);
+        var story = Story(kit);
+        var order = receivedFirst
+                        ? new[] { 0, 1, 2, 5, 4, 3, 6, 7, 8, 10, 9, 12, 11, 15, 14, 13 }
+                        : Enumerable.Range(0, story.Length).ToArray();
+
+        foreach (var index in order)
+        {
+            // Act
+            await kit.AddAsync(story[index]);
+            await kit.ProjectAsync();
+
+            // Assert: every asset account's balance and fiat are its bucket's open lots, plus what other buckets owe
+            // it, less what it owes (a bucket that owes holds no lot), and no lot is missing
+            Assert.Null(kit.Projector.ProjectionError);
+            var lots = (await kit.ListLotsAsync()).Select(l => l.Lot).Where(l => l.RemainingMsat > 0).ToList();
+            var balances = await kit.ReadAsync(u => u.AccountingBooksDbRepository.GetAccountBalancesAsync(
+                                                   AccountingBook.Financial, TestContext.Current.CancellationToken));
+            foreach (var role in new[] { AccountRole.Channels, AccountRole.Pending, AccountRole.Wallet,
+                                         AccountRole.Clearing })
+            {
+                var bucket = (AccountingLotBucket)(int)role;
+                var account = balances.Where(b => b.AccountName == FinancialChart.Default[
+                                                      FinancialChart.DefaultAccountOf(role)]).ToList();
+                var held = lots.Where(l => !l.IsDebt && l.Bucket == bucket).ToList();
+                var owedTo = lots.Where(l => l.IsDebt && l.Lender == bucket).ToList();
+                var owedBy = lots.Where(l => l.IsDebt && l.Bucket == bucket).ToList();
+                Assert.Equal(account.Sum(b => b.BalanceMsat),
+                             held.Sum(l => l.RemainingMsat) + owedTo.Sum(l => l.RemainingMsat)
+                           - owedBy.Sum(l => l.RemainingMsat));
+                Assert.Equal(account.Sum(b => b.FiatAmount),
+                             held.Sum(RemainingCost) + owedTo.Sum(RemainingCost) - owedBy.Sum(RemainingCost));
+                if (owedBy.Count > 0)
+                    Assert.Empty(held);
+            }
+
+            Assert.DoesNotContain(await kit.ListEntriesAsync(AccountingBook.Financial),
+                                  e => e.Note?.Contains("shortfall", StringComparison.Ordinal) == true);
+        }
+
+        // Every half has its other half: nothing is owed at the end, and the clearing account holds nothing
+        var open = (await kit.ListLotsAsync()).Select(l => l.Lot).Where(l => l.RemainingMsat > 0).ToList();
+        Assert.DoesNotContain(open, l => l.IsDebt);
+        Assert.DoesNotContain(open, l => l.Bucket is AccountingLotBucket.Clearing or AccountingLotBucket.Pending
+                                                    or AccountingLotBucket.Rebalance);
+        Assert.Equal(1_398_430_000, open.Sum(l => l.RemainingMsat));
+    }
+
     [Fact]
     public async Task Given_ProjectedMonths_When_ClosedWithALateFactAfter_Then_VerifyHoldsAndTheFactIsAnAdjustment()
     {
@@ -532,6 +595,10 @@ public sealed class FinancialBooksProjectorTests
         Assert.All(await kit.Periods.VerifyClosesAsync(TestContext.Current.CancellationToken),
                    v => Assert.True(v.IsIntact, v.Problem));
     }
+
+    // The cost of what is left of a lot
+    private static decimal RemainingCost(AccountingLot lot) =>
+        FinancialLotPool.CostOf(lot, lot.RemainingMsat, Usd)!.Value;
 
     /// <summary>Writes the story's events (ledger sequences 1 to 16).</summary>
     private static Task StoryAsync(FinancialProjectorTestKit kit) => kit.AddAsync(Story(kit));
