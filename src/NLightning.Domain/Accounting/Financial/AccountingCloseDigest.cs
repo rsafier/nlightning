@@ -157,11 +157,20 @@ public sealed class AccountingCloseDigest : IDisposable
         WriteInt64(stream, relief.Msat);
         WriteOptionalString(stream, relief.FiatCostRelieved is { } cost ? AccountingClosingState.FormatFiat(cost) : null);
         WriteOptionalString(stream, relief.Proceeds is { } proceeds ? AccountingClosingState.FormatFiat(proceeds) : null);
+
+        // A move or a settlement (NL-657); a disposal adds nothing, so the closes made before stay verifiable
+        if (relief.Kind != AccountingLotReliefKind.Disposal)
+        {
+            stream.WriteByte(2);
+            stream.WriteByte((byte)relief.Kind);
+        }
+
         return stream.ToArray();
     }
 
-    /// <summary>The canonical bytes of a lot open at a close (its current remaining amount, account and
-    /// <c>ClosedPeriodId</c> left out; the remaining amount at the close in).</summary>
+    /// <summary>The canonical bytes of a lot open at a close (its current remaining amount and <c>ClosedPeriodId</c>
+    /// left out; the remaining amount at the close in; the bucket, the acquisition time of a moved part and a debt's
+    /// lender only when one is set, NL-657).</summary>
     public static byte[] GetLotBytes(AccountingLot lot, long remainingAtEndMsat)
     {
         ArgumentNullException.ThrowIfNull(lot);
@@ -179,6 +188,17 @@ public sealed class AccountingCloseDigest : IDisposable
         WriteOptionalString(stream, lot.FiatCurrency);
         WriteOptionalInt64(stream, lot.PriceId);
         stream.WriteByte(lot.BasisEstimated ? (byte)1 : (byte)0);
+
+        // The bucket, a moved part's acquisition time and a debt's lender (NL-657); a lot of the node-wide pool adds
+        // nothing, so the closes made before stay verifiable
+        if (lot.Bucket is not null || lot.HeldSince is not null || lot.Lender is not null)
+        {
+            stream.WriteByte(2);
+            WriteOptionalInt64(stream, lot.Bucket is { } bucket ? (long)bucket : null);
+            WriteOptionalInt64(stream, lot.HeldSince?.UtcTicks);
+            WriteOptionalInt64(stream, lot.Lender is { } lender ? (long)lender : null);
+        }
+
         return stream.ToArray();
     }
 

@@ -217,9 +217,18 @@ internal static class AccountingFinancialSchemaRoundTrip
         var lot = new AccountingLot(0, s_at, AccountingLotOrigin.Acquisition, 1, 0, null, null, 5_000, 5_000,
                                     4.30240617m, "USD", priceId, false, null);
         var opening = new AccountingLot(0, s_at.AddDays(-1), AccountingLotOrigin.Opening, null, 0,
-                                        AccountRole.Wallet, null, 10_000, 10_000, null, null, null, true, null);
+                                        AccountingLotBucket.Wallet, null, 10_000, 10_000, null, null, null, true, null);
+
+        // NL-657: a part moved to another bucket (its parent, its original acquisition time) and a bucket's debt
+        var debt = new AccountingLot(0, s_at.AddDays(3), AccountingLotOrigin.Debt, 3, 0, AccountingLotBucket.Clearing,
+                                     null, 1_000, 1_000, 0.86m, "USD", null, false, null)
+        {
+            Lender = AccountingLotBucket.Wallet
+        };
         long lotId;
         long openingId;
+        long movedId;
+        long debtId;
         await using (var context = contextFactory())
         {
             var rules = new AccountingRuleDbRepository(context);
@@ -229,8 +238,13 @@ internal static class AccountingFinancialSchemaRoundTrip
             var lots = new AccountingLotDbRepository(context);
             lotId = await lots.AddLotAsync(lot, cancellationToken);
             openingId = await lots.AddLotAsync(opening, cancellationToken);
+            movedId = await lots.AddLotAsync(Moved(lotId), cancellationToken);
+            debtId = await lots.AddLotAsync(debt, cancellationToken);
             lots.AddRelief(new AccountingLotRelief(0, lotId, 1, 1, s_at.AddDays(30), 2_000, 1.72096247m, 2.5m,
                                                    null));
+            lots.AddRelief(new AccountingLotRelief(0, lotId, 2, 0, s_at.AddDays(2), 1_000, 0.86048123m, 0.86048123m,
+                                                   null)
+            { Kind = AccountingLotReliefKind.Move });
             await new AccountingPeriodDbRepository(context).AddAsync(
                 new AccountingPeriod("2026-09", new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero),
                                      new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero),
@@ -259,9 +273,15 @@ internal static class AccountingFinancialSchemaRoundTrip
             var lots = new AccountingLotDbRepository(context);
             Assert.Equal(lot with { Id = lotId }, await lots.GetLotAsync(lotId, cancellationToken));
             var open = await lots.ListOpenLotsAsync(cancellationToken: cancellationToken);
-            Assert.Equal([openingId, lotId], open.Select(l => l.Id));
+            Assert.Equal([openingId, lotId, movedId, debtId], open.Select(l => l.Id));
             Assert.Equal(opening with { Id = openingId }, open[0]);
-            var relief = Assert.Single(await lots.ListReliefsByLotAsync(lotId, cancellationToken));
+            Assert.Equal(Moved(lotId) with { Id = movedId }, open[2]);
+            Assert.Equal(debt with { Id = debtId }, open[3]);
+            Assert.Equal([movedId], (await lots.ListOpenLotsAsync(AccountingLotBucket.Channels, cancellationToken))
+                                    .Select(l => l.Id));
+            var reliefs = await lots.ListReliefsByLotAsync(lotId, cancellationToken);
+            Assert.Equal([AccountingLotReliefKind.Move, AccountingLotReliefKind.Disposal], reliefs.Select(r => r.Kind));
+            var relief = reliefs[1];
             Assert.Equal(new AccountingLotRelief(relief.Id, lotId, 1, 1, s_at.AddDays(30), 2_000, 1.72096247m, 2.5m,
                                                  null), relief);
             Assert.Equal(relief, Assert.Single(await lots.ListReliefsByEntryAsync(1, 1, cancellationToken)));
@@ -284,7 +304,8 @@ internal static class AccountingFinancialSchemaRoundTrip
             Assert.Equal(1, await new AccountingBooksDbRepository(context)
                                 .MarkEntriesClosedAsync(AccountingBook.Financial, "2026-09", period.Start,
                                                         period.End, cancellationToken));
-            Assert.Equal(2, await lots.MarkClosedAsync("2026-09", period.End, cancellationToken));
+            // The four lots acquired in September and the move relief of Sep 16 (the disposal is of October)
+            Assert.Equal(5, await lots.MarkClosedAsync("2026-09", period.End, cancellationToken));
             await context.SaveChangesAsync(cancellationToken);
         }
 
@@ -318,7 +339,8 @@ internal static class AccountingFinancialSchemaRoundTrip
 
             var lots = new AccountingLotDbRepository(context);
             Assert.Equal("2026-09", (await lots.GetLotAsync(lotId, cancellationToken))!.ClosedPeriodId);
-            Assert.Null(Assert.Single(await lots.ListReliefsByLotAsync(lotId, cancellationToken)).ClosedPeriodId);
+            Assert.Equal(["2026-09", null], (await lots.ListReliefsByLotAsync(lotId, cancellationToken))
+                                            .Select(r => r.ClosedPeriodId));
         }
     }
 
@@ -384,6 +406,14 @@ internal static class AccountingFinancialSchemaRoundTrip
             [(byte[])invoiceHash, Enumerable.Repeat((byte)0x72, 32).ToArray(),
              Enumerable.Repeat((byte)0x73, 32).ToArray(), "lnbcrt1a2invoice"], cancellationToken);
     }
+
+    // A part of the lot moved to the channels the day after, keeping its acquisition time (NL-657)
+    private static AccountingLot Moved(long parentId) =>
+        new(0, s_at.AddDays(2), AccountingLotOrigin.Acquisition, 2, 0, AccountingLotBucket.Channels, parentId, 1_000,
+            1_000, 0.86048123m, "USD", null, false, null)
+        {
+            HeldSince = s_at
+        };
 
     private static AccountingAccountBalance Balance(IEnumerable<AccountingAccountBalance> balances, string name) =>
         balances.Single(b => b.AccountName == name);

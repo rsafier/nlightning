@@ -31,12 +31,20 @@ public class AccountingLotEntity
 
     public int SourceAdjustment { get; set; }
 
-    /// <summary><c>AccountRole</c> of the asset account that holds the lot when lots are tracked per account, or null
-    /// for the node-wide pool.</summary>
+    /// <summary><c>AccountingLotBucket</c> that holds the lot (the debtor of a debt), or null for a lot of the
+    /// node-wide pool of an older book or an imported lot not taken by its opening balance yet (NL-657).</summary>
     public int? Account { get; set; }
 
-    /// <summary>The lot a split lot came from, or null.</summary>
+    /// <summary>The lot a moved part came from, or null.</summary>
     public long? ParentLotId { get; set; }
+
+    /// <summary>The original acquisition time of a moved part (UTC ticks; FIFO/LIFO and the holding period), or null
+    /// for the lot's own <see cref="AcquiredAt"/> (migration <c>AddLotBuckets</c>, NL-657).</summary>
+    public DateTimeOffset? HeldSince { get; set; }
+
+    /// <summary><c>AccountingLotBucket</c> a debt (<c>Origin</c> 5) is owed to, or null (migration
+    /// <c>AddLotBuckets</c>, NL-657).</summary>
+    public int? Lender { get; set; }
 
     public required long OriginalMsat { get; set; }
     public required long RemainingMsat { get; set; }

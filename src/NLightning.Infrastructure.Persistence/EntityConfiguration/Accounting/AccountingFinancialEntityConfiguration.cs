@@ -119,6 +119,10 @@ public static class AccountingFinancialEntityConfiguration
             entity.Property(l => l.SourceAdjustment).IsRequired();
             entity.Property(l => l.Account).IsRequired(false);
             entity.Property(l => l.ParentLotId).IsRequired(false);
+            entity.Property(l => l.HeldSince)
+                  .HasConversion<UtcTicksConverter>()
+                  .IsRequired(false);
+            entity.Property(l => l.Lender).IsRequired(false);
             entity.Property(l => l.OriginalMsat).IsRequired();
             entity.Property(l => l.RemainingMsat).IsRequired();
             entity.Property(l => l.FiatCost)
@@ -165,6 +169,7 @@ public static class AccountingFinancialEntityConfiguration
             entity.Property(r => r.ClosedPeriodId)
                   .HasMaxLength(AccountingSchemaLimits.PeriodIdMaxLength)
                   .IsRequired(false);
+            entity.Property(r => r.Kind).IsRequired();
 
             // The reliefs of a disposing entry; realized gains by period; a close's reliefs
             entity.HasIndex(r => new { r.LedgerSeq, r.Adjustment });

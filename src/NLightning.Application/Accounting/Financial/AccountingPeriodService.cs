@@ -8,6 +8,7 @@ namespace NLightning.Application.Accounting.Financial;
 using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Financial;
+using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Crypto.ValueObjects;
@@ -177,10 +178,21 @@ public sealed class AccountingPeriodService : IAccountingPeriods, IAccountingAdj
         if (key.Book != Financial || valuation.Posting.AccountName is not { Length: > 0 } accountName)
             return false;
 
-        var entry = await FindEntryAsync(unitOfWork.AccountingBooksDbRepository, key, cancellationToken);
+        var books = unitOfWork.AccountingBooksDbRepository;
+        var entry = await FindEntryAsync(books, key, cancellationToken);
         if (entry?.ClosedPeriodId is null
          || await GetLockingPeriodAsync(entry.OccurredAt, cancellationToken) is null)
             return false;
+
+        // The value lands where the line is held now: a reclassification after the close moved it (NL-681)
+        if (FinancialChart.IsClassifiable(valuation.Posting.Account)
+         && entry.Postings.ElementAtOrDefault(key.Index) is { } line)
+        {
+            var entries = await books.GetEntriesByKeyAsync(Financial, entry.EventKey, cancellationToken);
+            accountName = AccountingReclassification.CurrentAccountOf(entries, line) is { Length: > 0 } current
+                              ? current
+                              : accountName;
+        }
 
         await StageAdjustmentAsync(unitOfWork, new AccountingAdjustment(
                                        AccountingAdjustmentReason.Price, entry.LedgerSeq, entry.EventKey, entry.Kind,

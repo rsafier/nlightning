@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using NLightning.Infrastructure.Persistence.Contexts;
 
@@ -11,9 +12,11 @@ using NLightning.Infrastructure.Persistence.Contexts;
 namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 {
     [DbContext(typeof(NLightningDbContext))]
-    partial class NLightningDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261002133149_AddLotBuckets")]
+    partial class AddLotBuckets
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -904,9 +907,6 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<bool?>("ChangeAddressIsChange")
                         .HasColumnType("bit");
 
-                    b.Property<byte?>("CloseProtocol")
-                        .HasColumnType("tinyint");
-
                     b.Property<byte[]>("ClosingTransaction")
                         .HasColumnType("varbinary(max)");
 
@@ -965,9 +965,6 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<long?>("LocalFundingContributionSatoshis")
                         .HasColumnType("bigint");
-
-                    b.Property<bool?>("LocalIsCloser")
-                        .HasColumnType("bit");
 
                     b.Property<decimal>("LocalNextHtlcId")
                         .HasColumnType("decimal(20,0)");

@@ -116,7 +116,8 @@ public static class AccountingServiceCollectionExtensions
                                      sp.GetService<IOptions<AccountingOptions>>(),
                                      sp.GetService<IOptions<AccountingPriceOptions>>(),
                                      sp.GetService<IAccountingAdjustmentSink>,
-                                     sp.GetService<IPriceSource>() is not null, sp.GetService<TimeProvider>()));
+                                     sp.GetService<IPriceSource>() is not null, sp.GetService<TimeProvider>(),
+                                     () => sp.GetService<PriceValuationService>()?.IsCatchingUp == true));
         services.TryAddSingleton<IFinancialBooksProjector>(sp => sp.GetRequiredService<FinancialBooksProjector>());
         services.TryAddSingleton<IAccountingLots>(sp => sp.GetRequiredService<FinancialBooksProjector>());
 

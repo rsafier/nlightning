@@ -299,7 +299,8 @@ public sealed class AccountingLotIpcResponse
 
     [Key(3)] public long? SourceLedgerSeq { get; init; }
 
-    /// <summary>The <c>AccountRole</c> name of the account that holds it, or null for the node-wide pool.</summary>
+    /// <summary>The <c>AccountingLotBucket</c> name of the bucket that holds it (<c>Channels</c>, <c>Wallet</c>,
+    /// <c>HeldOutside</c>, ...), or null for a lot of the node-wide pool of an older book (NL-657).</summary>
     [Key(4)] public string? Account { get; init; }
 
     [Key(5)] public required long OriginalMsat { get; init; }
@@ -312,13 +313,22 @@ public sealed class AccountingLotIpcResponse
     [Key(12)] public string? MarketValue { get; init; }
     [Key(13)] public string? UnrealizedGain { get; init; }
 
+    /// <summary>When the sats of a part moved from another lot were acquired (its holding period starts there), or null
+    /// for the lot's own acquisition time (NL-657).</summary>
+    [Key(14)] public long? HeldSinceUnixMilliseconds { get; init; }
+
+    /// <summary>The lot a moved part came from, or null (NL-657).</summary>
+    [Key(15)] public long? ParentLotId { get; init; }
+
     public static AccountingLotIpcResponse From(AccountingLotLine line) => new()
     {
         Id = line.Lot.Id,
         AcquiredAtUnixMilliseconds = line.Lot.AcquiredAt.ToUnixTimeMilliseconds(),
         Origin = line.Lot.Origin.ToString(),
         SourceLedgerSeq = line.Lot.SourceLedgerSeq,
-        Account = line.Lot.Account?.ToString(),
+        Account = line.Lot.Bucket?.ToString(),
+        HeldSinceUnixMilliseconds = line.Lot.HeldSince?.ToUnixTimeMilliseconds(),
+        ParentLotId = line.Lot.ParentLotId,
         OriginalMsat = line.Lot.OriginalMsat,
         RemainingMsat = line.Lot.RemainingMsat,
         FiatCost = AccountingFinancialReportIpcResponse.Fiat(line.Lot.FiatCost),

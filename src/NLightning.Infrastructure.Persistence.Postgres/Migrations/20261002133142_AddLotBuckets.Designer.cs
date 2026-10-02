@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using NLightning.Infrastructure.Persistence.Contexts;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
 {
     [DbContext(typeof(NLightningDbContext))]
-    partial class NLightningDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261002133142_AddLotBuckets")]
+    partial class AddLotBuckets
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -1156,10 +1159,6 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("change_address_is_change");
 
-                    b.Property<byte?>("CloseProtocol")
-                        .HasColumnType("smallint")
-                        .HasColumnName("close_protocol");
-
                     b.Property<byte[]>("ClosingTransaction")
                         .HasColumnType("bytea")
                         .HasColumnName("closing_transaction");
@@ -1237,10 +1236,6 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.Property<long?>("LocalFundingContributionSatoshis")
                         .HasColumnType("bigint")
                         .HasColumnName("local_funding_contribution_satoshis");
-
-                    b.Property<bool?>("LocalIsCloser")
-                        .HasColumnType("boolean")
-                        .HasColumnName("local_is_closer");
 
                     b.Property<decimal>("LocalNextHtlcId")
                         .HasColumnType("numeric(20,0)")

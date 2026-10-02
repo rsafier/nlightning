@@ -32,6 +32,10 @@ public class AccountingLotReliefEntity
     /// <summary>The <c>AccountingPeriods</c> id of the close that holds the relief, or null.</summary>
     public string? ClosedPeriodId { get; set; }
 
+    /// <summary><c>AccountingLotReliefKind</c>: 0 a disposal, 1 a move to another bucket, 2 a debt's settlement
+    /// (migration <c>AddLotBuckets</c>, NL-657; the reliefs written before are disposals).</summary>
+    public byte Kind { get; set; }
+
     // Default constructor for EF Core
     internal AccountingLotReliefEntity()
     {
