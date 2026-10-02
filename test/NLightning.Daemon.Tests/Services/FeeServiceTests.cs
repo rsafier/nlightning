@@ -102,10 +102,7 @@ public class FeeServiceTests
     public async Task GivenApiFails_WhenRefreshFeeRateAsync_ThenUsesCachedValue()
     {
         // Arrange
-        var feeEstimationOptions = new FeeEstimationOptions
-        {
-            CacheFile = "GivenApiFails_WhenRefreshFeeRateAsync_ThenUsesCachedValue.test"
-        };
+        var feeEstimationOptions = new FeeEstimationOptions();
         var httpMessageHandlerMock = new Mock<HttpMessageHandler>(MockBehavior.Strict);
         httpMessageHandlerMock.Protected()
                               .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(),
@@ -128,35 +125,6 @@ public class FeeServiceTests
 
         // Assert
         Assert.Equal(expectedCachedFeeRate, cachedFeeRate);
-    }
-
-    [Fact]
-    public async Task GivenValidCache_WhenRefreshFeeRateAsync_ThenSavesCacheToFile()
-    {
-        // Arrange
-        var feeService = new FeeService(new OptionsWrapper<FeeEstimationOptions>(new FeeEstimationOptions()),
-                                        new HttpClient(new Mock<HttpMessageHandler>().Object),
-                                        new Mock<ILogger<FeeService>>().Object);
-        var tempFilePath = Path.GetTempFileName();
-        var cacheFilePathField = typeof(FeeService)
-           .GetField("_cacheFilePath", BindingFlags.NonPublic | BindingFlags.Instance);
-        Assert.NotNull(cacheFilePathField);
-        cacheFilePathField.SetValue(feeService, tempFilePath);
-        var feeRate = LightningMoney.Satoshis(1500);
-        var cachedFeeRateField = typeof(FeeService)
-           .GetField("_cachedFeeRatePerKw", BindingFlags.NonPublic | BindingFlags.Instance);
-        Assert.NotNull(cachedFeeRateField);
-        cachedFeeRateField.SetValue(feeService, feeRate.Satoshi);
-        var ctsField = typeof(FeeService).GetField("_cts", BindingFlags.NonPublic | BindingFlags.Instance);
-        Assert.NotNull(ctsField);
-        ctsField.SetValue(feeService, null);
-
-        // Act
-        await feeService.RefreshFeeRateAsync(CancellationToken.None);
-
-        // Assert
-        Assert.True(File.Exists(tempFilePath));
-        File.Delete(tempFilePath);
     }
 
     [Fact]

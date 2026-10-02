@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -26,6 +28,12 @@ using Options;
 /// target like the node-wide rate); <see cref="FeeEstimationOptions.SourceHttp"/> picks the mempool.space bucket of the
 /// last response that fits the target (<see cref="GetHttpBucket"/>); <see cref="FeeEstimationOptions.SourceFixed"/> is
 /// the fixed rate. Without a per-target estimate the node-wide rate is answered.</para>
+/// <para>The last good estimate (node-wide rate and HTTP buckets) is saved to <see cref="FeeEstimationOptions.CacheFile"/>
+/// after each successful fetch, by a background writer (never on the caller's path), and read back when the service is
+/// built (NL-706): at <see cref="StartAsync"/> a saved estimate younger than
+/// <see cref="FeeEstimationOptions.CacheExpiration"/> is used without waiting for a fetch, and one younger than
+/// <see cref="FeeEstimationOptions.CacheMaxAge"/> replaces <see cref="FeeEstimationOptions.FallbackFeeRatePerKw"/> while
+/// the first fetch fails. An older, corrupt or other-source file is ignored and logged.</para>
 /// Register it as one singleton (<see cref="FeeServiceCollectionExtensions.AddFeeServices"/>): the host starts that
 /// instance, and every consumer must read its cache.
 /// </remarks>
@@ -34,9 +42,20 @@ public class FeeService : IFeeService
     /// <summary>The longest HTTP answer read (64 KiB, NL-678): a mempool.space fee answer is about 100 bytes.</summary>
     public const int MaxResponseBytes = HttpResponseLimits.SmallResponseMaxBytes;
 
-    private const string FeeCacheFileName = "fee_cache.bin";
     private static readonly string[] s_httpBuckets = ["fastestFee", "halfHourFee", "hourFee", "economyFee"];
     private static readonly TimeSpan s_defaultCacheExpiration = TimeSpan.FromMinutes(5);
+
+    /// <summary>How long <see cref="StartAsync"/> waits for the cache file read before going on without it.</summary>
+    private static readonly TimeSpan s_cacheLoadWait = TimeSpan.FromSeconds(2);
+
+    /// <summary>How long <see cref="StopAsync"/> waits for the last cache write.</summary>
+    private static readonly TimeSpan s_cacheSaveWait = TimeSpan.FromSeconds(5);
+
+    /// <summary>The highest rate taken from the cache file: a corruption guard, not a fee policy.</summary>
+    internal const long MaxCachedFeeRatePerKw = int.MaxValue;
+
+    /// <summary>A saved estimate this far in the future (clock change) is still taken, as fetched now.</summary>
+    private static readonly TimeSpan s_clockSkewTolerance = TimeSpan.FromMinutes(5);
 
     private DateTime _lastFetchTime = DateTime.MinValue;
     private long _cachedFeeRatePerKw;
@@ -46,7 +65,15 @@ public class FeeService : IFeeService
     private readonly HttpClient _httpClient;
     private readonly ILogger<FeeService> _logger;
     private readonly TimeSpan _cacheTimeExpiration;
-    private readonly string _cacheFilePath;
+    private readonly string? _cacheFilePath;
+    private readonly TimeSpan _cacheMaxAge;
+    private readonly string _cacheSourceKey;
+    private readonly Lock _stateLock = new();
+    private readonly Lock _saveLock = new();
+    private readonly Task _cacheLoadTask = Task.CompletedTask;
+    private bool _fetchedOnce;
+    private FeeRateCacheEntry? _pendingSave;
+    private Task _saveTask = Task.CompletedTask;
     private readonly FeeEstimationOptions _feeEstimationOptions;
     private readonly Func<int, EstimateSmartFeeMode, CancellationToken, Task<decimal?>>? _bitcoindEstimator;
     private readonly ConcurrentDictionary<uint, (long FeeRatePerKw, DateTime FetchedAt)> _targetCache = new();
@@ -88,14 +115,43 @@ public class FeeService : IFeeService
 
         _cacheFilePath = ParseFilePath(_feeEstimationOptions);
         _cacheTimeExpiration = ParseCacheTime(_feeEstimationOptions.CacheExpiration);
+        _cacheMaxAge = FeeEstimationOptions.TryParseDuration(_feeEstimationOptions.CacheMaxAge, out var maxAge)
+                           ? maxAge
+                           : TimeSpan.FromHours(1);
+        _cacheSourceKey = ComputeSourceKey(_feeEstimationOptions);
 
-        // Try to load from the file initially
-        _ = LoadFromFileAsync();
+        // Read the saved estimate off the constructing thread; StartAsync waits for it, bounded (NL-706)
+        if (_cacheFilePath is not null)
+            _cacheLoadTask = Task.Run(LoadFromFile);
+    }
+
+    /// <summary>The cache file in use, as a full path, or null when there is none (off, or a fixed rate).</summary>
+    internal string? CacheFilePath => _cacheFilePath;
+
+    /// <summary>Completes when the cache file was read at construction (tests).</summary>
+    internal Task CacheLoaded => _cacheLoadTask;
+
+    /// <summary>Completes when every cache write scheduled so far is done (tests).</summary>
+    internal Task FlushCacheAsync()
+    {
+        lock (_saveLock)
+            return _saveTask;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // The saved estimate, if the file could be read in time: a slow disk never holds the start (NL-706)
+        try
+        {
+            await _cacheLoadTask.WaitAsync(s_cacheLoadWait, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Reading the fee rate cache file {CacheFile} takes more than {Wait}; starting without it",
+                               _cacheFilePath, s_cacheLoadWait);
+        }
 
         // Start the background task
         _feeTask = RunPeriodicRefreshAsync(_cts.Token);
@@ -126,6 +182,17 @@ public class FeeService : IFeeService
             {
                 // Expected during cancellation
             }
+        }
+
+        // The last estimate reaches the file before the process ends, bounded so a stuck disk never holds the stop
+        try
+        {
+            await FlushCacheAsync().WaitAsync(s_cacheSaveWait);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Writing the fee rate cache file {CacheFile} takes more than {Wait}; stopping without it",
+                               _cacheFilePath, s_cacheSaveWait);
         }
     }
 
@@ -224,9 +291,15 @@ public class FeeService : IFeeService
         try
         {
             var feeRate = await FetchFeeRatePerKwAsync(cancellationToken);
-            Interlocked.Exchange(ref _cachedFeeRatePerKw, feeRate);
-            _lastFetchTime = DateTime.UtcNow;
-            await SaveToFileAsync();
+            var fetchedAt = DateTime.UtcNow;
+            lock (_stateLock)
+            {
+                Interlocked.Exchange(ref _cachedFeeRatePerKw, feeRate);
+                _lastFetchTime = fetchedAt;
+                _fetchedOnce = true;
+            }
+
+            ScheduleSave(feeRate, fetchedAt);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -397,19 +470,152 @@ public class FeeService : IFeeService
         }
     }
 
-    // The fee rate cache file is not written or read yet (NL-706): both methods only log.
-    private Task SaveToFileAsync()
+    /// <summary>
+    /// Queues the estimate for the cache file. One write runs at a time, in order, and a write takes the newest queued
+    /// estimate, so a burst of refreshes costs one or two writes; the caller never waits on the disk (NL-706).
+    /// </summary>
+    private void ScheduleSave(long feeRatePerKw, DateTime fetchedAt)
     {
-        _logger.LogDebug("Saving fee rate to file {filePath}", _cacheFilePath);
+        if (_cacheFilePath is null)
+            return;
 
-        return Task.CompletedTask;
+        var entry = new FeeRateCacheEntry
+        {
+            Source = _feeEstimationOptions.Source.Trim(),
+            SourceKey = _cacheSourceKey,
+            FetchedAt = new DateTimeOffset(fetchedAt, TimeSpan.Zero),
+            FeeRatePerKw = feeRatePerKw,
+            Buckets = _feeEstimationOptions.IsSource(FeeEstimationOptions.SourceHttp)
+                          ? new Dictionary<string, long>(_httpBuckets)
+                          : null
+        };
+
+        lock (_saveLock)
+        {
+            var writeQueued = _pendingSave is not null;
+            _pendingSave = entry;
+            if (!writeQueued)
+                _saveTask = _saveTask.ContinueWith(_ => WritePending(), CancellationToken.None,
+                                                   TaskContinuationOptions.None, TaskScheduler.Default);
+        }
     }
 
-    private Task LoadFromFileAsync()
+    private void WritePending()
     {
-        _logger.LogDebug("Loading fee rate from file {filePath}", _cacheFilePath);
+        FeeRateCacheEntry? entry;
+        lock (_saveLock)
+        {
+            entry = _pendingSave;
+            _pendingSave = null;
+        }
 
-        return Task.CompletedTask;
+        if (entry is null || _cacheFilePath is null)
+            return;
+
+        try
+        {
+            FeeRateCacheFile.Write(_cacheFilePath, entry);
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Saved the fee rate {FeeRatePerKw} sat/kw to {CacheFile}", entry.FeeRatePerKw,
+                                 _cacheFilePath);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Saving the fee rate to {CacheFile} failed; the next estimate tries again",
+                               _cacheFilePath);
+        }
+    }
+
+    /// <summary>
+    /// Reads the saved estimate and takes it unless a fetch already answered: stale (older than
+    /// <see cref="FeeEstimationOptions.CacheMaxAge"/>), corrupt, other-source and unreadable files are logged and ignored.
+    /// </summary>
+    private void LoadFromFile()
+    {
+        if (_cacheFilePath is null)
+            return;
+
+        try
+        {
+            var entry = FeeRateCacheFile.TryRead(_cacheFilePath, out var problem);
+            if (entry is null)
+            {
+                if (problem is not null)
+                    _logger.LogWarning("Ignoring the fee rate cache file {CacheFile}: {Problem}", _cacheFilePath,
+                                       problem);
+                else if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug("No fee rate cache file at {CacheFile} yet", _cacheFilePath);
+                return;
+            }
+
+            if (GetEntryProblem(entry, DateTime.UtcNow) is { } entryProblem)
+            {
+                _logger.LogWarning("Ignoring the fee rate cache file {CacheFile}: {Problem}", _cacheFilePath,
+                                   entryProblem);
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            var fetchedAt = entry.FetchedAt.UtcDateTime > now ? now : entry.FetchedAt.UtcDateTime;
+            lock (_stateLock)
+            {
+                if (_fetchedOnce)
+                    return; // a fetch was quicker than the file: it is newer
+
+                Interlocked.Exchange(ref _cachedFeeRatePerKw, entry.FeeRatePerKw);
+                _lastFetchTime = fetchedAt;
+                if (entry.Buckets is not null && _feeEstimationOptions.IsSource(FeeEstimationOptions.SourceHttp))
+                    _httpBuckets = new Dictionary<string, long>(entry.Buckets);
+            }
+
+            if (_logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation("Loaded the fee rate {FeeRatePerKw} sat/kw fetched at {FetchedAt:u} from "
+                                     + "{CacheFile}", entry.FeeRatePerKw, fetchedAt, _cacheFilePath);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Reading the fee rate cache file {CacheFile} failed; starting without it",
+                               _cacheFilePath);
+        }
+    }
+
+    /// <summary>Why a saved entry can't be used now, or null when it can.</summary>
+    private string? GetEntryProblem(FeeRateCacheEntry entry, DateTime now)
+    {
+        if (!string.Equals(entry.Source, _feeEstimationOptions.Source.Trim(), StringComparison.OrdinalIgnoreCase)
+         || !string.Equals(entry.SourceKey, _cacheSourceKey, StringComparison.Ordinal))
+            return $"it was saved for another fee source ({entry.Source}) or other source settings";
+
+        if (entry.FeeRatePerKw < FeeRateConverter.FeeratePerKwFloor)
+            return $"its rate {entry.FeeRatePerKw} sat/kw is below {FeeRateConverter.FeeratePerKwFloor} sat/kw";
+
+        if (entry.Buckets?.Any(b => b.Value < FeeRateConverter.FeeratePerKwFloor) == true)
+            return $"a bucket rate is below {FeeRateConverter.FeeratePerKwFloor} sat/kw";
+
+        // Only a damaged file holds such a value (it would overflow the msat amounts built from it)
+        if (entry.FeeRatePerKw > MaxCachedFeeRatePerKw
+         || entry.Buckets?.Any(b => b.Value > MaxCachedFeeRatePerKw) == true)
+            return $"a rate is above {MaxCachedFeeRatePerKw} sat/kw";
+
+        var fetchedAt = entry.FetchedAt.UtcDateTime;
+        if (fetchedAt > now + s_clockSkewTolerance)
+            return $"it was fetched at {fetchedAt:u}, in the future";
+
+        var age = now - fetchedAt;
+        if (age > _cacheMaxAge)
+            return $"it was fetched at {fetchedAt:u}, more than FeeEstimation:CacheMaxAge ({_cacheMaxAge}) ago";
+
+        return null;
+    }
+
+    /// <summary>The settings that shape an estimate, hashed (a POST body may carry an API key).</summary>
+    internal static string ComputeSourceKey(FeeEstimationOptions options)
+    {
+        var settings = options.IsSource(FeeEstimationOptions.SourceBitcoind)
+                           ? $"{options.ConfirmationTarget}\n{options.EstimateMode.ToUpperInvariant()}"
+                           : $"{options.Url}\n{options.Method.ToUpperInvariant()}\n{options.Body}\n"
+                           + $"{options.PreferredFeeRate}\n{options.RateUnit}";
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(settings)));
     }
 
     private bool IsCacheValid()
@@ -443,18 +649,18 @@ public class FeeService : IFeeService
         }
     }
 
-    private static string ParseFilePath(FeeEstimationOptions feeEstimationOptions)
+    /// <summary>
+    /// The cache file as a full path (a relative one from the working directory; the daemon has already anchored the
+    /// file's relative path to the configuration directory, NL-306), or null when the cache is off: no
+    /// <see cref="FeeEstimationOptions.CacheFile"/>, or <see cref="FeeEstimationOptions.SourceFixed"/>, which has
+    /// nothing to remember.
+    /// </summary>
+    private static string? ParseFilePath(FeeEstimationOptions feeEstimationOptions)
     {
         var filePath = feeEstimationOptions.CacheFile;
-        if (string.IsNullOrWhiteSpace(filePath))
-        {
-            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, FeeCacheFileName);
-        }
+        if (string.IsNullOrWhiteSpace(filePath) || feeEstimationOptions.IsSource(FeeEstimationOptions.SourceFixed))
+            return null;
 
-        // Check if the file path is absolute or relative
-        return Path.IsPathRooted(filePath)
-                   ? filePath
-                   : Path.Combine(Directory.GetCurrentDirectory(),
-                                  filePath); // If it's relative, combine it with the current directory
+        return Path.GetFullPath(filePath.Trim());
     }
 }
