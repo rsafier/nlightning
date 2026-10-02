@@ -412,7 +412,8 @@ public sealed class OnchainAccountingTests : IDisposable
         var sweep = Stored(Spend([(commitment.TxId, toRemote.OutputIndex)], Sat(toRemote) - 400),
                            BroadcastPurpose.Sweep, new TxId(Enumerable.Repeat((byte)0x5E, 32).ToArray()));
         await MineSpendAsync(executor, sweep, commitment.TxId, toRemote.OutputIndex, SpendHeight + 1);
-        var theirClaim = Spend([(commitment.TxId, ourHtlc.OutputIndex)], OurHtlcSat - 300);
+        var theirClaim = Spend([(commitment.TxId, ourHtlc.OutputIndex)], OurHtlcSat - 300,
+                               HtlcSuccessWitness(RealSigningCommitmentPair.Preimage(1)));
         await MineSpendAsync(executor, theirClaim, commitment.TxId, ourHtlc.OutputIndex, SpendHeight + 2);
         var ourClaim = Stored(Spend([(commitment.TxId, theirHtlc.OutputIndex)], TheirHtlcSat - 400),
                               BroadcastPurpose.HtlcClaim);
@@ -431,6 +432,7 @@ public sealed class OnchainAccountingTests : IDisposable
         Assert.Equal(OnchainAccounting.OfferedHtlc, lost.Details[OnchainAccounting.HtlcDirectionKey]);
         Assert.Equal("peer", lost.Details[OnchainAccounting.ClaimedByKey]);
         Assert.Equal("payment", lost.Details[OnchainAccounting.ValueBookedByKey]);
+        Assert.Equal(AccountingDetailKeys.ClaimPathPreimage, lost.Details[AccountingDetailKeys.ClaimPath]);
         Assert.Equal(OnchainAccounting.PendingBucket, lost.Details[OnchainAccounting.BucketKey]);
 
         // Assert: rule (a): their HTLC we claimed moves into the wallet, its value booked by our invoice
@@ -454,6 +456,37 @@ public sealed class OnchainAccountingTests : IDisposable
         Assert.Equal(-(long)TheirHtlcSat * 1_000, books[AccountRole.Received]);
         Assert.Equal(0, books[AccountRole.OnchainGain]);
         Assert.Equal(Math.Max(0, Msat(close, OnchainAccounting.LostKey)), books[AccountRole.LossOnchain]);
+    }
+
+    [Fact]
+    public async Task Given_OurRevokedCommitment_When_ThePeerTakesOurHtlcByRevocation_Then_ALossNotTheValueOfAPayment()
+    {
+        // Arrange (NL-612): our own commitment confirmed and the peer spends our offered HTLC output through the
+        // revocation path (we had broadcast a revoked state); our payment never completed (no preimage)
+        var local = _pair.Alice.State.LocalCommit;
+        var commitment = BuildCommitment(CommitmentSide.Local, local.Spec, local.Number, null);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        var ourHtlc = Row(OutputDescriptorKind.LocalOfferedHtlc);
+        _store.Origins[(_channel.ChannelId, HtlcDirection.Outgoing, ourHtlc.HtlcId!.Value)] =
+            HtlcOrigin.Local(RealSigningCommitmentPair.Hash(RealSigningCommitmentPair.Preimage(1)));
+        var executor = CreateExecutor();
+
+        // Act
+        var taken = Spend([(commitment.TxId, ourHtlc.OutputIndex)], OurHtlcSat - 300, RevocationWitness());
+        await MineSpendAsync(executor, taken, commitment.TxId, ourHtlc.OutputIndex, SpendHeight + 2);
+
+        // Assert: written off the pending bucket as the peer's, with the path, and no payment owns its value
+        var lost = _store.Events.Single(e => e.OutputIndex == ourHtlc.OutputIndex && e.TxId == commitment.TxId);
+        Assert.Equal(-(long)OurHtlcSat * 1_000, lost.AmountMsat);
+        Assert.Equal("peer", lost.Details[OnchainAccounting.ClaimedByKey]);
+        Assert.Equal(AccountingDetailKeys.ClaimPathRevocation, lost.Details[AccountingDetailKeys.ClaimPath]);
+        Assert.False(lost.Details.ContainsKey(OnchainAccounting.ValueBookedByKey));
+
+        // Assert (the books): the HTLC's value is a loss, not taken out of the channels a second time
+        var books = BooksSimulator.Of([lost]);
+        Assert.Equal(-(long)OurHtlcSat * 1_000, books[AccountRole.Pending]);
+        Assert.Equal((long)OurHtlcSat * 1_000, books[AccountRole.LossOnchain]);
+        Assert.Equal(0, books[AccountRole.Channels]);
     }
 
     [Fact]
@@ -839,14 +872,27 @@ public sealed class OnchainAccountingTests : IDisposable
         return transaction;
     }
 
-    private static SignedTransaction Spend(IEnumerable<(TxId TxId, uint Vout)> inputs, ulong outputSat)
+    private static SignedTransaction Spend(IEnumerable<(TxId TxId, uint Vout)> inputs, ulong outputSat,
+                                           byte[][]? firstInputWitness = null)
     {
         var transaction = Network.RegTest.CreateTransaction();
         foreach (var (txId, vout) in inputs)
             transaction.Inputs.Add(new OutPoint(new uint256(txId), vout));
+        if (firstInputWitness is not null)
+            transaction.Inputs[0].WitScript = new WitScript(firstInputWitness);
         transaction.Outputs.Add(Money.Satoshis(outputSat), new Key().PubKey.WitHash.ScriptPubKey);
         return new SignedTransaction(new TxId(transaction.GetHash().ToBytes()), transaction.ToBytes());
     }
+
+    /// <summary>The witness of the peer's HTLC-success transaction: <c>0 &lt;sig&gt; &lt;sig&gt; &lt;preimage&gt;
+    /// &lt;script&gt;</c> (only its shape and preimage matter to the books).</summary>
+    private static byte[][] HtlcSuccessWitness(Secret preimage) =>
+        [[], FakeSignature(), FakeSignature(), (byte[])preimage, [0x51]];
+
+    /// <summary>The witness of a revocation spend: <c>&lt;sig&gt; &lt;revocationpubkey&gt; &lt;script&gt;</c>.</summary>
+    private static byte[][] RevocationWitness() => [FakeSignature(), [0x02, .. new byte[32]], [0x51]];
+
+    private static byte[] FakeSignature() => [0x30, .. new byte[70]];
 
     /// <summary>The second-level row the local resolver writes for our confirmed HTLC transaction.</summary>
     private OutputResolutionModel SecondLevelRow(ChainTx htlcTransaction, OutputResolutionModel parent)

@@ -22,6 +22,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
+using Domain.Onchain.Parsers;
 using Domain.Payments.Enums;
 using Domain.Persistence.Interfaces;
 using Fees;
@@ -1103,7 +1104,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                     continue;
 
                 var ownership = await GetHtlcValueOwnerAsync(unitOfWork, channel.ChannelId, data?.Htlc, ours,
-                                                             revoked);
+                                                             revoked, ClaimPathOf(data?.Htlc, ours, spender, row));
                 accounting.Add(OnchainAccounting.Resolution(channel, close, row, data, kind, eventKey, flows, counted,
                                                             spender.TxId, spent.BlockHeight, now,
                                                             broadcast?.ReplacesTransactionId is not null, ownership));
@@ -1125,7 +1126,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     /// (NL-602 A2).
     /// </summary>
     private async Task<IReadOnlyList<(string Key, string? Value)>> GetHtlcValueOwnerAsync(
-        IUnitOfWork unitOfWork, ChannelId channelId, SpecHtlc? htlc, bool ours, bool revoked)
+        IUnitOfWork unitOfWork, ChannelId channelId, SpecHtlc? htlc, bool ours, bool revoked, string? claimPath)
     {
         if (htlc is not { } spec)
             return [];
@@ -1142,12 +1143,23 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
 
             if (spec.Direction == HtlcDirection.Outgoing && !ours)
             {
+                // NL-612: only a claim with the preimage paid the payment or forward that booked the value; the peer
+                // taking it any other way (the revocation path of our own revoked commitment) is a loss of ours
+                if (claimPath != AccountingDetailKeys.ClaimPathPreimage)
+                    return
+                    [
+                        (OnchainAccounting.ClaimedByKey, AccountingDetailKeys.ResolvedByPeer),
+                        (AccountingDetailKeys.ClaimPath, claimPath),
+                        (OnchainAccounting.BucketKey, OnchainAccounting.PendingBucket)
+                    ];
+
                 var origin = unitOfWork.ChannelStateDbRepository is { } state
                                  ? await state.GetHtlcOriginAsync(channelId, new HtlcKey(spec.Direction, spec.Id))
                                  : null;
                 return
                 [
                     (OnchainAccounting.ClaimedByKey, AccountingDetailKeys.ResolvedByPeer),
+                    (AccountingDetailKeys.ClaimPath, claimPath),
                     (OnchainAccounting.ValueBookedByKey, origin?.Kind switch
                     {
                         HtlcOriginKind.Local => "payment",
@@ -1165,6 +1177,29 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         }
 
         return [];
+    }
+
+    /// <summary>
+    /// How the peer took our offered HTLC <paramref name="htlc"/> (output <paramref name="row"/>) with
+    /// <paramref name="spender"/> (NL-612): the witness of the spending input carries the HTLC's preimage, takes the
+    /// revocation path, or neither. Null for any other output or a spend of ours.
+    /// </summary>
+    private static string? ClaimPathOf(SpecHtlc? htlc, bool ours, ChainTx spender, OutputResolutionModel row)
+    {
+        if (htlc is not { Direction: HtlcDirection.Outgoing } spec || ours)
+            return null;
+
+        var index = spender.IndexOfInputSpending(row.TransactionId, row.OutputIndex);
+        if (index < 0)
+            return AccountingDetailKeys.ClaimPathUnknown;
+
+        var witness = spender.Inputs[index].Witness;
+        if (HtlcWitnessParser.TryExtractPreimage(witness, spec.PaymentHash, out _))
+            return AccountingDetailKeys.ClaimPathPreimage;
+
+        return HtlcWitnessParser.Parse(witness).Path == HtlcSpendPath.Revocation
+                   ? AccountingDetailKeys.ClaimPathRevocation
+                   : AccountingDetailKeys.ClaimPathUnknown;
     }
 
     /// <summary>What a row's change in a round is, for the accounting feed.</summary>

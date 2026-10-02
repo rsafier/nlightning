@@ -127,6 +127,20 @@ public static class AccountingDetailKeys
     /// <summary>Who claimed an HTLC output.</summary>
     public const string ClaimedBy = "claimedBy";
 
+    /// <summary>How the peer took one of our offered HTLC outputs, read from the spender's witness (NL-612):
+    /// <see cref="ClaimPathPreimage"/>, <see cref="ClaimPathRevocation"/> or <see cref="ClaimPathUnknown"/>. Only a
+    /// preimage claim leaves the value to the payment or forward that booked it.</summary>
+    public const string ClaimPath = "claimPath";
+
+    /// <summary>The peer's spend carries the HTLC's payment preimage.</summary>
+    public const string ClaimPathPreimage = "preimage";
+
+    /// <summary>The peer's spend takes the revocation path (our own revoked commitment's output).</summary>
+    public const string ClaimPathRevocation = "revocation";
+
+    /// <summary>The peer's spend carries no preimage of the HTLC and is no revocation spend we recognize.</summary>
+    public const string ClaimPathUnknown = "unknown";
+
     /// <summary>"true" when a resolution's fee includes the fee bumps of its RBF replacements.</summary>
     public const string IncludesFeeBump = "includesFeeBump";
 

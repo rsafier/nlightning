@@ -69,7 +69,9 @@ using Domain.Onchain.Models;
 /// <c>PaymentSucceeded</c>, <c>ForwardSettled</c> or <c>ForwardLostOnchain</c>: its event writes the HTLC off the
 /// pending bucket (<c>AmountMsat</c> = −value, <see cref="BucketKey"/> = <see cref="PendingBucket"/>,
 /// <see cref="ClaimedByKey"/> = peer, <see cref="ValueBookedByKey"/> = payment or forward), which the books do not
-/// count as a second loss. (c) An offered HTLC that times out back to us is an ordinary movement into the wallet, with
+/// count as a second loss. Only a spend whose witness carries the HTLC's preimage is such a claim (NL-612,
+/// <see cref="AccountingDetailKeys.ClaimPath"/>): the peer taking it by the revocation path of our own revoked
+/// commitment (or any spend without the preimage) gets no <see cref="ValueBookedByKey"/>, so the books post a loss. (c) An offered HTLC that times out back to us is an ordinary movement into the wallet, with
 /// its fees: it was in our gross balance at the close. (d) An incoming HTLC that times out to the peer is 0,
 /// informational. The books match the HTLC by <see cref="PaymentHashKey"/>/<see cref="HtlcIdKey"/>.</para>
 /// <para><b>Reorgs.</b> A resolution whose spend was reorged out, and a close replaced by another transaction, are
