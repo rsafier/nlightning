@@ -1,11 +1,13 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using NLightning.Tests.Utils.Accounting;
 
 namespace NLightning.Application.Tests.Payments.Switch;
 
 using Application.Payments.Routing;
 using Application.Payments.Switch;
 using Channels.Harness;
+using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Models;
@@ -51,6 +53,7 @@ public class MppReceiveTests
         // Arrange
         await using var harness = await CreateHarnessAsync();
         var invoice = await CreateInvoiceAsync(harness);
+        var (bobBefore, carolBefore) = (harness.Bob.LocalBalanceMsat, harness.Carol.LocalBalanceMsat);
 
         // Act: the first part is held
         await PayPartAsync(harness, invoice, s_firstPart, s_amount);
@@ -91,6 +94,15 @@ public class MppReceiveTests
         Assert.Equal(2, forwards.Count);
         Assert.All(forwards, f => Assert.Equal(AccountingEventKind.ForwardSettled, f.Kind));
         Assert.Equal(2, forwards.Select(f => f.EventKey).Distinct().Count());
+
+        // NL-602 A2 (the books): the one settle and the two forward fees move each node's channels account exactly as
+        // its live balances
+        var carolBooks = BooksSimulator.Of(await AccountingEventsAsync(harness.Carol));
+        Assert.Equal(harness.Carol.LocalBalanceMsat - carolBefore, carolBooks[AccountRole.Channels]);
+        Assert.Equal(-(long)s_amount.MilliSatoshi, carolBooks[AccountRole.Received]);
+        var bobBooks = BooksSimulator.Of(forwards);
+        Assert.Equal(harness.Bob.LocalBalanceMsat - bobBefore, bobBooks[AccountRole.Channels]);
+        Assert.Equal(-bobBooks[AccountRole.Channels], bobBooks[AccountRole.Routing]);
     }
 
     [Fact]

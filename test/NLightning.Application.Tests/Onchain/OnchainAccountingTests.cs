@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NBitcoin;
+using NLightning.Tests.Utils.Accounting;
 
 namespace NLightning.Application.Tests.Onchain;
 
@@ -12,8 +13,10 @@ using Application.Channels.Services;
 using Application.Onchain;
 using Application.Onchain.Accounting;
 using Application.Onchain.Interfaces;
+using Application.Payments;
 using Application.Protocol.Factories;
 using Channels.Services;
+using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Models;
@@ -29,9 +32,11 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
+using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -310,6 +315,16 @@ public sealed class OnchainAccountingTests : IDisposable
 
         // Assert: nothing new
         Assert.Equal(5, _store.Events.Count);
+
+        // Assert (NL-602 A2, the books): pending nets to zero, the channels lost B, the clearing account holds what the
+        // two sweeps paid to the wallet and the sweep fees are the three spenders' fees
+        var books = BooksSimulator.Of(_store.Events);
+        Assert.Equal(0, books[AccountRole.Pending]);
+        Assert.Equal(close.AmountMsat, books[AccountRole.Channels]);
+        Assert.Equal(((long)toLocalSat - 500 + (long)OurHtlcSat - 500) * 1_000, books[AccountRole.Clearing]);
+        Assert.Equal(1_000_000, books[AccountRole.FeeSweep]);
+        Assert.Equal(close.FeeMsat, books[AccountRole.FeeCommitment]);
+        Assert.Equal(0, books[AccountRole.OnchainGain]);
     }
 
     [Fact]
@@ -363,6 +378,17 @@ public sealed class OnchainAccountingTests : IDisposable
         Assert.False(gained.Details.ContainsKey(OnchainAccounting.IncludesFeeBumpKey));
         Assert.Equal(OnchainAccounting.WalletBucket, gained.Details[OnchainAccounting.BucketToKey]);
         Assert.Equal(0, PendingBalance());
+
+        // Assert (NL-602 A2, the books): with the off-chain events that own the two HTLCs' value (our payment that the
+        // peer's claim completed, our invoice that our claim settled), pending nets to zero and the channels lost B
+        var close = _store.Events[0];
+        var books = BooksSimulator.Of([.. _store.Events, .. OffChainEventsOfTheHtlcs(close.OccurredAt)]);
+        Assert.Equal(0, books[AccountRole.Pending]);
+        Assert.Equal(close.AmountMsat, books[AccountRole.Channels]);
+        Assert.Equal((long)OurHtlcSat * 1_000, books[AccountRole.Sent]);
+        Assert.Equal(-(long)TheirHtlcSat * 1_000, books[AccountRole.Received]);
+        Assert.Equal(0, books[AccountRole.OnchainGain]);
+        Assert.Equal(Math.Max(0, Msat(close, OnchainAccounting.LostKey)), books[AccountRole.LossOnchain]);
     }
 
     [Fact]
@@ -427,6 +453,17 @@ public sealed class OnchainAccountingTests : IDisposable
         Assert.Equal(-(long)OurHtlcSat * 1_000, breach.AmountMsat);
         Assert.Equal("peer", breach.Details[OnchainAccounting.ClaimedByKey]);
         Assert.Equal(0, PendingBalance());
+
+        // Assert (NL-602 A2, the books): pending nets to zero and the channels lost B; the penalties are gains, not the
+        // income of an invoice (a revoked HTLC output is taken through the revocation path, no preimage), and our HTLC
+        // the cheater took is a loss (no payment owns it here)
+        Assert.DoesNotContain(penalties, e => e.Details.ContainsKey(OnchainAccounting.ValueBookedByKey));
+        var books = BooksSimulator.Of(_store.Events);
+        Assert.Equal(0, books[AccountRole.Pending]);
+        Assert.Equal(closed.AmountMsat, books[AccountRole.Channels]);
+        Assert.Equal(-(long)penaltyInputsSat * 1_000, books[AccountRole.OnchainGain]);
+        Assert.Equal((long)OurHtlcSat * 1_000 + Math.Max(0, Msat(closed, OnchainAccounting.LostKey)),
+                     books[AccountRole.LossOnchain]);
     }
 
     [Fact]
@@ -468,6 +505,17 @@ public sealed class OnchainAccountingTests : IDisposable
         Assert.Equal(AccountingEventKeys.Reemitted(resolved.EventKey, SpendHeight + 153), again.EventKey);
         Assert.Equal(resolved.AmountMsat, again.AmountMsat);
         Assert.Equal(Msat(_store.Events[0], OnchainAccounting.PendingKey) - ValueMsat(toLocal), PendingBalance());
+
+        // Assert (NL-602 A2, the books): the reversal undid the first sweep's postings exactly and the second
+        // confirmation booked them once more
+        var books = BooksSimulator.Of(_store.Events);
+        Assert.Equal(PendingBalance(), books[AccountRole.Pending]);
+        Assert.Equal(_store.Events[0].AmountMsat, books[AccountRole.Channels]);
+        Assert.Equal(resolved.AmountMsat, books[AccountRole.Clearing]);
+        Assert.Equal(resolved.FeeMsat, books[AccountRole.FeeSweep]);
+        var reversalEntry = books.Entry(reversal.EventKey)!;
+        Assert.Equal(books.Entry(resolved.EventKey)!.Postings.Select(p => (p.Account, -p.AmountMsat)),
+                     reversalEntry.Postings.Select(p => (p.Account, p.AmountMsat)));
     }
 
     [Fact]
@@ -509,6 +557,13 @@ public sealed class OnchainAccountingTests : IDisposable
         // The old close's pending bucket is back to zero; the new close's holds its own outputs
         Assert.Equal(0, PendingBalance(ours.TxId));
         Assert.Equal(Msat(added[2], OnchainAccounting.PendingKey), PendingBalance(theirs.TxId));
+
+        // Assert (NL-602 A2, the books): only the new close stands
+        var books = BooksSimulator.Of(_store.Events);
+        Assert.Equal(Msat(added[2], OnchainAccounting.PendingKey), books[AccountRole.Pending]);
+        Assert.Equal(added[2].AmountMsat, books[AccountRole.Channels]);
+        Assert.Equal(0, books[AccountRole.Clearing]);
+        Assert.Equal(0, books[AccountRole.FeeSweep]);
     }
 
     [Fact]
@@ -538,12 +593,48 @@ public sealed class OnchainAccountingTests : IDisposable
         Assert.Equal(AccountingEventKeys.OutputIgnored(commitment.TxId, toLocal.OutputIndex), ignored.EventKey);
         Assert.Equal(-ValueMsat(toLocal), ignored.AmountMsat);
         Assert.Equal("ignored", ignored.Details[OnchainAccounting.ResolvedByKey]);
+
+        // Assert (NL-602 A2, the books): the given-up output left the pending bucket as a loss
+        var close = _store.Events[0];
+        var books = BooksSimulator.Of(_store.Events);
+        Assert.Equal(Msat(close, OnchainAccounting.PendingKey) - ValueMsat(toLocal), books[AccountRole.Pending]);
+        Assert.Equal(ValueMsat(toLocal) + Math.Max(0, Msat(close, OnchainAccounting.LostKey)),
+                     books[AccountRole.LossOnchain]);
     }
 
     public void Dispose()
     {
         _provider.Dispose();
         _pair.Dispose();
+    }
+
+    /// <summary>
+    /// What the payment core writes for the two HTLCs of the shared arrangement (the real writers): our payment of
+    /// <see cref="OurHtlcSat"/>, completed by the preimage the peer revealed, and our invoice of
+    /// <see cref="TheirHtlcSat"/>, settled by our on-chain claim.
+    /// </summary>
+    private IReadOnlyList<AccountingEventModel> OffChainEventsOfTheHtlcs(DateTimeOffset at)
+    {
+        var ourPreimage = RealSigningCommitmentPair.Preimage(1);
+        var payment = new PaymentModel(RealSigningCommitmentPair.Hash(ourPreimage), "lnbcrt-test",
+                                       _channel.RemoteNodeId, LightningMoney.Satoshis(OurHtlcSat), LightningMoney.Zero,
+                                       at);
+        payment.AddOutgoingHtlc(_channel.ChannelId, 0);
+        payment.Succeed(ourPreimage, at);
+
+        var theirPreimage = RealSigningCommitmentPair.Preimage(2);
+        var invoice = new InvoiceModel(RealSigningCommitmentPair.Hash(theirPreimage), theirPreimage,
+                                       RealSigningCommitmentPair.Preimage(9), LightningMoney.Satoshis(TheirHtlcSat),
+                                       "on chain", "lnbcrt-test", at, 3_600, 18);
+        invoice.Accept(LightningMoney.Satoshis(TheirHtlcSat));
+        invoice.Settle(at);
+
+        return
+        [
+            PaymentAccountingEvents.PaymentSucceeded(payment, 1, false, null),
+            PaymentAccountingEvents.InvoiceSettled(invoice, LightningMoney.Satoshis(TheirHtlcSat), _channel.ChannelId,
+                                                   _channel, 1, true, SpendHeight + 3)
+        ];
     }
 
     private OnchainResolutionExecutor CreateExecutor() =>

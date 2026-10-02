@@ -1,10 +1,12 @@
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Tests.Utils.Accounting;
 
 namespace NLightning.Application.Tests.Payments.Switch;
 
 using Application.Payments;
 using Application.Payments.Routing;
 using Channels.Harness;
+using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Models;
@@ -78,6 +80,16 @@ public class ThreeNodeSwitchTests
         Assert.Equal(ThreeNodeHarness.BobCarolChannelId, circuit.OutgoingChannelId);
         await AssertNoSettledRowsAsync(harness);
         AssertNeverTwoLocks(harness);
+
+        // NL-602 A2 (the books): Carol's and Bob's channels account moved exactly as their live balances. Alice offered
+        // her HTLC through the harness, not her payment service, so she has no payment event to book.
+        var carolBooks = BooksSimulator.Of(await AccountingEventsAsync(harness.Carol));
+        Assert.Equal((long)after.CarolBc - (long)before.CarolBc, carolBooks[AccountRole.Channels]);
+        Assert.Equal(-(long)s_amount.MilliSatoshi, carolBooks[AccountRole.Received]);
+        var bobBooks = BooksSimulator.Of(await AccountingEventsAsync(harness.Bob));
+        Assert.Equal((long)after.BobAb - (long)before.BobAb + ((long)after.BobBc - (long)before.BobBc),
+                     bobBooks[AccountRole.Channels]);
+        Assert.Equal(-(long)fee.MilliSatoshi, bobBooks[AccountRole.Routing]);
     }
 
     [Fact]

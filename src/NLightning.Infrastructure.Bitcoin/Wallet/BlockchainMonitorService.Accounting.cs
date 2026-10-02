@@ -54,19 +54,19 @@ public partial class BlockchainMonitorService
     private const int MaxReplacementChainLength = 64;
 
     /// <summary>The source of a wallet movement whose transaction we neither broadcast nor watch nor signed.</summary>
-    internal const string ExternalSource = "external";
+    internal const string ExternalSource = AccountingDetailKeys.ExternalSource;
 
     /// <summary>The source of a wallet movement whose transaction is one of our stored broadcasts.</summary>
-    internal const string BroadcastSource = "broadcast";
+    internal const string BroadcastSource = AccountingDetailKeys.BroadcastSource;
 
     /// <summary>The source of a wallet movement whose transaction is a watched channel transaction or spends a watched
     /// channel output (a mutual close, a sweep or claim without a stored row).</summary>
-    internal const string ChannelSource = "channel";
+    internal const string ChannelSource = AccountingDetailKeys.ChannelSource;
 
     /// <summary>The source of a wallet movement whose transaction spends our wallet outputs but is not a stored
     /// broadcast (an interactive transaction the peer published, a transaction from before the broadcast table).
     /// </summary>
-    internal const string WalletSource = "wallet";
+    internal const string WalletSource = AccountingDetailKeys.WalletSource;
 
     /// <summary>The stored row of a pending broadcast before the block marks it confirmed; null when unreadable.</summary>
     private async Task<BroadcastTransactionModel?> TryGetBroadcastForAccountingAsync(IUnitOfWork uow, TxId txId)
@@ -174,7 +174,8 @@ public partial class BlockchainMonitorService
         }
 
         var details = AccountingDetailsCodec.Create(("purpose", nameof(BroadcastPurpose.WalletSend)),
-                                                    ("destination", externalOutputs == 1 ? destination : null),
+                                                    (AccountingDetailKeys.Destination,
+                                                     externalOutputs == 1 ? destination : null),
                                                     ("externalOutputs",
                                                      externalOutputs.ToString(CultureInfo.InvariantCulture)),
                                                     ("feeUnknown", stored.Fee is null ? "true" : null));
@@ -226,10 +227,9 @@ public partial class BlockchainMonitorService
         var details = AccountingDetailsCodec.Create(("address", address.Address),
                                                     ("addressType", Enum.GetName(address.AddressType)),
                                                     ("change", address.IsChange ? "true" : "false"),
-                                                    ("source", source.Source),
-                                                    ("purpose", source.Purpose is { } purpose
-                                                                    ? Enum.GetName(purpose)
-                                                                    : null));
+                                                    (AccountingDetailKeys.Source, source.Source),
+                                                    (AccountingDetailKeys.Purpose,
+                                                     source.Purpose is { } purpose ? Enum.GetName(purpose) : null));
         var amountMsat = checked((long)utxo.Amount.MilliSatoshi);
         effects.Accounting.Add(new AccountingCandidate(
                                    AccountingEventKeys.WalletReceived(utxo.TxId, utxo.Index),
@@ -248,10 +248,9 @@ public partial class BlockchainMonitorService
         var details = AccountingDetailsCodec.Create(("spentBy", new TxId(spender.GetHash().ToBytes()).ToString()),
                                                     ("address", spent.WalletAddress?.Address),
                                                     ("addressType", Enum.GetName(spent.AddressType)),
-                                                    ("source", source.Source),
-                                                    ("purpose", source.Purpose is { } purpose
-                                                                    ? Enum.GetName(purpose)
-                                                                    : null),
+                                                    (AccountingDetailKeys.Source, source.Source),
+                                                    (AccountingDetailKeys.Purpose,
+                                                     source.Purpose is { } purpose ? Enum.GetName(purpose) : null),
                                                     ("reservation", reservation));
         var amountMsat = -checked((long)spent.Amount.MilliSatoshi);
         var channelId = spent.LockedToChannelId ?? source.ChannelId;

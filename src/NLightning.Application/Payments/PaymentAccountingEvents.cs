@@ -58,8 +58,9 @@ internal static class PaymentAccountingEvents
         var requested = invoice.Amount is { } amount && amount != received ? Msat(amount) : null;
         var customRecords = invoice.Keysend?.CustomRecords;
         var details = AccountingDetailsCodec.Create(
-            ("kind", KindName(invoice.Kind)),
-            ("description", string.IsNullOrEmpty(invoice.Description) ? null : invoice.Description),
+            (AccountingDetailKeys.Kind, KindName(invoice.Kind)),
+            (AccountingDetailKeys.Description,
+             string.IsNullOrEmpty(invoice.Description) ? null : invoice.Description),
             ("requestedMsat", requested),
             ("parts", parts.ToString(CultureInfo.InvariantCulture)),
             ("settledBy", claimedOnchain ? "onchainClaim" : "fulfill"),
@@ -98,10 +99,10 @@ internal static class PaymentAccountingEvents
                                                         string? description)
     {
         var details = AccountingDetailsCodec.Create(
-            ("kind", PaymentKindName(payment)),
-            ("description", string.IsNullOrEmpty(description) ? null : description),
+            (AccountingDetailKeys.Kind, PaymentKindName(payment)),
+            (AccountingDetailKeys.Description, string.IsNullOrEmpty(description) ? null : description),
             ("parts", Math.Max(1, parts).ToString(CultureInfo.InvariantCulture)),
-            ("selfPayment", selfPayment ? "true" : null),
+            (AccountingDetailKeys.SelfPayment, selfPayment ? AccountingDetailKeys.True : null),
             ("offer", payment.Bolt12?.Offer),
             ("payerNote", payment.Bolt12?.PayerNote),
             ("customRecords", payment.Keysend?.CustomRecords is { Count: > 0 } records
@@ -130,8 +131,8 @@ internal static class PaymentAccountingEvents
     public static AccountingEventModel PaymentFailed(PaymentModel payment)
     {
         var details = AccountingDetailsCodec.Create(
-            ("kind", PaymentKindName(payment)),
-            ("reason", payment.FailureReason),
+            (AccountingDetailKeys.Kind, PaymentKindName(payment)),
+            (AccountingDetailKeys.Reason, payment.FailureReason),
             ("failureCode", payment.FailureCode?.ToString()),
             ("failureSourceIndex", payment.FailureSourceIndex?.ToString(CultureInfo.InvariantCulture)),
             ("amountMsat", Msat(payment.Amount)),
@@ -198,7 +199,8 @@ internal static class PaymentAccountingEvents
             .. ForwardDetails(circuit, incoming, outgoing).Select(p => (p.Key, (string?)p.Value)),
             ("outgoingChannelId", outgoingChannelId.ToString()),
             ("outgoingHtlcId", outgoingHtlcId.ToString(CultureInfo.InvariantCulture)),
-            ("reason", "The preimage of the outgoing HTLC was revealed on chain after the upstream HTLC was failed")
+            (AccountingDetailKeys.Reason,
+             "The preimage of the outgoing HTLC was revealed on chain after the upstream HTLC was failed")
         ]);
 
         return new AccountingEventModel
@@ -224,11 +226,11 @@ internal static class PaymentAccountingEvents
         return AccountingDetailsCodec.Create(
             ("incomingChannelId", circuit.IncomingChannelId.ToString()),
             ("incomingHtlcId", circuit.IncomingHtlcId.ToString(CultureInfo.InvariantCulture)),
-            ("incomingScid", ScidOf(incoming)?.ToString()),
+            (AccountingDetailKeys.IncomingScid, ScidOf(incoming)?.ToString()),
             ("incomingAmountMsat", Msat(circuit.IncomingAmount)),
             ("outgoingChannelId", circuit.OutgoingChannelId?.ToString()),
             ("outgoingHtlcId", circuit.OutgoingHtlcId?.ToString(CultureInfo.InvariantCulture)),
-            ("outgoingScid", (ScidOf(outgoing) ?? circuit.OutgoingShortChannelId).ToString()),
+            (AccountingDetailKeys.OutgoingScid, (ScidOf(outgoing) ?? circuit.OutgoingShortChannelId).ToString()),
             ("outgoingAmountMsat", Msat(circuit.OutgoingAmount)));
     }
 

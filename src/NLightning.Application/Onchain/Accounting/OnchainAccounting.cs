@@ -81,45 +81,45 @@ using Domain.Onchain.Models;
 /// </remarks>
 internal static class OnchainAccounting
 {
-    public const string ChannelBucket = "channel";
-    public const string PendingBucket = "onchain-pending";
-    public const string WalletBucket = "wallet";
+    public const string ChannelBucket = AccountingDetailKeys.ChannelBucket;
+    public const string PendingBucket = AccountingDetailKeys.PendingBucket;
+    public const string WalletBucket = AccountingDetailKeys.WalletBucket;
 
-    public const string BucketFromKey = "bucketFrom";
-    public const string BucketToKey = "bucketTo";
-    public const string CloseKindKey = "closeKind";
+    public const string BucketFromKey = AccountingDetailKeys.BucketFrom;
+    public const string BucketToKey = AccountingDetailKeys.BucketTo;
+    public const string CloseKindKey = AccountingDetailKeys.CloseKind;
     public const string CommitmentNumberKey = "commitmentNumber";
     public const string FunderKey = "funder";
     public const string BalanceSourceKey = "balanceSource";
-    public const string PendingKey = "pendingMsat";
-    public const string LostKey = "lostMsat";
+    public const string PendingKey = AccountingDetailKeys.PendingMsat;
+    public const string LostKey = AccountingDetailKeys.LostMsat;
     public const string TrimmedHtlcKey = "trimmedHtlcMsat";
     public const string OurOutputsKey = "ourOutputsSat";
     public const string CommitmentFeeKey = "commitmentFeeSat";
     public const string LatestBalanceKey = "latestLocalBalanceMsat";
     public const string FundingTxIdKey = "fundingTxId";
     public const string CountedVoutsKey = "countedVouts";
-    public const string DescriptorKey = "descriptor";
+    public const string DescriptorKey = AccountingDetailKeys.Descriptor;
     public const string HtlcIdKey = "htlcId";
-    public const string HtlcDirectionKey = "htlcDirection";
+    public const string HtlcDirectionKey = AccountingDetailKeys.HtlcDirection;
     public const string PaymentHashKey = "paymentHash";
     public const string SpenderTxIdKey = "spenderTxId";
-    public const string ResolvedByKey = "resolvedBy";
-    public const string PendingOutKey = "pendingOutMsat";
-    public const string PendingInKey = "pendingInMsat";
-    public const string WalletKey = "walletMsat";
-    public const string CountedKey = "counted";
-    public const string ValueKey = "valueMsat";
-    public const string CloseTxIdKey = "closeTxId";
-    public const string NoteKey = "note";
-    public const string IncludesFeeBumpKey = "includesFeeBump";
-    public const string ValueBookedByKey = "valueBookedBy";
-    public const string ClaimedByKey = "claimedBy";
-    public const string BucketKey = "bucket";
+    public const string ResolvedByKey = AccountingDetailKeys.ResolvedBy;
+    public const string PendingOutKey = AccountingDetailKeys.PendingOutMsat;
+    public const string PendingInKey = AccountingDetailKeys.PendingInMsat;
+    public const string WalletKey = AccountingDetailKeys.WalletMsat;
+    public const string CountedKey = AccountingDetailKeys.Counted;
+    public const string ValueKey = AccountingDetailKeys.ValueMsat;
+    public const string CloseTxIdKey = AccountingDetailKeys.CloseTxId;
+    public const string NoteKey = AccountingDetailKeys.Note;
+    public const string IncludesFeeBumpKey = AccountingDetailKeys.IncludesFeeBump;
+    public const string ValueBookedByKey = AccountingDetailKeys.ValueBookedBy;
+    public const string ClaimedByKey = AccountingDetailKeys.ClaimedBy;
+    public const string BucketKey = AccountingDetailKeys.Bucket;
     public const string OfferedHtlc = "offered";
     public const string IncomingHtlc = "incoming";
-    public const string ReversesKey = "reverses";
-    public const string OriginalKindKey = "originalKind";
+    public const string ReversesKey = AccountingConfirmations.ReversesDetail;
+    public const string OriginalKindKey = AccountingConfirmations.OriginalKindDetail;
 
     public const string BalanceFromCommitment = "commitment";
     public const string BalanceFromLatestLocal = "latest-local-commitment";
@@ -266,7 +266,8 @@ internal static class OnchainAccounting
         var pendingOut = counted ? valueMsat : 0;
         var inputIndex = spender.IndexOfInputSpending(row.TransactionId, row.OutputIndex);
         if (inputIndex < 0)
-            return new ResolutionFlows(pendingOut, 0, 0, 0, -pendingOut, "us", "the spender does not spend it");
+            return new ResolutionFlows(pendingOut, 0, 0, 0, -pendingOut, AccountingDetailKeys.ResolvedByUs,
+                                       "the spender does not spend it");
 
         bool IsPendingOutput(int vout) => rows.ContainsKey((spender.TxId, (uint)vout))
                                        || (isHtlcTransaction && vout == inputIndex);
@@ -275,7 +276,8 @@ internal static class OnchainAccounting
         {
             var pendingIn = checked((long)spender.Outputs[inputIndex].AmountSat * 1_000);
             var htlcFee = Math.Max(0, valueMsat - pendingIn);
-            return new ResolutionFlows(pendingOut, pendingIn, 0, htlcFee, counted ? 0 : pendingIn, "us");
+            return new ResolutionFlows(pendingOut, pendingIn, 0, htlcFee, counted ? 0 : pendingIn,
+                                       AccountingDetailKeys.ResolvedByUs);
         }
 
         // The rows the spender spends (its other inputs must be rows too, or the row's value is merged with them)
@@ -294,8 +296,8 @@ internal static class OnchainAccounting
 
             if (!rows.TryGetValue((input.PreviousTxId, input.PreviousVout), out var other)
              || OutputDescriptorData.TryDecode(other) is not { } data)
-                return new ResolutionFlows(pendingOut, 0, 0, 0, -pendingOut, "us",
-                                           "merged with inputs that are not outputs of the channel");
+                return new ResolutionFlows(pendingOut, 0, 0, 0, -pendingOut, AccountingDetailKeys.ResolvedByUs,
+                                           AccountingDetailKeys.MergedNote);
 
             shares.Add((i, checked((long)data.AmountSat * 1_000)));
         }
@@ -325,8 +327,9 @@ internal static class OnchainAccounting
 
         var fee = valueMsat - ours;
         return fee >= 0
-                   ? new ResolutionFlows(pendingOut, 0, ours, fee, ours, "us")
-                   : new ResolutionFlows(pendingOut, 0, ours, 0, ours, "us", "pays out more than its value");
+                   ? new ResolutionFlows(pendingOut, 0, ours, fee, ours, AccountingDetailKeys.ResolvedByUs)
+                   : new ResolutionFlows(pendingOut, 0, ours, 0, ours, AccountingDetailKeys.ResolvedByUs,
+                                         "pays out more than its value");
     }
 
     /// <summary>

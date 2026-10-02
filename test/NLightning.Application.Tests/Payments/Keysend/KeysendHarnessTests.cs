@@ -1,11 +1,13 @@
 using System.Security.Cryptography;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Tests.Utils.Accounting;
 
 namespace NLightning.Application.Tests.Payments.Keysend;
 
 using Application.Payments.Keysend;
 using Application.Payments.Send;
 using Channels.Harness;
+using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Models;
@@ -38,6 +40,7 @@ public class KeysendHarnessTests
         var bobToAlice = LightningMoney.MilliSatoshis(2_000_001);
         CustomRecord[] boost = [new(7629169, "{\"action\":\"boost\"}"u8), new(133773310, [0x01, 0x02])];
         var aliceBefore = harness.Alice.Channel(ThreeNodeHarness.AliceBobChannelId).LocalBalance;
+        var (aliceTotalBefore, bobTotalBefore) = (harness.Alice.LocalBalanceMsat, harness.Bob.LocalBalanceMsat);
 
         // Act
         var first = await KeysendAsync(harness, harness.Alice, harness.Bob, aliceToBob, boost);
@@ -112,6 +115,17 @@ public class KeysendHarnessTests
         var bobSent = Assert.Single(bobEvents, e => e.Kind == AccountingEventKind.PaymentSucceeded);
         Assert.Equal(-(long)bobToAlice.MilliSatoshi, bobSent.AmountMsat);
         Assert.False(bobSent.Details.ContainsKey("customRecords"));
+
+        // NL-602 A2 (the books): each node's channels account moved exactly as its live balances, its payment an
+        // expense and its receipt an income
+        var aliceBooks = BooksSimulator.Of(aliceEvents);
+        Assert.Equal(harness.Alice.LocalBalanceMsat - aliceTotalBefore, aliceBooks[AccountRole.Channels]);
+        Assert.Equal((long)aliceToBob.MilliSatoshi, aliceBooks[AccountRole.Sent]);
+        Assert.Equal(-(long)bobToAlice.MilliSatoshi, aliceBooks[AccountRole.Received]);
+        var bobBooks = BooksSimulator.Of(bobEvents);
+        Assert.Equal(harness.Bob.LocalBalanceMsat - bobTotalBefore, bobBooks[AccountRole.Channels]);
+        Assert.Equal((long)bobToAlice.MilliSatoshi, bobBooks[AccountRole.Sent]);
+        Assert.Equal(-(long)aliceToBob.MilliSatoshi, bobBooks[AccountRole.Received]);
     }
 
     [Fact]
