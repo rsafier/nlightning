@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 
 namespace NLightning.Application.Tests.Payments.Send;
 
+using NLightning.Tests.Utils;
+
 using Application.Payments.Send.Interfaces;
 using Bolt11.Models;
 using Domain.Channels.Commitments;
@@ -257,18 +259,28 @@ public class PaymentHarnessTests : IDisposable
     [Fact]
     public async Task Given_ShortTimeout_When_TheOutcomeIsLate_Then_InFlightIsReturnedAndTheOutcomeIsStoredLater()
     {
-        // Arrange
+        // Arrange - NL-465: the timeout is fired by Bob's stepped clock, so nothing here depends on wall-clock
+        // racing; the clock is frozen until the test advances it
         var ct = TestContext.Current.CancellationToken;
         var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "late", null, ct);
+        var payTask = _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null,
+                                                                  TimeSpan.FromMilliseconds(50), ct);
 
-        // Act: nothing is delivered while Bob waits
-        var payment = await _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null,
-                                                                          TimeSpan.FromMilliseconds(50), ct);
-        await _harness.PumpAsync();
+        // Act: advance Bob's clock in steps until the 50 ms timeout fires (the offer's own debounced commit fires
+        // on the way), keeping the whole ordering deterministic
+        await WaitFor.TrueAsync(() =>
+        {
+            _harness.Bob.Clock.Advance(TimeSpan.FromMilliseconds(25));
+            return payTask.IsCompleted;
+        }, TimeSpan.FromSeconds(10), "the payment timeout on the stepped clock", ct);
+        var payment = await payTask;
 
-        // Assert
+        // Assert: InFlight at the timeout, with the HTLC offered but unanswered
         Assert.Equal(PaymentStatus.InFlight, payment.Status);
         Assert.Equal(0UL, payment.OutgoingHtlcId);
+
+        // The late outcome: delivering now resolves the payment and stores it
+        await _harness.PumpAsync();
         var stored = await _harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct);
         Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
         Assert.Equal(invoice.Preimage, stored.Preimage);
@@ -364,6 +376,22 @@ public class PaymentHarnessTests : IDisposable
         AssertNoPendingHtlcs();
     }
 
+    /// <summary>
+    /// Advances Bob's stepped clock in steps until a paying with a timeout returns (the timeout timer fires on that
+    /// clock), then returns the payment (NL-465).
+    /// </summary>
+    private static async Task<PaymentModel> AwaitTimedOutAsync(Task<PaymentModel> payTask,
+                                                              PaymentHarnessNode node,
+                                                              CancellationToken ct)
+    {
+        await WaitFor.TrueAsync(() =>
+        {
+            node.Clock.Advance(TimeSpan.FromMilliseconds(25));
+            return payTask.IsCompleted;
+        }, TimeSpan.FromSeconds(10), "the payment timeout on the stepped clock", ct);
+        return await payTask;
+    }
+
     [Fact]
     public async Task Given_ALiveHtlcWhoseIdWasNotRecorded_When_ReconcilingAtStartup_Then_ItIsAttached()
     {
@@ -371,7 +399,9 @@ public class PaymentHarnessTests : IDisposable
         var ct = TestContext.Current.CancellationToken;
         var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "reconcile", null, ct);
         _harness.Bob.Payments.FailNextUpdates = 1;
-        await _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, TimeSpan.FromMilliseconds(50), ct);
+        await AwaitTimedOutAsync(
+            _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, TimeSpan.FromMilliseconds(50), ct),
+            _harness.Bob, ct);
         Assert.Null((await _harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct))!.OutgoingHtlcId);
 
         // Act
@@ -395,7 +425,9 @@ public class PaymentHarnessTests : IDisposable
         var ct = TestContext.Current.CancellationToken;
         var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "replay", null, ct);
         _harness.Bob.Payments.FailNextUpdates = 1;
-        await _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, TimeSpan.FromMilliseconds(50), ct);
+        await AwaitTimedOutAsync(
+            _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, TimeSpan.FromMilliseconds(50), ct),
+            _harness.Bob, ct);
 
         // Act: an archived failure of another HTLC with the same hash (an earlier attempt) is replayed
         var handled = await OutcomeHandler(_harness.Bob).HandleOutgoingHtlcFailedAsync(

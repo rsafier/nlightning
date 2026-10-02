@@ -8,6 +8,7 @@ using NBitcoin;
 
 namespace NLightning.Application.Tests.Payments.Send.Harness;
 
+using NLightning.Tests.Utils;
 using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
 using Application.Channels.Interfaces;
@@ -183,11 +184,18 @@ internal sealed class PaymentHarness : IDisposable
     /// Delivers queued messages, one per direction in turn, until every queue is empty and no commit scheduler has a
     /// signature waiting.
     /// </summary>
+    /// <summary>The node clock (stepped): tests advance it to fire payment timeouts deterministically.</summary>
+    public SteppedClockProvider Clock { get; } = new();
+
     public async Task PumpAsync()
     {
         var nodes = Nodes;
         for (var steps = 0; steps < 20_000; steps++)
         {
+            // The nodes' clocks are stepped: fire whatever debounced commits became due, deterministically
+            foreach (var node in nodes)
+                node.Clock.Advance(TimeSpan.FromMilliseconds(10));
+
             foreach (var node in nodes)
                 await node.Scheduler.WhenIdleAsync();
 
@@ -334,6 +342,9 @@ internal sealed class PaymentHarness : IDisposable
 [ExcludeFromCodeCoverage]
 internal sealed class PaymentHarnessNode : IDisposable
 {
+    /// <summary>The node's clock (stepped): tests advance it to fire payment timeouts deterministically (NL-465).</summary>
+    public SteppedClockProvider Clock { get; } = new();
+
     private readonly ServiceProvider _provider;
     private readonly InMemoryChannelRepository _channels = new();
     private readonly ConcurrentQueue<(CompactPubKey To, IChannelMessage Message)> _outbox = new();
@@ -409,6 +420,9 @@ internal sealed class PaymentHarnessNode : IDisposable
         services.Configure<CommitSchedulerOptions>(o => o.Debounce = TimeSpan.Zero);
         services.AddSingleton(ChannelUpdates.Object);
         services.AddPaymentsServices();
+        // Before AddPaymentSendServices' TryAdd(TimeProvider.System): the node's clock is stepped, so a test owns
+        // when payment timeouts fire (NL-465)
+        services.AddSingleton<TimeProvider>(Clock);
         services.AddPaymentSendServices();
         if (usesGraph)
         {
