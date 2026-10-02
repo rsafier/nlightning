@@ -10,6 +10,7 @@ using Domain.Accounting.Books;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Financial;
 using Domain.Accounting.Models;
+using Domain.Accounting.Prices;
 using Domain.Client.Enums;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
@@ -199,6 +200,41 @@ public sealed class FinancialReclassificationTests
         await AssertClosesIntactAsync(kit);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_AClosedEntryRepricedAndReclassified_When_ReclassifiedBack_Then_ThePriceCorrectionFollowsIt(
+        bool repricedFirst)
+    {
+        // Arrange: the January invoice valued at 50,000 (-50 USD on income:sales), January closed
+        await using var kit = await FinancialProjectorTestKit.CreateAsync(s_now);
+        var (january, _) = await ArrangeClosedJanuaryAsync(kit);
+        var replacement = new AccountingPriceReplacement(null, s_t1, 45_000m, null, "wrong price");
+
+        // Act: the price replaced (+5 income:sales, -5 cost basis) before or after the move to income:consulting
+        if (repricedFirst)
+            await kit.Valuation.ReplaceAsync(replacement, TestContext.Current.CancellationToken);
+        await ClassifyAsync(kit, AccountingClassifyAction.Set, january.EventKey, "income:consulting");
+        if (!repricedFirst)
+            await kit.Valuation.ReplaceAsync(replacement, TestContext.Current.CancellationToken);
+        await kit.ProjectAsync();
+        var moved = await FactBalancesAsync(kit, january.EventKey);
+        await ClassifyAsync(kit, AccountingClassifyAction.Unset, january.EventKey);
+        await kit.ProjectAsync();
+        var back = await FactBalancesAsync(kit, january.EventKey);
+
+        // Assert: the whole fact, its price correction included, sits on the account its classification names
+        Assert.Equal((0L, 0m), moved.GetValueOrDefault("income:sales"));
+        Assert.Equal((-100_000_000L, -45m), moved["income:consulting"]);
+        Assert.Equal((-100_000_000L, -45m), back["income:sales"]);
+        Assert.Equal((0L, 0m), back.GetValueOrDefault("income:consulting"));
+        Assert.Equal(-5m, back["assets:cost-basis"].Fiat);
+        await AssertClosesIntactAsync(kit);
+        var incremental = await kit.SnapshotFinancialAsync();
+        await kit.Periods.RebuildFinancialAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(incremental, await kit.SnapshotFinancialAsync());
+    }
+
     private static async Task<(AccountingEventModel January, AccountingEventModel February)> ArrangeClosedJanuaryAsync(
         FinancialProjectorTestKit kit)
     {
@@ -230,6 +266,14 @@ public sealed class FinancialReclassificationTests
     private static async Task<IReadOnlyList<AccountingEntry>> EntriesAsync(FinancialProjectorTestKit kit, string key) =>
         (await kit.ListEntriesAsync(AccountingBook.Financial)).Where(e => e.EventKey == key)
                                                               .OrderBy(e => e.Adjustment).ToList();
+
+    // The fact's lines summed per account over all its entries
+    private static async Task<Dictionary<string, (long Msat, decimal Fiat)>> FactBalancesAsync(
+        FinancialProjectorTestKit kit, string key) =>
+        (await EntriesAsync(kit, key)).SelectMany(e => e.Postings)
+                                      .GroupBy(p => p.AccountName!)
+                                      .ToDictionary(g => g.Key, g => (g.Sum(p => p.AmountMsat),
+                                                                       g.Sum(p => p.FiatAmount ?? 0m)));
 
     private static async Task<IReadOnlyList<string>> LotsAsync(FinancialProjectorTestKit kit) =>
         (await kit.ListLotsAsync()).Select(l => $"{l.Lot.Id} {l.Lot.RemainingMsat} {l.Lot.FiatCost} {l.Reliefs.Count}")
