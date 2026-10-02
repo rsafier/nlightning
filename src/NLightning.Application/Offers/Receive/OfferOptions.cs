@@ -37,9 +37,15 @@ public sealed class OfferOptions
 
     /// <summary>
     /// Blocks added to the invoice's lifetime (its relative expiry at 10 minutes a block) for the paths'
-    /// <c>max_cltv_expiry</c>, so a payment made just before the invoice expires still fits.
+    /// <c>max_cltv_expiry</c>, so a payment made just before the invoice expires still fits, and so does a payer's
+    /// random "shadow" CLTV offset on top of our final delta: LDK adds up to 432 blocks
+    /// (<c>MAX_SHADOW_CLTV_EXPIRY_DELTA_OFFSET</c>, a random walk over its graph's deltas) to a blinded path's final CLTV,
+    /// which the old 144 refused with <c>invalid_onion_blinding</c> (NL-723). 1008 (a week); LDK's own paths allow 2016.
     /// </summary>
-    public uint PathLifetimeMarginBlocks { get; set; } = 144;
+    public uint PathLifetimeMarginBlocks { get; set; } = DefaultPathLifetimeMarginBlocks;
+
+    /// <summary>The default <see cref="PathLifetimeMarginBlocks"/> (NL-723).</summary>
+    public const uint DefaultPathLifetimeMarginBlocks = 1008;
 
     /// <summary>
     /// How often <see cref="ExpiredBolt12InvoicePruner"/> deletes expired unpaid BOLT 12 invoices (NL-448); zero turns

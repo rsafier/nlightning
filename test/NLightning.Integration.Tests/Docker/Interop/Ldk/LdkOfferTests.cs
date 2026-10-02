@@ -29,7 +29,11 @@ using Utils;
 /// <para>Our node has only private channels, so our offers carry <c>offer_paths</c> introduced by LDK and our invoices
 /// blinded payment paths introduced by LDK too, ending with our own dummy hops (NL-440, NL-526): what we receive is the
 /// amount plus our dummy hops' fee, which LDK pays as part of the paths' pay info. LDK Node's offers with only an
-/// unannounced channel are introduced by LDK itself. Run with <c>scripts/run-interop.sh ldk Release -class
+/// unannounced channel are introduced by LDK itself. LDK adds a random shadow CLTV offset (up to 432 blocks, a random
+/// walk over the deltas of its graph) to a blinded path's final CLTV: once LDK knows public channels (after
+/// <see cref="LdkGossipTests"/> in a full run) it exceeded our paths' old <c>max_cltv_expiry</c> margin and (c)/(d)
+/// failed with <c>invalid_onion_blinding</c> (NL-723, fixed: <c>Offers:PathLifetimeMarginBlocks</c> 1008). Our payments
+/// over LDK's blinded paths log that LDK's fulfill <c>attribution_data</c> does not verify for hop 0 (NL-724). Run with <c>scripts/run-interop.sh ldk Release -class
 /// NLightning.Integration.Tests.Docker.Interop.Ldk.LdkOfferTests</c>.</para>
 /// </remarks>
 [Collection(LdkInteropCollection.Name)]
