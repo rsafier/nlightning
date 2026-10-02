@@ -501,17 +501,23 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
 
     /// <summary>
     /// A 2xx answer's body, at most <paramref name="maxBytes"/> (NL-678); a longer one, or a body that breaks off, is
-    /// <see cref="EsploraUnavailableException"/> (the index's fault, transient for the lookup).
+    /// <see cref="EsploraUnavailableException"/> (the index's fault, transient for the lookup). The read has its own
+    /// deadline, the client's <c>Timeout</c>, which stops at the headers with <c>ResponseHeadersRead</c>: a body that
+    /// stalls after its headers is unavailable too, never a lookup held forever (NL-732).
     /// </summary>
-    private static async Task<byte[]> ReadBoundedAsync(HttpResponseMessage response, int maxBytes,
-                                                       CancellationToken cancellationToken)
+    private async Task<byte[]> ReadBoundedAsync(HttpResponseMessage response, int maxBytes,
+                                                CancellationToken cancellationToken)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan)
+            deadline.CancelAfter(_httpClient.Timeout);
+
         try
         {
-            return await HttpResponseLimits.ReadBoundedAsync(response.Content, maxBytes, cancellationToken);
+            return await HttpResponseLimits.ReadBoundedAsync(response.Content, maxBytes, deadline.Token);
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException
-                                    || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
+                                    || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
         {
             throw new EsploraUnavailableException(
                 $"GET {response.RequestMessage?.RequestUri} answered a body that could not be read: {ex.Message}", ex);

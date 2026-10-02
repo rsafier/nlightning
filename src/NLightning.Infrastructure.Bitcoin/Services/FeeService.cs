@@ -284,13 +284,20 @@ public class FeeService : IFeeService
     {
         HttpResponseMessage response;
 
+        // HttpClient.Timeout stops at the headers with ResponseHeadersRead, so one deadline covers the request and the
+        // bounded body read: a server or Tor circuit that sends the headers and then stalls the body times out like a
+        // request would (NL-732), instead of holding the start, the refresh loop and every caller that waits on it
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan)
+            deadline.CancelAfter(_httpClient.Timeout);
+
         try
         {
             // ResponseHeadersRead: the body is read bounded below (NL-678), never buffered whole by the client
             if (_feeEstimationOptions.Method.Equals("GET", StringComparison.CurrentCultureIgnoreCase))
             {
                 response = await _httpClient.GetAsync(_feeEstimationOptions.Url,
-                                                      HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                                                      HttpCompletionOption.ResponseHeadersRead, deadline.Token);
             }
             else // POST
             {
@@ -301,7 +308,7 @@ public class FeeService : IFeeService
                     _feeEstimationOptions.ContentType);
 
                 response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
-                                                       cancellationToken);
+                                                       deadline.Token);
             }
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -313,7 +320,7 @@ public class FeeService : IFeeService
         using (response)
         {
             response.EnsureSuccessStatusCode();
-            body = await HttpResponseLimits.ReadBoundedAsync(response.Content, MaxResponseBytes, cancellationToken);
+            body = await HttpResponseLimits.ReadBoundedAsync(response.Content, MaxResponseBytes, deadline.Token);
         }
 
         // Parse the JSON response

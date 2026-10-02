@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq.Protected;
 using NBitcoin.RPC;
+using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Infrastructure.Bitcoin.Tests.Services;
 
@@ -470,7 +471,8 @@ public class FeeServiceSourceTests
     [Theory]
     [InlineData("http://mempool.space/api/v1/fees/recommended", false, false)]
     [InlineData("http://mempool.space/api/v1/fees/recommended", true, true)]
-    [InlineData("http://192.168.1.10:8999/api/v1/fees/recommended", false, false)]
+    [InlineData("http://192.168.1.10:8999/api/v1/fees/recommended", false, true)] // a LAN IP literal (NL-735)
+    [InlineData("http://mempool.lan:8999/api/v1/fees/recommended", false, false)]
     [InlineData("http://127.0.0.1:8999/api/v1/fees/recommended", false, true)]
     [InlineData("ftp://mempool.space/fees", true, false)]
     public void Given_AFeeUrl_When_Constructed_Then_PlainHttpIsOnlyAcceptedLocallyOrWhenAllowed(string url, bool allow,
@@ -484,6 +486,29 @@ public class FeeServiceSourceTests
         if (!valid)
             Assert.Throws<InvalidOperationException>(() => CreateService(options,
                                                                         new Mock<HttpMessageHandler>().Object));
+    }
+
+    [Fact]
+    public async Task Given_AServerThatStallsTheBody_When_Refreshed_Then_TheRequestTimesOutAndTheFallbackIsKept()
+    {
+        // Arrange (NL-732): the headers come at once, the body never ends; HttpClient.Timeout alone stops at the
+        // headers with ResponseHeadersRead, so the refresh hung for the life of the process
+        var handler = new StallingBodyHttpHandler();
+        var options = new FeeEstimationOptions { CacheFile = "fee-source-test.bin", FallbackFeeRatePerKw = 2_500 };
+        var service = new FeeService(new OptionsWrapper<FeeEstimationOptions>(options),
+                                     new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(200) },
+                                     NullLogger<FeeService>.Instance);
+
+        // Act
+        var refresh = service.RefreshFeeRateAsync(TestContext.Current.CancellationToken);
+        var finished = await Task.WhenAny(refresh, Task.Delay(TimeSpan.FromSeconds(30),
+                                                              TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Same(refresh, finished);
+        await refresh;
+        Assert.True(handler.BodyReadCancelled);
+        Assert.Equal(2_500, service.GetCachedFeeRatePerKw().Satoshi);
     }
 
     private static FeeService CreateService(FeeEstimationOptions options, HttpMessageHandler handler)

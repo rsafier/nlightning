@@ -219,6 +219,36 @@ public class EsploraTxIdSourceTests
     }
 
     [Fact]
+    public async Task Given_AnIndexThatStallsTheBody_When_Lookup_Then_ItIsTransientWithinTheClientTimeout()
+    {
+        // Arrange (NL-732): the index sends its headers and then never ends the body; bitcoind cannot serve the block
+        _chain.PrunedHeights.Add(FundingHeight);
+        var stalling = new StallingBodyHttpHandler();
+        using var source = new EsploraTxIdSource(
+            _chain, new HttpClient(stalling) { Timeout = TimeSpan.FromMilliseconds(200) },
+            NullLogger<EsploraTxIdSource>.Instance,
+            Microsoft.Extensions.Options.Options.Create(new FundingTxIdSourceOptions
+            {
+                FundingTxIdSource = FundingTxIdSourceKind.Esplora,
+                EsploraUrl = EsploraUrl,
+                EsploraRequestsPerSecond = 100
+            }), null, ownsHttpClient: true);
+        using var lookup = CreateLookup(source);
+
+        // Act
+        var lookupTask = lookup.LookupAsync(FundingScid, TestContext.Current.CancellationToken);
+        var finished = await Task.WhenAny(lookupTask, Task.Delay(TimeSpan.FromSeconds(30),
+                                                                 TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Same(lookupTask, finished);
+        var result = await lookupTask;
+        Assert.Equal(FundingOutputStatus.ChainUnavailable, result.Status);
+        Assert.True(result.IsTransient);
+        Assert.True(stalling.BodyReadCancelled);
+    }
+
+    [Fact]
     public async Task Given_IndexForgingProofPosition_When_Lookup_Then_MerkleRootMismatchIsTransient()
     {
         // Arrange: the other tx at index 3 with its own branch but the claimed position 3

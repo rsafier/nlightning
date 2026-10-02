@@ -5,9 +5,12 @@ namespace NLightning.Domain.Node.Options;
 /// <summary>
 /// Which URLs the node's own HTTP clients (fee estimation, the Esplora funding txid source, the accounting price
 /// source) may use (NL-678, SECURITY_REVIEW SR-22): <c>https://</c> always; plain <c>http://</c> only to a loopback
-/// host (<c>127.0.0.0/8</c>, <c>::1</c>, <c>localhost</c>) or a Tor <c>.onion</c> service (authenticated end to end by
-/// Tor), or when the operator explicitly allows it (a self-hosted server on the LAN). An unauthenticated answer could
-/// otherwise be rewritten by anyone on the path: a fee rate, a price, a txid list.
+/// host (<c>127.0.0.0/8</c>, <c>::1</c>, <c>localhost</c>), a private-network IP literal (the transport's
+/// <see cref="TorOptions.IsLocalNetworkAddress"/>: RFC 1918, link-local, unique-local; a self-hosted mempool on the
+/// LAN, which configurations from before NL-678 use, NL-735) or a Tor <c>.onion</c> service (authenticated end to end
+/// by Tor), or when the operator explicitly allows it. An unauthenticated answer could otherwise be rewritten by
+/// anyone on the path: a fee rate, a price, a txid list. A host name is never taken as local (DNS could point it
+/// anywhere), and carrier-grade NAT space (<c>100.64/10</c>) is the provider's network.
 /// </summary>
 public static class HttpUrlPolicy
 {
@@ -40,12 +43,29 @@ public static class HttpUrlPolicy
         if (!uri.IsAbsoluteUri || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
             return $"{settingName} '{uri}' is not an absolute http(s) URL";
 
-        if (uri.Scheme == Uri.UriSchemeHttps || allowPlainHttp || IsLoopbackOrOnionHost(uri.Host))
+        if (uri.Scheme == Uri.UriSchemeHttps || allowPlainHttp || IsLoopbackOrOnionHost(uri.Host)
+         || IsLocalNetworkIpHost(uri.Host))
             return null;
 
         return $"{settingName} '{uri}' is plain http:// to {uri.Host}: its answers are not authenticated, so anyone on "
-             + $"the path can change them. Use https://, a loopback or .onion host, or set {allowSettingName} true "
+             + $"the path can change them. Use https://, a loopback, private-network IP or .onion host, or set "
+             + $"{allowSettingName} true "
              + "for a server you trust on your own network";
+    }
+
+    /// <summary>
+    /// True for a private-network IP literal (<see cref="TorOptions.IsLocalNetworkAddress"/>, NL-735); never a name.
+    /// </summary>
+    public static bool IsLocalNetworkIpHost(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host))
+            return false;
+
+        var name = host.Trim();
+        if (name.StartsWith('[') && name.EndsWith(']'))
+            name = name[1..^1];
+
+        return IPAddress.TryParse(name, out var address) && TorOptions.IsLocalNetworkAddress(address);
     }
 
     /// <summary>

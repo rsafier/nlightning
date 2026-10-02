@@ -170,6 +170,26 @@ public class HttpPriceSourceTests
         Assert.Equal(86_000m, price?.Price);
     }
 
+    [Fact]
+    public async Task Given_AServerThatStallsTheBody_When_APriceIsAsked_Then_ItTimesOutAsNone()
+    {
+        // Arrange (NL-732): headers at once, then a body that never ends
+        var handler = new StallingBodyHttpHandler();
+        var source = new HttpPriceSource(new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(200) },
+                                         MsOptions.Create(new AccountingPriceOptions()),
+                                         NullLogger<HttpPriceSource>.Instance);
+
+        // Act
+        var ask = source.GetPriceAsync("USD", s_at, TestContext.Current.CancellationToken);
+        var finished = await Task.WhenAny(ask, Task.Delay(TimeSpan.FromSeconds(30),
+                                                          TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Same(ask, finished);
+        Assert.Null(await ask);
+        Assert.True(handler.BodyReadCancelled);
+    }
+
     private static HttpPriceSource CreateSource(HttpMessageHandler handler) =>
         new(new HttpClient(handler), MsOptions.Create(new AccountingPriceOptions()),
             NullLogger<HttpPriceSource>.Instance);

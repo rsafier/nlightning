@@ -71,11 +71,17 @@ public sealed class HttpPriceSource : IPriceSource
             return null;
         }
 
+        // HttpClient.Timeout stops at the headers with ResponseHeadersRead: one deadline covers the request and the
+        // bounded body read, so a stalled body times out like a request (NL-732)
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan)
+            deadline.CancelAfter(_httpClient.Timeout);
+
         try
         {
             // The body is read bounded (NL-678), not buffered whole by the client
             using var response = await _httpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead,
-                                                            cancellationToken);
+                                                            deadline.Token);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("The price source answered {Status} for {Currency} at {Time:O}",
@@ -84,7 +90,7 @@ public sealed class HttpPriceSource : IPriceSource
             }
 
             var body = await HttpResponseLimits.ReadBoundedStringAsync(response.Content, MaxResponseBytes,
-                                                                       cancellationToken);
+                                                                       deadline.Token);
             if (TryParse(body, code, out var priceTime, out var price, out var error))
                 return new AccountingPrice(0, code, priceTime, price, AccountingPriceSource.Http,
                                            _timeProvider.GetUtcNow());
@@ -97,10 +103,10 @@ public sealed class HttpPriceSource : IPriceSource
         {
             throw;
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException or IOException
                                       or InvalidOperationException)
         {
-            // TaskCanceledException without our cancellation is the client's timeout
+            // A cancellation without ours is the client's timeout or the deadline of the body read (NL-732)
             _logger.LogWarning("The price source could not be reached for {Currency} at {Time:O}: {Message}", code,
                                time, e.Message);
             return null;
