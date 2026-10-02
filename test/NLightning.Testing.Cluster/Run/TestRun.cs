@@ -200,6 +200,25 @@ public sealed class TestRun : IAsyncDisposable
         return handle;
     }
 
+    /// <summary>
+    /// Removes the deployed node <paramref name="name"/> (<see cref="RunNodeRemoval"/>: StatefulSet, pod stopped with
+    /// <see cref="TestRunOptions.TeardownGracePeriodSeconds"/>, Services, data PVC) and forgets its handle; returns once
+    /// it is gone, so a node of that name can be deployed again. For a node a test adds to a shared topology and must
+    /// take away again.
+    /// </summary>
+    /// <exception cref="TimeoutException">It is still there after <see cref="TestRunOptions.DeletionTimeout"/>.</exception>
+    public async Task RemoveNodeAsync(string name, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ObjectDisposedException.ThrowIf(_disposed != 0, this);
+
+        await RunNodeRemoval.RemoveAsync(Client, Namespace, name, _options.TeardownGracePeriodSeconds ?? 1,
+                                         _options.DeletionTimeout, cancellationToken)
+                            .ConfigureAwait(false);
+        _nodes.TryRemove(name, out _);
+        _options.Log?.Invoke($"[nltg-cluster] run {Id}: node {name} removed from {Namespace}");
+    }
+
     /// <summary>The handle of a deployed node.</summary>
     public KubeNodeHandle GetNode(string name) =>
         _nodes.TryGetValue(name, out var handle)
