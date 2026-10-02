@@ -203,4 +203,25 @@ set `OnionServiceEnabled` false, host the onion service in Arti's own configurat
   `dotnet run --project test/NLightning.Infrastructure.Tests -f net10.0 -- -class NLightning.Infrastructure.Tests.Transport.Tor.TorLiveTests -explicit only`.
   Run on 2026-09-30 against Tor 0.4.8.10 with TCP and Unix control and SOCKS sockets: SAFECOOKIE, `ADD_ONION` with the
   saved key (Tor answers 550 collision to a second registration while ours runs), the same address after a restart, and
-  Tor's real SOCKS5 refusal (`0x06`, no circuits in that sandbox). No Docker proof against LND/CLN over Tor yet (NL-572).
+  Tor's real SOCKS5 refusal (`0x06`, no circuits in that sandbox). The Docker proof against CLN came later (NL-572,
+  next item).
+- Docker interop with CLN over Tor (NL-572, `test/NLightning.Integration.Tests/Docker/Interop/Tor/ClnTorInteropTests`,
+  fixture `Fixtures/TorInteropFixture`, trait `Category=Interop.Tor`; `scripts/run-interop.sh tor`, 3.5-5 min from
+  the host; **needs Internet**: the onion services are on the public Tor network). A C Tor client (`nltg-tor`, image
+  `nltg-tor:alpine3.22` built from `test/Docker/tor` when missing: Alpine's tor, control port with a hashed password,
+  `SocksPort`/`ControlPort` published on the host's `127.0.0.1`) hosts CLN's onion service from `torrc`
+  (`HiddenServiceDir`); CLN v26.06.8 (`nltg-tor-cln`) shares the Tor container's network namespace, listens on
+  `127.0.0.1:9735` only (so the onion service is the only way in; CLN lists such a peer at `127.0.0.1:<port>`) and
+  dials onions through `--proxy=127.0.0.1:9050`. Our node's onion service is registered through the control port with
+  the password, its target `host.docker.internal` as resolved in the Tor container, and our listener on `0.0.0.0`
+  (`AllowClearnetListen` in `TorOnly`); `NLightningTestNode` starts and stops `ITorOnionService` as the daemon does.
+  Proven on 2026-10-02 (Tor 0.4.8 on Alpine 3.22, OrbStack): (1) `Hybrid`, no onion service of ours: we dial CLN's
+  onion, fund a channel (500k, 150k pushed) and pay both ways; (2) `TorOnly` with our onion service: the same, then
+  Tor is killed (`SIGKILL`, the container's shell starts it again) and our node re-adds its onion service with the
+  same key and address, redials CLN's onion through the reconnect backoff, reestablishes and pays both ways again;
+  (3) `TorOnly`: CLN dials our onion service (`connect` to `<ours>.onion`), funds a channel to us over that
+  connection, and payments work both ways. Not covered: LND (`tor.active`, `tor.v3`; the same fixture shape with
+  LND in Tor's network namespace would do), CLN's own `statictor`/`autotor` service (CLN's onion is a `torrc` one
+  here), a private Tor network (chutney) for a hermetic run, and an inbound onion peer arriving from loopback (here
+  Tor is in a container, so inbound connections come from `host.docker.internal`'s address, not loopback, and the
+  NL-579 announced-onion rule is not exercised).
