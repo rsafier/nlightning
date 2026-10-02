@@ -1,0 +1,59 @@
+# The permissions of an in-cluster test runner (plan §4, R5: the test process as a Job when the host cannot reach the
+# pods). Ported from LNUnit PR #10's KUBERNETES_CLUSTER_SUPPORT.md phase 2 and narrowed to what the harness calls.
+# Run namespaces are created at runtime, so the role is a ClusterRole bound cluster-wide; the harness itself only
+# touches namespaces under its prefix that carry its run label (RunNamespace.IsOwnedBy).
+#
+# NOT applied by the spike (the spike creates no cluster-scoped objects). Apply it only on a cluster dedicated to the
+# harness: kubectl apply -f runner-rbac.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nltg-system
+  labels:
+    app.kubernetes.io/managed-by: nltg-test-harness
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nltg-test-runner
+  namespace: nltg-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nltg-test-runner
+rules:
+  # Run namespaces
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+  # Nodes of a run
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/status", "services", "persistentvolumeclaims", "configmaps",
+                "resourcequotas", "events"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch"]
+  # Exec: file reads (LND tls.cert, admin.macaroon), CLIs, pause/resume
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+  # Network partitions (plan Faults/)
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "delete", "get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nltg-test-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nltg-test-runner
+subjects:
+  - kind: ServiceAccount
+    name: nltg-test-runner
+    namespace: nltg-system
