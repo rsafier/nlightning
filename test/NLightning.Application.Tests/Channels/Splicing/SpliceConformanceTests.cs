@@ -13,6 +13,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
 using Domain.Protocol.Onion.ValueObjects;
 using Harness;
+using NLightning.Tests.Utils;
 
 /// <summary>
 /// Splicing plan SP2-A-T3: the reestablish flows of <c>bolt02/splicing-test.md</c> (SP-T-03..SP-T-11) on the real
@@ -49,15 +50,24 @@ public class SpliceConformanceTests
         using var harness = new SpliceHarness(realEngine: true);
         harness.Alice.Fund(SpliceIn + 200_000);
         var start = StartSplice(harness);
-        await PumpUntilAsync(harness, (from, m) => from == "Alice" && m is TxCompleteMessage);
+        // Alice's commitment_signed is raised by a continuation that follows her tx_complete (a save in between),
+        // so the outbox it belongs behind is waited for, not raced (NL-513)
+        await PumpUntilAsync(harness, static (from, m) => from == "Alice" && m is TxCompleteMessage,
+                             () => SecondQueued(harness.Alice) is CommitmentSignedMessage,
+                             "Alice's commitment_signed to be queued behind her tx_complete");
         Assert.IsType<CommitmentSignedMessage>(SecondQueued(harness.Alice));
 
         // Act
         await harness.Harness.DisconnectAsync();
-        var result = await start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        var result = await start.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         var mark = harness.Transcript.Count;
         await harness.Harness.ReconnectAsync();
-        await harness.PumpAsync();
+        // The tx_abort exchange is published by the splice negotiation's continuations after the reestablishes were
+        // handled, possibly once the exchange already went quiet: the transcript is waited for (NL-513)
+        await PumpUntilAsync(harness, static (_, _) => false,
+                             () => Sequence(harness, mark) is
+                             ["Alice:ChannelReestablish", "Bob:ChannelReestablish", "Bob:TxAbort", "Alice:TxAbort"],
+                             "the splice to be aborted on both sides (both tx_abort on the transcript)");
 
         // Assert: Alice asked for Bob's commitment_signed, Bob never had the transaction
         var aliceReestablish = Reestablish(harness, mark, "Alice");
@@ -89,7 +99,10 @@ public class SpliceConformanceTests
         await harness.RestartAsync(harness.Alice);
         mark = harness.Transcript.Count;
         await harness.Harness.ReconnectAsync();
-        await harness.PumpAsync();
+        await PumpUntilAsync(harness, static (_, _) => false,
+                             () => Reestablished(harness, mark) && harness.Alice.Node.OutboxIsEmpty
+                                && harness.Bob.Node.OutboxIsEmpty,
+                             "both channel_reestablish after Alice's restart");
         Assert.Null(Reestablish(harness, mark, "Alice").NextFundingTlv);
         Assert.Null(Reestablish(harness, mark, "Bob").NextFundingTlv);
         Assert.DoesNotContain(harness.Transcript.Skip(mark), t => t.Message is TxAbortMessage);
@@ -527,6 +540,29 @@ public class SpliceConformanceTests
         Assert.True(result.State == SpliceNegotiationState.Signed, $"{result.State}: {result.FailureReason}");
         return (fundingTx1, result.SpliceTxId!.Value);
     }
+
+    /// <summary>
+    /// Pumps the exchange (a held message is never delivered) inside a bounded wait until
+    /// <paramref name="condition"/> holds: the assertions that follow wait for the messages a background
+    /// continuation still owes (published once the exchange already went quiet) instead of racing them (NL-513).
+    /// </summary>
+    /// <exception cref="TimeoutException">Still false after half a minute.</exception>
+    private static async Task PumpUntilAsync(SpliceHarness harness, Func<string, IChannelMessage, bool> hold,
+                                             Func<bool> condition, string description)
+    {
+        await WaitFor.TrueAsync(async () =>
+        {
+            await harness.WhenIdleAsync();
+            await TryDeliverAsync(harness, harness.Alice, hold);
+            await TryDeliverAsync(harness, harness.Bob, hold);
+            return condition();
+        }, TimeSpan.FromSeconds(30), description, TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>Both sides sent their channel_reestablish since <paramref name="mark"/>.</summary>
+    private static bool Reestablished(SpliceHarness harness, int mark) =>
+        harness.Transcript.Skip(mark).Any(t => t.From == "Alice" && t.Message is ChannelReestablishMessage)
+     && harness.Transcript.Skip(mark).Any(t => t.From == "Bob" && t.Message is ChannelReestablishMessage);
 
     /// <summary>
     /// Delivers messages both ways, as <see cref="SpliceHarness.PumpAsync"/> does, except that a node whose next message
