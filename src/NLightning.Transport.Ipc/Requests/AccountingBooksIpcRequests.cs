@@ -126,12 +126,19 @@ public sealed class AccountingAdminIpcRequest
     /// <summary>The <c>AccountingAdminAction</c> value (1 reconcile, 2 rebuild, 3 verify).</summary>
     [Key(0)] public int Action { get; set; } = (int)AccountingAdminAction.Verify;
 
+    /// <summary>The classify action (action 5, NL-602 A3-T3).</summary>
+    [Key(2)] public AccountingClassifyIpcRequest? Classify { get; set; }
+
     /// <exception cref="ClientException">An unknown action.</exception>
     public AccountingAdminClientRequest ToClientRequest()
     {
         if (!Enum.IsDefined(typeof(AccountingAdminAction), Action))
             throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown accounting action {Action}.");
 
-        return new AccountingAdminClientRequest { Action = (AccountingAdminAction)Action };
+        return new AccountingAdminClientRequest
+        {
+            Action = (AccountingAdminAction)Action,
+            Classify = Classify?.ToClientRequest()
+        };
     }
 }

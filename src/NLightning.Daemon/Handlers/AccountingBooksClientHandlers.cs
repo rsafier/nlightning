@@ -6,6 +6,7 @@ using Application.Accounting;
 using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
+using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Services;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
@@ -186,16 +187,19 @@ public sealed class AccountingAdminClientHandler
     private readonly IAccountingBooks? _books;
     private readonly AccountNames _names;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly IAccountingClassificationAdmin? _classification;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.AccountingAdmin;
 
     public AccountingAdminClientHandler(IUnitOfWork unitOfWork, IAccountingBooks? books,
-                                        IOptions<AccountingOptions>? options = null)
+                                        IOptions<AccountingOptions>? options = null,
+                                        IAccountingClassificationAdmin? classification = null)
     {
         _unitOfWork = unitOfWork;
         _books = books;
         _names = (options?.Value ?? new AccountingOptions()).GetAccountNames();
+        _classification = classification;
     }
 
     /// <inheritdoc/>
@@ -216,6 +220,16 @@ public sealed class AccountingAdminClientHandler
                 return response with { Reconcile = await RequireBooks().ReconcileAsync(ct) };
             case AccountingAdminAction.Rebuild:
                 return response with { RebuiltEntries = await RequireBooks().RebuildAsync(ct) };
+            case AccountingAdminAction.Classify:
+                return response with
+                {
+                    Classify = await (_classification
+                                   ?? throw new ClientException(ErrorCodes.InvalidOperation,
+                                                                "Accounting classification is not available."))
+                                  .HandleAsync(request.Classify
+                                            ?? throw new ClientException(ErrorCodes.InvalidOperation,
+                                                                         "A classify action is required."), ct)
+                };
             default:
                 throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown accounting action {request.Action}.");
         }

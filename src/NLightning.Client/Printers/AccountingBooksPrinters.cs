@@ -236,5 +236,8 @@ public sealed class AccountingAdminPrinter : IPrinter<AccountingAdminIpcResponse
                                                 verification.BreakReason, verification.VerifiedCount,
                                                 verification.TipLedgerSeq, verification.TipHash));
         }
+
+        if (item.Classify is { } classify)
+            new AccountingClassifyPrinter(_output).Print(classify);
     }
 }

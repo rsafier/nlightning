@@ -29,7 +29,7 @@ internal static class AccountingBooksCommands
     internal const string Usage =
         "accounting report <balance|income|channels|peers|fees|register> [options] | accounting export --format "
       + "<hledger|beancount|csv> [--since <time>] [--until <time>] [--output <file>] | accounting "
-      + "<reconcile|rebuild|verify>";
+      + "<reconcile|rebuild|verify> | " + AccountingClassifyCommands.Usage;
 
     /// <summary>The largest register page.</summary>
     internal const int MaxLimit = 1_000;
@@ -88,6 +88,10 @@ internal static class AccountingBooksCommands
                 return ParseReport(commandArgs[1..], out error);
             case "export":
                 return ParseExport(commandArgs[1..], out error);
+            case "classify":
+                return AccountingClassifyCommands.Parse(commandArgs[1..], out error) is { } classify
+                           ? new AccountingArguments(subcommand, Admin: classify)
+                           : null;
             case "reconcile":
             case "rebuild":
             case "verify":

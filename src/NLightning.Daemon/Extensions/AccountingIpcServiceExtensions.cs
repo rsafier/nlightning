@@ -11,6 +11,7 @@ using Daemon.Ipc.Interfaces;
 using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
+using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Client.Requests;
@@ -54,7 +55,8 @@ public static class AccountingIpcServiceExtensions
             AccountingAdminClientResponse>>(sp => new AccountingAdminClientHandler(
                                                 sp.GetRequiredService<IUnitOfWork>(),
                                                 sp.GetService<IAccountingBooks>(),
-                                                sp.GetService<IOptions<AccountingOptions>>()));
+                                                sp.GetService<IOptions<AccountingOptions>>(),
+                                                sp.GetService<IAccountingClassificationAdmin>()));
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIpcCommandHandler, ListAccountingEventsIpcHandler>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIpcCommandHandler, AccountingSnapshotIpcHandler>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIpcCommandHandler, AccountingReportIpcHandler>());

@@ -56,6 +56,9 @@ public sealed class AccountingAdminIpcResponse
 
     [Key(3)] public AccountingVerificationIpcResponse? Verification { get; init; }
 
+    /// <summary>The answer of a classify action (action 5, NL-602 A3-T3).</summary>
+    [Key(5)] public AccountingClassifyIpcResponse? Classify { get; init; }
+
     public static AccountingAdminIpcResponse FromClientResponse(AccountingAdminClientResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -99,7 +102,8 @@ public sealed class AccountingAdminIpcResponse
             Action = (int)response.Action,
             Reconcile = reconcile,
             RebuiltEntries = response.RebuiltEntries,
-            Verification = verification
+            Verification = verification,
+            Classify = response.Classify is { } classify ? AccountingClassifyIpcResponse.FromClientResponse(classify) : null
         };
     }
 }
