@@ -49,6 +49,7 @@ using Infrastructure.Bitcoin;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Serialization;
+using NLightning.Tests.Utils;
 using NLightning.Tests.Utils.Mocks;
 
 /// <summary>
@@ -182,6 +183,22 @@ internal sealed class TwoNodeHarness : IDisposable
         }
 
         throw new InvalidOperationException("The message exchange did not converge");
+    }
+
+    /// <summary>
+    /// Pumps the exchange until <paramref name="condition"/> holds, so a caller asserts on what a fire-and-forget
+    /// continuation still owes the recorded outboxes (a send task's own channel_update, a node announcement request)
+    /// only after it happened, instead of racing it. Throws <see cref="TimeoutException"/> naming
+    /// <paramref name="description"/> when it never holds.
+    /// </summary>
+    public async Task PumpUntilAsync(Func<bool> condition, TimeSpan timeout, string description,
+                                     CancellationToken cancellationToken = default)
+    {
+        await WaitFor.TrueAsync(async () =>
+        {
+            await PumpAsync();
+            return condition();
+        }, timeout, description, cancellationToken);
     }
 
     /// <summary>
