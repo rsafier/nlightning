@@ -30,6 +30,7 @@ public interface IAccountingBooksDbRepository
     Task<IReadOnlyList<AccountingEntry>> ListEntriesAsync(AccountingEntryQuery query,
                                                           CancellationToken cancellationToken = default);
 
-    /// <summary>Stages the deletion of every entry, posting, balance and the cursor (a rebuild).</summary>
+    /// <summary>Deletes every entry, posting, balance and the cursor at once (a rebuild; not staged: it runs before
+    /// the rebuild's first save, so a crash after it rebuilds from 0).</summary>
     Task ClearAsync(CancellationToken cancellationToken = default);
 }

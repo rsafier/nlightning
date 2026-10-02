@@ -17,6 +17,67 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.12");
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingBalanceEntity", b =>
+                {
+                    b.Property<int>("Account")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("BalanceMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Account");
+
+                    b.ToTable("AccountingBalances");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingCursorEntity", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("LastLedgerSeq")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("AccountingCursor");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingEntryEntity", b =>
+                {
+                    b.Property<long>("LedgerSeq")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<string>("EventKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Note")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("OccurredAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("LedgerSeq");
+
+                    b.HasIndex("EventKey")
+                        .IsUnique();
+
+                    b.HasIndex("OccurredAt");
+
+                    b.ToTable("AccountingEntries");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingEventEntity", b =>
                 {
                     b.Property<long>("Id")
@@ -87,6 +148,30 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasIndex("OccurredAt");
 
                     b.ToTable("AccountingEvents");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingPostingEntity", b =>
+                {
+                    b.Property<long>("LedgerSeq")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Index")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Account")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("AmountMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("OccurredAt")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("LedgerSeq", "Index");
+
+                    b.HasIndex("Account", "OccurredAt");
+
+                    b.ToTable("AccountingPostings");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.BlockHeaderEntity", b =>
@@ -1691,6 +1776,15 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasKey("PaymentHash", "PartIndex", "HopIndex");
 
                     b.ToTable("PaymentPartHops");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingPostingEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingEntryEntity", null)
+                        .WithMany()
+                        .HasForeignKey("LedgerSeq")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.FeeInputReservationInputEntity", b =>

@@ -14,6 +14,7 @@ using ServiceStack;
 namespace NLightning.Integration.Tests.Docker.Utils;
 
 using Application.Accounting;
+using Application.Accounting.Books;
 using Application.Channels.Fees;
 using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
@@ -350,6 +351,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             Services.GetRequiredService<OnionReplayBlockPruner>().Start();
             // As the daemon does: seal the accounting events (NL-602)
             Services.GetService<AccountingEventSealerService>()?.Start();
+            // As the daemon does: the books after the sealer (NL-602 A2)
+            Services.GetService<AccountingBooksService>()?.Start();
             // As the daemon does: the splice auto-bump (wave SPR); nothing while Splice:AutoBumpAfterBlocks is unset
             Services.GetService<SpliceAutoBumper>()?.Start();
             _started = true;
@@ -375,6 +378,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             if (_started)
             {
                 await StopSafetyServicesAsync();
+                // As the daemon does: the books stop before the sealer (NL-602 A2)
+                await (Services.GetService<AccountingBooksService>()?.StopAsync() ?? Task.CompletedTask);
                 await Task.WhenAll(Services.GetRequiredService<OnionReplayBlockPruner>().StopAsync(),
                                    Services.GetRequiredService<IMempoolReactor>().StopAsync(),
                                    Services.GetService<SpliceAutoBumper>()?.StopAsync() ?? Task.CompletedTask,

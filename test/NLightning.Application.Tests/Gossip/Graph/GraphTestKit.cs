@@ -25,13 +25,84 @@ using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Gossip;
 
-/// <summary>A clock that stays where it is set.</summary>
+/// <summary>
+/// A clock that stays where it is set. With <paramref name="steppedTimers"/> its timers fire (on the caller's
+/// thread) only from <see cref="Advance"/>, once the clock reaches their due time (NL-445): the ingress's retry
+/// queue and write-behind round are scheduled through <see cref="TimeProvider.CreateTimer"/>, so they run when the
+/// test moves the clock, never on a real threadpool timer that CPU load can stretch or reorder. The default keeps
+/// real timers, which the sync manager's tests step through with real waits.
+/// </summary>
 [ExcludeFromCodeCoverage]
-internal sealed class SettableTimeProvider(DateTimeOffset now) : TimeProvider
+internal sealed class SettableTimeProvider(DateTimeOffset now, bool steppedTimers = false) : TimeProvider
 {
+    private readonly object _gate = new();
+    private readonly List<SteppedTimer> _timers = [];
+    private readonly bool _steppedTimers = steppedTimers;
+
     public DateTimeOffset Now { get; set; } = now;
 
     public override DateTimeOffset GetUtcNow() => Now;
+
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        if (!_steppedTimers)
+            return base.CreateTimer(callback, state, dueTime, period);
+
+        var timer = new SteppedTimer(this, callback, state);
+        timer.Change(dueTime, period);
+        return timer;
+    }
+
+    /// <summary>Moves the clock forward by <paramref name="by"/> and fires every stepped timer that became due, in
+    /// due order, on the caller's thread.</summary>
+    public void Advance(TimeSpan by)
+    {
+        List<SteppedTimer> due;
+        lock (_gate)
+        {
+            Now += by;
+            due = _timers.Where(t => t.DueAt is { } at && at <= Now).OrderBy(t => t.DueAt).ToList();
+            foreach (var timer in due)
+                timer.DueAt = null;
+        }
+
+        foreach (var timer in due)
+            timer.Fire();
+    }
+
+    private sealed class SteppedTimer(SettableTimeProvider owner, TimerCallback callback, object? state) : ITimer
+    {
+        public DateTimeOffset? DueAt { get; set; }
+
+        public bool Change(TimeSpan dueTime, TimeSpan period)
+        {
+            lock (owner._gate)
+            {
+                DueAt = dueTime == Timeout.InfiniteTimeSpan ? null : owner.Now + dueTime;
+                if (!owner._timers.Contains(this))
+                    owner._timers.Add(this);
+            }
+
+            return true;
+        }
+
+        public void Fire() => callback(state);
+
+        public void Dispose()
+        {
+            lock (owner._gate)
+            {
+                DueAt = null;
+                owner._timers.Remove(this);
+            }
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return ValueTask.CompletedTask;
+        }
+    }
 }
 
 /// <summary>A secp256k1 key for signing test gossip.</summary>
@@ -85,10 +156,10 @@ internal sealed class GraphTestKit
                         CompactPubKey? ourNodeId = null, int writeBatchSize = GraphStore.DefaultWriteBatchSize,
                         int loadBatchSize = GraphStore.DefaultLoadBatchSize,
                         Application.Gossip.Metrics.GossipMetrics? metrics = null,
-                        GossipMemoryBudget? memoryBudget = null)
+                        GossipMemoryBudget? memoryBudget = null, bool steppedTimers = false)
     {
         Repository = repository ?? new InMemoryGraphDbRepository();
-        Clock = new SettableTimeProvider(now ?? DefaultNow);
+        Clock = new SettableTimeProvider(now ?? DefaultNow, steppedTimers);
         Options = new GossipGraphOptions { Workers = 1 };
         configure?.Invoke(Options);
 

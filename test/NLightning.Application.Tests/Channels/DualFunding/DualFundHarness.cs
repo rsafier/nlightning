@@ -58,6 +58,7 @@ using Infrastructure.Protocol.Onion;
 using Infrastructure.Repositories;
 using Infrastructure.Serialization;
 using InteractiveTx.TestDoubles;
+using NLightning.Tests.Utils;
 
 /// <summary>
 /// Two in-process nodes for the dual-funded open (splicing plan wave DF): each a real <see cref="ChannelManager"/> with
@@ -91,6 +92,10 @@ internal sealed class DualFundHarness : IAsyncDisposable
 
     /// <summary>How long <c>OpenAsync</c>/<c>BumpAsync</c> wait (the nodes' <c>Node:DualFund:OpenTimeout</c>).</summary>
     public TimeSpan OpenTimeout { get; }
+
+    /// <summary>The nodes' clock (stepped): tests advance it to fire the open watchdog deterministically (NL-512).
+    /// </summary>
+    public SteppedClockProvider Clock { get; } = new();
 
     /// <summary>The nodes' <c>Node:DualFund:AllowRbf</c>.</summary>
     public bool AllowRbf { get; }
@@ -152,6 +157,8 @@ internal sealed class DualFundHarness : IAsyncDisposable
     {
         for (var steps = 0; steps < 10_000; steps++)
         {
+            // The nodes' clock is stepped: fire whatever debounced commits became due, deterministically
+            Clock.Advance(TimeSpan.FromMilliseconds(10));
             await WhenIdleAsync();
             var delivered = false;
             foreach (var key in _links.Keys.OrderBy(k => k.From).ToList())
@@ -179,6 +186,10 @@ internal sealed class DualFundHarness : IAsyncDisposable
     {
         for (var rounds = 0; rounds < 1_000 && !operation.IsCompleted; rounds++)
         {
+            System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"ROUND {rounds}\n");
+            // The nodes' clock is stepped: fire whatever debounced commits became due, and let opens whose deadline
+            // the test relies on (BOLT 2 gives the initiator up) reach it deterministically
+            Clock.Advance(TimeSpan.FromMilliseconds(10));
             await PumpAsync();
             if (!operation.IsCompleted)
                 await Task.WhenAny(operation, Task.Delay(10));
@@ -386,11 +397,15 @@ internal sealed class DualFundNode
                      })
                     .ReturnsAsync(true);
 
+        System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"BeforeBuildProvider {DateTime.UtcNow:HH:mm:ss.fff}\n");
         _provider = BuildProvider();
+        System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"AfterBuildProvider\n");
         if (migrate)
         {
             using var scope = _provider.CreateScope();
+            System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"BeforeMigrate\n");
             await scope.ServiceProvider.GetRequiredService<NLightningDbContext>().Database.MigrateAsync();
+            System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"AfterMigrate\n");
         }
 
         ChannelManager = _provider.GetRequiredService<ChannelManager>();
@@ -466,6 +481,9 @@ internal sealed class DualFundNode
 
         var services = new ServiceCollection();
         services.AddLogging();
+        // Before every TryAdd(TimeProvider.System) of the service extensions below: the nodes' clock is stepped, so a
+        // test owns when the open watchdog and the open deadline fire (NL-512)
+        services.AddSingleton<TimeProvider>(_harness.Clock);
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(Options));
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new DualFundingOptions
         {
