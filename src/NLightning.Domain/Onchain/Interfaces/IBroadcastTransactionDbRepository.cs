@@ -50,7 +50,9 @@ public interface IBroadcastTransactionDbRepository
     /// <summary>Every broadcast that is still pending (the rebroadcast set).</summary>
     Task<IReadOnlyList<BroadcastTransactionModel>> GetPendingAsync();
 
-    /// <summary>Stages the confirmation of a broadcast; does nothing when it has no row.</summary>
+    /// <summary>Stages the confirmation of a broadcast; does nothing when it has no row. The block decides: a row in any
+    /// state becomes <see cref="Enums.BroadcastState.Confirmed"/>, also one replaced by an RBF bump or abandoned that
+    /// confirmed anyway (NL-606).</summary>
     Task MarkConfirmedAsync(TxId transactionId, uint height, Hash blockHash);
 
     /// <summary>

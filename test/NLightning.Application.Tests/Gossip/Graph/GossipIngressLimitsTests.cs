@@ -380,6 +380,40 @@ public class GossipIngressLimitsTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_APeerJustBanned_When_ItsInFlightInvalidGossipIsProcessed_Then_ItIsNotBannedAndDisconnectedAgain()
+    {
+        // Arrange: a peer (not a graph node, so its ban leaves the channel's own gossip alone) banned at its fifth
+        // invalid signature (NL-746). Messages it handed over before the ban are already past the door and still reach
+        // the validation, as under a loaded flood with several workers
+        var kit = await CreateKitWithChannelAsync();
+        var peer = GraphTestKit.CreatePeer(0x66);
+        var direction = GraphTestKit.DirectionOf(s_alice, s_bob);
+        for (var i = 1; i <= 5; i++)
+            await ProcessAsync(kit, peer, Update(s_mallory, direction, s_now - 100 + (uint)i, i));
+        Assert.True(kit.Ingress.IsBannedForMisbehaviour(peer.Object.PeerPubKey));
+
+        // Act: five more invalid signatures, processed after the ban (a minute apart, so the channel_update rate limit
+        // lets each through to the signature check, all inside the 10 min misbehaviour window)
+        var rejected = new List<GossipIngressResult>();
+        for (var i = 6; i <= 10; i++)
+        {
+            kit.Clock.Now += TimeSpan.FromMinutes(1);
+            rejected.Add(await ProcessAsync(kit, peer, Update(s_mallory, direction, s_now + (uint)(60 * i), i)));
+        }
+
+        Assert.All(rejected, r => Assert.Equal(GossipIngressOutcome.Warned, r.Outcome));
+        // Assert: each was refused for its signature; one ban, one ban disconnect, and the ban keeps its end
+        Assert.Equal(10, _recorder.Sum("nlightning.gossip.messages.rejected",
+                                       (GossipMetrics.ReasonTag, GossipMetricReasons.InvalidSignature)));
+        peer.Verify(p => p.Disconnect(It.Is<WarningException>(e => e.Message.Contains("Too much invalid gossip"))),
+                    Times.Once);
+        Assert.Equal(1, _recorder.Sum("nlightning.gossip.peers.banned"));
+        await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
+        var ban = Assert.Single(kit.Repository.Bans.Values);
+        Assert.Equal(GraphTestKit.DefaultNow + TimeSpan.FromHours(1), ban.Until);
+    }
+
+    [Fact]
     public async Task Given_ThrowawayNodeIds_When_EachIsBannedForMisbehaviour_Then_TheBansArePersistedAndTheMemoryIsBoundedAndPruned()
     {
         // Arrange: node ids that are not in the graph cost a flooder one handshake each; their bans are persisted now

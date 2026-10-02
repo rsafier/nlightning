@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
@@ -23,6 +24,7 @@ using Domain.Accounting.Models;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
+using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Interfaces;
@@ -98,6 +100,27 @@ internal sealed class SpliceHarness : IDisposable
                                      });
         foreach (var node in new[] { Harness.Alice, Harness.Bob })
             AttachNode(_nodes[node.Name], node);
+        Harness.BeforeRestore = RestoreLockedFunding;
+    }
+
+    /// <summary>
+    /// As the channel row after a splice lock (<c>IChannelFundingDbRepository.ApplyLockAsync</c> moves its funding
+    /// columns, key index and short channel id; NL-496): a restarted node whose saved snapshot runs on a locked splice
+    /// gets that funding on its channel model, so the restore registers the signer with it.
+    /// </summary>
+    private void RestoreLockedFunding(HarnessNode node, ChannelModel channel)
+    {
+        if (!RealEngine || node.Store.Committed?.Params.Funding is not { } current
+                        || current.FundingTxId == channel.FundingOutput?.TransactionId)
+            return;
+
+        var locked = _nodes[node.Name].FundingRows.Committed.GetValueOrDefault(current.FundingTxId) ?? current;
+        channel.ReplaceFundingOutput(new FundingOutputInfo(LightningMoney.Satoshis(locked.CapacitySatoshis),
+                                                           locked.LocalFundingPubKey, locked.RemoteFundingPubKey,
+                                                           locked.FundingTxId, locked.OutputIndex));
+        channel.SetLocalFundingKeyIndex(locked.LocalFundingKeyIndex);
+        if (locked.ShortChannelId is { } shortChannelId)
+            channel.ShortChannelId = shortChannelId;
     }
 
     /// <summary>
@@ -110,9 +133,36 @@ internal sealed class SpliceHarness : IDisposable
     {
         node.Sessions.DiscardStaged();
         node.FundingRows.DiscardStaged();
+        RestorePendingFundingsFromRows(node);
         var restarted = await Harness.RestartNodeAsync(node.Node);
         AttachNode(node, restarted);
         RegisterSavedFundings(node);
+    }
+
+    /// <summary>
+    /// As <c>ChannelStateDbRepository.LoadAsync</c> (NL-496): the pending fundings of the restored snapshot come from
+    /// their saved <c>ChannelFundings</c> rows, which alone carry what the lock steps write (<c>splice_locked</c> sent
+    /// and received, the confirmation height, the short channel id). The in-memory state store keeps the snapshot as the
+    /// engine last applied it, so the rows' records replace its pending fundings before the restart reads it.
+    /// </summary>
+    private void RestorePendingFundingsFromRows(SpliceNode node)
+    {
+        var store = node.Node.Store;
+        if (!RealEngine || store.Committed is not { PendingFundings.IsEmpty: false } committed)
+            return;
+
+        var rows = node.FundingRows.Committed;
+        var pending = committed.PendingFundings
+                               .Select(f => rows.TryGetValue(f.FundingTxId, out var row)
+                                         && row.Status == ChannelFundingStatus.Pending
+                                                ? row
+                                                : f)
+                               .ToImmutableList();
+
+        // PendingFundings has a private init accessor: set it on a copy of the record
+        var copy = (ChannelCommitments)typeof(ChannelCommitments).GetMethod("<Clone>$")!.Invoke(committed, null)!;
+        typeof(ChannelCommitments).GetProperty(nameof(ChannelCommitments.PendingFundings))!.SetValue(copy, pending);
+        store.Seed(copy);
     }
 
     /// <summary>
@@ -130,11 +180,19 @@ internal sealed class SpliceHarness : IDisposable
         if (others.Count == 0)
             return;
 
+        // As ChannelSigningInfoDbRepository: a pending funding whose local commitment slot carries the peer's
+        // signatures (the slot ReceiveSpliceCommitmentAsync saved) is marked at that slot's number; the current
+        // funding's signatures do not matter (the first commitment of a channel has none, NL-496)
         Dictionary<TxId, ulong>? persisted = null;
         var commitments = channel.Commitments;
-        if (commitments is { LocalCommit.RemoteSignatures: not null, PendingFundings.Count: > 0 })
-            persisted = commitments.PendingFundings.ToDictionary(f => f.FundingTxId,
-                                                                 _ => commitments.LocalCommit.Number);
+        if (commitments is { PendingFundings.Count: > 0 })
+        {
+            persisted = commitments.PendingFundings
+                                   .Where(f => commitments.LocalCommit.SignaturesFor(f.FundingTxId) is not null)
+                                   .ToDictionary(f => f.FundingTxId, _ => commitments.LocalCommit.Number);
+            if (persisted.Count == 0)
+                persisted = null;
+        }
 
         node.Node.Signer.RegisterChannel(channel.ChannelId, channel.GetSigningInfo() with
         {

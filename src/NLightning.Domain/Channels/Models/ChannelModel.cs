@@ -131,6 +131,18 @@ public class ChannelModel
     /// </summary>
     public SignedTransaction? ClosingTransaction { get; private set; }
 
+    /// <summary>
+    /// The protocol the <see cref="ClosingTransaction"/> was agreed with (NL-610), or null: not recorded (a close
+    /// agreed before it was, or a mutual close found on chain whose shape did not tell).
+    /// </summary>
+    public MutualCloseProtocol? CloseProtocol { get; private set; }
+
+    /// <summary>
+    /// For an <see cref="MutualCloseProtocol.Simple"/> close: true when we were the closer (our <c>closing_complete</c>,
+    /// so we paid the fee), false when the peer was; null when not recorded or for a legacy close (NL-610).
+    /// </summary>
+    public bool? LocalIsCloser { get; private set; }
+
     #endregion
 
     #region Announcement state (BOLT 7 plan G1)
@@ -497,6 +509,14 @@ public class ChannelModel
             throw new InvalidOperationException("The peer's shutdown script is not set yet");
 
         RemoteShutdownScript = script;
+    }
+
+    /// <summary>Records how the closing transaction was agreed (NL-610): the protocol and, for a simple close, whether
+    /// we were the closer.</summary>
+    public void SetCloseTerms(MutualCloseProtocol? protocol, bool? localIsCloser)
+    {
+        CloseProtocol = protocol;
+        LocalIsCloser = protocol == MutualCloseProtocol.Simple ? localIsCloser : null;
     }
 
     /// <summary>Records the agreed, fully signed mutual close transaction.</summary>

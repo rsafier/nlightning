@@ -122,8 +122,10 @@ public class BroadcastTransactionDbRepository
     /// <inheritdoc />
     public async Task MarkConfirmedAsync(TxId transactionId, uint height, Hash blockHash)
     {
+        // NL-606: the block decides, whatever the row's state: a replaced or abandoned transaction that confirmed
+        // anyway is the one that confirmed
         var entity = await DbSet.FindAsync(transactionId);
-        if (entity is null || entity.State is (byte)BroadcastState.Replaced or (byte)BroadcastState.Abandoned)
+        if (entity is null)
             return;
 
         entity.State = (byte)BroadcastState.Confirmed;

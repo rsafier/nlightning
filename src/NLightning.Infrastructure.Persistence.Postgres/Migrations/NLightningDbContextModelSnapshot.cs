@@ -272,6 +272,14 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnName("fiat_currency")
                         .IsFixedLength();
 
+                    b.Property<long?>("HeldSince")
+                        .HasColumnType("bigint")
+                        .HasColumnName("held_since");
+
+                    b.Property<int?>("Lender")
+                        .HasColumnType("integer")
+                        .HasColumnName("lender");
+
                     b.Property<byte>("Origin")
                         .HasColumnType("smallint")
                         .HasColumnName("origin");
@@ -340,6 +348,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasPrecision(28, 8)
                         .HasColumnType("numeric(28,8)")
                         .HasColumnName("fiat_cost_relieved");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("smallint")
+                        .HasColumnName("kind");
 
                     b.Property<long>("LedgerSeq")
                         .HasColumnType("bigint")
@@ -1144,6 +1156,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("change_address_is_change");
 
+                    b.Property<byte?>("CloseProtocol")
+                        .HasColumnType("smallint")
+                        .HasColumnName("close_protocol");
+
                     b.Property<byte[]>("ClosingTransaction")
                         .HasColumnType("bytea")
                         .HasColumnName("closing_transaction");
@@ -1221,6 +1237,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.Property<long?>("LocalFundingContributionSatoshis")
                         .HasColumnType("bigint")
                         .HasColumnName("local_funding_contribution_satoshis");
+
+                    b.Property<bool?>("LocalIsCloser")
+                        .HasColumnType("boolean")
+                        .HasColumnName("local_is_closer");
 
                     b.Property<decimal>("LocalNextHtlcId")
                         .HasColumnType("numeric(20,0)")

@@ -18,6 +18,7 @@ using Domain.Node.Options;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
+using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin;
@@ -109,6 +110,98 @@ public sealed class BlindedPaymentPathFactoryTests : IDisposable
         // Assert: no public channel can carry the payment, so the private one introduces it
         var path = Assert.Single(paths);
         Assert.Equal(privatePeer, path.Path.FirstNodeId);
+    }
+
+    [Theory]
+    [InlineData(false, true, "alias")]
+    [InlineData(false, false, "real")]
+    [InlineData(true, true, "real")]
+    public async Task Given_ThePeersAlias_When_CreatingPaths_Then_AnUnannouncedChannelIsNamedByIt(bool announced,
+        bool withAlias, string expected)
+    {
+        // Arrange (NL-717: Eclair resolves a private channel only by the alias it sent in channel_ready; a channel
+        // without option_scid_alias in its type)
+        var peerKeys = new TestNodeKeyManager(0x0e);
+        var realScid = new ShortChannelId(402, 2, 1);
+        var alias = new ShortChannelId(0x0240b310846dca2aUL);
+        var channel = AddChannel(peerKeys.NodeId, 2, realScid, 600_000, announced);
+        if (withAlias)
+            channel.RemoteAlias = alias;
+        SetPeerUpdate(channel);
+
+        // Act
+        var paths = await CreateFactory().CreateAsync(s_preimage, LightningMoney.Satoshis(50_000), 7_200,
+                                                      TestContext.Current.CancellationToken);
+
+        // Assert: the introduction node (the peer) reads the short channel id it must forward over
+        var path = Assert.Single(paths).Path;
+        var unblinded = _provider.GetRequiredService<IRouteBlindingService>()
+                                 .Unblind(peerKeys.GetNodeKeyPair().PrivKey, path.FirstPathKey,
+                                          path.Hops[0].EncryptedRecipientData);
+        Assert.Equal(expected == "alias" ? alias : realScid, unblinded.RecipientData.ShortChannelId);
+    }
+
+    [Fact]
+    public async Task Given_AnInvoiceOfTwoHours_When_CreatingPaths_Then_TheIntroductionAllowsAPayersRandomFinalDelta()
+    {
+        // Arrange (NL-719: Eclair adds 150 to 350 blocks to the final expiry; with a 144-block margin its HTLC was
+        // above max_cltv_expiry at our hop)
+        var peerKeys = new TestNodeKeyManager(0x0e);
+        var channel = AddChannel(peerKeys.NodeId, 2, new ShortChannelId(402, 2, 1), 600_000);
+        SetPeerUpdate(channel);
+
+        // Act
+        var paths = await CreateFactory().CreateAsync(s_preimage, LightningMoney.Satoshis(50_000), 7_200,
+                                                      TestContext.Current.CancellationToken);
+
+        // Assert: 800 + 12 blocks of invoice + the 1,008-block margin (+ our final delta and the dummy hop's)
+        var path = Assert.Single(paths).Path;
+        var unblinded = _provider.GetRequiredService<IRouteBlindingService>()
+                                 .Unblind(peerKeys.GetNodeKeyPair().PrivKey, path.FirstPathKey,
+                                          path.Hops[0].EncryptedRecipientData);
+        Assert.NotNull(unblinded.RecipientData.PaymentConstraints);
+        Assert.True(unblinded.RecipientData.PaymentConstraints.MaxCltvExpiry >= 800 + 12 + 1_008,
+                    $"max_cltv_expiry {unblinded.RecipientData.PaymentConstraints.MaxCltvExpiry}");
+    }
+
+    [Fact]
+    public async Task Given_ThePathsOfAnInvoice_When_APayerAddsLdksLargestShadowOffset_Then_EveryHopStillAcceptsIt()
+    {
+        // Arrange (NL-723): LDK adds a random "shadow" CLTV offset of up to 432 blocks
+        // (MAX_SHADOW_CLTV_EXPIRY_DELTA_OFFSET) to a blinded path's final CLTV; our hops' max_cltv_expiry refused it
+        const uint ldkMaxShadowOffset = 3 * 144;
+        var peerKeys = new TestNodeKeyManager(0x0c);
+        var announced = AddChannel(peerKeys.NodeId, 1, new ShortChannelId(401, 2, 1), 600_000, announced: true);
+        SetPeerUpdate(announced);
+        var routeBlinding = _provider.GetRequiredService<IRouteBlindingService>();
+        var finalDelta = new NodeOptions().Routing.InvoiceMinFinalCltvExpiry;
+
+        // Act
+        var path = Assert.Single(await CreateFactory().CreateAsync(s_preimage, LightningMoney.Satoshis(50_000),
+                                                                   7_200, TestContext.Current.CancellationToken));
+
+        // Assert: walk the path as its hops would (the introduction node, then our own hops) and check each hop's
+        // payment_constraints against the CLTV of an HTLC that carries the largest shadow offset (BOLT 4: a hop's
+        // incoming cltv_expiry is the next hop's plus its delta)
+        var unblinded = new List<BlindedRecipientData>();
+        var pathKey = path.Path.FirstPathKey;
+        for (var i = 0; i < path.Path.Hops.Count; i++)
+        {
+            var key = i == 0 ? peerKeys.GetNodeKeyPair().PrivKey : _us.GetNodeKeyPair().PrivKey;
+            var hop = routeBlinding.Unblind(key, pathKey, path.Path.Hops[i].EncryptedRecipientData);
+            unblinded.Add(hop.RecipientData);
+            pathKey = hop.NextPathKey;
+        }
+
+        var cltvExpiry = 800 + finalDelta + ldkMaxShadowOffset;
+        for (var i = unblinded.Count - 1; i >= 0; i--)
+        {
+            if (i < unblinded.Count - 1)
+                cltvExpiry += unblinded[i].PaymentRelay!.CltvExpiryDelta;
+            Assert.True(cltvExpiry <= unblinded[i].PaymentConstraints!.MaxCltvExpiry,
+                        $"hop {i}: cltv_expiry {cltvExpiry} above max_cltv_expiry "
+                      + $"{unblinded[i].PaymentConstraints!.MaxCltvExpiry}");
+        }
     }
 
     private BlindedPaymentPathFactory CreateFactory() =>

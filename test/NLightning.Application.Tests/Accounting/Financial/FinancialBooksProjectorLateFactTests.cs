@@ -44,9 +44,10 @@ public sealed class FinancialBooksProjectorLateFactTests
                                         TestContext.Current.CancellationToken);
         await kit.ProjectAsync();
 
-        // Assert: the late withdrawal still relieves the (re-opened) deposit lot, so the lots hold the assets
+        // Assert: the late withdrawal still relieves the (re-opened) deposit lot, so the lots hold the assets (the
+        // withdrawal came from the clearing account, which borrowed the wallet's lots: it owes the wallet 1e8, NL-657)
         Assert.Equal(1_400_000_000L, await AssetMsatAsync(kit));
-        Assert.Equal(1_400_000_000L, (await kit.ListLotsAsync()).Sum(l => l.Lot.RemainingMsat));
+        Assert.Equal(1_400_000_000L, await LotMsatAsync(kit));
         var (replayedLot, replayedReliefs) = (await kit.ListLotsAsync())
                                             .Single(l => l.Lot.Origin == AccountingLotOrigin.Acquisition);
         Assert.Equal(400m, replayedLot.FiatCost);
@@ -75,7 +76,7 @@ public sealed class FinancialBooksProjectorLateFactTests
 
         // Assert
         Assert.Equal(incremental, await kit.SnapshotFinancialAsync());
-        Assert.Equal(1_400_000_000L, (await kit.ListLotsAsync()).Sum(l => l.Lot.RemainingMsat));
+        Assert.Equal(1_400_000_000L, await LotMsatAsync(kit));
         Assert.Equal(1_400_000_000L, await AssetMsatAsync(kit));
         Assert.All(await kit.Periods.VerifyClosesAsync(TestContext.Current.CancellationToken),
                    v => Assert.True(v.IsIntact, v.Problem));
@@ -132,12 +133,11 @@ public sealed class FinancialBooksProjectorLateFactTests
         // Act
         await kit.ProjectAsync();
 
-        // Assert: the opening lot (1e9 for 400) gives up 5e8 at its cost of 200, nothing is realized, and the cost-basis
-        // line brings the assets from their market value (300) to the cost relieved
+        // Assert: the opening lot (1e9 for 400) gives up 5e8 at its cost of 200, nothing is realized, and the wallet
+        // line carries that cost (NL-657)
         var reversal = (await kit.ListEntriesAsync(AccountingBook.Financial)).Single(e => e.LedgerSeq == 4);
-        Assert.Equal([("assets:onchain:wallet", -500_000_000L, (decimal?)-300m),
-                      ("equity:opening-balances", 500_000_000L, 200m),
-                      ("assets:cost-basis", 0L, 100m)],
+        Assert.Equal([("assets:onchain:wallet", -500_000_000L, (decimal?)-200m),
+                      ("equity:opening-balances", 500_000_000L, 200m)],
                      reversal.Postings.Select(p => (p.AccountName!, p.AmountMsat, p.FiatAmount)).ToArray());
         var lots = await kit.ListLotsAsync();
         var (_, openingReliefs) = lots.Single(l => l.Lot.Origin == AccountingLotOrigin.Opening);
@@ -168,6 +168,10 @@ public sealed class FinancialBooksProjectorLateFactTests
         await kit.AddAsync(kit.Withdrawal(100_000_000, 0, s_jan20));
         await kit.ProjectAsync();
     }
+
+    // The msat the open lots hold (a bucket's debt is no asset)
+    private static async Task<long> LotMsatAsync(FinancialProjectorTestKit kit) =>
+        (await kit.ListLotsAsync()).Where(l => !l.Lot.IsDebt).Sum(l => l.Lot.RemainingMsat);
 
     private static async Task<long> AssetMsatAsync(FinancialProjectorTestKit kit) =>
         (await kit.ReadAsync(u => u.AccountingBooksDbRepository.GetAccountBalancesAsync(

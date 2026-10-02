@@ -209,6 +209,12 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasColumnType("TEXT")
                         .IsFixedLength();
 
+                    b.Property<long?>("HeldSince")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("Lender")
+                        .HasColumnType("INTEGER");
+
                     b.Property<byte>("Origin")
                         .HasColumnType("INTEGER");
 
@@ -259,6 +265,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<decimal?>("FiatCostRelieved")
                         .HasPrecision(28, 8)
                         .HasColumnType("TEXT");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("LedgerSeq")
                         .HasColumnType("INTEGER");
@@ -876,6 +885,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<bool?>("ChangeAddressIsChange")
                         .HasColumnType("INTEGER");
 
+                    b.Property<byte?>("CloseProtocol")
+                        .HasColumnType("INTEGER");
+
                     b.Property<byte[]>("ClosingTransaction")
                         .HasColumnType("BLOB");
 
@@ -933,6 +945,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<long?>("LocalFundingContributionSatoshis")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool?>("LocalIsCloser")
                         .HasColumnType("INTEGER");
 
                     b.Property<ulong>("LocalNextHtlcId")

@@ -10,6 +10,7 @@ namespace NLightning.Infrastructure.Bitcoin.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Money;
 using Domain.Node.Options;
+using Infrastructure.Transport.Http;
 using Networks;
 using Options;
 
@@ -30,6 +31,9 @@ using Options;
 /// </remarks>
 public class FeeService : IFeeService
 {
+    /// <summary>The longest HTTP answer read (64 KiB, NL-678): a mempool.space fee answer is about 100 bytes.</summary>
+    public const int MaxResponseBytes = HttpResponseLimits.SmallResponseMaxBytes;
+
     private const string FeeCacheFileName = "fee_cache.bin";
     private static readonly string[] s_httpBuckets = ["fastestFee", "halfHourFee", "hourFee", "economyFee"];
     private static readonly TimeSpan s_defaultCacheExpiration = TimeSpan.FromMinutes(5);
@@ -280,20 +284,31 @@ public class FeeService : IFeeService
     {
         HttpResponseMessage response;
 
+        // HttpClient.Timeout stops at the headers with ResponseHeadersRead, so one deadline covers the request and the
+        // bounded body read: a server or Tor circuit that sends the headers and then stalls the body times out like a
+        // request would (NL-732), instead of holding the start, the refresh loop and every caller that waits on it
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan)
+            deadline.CancelAfter(_httpClient.Timeout);
+
         try
         {
+            // ResponseHeadersRead: the body is read bounded below (NL-678), never buffered whole by the client
             if (_feeEstimationOptions.Method.Equals("GET", StringComparison.CurrentCultureIgnoreCase))
             {
-                response = await _httpClient.GetAsync(_feeEstimationOptions.Url, cancellationToken);
+                response = await _httpClient.GetAsync(_feeEstimationOptions.Url,
+                                                      HttpCompletionOption.ResponseHeadersRead, deadline.Token);
             }
             else // POST
             {
-                var content = new StringContent(
+                using var request = new HttpRequestMessage(HttpMethod.Post, _feeEstimationOptions.Url);
+                request.Content = new StringContent(
                     _feeEstimationOptions.Body,
                     System.Text.Encoding.UTF8,
                     _feeEstimationOptions.ContentType);
 
-                response = await _httpClient.PostAsync(_feeEstimationOptions.Url, content, cancellationToken);
+                response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
+                                                       deadline.Token);
             }
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -301,12 +316,15 @@ public class FeeService : IFeeService
             throw new InvalidOperationException("Error fetching from API", e);
         }
 
-        response.EnsureSuccessStatusCode();
-        var jsonResponseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        byte[] body;
+        using (response)
+        {
+            response.EnsureSuccessStatusCode();
+            body = await HttpResponseLimits.ReadBoundedAsync(response.Content, MaxResponseBytes, deadline.Token);
+        }
 
         // Parse the JSON response
-        using var document =
-            await JsonDocument.ParseAsync(jsonResponseStream, cancellationToken: cancellationToken);
+        using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
 
         // Extract the preferred fee rate from the JSON response
@@ -379,26 +397,12 @@ public class FeeService : IFeeService
         }
     }
 
+    // The fee rate cache file is not written or read yet (NL-706): both methods only log.
     private Task SaveToFileAsync()
     {
         _logger.LogDebug("Saving fee rate to file {filePath}", _cacheFilePath);
 
         return Task.CompletedTask;
-        // try
-        // {
-        //     var cacheData = new FeeRateCacheData
-        //     {
-        //         FeeRate = _cachedFeeRate,
-        //         LastFetchTime = _lastFetchTime
-        //     };
-        //
-        //     await using var fileStream = File.OpenWrite(_cacheFilePath);
-        //     await MessagePackSerializer.SerializeAsync(fileStream, cacheData, cancellationToken: CancellationToken.None);
-        // }
-        // catch (Exception e)
-        // {
-        //     _logger.LogError(e, "Error saving fee rate to file");
-        // }
     }
 
     private Task LoadFromFileAsync()
@@ -406,36 +410,6 @@ public class FeeService : IFeeService
         _logger.LogDebug("Loading fee rate from file {filePath}", _cacheFilePath);
 
         return Task.CompletedTask;
-        // try
-        // {
-        //     if (!File.Exists(_cacheFilePath))
-        //     {
-        //         _logger.LogDebug("Fee rate cache file does not exist. Skipping load.");
-        //         return;
-        //     }
-        //
-        //     await using var fileStream = File.OpenRead(_cacheFilePath);
-        //     var cacheData =
-        //         await MessagePackSerializer.DeserializeAsync<FeeRateCacheData?>(fileStream,
-        //             cancellationToken: cancellationToken);
-        //
-        //     if (cacheData == null)
-        //     {
-        //         _logger.LogDebug("Fee rate cache file is empty. Skipping load.");
-        //         return;
-        //     }
-        //
-        //     _cachedFeeRate = cacheData.FeeRate;
-        //     _lastFetchTime = cacheData.LastFetchTime;
-        // }
-        // catch (OperationCanceledException)
-        // {
-        //     // Ignore cancellation
-        // }
-        // catch (Exception e)
-        // {
-        //     _logger.LogError(e, "Error loading fee rate from file");
-        // }
     }
 
     private bool IsCacheValid()

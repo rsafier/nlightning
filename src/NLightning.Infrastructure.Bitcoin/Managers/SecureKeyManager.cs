@@ -361,7 +361,7 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
                 Argon2OpsLimit = Argon2Id.DefaultOpsLimit,
                 NodeKeyPath = isBip32 ? NodeKeyPathString : null
             };
-            var json = JsonSerializer.Serialize(data);
+            var json = JsonSerializer.Serialize(data, KeyFileDataJsonContext.Default.KeyFileData);
             WriteFileAtomically(_filePath, json);
         }
     }
@@ -400,7 +400,7 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
                                                   Func<string, byte[]?>? legacyAnsiPasswordEncoder)
     {
         var jsonString = File.ReadAllText(filePath);
-        var data = JsonSerializer.Deserialize<KeyFileData>(jsonString)
+        var data = JsonSerializer.Deserialize(jsonString, KeyFileDataJsonContext.Default.KeyFileData)
                 ?? throw new SerializationException("Invalid key file");
 
         var network = expectedNetwork.ToNBitcoinNetwork();
@@ -988,13 +988,13 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         if (!File.Exists(_filePath))
             return;
 
-        var data = JsonSerializer.Deserialize<KeyFileData>(File.ReadAllText(_filePath))
+        var data = JsonSerializer.Deserialize(File.ReadAllText(_filePath), KeyFileDataJsonContext.Default.KeyFileData)
                 ?? throw new SerializationException("Invalid key file");
         if (data.LastUsedIndex > _lastUsedIndex)
             return;
 
         data.LastUsedIndex = _lastUsedIndex;
-        WriteFileAtomically(_filePath, JsonSerializer.Serialize(data));
+        WriteFileAtomically(_filePath, JsonSerializer.Serialize(data, KeyFileDataJsonContext.Default.KeyFileData));
     }
 
     private ExtKey GetMasterKey()

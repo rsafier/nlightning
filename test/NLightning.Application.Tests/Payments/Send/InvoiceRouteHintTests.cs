@@ -171,6 +171,30 @@ public class InvoiceRouteHintTests : IDisposable
         Assert.Equal(alias, hint.ShortChannelId);
     }
 
+    [Theory]
+    [InlineData(true, "alias")]
+    [InlineData(false, "real")]
+    public async Task Given_APrivateChannelWithoutScidAlias_When_CreatingAnInvoice_Then_TheHintUsesThePeersAliasWhenItSentOne(
+        bool withAlias, string expected)
+    {
+        // Arrange (NL-742): a private channel whose type has no option_scid_alias; Eclair resolves it only by the alias
+        // it sent in channel_ready, so a hint naming the real short channel id was unpayable through Eclair
+        var alias = new ShortChannelId(16_000_000, 7, 8);
+        var real = new ShortChannelId(401, 2, 1);
+        var channel = AddChannel(new TestNodeKeyManager(0x0c).NodeId, 1, real, remoteSat: 600_000);
+        if (withAlias)
+            channel.RemoteAlias = alias;
+        SetPeerUpdate(channel, 1_000, 1, 40);
+
+        // Act
+        var invoice = await CreateService().CreateInvoiceAsync(null, "private", null,
+                                                               TestContext.Current.CancellationToken);
+
+        // Assert
+        var hint = Assert.Single(Assert.Single(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints));
+        Assert.Equal(expected == "alias" ? alias : real, hint.ShortChannelId);
+    }
+
     [Fact]
     public async Task Given_NoChannelServices_When_CreatingAnInvoice_Then_NoHint()
     {

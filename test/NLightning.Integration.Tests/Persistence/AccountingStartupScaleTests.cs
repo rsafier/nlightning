@@ -88,7 +88,7 @@ public sealed class AccountingStartupScaleTests : IDisposable
 
     public void Dispose()
     {
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         foreach (var path in new[] { _databasePath, _databasePath + "-wal", _databasePath + "-shm" })
         {
             try
@@ -148,7 +148,7 @@ public sealed class AccountingStartupScaleTests : IDisposable
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
+            SqliteTestPools.Clear(path);
             foreach (var file in new[] { path, path + "-wal", path + "-shm" })
                 if (File.Exists(file))
                     File.Delete(file);

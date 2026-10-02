@@ -83,8 +83,15 @@ public sealed class AnchorPeerCpfpTests : IDisposable
         _memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
                .Returns((Func<ChannelModel, bool> predicate) => predicate(_channel) ? [_channel] : []);
         _monitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(500);
+        // NL-611: an anchor sweep is a stored AnchorSweep row published like a child; the tests keep it apart
         _monitor.Setup(m => m.PublishAsync(It.IsAny<BroadcastTransactionModel>()))
-                .Callback<BroadcastTransactionModel>(_published.Add)
+                .Callback<BroadcastTransactionModel>(row =>
+                 {
+                     if (row.Purpose == BroadcastPurpose.AnchorSweep)
+                         _sweeps.Add(row.ToSignedTransaction());
+                     else
+                         _published.Add(row);
+                 })
                 .ReturnsAsync(true);
         _monitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
                 .Callback<SignedTransaction>(_sweeps.Add)

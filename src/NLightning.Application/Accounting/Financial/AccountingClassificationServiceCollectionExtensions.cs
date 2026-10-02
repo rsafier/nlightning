@@ -9,6 +9,7 @@ using Domain.Accounting.Books;
 using Domain.Accounting.Financial;
 using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Interfaces;
+using Domain.Accounting.Prices;
 
 /// <summary>The financial book's classification services (NL-602 A3-T3).</summary>
 public static class AccountingClassificationServiceCollectionExtensions
@@ -25,7 +26,8 @@ public static class AccountingClassificationServiceCollectionExtensions
                                      sp.GetRequiredService<ILogger<AccountingClassificationService>>(),
                                      sp.GetService<IOptions<AccountingOptions>>(), sp.GetService<IAccountingBooks>(),
                                      sp.GetService<IAccountingEventSealer>(), sp.GetService<TimeProvider>(),
-                                     sp.GetService<IAccountingAdjustmentSink>()));
+                                     sp.GetService<IAccountingAdjustmentSink>(),
+                                     sp.GetService<IOptions<AccountingPriceOptions>>()));
         services.TryAddSingleton<IAccountingClassificationAdmin>(
             sp => sp.GetRequiredService<AccountingClassificationService>());
         return services;

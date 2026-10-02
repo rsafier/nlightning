@@ -9,7 +9,6 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
-using Domain.Enums;
 using Domain.Money;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
@@ -54,7 +53,8 @@ public sealed record BlindedPathRequest(
 /// <remarks>
 /// <para>Candidates: every <c>Open</c> channel that is announced (<see cref="ChannelAnnouncementService.IsAnnounced"/>:
 /// its peer is a public node, so a sender can route to it; any channel with
-/// <see cref="BlindedPathRequest.IncludePrivateChannels"/>, an unannounced alias channel by its <c>RemoteAlias</c>),
+/// <see cref="BlindedPathRequest.IncludePrivateChannels"/>, an unannounced channel by the peer's alias
+/// <c>RemoteAlias</c> when it sent one (NL-717), else by its real short channel id unless it is an alias channel),
 /// whose link is up and whose peer's <c>channel_update</c> we
 /// hold and is not disabled, largest peer balance first (only those that can send <see cref="BlindedPathRequest.Amount"/>
 /// within the update's HTLC limits).</para>
@@ -142,10 +142,10 @@ public sealed class BlindedPathBuilder
             if (!announced && !request.IncludePrivateChannels)
                 continue;
 
-            // The peer resolves the short_channel_id among its own: our alias of the peer for an alias channel
-            var shortChannelId = !announced && channel.ChannelParams.UseScidAlias > FeatureSupport.No
-                                     ? channel.RemoteAlias ?? default
-                                     : channel.ShortChannelId;
+            // The peer resolves the short_channel_id among its own (NL-717): an unannounced channel by the alias the
+            // peer gave us whenever it gave one (BOLT 2: its sender MUST always recognize it; Eclair resolves a private
+            // channel by nothing else), else by the real short channel id unless the channel type forbids it
+            var shortChannelId = InvoiceService.GetInboundShortChannelId(channel);
             if (shortChannelId == default)
                 continue;
 

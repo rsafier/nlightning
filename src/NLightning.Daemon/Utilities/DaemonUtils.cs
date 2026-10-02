@@ -20,9 +20,11 @@ public class DaemonUtils
     internal const string UnixDaemonLauncherScript =
         "exec 3<&0; nohup \"$0\" \"$@\" <&3 3<&- >/dev/null 2>&1 & exec 3<&-; echo $!";
 
+    internal const string CheckConfigFlag = "--check-config";
+
     private static readonly HashSet<string> s_bareFlags = new(StringComparer.OrdinalIgnoreCase)
     {
-        DashDashDaemon, DashDashDaemonChild, "--stop", "--status", "--help"
+        DashDashDaemon, DashDashDaemonChild, "--stop", "--status", "--help", CheckConfigFlag
     };
 
     private static readonly HashSet<string> s_shortSwitches = ["-n", "-c", "-h", "-?"];
@@ -34,9 +36,10 @@ public class DaemonUtils
         Console.WriteLine("  nltg [options]");
         Console.WriteLine("  nltg --stop         Stop a running daemon");
         Console.WriteLine("  nltg --status       Show daemon status");
+        Console.WriteLine("  nltg --check-config Check the configuration and exit");
         Console.WriteLine();
         Console.WriteLine("Options:");
-        Console.WriteLine("  --network, -n <network>    Network to use (mainnet, testnet, regtest, signet, mutinynet) [default: mainnet]");
+        Console.WriteLine("  --network, -n <network>    Network to use (mainnet, testnet, testnet4, regtest, signet, mutinynet) [default: mainnet]");
         Console.WriteLine("  --config, -c <path>        Path to custom configuration file");
         Console.WriteLine("  --daemon [true|false]      Run as a daemon [default: false]");
         Console.WriteLine("  --password-file <path>     Read the key encryption password from a file");
@@ -44,6 +47,7 @@ public class DaemonUtils
         Console.WriteLine("  --password <password>      Key encryption password (insecure: visible in the process list)");
         Console.WriteLine("  --stop                     Stop a running daemon");
         Console.WriteLine("  --status                   Show daemon status information");
+        Console.WriteLine("  --check-config             Bind and validate the configuration, then exit (0 = valid)");
         Console.WriteLine("  --help, -h, -?             Show this help message");
         Console.WriteLine();
         Console.WriteLine("Environment Variables:");
@@ -153,6 +157,14 @@ public class DaemonUtils
     {
         return args.Any(arg =>
                             arg.Equals("--status", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Checks the command line for <c>--check-config</c>: bind and validate the configuration, then exit (NL-338).
+    /// </summary>
+    public static bool IsCheckConfigRequested(string[] args)
+    {
+        return args.Any(arg => arg.Equals(CheckConfigFlag, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>

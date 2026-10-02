@@ -68,7 +68,9 @@ using Relay.Interfaces;
 /// <c>reply_channel_range</c> stream, recognized by the query's kept collector) and consumes it, so BOLT 7's
 /// one-outstanding-query rule holds and a late reply is never taken for the next query's (NL-365). A reply that breaks
 /// the rules ends the querying of that connection for good (the stream's position is then unknown); a sync peer whose
-/// range sync failed gets <c>gossip_timestamp_filter(now, 0xFFFFFFFF)</c>. With the ingress's queue known, each
+/// range sync failed gets <c>gossip_timestamp_filter(now, 0xFFFFFFFF)</c>, except one that answered the range query
+/// but left a <c>query_short_channel_ids</c> unanswered (LDK: rust-lightning does not implement it), which gets the
+/// backlog filter of a sync without timestamps instead, so its existing gossip still reaches us (NL-722). With the ingress's queue known, each
 /// <c>query_short_channel_ids</c> asks for at most a tenth of its per-peer capacity in channels and waits until the
 /// queue is at most half full (NL-353), so the answers of a large sync are not dropped. After a sync with timestamps
 /// the filter starts where the sync started (less <see cref="TimestampSyncFilterMarginSeconds"/>), since the sync
@@ -627,6 +629,11 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                         // NL-365: the query given up on before may still be answered; its late reply goes first, so
                         // BOLT 7's one-outstanding-query rule holds and it never completes the wrong query
                         await ConsumeOutstandingRepliesAsync(session, cancellationToken);
+                        if (session.IsQuerySlotPoisoned)
+                        {
+                            (work as ScidQueryWork)?.Completion?.TrySetResult(false);
+                            continue;
+                        }
                     }
 
                     switch (work)
@@ -697,15 +704,28 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     /// Waits, before the next query on this connection (NL-365), for the outstanding reply of the query we gave up
     /// on: the late <c>reply_short_channel_ids_end</c>, or the rest of a late <c>reply_channel_range</c> stream,
     /// which is fed to the kept collector of that query until it completes. A late range reply that breaks the rules
-    /// ends the querying on this connection for good (the stream's position is then unknown).
+    /// ends the querying on this connection for good (the stream's position is then unknown), and so does a late reply
+    /// that does not come within another <see cref="GossipSyncOptions.SyncReplyTimeout"/> (NL-718: Eclair drops a query
+    /// over its rate limit without ever answering it, and the next query of the connection waited for it forever).
     /// </summary>
     private async Task ConsumeOutstandingRepliesAsync(PeerSession session, CancellationToken cancellationToken)
     {
         while (session.IsAwaitingOutstandingReply)
         {
-            var late = await session.Replies.ReadAsync(cancellationToken);
+            var late = await ReadReplyAsync(session, cancellationToken);
+            if (late is null)
+            {
+                session.PoisonQuerySlot();
+                _logger.LogInformation("Peer {Peer} never answered the query we gave up on (another {Timeout} passed); "
+                                     + "no more gossip queries on this connection", session.Peer.PeerPubKey,
+                                       _options.SyncReplyTimeout);
+                return;
+            }
+
             if (session.OutstandingCollector is not { } collector)
             {
+                // A late reply_short_channel_ids_end: the peer implements the query after all (NL-744)
+                session.ScidQueryAnswered = true;
                 session.OutstandingReplyConsumed();
                 _logger.LogDebug("The late reply_short_channel_ids_end of peer {Peer} arrived; querying it again",
                                  session.Peer.PeerPubKey);
@@ -753,6 +773,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                     : null);
 
             var collector = new RangeReplyCollector(OurChain, 0, numberOfBlocks);
+            await PaceQueryAsync(session, cancellationToken);
             session.ExpectReplies(MessageTypes.ReplyChannelRange);
             var abandoned = false;
             try
@@ -856,7 +877,18 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                 }
 
                 if (outcome == ScidQueryOutcome.Failed)
+                {
+                    // NL-722: a peer that answers the range query but not query_short_channel_ids (rust-lightning
+                    // 0.3 leaves it unimplemented and ignores it) is asked for its gossip by timestamp instead, as
+                    // after a sync without timestamps: LDK streams its whole graph to a filter that starts more than
+                    // 6 h ago, and nothing that started now would ever bring us its existing channels
+                    // Only for a peer that never answered one on this connection (NL-744): a peer that answered an
+                    // earlier batch implements the query and was only slow (LND or CLN under load), and the backlog
+                    // filter would stream it its whole graph past the ingress pacing (NL-353)
+                    if (session.ScidQueryUnanswered && !session.ScidQueryAnswered)
+                        session.FallbackFilterStart = GetSyncFilterStart(false, startedAt);
                     return;
+                }
             }
 
             if (asked < wanted.Count)
@@ -905,7 +937,12 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         session.LiveFilterSent = true;
         try
         {
-            await SendFilterAsync(session, new GossipTimestampFilter(NowSeconds(), uint.MaxValue), cancellationToken);
+            var start = session.FallbackFilterStart ?? NowSeconds();
+            if (session.FallbackFilterStart is not null)
+                _logger.LogInformation("Peer {Peer} left our query_short_channel_ids unanswered; asking for its gossip "
+                                     + "since {Start} by gossip_timestamp_filter instead (NL-722)",
+                                       session.Peer.PeerPubKey, start);
+            await SendFilterAsync(session, new GossipTimestampFilter(start, uint.MaxValue), cancellationToken);
         }
         catch (Exception e)
         {
@@ -1058,6 +1095,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             flags);
 
         await WaitForIngressAsync(session, cancellationToken);
+        await PaceQueryAsync(session, cancellationToken);
         session.ExpectReplies(MessageTypes.ReplyShortChannelIdsEnd);
         var abandoned = false;
         try
@@ -1073,6 +1111,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                 // so a late end never completes the wrong query
                 session.AbandonReplyWait(null);
                 abandoned = true;
+                session.ScidQueryUnanswered = true;
                 _logger.LogInformation("Peer {Peer} did not answer our query_short_channel_ids in {Timeout}; its "
                                      + "next query waits for the late end", session.Peer.PeerPubKey,
                                        _options.SyncReplyTimeout);
@@ -1080,6 +1119,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             }
 
             var end = (ReplyShortChannelIdsEndMessage)reply;
+            session.ScidQueryAnswered = true;
             if (end.Payload.ChainHash != OurChain)
                 throw new SyncViolationException(
                     new WarningException("reply_short_channel_ids_end: chain_hash is not the one we queried"));
@@ -1137,6 +1177,27 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
 
             await Task.Delay(s_ingressPollInterval, _timeProvider, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// NL-407: keeps <see cref="GossipSyncOptions.MinQueryInterval"/> between two queries of ours
+    /// (<c>query_channel_range</c> and <c>query_short_channel_ids</c>) on one connection, counted from when the previous
+    /// one was queued. Eclair answers at most 5 gossip queries per second per connection (both kinds share
+    /// <c>router.sync.max-queries-per-second</c>, default 5) and silently drops the rest, without a
+    /// <c>reply_short_channel_ids_end</c>: back-to-back queries for small batches made the fifth query of a sync time
+    /// out and ended our querying of that connection. 250 ms keeps any five consecutive queries more than a second apart.
+    /// </summary>
+    private async Task PaceQueryAsync(PeerSession session, CancellationToken cancellationToken)
+    {
+        var interval = _options.MinQueryInterval;
+        if (interval > TimeSpan.Zero && session.LastQueryAt is { } last)
+        {
+            var wait = interval - (_timeProvider.GetUtcNow() - last);
+            if (wait > TimeSpan.Zero)
+                await Task.Delay(wait, _timeProvider, cancellationToken);
+        }
+
+        session.LastQueryAt = _timeProvider.GetUtcNow();
     }
 
     /// <summary>
@@ -1332,6 +1393,21 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         public bool LiveFilterSent { get; set; }
         public bool NeedsLiveFilter { get; set; }
 
+        /// <summary>
+        /// Where the filter after a failed range sync starts instead of now (NL-722): set when the peer answered our
+        /// range query but not our <c>query_short_channel_ids</c>.
+        /// </summary>
+        public uint? FallbackFilterStart { get; set; }
+
+        /// <summary>Our last <c>query_short_channel_ids</c> on this connection went unanswered (NL-722).</summary>
+        public bool ScidQueryUnanswered { get; set; }
+
+        /// <summary>
+        /// The peer answered a <c>query_short_channel_ids</c> of ours on this connection, in time or late (NL-744): it
+        /// implements the query, so a later timeout never brings the NL-722 backlog filter.
+        /// </summary>
+        public bool ScidQueryAnswered { get; set; }
+
         private int _failedQueries;
 
         /// <summary>How many of our queries to this peer timed out, failed or broke the rules (NL-363).</summary>
@@ -1389,6 +1465,11 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         }
 
         public DateTimeOffset? LastRangeSyncAt { get; set; }
+
+        /// <summary>
+        /// When our last query went out on this connection (NL-407 pacing). Only the querier loop reads and writes it.
+        /// </summary>
+        public DateTimeOffset? LastQueryAt { get; set; }
         public int PendingWork => Volatile.Read(ref _pendingWork);
         public bool IsIdle => PendingWork == 0 && Volatile.Read(ref _queuedQueries) == 0;
 

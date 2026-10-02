@@ -172,6 +172,59 @@ public sealed class EclairClient : IDisposable
         await CallAsync("onchainbalance", cancellationToken)
      ?? throw new EclairRpcException("onchainbalance", 0, "empty answer");
 
+    /// <summary><c>splicein</c>: adds <paramref name="amountInSat"/> from Eclair's wallet to the channel.</summary>
+    public async Task<JsonNode?> SpliceInAsync(string channelId, long amountInSat, CancellationToken cancellationToken) =>
+        await CallAsync("splicein", cancellationToken, ("channelId", channelId), ("amountIn", amountInSat));
+
+    /// <summary><c>spliceout</c>: pays <paramref name="amountOutSat"/> from the channel to <paramref name="address"/>.
+    /// </summary>
+    public async Task<JsonNode?> SpliceOutAsync(string channelId, long amountOutSat, string address,
+                                                CancellationToken cancellationToken) =>
+        await CallAsync("spliceout", cancellationToken, ("channelId", channelId), ("amountOut", amountOutSat),
+                        ("address", address));
+
+    /// <summary><c>rbfsplice</c>: RBF of Eclair's pending splice at <paramref name="feerateSatByte"/>.</summary>
+    public async Task<JsonNode?> RbfSpliceAsync(string channelId, long feerateSatByte, long feeBudgetSat,
+                                                CancellationToken cancellationToken) =>
+        await CallAsync("rbfsplice", cancellationToken, ("channelId", channelId),
+                        ("targetFeerateSatByte", feerateSatByte), ("fundingFeeBudgetSatoshis", feeBudgetSat));
+
+    /// <summary><c>rbfopen</c>: RBF of Eclair's unconfirmed dual-funded open at <paramref name="feerateSatByte"/>.
+    /// </summary>
+    public async Task<JsonNode?> RbfOpenAsync(string channelId, long feerateSatByte, long feeBudgetSat,
+                                              CancellationToken cancellationToken) =>
+        await CallAsync("rbfopen", cancellationToken, ("channelId", channelId),
+                        ("targetFeerateSatByte", feerateSatByte), ("fundingFeeBudgetSatoshis", feeBudgetSat));
+
+    /// <summary><c>forceclose</c>: Eclair publishes its commitment.</summary>
+    public async Task<JsonNode?> ForceCloseAsync(string channelId, CancellationToken cancellationToken) =>
+        await CallAsync("forceclose", cancellationToken, ("channelId", channelId));
+
+    /// <summary><c>allchannels</c>: the public channels in Eclair's graph.</summary>
+    public async Task<JsonArray> AllChannelsAsync(CancellationToken cancellationToken) =>
+        (await CallAsync("allchannels", cancellationToken))?.AsArray() ?? [];
+
+    /// <summary><c>allupdates</c> of <paramref name="nodeId"/> (or every node when null).</summary>
+    public async Task<JsonArray> AllUpdatesAsync(string? nodeId, CancellationToken cancellationToken) =>
+        (await CallAsync("allupdates", cancellationToken, ("nodeId", nodeId)))?.AsArray() ?? [];
+
+    /// <summary><c>nodes</c>: the node announcements in Eclair's graph.</summary>
+    public async Task<JsonArray> NodesAsync(CancellationToken cancellationToken) =>
+        (await CallAsync("nodes", cancellationToken))?.AsArray() ?? [];
+
+    /// <summary><c>createoffer</c>: a BOLT 12 offer of Eclair's (the <c>encoded</c> string is the offer).</summary>
+    public async Task<JsonNode> CreateOfferAsync(string description, long? amountMsat,
+                                                 CancellationToken cancellationToken) =>
+        await CallAsync("createoffer", cancellationToken, ("description", description), ("amountMsat", amountMsat))
+     ?? throw new EclairRpcException("createoffer", 0, "empty answer");
+
+    /// <summary><c>payoffer blocking=true</c>: pays a BOLT 12 offer (the payment event).</summary>
+    public async Task<JsonNode> PayOfferAsync(string offer, long amountMsat, CancellationToken cancellationToken,
+                                              bool connectDirectly = false) =>
+        await CallAsync("payoffer", cancellationToken, ("offer", offer), ("amountMsat", amountMsat),
+                        ("blocking", true), ("maxAttempts", 3), ("connectDirectly", connectDirectly))
+     ?? throw new EclairRpcException("payoffer", 0, "empty answer");
+
     public void Dispose() => _http.Dispose();
 }
 

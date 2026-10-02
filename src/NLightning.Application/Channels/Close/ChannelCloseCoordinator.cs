@@ -207,6 +207,24 @@ public sealed class ChannelCloseCoordinator
                 // send its own, once both shutdowns went over this connection
                 if (simpleClose && channel.State == ChannelState.Closing)
                     _registry.Get(channelId).ShutdownReceivedOnConnection = true;
+
+                // NL-725 (B2-RE-29): the reconnection restarted the legacy negotiation, and a fundee that lost our
+                // agreement (CLN back in closingd) waits for the funder's closing_signed: as the funder, open it again
+                // with the agreed fee (the peer's answer is then the agreed fee too, ignored once answered)
+                if (!simpleClose && channel is { State: ChannelState.Closing, IsInitiator: true })
+                {
+                    var closingEntry = _registry.Get(channelId);
+                    closingEntry.ShutdownReceivedOnConnection = true;
+                    if (closingEntry is { ShutdownSentOnConnection: true, AgreedClosingSignedSentOnConnection: false }
+                     && CreateAgreedClosingSigned(channel, null) is { } reopened)
+                    {
+                        _logger.LogInformation(
+                            "shutdown for closing channel {ChannelId}: proposing the agreed fee of {Fee} sat again",
+                            channelId, (ulong)reopened.Payload.FeeAmount.Satoshi);
+                        return [reopened];
+                    }
+                }
+
                 _logger.LogInformation("Ignoring shutdown for channel {ChannelId}: its closing transaction is out",
                                        channelId);
                 return [];
@@ -524,6 +542,7 @@ public sealed class ChannelCloseCoordinator
         await PersistAsync(channel, m =>
         {
             m.SetClosingTransaction(closingTransaction);
+            m.SetCloseTerms(MutualCloseProtocol.Legacy, null); // NL-610: the funder pays the closing fee
             if (m.State < ChannelState.Closing)
                 m.UpdateState(ChannelState.Closing);
         });
@@ -807,9 +826,11 @@ public sealed class ChannelCloseCoordinator
     /// <summary>
     /// Our <c>closing_signed</c> for the stored closing transaction (its fee, our signature of it), or null when we
     /// already answered that fee on this connection, or the stored transaction is none of our variants (e.g. recorded
-    /// from the chain).
+    /// from the chain). <paramref name="receivedFeeSat"/> null opens a restarted negotiation as the funder (NL-725):
+    /// the message then carries <c>fee_range</c> [fee, fee] when we send ranges, so a peer that follows it can only
+    /// answer the agreed fee, and it counts as the agreed answer of this connection.
     /// </summary>
-    private ClosingSignedMessage? CreateAgreedClosingSigned(ChannelModel channel, ulong receivedFeeSat)
+    private ClosingSignedMessage? CreateAgreedClosingSigned(ChannelModel channel, ulong? receivedFeeSat)
     {
         if (channel is not { ClosingTransaction: { } stored, FundingOutput: { } funding }
          || channel.LocalShutdownScript is null || channel.RemoteShutdownScript is null)
@@ -842,9 +863,12 @@ public sealed class ChannelCloseCoordinator
                 continue;
 
             var signature = _lightningSigner.SignChannelTransaction(channel.ChannelId, unsigned);
-            if (feeSat == receivedFeeSat)
+            if (receivedFeeSat is null || feeSat == receivedFeeSat)
                 entry.AgreedClosingSignedSentOnConnection = true;
-            return CreateClosingSigned(channel.ChannelId, feeSat, null, signature);
+            var range = receivedFeeSat is null && context.InitialState.SendFeeRange
+                            ? new ClosingFeeRange(feeSat, feeSat)
+                            : null;
+            return CreateClosingSigned(channel.ChannelId, feeSat, range, signature);
         }
 
         return null;

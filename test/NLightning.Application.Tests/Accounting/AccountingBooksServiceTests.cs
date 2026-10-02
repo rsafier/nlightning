@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -30,6 +29,7 @@ using Infrastructure.Crypto.Hashes;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Repositories;
+using TestUtils;
 
 /// <summary>
 /// The operational books' projector (NL-602 A2) over the production unit of work on a SQLite file, with a stub rules
@@ -75,7 +75,7 @@ public sealed class AccountingBooksServiceTests : IAsyncLifetime
         if (_provider is not null)
             await _provider.DisposeAsync();
 
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         foreach (var path in new[] { _databasePath, _databasePath + "-wal", _databasePath + "-shm" })
         {
             try

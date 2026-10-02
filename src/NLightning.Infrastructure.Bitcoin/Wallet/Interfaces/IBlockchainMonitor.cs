@@ -89,7 +89,18 @@ public interface IBlockchainMonitor : IChainBroadcaster, IOutpointWatcher
     void WatchBitcoinAddress(WalletAddressModel walletAddress);
 
     /// <summary>
-    /// Loads the watches, catches up to the chain tip (the tip included, NL-215), then follows new blocks.
+    /// Loads from the database, without asking bitcoind, what the node's wallet needs before any peer can act on it
+    /// (NL-600): the wallet UTXO set with its fee input reservations (spent ones ended), the wallet addresses, the
+    /// pending watched transactions, the channel locks of pending fundings (NL-462) and the last processed height. A
+    /// host calls it before <c>PeerManager.StartAsync</c>: a negotiation resumed by a peer right after a restart (a
+    /// splice's <c>tx_signatures</c>) signs reserved wallet inputs the signer finds only in the loaded UTXO set. Runs
+    /// once per start; <see cref="StartAsync"/> calls it when the host has not.
+    /// </summary>
+    Task LoadWalletAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Loads the watches (<see cref="LoadWalletAsync"/>, when the host has not called it), catches up to the chain tip
+    /// (the tip included, NL-215), then follows new blocks.
     /// </summary>
     /// <param name="heightOfBirth">Wallet's height of birth to avoid processing old blocks</param>
     /// <param name="cancellationToken"></param>

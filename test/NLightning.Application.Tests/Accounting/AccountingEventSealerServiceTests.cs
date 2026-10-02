@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -21,6 +20,7 @@ using Infrastructure.Crypto.Hashes;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Repositories;
+using TestUtils;
 
 /// <summary>
 /// The accounting feed's sealer service (NL-602) over the production unit of work on a SQLite file: rows written in
@@ -52,7 +52,7 @@ public sealed class AccountingEventSealerServiceTests : IAsyncLifetime
         if (_provider is not null)
             await _provider.DisposeAsync();
 
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         foreach (var path in new[] { _databasePath, _databasePath + "-wal", _databasePath + "-shm" })
         {
             try

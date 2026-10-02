@@ -16,8 +16,9 @@ using Domain.Onchain.Enums;
 /// limits or conflicts, a node that is down) is temporary and resets the count.</para>
 /// <para>The chain monitor abandons only a transaction that spends wallet outputs alone: a channel funding
 /// (<see cref="BroadcastPurpose.Funding"/>, and <see cref="BroadcastPurpose.Unspecified"/>, the legacy funding path)
-/// and a <see cref="BroadcastPurpose.WalletSend"/>. Nothing about a channel's safety depends on those; abandoning one
-/// releases its wallet inputs. A commitment, penalty, HTLC transaction, sweep, claim, CPFP child or mutual close spends
+/// and a <see cref="BroadcastPurpose.WalletSend"/>, plus our anchor sweep (<see cref="BroadcastPurpose.AnchorSweep"/>,
+/// NL-611: anyone may take anchors, so its inputs are often spent by someone else). Nothing about a channel's safety
+/// depends on those; abandoning one releases its wallet inputs. A commitment, penalty, HTLC transaction, sweep, claim, CPFP child or mutual close spends
 /// a channel output: it is never abandoned for refusals, however many, because an input that is merely not confirmed
 /// yet (a parent still in flight, evicted or reorged out) is refused as missing too, and giving up would lose funds.
 /// Those are given up only by the explicit rules of the component that proves a conflicting spend on chain (the
@@ -82,7 +83,7 @@ internal static class BroadcastRefusalRules
     /// <remarks>A <see cref="BroadcastPurpose.Splice"/> is treated as a funding, as it was while splices were saved as
     /// <see cref="BroadcastPurpose.Funding"/> (NL-626 changed only the label).</remarks>
     public static bool MayAbandon(BroadcastPurpose purpose) =>
-        IsFunding(purpose) || purpose is BroadcastPurpose.WalletSend;
+        IsFunding(purpose) || purpose is BroadcastPurpose.WalletSend or BroadcastPurpose.AnchorSweep;
 
     /// <summary>
     /// True when abandoning a transaction of this purpose releases its channel's wallet UTXO locks: a funding, the legacy

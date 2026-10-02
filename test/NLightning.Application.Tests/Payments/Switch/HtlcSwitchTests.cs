@@ -591,8 +591,8 @@ public class HtlcSwitchTests
         services.AddScoped(_ => _context.UnitOfWork.Object);
         var provider = services.BuildServiceProvider();
         var nodeOptions = new NodeOptions { EnableHtlcs = true };
-        if (advertiseAttribution)
-            nodeOptions.Features.OptionAttributionData = FeatureSupport.Optional;
+        // option_attribution_data is Optional by default (NL-332): turn it off explicitly for the legacy-path tests
+        nodeOptions.Features.OptionAttributionData = advertiseAttribution ? FeatureSupport.Optional : FeatureSupport.No;
         var options = Options.Create(nodeOptions);
         var onionProcessor = new IncomingOnionProcessor(new UnreadableOnionSphinx(),
                                                         new Mock<IHopPayloadSerializer>().Object,

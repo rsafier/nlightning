@@ -115,6 +115,15 @@ public class AccountingCloseDigestTests
             Digest(Header(), [Entry()], [Relief()], [(Lot() with { FiatCost = 9m }, 700L)], "{}"),
             Digest(Header(), [Entry()], [Relief()], [(Lot() with { BasisEstimated = true }, 700L)], "{}"),
             Digest(Header(), [Entry()], [Relief()], [(Lot(), 699L)], "{}"),
+            Digest(Header(), [Entry()], [Relief() with { Kind = AccountingLotReliefKind.Move }], [(Lot(), 700L)],
+                   "{}"),
+            Digest(Header(), [Entry()], [Relief() with { Kind = AccountingLotReliefKind.Settlement }],
+                   [(Lot(), 700L)], "{}"),
+            Digest(Header(), [Entry()], [Relief()], [(Lot() with { Bucket = AccountingLotBucket.Wallet }, 700L)], "{}"),
+            Digest(Header(), [Entry()], [Relief()], [(Lot() with { HeldSince = s_at.AddDays(-1) }, 700L)], "{}"),
+            Digest(Header(), [Entry()], [Relief()],
+                   [(Lot() with { Bucket = AccountingLotBucket.Clearing, Lender = AccountingLotBucket.Wallet }, 700L)],
+                   "{}"),
             Digest(Header(), [Entry()], [Relief()], [], "{}"),
             Digest(Header(), [Entry()], [Relief()], [(Lot(), 700L)], "{ }")
         };
@@ -127,19 +136,41 @@ public class AccountingCloseDigestTests
     [Fact]
     public void Given_AFieldALaterWriteMayChange_When_Digested_Then_TheDigestStays()
     {
-        // Arrange: the closed period's mark, a lot's current remaining amount and account, a padded decimal scale
+        // Arrange: the closed period's mark, a lot's current remaining amount, a padded decimal scale
         var baseline = Digest(Header(), [Entry()], [Relief()], [(Lot(), 700L)], "{}");
 
         // Act
         var marked = Digest(Header(), [Entry() with { ClosedPeriodId = "2026-09" }],
                             [Relief() with { ClosedPeriodId = "2026-09" }],
-                            [(Lot() with { ClosedPeriodId = "2026-09", RemainingMsat = 1, Account = AccountRole.Wallet },
+                            [(Lot() with { ClosedPeriodId = "2026-09", RemainingMsat = 1 },
                               700L)], "{}");
         var padded = Digest(Header(), [Entry(fiat: 1.20000000m)], [Relief()], [(Lot(), 700L)], "{}");
 
         // Assert
         Assert.Equal(baseline, marked);
         Assert.Equal(baseline, padded);
+    }
+
+    [Fact]
+    public void Given_ALotAndADisposalWithoutTheBucketFields_When_Digested_Then_TheirBytesKeepTheFirstLayout()
+    {
+        // Arrange - NL-657: closes made before lots were kept per bucket must still verify
+        var lot = Lot();
+        var relief = Relief();
+
+        // Act
+        var lotBytes = AccountingCloseDigest.GetLotBytes(lot, 700);
+        var bucketBytes = AccountingCloseDigest.GetLotBytes(lot with { Bucket = AccountingLotBucket.Wallet }, 700);
+        var reliefBytes = AccountingCloseDigest.GetReliefBytes(relief);
+        var moveBytes = AccountingCloseDigest.GetReliefBytes(relief with { Kind = AccountingLotReliefKind.Move });
+
+        // Assert: the first layout ends with the basis flag (a lot) or the proceeds (a relief); the new fields follow
+        // it, after a marker, only when set
+        Assert.Equal(0, lotBytes[^1]);
+        Assert.Equal(lotBytes, bucketBytes[..lotBytes.Length]);
+        Assert.Equal(2, bucketBytes[lotBytes.Length]);
+        Assert.Equal(reliefBytes, moveBytes[..reliefBytes.Length]);
+        Assert.Equal([2, (byte)AccountingLotReliefKind.Move], moveBytes[reliefBytes.Length..]);
     }
 
     [Fact]

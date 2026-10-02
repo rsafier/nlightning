@@ -27,6 +27,16 @@ public sealed class LightningMoney
 
     #region Constructors
 
+    /// <summary>
+    /// Zero, like <see cref="Zero"/>. It exists for the configuration binding source generator (NL-338), which can
+    /// only bind a type it can construct: without it every options class with a <see cref="LightningMoney"/> member
+    /// (such as <c>NodeOptions</c>) fails the generator with SYSLIB1100. Configuration cannot set an amount through it
+    /// (the type has no settable members).
+    /// </summary>
+    public LightningMoney() : this(0UL)
+    {
+    }
+
     public LightningMoney(ulong milliSatoshi)
     {
         _milliSatoshi = milliSatoshi;

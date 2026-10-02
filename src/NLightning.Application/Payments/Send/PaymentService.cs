@@ -2235,7 +2235,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
     /// <summary>
     /// The channels a circular payment may come back in through (NL-609): every usable channel (or only
     /// <paramref name="pin"/>) whose peer's <c>channel_update</c> we hold and that is not disabled, under the short
-    /// channel id the peer forwards over (its alias for an alias channel, as in our route hints), the one the peer can
+    /// channel id the peer forwards over (<see cref="InvoiceService.GetInboundShortChannelId"/>, as in our route hints, NL-742), the one the peer can
     /// send us the most first. None without the channel update service.
     /// </summary>
     private List<IncomingChannelCandidate> BuildIncomingCandidates(IEnumerable<ChannelModel> channels, ChannelId? pin)
@@ -2252,9 +2252,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
              || update is null || update.IsDisabled)
                 continue;
 
-            var shortChannelId = channel.ChannelParams.UseScidAlias > FeatureSupport.No
-                                     ? channel.RemoteAlias ?? default
-                                     : channel.ShortChannelId;
+            var shortChannelId = InvoiceService.GetInboundShortChannelId(channel);
             if (shortChannelId == default)
                 continue;
 

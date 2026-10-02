@@ -1,6 +1,7 @@
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NBitcoin;
@@ -46,8 +47,11 @@ internal sealed class ChainMonitorHarness : IAsyncDisposable
         set => _interceptor.Armed = value;
     }
 
-    public ChainMonitorHarness(uint tipHeight = 100)
+    private readonly ILogger<BlockchainMonitorService> _monitorLogger;
+
+    public ChainMonitorHarness(uint tipHeight = 100, ILogger<BlockchainMonitorService>? monitorLogger = null)
     {
+        _monitorLogger = monitorLogger ?? NullLogger<BlockchainMonitorService>.Instance;
         Chain = new FakeBitcoinChain(tipHeight);
         var services = new ServiceCollection();
         services.AddSingleton<IUtxoMemoryRepository, UtxoMemoryRepository>();
@@ -116,7 +120,7 @@ internal sealed class ChainMonitorHarness : IAsyncDisposable
             ZmqTxPort = _zmq.TxPort
         });
         var nodeOptions = Options.Create(new NodeOptions { BitcoinNetwork = "regtest" });
-        return new BlockchainMonitorService(bitcoinOptions, Chain, NullLogger<BlockchainMonitorService>.Instance,
+        return new BlockchainMonitorService(bitcoinOptions, Chain, _monitorLogger,
                                             nodeOptions, _services)
         {
             BlockRetryBaseDelay = TimeSpan.Zero,

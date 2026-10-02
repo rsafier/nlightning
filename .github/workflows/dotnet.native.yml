@@ -36,6 +36,11 @@ jobs:
       - name: Test
         run: dotnet test --no-build --configuration Release.Native --verbosity normal --logger trx --collect:"XPlat Code Coverage" --filter 'FullyQualifiedName!~Docker'
 
+      # NativeAOT (NL-338, CLAUDE.md "NativeAOT"): publish nltg and the client for linux-x64 and run them in a throwaway
+      # HOME (help, --check-config, --status, the refused node start of NL-708, the client without a node)
+      - name: NativeAOT publish and smoke
+        run: scripts/aot-smoke.sh --framework net10.0 --rid linux-x64
+
       - name: Combine Coverage Reports
         uses: danielpalme/ReportGenerator-GitHub-Action@5.2.4
         with:

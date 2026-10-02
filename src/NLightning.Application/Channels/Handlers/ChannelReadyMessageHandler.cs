@@ -107,11 +107,30 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
             channel.RemoteKeySet.UpdatePerCommitmentPoint(payload.SecondPerCommitmentPoint);
         }
 
+        // NL-717: the peer's alias (channel_ready short_channel_id) is kept whatever the channel type, the first one
+        // received: BOLT 2 lets the receiver use it and makes its sender always recognize it, and a peer can resolve an
+        // unannounced channel only by it (Eclair maps a private channel by its own alias, not the real short channel
+        // id), so our blinded paths name such a channel by it
+        var aliasLearned = false;
+        if (message.ShortChannelIdTlv is { } aliasTlv && channel.RemoteAlias is null)
+        {
+            channel.RemoteAlias = aliasTlv.ShortChannelId;
+            aliasLearned = true;
+        }
+
         switch (currentState)
         {
             case ChannelState.Open or ChannelState.ReadyForThem: // Handle ScidAlias
                 {
-                    if (mustUseScidAlias)
+                    if (aliasLearned)
+                    {
+                        if (_logger.IsEnabled(LogLevel.Debug))
+                            _logger.LogDebug("Stored remote alias {Alias} for channel {ChannelId}", channel.RemoteAlias,
+                                             payload.ChannelId);
+
+                        await PersistChannelAsync(channel);
+                    }
+                    else if (mustUseScidAlias)
                     {
                         if (ShouldReplaceAlias())
                         {

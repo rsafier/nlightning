@@ -181,6 +181,7 @@ public sealed class SecureKeyManagerTests : IDisposable
     [Theory]
     [InlineData("mainnet")] // NBitcoin names it "Main" in the file (NL-403)
     [InlineData("testnet")]
+    [InlineData("testnet4")]
     [InlineData("regtest")]
     [InlineData("signet")]
     public void Given_AKeyFileSavedOnANetwork_When_FromFilePathOnTheSameNetwork_Then_ItLoads(string networkName)
@@ -196,6 +197,22 @@ public sealed class SecureKeyManagerTests : IDisposable
         // Assert
         Assert.Equal(ExpectedNodePubKey(), (byte[])loaded.GetNodePubKey());
         Assert.Equal(7u, loaded.HeightOfBirth);
+    }
+
+    [Theory]
+    [InlineData("testnet", "testnet4")]
+    [InlineData("testnet4", "testnet")]
+    public void Given_ATestnetKeyFile_When_FromFilePathOnTheOtherTestnet_Then_Throws(string savedOn, string loadedOn)
+    {
+        // Arrange: testnet3 and testnet4 share key versions and addresses, but not the chain (NL-012)
+        using (var keyManager = new SecureKeyManager(s_privateKey.ToArray(), BitcoinNetwork.Resolve(savedOn), _filePath,
+                                                     7))
+            keyManager.SaveToFile(Password);
+
+        // Act / Assert
+        var exception = Assert.ThrowsAny<Exception>(() => SecureKeyManager.FromFilePath(_filePath,
+                                                             BitcoinNetwork.Resolve(loadedOn), Password));
+        Assert.Contains("Invalid network", exception.Message);
     }
 
     [Fact]

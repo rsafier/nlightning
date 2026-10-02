@@ -14,6 +14,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Gossip.Enums;
 using Domain.Gossip.Interfaces;
 using Domain.Money;
+using Infrastructure.Transport.Http;
 
 /// <summary>
 /// The Esplora funding txid source (BOLT 7 plan D12, pruned nodes): the index's answer is used only when it reaches
@@ -24,7 +25,7 @@ using Domain.Money;
 /// </summary>
 public class EsploraTxIdSourceTests
 {
-    private const string EsploraUrl = "http://esplora.test/api";
+    private const string EsploraUrl = "https://esplora.test/api";
     private const uint FundingHeight = 101;
     private const uint FundingIndex = 3;
     private const long FundingSatoshis = 1_000_000;
@@ -218,6 +219,36 @@ public class EsploraTxIdSourceTests
     }
 
     [Fact]
+    public async Task Given_AnIndexThatStallsTheBody_When_Lookup_Then_ItIsTransientWithinTheClientTimeout()
+    {
+        // Arrange (NL-732): the index sends its headers and then never ends the body; bitcoind cannot serve the block
+        _chain.PrunedHeights.Add(FundingHeight);
+        var stalling = new StallingBodyHttpHandler();
+        using var source = new EsploraTxIdSource(
+            _chain, new HttpClient(stalling) { Timeout = TimeSpan.FromMilliseconds(200) },
+            NullLogger<EsploraTxIdSource>.Instance,
+            Microsoft.Extensions.Options.Options.Create(new FundingTxIdSourceOptions
+            {
+                FundingTxIdSource = FundingTxIdSourceKind.Esplora,
+                EsploraUrl = EsploraUrl,
+                EsploraRequestsPerSecond = 100
+            }), null, ownsHttpClient: true);
+        using var lookup = CreateLookup(source);
+
+        // Act
+        var lookupTask = lookup.LookupAsync(FundingScid, TestContext.Current.CancellationToken);
+        var finished = await Task.WhenAny(lookupTask, Task.Delay(TimeSpan.FromSeconds(30),
+                                                                 TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Same(lookupTask, finished);
+        var result = await lookupTask;
+        Assert.Equal(FundingOutputStatus.ChainUnavailable, result.Status);
+        Assert.True(result.IsTransient);
+        Assert.True(stalling.BodyReadCancelled);
+    }
+
+    [Fact]
     public async Task Given_IndexForgingProofPosition_When_Lookup_Then_MerkleRootMismatchIsTransient()
     {
         // Arrange: the other tx at index 3 with its own branch but the claimed position 3
@@ -274,6 +305,71 @@ public class EsploraTxIdSourceTests
                       $"block/{_chain.Inner[FundingHeight].GetHash()}/txid/{FundingIndex}", "block-height/0"],
                      _esplora.Requests);
         Assert.False(source.Refused);
+    }
+
+    [Fact]
+    public async Task Given_ATxidListOverTheCap_When_Lookup_Then_TransientWithoutReadingItWhole()
+    {
+        // Arrange - NL-678: an answer past 4 MiB is no block's txid list
+        _esplora.Scripted.Enqueue(() => FakeEsploraHandler.Json(
+                                      "[\"" + new string('0', HttpResponseLimits.TxIdListMaxBytes) + "\"]"));
+        using var source = CreateSource();
+        using var lookup = CreateLookup(source);
+
+        // Act
+        var result = await lookup.LookupAsync(FundingScid, TestContext.Current.CancellationToken);
+
+        // Assert: unavailable (the index's fault, never the peer's), then the one-time chain check (NL-424)
+        Assert.Equal(FundingOutputStatus.ChainUnavailable, result.Status);
+        Assert.Equal([$"block/{_chain.Inner[FundingHeight].GetHash()}/txids", "block-height/0"], _esplora.Requests);
+        Assert.False(source.Refused);
+    }
+
+    [Fact]
+    public async Task Given_ASmallAnswerOverTheCap_When_Lookup_Then_Transient()
+    {
+        // Arrange - NL-678: the per-position txid answered with 64 KiB and more
+        _esplora.BlockTxIdsUnsupported = true;
+        _esplora.Scripted.Enqueue(() => FakeEsploraHandler.Json(
+                                      new string('a', HttpResponseLimits.SmallResponseMaxBytes + 1)));
+        using var source = CreateSource();
+        using var lookup = CreateLookup(source);
+
+        // Act
+        var result = await lookup.LookupAsync(FundingScid, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FundingOutputStatus.ChainUnavailable, result.Status);
+        Assert.False(source.Refused);
+    }
+
+    [Theory]
+    [InlineData("http://esplora.test/api", false, false)]
+    [InlineData("http://esplora.test/api", true, true)]
+    [InlineData("http://127.0.0.1:3002", false, true)]
+    [InlineData("http://explorerzydxu5ecjrkwceayqybizmpjjznk5izmitf2modhcusuqlid.onion/api", false, true)]
+    [InlineData("https://esplora.test/api", false, true)]
+    public void Given_AnEsploraUrl_When_Validated_Then_PlainHttpIsOnlyAcceptedLocallyOrWhenAllowed(string url,
+        bool allow, bool valid)
+    {
+        // Arrange - NL-678
+        var options = new FundingTxIdSourceOptions
+        {
+            FundingTxIdSource = FundingTxIdSourceKind.Esplora,
+            EsploraUrl = url,
+            EsploraAllowPlainHttp = allow
+        };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Equal(valid, errors.Count == 0);
+        if (!valid)
+        {
+            Assert.Contains("Gossip:EsploraAllowPlainHttp", Assert.Single(errors));
+            Assert.Throws<ArgumentException>(() => CreateSource(options: options));
+        }
     }
 
     [Fact]

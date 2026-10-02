@@ -64,6 +64,13 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
     /// <summary>The most rollbacks one call does before it gives up for the round (a guard against a loop).</summary>
     public const int MaxRollbacksPerCall = 20;
 
+    /// <summary>
+    /// How long the background rounds wait with a replay the back-valuation asked for while it is still catching up
+    /// over old unpriced history (NL-658): one replay at the end instead of one per valuation round. An explicit
+    /// <see cref="ProjectAsync"/> (a close, a rebuild, the reports) never waits.
+    /// </summary>
+    public static readonly TimeSpan MaxReplayDeferral = TimeSpan.FromHours(6);
+
     private readonly Lock _stateGate = new();
     private readonly SemaphoreSlim _roundGate = new(1, 1);
     private readonly ILogger<FinancialBooksProjector> _logger;
@@ -81,11 +88,19 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
     private readonly Counter<long> _failureCounter;
     private readonly Counter<long> _shortfallCounter;
 
+    private readonly Func<bool> _deferReplay;
     private Task? _loop;
     private bool _started;
     private bool _stopped;
     private string? _reportedFailureKey;
     private volatile string? _projectionError;
+
+    // The lot pool kept across rounds (NL-658), used again only while the saved lots still have its fingerprint;
+    // touched under the round gate only
+    private FinancialLotPool? _cachedPool;
+    private IReadOnlyList<AccountingLot>? _cachedImported;
+    private long _openLotLoads;
+    private DateTimeOffset? _replayDeferredSince;
 
     /// <param name="scopeFactory">The scopes of the pages.</param>
     /// <param name="logger">The logger.</param>
@@ -96,13 +111,17 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
     /// <param name="hasPriceSource">Whether a price source is registered (with a fetching source configured, an entry
     /// waits for the price of its own hour as the back-valuation does).</param>
     /// <param name="timeProvider">The clock.</param>
+    /// <param name="deferReplay">Whether the back-valuation is still catching up over old unpriced history: the
+    /// background rounds then wait with its replays, at most <see cref="MaxReplayDeferral"/> (NL-658); none = never
+    /// wait.</param>
     public FinancialBooksProjector(IServiceScopeFactory scopeFactory, ILogger<FinancialBooksProjector> logger,
                                    IOptions<AccountingOptions>? options = null,
                                    IOptions<AccountingPriceOptions>? priceOptions = null,
                                    Func<IAccountingAdjustmentSink?>? adjustmentSink = null, bool hasPriceSource = false,
-                                   TimeProvider? timeProvider = null)
+                                   TimeProvider? timeProvider = null, Func<bool>? deferReplay = null)
     {
         ArgumentNullException.ThrowIfNull(scopeFactory);
+        _deferReplay = deferReplay ?? (() => false);
         _scopeFactory = scopeFactory;
         _logger = logger;
         _options = options?.Value ?? new AccountingOptions();
@@ -153,6 +172,10 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
 
     /// <summary>The meter, for tests that assert the instruments.</summary>
     internal Meter Meter { get; }
+
+    /// <summary>How many times a round read every open lot from the database (NL-658: not when the pool kept from the
+    /// round before still has the saved lots' fingerprint).</summary>
+    internal long OpenLotLoads => Interlocked.Read(ref _openLotLoads);
 
     private IAccountingAdjustmentSink Sink => _sinkFactory() ?? NullAccountingAdjustmentSink.Instance;
 
@@ -213,7 +236,7 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
         await _roundGate.WaitAsync(cancellationToken);
         try
         {
-            return await ProjectCoreAsync(int.MaxValue, cancellationToken);
+            return await ProjectCoreAsync(int.MaxValue, false, cancellationToken);
         }
         finally
         {
@@ -229,6 +252,8 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
         await _roundGate.WaitAsync(cancellationToken);
         try
         {
+            // An exclusive action (a close, a rebuild, a lot import) may write lots: the kept pool is read again
+            InvalidateLots();
             return await action(cancellationToken);
         }
         finally
@@ -300,8 +325,23 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
 
     #region Projection
 
+    /// <summary>One background round (the loop's, and tests'): up to <see cref="MaxBatchesPerRound"/> pages, a replay
+    /// the back-valuation asked for while it is still catching up deferred (NL-658).</summary>
+    internal async Task<int> RunRoundAsync(CancellationToken cancellationToken)
+    {
+        await _roundGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await ProjectCoreAsync(MaxBatchesPerRound, true, cancellationToken);
+        }
+        finally
+        {
+            _roundGate.Release();
+        }
+    }
+
     /// <summary>Projects up to <paramref name="maxPages"/> pages; the caller holds the round gate.</summary>
-    private async Task<int> ProjectCoreAsync(int maxPages, CancellationToken cancellationToken)
+    private async Task<int> ProjectCoreAsync(int maxPages, bool mayDeferReplay, CancellationToken cancellationToken)
     {
         var sink = Sink;
         var total = 0;
@@ -323,6 +363,11 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             IReadOnlyList<AccountingEntry> operational = [];
             if (await books.GetLastOpenEntrySeqAsync(AccountingBook.Financial, cancellationToken) > cursor)
             {
+                // While the back-valuation catches up over old history it lowers the cursor every round: one replay
+                // at the end rather than one per valuation round (NL-658), at most MaxReplayDeferral
+                if (mayDeferReplay && DeferReplay())
+                    break;
+
                 rollbackTo = cursor + 1;
                 reason = "entries after the cursor were valued or reclassified";
             }
@@ -333,9 +378,9 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
                 if (operational.Count == 0)
                     break;
 
-                // The round's state only when there is something to project (an idle round reads no lot)
-                round ??= await FinancialProjectionRound.LoadAsync(unitOfWork, cursor, Method, Currency, sink,
-                                                                   cancellationToken);
+                // The round's state only when there is something to project (an idle round reads no lot); the pool
+                // kept from the round before when the saved lots still have its fingerprint (NL-658)
+                round ??= await LoadRoundAsync(unitOfWork, cursor, sink, cancellationToken);
                 if (round.RollbackTo is { } target)
                 {
                     rollbackTo = target;
@@ -353,6 +398,8 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
                 _rollbackCounter.Add(1);
                 _logger.LogDebug("The financial book projects again from ledger sequence {From}: {Reason}", from,
                                  reason);
+                _replayDeferredSince = null;
+                InvalidateLots();
                 round = null;
                 page--;
                 continue;
@@ -373,6 +420,7 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
                 await books.RollbackOpenEntriesAsync(AccountingBook.Financial, restart.FromLedgerSeq,
                                                      cancellationToken);
                 _rollbackCounter.Add(1);
+                InvalidateLots();
                 round = null;
                 page--;
                 continue;
@@ -392,6 +440,63 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
     }
 
     private int PageSize => Math.Max(1, _options.SealBatchSize);
+
+    /// <summary>The round's state: the pool kept from the round before when the saved open lots still have its
+    /// fingerprint (whatever happened since: a failed page, a write of another service), else every open lot read
+    /// again.</summary>
+    private async Task<FinancialProjectionRound> LoadRoundAsync(IUnitOfWork unitOfWork, long cursor,
+                                                                IAccountingAdjustmentSink sink,
+                                                                CancellationToken cancellationToken)
+    {
+        var lots = unitOfWork.AccountingLotDbRepository;
+        if (_cachedPool is { } pool && _cachedImported is { } imported && pool.Method == Method
+         && await lots.GetOpenLotsFingerprintAsync(cancellationToken) is { } saved && saved == pool.Fingerprint)
+        {
+            var kept = await FinancialProjectionRound.LoadAsync(unitOfWork, cursor, pool, imported, sink,
+                                                                cancellationToken);
+            return kept;
+        }
+
+        Interlocked.Increment(ref _openLotLoads);
+        var round = await FinancialProjectionRound.LoadAsync(unitOfWork, cursor, Method, Currency, sink,
+                                                             cancellationToken);
+        _cachedPool = round.Pool;
+        _cachedImported = round.ImportedLots;
+        return round;
+    }
+
+    private void InvalidateLots()
+    {
+        _cachedPool = null;
+        _cachedImported = null;
+    }
+
+    // Whether a background round waits with the replay the back-valuation asked for (it is catching up), at most
+    // MaxReplayDeferral from the first time it did
+    private bool DeferReplay()
+    {
+        bool catchingUp;
+        try
+        {
+            catchingUp = _deferReplay();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            catchingUp = false;
+        }
+
+        var now = _timeProvider.GetUtcNow();
+        if (!catchingUp)
+            return false;
+
+        _replayDeferredSince ??= now;
+        if (now - _replayDeferredSince.Value >= MaxReplayDeferral)
+            return false;
+
+        _logger.LogDebug("The financial book waits with its replay while the back-valuation catches up (since {Since:O})",
+                         _replayDeferredSince.Value);
+        return true;
+    }
 
     /// <summary>One page: projects and saves it (entries, lots, reliefs, cursor), or throws before saving.</summary>
     private async Task<int> ProjectPageAsync(IUnitOfWork unitOfWork, FinancialProjectionRound round,
@@ -466,6 +571,7 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
         var cancelled = false;
         IReadOnlyList<AccountingPosting>? fixedPostings = null;
         var fixedFlags = AccountingEntryFlags.None;
+        long? correctionOf = null;
 
         var reversedKey = operational.Kind == AccountingEventKind.Reversal
                        && accountingEvent.Details.TryGetValue(AccountingConfirmations.ReversesDetail, out var key)
@@ -482,10 +588,12 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             lines = [];
         }
         else if (reversedKey is not null
-              && await ClosedFactLinesAsync(books, reversedKey, cancellationToken) is { } closedLines)
+              && await ClosedFactLinesAsync(books, reversedKey, cancellationToken) is { } closed)
         {
-            // The reversal of a closed period's fact: its lines negated at their values, in the open period
-            lines = closedLines;
+            // The reversal of a closed period's fact: its lines negated at their values, in the open period; what it
+            // takes back of the fact's acquisition is a correction at cost (NL-675)
+            lines = closed.Lines;
+            correctionOf = closed.LedgerSeq;
             extraFlags |= AccountingEntryFlags.Adjustment;
             notes.Add($"reverses {reversedKey} of a closed period");
         }
@@ -506,19 +614,11 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             }
         }
 
-        if (operational.EventKey == AccountingEventKeys.Cutover() && round.HasImportedLots)
-        {
-            var (importLines, pending) = await ImportedBasisLinesAsync(page, cancellationToken);
-            fixedPostings = importLines;
-            fixedFlags = pending ? AccountingEntryFlags.GainPending : AccountingEntryFlags.None;
-            notes.Add("the imported lots' basis (D-A9)");
-        }
-
         // Plan the entry (or take the fixed lines)
         FinancialEntryPlan plan;
         if (fixedPostings is not null)
         {
-            plan = new FinancialEntryPlan(fixedPostings, fixedFlags, [], null);
+            plan = new FinancialEntryPlan(fixedPostings, fixedFlags, [], []);
         }
         else
         {
@@ -530,7 +630,8 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             {
                 IsOpeningBalance = operational.Kind == AccountingEventKind.OpeningBalance,
                 OpeningLotsImported = round.HasImportedLots,
-                Cancelled = cancelled
+                Cancelled = cancelled,
+                CorrectionOf = correctionOf
             }, round.Pool, _chart);
         }
 
@@ -584,12 +685,11 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             RuleId = ruleId
         };
         await books.AddEntryAsync(financial, cancellationToken);
-        if (operational.Kind == AccountingEventKind.OpeningBalance)
-            page.StagedOpenings.Add(financial);
         await ApplyLotsAsync(page, plan, operational.LedgerSeq, 0, operational.OccurredAt, cancellationToken);
     }
 
-    /// <summary>Stages the plan's reliefs and lot and keeps the pool in step.</summary>
+    /// <summary>Stages the plan's reliefs (disposals, moves, settlements) and new lots (acquisitions, moved parts,
+    /// debts) and keeps the pool in step.</summary>
     private static async Task ApplyLotsAsync(PageState page, FinancialEntryPlan plan, long ledgerSeq, int adjustment,
                                              DateTimeOffset at, CancellationToken cancellationToken)
     {
@@ -602,16 +702,24 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             var relieved = page.Round.Pool.Relieve(take.LotId, take.Msat);
             await lots.UpdateLotAsync(relieved, cancellationToken);
             lots.AddRelief(new AccountingLotRelief(0, take.LotId, ledgerSeq, adjustment, at, take.Msat, take.Cost,
-                                                   take.Proceeds, null));
+                                                   take.Proceeds, null)
+            {
+                Kind = take.Kind
+            });
         }
 
-        if (plan.NewLot is not { } spec)
-            return;
-
-        var lot = new AccountingLot(0, at, spec.Origin, ledgerSeq, adjustment, null, null, spec.Msat, spec.Msat,
-                                    spec.Cost, spec.Currency, spec.PriceId, spec.BasisEstimated, null);
-        var id = await lots.AddLotAsync(lot, cancellationToken);
-        page.Round.Pool.Add(lot with { Id = id });
+        foreach (var spec in plan.NewLots)
+        {
+            var lot = new AccountingLot(0, at, spec.Origin, ledgerSeq, adjustment, spec.Bucket, spec.ParentLotId,
+                                        spec.Msat, spec.Msat, spec.Cost, spec.Currency, spec.PriceId,
+                                        spec.BasisEstimated, null)
+            {
+                HeldSince = spec.HeldSince,
+                Lender = spec.Lender
+            };
+            var id = await lots.AddLotAsync(lot, cancellationToken);
+            page.Round.Pool.Add(lot with { Id = id });
+        }
     }
 
     /// <summary>
@@ -663,9 +771,9 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
         throw new RestartException(projected.LedgerSeq);
     }
 
-    /// <summary>The negated lines (at their values) of a closed period's fact, or null when the fact is not in a
-    /// closed period of the book.</summary>
-    private static async Task<IReadOnlyList<AccountingPosting>?> ClosedFactLinesAsync(
+    /// <summary>The negated lines (at their values) of a closed period's fact and its ledger sequence, or null when the
+    /// fact is not in a closed period of the book.</summary>
+    private static async Task<(IReadOnlyList<AccountingPosting> Lines, long LedgerSeq)?> ClosedFactLinesAsync(
         IAccountingBooksDbRepository books, string reversedKey, CancellationToken cancellationToken)
     {
         var entries = await books.GetEntriesByKeyAsync(AccountingBook.Financial, reversedKey, cancellationToken);
@@ -682,60 +790,12 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
                           .Where(s => s.Msat != 0)
                           .ToList();
         var valued = sums.All(s => s.Valued && s.Currency is not null);
-        return sums.Select(s => new AccountingPosting(s.Account, -s.Msat)
+        return (sums.Select(s => new AccountingPosting(s.Account, -s.Msat)
         {
             AccountName = s.AccountName,
             FiatAmount = valued ? -s.Fiat : null,
             FiatCurrency = valued ? s.Currency : null
-        }).ToList();
-    }
-
-    /// <summary>
-    /// The cutover marker's lines after a lot import: <c>assets:cost-basis</c> against the opening balances by the
-    /// imported cost less the opening balances' market value; pending when an opening balance or a lot is unvalued.
-    /// </summary>
-    private async Task<(IReadOnlyList<AccountingPosting> Lines, bool Pending)> ImportedBasisLinesAsync(
-        PageState page, CancellationToken cancellationToken)
-    {
-        var books = page.UnitOfWork.AccountingBooksDbRepository;
-        var openings = new List<AccountingEntry>(page.StagedOpenings);
-        var after = 0L;
-        while (true)
-        {
-            var saved = await books.ListEntriesAsync(new AccountingEntryQuery(after, 500,
-                                                                              Kinds: [AccountingEventKind.OpeningBalance])
-            {
-                Book = AccountingBook.Financial
-            }, cancellationToken);
-            openings.AddRange(saved.Where(e => e.Adjustment == 0));
-            if (saved.Count < 500)
-                break;
-
-            after = saved[^1].LedgerSeq;
-        }
-
-        var assetLines = openings.SelectMany(e => e.Postings).Where(p => FinancialLotRules.IsAsset(p.Account)
-                                                                      && p.AmountMsat != 0).ToList();
-        var lots = page.Round.ImportedLots;
-        if (assetLines.Any(p => p.FiatAmount is null || p.FiatCurrency != Currency)
-         || lots.Any(l => l.FiatCost is null || l.FiatCurrency != Currency))
-            return ([], true);
-
-        var difference = lots.Sum(l => l.FiatCost!.Value) - assetLines.Sum(p => p.FiatAmount!.Value);
-        if (difference == 0m)
-            return ([], false);
-
-        return (
-        [
-            new AccountingPosting(AccountRole.Opening, 0)
-            {
-                AccountName = _chart[FinancialAccount.CostBasis], FiatAmount = difference, FiatCurrency = Currency
-            },
-            new AccountingPosting(AccountRole.Opening, 0)
-            {
-                AccountName = _chart[FinancialAccount.Opening], FiatAmount = -difference, FiatCurrency = Currency
-            }
-        ], false);
+        }).ToList(), entries[0].LedgerSeq);
     }
 
     private static AccountingPosting Negate(AccountingPosting posting) =>
@@ -780,15 +840,7 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
         {
             try
             {
-                await _roundGate.WaitAsync(token);
-                try
-                {
-                    await ProjectCoreAsync(MaxBatchesPerRound, token);
-                }
-                finally
-                {
-                    _roundGate.Release();
-                }
+                await RunRoundAsync(token);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -906,7 +958,6 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
         public ClassificationEngine Engine { get; } = engine;
         public IReadOnlyDictionary<string, AccountingOverride> Overrides { get; } = overrides;
         public FinancialPriceWindow Prices { get; } = prices;
-        public List<AccountingEntry> StagedOpenings { get; } = [];
     }
 
     /// <summary>A page found a fact projected before its reversal: roll back to it and start again.</summary>

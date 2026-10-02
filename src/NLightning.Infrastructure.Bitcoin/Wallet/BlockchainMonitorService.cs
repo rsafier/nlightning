@@ -73,10 +73,14 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _newBlockSemaphore = new(1, 1);
     private readonly SemaphoreSlim _blockBacklogSemaphore = new(1, 1);
+    private readonly SemaphoreSlim _walletLoadSemaphore = new(1, 1);
     private readonly ConcurrentDictionary<uint256, WatchedTransactionModel> _watchedTransactions = new();
     private readonly ConcurrentDictionary<string, WalletAddressModel> _watchedAddresses = new();
     private readonly ConcurrentDictionary<OutPoint, ChannelId> _watchedOutpoints = new();
     private readonly ConcurrentDictionary<uint256, BroadcastTransactionModel> _pendingBroadcasts = new();
+
+    // NL-606: the earlier members of each pending RBF replacement's chain (the rows it replaced), by the head's txid
+    private readonly ConcurrentDictionary<uint256, IReadOnlyList<uint256>> _replacementChains = new();
     private readonly ConcurrentDictionary<uint256, int> _refusals = new();
     private readonly ConcurrentDictionary<uint256, int> _permanentRefusals = new();
     private readonly SortedDictionary<uint, BlockHeaderModel> _headers = new();
@@ -93,6 +97,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     private Task? _mempoolTask;
     private uint _lastProcessedBlockHeight;
     private uint _catchUpHeight;
+    private bool _walletLoaded;
+    private BlockchainState? _loadedState;
+    private IReadOnlyList<BroadcastTransactionModel>? _loadedPendingBroadcasts;
     private SubscriberSocket? _blockSocket;
     private SubscriberSocket? _txSocket;
 
@@ -165,22 +172,65 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
     }
 
+    /// <inheritdoc />
+    public async Task LoadWalletAsync(CancellationToken cancellationToken = default)
+    {
+        await _walletLoadSemaphore.WaitAsync(cancellationToken);
+        try
+        {
+            if (_walletLoaded)
+                return;
+
+            using var scope = _serviceProvider.CreateScope();
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            await LoadPendingWatchedTransactionsAsync(uow);
+            LoadBitcoinAddresses(uow);
+            var endedReservations = await LoadUtxoSetAsync(uow);
+
+            // The channel locks are restored from the pending funding broadcasts (NL-462)
+            var pendingBroadcasts = await uow.BroadcastTransactionDbRepository.GetPendingAsync();
+            await RestoreChannelUtxoLocksAsync(uow, pendingBroadcasts);
+
+            // The last processed height, so what runs before the start (the peers' first messages, the retired SCID
+            // map) does not see height 0. Only block processing changes the state, so StartAsync uses this read (or
+            // creates the state at the height of birth)
+            var state = await uow.BlockchainStateDbRepository.GetStateAsync();
+            if (state is not null)
+                _lastProcessedBlockHeight = state.LastProcessedHeight;
+
+            // The fee input reservations whose inputs are all spent are deleted in their own save
+            if (endedReservations)
+                await uow.SaveChangesAsync();
+
+            _loadedState = state;
+            _loadedPendingBroadcasts = pendingBroadcasts;
+            _walletLoaded = true;
+        }
+        finally
+        {
+            _walletLoadSemaphore.Release();
+        }
+    }
+
     public async Task StartAsync(uint heightOfBirth, CancellationToken cancellationToken)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // The host loads the wallet before the peers connect (NL-600); a host that did not gets it loaded here
+        var loadedByHost = _walletLoaded;
+        await LoadWalletAsync(cancellationToken);
 
         using (var scope = _serviceProvider.CreateScope())
         {
             using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-            await LoadPendingWatchedTransactionsAsync(uow);
-            LoadBitcoinAddresses(uow);
-            await LoadUtxoSetAsync(uow);
-
-            // Read once: the channel locks are restored from the funding ones (NL-462), and every still pending one is
-            // sent again after the start
-            var pendingBroadcasts = await uow.BroadcastTransactionDbRepository.GetPendingAsync();
-            await RestoreChannelUtxoLocksAsync(uow, pendingBroadcasts);
+            // Every still pending broadcast is sent again after the start: read again when the host loaded the wallet
+            // earlier (the peers may have stored some since)
+            var pendingBroadcasts = loadedByHost || _loadedPendingBroadcasts is null
+                                        ? await uow.BroadcastTransactionDbRepository.GetPendingAsync()
+                                        : _loadedPendingBroadcasts;
+            _loadedPendingBroadcasts = null;
 
             // Every channel past funding_created that is not closed gets its funding output watched (backfill for
             // channels stored before the watch existed, or whose watch was never saved)
@@ -189,8 +239,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 _logger.LogInformation("Watching the funding outputs of {Count} channels that had no watch",
                                        backfilled.Count);
 
-            // Get the current state or create a new one if it doesn't exist
-            var currentBlockchainState = await uow.BlockchainStateDbRepository.GetStateAsync();
+            // The current state (read by the wallet load; only block processing changes it) or a new one
+            var currentBlockchainState = _loadedState;
+            _loadedState = null;
             if (currentBlockchainState is null)
             {
                 _logger.LogInformation("No blockchain state found, starting from height {Height}", heightOfBirth);
@@ -268,6 +319,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             throw new InvalidOperationException("Service is not running");
 
         await _cts.CancelAsync();
+
+        // A later start on this instance loads the wallet again, as a new process does
+        _walletLoaded = false;
 
         foreach (var task in new[] { _monitoringTask, _mempoolTask })
         {
@@ -935,6 +989,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                                        new BlockHeaderModel(height, blockHash,
                                                             new Hash(block.Header.HashPrevBlock.ToBytes())));
         var transactions = block.Transactions;
+        Dictionary<uint256, uint256>? replacedMembers = null;
 
         if (_logger.IsEnabled(LogLevel.Debug))
             _logger.LogDebug("Processing block {Height} with {TxCount} transactions", height, transactions.Count);
@@ -966,13 +1021,27 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
 
             if (_pendingBroadcasts.ContainsKey(txId))
             {
-                // The stored row as it was before this block (the accounting feed records a confirmation once, NL-602)
+                // The stored row as it was before this block (the accounting feed records a confirmation once, NL-602).
+                // NL-606: the block decides, not the row's state: a row another component marked Replaced or
+                // Abandoned after this memory copy was taken confirmed all the same
                 var stored = await TryGetBroadcastForAccountingAsync(uow, new TxId(txId.ToBytes()));
                 await uow.BroadcastTransactionDbRepository.MarkConfirmedAsync(new TxId(txId.ToBytes()), height,
                                                                                blockHash);
                 effects.ConfirmedBroadcasts.Add(txId);
-                if (stored is { State: BroadcastState.Pending })
+                if (stored is not null && stored.State != BroadcastState.Confirmed)
                     await CollectBroadcastConfirmedAsync(uow, stored, transactions[index], effects);
+
+                // A transaction a pending RBF replacement replaced, still in memory: that replacement is now void
+                replacedMembers ??= await GetReplacedChainMembersAsync(uow);
+                if (replacedMembers.TryGetValue(txId, out var voided) && voided != txId)
+                    await StageReplacementVoidedAsync(uow, voided, txId, effects);
+            }
+            else
+            {
+                replacedMembers ??= await GetReplacedChainMembersAsync(uow);
+                if (replacedMembers.TryGetValue(txId, out var head))
+                    await StageReplacedMemberConfirmedAsync(uow, txId, head, transactions[index], height, blockHash,
+                                                            effects);
             }
         }
 
@@ -1473,6 +1542,99 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     }
 
     /// <summary>
+    /// The earlier members of every pending RBF replacement's chain (NL-606): each row a pending broadcast replaced,
+    /// followed back through <see cref="BroadcastTransactionModel.ReplacesTransactionId"/>, mapped to the pending head;
+    /// splice and funding attempts are left out (siblings kept Pending until the lock, NL-736).
+    /// A chain is read once per head and kept while the head is pending; a failed read is logged and retried at the next
+    /// block.
+    /// </summary>
+    private async Task<Dictionary<uint256, uint256>> GetReplacedChainMembersAsync(IUnitOfWork uow)
+    {
+        var members = new Dictionary<uint256, uint256>();
+        foreach (var headId in _replacementChains.Keys)
+            if (!_pendingBroadcasts.ContainsKey(headId))
+                _replacementChains.TryRemove(headId, out _);
+
+        foreach (var (headId, head) in _pendingBroadcasts)
+        {
+            // A splice RBF (or funding) attempt names the attempt it bumps but keeps it Pending on purpose (wave SPR):
+            // every attempt is sent until the splice lock abandons the losers, so a confirmed sibling never voids it
+            // (NL-736: voided, a reorg of the sibling's block left the splice without an attempt to send)
+            if (head.ReplacesTransactionId is null
+             || head.Purpose is BroadcastPurpose.Splice or BroadcastPurpose.Funding)
+                continue;
+
+            if (!_replacementChains.TryGetValue(headId, out var chain))
+            {
+                try
+                {
+                    var read = new List<uint256>();
+                    var replaces = head.ReplacesTransactionId;
+                    for (var steps = 0; replaces is { } earlier && steps < MaxReplacementChainLength; steps++)
+                    {
+                        var member = new uint256(earlier);
+                        if (member == headId || read.Contains(member))
+                            break;
+
+                        read.Add(member);
+                        replaces = (await uow.BroadcastTransactionDbRepository.GetByTransactionIdAsync(earlier))
+                           ?.ReplacesTransactionId;
+                    }
+
+                    chain = read;
+                    _replacementChains[headId] = chain;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Cannot read the replaced transactions of {TxId}", headId);
+                    continue;
+                }
+            }
+
+            foreach (var member in chain)
+                members.TryAdd(member, headId);
+        }
+
+        return members;
+    }
+
+    /// <summary>
+    /// A transaction our pending RBF replacement <paramref name="headId"/> replaced confirmed instead of it (NL-606): its
+    /// row is marked <see cref="BroadcastState.Confirmed"/> (the block decides, whatever the row's state), the pending
+    /// head <see cref="BroadcastState.Replaced"/> (it can never confirm now) and forgotten after the save, and the
+    /// confirmation is recorded in the accounting feed like any confirmed broadcast's.
+    /// </summary>
+    private async Task StageReplacedMemberConfirmedAsync(IUnitOfWork uow, uint256 txId, uint256 headId,
+                                                         Transaction transaction, uint height, Hash blockHash,
+                                                         BlockEffects effects)
+    {
+        var memberTxId = new TxId(txId.ToBytes());
+        var stored = await TryGetBroadcastForAccountingAsync(uow, memberTxId);
+        if (stored is null || stored.State == BroadcastState.Confirmed)
+            return;
+
+        await uow.BroadcastTransactionDbRepository.MarkConfirmedAsync(memberTxId, height, blockHash);
+        effects.ConfirmedReplacedMembers[txId] = stored;
+        await CollectBroadcastConfirmedAsync(uow, stored, transaction, effects);
+        await StageReplacementVoidedAsync(uow, headId, txId, effects);
+    }
+
+    /// <summary>
+    /// The pending RBF replacement <paramref name="headId"/> can never confirm: <paramref name="confirmedId"/>, a
+    /// transaction it replaced, confirmed (NL-606). Its row is marked <see cref="BroadcastState.Replaced"/> and it is
+    /// forgotten after the block's save.
+    /// </summary>
+    private async Task StageReplacementVoidedAsync(IUnitOfWork uow, uint256 headId, uint256 confirmedId,
+                                                   BlockEffects effects)
+    {
+        await uow.BroadcastTransactionDbRepository.MarkReplacedAsync(new TxId(headId.ToBytes()));
+        effects.ConfirmedBroadcasts.Add(headId);
+
+        _logger.LogInformation("Transaction {TxId} confirmed instead of its RBF replacement {HeadId}, which is no "
+                             + "longer broadcast", confirmedId, headId);
+    }
+
+    /// <summary>
     /// Forgets the in-memory pending broadcasts whose stored row another component moved out of
     /// <see cref="BroadcastState.Pending"/> (the sweep scheduler's <see cref="BroadcastState.Replaced"/>, the watcher's
     /// or scheduler's <see cref="BroadcastState.Abandoned"/>): they are never sent again. A transaction without a row is
@@ -1777,7 +1939,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         }
     }
 
-    private async Task LoadUtxoSetAsync(IUnitOfWork uow)
+    /// <returns>True when reservations whose inputs are all spent were deleted (staged; the caller saves).</returns>
+    private async Task<bool> LoadUtxoSetAsync(IUnitOfWork uow)
     {
         _logger.LogInformation("Loading Utxo set");
 
@@ -1810,6 +1973,8 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             GetUtxoMemoryRepository().LoadFeeReservations(reserved);
             _logger.LogInformation("Restored {Count} reserved fee input(s)", reserved.Count);
         }
+
+        return ended.Count > 0;
 
         IUtxoMemoryRepository GetUtxoMemoryRepository() =>
             _serviceProvider.GetService<IUtxoMemoryRepository>()
@@ -1871,6 +2036,10 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         public List<WatchedTransactionModel> Confirmed { get; } = [];
         public List<WatchedOutpointModel> NewOutpoints { get; } = [];
         public List<uint256> ConfirmedBroadcasts { get; } = [];
+
+        /// <summary>The stored rows of the replaced RBF chain members this block holds (NL-606), by txid: a wallet
+        /// movement of one of them comes from our broadcast.</summary>
+        public Dictionary<uint256, BroadcastTransactionModel> ConfirmedReplacedMembers { get; } = [];
         public List<WalletMovementEventArgs> Movements { get; } = [];
         public List<OutpointSpentEventArgs> Spends { get; } = [];
 

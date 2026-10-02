@@ -149,7 +149,12 @@ public sealed class AccountingFinancialReportPrinter
                                             Amount(lots.BasisEstimatedMsat)));
         foreach (var lot in lots.Lots)
         {
-            _output.WriteLine(string.Format(s_inv, "  #{0} {1} {2}{3}: {4} of {5}, cost {6}{7}", lot.Id,
+            // The bucket and, for a part moved from another lot, when its sats were acquired (NL-657)
+            var held = (lot.Account is { } bucket ? " in " + bucket : string.Empty)
+                     + (lot.HeldSinceUnixMilliseconds is { } since
+                            ? " (held since " + Time(since) + ")"
+                            : string.Empty);
+            _output.WriteLine(string.Format(s_inv, "  #{0} {1} {2}{3}{8}: {4} of {5}, cost {6}{7}", lot.Id,
                                             Time(lot.AcquiredAtUnixMilliseconds), lot.Origin,
                                             lot.BasisEstimated ? " (estimated)" : string.Empty,
                                             Amount(lot.RemainingMsat), Amount(lot.OriginalMsat),
@@ -158,7 +163,7 @@ public sealed class AccountingFinancialReportPrinter
                                                 ? string.Empty
                                                 : string.Format(s_inv, ", value {0}, gain {1}",
                                                                 Fiat(report, lot.MarketValue),
-                                                                Fiat(report, lot.UnrealizedGain))));
+                                                                Fiat(report, lot.UnrealizedGain)), held));
         }
 
         if (lots.HasMore)

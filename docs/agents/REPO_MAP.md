@@ -70,8 +70,7 @@ Baseline observed on macOS arm64 with SDK 10.0.103 (`wip/fafo` @ `1a38360`):
 | `src/NLightning.Application` | net10.0 | 1.0.0 | `PeerManager`, `ChannelManager`, BOLT 2 v1 open handlers, `MessageFactory` |
 | `src/NLightning.Bolt11` | net10.0 | 5.0.0 | BOLT 11 invoice library (only test projects consume it) |
 | `src/NLightning.Daemon` | net10.0 | 0.0.1 | Executable host and composition root, IPC server |
-| `src/NLightning.Daemon.Contracts` | **net9.0** | — | Paths, CLI parsing helpers, `IControlClient` (unused) |
-| `src/NLightning.Daemon.Plugins` | **net9.0** | — | Plugin API (`IDaemonPlugin`, `IDaemonContext`), not wired up |
+| `src/NLightning.Daemon.Contracts` | **net9.0** | — | Paths, CLI parsing helpers (`IControlClient` deleted, NL-151) |
 | `src/NLightning.Transport.Ipc` | net10.0 | — | IPC envelope, DTOs, MessagePack formatters |
 | `src/NLightning.Client` | net10.0 | — | CLI (`nltg` per the usage text; the assembly is `NLightning.Client`) |
 
@@ -91,7 +90,6 @@ graph TD
   App[NLightning.Application]
   B11[NLightning.Bolt11]
   Contracts["NLightning.Daemon.Contracts (net9)"]
-  Plugins["NLightning.Daemon.Plugins (net9)"]
   Ipc[NLightning.Transport.Ipc]
   Client[NLightning.Client]
   Daemon[NLightning.Daemon]
@@ -111,7 +109,6 @@ graph TD
   App --> Btc
   B11 --> Infra
   B11 --> Btc
-  Plugins --> Contracts
   Ipc --> Contracts
   Ipc --> Domain
   Client --> Contracts
@@ -119,7 +116,6 @@ graph TD
   Client --> Domain
   Daemon --> App
   Daemon --> Client
-  Daemon --> Plugins
   Daemon --> Repo
   Daemon --> Btc
   Daemon --> PPg
@@ -150,7 +146,7 @@ graph TD
 | `AddNltgNodeServices` (Daemon) | `NodeServiceExtensions.cs` | All of the above, plus `IConfiguration`, the `ISecureKeyManager` instance, `FeeService` (HttpClient), options, client handlers, IPC router and command handlers. Used by `ConfigureNltgServices` and by the Docker tests (`NLightningTestNode`) |
 | Daemon host only | `NodeServiceExtensions.ConfigureNltgServices` | `NltgDaemonService`, `NamedPipeIpcService`, `CookieFileAuthenticator` (need `configPath`) |
 
-Not registered anywhere: `DustService`, `PluginLoaderService`, `RevocationWatchDbRepository`. Individual `*DbRepository` classes are also not registered; reach them only through `IUnitOfWork`.
+Not registered anywhere: `DustService`, `RevocationWatchDbRepository` (`PluginLoaderService` was deleted, NL-151). Individual `*DbRepository` classes are also not registered; reach them only through `IUnitOfWork`.
 
 ---
 
@@ -164,14 +160,14 @@ Not registered anywhere: `DustService`, `PluginLoaderService`, `RevocationWatchD
 
 | Folder | Contents / key types |
 |---|---|
-| `Protocol/Constants` | `MessageTypes` (ushort enum). `TlvConstants` (flat class; values **collide across messages**: 0 = UpfrontShutdownScript/BlindedPath/FundingOutputContribution, 1 = Networks/ChannelType/FeeRange/ShortChannelId/NextFunding/QueryFlags/QueryOption/ReplyChannelRangeTimestamps, 2 = RequireConfirmedInputs, 3 = RemoteAddress/ReplyChannelRangeChecksums). `ChainConstants` (main/testnet/regtest; **no signet/testnet4**, NL-012). `InteractiveTransactionConstants`, `NetworkConstants` |
+| `Protocol/Constants` | `MessageTypes` (ushort enum). `TlvConstants` (flat class; values **collide across messages**: 0 = UpfrontShutdownScript/BlindedPath/FundingOutputContribution, 1 = Networks/ChannelType/FeeRange/ShortChannelId/NextFunding/QueryFlags/QueryOption/ReplyChannelRangeTimestamps, 2 = RequireConfirmedInputs, 3 = RemoteAddress/ReplyChannelRangeChecksums). `ChainConstants` (main/testnet/testnet4/regtest/signet; NL-012). `InteractiveTransactionConstants`, `NetworkConstants` |
 | `Protocol/Messages` | `BaseMessage`, `BaseChannelMessage`, plus sealed messages for BOLT 1 (Init, Error, Warning, Ping, Pong), BOLT 2 (Stfu, OpenChannel1/2, AcceptChannel1/2, FundingCreated/Signed, ChannelReady, Shutdown, ClosingSigned, Tx*, UpdateAddHtlc, UpdateFulfill/Fail/FailMalformedHtlc, CommitmentSigned, RevokeAndAck, UpdateFee, ChannelReestablish) and BOLT 7 (typed ChannelAnnouncement/NodeAnnouncement with Domain codecs on their payloads, ChannelUpdate, AnnouncementSignatures as a `BaseChannelMessage` (gossip wave G-A; `GossipMessage`/`GossipPayload` are gone); typed QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd, GossipTimestampFilter) |
 | `Protocol/Payloads` | One `*Payload` per message. `ErrorPayload` is shared with Warning. `PlaceholderPayload` is internal and its `ChannelId` throws |
 | `Protocol/Tlv` | `BaseTlv` plus `BlindedPathTlv`, `ChannelTypeTlv`, `FeeRangeTlv`, `FundingOutputContributionTlv`, `NetworksTlv` (file `NetworksTLV.cs`), `NextFundingTlv`, `RemoteAddressTlv`, `RequireConfirmedInputsTlv` (file `RequireConfirmedInputsTLV.cs`), `ShortChannelIdTlv`, `UpfrontShutdownScriptTlv` |
 | `Protocol/Models` | `TlvStream` (file `TLVStream.cs`; SortedDictionary, rejects duplicates, no even/odd rule). `CommitmentNumber` (BOLT 3 obscuring, locktime/sequence) |
 | `Protocol/ValueObjects` | `BigSize`, `ChainHash`, `BitcoinNetwork` |
 | `Protocol/Interfaces` | `IMessage`, `IChannelMessage`, `IMessageFactory`, `IMessageService(+Factory)`, `IPingPongService`, `ITlvConverter(+Factory)`, `ITransportServiceFactory`. The same folder also holds non-wire services: `IKeyDerivationService`, `ICommitmentKeyDerivationService`, `ISecureKeyManager`, `ISecretStorageService(+Factory)`, `IChannelKeySetFactory`, `IChannelIdFactory`, `IDustService` |
-| `Protocol/Enums` | `BasepointType`, `HtlcType` (unused) |
+| `Protocol/Enums` | `BasepointType` (`HtlcType` deleted, NL-151) |
 | `Channels` | `ChannelModel` (aggregate). `ChannelState` (the numeric order **is** the state machine: None 0, V1Opening 1, V1FundingCreated 2, V1FundingSigned 3, V2Opening 10, ReadyForThem 20, ReadyForUs 21, Open 22, Closing 30, Failed 35, Closed 40, Stale 50). `ChannelKeySetModel`, `ChannelFactory`, `ChannelOpenValidator`, `ChannelParams` (`Local`/`Remote` `ChannelParty`, NL-194), `ChannelId`, `ShortChannelId`, `Htlc`, `HtlcState`, `HtlcDirection`, `CommitmentKeys`. `Commitments/` is the BOLT 2 engine (`ChannelCommitments`, events in `Commitments/Events`, engine ports in `Commitments/Interfaces`). Repository ports: `IChannelMemoryRepository`, `IChannelDbRepository`, `IChannelStateDbRepository` (engine snapshot, one save per transition; `IHtlcDbRepository` was removed in N5), and others. `IHtlcSwitch`, `IChannelOperations` (contracts, ABCD W0). `Domain/Payments/` holds invoice/payment/forward-circuit models, their repository/service ports, `IForwardingPolicy` and `ForwardingFee` (contracts only) |
 | `Bitcoin` | Value objects (`TxId`, `BitcoinScript`, `Witness`, `SignedTransaction`, `BlockchainState`, ...). Ports: `ILightningSigner`, `IFeeService`, `IUtxoMemoryRepository`, DB repositories, `ISignatureValidator` (unused). `Transactions/`: `CommitmentTransactionModelFactory`, `FundingTransactionModelFactory`, the `*Model` classes, `*OutputInfo`, and `WeightConstants`/`TransactionConstants`. `PenaltyTransactionModel` is empty |
 | `Money` | `LightningMoney` (msat, **mutable reference class**; implicit `long/ulong` means **msat**) |
@@ -218,7 +214,7 @@ Not registered anywhere: `DustService`, `PluginLoaderService`, `RevocationWatchD
 | Crypto | `Crypto/Functions/Ecdh.cs` (`IEcdh` = SHA256(compressed(k*P)), which is the BOLT 4 shared-secret definition), `Crypto/Contexts/NLightningCryptoContext.cs`, `Crypto/Hashes/Ripemd160.cs` |
 | Wallet/chain | `Wallet/BitcoinChainService.cs` (RPC; its constructor makes a **blocking** RPC call), `Wallet/BitcoinWalletService.cs`, `Wallet/BlockchainMonitorService.cs` (ZMQ `rawblock`) |
 | Other | `Services/FeeService.cs`, `DustService.cs`. `InteractiveTx/{PrevTxInspector,InteractiveTxBuilder}` (wave qit; the old `InteractiveTransactionService` is deleted). `Encoders/Bech32Encoder.cs` (internal, used by Bolt11). `Options/{BitcoinOptions,FeeEstimationOptions}.cs` |
-| Dead code | `Transactions/*` (commented out; `PenaltyTransaction` is empty). `Adapters/OutputAdapters/*` (interfaces with no implementations) |
+| Dead code | `Transactions/*` (commented out; `PenaltyTransaction` is empty). `Adapters/OutputAdapters/*` deleted (NL-151) |
 
 **Tests:** `test/NLightning.Infrastructure.Bitcoin.Tests` (247 tests: builders, outputs, signer, onion, blockchain monitor, interactive-tx inspector and builder). BOLT 3 vectors are in `test/NLightning.Integration.Tests/BOLT3/Bolt3IntegrationTests.cs`.
 
@@ -278,7 +274,7 @@ Not registered anywhere: `DustService`, `PluginLoaderService`, `RevocationWatchD
 
 **Tests:** `test/NLightning.Application.Tests` (78: the five open handlers, ChannelReady, FundingConfirmed, ChannelManager, PeerManager).
 
-### 3.7 NLightning.Daemon / Daemon.Contracts / Daemon.Plugins
+### 3.7 NLightning.Daemon / Daemon.Contracts
 
 - `src/NLightning.Daemon/Program.cs`: top-level statements. Order: config, the `--stop`/`--status`/`--help` commands, password, key create/load (`SecureKeyManager`), daemonize, then the host with Serilog, migrations (only if `Database:RunMigrations=true`), then run.
 - `Extensions/NodeConfigurationExtensions.cs`: config path defaults to `~/.nltg/{network}/appsettings.json`. Precedence is JSON < env `NLTG_*` < CLI. It also holds the default config template.
@@ -288,9 +284,8 @@ Not registered anywhere: `DustService`, `PluginLoaderService`, `RevocationWatchD
   - `Services/Ipc/{NamedPipeIpcService,IpcFraming,IpcRouting,CookieFileAuthenticator}.cs`
   - `Ipc/Handlers/*IpcHandler.cs` (one per `ClientCommand`)
   - `Handlers/OpenChannelClientHandler.cs` and `OpenChannelClientSubscriptionHandler.cs` (scoped business flows)
-- `Utilities/DaemonUtils.cs` handles daemonization and the PID file. `Services/PluginLoaderService.cs` is **not registered**.
+- `Utilities/DaemonUtils.cs` handles daemonization and the PID file. The plugin loader stub (`PluginLoaderService`, the `NLightning.Daemon.Plugins` project) is deleted: no runtime plugin loading (NL-151).
 - `src/NLightning.Daemon.Contracts`: `NodeConstants` (nltg.key.json, nltg.pid, nltg.ipc, nltg.cookie), `NodeUtils`, `CommandLineHelper` (shared with the client; has bugs, see §10).
-- `src/NLightning.Daemon.Plugins`: API only.
 
 **Tests:** `test/NLightning.Daemon.Tests` (109: open-channel client/IPC handlers, FeeService, CLI and daemon argument parsing, password handling, IPC formatters and `NamedPipeIpcService`).
 
@@ -409,11 +404,11 @@ An inbound `update_add_htlc`, `commitment_signed`, `revoke_and_ack`, `shutdown`,
 | 1 messaging | Mostly done | init/error/warning/ping/pong (`Domain/Protocol/Messages`, `Infrastructure/Node/Services/*`). Canonical BigSize, strict TLV streams on every message. Gaps: remote_addr TLV not sent and its converter is buggy (NL-008, NL-009), no ping rate limit (NL-005), no peer_storage (NL-010) |
 | 2 peer protocol | Mostly done | v1 open, HTLC normal operation (N6), channel_reestablish (N7), N9 safety, legacy close (N10) and `option_simple_close` (N11, ABCD wave 6) are handled in `src/NLightning.Application/Channels/` and proven against LND (Docker `NormalOperationFlowTests`, `ReestablishFlowTests`, `CooperativeCloseFlowTests`) and CLN. v2/interactive-tx (NL-037), splicing and quiescence are not handled. See `BOLT_COVERAGE.md` and `BOLT2_NORMAL_OPERATION_PLAN.md` |
 | 3 transactions | Done | Funding, commitment, HTLC-success/timeout, closing (legacy and simple) and sweep/penalty txs, every Appendix C/F vector byte-exact. Anchors on chain: BOLT 5 O7-T1..T3 done in wave O7, O7-T4 in wave O7b (`option_anchors` Optional by default) |
-| 4 onion | **Mostly done (M1-M4, M3b)** | Sphinx construct/peel (`src/NLightning.Infrastructure.Bitcoin/Onion/`), hop payloads, legacy error onions, `HtlcSwitch` (forward, final hop with basic_mpp sets) and `PaymentService` (retries, fee limit, MPP send) in `src/NLightning.Application/Payments/`, persistent replay set `PersistentOnionReplayStore` (NL-078) pruned on every block by `OnionReplayBlockPruner` (NL-327). attribution_data is persisted and used by the switch and `PaymentService` when `OptionAttributionData` is advertised (NL-326; the feature stays experimental, NL-332); route blinding (M5) missing. See §6 and `ONION_ROUTING_PLAN.md` |
+| 4 onion | **Mostly done (M1-M4, M3b)** | Sphinx construct/peel (`src/NLightning.Infrastructure.Bitcoin/Onion/`), hop payloads, legacy error onions, `HtlcSwitch` (forward, final hop with basic_mpp sets) and `PaymentService` (retries, fee limit, MPP send) in `src/NLightning.Application/Payments/`, persistent replay set `PersistentOnionReplayStore` (NL-078) pruned on every block by `OnionReplayBlockPruner` (NL-327). attribution_data is persisted and used by the switch and `PaymentService` when `OptionAttributionData` is advertised (NL-326; Optional by default since NL-332); route blinding (M5) missing. See §6 and `ONION_ROUTING_PLAN.md` |
 | 5 on-chain | Done (O0-O8; O7-T4 in wave O7b, anchors on by default) | `src/NLightning.Application/Onchain/` (watcher, executor, local/remote/revoked resolvers, `SweepScheduler`, reorg handling), builders in `src/NLightning.Infrastructure.Bitcoin/Builders/`; Docker O2-O6 in `test/NLightning.Integration.Tests/Docker/Onchain/`. HTLCs are on for every network since O6-T4 (gossip wave G-D; `Node:EnableHtlcs=false` turns them off); O8 mempool reaction in `Onchain/Mempool/`; anchors (O7) in `Onchain/Anchors/` (CPFP), `Onchain/Wallet/` (fee-input adapters) and `LocalCommitResolver`, the peer-commitment CPFP in `Onchain/Anchors/AnchorCpfpService.Peer.cs`, the anchors reserve in `Infrastructure.Bitcoin/Wallet/AnchorReserveService.cs`, Docker `Docker/Onchain/Anchors/`. See `BOLT5_ONCHAIN_PLAN.md` |
 | 7 gossip | Partial (G0-G4 wired; G5-T2..T4 done in G-D; G5-T1 memory budget and the mainnet gate D12 open) | Gossip wave G-D: `Application/Gossip/Graph/{GossipRateLimiter,GossipMisbehaviourTracker,GraphMemoryAccounting,GossipGraphDescriber}`, `Application/Gossip/Metrics/` (`Meter("NLightning.Gossip")`), batched `GraphStore` flush and streamed load, `describegraph` (IPC 20), `scripts/mutinynet/soak-gossip.sh`. Gossip wave G-C: `Application/Gossip/Sync/` (`QueryResponder`, `GossipSyncManager`, `RangeReplyCollector`, `GossipSyncScidRefresher`), `Application/Gossip/Relay/GossipRelayScheduler.Relay.cs` (others' gossip, per-peer filters, origin suppression via `OriginTrackingGossipIngress`, sent through `PeerGossipSender` → `IPeerGossipOutbox` = `PeerManager`), `Domain/Gossip/Queries/` (codec, CRC32C `ChannelUpdateChecksum`, `GossipTimestampFilter`), `Payments/Routing/{GraphPathSource,MissionControl}` (graph routes in `PaymentRoutePlanner`), `getroute` (IPC 19; next free 20), `Node:Invoices:RouteHints`; Docker `Docker/Gossip/{PublicPaymentFlowTests,GossipSyncFlowTests}` and `Interop/Cln/ClnGossipTests` (the goal proofs). Gossip wave G-B: public channels (`openchannel --public`), `AnnouncementSignaturesMessageHandler`, `Application/Gossip/Announcements/` (`ChannelAnnouncementService`, `NodeAnnouncementService`, `OwnGossipPublisher`) and `Relay/GossipRelayScheduler` (our own 256 → 258 → 257 to connected peers), `Application/Gossip/Graph/` (`GossipIngress`, `GraphStore`, `GraphPruner`, started by `Daemon/Services/GossipGraphHostedService`), IPC `listnodes` (17) / `listgraphchannels` (18); Docker `Docker/Gossip/` Proofs G0-G2. Before that, gossip wave G-A added the signature verifier and funding output lookup (`Infrastructure.Bitcoin/Gossip/`), the graph schema (`AddGossipGraph`, `IGraphDbRepository`), `SignChannelAnnouncement`, and the pure `Domain/Gossip/{Addresses,Graph,Validation}` and `Domain/Routing/Pathfinding`, none wired yet; 258 is a typed signed `channel_update` exchanged with the channel peer only; 261/263 get empty replies, 265 is ignored. No announcements or graph (NL-099) |
 | 8 transport | Done | Vector-tested. `ReadExactlyAsync` reads and lock-across-encrypt writes (NL-104, NL-105) |
-| 9 features | Mostly done | `FeatureSet`, `FeatureOptions`. BOLT 9 dependency table and per-context filtering (NL-110, NL-111). Unimplemented features default to No and are refused unless `Features:AllowExperimentalFeatures=true` (since wave d13 only attribution_data; splice, quiesce and dual_fund are Optional by default) |
+| 9 features | Mostly done | `FeatureSet`, `FeatureOptions`. BOLT 9 dependency table and per-context filtering (NL-110, NL-111). Unimplemented features default to No and are refused unless `Features:AllowExperimentalFeatures=true` (the set is empty since NL-332: attribution_data, its last member since wave d13, is Optional by default; splice, quiesce and dual_fund are Optional by default since d13) |
 | 10 DNS seed | Implemented (client), on by default on mainnet only, public fallback resolvers | `Infrastructure.Bitcoin/Bootstrap/DnsSeedClient.cs`, `Application/Node/Bootstrap/PeerBootstrapService.cs` (NL-113) |
 | 11 invoices | Library done | `src/NLightning.Bolt11`, not wired into the node (NL-114). Gaps: no taproot fallback (NL-118), non-minimal field lengths accepted (NL-222) |
 | 12 offers | Missing | — |

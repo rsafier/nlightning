@@ -345,7 +345,16 @@ public sealed class WalletInteractiveTxContributor : IInteractiveTxContributor
             try
             {
                 if (!_lightningSigner.SignWalletTransaction(signed, reservationId, otherSpentOutputs))
-                    throw new InvalidOperationException("The signer found no wallet input in the transaction");
+                {
+                    // NL-600: say what the wallet holds of our inputs (an unloaded UTXO set holds none of them)
+                    var seen = string.Join(", ", contribution.Inputs.Select(DescribeWalletInput));
+                    if (_logger.IsEnabled(LogLevel.Error))
+                        _logger.LogError(
+                            "The signer found no wallet input of reservation {ReservationId} in interactive "
+                          + "transaction {TxId}; our inputs: {Inputs}", reservationId, transaction.TxId, seen);
+                    throw new InvalidOperationException(
+                        $"The signer found no wallet input in the transaction (reservation {reservationId}: {seen})");
+                }
             }
             catch
             {
@@ -374,6 +383,15 @@ public sealed class WalletInteractiveTxContributor : IInteractiveTxContributor
         {
             _gate.Release();
         }
+    }
+
+    private string DescribeWalletInput(ContributedInput input)
+    {
+        var inWallet = _utxoMemoryRepository.TryGetUtxo(input.PrevTxId, input.PrevTxVout, out _);
+        var reservation = _utxoMemoryRepository.TryGetFeeReservation(input.PrevTxId, input.PrevTxVout, out var id)
+                              ? id.ToString()
+                              : "none";
+        return $"{input.PrevTxId}:{input.PrevTxVout} (in wallet: {inWallet}, reservation: {reservation})";
     }
 
     /// <inheritdoc />

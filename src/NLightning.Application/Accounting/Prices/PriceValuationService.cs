@@ -99,6 +99,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
     private readonly Counter<long> _valuedCounter;
     private readonly Counter<long> _lateCounter;
     private readonly Counter<long> _failureCounter;
+    private readonly Counter<long> _rejectedCounter;
 
     private TaskCompletionSource _wake = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task? _loop;
@@ -110,6 +111,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
     private bool _reportedClosedLeft;
     private long _totalValued;
     private long _totalFetched;
+    private volatile bool _catchingUp;
 
     public PriceValuationService(IServiceScopeFactory scopeFactory, ILogger<PriceValuationService> logger,
                                  IOptions<AccountingOptions>? accountingOptions = null,
@@ -138,6 +140,8 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                                                  "Postings of a closed period handed to the adjustment rule");
         _failureCounter = Meter.CreateCounter<long>("nlightning.accounting.valuation.failures", "{failure}",
                                                     "Back-valuation rounds that failed");
+        _rejectedCounter = Meter.CreateCounter<long>("nlightning.accounting.prices.rejected", "{price}",
+                                                     "Fetched prices refused by the sanity bound (NL-678)");
     }
 
     /// <summary>Unvalued postings per page (one save each; <see cref="DefaultPageSize"/>, smaller in tests).</summary>
@@ -162,6 +166,13 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
 
     /// <summary>Prices asked of the sources since the process started.</summary>
     public long TotalFetched => Interlocked.Read(ref _totalFetched);
+
+    /// <summary>
+    /// Whether the last round used its whole fetch budget and still had hours to ask (NL-658): the back-valuation is
+    /// catching up over old unpriced history, and the financial projector's background rounds wait with the replays it
+    /// asks for (<see cref="Financial.FinancialBooksProjector.MaxReplayDeferral"/>).
+    /// </summary>
+    public bool IsCatchingUp => _catchingUp;
 
     /// <summary>The meter, for tests that assert the instruments.</summary>
     internal Meter Meter { get; }
@@ -348,10 +359,14 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                                                       hours.Count * 60 + 1, cancellationToken))
                              .Select(p => AccountingValuation.HourStart(p.Time))
                              .ToHashSet();
+                // The prices this batch accepted but has not saved yet: the sanity bound compares with them too (NL-733)
+                var accepted = new List<AccountingPrice>();
                 foreach (var hour in hours.Where(h => !covered.Contains(h)))
                 {
                     requested++;
                     var price = await AskSourceAsync(currency, hour, cancellationToken);
+                    if (price is not null && !await IsPlausibleAsync(prices, price, accepted, cancellationToken))
+                        price = null;
                     if (price is null)
                     {
                         unavailable++;
@@ -359,7 +374,10 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                     }
 
                     if (await prices.TryAddAsync(price, cancellationToken))
+                    {
                         stored++;
+                        accepted.Add(price);
+                    }
                 }
 
                 if (stored > 0)
@@ -482,6 +500,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
         var canFetch = _priceOptions.HasSource && _priceSource is not null && _priceOptions.MaxFetchesPerRound > 0;
         var fetchBudget = canFetch ? Math.Max(0, maxFetches) : 0;
         int listed = 0, valued = 0, fetched = 0, stored = 0, late = 0, closedLeft = 0, unpriced = 0, deferred = 0;
+        var budgetLeftOver = false;
 
         for (var page = 0; page < MaxPagesPerRound; page++)
         {
@@ -500,8 +519,10 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             listed += postings.Count;
 
             // A late fact's lines (NL-671) are valued at the fact's time, never the adjustment's: they stand at the
-            // fact's time here, and a price found for them replays the fact (the projector stages it again)
+            // fact's time here; a price found for an open one replays the fact (the projector stages it again), and one
+            // closed unvalued by a forced close gets its price adjustment at the fact's price too (NL-680)
             var lateFacts = await LateFactTimesAsync(books, postings, cancellationToken);
+            var own = postings.ToDictionary(p => p.Key);
             if (lateFacts.Count > 0)
                 postings = postings.Select(p => lateFacts.TryGetValue(p.Key, out var factAt)
                                                     ? p with { OccurredAt = factAt }
@@ -510,6 +531,11 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             var resolved = await ResolvePricesAsync(prices, currency, postings, maxAge, cancellationToken);
 
             // The hours still without their own price, each asked once (at its earliest posting's time)
+            // A page that still waits for hours after the budget ran out (also exactly on the previous page) is a
+            // catch-up too (NL-734); a round that may not fetch at all (an import's or fetch's valuation) is not
+            if (fetchBudget == 0 && maxFetches > 0 && canFetch && postings.Any(WaitsForItsHour))
+                budgetLeftOver = true;
+
             if (fetchBudget > 0 && postings.Any(WaitsForItsHour))
             {
                 var missing = postings.Where(WaitsForItsHour)
@@ -517,21 +543,31 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                                       .Select(g => (Hour: g.Key, At: g.Min(p => p.OccurredAt)))
                                       .OrderBy(h => h.Hour);
                 var pageStored = 0;
+                var accepted = new List<AccountingPrice>(); // staged, not saved yet: checked against too (NL-733)
                 foreach (var (hour, at) in missing)
                 {
                     if (fetchBudget == 0)
+                    {
+                        // More hours to ask than this round may: a catch-up over old history
+                        budgetLeftOver = true;
                         break;
+                    }
 
                     fetchBudget--;
                     fetched++;
                     var price = await AskSourceAsync(currency, at, cancellationToken);
+                    if (price is not null && !await IsPlausibleAsync(prices, price, accepted, cancellationToken))
+                        price = null;
                     if (price is not null && price.Time >= hour && AccountingValuation.IsUsable(price.Time, at, maxAge))
                         _retryAfter.Remove(hour);
                     else
                         RememberAsked(hour, now);
 
                     if (price is not null && await prices.TryAddAsync(price, cancellationToken))
+                    {
                         pageStored++;
+                        accepted.Add(price);
+                    }
                 }
 
                 if (pageStored > 0)
@@ -562,7 +598,9 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                     continue;
                 }
 
-                if (lateFacts.ContainsKey(posting.Key))
+                var ownPosting = own[posting.Key];
+                var closedNowToo = IsClosed(ownPosting, closedNow);
+                if (lateFacts.ContainsKey(posting.Key) && !closedNowToo)
                 {
                     // Never filled in place: the projector stages the late fact again at this price
                     if (replayFrom is null || posting.Key.LedgerSeq < replayFrom)
@@ -571,14 +609,14 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                 }
 
                 var fiat = AccountingValuation.FiatValue(posting.AmountMsat, price.Price);
-                if (IsClosed(posting, closedNow))
+                if (closedNowToo)
                 {
                     // Never filled (D-A8): the adjustment rule carries the value into the open period
                     if (_adjusted.Contains(posting.Key))
                         continue;
 
                     if (await _adjustmentSink.AdjustLateValuationAsync(
-                            unitOfWork, new AccountingLateValuation(posting, price, fiat), cancellationToken))
+                            unitOfWork, new AccountingLateValuation(ownPosting, price, fiat), cancellationToken))
                     {
                         late++;
                         if (_adjusted.Count >= MaxRememberedAdjustments)
@@ -632,6 +670,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                 break;
         }
 
+        _catchingUp = budgetLeftOver;
         if (valued > 0)
         {
             _valuedCounter.Add(valued);
@@ -666,9 +705,10 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
     }
 
     /// <summary>
-    /// The fact's time of every posting of an open late fact waiting for its price (an adjustment flagged
-    /// <see cref="AccountingEntryFlags.LateFact"/> and <see cref="AccountingEntryFlags.PendingValuation"/>, NL-671):
-    /// the time of the operational entry it projects. Postings whose operational entry cannot be found are left out.
+    /// The fact's time of every posting of a late fact waiting for its price (an adjustment flagged
+    /// <see cref="AccountingEntryFlags.LateFact"/> and <see cref="AccountingEntryFlags.PendingValuation"/>, NL-671; open,
+    /// or closed by a forced close, NL-680): the time of the operational entry it projects. Postings whose operational
+    /// entry cannot be found are left out.
     /// </summary>
     private static async Task<Dictionary<AccountingPostingKey, DateTimeOffset>> LateFactTimesAsync(
         IAccountingBooksDbRepository books, IReadOnlyList<AccountingUnvaluedPosting> postings,
@@ -681,7 +721,6 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
         foreach (var posting in postings)
         {
             if (posting.Key is not { Book: AccountingBook.Financial, Adjustment: > 0 } key
-             || posting.ClosedPeriodId is not null
              || (posting.EntryFlags & pendingLateFact) != pendingLateFact)
                 continue;
 
@@ -741,6 +780,57 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             Price = RoundPrice(price.Price),
             FetchedAt = _timeProvider.GetUtcNow()
         };
+    }
+
+    /// <summary>
+    /// The sanity bound of a fetched price (NL-678): a price from the HTTP source that differs from the nearest saved
+    /// price within <see cref="AccountingPriceOptions.MaxAge"/> before or after its time by more than
+    /// <see cref="AccountingPriceOptions.MaxPriceJumpFactor"/> is refused (logged, counted, never stored), so a stored
+    /// price, which is never replaced, cannot come from a source's decimal-point or unit mistake next to good ones.
+    /// Imported and file prices are the operator's and are not checked; nor is a price without a saved neighbor or one
+    /// in <paramref name="batch"/>: the prices the same fetch or page accepted and staged but has not saved yet, which
+    /// count as neighbors too (NL-733), so a 10x price fetched between good ones of one batch is refused as well.
+    /// </summary>
+    private async Task<bool> IsPlausibleAsync(IAccountingPriceDbRepository prices, AccountingPrice price,
+                                              IReadOnlyList<AccountingPrice> batch,
+                                              CancellationToken cancellationToken)
+    {
+        if (price.Source != AccountingPriceSource.Http || _priceOptions.MaxPriceJumpFactor == 0)
+            return true;
+
+        var maxAge = _priceOptions.MaxAge;
+        var before = await prices.GetAtOrBeforeAsync(price.Currency, price.Time, maxAge, cancellationToken);
+        foreach (var staged in batch)
+        {
+            if (staged.Currency == price.Currency && staged.Time <= price.Time && price.Time - staged.Time <= maxAge
+             && (before is null || staged.Time > before.Time))
+                before = staged;
+        }
+
+        var neighbor = before;
+        if (before is null || _priceOptions.IsPlausibleNext(price.Price, before.Price))
+        {
+            var until = DateTimeOffset.MaxValue - price.Time > maxAge ? price.Time + maxAge : DateTimeOffset.MaxValue;
+            var after = await prices.ListAsync(price.Currency, price.Time.AddTicks(1), until, 1, cancellationToken);
+            neighbor = after.Count > 0 ? after[0] : null;
+            foreach (var staged in batch)
+            {
+                if (staged.Currency == price.Currency && staged.Time > price.Time && staged.Time <= until
+                 && (neighbor is null || staged.Time < neighbor.Time))
+                    neighbor = staged;
+            }
+
+            if (neighbor is null || _priceOptions.IsPlausibleNext(price.Price, neighbor.Price))
+                return true;
+        }
+
+        _rejectedCounter.Add(1);
+        _logger.LogWarning(
+            "Refused the price source's {Currency} price {Price} at {Time:O}: it is more than {Factor} times away from "
+          + "the stored {Neighbor} at {NeighborTime:O} ({Section}:MaxPriceJumpFactor); import the right price with "
+          + "'accounting prices import' if the source is right", price.Currency, price.Price, price.Time,
+            _priceOptions.MaxPriceJumpFactor, neighbor!.Price, neighbor.Time, AccountingPriceOptions.SectionName);
+        return false;
     }
 
     private async Task<IReadOnlyList<AccountingPeriod>> GetClosedPeriodsAsync(CancellationToken cancellationToken)

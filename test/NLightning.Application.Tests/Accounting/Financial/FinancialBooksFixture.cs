@@ -1,4 +1,3 @@
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -21,6 +20,7 @@ using Infrastructure.Crypto.Hashes;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Repositories;
+using TestUtils;
 
 /// <summary>
 /// A financial book seeded by hand on a SQLite file through the production unit of work (NL-602 A3-T6): prices, ten
@@ -114,7 +114,7 @@ public sealed class FinancialBooksFixture : IAsyncDisposable
         if (_provider is not null)
             await _provider.DisposeAsync();
 
-        SqliteConnection.ClearAllPools();
+        SqliteTestPools.Clear(_databasePath);
         foreach (var path in new[] { _databasePath, _databasePath + "-wal", _databasePath + "-shm" })
         {
             try

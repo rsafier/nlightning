@@ -37,9 +37,37 @@ public sealed class OfferOptions
 
     /// <summary>
     /// Blocks added to the invoice's lifetime (its relative expiry at 10 minutes a block) for the paths'
-    /// <c>max_cltv_expiry</c>, so a payment made just before the invoice expires still fits.
+    /// <c>max_cltv_expiry</c>, so a payment made just before the invoice expires still fits, and so does the random
+    /// delta a payer adds to the final expiry to hide the recipient's position: Eclair adds 150 to 350 blocks
+    /// (<c>eclair.send.recipient-final-expiry</c>, NL-719) and LDK a "shadow" CLTV offset of up to 432 blocks
+    /// (<c>MAX_SHADOW_CLTV_EXPIRY_DELTA_OFFSET</c>, NL-723); with the former 144 those payments over our paths were
+    /// refused as above <c>max_cltv_expiry</c> (<c>invalid_onion_blinding</c>). Default 1,008 (a week; LDK's own paths
+    /// allow 2016); BOLT 4 lets the recipient choose it.
     /// </summary>
-    public uint PathLifetimeMarginBlocks { get; set; } = 144;
+    public uint PathLifetimeMarginBlocks { get; set; } = DefaultPathLifetimeMarginBlocks;
+
+    /// <summary>The default of <see cref="PathLifetimeMarginBlocks"/> (NL-719, NL-723).</summary>
+    public const uint DefaultPathLifetimeMarginBlocks = 1_008;
+
+    /// <summary>
+    /// The default before NL-719/NL-723, which the <c>appsettings.json</c> template wrote into every node's file: a bound
+    /// value equal to it is taken as that old default and raised to <see cref="DefaultPathLifetimeMarginBlocks"/> with a
+    /// warning (NL-743), so existing nodes get the margin their payers need. Pin a small margin with another value.
+    /// </summary>
+    public const uint FormerDefaultPathLifetimeMarginBlocks = 144;
+
+    /// <summary>True when <see cref="PathLifetimeMarginBlocks"/> was raised from the former template default (NL-743).</summary>
+    internal bool PathLifetimeMarginRaisedFromFormerDefault { get; private set; }
+
+    /// <summary>Raises a bound <see cref="FormerDefaultPathLifetimeMarginBlocks"/> to the default (NL-743).</summary>
+    internal void UpgradeFormerDefaults()
+    {
+        if (PathLifetimeMarginBlocks != FormerDefaultPathLifetimeMarginBlocks)
+            return;
+
+        PathLifetimeMarginBlocks = DefaultPathLifetimeMarginBlocks;
+        PathLifetimeMarginRaisedFromFormerDefault = true;
+    }
 
     /// <summary>
     /// How often <see cref="ExpiredBolt12InvoicePruner"/> deletes expired unpaid BOLT 12 invoices (NL-448); zero turns

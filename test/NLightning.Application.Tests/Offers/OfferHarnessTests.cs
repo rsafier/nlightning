@@ -13,6 +13,7 @@ using Application.Payments.Send;
 using Channels.Harness;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Labels;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
@@ -105,6 +106,9 @@ public class OfferHarnessTests
         Assert.Equal("bolt12", paid.Details["kind"]);
         Assert.Equal(offer.Bolt12, paid.Details["offer"]);
         Assert.Equal("from alice", paid.Details["payerNote"]);
+
+        // NL-645: the payment also carries the offer's id, the one Carol recorded, so a rule on the offer matches both
+        Assert.Equal(offer.OfferId.ToString(), paid.Details[ClassificationEngine.OfferIdDetail]);
     }
 
     [Fact]

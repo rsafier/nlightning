@@ -78,6 +78,18 @@ public sealed class GossipSyncOptions
     /// <remarks>Configuration key <c>Gossip:SkipChannelsStaleFor</c>.</remarks>
     public TimeSpan SkipChannelsStaleFor { get; set; } = TimeSpan.FromSeconds(1_209_600);
 
+    /// <summary>The default of <see cref="MinQueryInterval"/>.</summary>
+    public static readonly TimeSpan DefaultMinQueryInterval = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// The least time between two of our queries (<c>query_channel_range</c>, <c>query_short_channel_ids</c>) on one
+    /// connection (NL-407). Eclair answers at most 5 gossip queries per second per connection and drops the rest
+    /// without a reply, which ended our querying of that connection; 250 ms keeps every five consecutive queries more
+    /// than a second apart. Zero sends them back to back.
+    /// </summary>
+    /// <remarks>Configuration key <c>Gossip:MinQueryInterval</c>, default 250 ms.</remarks>
+    public TimeSpan MinQueryInterval { get; set; } = DefaultMinQueryInterval;
+
     /// <summary>
     /// Queries of one peer waiting for an answer; a peer that sends more before we answered gets a warning and the
     /// query is dropped (BOLT 7: the sender MUST NOT send a query while one is outstanding; the receiver MAY warn).
@@ -150,6 +162,8 @@ public sealed class GossipSyncOptions
             errors.Add($"{nameof(SyncFilterBacklog)} must not be negative");
         if (SkipChannelsStaleFor < TimeSpan.Zero)
             errors.Add($"{nameof(SkipChannelsStaleFor)} must not be negative");
+        if (MinQueryInterval < TimeSpan.Zero)
+            errors.Add($"{nameof(MinQueryInterval)} must not be negative");
         if (MaxQueuedQueriesPerPeer < 1)
             errors.Add($"{nameof(MaxQueuedQueriesPerPeer)} must be at least 1");
         if (QueriedChannelTtl < TimeSpan.Zero)

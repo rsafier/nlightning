@@ -1,7 +1,4 @@
 namespace NLightning.Domain.Accounting.Financial;
-
-using Books;
-
 /// <summary>
 /// The cost-basis lots and their reliefs (<c>AccountingLots</c>, <c>AccountingLotReliefs</c>, A3-T4). Writes are staged
 /// and committed by the unit of work's save, so a projector saves its lots and reliefs with its entries and cursor.
@@ -21,10 +18,19 @@ public interface IAccountingLotDbRepository
     /// <summary>The lot (saved or staged), or null.</summary>
     Task<AccountingLot?> GetLotAsync(long id, CancellationToken cancellationToken = default);
 
-    /// <summary>The lots with something left (saved, overlaid with what this unit of work staged), oldest first (by
-    /// acquisition time, then id); only those held by <paramref name="account"/> when set.</summary>
-    Task<IReadOnlyList<AccountingLot>> ListOpenLotsAsync(AccountRole? account = null,
+    /// <summary>The lots and debts with something left (saved, overlaid with what this unit of work staged), oldest first
+    /// (by <see cref="AccountingLot.AcquiredAt"/>, then id); only those held by <paramref name="bucket"/> when
+    /// set.</summary>
+    Task<IReadOnlyList<AccountingLot>> ListOpenLotsAsync(AccountingLotBucket? bucket = null,
                                                          CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// What identifies the saved open lots and debts cheaply (NL-658): one aggregate read, so the financial projector can
+    /// keep its pool across rounds and read every open lot again only when the saved ones changed. The default (test
+    /// doubles) returns null: no fingerprint, the pool is read every round.
+    /// </summary>
+    Task<AccountingLotsFingerprint?> GetOpenLotsFingerprintAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<AccountingLotsFingerprint?>(null);
 
     /// <summary>Stages a relief (its <see cref="AccountingLotRelief.Id"/> is ignored and assigned by the save).</summary>
     void AddRelief(AccountingLotRelief relief);
@@ -65,14 +71,15 @@ public interface IAccountingLotDbRepository
     /// <summary>Deletes every lot and relief at once (a rebuild before any close; not staged).</summary>
     Task ClearAsync(CancellationToken cancellationToken = default);
 
-    /// <summary>The saved lots of <paramref name="origin"/>, by id, whatever is left of them (A3-T4: the imported lots
-    /// of D-A9). The default (test doubles) throws <see cref="NotSupportedException"/>.</summary>
+    /// <summary>The saved lots of <paramref name="origin"/> that are no moved part (no <c>ParentLotId</c>), by id,
+    /// whatever is left of them (A3-T4: the imported lots of D-A9). The default (test doubles) throws
+    /// <see cref="NotSupportedException"/>.</summary>
     Task<IReadOnlyList<AccountingLot>> ListLotsByOriginAsync(AccountingLotOrigin origin,
                                                              CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("This repository does not list lots by origin.");
 
-    /// <summary>Deletes every lot of <paramref name="origin"/> with its reliefs at once (not staged; A3-T4: an import
-    /// replaces the earlier one). The default (test doubles) throws <see cref="NotSupportedException"/>.</summary>
+    /// <summary>Deletes every lot of <paramref name="origin"/> (the parts moved from them included) with its reliefs at
+    /// once (not staged; A3-T4: an import replaces the earlier one). The default (test doubles) throws <see cref="NotSupportedException"/>.</summary>
     Task<int> DeleteLotsByOriginAsync(AccountingLotOrigin origin, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("This repository does not delete lots by origin.");
 
@@ -86,3 +93,9 @@ public interface IAccountingLotDbRepository
                                                               CancellationToken cancellationToken = default) =>
         throw new NotSupportedException("This repository does not list reliefs by time.");
 }
+
+/// <summary>
+/// The saved open lots and debts in a few numbers (NL-658): how many, the highest id, the msat they hold and how many of
+/// them a close recorded. Equal fingerprints mean the financial projector's pool is the saved one.
+/// </summary>
+public sealed record AccountingLotsFingerprint(int OpenLots, long MaxId, long RemainingMsat, int ClosedLots);

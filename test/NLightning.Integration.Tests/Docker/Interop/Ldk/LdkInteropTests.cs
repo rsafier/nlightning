@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Integration.Tests.Docker.Interop.Ldk;
 
+using Abcd;
 using Daemon.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
@@ -13,6 +14,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Node.ValueObjects;
+using Domain.Payments.Enums;
 using Domain.Protocol.Messages;
 using Fixtures;
 using Onchain.Anchors;
@@ -178,6 +180,57 @@ public sealed class LdkInteropTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// 5b (NL-556): reestablish with an HTLC in flight. Our HTLC to LDK's hold invoice is held by LDK while first our
+    /// node restarts and then LDK does: after each restart both ends reestablish (we send <c>channel_reestablish</c>),
+    /// the HTLC stays in both our commitments and LDK still holds it; then LDK claims it (<c>bolt11-claim-for-id</c>)
+    /// and our payment succeeds with LDK's preimage, the channel usable with no HTLC left and a payment each way.
+    /// </summary>
+    [Fact(Timeout = TestTimeoutMs)]
+    public async Task Given_OurHtlcHeldByLdk_When_BothEndsRestart_Then_ReestablishedAndLdkClaimsIt()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var session = await OwnAsync(LdkChannelSession.BuildOurFundedAsync(
+                                         _fixture, "nltg-ldk-htlc-re", LightningMoney.Satoshis(400_000),
+                                         LightningMoney.Satoshis(50_000), ct));
+        var held = await session.SendHeldHtlcAsync("nltg ldk reestablish with an htlc", ct, 20_000);
+
+        // Act 1: we restart
+        await session.Node.StopAsync();
+        await session.StartNodeAsync(ct);
+
+        // Assert 1: usable means reestablished on the new connection (our recorder attaches after the start, so the
+        // channel_reestablish sent while the node started is not in it)
+        await session.WaitUsableAsync(ct);
+        await AssertStillHeldAsync(session, held, ct);
+
+        // Act 2: LDK restarts
+        var mark = session.Sent.Mark;
+        await _fixture.RestartLdkAsync(ct);
+
+        // Assert 2
+        await Poll.UntilAsync(() => session.Sent.CountSent<ChannelReestablishMessage>(session.ChannelId, mark) > 0,
+                              LdkChannelSession.UsableTimeout, "we sent channel_reestablish after LDK's restart", ct);
+        await session.WaitUsableAsync(ct);
+        await AssertStillHeldAsync(session, held, ct);
+
+        // Act 3: LDK claims the HTLC
+        await _fixture.Ldk.Bolt11ClaimForIdAsync(held.LdkPaymentId, Convert.ToHexString(held.Preimage), ct);
+
+        // Assert 3
+        var payment = await Poll.ForAsync(async () => await session.Node.GetPaymentAsync(held.PaymentHash, ct) is
+        { Status: PaymentStatus.Succeeded } p
+                                                          ? p
+                                                          : null,
+                                          LdkChannelSession.SettleTimeout, "our payment succeeded", ct);
+        Assert.Equal(held.Preimage, (byte[])payment.Preimage!.Value);
+        await session.WaitUsableAsync(ct, requireNoHtlcs: true);
+        Assert.False((await session.GetOurChannelAsync(ct)).DataLossDetected);
+        await session.AssertWePayLdkAsync(LightningMoney.Satoshis(7_000), ct);
+        await session.AssertLdkPaysUsAsync(LightningMoney.Satoshis(6_000), ct);
+    }
+
+    /// <summary>
     /// 4: a channel we fund (500k sat, 100k pushed), after a payment each way, closed by us: legacy
     /// <c>shutdown</c>/<c>closing_signed</c>, the closing transaction in the mempool, our channel Closed after 6
     /// blocks, LDK no longer lists it, and our wallet grown by our balance less the closing fee.
@@ -218,6 +271,14 @@ public sealed class LdkInteropTests : IAsyncLifetime
                               s_closeTimeout, "our wallet holds our channel balance less the closing fee", ct);
         Console.WriteLine($"[ldk] closed: our balance {ours.LocalBalance.Satoshi} sat, closing fee {fee} sat, "
                         + $"wallet +{(AnchorsHarness.WalletBalance(session.Node) - walletBefore).Satoshi} sat");
+        // The negotiation as our coordinator logged it: our proposal with its fee_range and LDK's answer (NL-556's
+        // closing-fee observation)
+        foreach (var line in session.Node.NodeLog.Where(l => l.Contains("closing fee", StringComparison.Ordinal)
+                                                          || l.Contains("closing_signed for channel",
+                                                                        StringComparison.Ordinal)
+                                                          || l.Contains("agreed on closing transaction",
+                                                                        StringComparison.Ordinal)))
+            Console.WriteLine($"[ldk] close log: {line}");
     }
 
     /// <summary>
@@ -289,6 +350,21 @@ public sealed class LdkInteropTests : IAsyncLifetime
         _session = await LdkChannelSession.GetAsync(_fixture, ct);
         await _session.PrepareAsync(ct);
         return _session;
+    }
+
+    /// <summary>
+    /// The held HTLC is still in both our commitments, our payment in flight and LDK's inbound payment pending.
+    /// </summary>
+    private static async Task AssertStillHeldAsync(LdkChannelSession session, LdkChannelSession.HeldHtlc held,
+                                                   CancellationToken ct)
+    {
+        var htlc = await AnchorsHarness.WaitForHtlcInBothCommitmentsAsync(session.Node, session.ChannelId,
+                                                                        HtlcDirection.Outgoing, ct);
+        Assert.Equal(held.Htlc.Id, htlc.Id);
+        Assert.Equal(PaymentStatus.InFlight, (await session.Node.GetPaymentAsync(held.PaymentHash, ct))?.Status);
+        var ldkPayment = await session.Ldk.GetPaymentAsync(held.LdkPaymentId, ct);
+        Console.WriteLine($"[ldk] after the restart LDK lists: {ldkPayment?.ToJsonString()}");
+        Assert.Equal("PENDING", LdkClient.StatusOf(ldkPayment), StringComparer.OrdinalIgnoreCase);
     }
 
     private async Task<LdkChannelSession> OwnAsync(Task<LdkChannelSession> build)

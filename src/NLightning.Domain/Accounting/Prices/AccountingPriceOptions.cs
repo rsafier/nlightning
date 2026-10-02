@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Accounting.Prices;
 
 using Constants;
+using Node.Options;
 
 /// <summary>
 /// The fiat valuation of the financial books (configuration section <see cref="SectionName"/>, NL-602 A3-T2, D-A1,
@@ -28,8 +29,30 @@ public sealed class AccountingPriceOptions
     /// <summary>Which sources the job asks (default <see cref="AccountingPriceSourceMode.Both"/>: the file first).</summary>
     public AccountingPriceSourceMode Source { get; set; } = AccountingPriceSourceMode.Both;
 
-    /// <summary>The HTTP source's endpoint (<see cref="DefaultUrl"/>); requests go through Tor in <c>TorOnly</c>.</summary>
+    /// <summary>The default <see cref="MaxPriceJumpFactor"/>: a fetched price more than 3 times (or less than a third
+    /// of) a stored neighbor is refused.</summary>
+    public const decimal DefaultMaxPriceJumpFactor = 3m;
+
+    /// <summary>The largest <see cref="MaxPriceJumpFactor"/> (10^6).</summary>
+    public const decimal MaxPriceJumpFactorLimit = 1_000_000m;
+
+    /// <summary>The HTTP source's endpoint (<see cref="DefaultUrl"/>); requests go through Tor whenever
+    /// <c>Node:Tor:Mode</c> is not <c>Off</c> (NL-677). <c>https://</c>, or <c>http://</c> only to a loopback or
+    /// <c>.onion</c> host unless <see cref="AllowPlainHttp"/> (NL-678).</summary>
     public string Url { get; set; } = DefaultUrl;
+
+    /// <summary>Allow a plain <c>http://</c> <see cref="Url"/> to any host (a price server you trust on your own
+    /// network); default false: plain HTTP only to loopback or <c>.onion</c> hosts (NL-678).</summary>
+    public bool AllowPlainHttp { get; set; }
+
+    /// <summary>
+    /// The sanity bound of a fetched (HTTP) price (NL-678): one that differs from the nearest stored price within
+    /// <see cref="MaxAge"/> (before or after it) by more than this factor, either way, is refused and never stored (a
+    /// decimal-point, unit or currency mistake of the source; a stored price is never replaced). Default
+    /// <see cref="DefaultMaxPriceJumpFactor"/>; 0 turns the check off; otherwise more than 1 and at most
+    /// <see cref="MaxPriceJumpFactorLimit"/>. Imported prices and the operator's price file are trusted as given.
+    /// </summary>
+    public decimal MaxPriceJumpFactor { get; set; } = DefaultMaxPriceJumpFactor;
 
     /// <summary>The operator's price file (<c>unixSeconds,price</c> per line, D-A11); read again when it changes.</summary>
     public string CsvFile { get; set; } = DefaultCsvFile;
@@ -65,9 +88,12 @@ public sealed class AccountingPriceOptions
         if (!Enum.IsDefined(Source))
             errors.Add($"{SectionName}:Source '{Source}' is not None, Csv, Http or Both");
         if (UsesHttp
-            && (!Uri.TryCreate(Url, UriKind.Absolute, out var uri)
-             || (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp)))
-            errors.Add($"{SectionName}:Url '{Url}' is not an absolute http(s) URL");
+            && HttpUrlPolicy.GetError(Url, AllowPlainHttp, $"{SectionName}:Url",
+                                      $"{SectionName}:{nameof(AllowPlainHttp)}") is { } urlError)
+            errors.Add(urlError);
+        if (MaxPriceJumpFactor != 0 && (MaxPriceJumpFactor <= 1 || MaxPriceJumpFactor > MaxPriceJumpFactorLimit))
+            errors.Add($"{SectionName}:MaxPriceJumpFactor must be 0 (off) or more than 1 and at most "
+                     + $"{MaxPriceJumpFactorLimit}");
         if (UsesCsv && string.IsNullOrWhiteSpace(CsvFile))
             errors.Add($"{SectionName}:CsvFile is empty");
         if (MaxAge <= TimeSpan.Zero)
@@ -78,6 +104,21 @@ public sealed class AccountingPriceOptions
             errors.Add($"{SectionName}:MaxFetchesPerRound must not be negative");
 
         return errors;
+    }
+
+    /// <summary>
+    /// Whether a fetched <paramref name="price"/> is within <see cref="MaxPriceJumpFactor"/> of a stored neighbor
+    /// <paramref name="reference"/> (both positive); always true with the check off.
+    /// </summary>
+    public bool IsPlausibleNext(decimal price, decimal reference)
+    {
+        if (MaxPriceJumpFactor == 0)
+            return true;
+        if (price <= 0 || reference <= 0)
+            return false;
+
+        // price / reference within [1 / factor, factor], without dividing (no overflow at the schema's bounds)
+        return price <= reference * MaxPriceJumpFactor && price * MaxPriceJumpFactor >= reference;
     }
 
     /// <summary>Whether <paramref name="code"/> is three upper-case ASCII letters.</summary>

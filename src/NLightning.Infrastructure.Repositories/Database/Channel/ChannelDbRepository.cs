@@ -505,6 +505,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             FirstRemoteHtlcIdAfterLocalShutdown = channelModel.FirstRemoteHtlcIdAfterLocalShutdown,
             ClosingTxId = channelModel.ClosingTransaction?.TxId,
             ClosingTransaction = channelModel.ClosingTransaction?.RawTxBytes,
+            CloseProtocol = (byte?)channelModel.CloseProtocol,
+            LocalIsCloser = channelModel.LocalIsCloser,
 
             RemoteAnnouncementNodeSig = channelModel.RemoteAnnouncementSignatures?.NodeSignature.Value,
             RemoteAnnouncementBitcoinSig = channelModel.RemoteAnnouncementSignatures?.BitcoinSignature.Value,
@@ -609,6 +611,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             channelModel.SetFirstRemoteHtlcIdAfterLocalShutdown(firstAfterShutdown);
         if (channelEntity is { ClosingTxId: { } closingTxId, ClosingTransaction: { Length: > 0 } closingTx })
             channelModel.SetClosingTransaction(new SignedTransaction(closingTxId, closingTx));
+        if (channelEntity.CloseProtocol is { } closeProtocol)
+            channelModel.SetCloseTerms((MutualCloseProtocol)closeProtocol, channelEntity.LocalIsCloser);
         if (channelEntity is { RemoteAnnouncementNodeSig: { } nodeSig, RemoteAnnouncementBitcoinSig: { } bitcoinSig })
             channelModel.SetRemoteAnnouncementSignatures(
                 new ChannelAnnouncementSignatures(new CompactSignature(nodeSig), new CompactSignature(bitcoinSig)));

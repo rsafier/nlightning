@@ -11,8 +11,9 @@ using Domain.Persistence.Interfaces;
 
 /// <summary>
 /// What one projection round of the financial book keeps in memory (NL-602 A3-T4): the open lots, the imported lots and
-/// the reversals of the facts not projected yet. Loaded from the database at the start of a round (and again after a
-/// rollback), never kept across rounds (the contract of <see cref="IFinancialBooksProjector"/>).
+/// the reversals of the facts not projected yet. Loaded at the start of a round (and again after a rollback); the
+/// projector keeps the pool for the next round only while the saved lots still have its fingerprint, and never across a
+/// rollback or an exclusive action (NL-658).
 /// </summary>
 internal sealed class FinancialProjectionRound
 {
@@ -58,7 +59,18 @@ internal sealed class FinancialProjectionRound
         var pool = new FinancialLotPool(await lots.ListOpenLotsAsync(cancellationToken: cancellationToken), method,
                                         currency);
         var imported = await lots.ListLotsByOriginAsync(AccountingLotOrigin.Import, cancellationToken);
-        var round = new FinancialProjectionRound(pool, imported);
+        return await LoadAsync(unitOfWork, cursor, pool, imported, sink, cancellationToken);
+    }
+
+    /// <summary>A round over a pool kept from the round before (NL-658): only the reversals after the cursor are
+    /// read.</summary>
+    public static async Task<FinancialProjectionRound> LoadAsync(IUnitOfWork unitOfWork, long cursor,
+                                                                 FinancialLotPool pool,
+                                                                 IReadOnlyList<AccountingLot> importedLots,
+                                                                 IAccountingAdjustmentSink sink,
+                                                                 CancellationToken cancellationToken)
+    {
+        var round = new FinancialProjectionRound(pool, importedLots);
         await round.FindReversalsAsync(unitOfWork, cursor, sink, cancellationToken);
         return round;
     }

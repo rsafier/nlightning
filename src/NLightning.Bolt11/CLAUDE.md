@@ -36,7 +36,7 @@ Standalone BOLT 11 invoice library: model, encode, sign, decode and validate Lig
 
 ## Dependency rules
 - Allowed references: `NLightning.Infrastructure.Bitcoin`, `NLightning.Infrastructure`, and Domain (transitively).
-- Must NOT reference: Application, Daemon, Daemon.Contracts, Daemon.Plugins, Client, Transport.Ipc, Infrastructure.Serialization, Infrastructure.Persistence.* or Infrastructure.Repositories.
+- Must NOT reference: Application, Daemon, Daemon.Contracts, Client, Transport.Ipc, Infrastructure.Serialization, Infrastructure.Persistence.* or Infrastructure.Repositories.
 - Keep the package free of DI and hosting. `Invoice` is constructed directly, and the optional `ISecureKeyManager` is passed to its ctor.
 - Code must compile under `CRYPTO_LIBSODIUM`, `CRYPTO_NATIVE` and `CRYPTO_JS` (defined in `src/NLightning.Infrastructure/NLightning.Infrastructure.csproj`; this csproj only adds `CRYPTO_JS` for `.Wasm`), because CI builds Release, Release.Native and Release.Wasm (`.github/workflows/`).
 

@@ -49,13 +49,15 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
 
     public ChannelMessageRecorder Sent { get; }
 
-    public ChannelId ChannelId { get; private set; }
+    public ChannelId ChannelId { get; set; }
 
     public string ChannelIdHex => ChannelId.ToString();
 
     public EclairClient Eclair => _fixture.Eclair;
 
     public CompactPubKey EclairPubKey => Convert.FromHexString(_fixture.EclairNodeId);
+
+    public string EclairPubKeyHex => _fixture.EclairNodeId;
 
     /// <summary>The shared channel we fund, built once per fixture on its own token.</summary>
     public static Task<EclairChannelSession> GetAsync(EclairFixture fixture, CancellationToken cancellationToken) =>
@@ -162,13 +164,25 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
     /// from a peer with which it negotiated <c>option_dual_fund</c> (NL-557,
     /// <c>EclairInteropTests.Given_DefaultFeatures_When_WeOpenWithAPush_Then_EclairRefusesTheV1Open</c>).
     /// </param>
+    /// <param name="configureNodeOptions">Runs on the node options (after the push rule above).</param>
+    /// <param name="configureNode">Runs before the node starts.</param>
+    /// <param name="isPublic">An announced channel (<c>openchannel --public</c>).</param>
     public static async Task<EclairChannelSession> BuildOurFundedAsync(EclairFixture fixture, string nodeName,
                                                                        LightningMoney capacity, LightningMoney? push,
-                                                                       CancellationToken cancellationToken)
+                                                                       CancellationToken cancellationToken,
+                                                                       Action<NodeOptions>? configureNodeOptions = null,
+                                                                       Action<NLightningTestNode>? configureNode = null,
+                                                                       bool isPublic = false)
     {
         var node = await NLightningTestNode.CreateAsync(
                        fixture.Bitcoin, nodeName,
-                       configureNodeOptions: push is null ? null : o => o.Features.DualFund = FeatureSupport.No);
+                       configureNodeOptions: o =>
+                       {
+                           if (push is not null)
+                               o.Features.DualFund = FeatureSupport.No;
+                           configureNodeOptions?.Invoke(o);
+                       });
+        configureNode?.Invoke(node);
         var session = new EclairChannelSession(fixture, node);
         try
         {
@@ -185,16 +199,21 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
                                    .GetRequiredService<IClientCommandHandler<OpenChannelClientRequest,
                                         OpenChannelClientResponse>>();
                 // The daemon's plain openchannel (NLightningTestNode.OpenChannelAsync would force v1)
-                var response = await handler.HandleAsync(new OpenChannelClientRequest(fixture.EclairAddress, capacity),
-                                                         cancellationToken);
+                var response = await handler.HandleAsync(new OpenChannelClientRequest(fixture.EclairAddress, capacity)
+                {
+                    IsPublic = isPublic
+                }, cancellationToken);
                 session.ChannelId = response.ChannelId;
                 Console.WriteLine($"[eclair] {nodeName} opened {response.ChannelId} with a plain openchannel");
             }
             else
             {
                 var channel = await node.OpenChannelAsync(
-                                  new OpenChannelClientRequest(fixture.EclairAddress, capacity) { PushAmount = push },
-                                  cancellationToken);
+                                  new OpenChannelClientRequest(fixture.EclairAddress, capacity)
+                                  {
+                                      PushAmount = push,
+                                      IsPublic = isPublic
+                                  }, cancellationToken);
                 session.ChannelId = channel.ChannelId;
                 Console.WriteLine($"[eclair] {nodeName} opened {channel.ChannelId} ({channel.ChannelPoint()}), "
                                 + $"state {channel.ChannelState}");
@@ -217,7 +236,8 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
     /// </summary>
     public static async Task<EclairChannelSession> BuildEclairFundedAsync(
         EclairFixture fixture, string nodeName, LightningMoney capacity, CancellationToken cancellationToken,
-        Action<NodeOptions>? configureNodeOptions = null, Action<NLightningTestNode>? configureNode = null)
+        Action<NodeOptions>? configureNodeOptions = null, Action<NLightningTestNode>? configureNode = null,
+        bool announce = false)
     {
         var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName,
                                                         configureNodeOptions: configureNodeOptions);
@@ -232,11 +252,40 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
                                                 cancellationToken);
             await session.ConnectAsync(cancellationToken);
 
-            var answer = await fixture.Eclair.OpenAsync(node.NodeIdHex, (long)capacity.Satoshi, cancellationToken);
+            var answer = await fixture.Eclair.OpenAsync(node.NodeIdHex, (long)capacity.Satoshi, cancellationToken,
+                                                        announce: announce);
             Console.WriteLine($"[eclair] Eclair opened to {nodeName}: {answer}");
             session.ChannelId = ParseOpenedChannelId(answer);
 
             await session.MineUntilUsableAsync(cancellationToken);
+            return session;
+        }
+        catch
+        {
+            await session.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// A node <paramref name="nodeName"/> with <paramref name="walletSat"/> in its wallet, connected to Eclair, and no
+    /// channel yet (the caller opens one and sets <see cref="ChannelId"/>). <paramref name="configureNode"/> runs before
+    /// the node starts. The caller disposes the session.
+    /// </summary>
+    public static async Task<EclairChannelSession> CreateConnectedAsync(
+        EclairFixture fixture, string nodeName, LightningMoney walletSat, CancellationToken cancellationToken,
+        Action<NodeOptions>? configureNodeOptions = null, Action<NLightningTestNode>? configureNode = null)
+    {
+        var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName,
+                                                        configureNodeOptions: configureNodeOptions);
+        configureNode?.Invoke(node);
+        var session = new EclairChannelSession(fixture, node);
+        try
+        {
+            await session.StartNodeAsync(cancellationToken);
+            await node.FundWalletAsync(walletSat, AddressType.P2Wpkh, cancellationToken);
+            await fixture.WaitAllAtTipAsync([node], cancellationToken);
+            await session.ConnectAsync(cancellationToken);
             return session;
         }
         catch
@@ -335,7 +384,7 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
     }
 
     /// <summary>Mines one block at a time until both ends agree the channel is usable.</summary>
-    private async Task MineUntilUsableAsync(CancellationToken cancellationToken)
+    public async Task MineUntilUsableAsync(CancellationToken cancellationToken)
     {
         var deadline = DateTime.UtcNow + UsableTimeout;
         while (true)
@@ -354,6 +403,17 @@ public sealed partial class EclairChannelSession : IAsyncDisposable
         Console.WriteLine($"[eclair] channel ready: {await DescribeAsync(cancellationToken)}");
     }
 
+    /// <summary>The funding txid (display order) in Eclair's <c>open</c> answer (<c>fundingTxId=...</c>).</summary>
+    public static string ParseOpenedFundingTxId(string openAnswer)
+    {
+        var match = FundingTxIdRegex().Match(openAnswer);
+        Assert.True(match.Success, $"No fundingTxId in Eclair's open answer: {openAnswer}");
+        return match.Groups["txid"].Value;
+    }
+
     [GeneratedRegex("channel (?<id>[0-9a-f]{64})")]
     private static partial Regex CreatedChannelRegex();
+
+    [GeneratedRegex("fundingTxId=(?<txid>[0-9a-f]{64})")]
+    private static partial Regex FundingTxIdRegex();
 }

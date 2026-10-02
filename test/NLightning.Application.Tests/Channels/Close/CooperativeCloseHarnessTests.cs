@@ -65,6 +65,11 @@ public class CooperativeCloseHarnessTests
         Assert.NotNull(aliceSigned[0].FeeRangeTlv);
         var bobSigned = Assert.Single(close.Alice.Received.OfType<ClosingSignedMessage>());
         Assert.Equal(aliceSigned[0].Payload.FeeAmount, bobSigned.Payload.FeeAmount);
+
+        // NL-610: both record the legacy protocol (the funder paid the fee), no closer
+        Assert.Equal(MutualCloseProtocol.Legacy, close.Alice.Channel.CloseProtocol);
+        Assert.Equal(MutualCloseProtocol.Legacy, close.Bob.Channel.CloseProtocol);
+        Assert.Null(close.Alice.Channel.LocalIsCloser);
     }
 
     [Fact]
@@ -299,6 +304,53 @@ public class CooperativeCloseHarnessTests
         Assert.Contains(aliceAfter, m => m is ShutdownMessage);
         Assert.Single(aliceAfter.OfType<ClosingSignedMessage>());
         close.AssertClosedTogether();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_BothClosing_When_Reconnect_Then_FunderProposesTheAgreedFeeAgainOnce(bool sendFeeRange)
+    {
+        // Arrange - NL-725: both sides agreed and are Closing; after a reconnection a fundee that lost the agreement
+        // (CLN restarts closingd and waits) needs the funder's closing_signed, which a Closing funder never sent
+        using var close = new CloseHarness(aliceSendsFeeRange: sendFeeRange, bobSendsFeeRange: sendFeeRange);
+        await close.CloseService(close.Alice).CloseChannelAsync(TwoNodeHarness.ChannelId, new ChannelCloseRequest(),
+                                                                TestContext.Current.CancellationToken);
+        await close.Harness.PumpAsync();
+        var tx = close.AssertClosedTogether();
+        var fee = TwoNodeHarness.FundingSatoshis - (ulong)tx.Outputs.Sum(o => o.Value.Satoshi);
+        var bobBefore = close.Bob.Received.Count;
+        var aliceBefore = close.Alice.Received.Count;
+
+        // Act
+        await close.Harness.DisconnectAsync();
+        await close.Harness.ReconnectAsync();
+        await close.Harness.PumpAsync();
+
+        // Assert: Alice (the funder) re-sent her shutdown, then the agreed fee once, with fee_range [fee, fee] when she
+        // sends ranges; Bob answered it once; nothing else followed and both kept the same transaction
+        var bobAfter = close.Bob.Received.Skip(bobBefore).ToList();
+        var aliceAfter = close.Alice.Received.Skip(aliceBefore).ToList();
+        Assert.Contains(bobAfter, m => m is ShutdownMessage);
+        var proposed = Assert.Single(bobAfter.OfType<ClosingSignedMessage>());
+        Assert.True(bobAfter.IndexOf(proposed) > bobAfter.FindIndex(m => m is ShutdownMessage));
+        Assert.Equal(fee, (ulong)proposed.Payload.FeeAmount.Satoshi);
+        if (sendFeeRange)
+        {
+            Assert.NotNull(proposed.FeeRangeTlv);
+            Assert.Equal(fee, (ulong)proposed.FeeRangeTlv.MinFeeAmount.Satoshi);
+            Assert.Equal(fee, (ulong)proposed.FeeRangeTlv.MaxFeeAmount.Satoshi);
+        }
+        else
+        {
+            Assert.Null(proposed.FeeRangeTlv);
+        }
+
+        var answered = Assert.Single(aliceAfter.OfType<ClosingSignedMessage>());
+        Assert.Equal(fee, (ulong)answered.Payload.FeeAmount.Satoshi);
+        Assert.Equal(ChannelState.Closing, close.Alice.Channel.State);
+        Assert.Equal(ChannelState.Closing, close.Bob.Channel.State);
+        Assert.Equal(tx.GetHash(), close.AssertClosedTogether().GetHash());
     }
 
     [Fact]

@@ -9,8 +9,10 @@ using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Financial;
 using Domain.Accounting.Financial.Classification;
+using Domain.Accounting.Financial.Reports;
 using Domain.Accounting.Interfaces;
 using Domain.Accounting.Models;
+using Domain.Accounting.Prices;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
 using Domain.Client.Exceptions;
@@ -74,9 +76,19 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
                                            ILogger<AccountingClassificationService> logger,
                                            IOptions<AccountingOptions>? options = null, IAccountingBooks? books = null,
                                            IAccountingEventSealer? sealer = null, TimeProvider? timeProvider = null,
-                                           IAccountingAdjustmentSink? adjustmentSink = null)
+                                           IAccountingAdjustmentSink? adjustmentSink = null,
+                                           IOptions<AccountingPriceOptions>? priceOptions = null)
     {
         _sink = adjustmentSink ?? NullAccountingAdjustmentSink.Instance;
+        try
+        {
+            Currency = AccountingFiat.NormalizeCurrency(priceOptions?.Value.Currency);
+        }
+        catch (ArgumentException)
+        {
+            Currency = AccountingFiat.DefaultCurrency;
+        }
+
         _scopeFactory = scopeFactory;
         _logger = logger;
         _options = options?.Value ?? new AccountingOptions();
@@ -89,6 +101,9 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
 
     /// <summary>The financial chart in effect.</summary>
     public FinancialChart Chart { get; }
+
+    /// <summary>The financial book's currency (<c>Accounting:Prices:Currency</c>).</summary>
+    public string Currency { get; }
 
     /// <summary>The profile in effect.</summary>
     public AccountingProfile Profile => _options.Profile;
@@ -559,8 +574,10 @@ public sealed class AccountingClassificationService : IAccountingClassificationA
             if (!classification.HasClassifiableLine)
                 return null;
 
+            // A line left unvalued by a forced close moves at 0 in the book's currency, never valued later: its value
+            // comes with its price adjustment, posted where the line is then (NL-681)
             var moves = AccountingReclassification.PlanMove(
-                entries, role => engine.AccountNameOf(role, accountingEvent, classification));
+                entries, role => engine.AccountNameOf(role, accountingEvent, classification), Currency);
             if (moves.Count == 0)
                 return null;
 

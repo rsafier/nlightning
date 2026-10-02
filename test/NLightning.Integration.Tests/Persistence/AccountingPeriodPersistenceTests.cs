@@ -123,6 +123,17 @@ public class AccountingPeriodPersistenceTests
                                                    TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public async Task Given_ALateFactAfterTheClose_When_TheFinancialBookIsResetToTheClose_Then_TheSharedRoundTripHolds()
+    {
+        // Arrange (NL-662, NL-671: the SQLite run of the round trip the Docker Postgres/SQL Server tests share)
+        using var database = new SqliteTestDatabase();
+
+        // Act & Assert
+        await AccountingBulkStatementsRoundTrip.AssertResetToCloseAsync(() => database.CreateContext(),
+                                                                        TestContext.Current.CancellationToken);
+    }
+
     /// <summary>
     /// Financial book: entry 1/0 (September, closed), entry 2/0 (October, open, unvalued), entry 2/1 (an adjustment);
     /// lots 1 (closed, 1,000), 2 (imported, 500), 3 (opened by entry 2/0), 4 (opened by the adjustment, 40); reliefs

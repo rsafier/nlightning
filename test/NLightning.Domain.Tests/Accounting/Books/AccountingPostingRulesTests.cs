@@ -283,6 +283,23 @@ public class AccountingPostingRulesTests
     }
 
     [Fact]
+    public void Given_OurAnchorsHtlcTransactionWithWalletFeeInputs_When_Posted_Then_TheWalletsFeeComesOutOfClearing()
+    {
+        // Arrange (NL-748): our anchors HTLC-success of a counted incoming HTLC keeps the HTLC's value on its
+        // second-level output; its 268 sat fee was paid by a wallet input (whose spend and change are wallet events)
+        var claimed = Resolution(AccountingEventKind.OutputResolved, amount: 0, fee: 268_000,
+                                 pendingOut: 20_000_000, pendingIn: 20_000_000, wallet: 0, counted: true, by: "us",
+                                 ("htlcDirection", "incoming"), ("valueBookedBy", "invoice"),
+                                 ("walletFeeMsat", "268000"));
+
+        // Act
+        var postings = Post(claimed);
+
+        // Assert: no gain, loss or channel movement; the fee is a sweep fee against the clearing account
+        AssertPostings(postings, (AccountRole.Clearing, -268_000), (AccountRole.FeeSweep, 268_000));
+    }
+
+    [Fact]
     public void Given_AnIncomingHtlcWeClaimedWhoseValueAnInvoiceBooked_When_Posted_Then_TheChannelsAreCredited()
     {
         // Arrange: rule (a), an uncounted incoming HTLC claimed with the preimage

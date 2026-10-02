@@ -169,6 +169,117 @@ public sealed class LdkClient(DockerClient client, string containerName, string 
     public async Task<JsonArray> ListPaymentsAsync(CancellationToken cancellationToken) =>
         (await RunAsync("list-payments", cancellationToken))["list"]?.AsArray() ?? [];
 
+    /// <summary>
+    /// <c>open-channel ... --announce-channel</c> (NL-556): a public channel, which LDK Node opens only when it has an
+    /// alias and listening addresses (<see cref="Fixtures.LdkFixture"/> configures both).
+    /// </summary>
+    /// <returns>LDK's <c>user_channel_id</c>.</returns>
+    public async Task<string> OpenAnnouncedChannelAsync(string nodeId, string hostPort, long channelSat,
+                                                        CancellationToken cancellationToken)
+    {
+        var result = await RunAsync("open-channel", cancellationToken, nodeId, hostPort, $"{channelSat}sat",
+                                    "--announce-channel");
+        return result["user_channel_id"]!.GetValue<string>();
+    }
+
+    /// <summary><c>force-close-channel &lt;user_channel_id&gt; &lt;peer&gt;</c>: LDK broadcasts its commitment.</summary>
+    public Task<JsonNode> ForceCloseChannelAsync(string userChannelId, string peerNodeId,
+                                                 CancellationToken cancellationToken) =>
+        RunAsync("force-close-channel", cancellationToken, userChannelId, peerNodeId, "--force-close-reason",
+                 "nltg interop proof");
+
+    /// <summary>
+    /// <c>bolt11-receive-for-hash &lt;hash&gt; &lt;sat&gt;</c>: a hold invoice; LDK keeps the HTLC until
+    /// <see cref="Bolt11ClaimForIdAsync"/> or <see cref="Bolt11FailForIdAsync"/>.
+    /// </summary>
+    /// <returns>The invoice.</returns>
+    public async Task<string> Bolt11ReceiveForHashAsync(string paymentHashHex, long amountSat, string description,
+                                                        CancellationToken cancellationToken) =>
+        (await RunAsync("bolt11-receive-for-hash", cancellationToken, paymentHashHex, $"{amountSat}sat", "-d",
+                        description))["invoice"]!.GetValue<string>();
+
+    /// <summary>
+    /// <c>bolt11-claim-for-id &lt;payment_id&gt; &lt;preimage&gt;</c>: LDK Node's <c>payment_id</c> of the held payment
+    /// (<c>list-payments</c>; for a hold invoice it is not the payment hash).
+    /// </summary>
+    public Task<JsonNode> Bolt11ClaimForIdAsync(string paymentIdHex, string preimageHex,
+                                                CancellationToken cancellationToken) =>
+        RunAsync("bolt11-claim-for-id", cancellationToken, paymentIdHex, preimageHex);
+
+    /// <summary><c>bolt11-fail-for-id &lt;payment_id&gt;</c>: fails a held payment back.</summary>
+    public Task<JsonNode> Bolt11FailForIdAsync(string paymentIdHex, CancellationToken cancellationToken) =>
+        RunAsync("bolt11-fail-for-id", cancellationToken, paymentIdHex);
+
+    /// <summary>
+    /// <c>bolt12-receive &lt;description&gt; [amount]</c>: a BOLT 12 offer (amountless without
+    /// <paramref name="amountSat"/>).
+    /// </summary>
+    /// <returns><c>offer</c> and <c>offer_id</c>.</returns>
+    public Task<JsonNode> Bolt12ReceiveAsync(string description, long? amountSat,
+                                             CancellationToken cancellationToken) =>
+        amountSat is { } amount
+            ? RunAsync("bolt12-receive", cancellationToken, description, $"{amount}sat")
+            : RunAsync("bolt12-receive", cancellationToken, description);
+
+    /// <summary>
+    /// <c>pay &lt;offer&gt; [amount] --wait</c>: LDK fetches our invoice over onion messages and pays it; the payment's
+    /// details once it succeeded (a failure or a timeout throws <see cref="LdkCliException"/>).
+    /// </summary>
+    public Task<JsonNode> PayOfferAsync(string offer, long? amountMsat, int timeoutSeconds,
+                                        CancellationToken cancellationToken)
+    {
+        List<string> args = [offer];
+        if (amountMsat is { } amount)
+            args.Add($"{amount}msat");
+        args.AddRange(["--wait", "--wait-timeout",
+                       timeoutSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+        return RunAsync("pay", cancellationToken, [.. args]);
+    }
+
+    /// <summary>
+    /// <c>spontaneous-send &lt;node&gt; &lt;msat&gt; [--custom-tlv type:hex]...</c> (keysend).
+    /// </summary>
+    /// <returns>LDK's <c>payment_id</c>.</returns>
+    public async Task<string> SpontaneousSendAsync(string nodeId, long amountMsat, CancellationToken cancellationToken,
+                                                   params string[] customTlvs)
+    {
+        List<string> args = [nodeId, $"{amountMsat}msat"];
+        foreach (var tlv in customTlvs)
+            args.AddRange(["--custom-tlv", tlv]);
+        return (await RunAsync("spontaneous-send", cancellationToken, [.. args]))["payment_id"]!.GetValue<string>();
+    }
+
+    /// <summary>The payment's <c>status</c> (<c>PENDING</c>, <c>SUCCEEDED</c>, <c>FAILED</c>), or null.</summary>
+    public static string? StatusOf(JsonNode? payment) => payment?["status"]?.ToString();
+
+    /// <summary><c>graph-get-channel &lt;scid&gt;</c>: the channel in LDK's network graph, or null.</summary>
+    public async Task<JsonNode?> GraphGetChannelAsync(ulong shortChannelId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await RunAsync("graph-get-channel", cancellationToken,
+                                   shortChannelId.ToString(System.Globalization.CultureInfo.InvariantCulture)))
+                ["channel"];
+        }
+        catch (LdkCliException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary><c>graph-get-node &lt;id&gt;</c>: the node in LDK's network graph, or null.</summary>
+    public async Task<JsonNode?> GraphGetNodeAsync(string nodeId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await RunAsync("graph-get-node", cancellationToken, nodeId))["node"];
+        }
+        catch (LdkCliException)
+        {
+            return null;
+        }
+    }
+
     private async Task<(long ExitCode, string Stdout, string Stderr)> ExecAsync(
         string subcommand, IEnumerable<string> args, CancellationToken cancellationToken)
     {

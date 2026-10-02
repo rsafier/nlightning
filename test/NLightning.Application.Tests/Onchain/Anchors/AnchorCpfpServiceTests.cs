@@ -90,8 +90,15 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         _memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
                .Returns((Func<ChannelModel, bool> predicate) => predicate(_channel) ? [_channel] : []);
         _monitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(500);
+        // NL-611: an anchor sweep is a stored AnchorSweep row published like a child; the tests keep it apart
         _monitor.Setup(m => m.PublishAsync(It.IsAny<BroadcastTransactionModel>()))
-                .Callback<BroadcastTransactionModel>(_published.Add)
+                .Callback<BroadcastTransactionModel>(row =>
+                 {
+                     if (row.Purpose == BroadcastPurpose.AnchorSweep)
+                         _sweeps.Add(row.ToSignedTransaction());
+                     else
+                         _published.Add(row);
+                 })
                 .ReturnsAsync(true);
         _monitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
                 .Callback<SignedTransaction>(_sweeps.Add)
@@ -721,6 +728,35 @@ public sealed class AnchorCpfpServiceTests : IDisposable
                         error.ToString());
         Assert.Equal(_walletScript, sweep.Outputs.Single().ScriptPubKey.ToBytes());
         Assert.Empty(_store.Children);
+
+        // NL-611: the sweep was stored as an AnchorSweep row of the channel, with its fee, before it was published
+        var row = Assert.Single(_store.Rows, r => r.Purpose == BroadcastPurpose.AnchorSweep);
+        Assert.Equal(new TxId(sweep.GetHash().ToBytes()), row.TransactionId);
+        Assert.Equal(_channel.ChannelId, row.ChannelId);
+        Assert.Equal(BroadcastState.Pending, row.State);
+        Assert.Equal(660 - sweep.Outputs.Single().Value.Satoshi, (long)row.Fee!.Satoshi);
+    }
+
+    [Fact]
+    public async Task Given_ARefusedAnchorSweep_When_Published_Then_ItsRowIsGivenUpAndNotRetried()
+    {
+        // Arrange (NL-611): bitcoind refuses the sweep (someone took an anchor first)
+        _estimate = 2_000;
+        var commitment = BroadcastCommitment();
+        commitment.MarkConfirmed(500, OnchainTestStore.BlockHash(1));
+        _estimate = 253;
+        _monitor.Setup(m => m.PublishAsync(It.Is<BroadcastTransactionModel>(r => r.Purpose == BroadcastPurpose.AnchorSweep)))
+                .Callback<BroadcastTransactionModel>(r => _sweeps.Add(r.ToSignedTransaction()))
+                .ReturnsAsync(false);
+
+        // Act
+        await Service.RunOnceAsync(515, TestContext.Current.CancellationToken);
+        await Service.RunOnceAsync(516, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Single(_sweeps);
+        Assert.Equal(BroadcastState.Abandoned,
+                     Assert.Single(_store.Rows, r => r.Purpose == BroadcastPurpose.AnchorSweep).State);
     }
 
     [Fact]

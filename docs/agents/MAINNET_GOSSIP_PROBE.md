@@ -90,7 +90,9 @@ below are the `wip/fafo` ones, with the probe branch's in parentheses.
 - **Eclair (ACINQ) stops answering `query_short_channel_ids`** after 4 queries of 200 channels (800 announcements) in
   every run: the fifth gets no `reply_short_channel_ids_end` within `SyncReplyTimeout` (2 min), the connection's
   query slot is closed and it gets the live filter; its live gossip keeps flowing (9,000 updates over the hour).
-  Possibly a per-peer query limit on a node we have no channel with (NL-407, not diagnosed).
+  Possibly a per-peer query limit on a node we have no channel with (NL-407). Diagnosed later from Eclair's source: a
+  per-connection limit of 5 gossip queries per second (range and scid queries together), the rest silently dropped;
+  our querier keeps `Gossip:MinQueryInterval` (250 ms) between queries since lane b10-eclair.
 - LND answers a 200-channel query in about 4 s (its outbound gossip rate limit), so a full sync from LND alone takes
   about 11 minutes.
 - Nearly every `channel_update` of the initial sync is first orphaned (53,593 in run1): announcements and updates
@@ -157,7 +159,7 @@ checkpointed at the restart (0.5 MiB) and stayed under 4 MiB.
 | NL-404 | Low | fixed (e64b5f4; 924df96) | With `gossip_queries_ex`, unknown channels whose both update timestamps are stale or missing are not asked for (`Gossip:SkipChannelsStaleFor`, 14 days; LND's zombie rule). Mainnet peers report almost none today (see NL-406). |
 | NL-405 | Low (memory) | fixed (63ecfbe; e771eb4) | `OriginTrackingGossipIngress` recorded up to 100,000 origins (about 15 MB) while the relay of others' gossip was off. |
 | NL-406 | Medium (memory, spec) | open | 24 % of the graph (9,774 channels) are announcements without any `channel_update`, sent by CLN (mostly on our `gossip_timestamp_filter`) against BOLT 7's MUST NOT. We store them; they are removed only by the pruner's stale rule 28 days after they arrive (and only while blocks come), and come back with the next CLN connection. Proposal: keep an announcement without update in a bounded pending cache (like the orphan cache, TTL) and store it only with its first update; or a zombie index (LND) of pruned SCIDs. Upstream CLN issue worth reporting. |
-| NL-407 | Low (interop) | open | ACINQ (Eclair) stops answering `query_short_channel_ids` after the fourth 200-channel query from a peer without channels; we end the querying of that connection after 2 min. To check against Eclair's source (a per-peer query budget?) and with a peer we have a channel with. |
+| NL-407 | Low (interop) | fixed (lane b10-eclair) | ACINQ (Eclair) stops answering `query_short_channel_ids` after the fourth 200-channel query from a peer without channels; we end the querying of that connection after 2 min. Cause (Eclair 0.14.3 `PeerConnection`): at most `router.sync.max-queries-per-second` (5) gossip queries per connection per second, range and scid queries together, the rest dropped without a reply. Fix: `Gossip:MinQueryInterval` (250 ms) between our queries on one connection; Docker `Interop/Eclair/EclairGossipTests` (b) all answered, (c) unpaced one dropped. |
 | NL-408 | Low (efficiency) | open | The initial sync orphans nearly every `channel_update` (workers race the announcement of the same channel) and replays it. Partitioning the ingress queue by short channel id would keep a channel's messages on one worker. |
 
 Carried and confirmed: NL-373 (memory budget: budget the GC heap, see above), NL-376 (the soak's WAL concern does not

@@ -216,6 +216,12 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .HasColumnType("nchar(3)")
                         .IsFixedLength();
 
+                    b.Property<long?>("HeldSince")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("Lender")
+                        .HasColumnType("int");
+
                     b.Property<byte>("Origin")
                         .HasColumnType("tinyint");
 
@@ -268,6 +274,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<decimal?>("FiatCostRelieved")
                         .HasPrecision(28, 8)
                         .HasColumnType("decimal(28,8)");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("LedgerSeq")
                         .HasColumnType("bigint");
@@ -895,6 +904,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<bool?>("ChangeAddressIsChange")
                         .HasColumnType("bit");
 
+                    b.Property<byte?>("CloseProtocol")
+                        .HasColumnType("tinyint");
+
                     b.Property<byte[]>("ClosingTransaction")
                         .HasColumnType("varbinary(max)");
 
@@ -953,6 +965,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<long?>("LocalFundingContributionSatoshis")
                         .HasColumnType("bigint");
+
+                    b.Property<bool?>("LocalIsCloser")
+                        .HasColumnType("bit");
 
                     b.Property<decimal>("LocalNextHtlcId")
                         .HasColumnType("decimal(20,0)");

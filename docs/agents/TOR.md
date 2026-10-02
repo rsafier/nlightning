@@ -9,11 +9,18 @@ whole reply, authenticates with COOKIE or a password only, detaches its services
 
 ## Modes
 
-| `Node:Tor:Mode` | Outbound `.onion` | Outbound IPv4/IPv6/DNS | Onion service (`OnionServiceEnabled` unset) | BOLT 10 DNS seeds | Fee / Esplora HTTP |
-|---|---|---|---|---|---|
-| `Off` (default) | refused: "set Node:Tor:Mode" | direct | off | as configured | direct |
-| `Hybrid` | through Tor | direct | off (set `OnionServiceEnabled` true to publish one) | as configured | direct |
-| `TorOnly` | through Tor | through Tor (exit), host names resolved by Tor; loopback and private-network IPs direct | on | through Tor (`Bootstrap:TorNameServer`, NL-571) | through Tor |
+| `Node:Tor:Mode` | Outbound `.onion` | Outbound IPv4/IPv6/DNS | Onion service (`OnionServiceEnabled` unset) | BOLT 10 DNS seeds | Fee / Esplora HTTP | Accounting price HTTP |
+|---|---|---|---|---|---|---|
+| `Off` (default) | refused: "set Node:Tor:Mode" | direct | off | as configured | direct | direct |
+| `Hybrid` | through Tor | direct | off (set `OnionServiceEnabled` true to publish one) | as configured | direct (a `.onion` URL through Tor) | through Tor (NL-677) |
+| `TorOnly` | through Tor | through Tor (exit), host names resolved by Tor; loopback and private-network IPs direct | on | through Tor (`Bootstrap:TorNameServer`, NL-571) | through Tor | through Tor |
+
+In every mode with Tor on, the node's HTTP clients reach a loopback or private-network IP literal and `localhost`
+directly (Tor refuses them; a self-hosted mempool or Esplora on the host or LAN), and a `.onion` URL through Tor
+(`TorHttpHandler.RoutesThroughTor`). The accounting price source (`Accounting:Prices:Url`) goes through Tor whenever Tor
+is on, `Hybrid` included (owner decision (a) on NL-677, 2026-10-02): the hours it asks for mark when the node moved
+money (SECURITY_REVIEW SR-21), so they never go out from the node's IP once Tor is configured; with Tor `Off` they
+still do (use `Accounting:Prices:Source=Csv` and `accounting prices import` to ask nothing).
 
 `Hybrid` is the "clearnet node that can peer with Tor-only nodes" setting. `TorOnly` is the private node.
 
@@ -147,7 +154,12 @@ CookieAuthFileGroupReadable 1
 - **Start-up warnings** (`TorStartupChecks`) in `TorOnly`: a non-loopback listen address allowed by
   `AllowClearnetListen`, clearnet entries in `Gossip:AnnounceAddresses`, fee estimates over HTTP, or no onion service at
   all. Tor-only mode without the SOCKS dialer registered refuses to build the HTTP handler (never a clearnet fallback,
-  NL-580).
+  NL-580), and so does any Tor mode for the price source's handler (NL-677).
+- **HTTP clients** (`Transport/Tor/TorHttpHandler`): a plain `SocketsHttpHandler` with Tor `Off`; with Tor on, one
+  `ConnectCallback` routes per host: local IP literals and `localhost` direct, `.onion` through Tor, anything else
+  through Tor in `TorOnly` or for a client created with `throughTorWhenEnabled` (the price source), else direct. Their
+  answers are size-capped and plain `http://` is refused except to loopback and `.onion` hosts (NL-678,
+  SECURITY_REVIEW SR-22).
 
 ## What Tor-only mode does not cover
 
@@ -175,8 +187,12 @@ set `OnionServiceEnabled` false, host the onion service in Arti's own configurat
   COOKIE-only/NULL ports, redaction, a faulted client and bounded lines, onion service lifecycle incl. Tor restart, the
   closing port's backoff and a corrupt or shared key, the configured client authorization and PoW defenses on the exact
   `ADD_ONION` line (NL-573), `TcpService` routes per mode incl. direct loopback in `TorOnly`, the
-  Tor network timeout, the Tor-only HTTP handler, the start-up checks) over the fakes
+  Tor network timeout, the HTTP handler per mode (the Tor-only handler, `Hybrid` direct to a local server, the
+  price source's handler through Tor in `Hybrid`, loopback direct in `TorOnly`, `RoutesThroughTor` per host; NL-677),
+  the start-up checks) over the fakes
   `test/NLightning.Tests.Utils/Mocks/{FakeSocks5Proxy,FakeTorControlPort}`,
+  `test/NLightning.Infrastructure.Bitcoin.Tests/Accounting/Prices/PriceSourceTorRoutingTests` (the production price
+  registration asks Tor for the host by name in `Hybrid` and `TorOnly`, NL-677),
   `test/NLightning.Infrastructure.Tests/Protocol/Dns/` (the DNS-over-TCP wire codec, and the seed resolver end to end
   through the SOCKS5 proxy, NL-571),
   `PeerManagerConnectTests.Given_ATorOnlyNode_When_ItDialsAnOnionPeer_*`: two real peer managers, the BOLT 8 handshake
@@ -187,4 +203,25 @@ set `OnionServiceEnabled` false, host the onion service in Arti's own configurat
   `dotnet run --project test/NLightning.Infrastructure.Tests -f net10.0 -- -class NLightning.Infrastructure.Tests.Transport.Tor.TorLiveTests -explicit only`.
   Run on 2026-09-30 against Tor 0.4.8.10 with TCP and Unix control and SOCKS sockets: SAFECOOKIE, `ADD_ONION` with the
   saved key (Tor answers 550 collision to a second registration while ours runs), the same address after a restart, and
-  Tor's real SOCKS5 refusal (`0x06`, no circuits in that sandbox). No Docker proof against LND/CLN over Tor yet (NL-572).
+  Tor's real SOCKS5 refusal (`0x06`, no circuits in that sandbox). The Docker proof against CLN came later (NL-572,
+  next item).
+- Docker interop with CLN over Tor (NL-572, `test/NLightning.Integration.Tests/Docker/Interop/Tor/ClnTorInteropTests`,
+  fixture `Fixtures/TorInteropFixture`, trait `Category=Interop.Tor`; `scripts/run-interop.sh tor`, 3.5-5 min from
+  the host; **needs Internet**: the onion services are on the public Tor network). A C Tor client (`nltg-tor`, image
+  `nltg-tor:alpine3.22` built from `test/Docker/tor` when missing: Alpine's tor, control port with a hashed password,
+  `SocksPort`/`ControlPort` published on the host's `127.0.0.1`) hosts CLN's onion service from `torrc`
+  (`HiddenServiceDir`); CLN v26.06.8 (`nltg-tor-cln`) shares the Tor container's network namespace, listens on
+  `127.0.0.1:9735` only (so the onion service is the only way in; CLN lists such a peer at `127.0.0.1:<port>`) and
+  dials onions through `--proxy=127.0.0.1:9050`. Our node's onion service is registered through the control port with
+  the password, its target `host.docker.internal` as resolved in the Tor container, and our listener on `0.0.0.0`
+  (`AllowClearnetListen` in `TorOnly`); `NLightningTestNode` starts and stops `ITorOnionService` as the daemon does.
+  Proven on 2026-10-02 (Tor 0.4.8 on Alpine 3.22, OrbStack): (1) `Hybrid`, no onion service of ours: we dial CLN's
+  onion, fund a channel (500k, 150k pushed) and pay both ways; (2) `TorOnly` with our onion service: the same, then
+  Tor is killed (`SIGKILL`, the container's shell starts it again) and our node re-adds its onion service with the
+  same key and address, redials CLN's onion through the reconnect backoff, reestablishes and pays both ways again;
+  (3) `TorOnly`: CLN dials our onion service (`connect` to `<ours>.onion`), funds a channel to us over that
+  connection, and payments work both ways. Not covered: LND (`tor.active`, `tor.v3`; the same fixture shape with
+  LND in Tor's network namespace would do), CLN's own `statictor`/`autotor` service (CLN's onion is a `torrc` one
+  here), a private Tor network (chutney) for a hermetic run, and an inbound onion peer arriving from loopback (here
+  Tor is in a container, so inbound connections come from `host.docker.internal`'s address, not loopback, and the
+  NL-579 announced-onion rule is not exercised).

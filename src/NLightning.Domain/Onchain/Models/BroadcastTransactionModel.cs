@@ -126,12 +126,10 @@ public sealed class BroadcastTransactionModel
     /// <summary>The transaction as a <see cref="SignedTransaction"/>.</summary>
     public SignedTransaction ToSignedTransaction() => new(TransactionId, RawTransaction);
 
-    /// <summary>A processed block holds it.</summary>
+    /// <summary>A processed block holds it. The block decides (NL-606): a replaced or abandoned one that confirmed anyway
+    /// is confirmed.</summary>
     public void MarkConfirmed(uint height, Hash blockHash)
     {
-        if (State is BroadcastState.Replaced or BroadcastState.Abandoned)
-            return;
-
         State = BroadcastState.Confirmed;
         ConfirmedHeight = height;
         ConfirmedBlockHash = blockHash;

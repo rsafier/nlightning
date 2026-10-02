@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -59,6 +58,7 @@ using Infrastructure.Repositories;
 using Infrastructure.Serialization;
 using InteractiveTx.TestDoubles;
 using NLightning.Tests.Utils;
+using TestUtils;
 
 /// <summary>
 /// Two in-process nodes for the dual-funded open (splicing plan wave DF): each a real <see cref="ChannelManager"/> with
@@ -245,7 +245,8 @@ internal sealed class DualFundHarness : IAsyncDisposable
         foreach (var node in Nodes)
             await node.StopAsync();
 
-        SqliteConnection.ClearAllPools();
+        foreach (var node in Nodes)
+            SqliteTestPools.Clear(node.DatabasePath);
         try
         {
             Directory.Delete(_directory, true);

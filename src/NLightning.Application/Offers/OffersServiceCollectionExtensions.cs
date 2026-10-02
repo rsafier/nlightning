@@ -16,6 +16,8 @@ using Receive;
 /// </summary>
 public static class OffersServiceCollectionExtensions
 {
+    private static int s_marginUpgradeLogged;
+
     /// <summary>
     /// Registers <see cref="OfferService"/> (as itself and <see cref="IOfferService"/>), the invoice_request handler
     /// <see cref="InvoiceRequestHandler"/> (an <see cref="IOnionMessageHandler"/> for type 64, picked up by the
@@ -30,7 +32,7 @@ public static class OffersServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddOffersServices(this IServiceCollection services)
     {
-        services.AddOptions<OfferOptions>();
+        services.AddOptions<OfferOptions>().PostConfigure(options => options.UpgradeFormerDefaults());
         services.TryAddSingleton(sp => ActivatorUtilities.CreateInstance<OfferPathIds>(sp));
         services.TryAddSingleton(sp =>
         {
@@ -59,11 +61,24 @@ public static class OffersServiceCollectionExtensions
     }
 
     /// <summary>
-    /// The configured <see cref="OfferOptions"/>, or the defaults when they are invalid (logged as an error).
+    /// The configured <see cref="OfferOptions"/>, or the defaults when they are invalid (logged as an error); a margin
+    /// raised from the former template default is logged once as a warning (NL-743).
     /// </summary>
     private static OfferOptions GetOptions(IServiceProvider serviceProvider)
     {
         var options = serviceProvider.GetService<IOptions<OfferOptions>>()?.Value ?? new OfferOptions();
+        if (options.PathLifetimeMarginRaisedFromFormerDefault && Interlocked.Exchange(ref s_marginUpgradeLogged, 1) == 0)
+        {
+            serviceProvider.GetService<ILoggerFactory>()?.CreateLogger(typeof(OffersServiceCollectionExtensions))
+                           .LogWarning("Offers:PathLifetimeMarginBlocks is {Former}, the default this node's "
+                                     + "appsettings.json was written with: using {Default} instead, since payers add "
+                                     + "a random delta to the final expiry (Eclair up to 350 blocks, LDK up to 432) "
+                                     + "and were refused (NL-719, NL-723, NL-743). Set it to {Default} in the file, or "
+                                     + "to another value to pin one", OfferOptions.FormerDefaultPathLifetimeMarginBlocks,
+                                       OfferOptions.DefaultPathLifetimeMarginBlocks,
+                                       OfferOptions.DefaultPathLifetimeMarginBlocks);
+        }
+
         var errors = options.GetValidationErrors();
         if (errors.Count == 0)
             return options;

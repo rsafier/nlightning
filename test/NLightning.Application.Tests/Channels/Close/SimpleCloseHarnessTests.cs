@@ -344,6 +344,8 @@ public class SimpleCloseHarnessTests
         Assert.Equal(777U, sig.Payload.LockTime);
         var stored = AssertSimpleClose(close, close.Bob.Channel.ClosingTransaction!, 777);
         Assert.Equal(AliceSat - 3_000, CloseHarness.OutputTo(stored, s_aliceNewScript));
+        Assert.Equal(MutualCloseProtocol.Simple, close.Bob.Channel.CloseProtocol); // NL-610: Alice was the closer
+        Assert.False(close.Bob.Channel.LocalIsCloser);
         Assert.Contains(close.Published(close.Bob), t => t.TxId == close.Bob.Channel.ClosingTransaction!.TxId);
 
         // B2-SC-E10: Bob's next closing_complete pays Alice's new script, and a spend by it is a mutual close
@@ -488,6 +490,8 @@ public class SimpleCloseHarnessTests
         Assert.Single(stored.Outputs);
         Assert.Equal(AliceSat - (long)fee, CloseHarness.OutputTo(stored, CloseHarness.AliceScript));
         Assert.Equal(close.Alice.Channel.ClosingTransaction!.TxId, close.Published(close.Alice)[^1].TxId);
+        Assert.Equal(MutualCloseProtocol.Simple, close.Alice.Channel.CloseProtocol); // NL-610: we were the closer
+        Assert.True(close.Alice.Channel.LocalIsCloser);
     }
 
     #endregion

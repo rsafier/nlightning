@@ -11,8 +11,8 @@ public class NodeOptions
     // private FeatureOptions _features;
 
     /// <summary>
-    /// The network to connect to: "mainnet", "testnet", "regtest" or "signet" (a custom signet such as Mutinynet is
-    /// "signet" here, named by <see cref="CustomSignet"/>). Set it from configuration through
+    /// The network to connect to: "mainnet", "testnet", "testnet4", "regtest" or "signet" (a custom signet such as
+    /// Mutinynet is "signet" here, named by <see cref="CustomSignet"/>). Set it from configuration through
     /// <see cref="BitcoinNetwork.Resolve"/>, which fails on an unknown name.
     /// </summary>
     public BitcoinNetwork BitcoinNetwork { get; set; } = NetworkConstants.Mainnet;
@@ -71,6 +71,14 @@ public class NodeOptions
     public TimeSpan NetworkTimeout { get; set; } = TimeSpan.FromSeconds(15);
 
     public bool MustTrimHtlcOutputs { get; set; }
+
+    /// <summary>
+    /// The <see cref="LightningMoney"/> members (<see cref="DustLimitAmount"/>, <see cref="HtlcMinimumAmount"/>,
+    /// <see cref="MinimumChannelSize"/>), which the configuration cannot set: a <see cref="LightningMoney"/> has no
+    /// settable members, so the binder leaves them unchanged, and the daemon refuses a file that names one (NL-338).
+    /// </summary>
+    public static readonly IReadOnlyList<string> UnboundMoneyKeys =
+        [nameof(DustLimitAmount), nameof(HtlcMinimumAmount), nameof(MinimumChannelSize)];
 
     public LightningMoney DustLimitAmount { get; set; } = LightningMoney.Satoshis(354);
 

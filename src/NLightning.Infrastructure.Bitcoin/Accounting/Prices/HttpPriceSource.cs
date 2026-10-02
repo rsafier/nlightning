@@ -8,6 +8,7 @@ namespace NLightning.Infrastructure.Bitcoin.Accounting.Prices;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Financial;
 using Domain.Accounting.Prices;
+using Infrastructure.Transport.Http;
 
 /// <summary>
 /// mempool.space's historical price API as a price source (D-A11, NL-602 A3-T2):
@@ -15,11 +16,15 @@ using Domain.Accounting.Prices;
 /// <c>{"prices":[{"time":t,"USD":p,...}],"exchangeRates":{"USDEUR":r,...}}</c> with the hourly price point at or
 /// before the time. A currency the point does not carry is converted from USD through <c>exchangeRates</c>
 /// (<c>USD&lt;code&gt;</c>). Only the back-valuation job and <c>prices fetch</c> ask it; its <see cref="HttpClient"/>
-/// is built next to the fee service's and goes through Tor in <c>TorOnly</c>. A failure (network, status, body) is
-/// logged and answers null; the stored prices are the cache, so a price is asked once.
+/// is built next to the fee service's and goes through Tor whenever Tor is on (NL-677). The answer is read up to
+/// <see cref="MaxResponseBytes"/> (NL-678). A failure (network, status, body, size) is logged and answers null; the
+/// stored prices are the cache, so a price is asked once.
 /// </summary>
 public sealed class HttpPriceSource : IPriceSource
 {
+    /// <summary>The longest answer read (64 KiB, NL-678): a historical-price answer is a few hundred bytes.</summary>
+    public const int MaxResponseBytes = HttpResponseLimits.SmallResponseMaxBytes;
+
     private const string UsdCode = "USD";
 
     private readonly HttpClient _httpClient;
@@ -66,10 +71,17 @@ public sealed class HttpPriceSource : IPriceSource
             return null;
         }
 
+        // HttpClient.Timeout stops at the headers with ResponseHeadersRead: one deadline covers the request and the
+        // bounded body read, so a stalled body times out like a request (NL-732)
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_httpClient.Timeout != Timeout.InfiniteTimeSpan)
+            deadline.CancelAfter(_httpClient.Timeout);
+
         try
         {
-            using var response = await _httpClient.GetAsync(uri, HttpCompletionOption.ResponseContentRead,
-                                                            cancellationToken);
+            // The body is read bounded (NL-678), not buffered whole by the client
+            using var response = await _httpClient.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead,
+                                                            deadline.Token);
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("The price source answered {Status} for {Currency} at {Time:O}",
@@ -77,7 +89,8 @@ public sealed class HttpPriceSource : IPriceSource
                 return null;
             }
 
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            var body = await HttpResponseLimits.ReadBoundedStringAsync(response.Content, MaxResponseBytes,
+                                                                       deadline.Token);
             if (TryParse(body, code, out var priceTime, out var price, out var error))
                 return new AccountingPrice(0, code, priceTime, price, AccountingPriceSource.Http,
                                            _timeProvider.GetUtcNow());
@@ -90,10 +103,10 @@ public sealed class HttpPriceSource : IPriceSource
         {
             throw;
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException or IOException
                                       or InvalidOperationException)
         {
-            // TaskCanceledException without our cancellation is the client's timeout
+            // A cancellation without ours is the client's timeout or the deadline of the body read (NL-732)
             _logger.LogWarning("The price source could not be reached for {Currency} at {Time:O}: {Message}", code,
                                time, e.Message);
             return null;

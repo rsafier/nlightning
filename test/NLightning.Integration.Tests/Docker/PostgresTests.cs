@@ -11,6 +11,7 @@ using Infrastructure.Persistence.Providers;
 using Persistence;
 
 [Collection("postgres")]
+[Trait("Database", "Postgres")]
 public class PostgresTests
 {
     private readonly PostgresFixture _fixture;
@@ -309,6 +310,31 @@ public class PostgresTests
         // Act & Assert
         await WalletIssuanceSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
                                                         TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Given_PostgresFinancialBook_When_ResetToTheClose_Then_TheBulkStatementsHoldWithALateFact()
+    {
+        // Arrange (NL-662, NL-671: the correlated ExecuteDelete, the ExecuteUpdate of RemainingMsat + n, the late facts'
+        // List.Contains and the flag test of ResetToCloseAsync, in its own transaction, on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_accounting_reset");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await AccountingBulkStatementsRoundTrip.AssertResetToCloseAsync(
+            () => new NLightningDbContext(options, databaseTypeProvider), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Given_PostgresFinancialBook_When_RolledBack_Then_TheBulkStatementsHoldWithALateFact()
+    {
+        // Arrange (NL-662, NL-671: the same bulk statements in RollbackOpenEntriesAsync, on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_accounting_rollback");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await AccountingBulkStatementsRoundTrip.AssertRollbackAsync(
+            () => new NLightningDbContext(options, databaseTypeProvider), TestContext.Current.CancellationToken);
     }
 
     /// <summary>Options for a database of its own on the container's server, once the server accepts

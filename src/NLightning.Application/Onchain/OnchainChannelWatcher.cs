@@ -414,7 +414,7 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                 return;
 
             var key = await OnchainAccounting.NewKeyAsync(
-                          accounting, AccountingEventKeys.ChannelForceClosed(channel.ChannelId, spend.TxId), height,
+                          accounting, AccountingEventKeys.ChannelForceClosed(channel.ChannelId, spend.TxId),
                           CancellationToken.None);
             if (key is null)
                 return;
@@ -464,6 +464,11 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                     await OnchainAccounting.StageReversalAsync(accounting, resolution,
                                                                row.ResolvedHeight ?? old.SpentAtHeight, now,
                                                                CancellationToken.None);
+
+                // NL-608: the loss of a settled forward's incoming HTLC recorded with it
+                if (row.State is OutputResolutionState.Resolved or OutputResolutionState.Ignored)
+                    await OnchainResolutionExecutor.StageUpstreamForwardLossReversalAsync(
+                        accounting, channelId, old, row, now, CancellationToken.None);
             }
 
             var close = await OnchainAccounting.FindAsync(

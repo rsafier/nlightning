@@ -6,6 +6,7 @@ using Application.Accounting.Export.Financial;
 using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Financial;
+using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Financial.Lots;
 using Domain.Accounting.Models;
 using Domain.Accounting.Prices;
@@ -80,15 +81,18 @@ public sealed class FinancialBooksProjectorTests
         Assert.Equal(operational.Select(e => e.LedgerSeq), financial.Select(e => e.LedgerSeq));
         Assert.Null(kit.Projector.ProjectionError);
 
-        // Only the funding fee, the payment, the rebalance's fee, the close fee and the withdrawal dispose
+        // Only the funding fee, the payment, the rebalance's fee, the close fee and the withdrawal dispose; every other
+        // relief moves a part of a lot between our buckets (NL-657)
         var lots = await kit.ListLotsAsync();
-        var reliefs = lots.SelectMany(l => l.Reliefs).ToList();
+        var reliefs = lots.SelectMany(l => l.Reliefs).Where(r => r.IsDisposal).ToList();
         Assert.Equal([5L, 8L, 10L, 12L, 15L], reliefs.Select(r => r.LedgerSeq).Distinct().Order().ToArray());
         Assert.Equal([1_000_000L, 300_100_000L, 20_000L, 300_000L, 500_200_000L],
                      reliefs.GroupBy(r => r.LedgerSeq).OrderBy(g => g.Key).Select(g => g.Sum(r => r.Msat)).ToArray());
         var realized = reliefs.GroupBy(r => r.LedgerSeq).OrderBy(g => g.Key)
                               .Select(g => g.Sum(r => r.Proceeds!.Value - r.FiatCostRelieved!.Value)).ToArray();
         Assert.Equal(gains, realized);
+        Assert.All(lots.SelectMany(l => l.Reliefs).Where(r => !r.IsDisposal),
+                   r => Assert.Equal((AccountingLotReliefKind.Move, r.FiatCostRelieved), (r.Kind, r.Proceeds)));
 
         // The gain lines of the entries say the same (a credit to income:gains:realized)
         foreach (var (seq, gain) in new[] { 5L, 8L, 10L, 12L, 15L }.Zip(gains))
@@ -98,26 +102,40 @@ public sealed class FinancialBooksProjectorTests
             Assert.Equal(0m, entry.Postings.Sum(p => p.FiatAmount!.Value));
         }
 
-        // Four lots: the opening balance (estimated basis), the deposit, the invoice, the forward fee; the rebalance's
-        // incoming half and the transfers open none
+        // Four acquisitions: the opening balance (estimated basis), the deposit, the invoice, the forward fee; the
+        // rebalance's incoming half and the transfers acquire nothing (their lots are moved parts), and no bucket owes
+        // another
+        var acquired = lots.Where(l => l.Lot.ParentLotId is null).ToList();
         Assert.Equal([(AccountingLotOrigin.Opening, 1_000_000_000L, (decimal?)400m, true),
                       (AccountingLotOrigin.Acquisition, 1_000_000_000L, 500m, false),
                       (AccountingLotOrigin.Acquisition, 200_000_000L, 60m, false),
                       (AccountingLotOrigin.Acquisition, 50_000L, 0.035m, false)],
-                     lots.Select(l => (l.Lot.Origin, l.Lot.OriginalMsat, l.Lot.FiatCost, l.Lot.BasisEstimated))
-                         .ToArray());
+                     acquired.Select(l => (l.Lot.Origin, l.Lot.OriginalMsat, l.Lot.FiatCost, l.Lot.BasisEstimated))
+                             .ToArray());
+        Assert.DoesNotContain(lots, l => l.Lot.IsDebt);
+        Assert.All(lots.Where(l => l.Lot.ParentLotId is not null),
+                   l => Assert.NotEqual(l.Lot.AcquiredAt, l.Lot.HeldSinceOrAcquired));
 
-        // The pool holds what the assets hold, and the assets' fiat is the open lots' cost
+        // The lots hold what the assets hold, and each asset account carries the cost of its own bucket's open lots
         var balances = await kit.ReadAsync(u => u.AccountingBooksDbRepository.GetAccountBalancesAsync(
                                                     AccountingBook.Financial, TestContext.Current.CancellationToken));
         var assets = balances.Where(b => b.AccountName!.StartsWith("assets:", StringComparison.Ordinal)).ToList();
         Assert.Equal(1_398_430_000, lots.Sum(l => l.Lot.RemainingMsat));
         Assert.Equal(1_398_430_000, assets.Sum(b => b.BalanceMsat));
-        Assert.Equal(lots.Sum(l => l.Lot.FiatCost!.Value - l.Reliefs.Sum(r => r.FiatCostRelieved!.Value)),
-                     assets.Sum(b => b.FiatAmount));
+        Assert.DoesNotContain(assets, b => b.AccountName == "assets:cost-basis" && b.FiatAmount != 0m);
+        foreach (var account in assets.Where(b => FinancialLotRules.IsAsset(b.Account)))
+        {
+            var bucket = (AccountingLotBucket)(int)account.Account;
+            var held = lots.Where(l => l.Lot.Bucket == bucket).ToList();
+            Assert.Equal(held.Sum(l => l.Lot.RemainingMsat), account.BalanceMsat);
+            Assert.Equal(held.Sum(l => l.Lot.FiatCost!.Value - l.Reliefs.Sum(r => r.FiatCostRelieved!.Value)),
+                         account.FiatAmount);
+        }
 
-        // The rebalance is a transfer: its halves net to zero msat in equity:transfers:rebalance
-        Assert.Equal(0, balances.Where(b => b.AccountName == "equity:transfers:rebalance").Sum(b => b.BalanceMsat));
+        // The rebalance is a transfer: its halves net to zero in equity:transfers:rebalance, in msat and in fiat
+        Assert.Equal((0L, 0m), (balances.Where(b => b.AccountName == "equity:transfers:rebalance").Sum(b => b.BalanceMsat),
+                                balances.Where(b => b.AccountName == "equity:transfers:rebalance")
+                                        .Sum(b => b.FiatAmount)));
         Assert.Equal(0, balances.Where(b => b.AccountName == "assets:onchain:clearing").Sum(b => b.BalanceMsat));
     }
 
@@ -215,9 +233,14 @@ public sealed class FinancialBooksProjectorTests
         await kit.AddAsync(FinancialProjectorTestKit.Reversal(deposit, s_t3, 799_999));
         await kit.ProjectAsync();
 
-        // Assert: no lot of the deposit; the withdrawal relieves the opening lot (cost 40, proceeds 60: gain 20)
+        // Assert: no lot of the deposit; the withdrawal relieves the opening lot (cost 40, proceeds 60: gain 20),
+        // borrowed by the clearing account, which owes the wallet for it (NL-657)
         var lots = await kit.ListLotsAsync();
-        var (openingLot, openingReliefs) = Assert.Single(lots);
+        var (openingLot, openingReliefs) = Assert.Single(lots, l => !l.Lot.IsDebt);
+        Assert.Equal((AccountingLotBucket.Clearing, AccountingLotBucket.Wallet, 100_000_000L),
+                     Assert.Single(lots, l => l.Lot.IsDebt).Lot is var debt
+                         ? (debt.Bucket!.Value, debt.Lender!.Value, debt.RemainingMsat)
+                         : default);
         Assert.Equal(AccountingLotOrigin.Opening, openingLot.Origin);
         var relief = Assert.Single(openingReliefs);
         Assert.Equal((4L, 100_000_000L, (decimal?)40m, (decimal?)60m),
@@ -265,6 +288,68 @@ public sealed class FinancialBooksProjectorTests
 
         // Assert
         Assert.Equal(incremental, await kit.SnapshotFinancialAsync());
+    }
+
+    [Theory]
+    [InlineData(AccountingCostBasisMethod.Fifo, false)]
+    [InlineData(AccountingCostBasisMethod.Lifo, false)]
+    [InlineData(AccountingCostBasisMethod.Hifo, false)]
+    [InlineData(AccountingCostBasisMethod.Fifo, true)]
+    [InlineData(AccountingCostBasisMethod.Lifo, true)]
+    [InlineData(AccountingCostBasisMethod.Hifo, true)]
+    public async Task Given_TheStoryInAnyOrder_When_ProjectedEntryByEntry_Then_EachAssetAccountHoldsItsBucketsCostBasis(
+        AccountingCostBasisMethod method, bool receivedFirst)
+    {
+        // Arrange (NL-749): the story, or the story with every half that pays into a bucket before the half that pays
+        // for it (the change and the close's output before the wallet's spend and the close, the funding before the
+        // spend, the rebalance received before it is paid)
+        await using var kit = await FinancialProjectorTestKit.CreateAsync(s_now, method);
+        await kit.AddPricesAsync(s_prices);
+        var story = Story(kit);
+        var order = receivedFirst
+                        ? new[] { 0, 1, 2, 5, 4, 3, 6, 7, 8, 10, 9, 12, 11, 15, 14, 13 }
+                        : Enumerable.Range(0, story.Length).ToArray();
+
+        foreach (var index in order)
+        {
+            // Act
+            await kit.AddAsync(story[index]);
+            await kit.ProjectAsync();
+
+            // Assert: every asset account's balance and fiat are its bucket's open lots, plus what other buckets owe
+            // it, less what it owes (a bucket that owes holds no lot), and no lot is missing
+            Assert.Null(kit.Projector.ProjectionError);
+            var lots = (await kit.ListLotsAsync()).Select(l => l.Lot).Where(l => l.RemainingMsat > 0).ToList();
+            var balances = await kit.ReadAsync(u => u.AccountingBooksDbRepository.GetAccountBalancesAsync(
+                                                   AccountingBook.Financial, TestContext.Current.CancellationToken));
+            foreach (var role in new[] { AccountRole.Channels, AccountRole.Pending, AccountRole.Wallet,
+                                         AccountRole.Clearing })
+            {
+                var bucket = (AccountingLotBucket)(int)role;
+                var account = balances.Where(b => b.AccountName == FinancialChart.Default[
+                                                      FinancialChart.DefaultAccountOf(role)]).ToList();
+                var held = lots.Where(l => !l.IsDebt && l.Bucket == bucket).ToList();
+                var owedTo = lots.Where(l => l.IsDebt && l.Lender == bucket).ToList();
+                var owedBy = lots.Where(l => l.IsDebt && l.Bucket == bucket).ToList();
+                Assert.Equal(account.Sum(b => b.BalanceMsat),
+                             held.Sum(l => l.RemainingMsat) + owedTo.Sum(l => l.RemainingMsat)
+                           - owedBy.Sum(l => l.RemainingMsat));
+                Assert.Equal(account.Sum(b => b.FiatAmount),
+                             held.Sum(RemainingCost) + owedTo.Sum(RemainingCost) - owedBy.Sum(RemainingCost));
+                if (owedBy.Count > 0)
+                    Assert.Empty(held);
+            }
+
+            Assert.DoesNotContain(await kit.ListEntriesAsync(AccountingBook.Financial),
+                                  e => e.Note?.Contains("shortfall", StringComparison.Ordinal) == true);
+        }
+
+        // Every half has its other half: nothing is owed at the end, and the clearing account holds nothing
+        var open = (await kit.ListLotsAsync()).Select(l => l.Lot).Where(l => l.RemainingMsat > 0).ToList();
+        Assert.DoesNotContain(open, l => l.IsDebt);
+        Assert.DoesNotContain(open, l => l.Bucket is AccountingLotBucket.Clearing or AccountingLotBucket.Pending
+                                                    or AccountingLotBucket.Rebalance);
+        Assert.Equal(1_398_430_000, open.Sum(l => l.RemainingMsat));
     }
 
     [Fact]
@@ -349,21 +434,30 @@ public sealed class FinancialBooksProjectorTests
         Assert.Equal((2, 1_500_000_000L, 550m, 400L, 4), (result.Imported, result.ImportedMsat, result.ImportedCost,
                                                          result.AdjustedMsat, result.ProjectedEntries));
         var lots = await kit.ListLotsAsync();
-        Assert.Equal([AccountingLotOrigin.Import, AccountingLotOrigin.Import], lots.Select(l => l.Lot.Origin).ToArray());
-        Assert.Equal(500_000_000, lots[1].Lot.OriginalMsat);
+        var imported = lots.Where(l => l.Lot.ParentLotId is null).ToList();
+        Assert.Equal([AccountingLotOrigin.Import, AccountingLotOrigin.Import],
+                     imported.Select(l => l.Lot.Origin).ToArray());
+        Assert.Equal(500_000_000, imported[1].Lot.OriginalMsat);
 
-        // FIFO: the payment relieves the first imported lot, 1e8 of 1e9 for 300 = 30, proceeds 50, gain 20
-        var relief = Assert.Single(lots[0].Reliefs);
-        Assert.Equal((100_000_000L, (decimal?)30m, (decimal?)50m), (relief.Msat, relief.FiatCostRelieved, relief.Proceeds));
+        // Each opening balance takes the imported lots in order at their cost (NL-657): the wallet the first (1e9 for
+        // 300), the channel the second (5e8 for 250); the moved parts keep the imported acquisition times
+        var wallet = lots.Single(l => l.Lot.Bucket == AccountingLotBucket.Wallet).Lot;
+        var (channelLot, channelReliefs) = lots.Single(l => l.Lot.Bucket == AccountingLotBucket.Channels);
+        Assert.Equal((imported[0].Lot.Id, (decimal?)300m, imported[0].Lot.AcquiredAt),
+                     (wallet.ParentLotId!.Value, wallet.FiatCost, wallet.HeldSinceOrAcquired));
+        Assert.Equal((imported[1].Lot.Id, (decimal?)250m), (channelLot.ParentLotId!.Value, channelLot.FiatCost));
 
-        // The cutover marker moves the assets from the opening market value (600) to the imported cost (550)
+        // FIFO in the channel: the payment relieves the channel's part, 1e8 of 5e8 for 250 = 50, proceeds 50, no gain
+        var relief = Assert.Single(channelReliefs);
+        Assert.Equal((100_000_000L, (decimal?)50m, (decimal?)50m), (relief.Msat, relief.FiatCostRelieved, relief.Proceeds));
+
+        // The opening entries carry the imported cost; the cutover marker posts nothing
         var entries = await kit.ListEntriesAsync(AccountingBook.Financial);
-        var marker = entries.Single(e => e.EventKey == "open:cutover");
-        Assert.Equal([("assets:cost-basis", (decimal?)-50m), ("equity:opening-balances", 50m)],
-                     marker.Postings.Select(p => (p.AccountName!, p.FiatAmount)).ToArray());
+        Assert.Empty(entries.Single(e => e.EventKey == "open:cutover").Postings);
+        Assert.Equal([300m, -300m], entries.Single(e => e.LedgerSeq == 1).Postings.Select(p => p.FiatAmount!.Value));
         var balances = await kit.ReadAsync(u => u.AccountingBooksDbRepository.GetAccountBalancesAsync(
                                                     AccountingBook.Financial, TestContext.Current.CancellationToken));
-        Assert.Equal(520m, balances.Where(b => b.AccountName!.StartsWith("assets:", StringComparison.Ordinal))
+        Assert.Equal(500m, balances.Where(b => b.AccountName!.StartsWith("assets:", StringComparison.Ordinal))
                                    .Sum(b => b.FiatAmount));
     }
 
@@ -488,17 +582,23 @@ public sealed class FinancialBooksProjectorTests
         await kit.ProjectAsync();
 
         // Assert: the deposit's lines negated at their January value (500), flagged as an adjustment; the deposit's
-        // lot is closed, so the reversal disposes FIFO of the opening lot (1e9 for 400) at 500: a gain of 100
+        // own lot (1e9 for 500) is taken back at its cost: nothing is realized (NL-675)
         var reversal = (await kit.ListEntriesAsync(AccountingBook.Financial)).Single(e => e.LedgerSeq == 4);
         Assert.True(reversal.Flags.HasFlag(AccountingEntryFlags.Adjustment));
         Assert.Equal([("assets:onchain:wallet", -1_000_000_000L, (decimal?)-500m),
-                      ("equity:transfers:in", 1_000_000_000L, 500m),
-                      ("assets:cost-basis", 0L, 100m),
-                      ("income:gains:realized", 0L, -100m)],
+                      ("equity:transfers:in", 1_000_000_000L, 500m)],
                      reversal.Postings.Select(p => (p.AccountName!, p.AmountMsat, p.FiatAmount)).ToArray());
+        var lots = await kit.ListLotsAsync();
+        var relief = Assert.Single(lots.Single(l => l.Lot.SourceLedgerSeq == 3).Reliefs);
+        Assert.Equal((4L, (decimal?)500m, (decimal?)500m), (relief.LedgerSeq, relief.FiatCostRelieved, relief.Proceeds));
+        Assert.Empty(lots.Single(l => l.Lot.Origin == AccountingLotOrigin.Opening).Reliefs);
         Assert.All(await kit.Periods.VerifyClosesAsync(TestContext.Current.CancellationToken),
                    v => Assert.True(v.IsIntact, v.Problem));
     }
+
+    // The cost of what is left of a lot
+    private static decimal RemainingCost(AccountingLot lot) =>
+        FinancialLotPool.CostOf(lot, lot.RemainingMsat, Usd)!.Value;
 
     /// <summary>Writes the story's events (ledger sequences 1 to 16).</summary>
     private static Task StoryAsync(FinancialProjectorTestKit kit) => kit.AddAsync(Story(kit));

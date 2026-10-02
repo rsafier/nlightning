@@ -34,6 +34,8 @@ public class DaemonArgsTests : IDisposable
     [InlineData("--daemon-child", "--network", "regtest")]
     [InlineData("--password", "secret", "--network", "regtest")]
     [InlineData("--password-stdin", "--network", "regtest")]
+    [InlineData("--check-config", "--network", "regtest")]
+    [InlineData("--network", "regtest", "--check-config")]
     public void GivenArgs_WhenNormalizedAndBound_ThenNetworkIsRead(params string[] args)
     {
         // Act
@@ -42,6 +44,17 @@ public class DaemonArgsTests : IDisposable
         // Assert
         Assert.Equal("regtest", config["network"]);
         Assert.Null(config["password"]);
+    }
+
+    [Theory]
+    [InlineData(true, "--check-config")]
+    [InlineData(true, "--network", "regtest", "--check-config")]
+    [InlineData(false, "--status")]
+    [InlineData(false)]
+    public void Given_Args_When_CheckingForCheckConfig_Then_OnlyTheFlagRequestsIt(bool expected, params string[] args)
+    {
+        // Act / Assert (NL-338)
+        Assert.Equal(expected, DaemonUtils.IsCheckConfigRequested(args));
     }
 
     [Fact]
@@ -213,11 +226,11 @@ public class DaemonArgsTests : IDisposable
 
         // Act
         var exception = Assert.Throws<ArgumentException>(() => NodeConfigurationExtensions
-                                                                  .ReadInitialConfiguration(["-n", "testnet4"]));
+                                                                  .ReadInitialConfiguration(["-n", "testnet5"]));
 
         // Assert: no fallback to mainnet and nothing written for the typo
-        Assert.Contains("testnet4", exception.Message);
-        Assert.False(Directory.Exists(Path.Combine(_tempHome, ".nltg", "testnet4")));
+        Assert.Contains("testnet5", exception.Message);
+        Assert.False(Directory.Exists(Path.Combine(_tempHome, ".nltg", "testnet5")));
     }
 
     [Fact]

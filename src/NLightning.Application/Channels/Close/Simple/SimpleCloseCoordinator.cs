@@ -267,7 +267,7 @@ public sealed class SimpleCloseCoordinator
             channel.ReplaceRemoteShutdownScript(closerScript);
         }
 
-        await RecordClosingTransactionAsync(channel, closingTransaction);
+        await RecordClosingTransactionAsync(channel, closingTransaction, false);
         _logger.LogInformation(
             "Signed the peer's closing transaction {TxId} for channel {ChannelId} ({Kind}, fee {Fee} sat, lock time {LockTime})",
             closingTransaction.TxId, channelId, kind, feeSat, payload.LockTime);
@@ -332,7 +332,7 @@ public sealed class SimpleCloseCoordinator
         var closingTransaction = _closingTransactionBuilder.AddWitness(variant.Unsigned, funding,
                                                                        variant.OurSignature, peerSignature);
         entry.SimpleProposal = null;
-        await RecordClosingTransactionAsync(channel, closingTransaction);
+        await RecordClosingTransactionAsync(channel, closingTransaction, true);
         _logger.LogInformation(
             "The peer signed our closing transaction {TxId} for channel {ChannelId} ({Kind}, fee {Fee} sat)",
             closingTransaction.TxId, channelId, kind, sent.FeeSatoshis.Satoshi);
@@ -388,9 +388,15 @@ public sealed class SimpleCloseCoordinator
     /// Stores <paramref name="closingTransaction"/> as the channel's closing transaction (Closing, first time) and
     /// stages its watch in the same save; then tracks the watch and completes the IPC waiters.
     /// </summary>
-    private async Task RecordClosingTransactionAsync(ChannelModel channel, SignedTransaction closingTransaction)
+    /// <param name="channel">The channel.</param>
+    /// <param name="closingTransaction">The fully signed closing transaction.</param>
+    /// <param name="localIsCloser">We sent its <c>closing_complete</c> (we pay its fee); false for the peer's
+    /// (NL-610).</param>
+    private async Task RecordClosingTransactionAsync(ChannelModel channel, SignedTransaction closingTransaction,
+                                                     bool localIsCloser)
     {
         channel.SetClosingTransaction(closingTransaction);
+        channel.SetCloseTerms(MutualCloseProtocol.Simple, localIsCloser);
         if (channel.State < ChannelState.Closing)
             channel.UpdateState(ChannelState.Closing);
 
