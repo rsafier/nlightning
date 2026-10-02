@@ -16,6 +16,9 @@ every implementation, our own node included, is driven through the same seams.
     namespace controller, finding unfinished pods, waits their largest spec `terminationGracePeriodSeconds` (bitcoind
     30 s) before it looks again. A terminating namespace still holds its admission slot (`RunAdmission.HoldsSlot`) until
     it is gone; live tests assert "gone or terminating" (`Live/RunAssertions`).
+  - `RemoveNodeAsync(name, ct)` (`RunNodeRemoval`): takes one node out of a live run (StatefulSet, pod with the
+    teardown grace, headless and `-p2p` Services, data PVC) and waits until it is gone, for a node a test adds next to
+    a warm topology (the CLN suite's own CLNs) and must remove again.
   - `TestRunOptions.FromEnvironment(suite)`: `NLTG_TEST_RUN_ID` (run id; generated when unset),
     `NLTG_TEST_NAMESPACE_PREFIX` (default `nltg-spike`; the real harness uses `nltg`), `NLTG_KUBE_CONTEXT`,
     `NLTG_KEEP_NAMESPACE=1` (keep for debugging).

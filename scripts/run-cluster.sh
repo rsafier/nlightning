@@ -28,11 +28,17 @@
 #       --keep-on-failure keep only the namespaces of failed runs (NLTG_KEEP_NAMESPACE=failure; reaped after their TTL)
 #       --diag M          when to collect diagnostics: failure (default), always or off (NLTG_CLUSTER_DIAG)
 #       --trait T         the xunit trait filter instead of Category=Cluster (e.g. Category=ClusterFailureProof)
+#       --explicit M      xunit's -explicit mode: only (default: the Cluster tests are Explicit), on or off
+#       --suite S         a ported suite on the cluster backend (NLTG_TEST_BACKEND=cluster): cln = the CLN interop
+#                         suite (-p integration, --trait Category=Interop.Cln, --explicit off; its 4 Explicit capture
+#                         tests stay out unless --explicit on is given); each run gets its own namespace(s)
 #
 # Example: the scaffold's namespace test 3 times at once
 #   scripts/run-cluster.sh -n 3 --method '*ARunDeploysABusyboxStatefulSet*'
 # Example: our in-process node against CLN and LND pods, 3 runs at once
 #   scripts/run-cluster.sh -n 3 -p integration --class NLightning.Integration.Tests.Cluster.Live.InProcessNodeClusterTests
+# Example: the whole CLN interop suite on the cluster, 3 runs at once (one CLN class: add --class)
+#   scripts/run-cluster.sh -n 3 --suite cln
 #
 # Never runs Docker suites and never touches namespaces outside nltg-spike-*: the test processes create only their
 # own namespaces, and the reaper only deletes harness run namespaces (nltg-cluster reap, RunReaper).
@@ -51,6 +57,9 @@ reap_orphans=0
 keep=0
 diag="${NLTG_CLUSTER_DIAG:-failure}"
 trait="Category=Cluster"
+explicit=only
+suite=""
+backend=""
 filters=()
 extra=()
 
@@ -73,7 +82,15 @@ while [[ $# -gt 0 ]]; do
     --keep-on-failure) keep=failure; shift ;;
     --diag) diag="${2:?}"; shift 2 ;;
     --trait) trait="${2:?}"; shift 2 ;;
-    -h|--help) sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --explicit) explicit="${2:?}"; explicit_set=1; shift 2 ;;
+    --suite)
+      suite="${2:?}"; shift 2
+      case "$suite" in
+        cln) project=integration; trait="Category=Interop.Cln"; backend=cluster
+             [[ -n "${explicit_set:-}" ]] || explicit=off ;;
+        *) die "--suite $suite: unknown suite (cln)" ;;
+      esac ;;
+    -h|--help) sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; extra=("$@"); break ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac
@@ -83,6 +100,7 @@ done
 jobs="${jobs:-$runs}"
 [[ "$jobs" =~ ^[0-9]+$ && "$jobs" -ge 1 ]] || die "--jobs must be a positive number"
 [[ "$diag" =~ ^(failure|always|off)$ ]] || die "--diag must be failure, always or off"
+[[ "$explicit" =~ ^(only|on|off)$ ]] || die "--explicit must be only, on or off"
 (( jobs > 6 )) && { echo "run-cluster: capping --jobs at 6 (the spike's namespace cap)"; jobs=6; }
 batch="${batch:-rc-$(date -u +%Y%m%d%H%M%S)}"
 batch="$(echo "$batch" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/^-*//; s/-*$//')"
@@ -123,7 +141,7 @@ fi
 
 # 2. The runs: each its own process and run id; at most $jobs in flight.
 batch_start=$(date +%s)
-echo "run-cluster: batch $batch, $runs run(s), $jobs at once, context $context, results in $results"
+echo "run-cluster: batch $batch, $runs run(s), $jobs at once, context $context, results in $results${suite:+, suite $suite on the cluster backend}"
 declare -a pids=() ids=()
 running() { local n=0 pid; for pid in "${pids[@]}"; do kill -0 "$pid" 2> /dev/null && n=$((n + 1)); done; echo "$n"; }
 
@@ -134,7 +152,8 @@ start_run() {
     start=$(date +%s)
     set +e
     NLTG_TEST_RUN_ID="$id" NLTG_KEEP_NAMESPACE="$keep" NLTG_CLUSTER_DIAG="$diag" NLTG_CLUSTER_DIAG_DIR="$dir/diag" \
-      dotnet "$test_dll" -explicit only -trait "$trait" "${filters[@]}" -xml "$dir/results.xml" \
+      NLTG_TEST_BACKEND="${backend:-${NLTG_TEST_BACKEND:-}}" \
+      dotnet "$test_dll" -explicit "$explicit" -trait "$trait" ${filters[@]+"${filters[@]}"} -xml "$dir/results.xml" \
       -showLiveOutput -noColor "${extra[@]}" > "$dir/output.log" 2>&1
     code=$?
     echo "$code $(( $(date +%s) - start )) $start" > "$dir/exit"

@@ -35,6 +35,28 @@ the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `
   block 28332 / raw tx 28333): by **pod IP** from the host, by headless Service name in the cluster. Read once: a test
   that restarts bitcoind must rebuild the node.
 
+## The CLN interop suite on the cluster (phase 2 lane B)
+
+- `NLTG_TEST_BACKEND=docker|cluster` (`Fixtures/TestBackend`, Docker when unset, a typo throws) picks the backend of
+  `Fixtures/ClnFixture`; the 17 classes under `Docker/Interop/Cln/` (and the two Explicit gossip captures) run
+  unchanged on either. `Fixtures/Cln/`: `IClnBackend`, `DockerClnBackend` (the former fixture: same images, containers,
+  flags and published ports) and `ClusterClnBackend` (a warm `ClusterTopologyFixture`, suite `cln-interop`: bitcoind
+  `miner` + CLN `nltg-cln` on `emptyDir`, same CLN release by digest, same flags and alias; bitcoind and CLN by pod IP
+  from the host; CLN dials us at `host.orb.internal`, `ClnFixture.HostAddressForCln`).
+- The classes that ran CLN containers of their own use `ClnFixture.StartClnAsync(ClnNodeSpec)` (`ExtraClnNode`:
+  client, node id, `Address`, `PeerHost` for other nodes, `RestartAsync`, disposal removes it): `ClnDualFundTests`
+  (`nltg-cln-df` per test), `ClnSpliceReestablishTests` (`nltg-cln-sp2`, `Restartable`: a PVC and its stable
+  `<node>-p2p` ClusterIP name on the cluster, a fixed `127.0.0.1` port on Docker) and the captures (`nltg-cln2`,
+  reached only by CLN). On the cluster they go into the run's namespace and `TestRun.RemoveNodeAsync` takes them out.
+- `ClnClient` runs `lightning-cli` through a `ClnExec` delegate (`docker exec`, or `ClusterClnBackend.KubeExec`); the
+  tests catch the Integration.Tests `ClnRpcException` on both backends.
+- The Tor interop suite (`Docker/Interop/Tor/`, `Category=Interop.Tor`) stays on Docker: on the cluster backend its
+  fixture starts nothing and its tests skip with the reason (`TestBackend.SkipOnCluster`).
+- Run: `scripts/run-cluster.sh -n 3 --suite cln` (N processes, each its own run id and namespace, no Docker lock;
+  `--class` for one class, `--explicit on` adds the captures). One process by hand:
+  `NLTG_TEST_BACKEND=cluster NLTG_KUBE_CONTEXT=orbstack dotnet test/NLightning.Integration.Tests/bin/Release/net10.0/NLightning.Integration.Tests.dll -trait Category=Interop.Cln`.
+  `scripts/run-interop.sh cln` is unchanged and runs the Docker backend (under the machine's Docker lock).
+
 ## Reachability (OrbStack, host-side tests)
 
 - Our node listens on 127.0.0.1 (all interfaces when `NLTG_HOST_ADDRESS` names another host) and is announced to the
