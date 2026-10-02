@@ -1,10 +1,16 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Tests.Utils.Accounting;
 
 namespace NLightning.Application.Tests.Onchain.Reorg;
 
 using Application.Channels.Services;
 using Application.Onchain.Reorg;
+using Domain.Accounting.Books;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Interfaces;
+using Domain.Accounting.Models;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
@@ -93,6 +99,95 @@ public sealed class FundingReconfirmationHandlerTests
         // Assert
         Assert.False(moved);
         Assert.Empty(updates);
+    }
+
+    [Fact]
+    public async Task Given_TheFundingsAccountingEvents_When_TheFundingConfirmedAgainElsewhere_Then_ReversedAndRecordedAtTheNewBlock()
+    {
+        // Arrange (NL-607): ChannelFunded and the push were recorded at the first block (800); the funding confirmed
+        // again at 910 after a reorg
+        var memory = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var fundingTxId = TxIdOf(0x01);
+        var channelId = ChannelIdOf(0x02);
+        memory.AddChannel(CreateChannel(channelId, Peer(3), fundingTxId));
+        var funded = Event(AccountingEventKeys.ChannelFunded(channelId, fundingTxId), AccountingEventKind.ChannelFunded,
+                           channelId, fundingTxId, 100_000_000, 800);
+        var push = Event(AccountingEventKeys.Push(channelId), AccountingEventKind.PushSent, channelId, fundingTxId,
+                         -5_000_000, 800);
+        var feed = new List<AccountingEventModel> { funded, push };
+        var saves = new List<int>();
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.ChannelDbRepository)
+                  .Returns(ChannelDbRepositoryOf(CreateChannel(channelId, Peer(3), fundingTxId)));
+        unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(FeedOf(feed));
+        unitOfWork.Setup(u => u.SaveChangesAsync()).Callback(() => saves.Add(feed.Count)).Returns(Task.CompletedTask);
+        var handler = new FundingReconfirmationHandler(new ChannelLockProvider(), memory, NullLogger.Instance,
+                                                       ScopeFactoryOf(unitOfWork.Object));
+        var watch = new WatchedTransactionModel(channelId, fundingTxId, 6);
+        watch.SetHeightAndIndex(910, 2);
+
+        // Act
+        await handler.HandleAsync(watch, TestContext.Current.CancellationToken);
+        await handler.HandleAsync(watch, TestContext.Current.CancellationToken);
+
+        // Assert: both reversed and recorded again at 910 with the new short channel id, in the move's one save; the
+        // second handling (same position) writes nothing
+        Assert.Equal([6], saves);
+        foreach (var original in new[] { funded, push })
+        {
+            var reversal = Assert.Single(feed, e => e.EventKey == AccountingEventKeys.Reversal(original.EventKey, 800));
+            Assert.Equal(-original.AmountMsat, reversal.AmountMsat);
+            var again = Assert.Single(feed, e => e.EventKey == AccountingEventKeys.Reconfirmed(original.EventKey, 2));
+            Assert.Equal(original.Kind, again.Kind);
+            Assert.Equal(original.AmountMsat, again.AmountMsat);
+            Assert.Equal(910u, again.BlockHeight);
+            Assert.Equal(new ShortChannelId(910, 2, 0), again.ShortChannelId);
+        }
+
+        var books = BooksSimulator.Of(feed);
+        Assert.Equal(95_000_000, books[AccountRole.Channels]);
+    }
+
+    private static AccountingEventModel Event(string key, AccountingEventKind kind, ChannelId channelId, TxId txId,
+                                              long amountMsat, uint height) => new()
+                                              {
+                                                  EventKey = key,
+                                                  Kind = kind,
+                                                  OccurredAt = DateTimeOffset.UnixEpoch,
+                                                  BlockHeight = height,
+                                                  ChannelId = channelId,
+                                                  ShortChannelId = new ShortChannelId(height, 1, 0),
+                                                  TxId = txId,
+                                                  OutputIndex = 0,
+                                                  AmountMsat = amountMsat,
+                                                  Finality = AccountingFinality.Confirmed
+                                              };
+
+    /// <summary>A feed over <paramref name="events"/>: staged rows are visible at once, as in a unit of work.</summary>
+    internal static IAccountingEventDbRepository FeedOf(List<AccountingEventModel> events)
+    {
+        var feed = new Mock<IAccountingEventDbRepository>();
+        feed.Setup(f => f.Add(It.IsAny<AccountingEventModel>())).Callback<AccountingEventModel>(events.Add);
+        feed.Setup(f => f.ExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string key, CancellationToken _) => events.Any(e => e.EventKey == key));
+        feed.Setup(f => f.GetByKeyPrefixAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string prefix, CancellationToken _) =>
+                              events.Where(e => e.EventKey.StartsWith(prefix, StringComparison.Ordinal)).ToList());
+        return feed.Object;
+    }
+
+    private static IServiceScopeFactory ScopeFactoryOf(IUnitOfWork unitOfWork)
+    {
+        var serviceProvider = new Mock<IServiceProvider>();
+        serviceProvider.Setup(sp => sp.GetService(typeof(IUnitOfWork))).Returns(unitOfWork);
+        var scopeFactory = new Mock<IServiceScopeFactory>();
+        scopeFactory.Setup(f => f.CreateScope()).Returns(() =>
+        {
+            var scope = new Mock<IServiceScope>();
+            scope.SetupGet(s => s.ServiceProvider).Returns(serviceProvider.Object);
+            return scope.Object;
+        });
+        return scopeFactory.Object;
     }
 
     private static IServiceScopeFactory NoScopeFactory()

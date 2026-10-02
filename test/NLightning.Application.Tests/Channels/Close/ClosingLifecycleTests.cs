@@ -156,6 +156,65 @@ public class ClosingLifecycleTests
         Assert.Single(_accountingEvents);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_AClosedChannel_When_ItsClosingTransactionConfirmsAgain_Then_TheMutualCloseIsRecordedAgainOnlyAfterItsReversal(
+        bool reversed)
+    {
+        // Arrange (NL-607): a Closed channel (not in memory) whose mutual close the chain monitor reversed when a reorg
+        // rewound the closing watch (or did not: a replayed confirmation)
+        var channel = CreateClosingChannel(ChannelState.Closing);
+        var closing = ClosingTx(channel, 999_000, null);
+        channel.SetClosingTransaction(closing);
+        channel.UpdateState(ChannelState.Closed);
+        var channelId = channel.ChannelId;
+        _channelDb.Setup(r => r.GetByIdAsync(channelId)).ReturnsAsync(channel);
+        var first = new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.ChannelClosedMutual(channelId, closing.TxId),
+            Kind = AccountingEventKind.ChannelClosedMutual,
+            OccurredAt = DateTimeOffset.UnixEpoch,
+            BlockHeight = 590,
+            ChannelId = channelId,
+            TxId = closing.TxId,
+            AmountMsat = -1_000_000_000,
+            FeeMsat = 1_000_000,
+            Finality = AccountingFinality.Confirmed
+        };
+        List<AccountingEventModel> recorded = reversed
+                                                  ? [first, AccountingConfirmations.CreateReversal(first, DateTimeOffset.UnixEpoch, 580)]
+                                                  : [first];
+        var read = false;
+        _accounting.Setup(a => a.GetByKeyPrefixAsync(first.EventKey, It.IsAny<CancellationToken>()))
+                   .Callback(() => read = true)
+                   .ReturnsAsync(recorded);
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, closing.TxId));
+        await WaitUntilAsync(() => reversed ? _saveOrder.Count == 2 : read);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+
+        // Assert: recorded again at the new block under its next confirmation key, in its own save; the channel is
+        // not brought back into memory
+        _memory.Verify(m => m.AddChannel(It.IsAny<ChannelModel>()), Times.Never);
+        if (!reversed)
+        {
+            Assert.Empty(_accountingEvents);
+            return;
+        }
+
+        var again = Assert.Single(_accountingEvents);
+        Assert.Equal(AccountingEventKeys.Reconfirmed(first.EventKey, 2), again.EventKey);
+        Assert.Equal(AccountingEventKind.ChannelClosedMutual, again.Kind);
+        Assert.Equal(600U, again.BlockHeight);
+        Assert.Equal(first.AmountMsat, again.AmountMsat);
+        Assert.Equal(first.FeeMsat, again.FeeMsat);
+        Assert.Equal(["event", "save"], _saveOrder);
+        Assert.Equal(ChannelState.Closed, channel.State);
+    }
+
     [Fact]
     public async Task Given_ThePeerPaidTheClosingFee_When_ClosingTransactionConfirmed_Then_OnlyTheMsatWeCouldNotCarryAreOurFee()
     {

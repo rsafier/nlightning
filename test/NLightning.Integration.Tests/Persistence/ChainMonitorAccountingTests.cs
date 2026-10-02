@@ -516,6 +516,40 @@ public class ChainMonitorAccountingTests
     }
 
     [Fact]
+    public async Task Given_AMutualCloseConfirmedAboveTheFork_When_TheChainRewinds_Then_ItIsReversedInTheRewind()
+    {
+        // Arrange (NL-607): the channel manager recorded a mutual close confirmed at 102 (and one at 100, below the
+        // fork); then a branch from 100 becomes the active chain
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        await harness.MineAndDeliverAsync();
+        await harness.MineAndDeliverAsync();
+        var above = MutualClose(ChannelIdOf(0x31), CreateTransaction(0x31), 102);
+        var below = MutualClose(ChannelIdOf(0x32), CreateTransaction(0x32), 100);
+        using (var scope = harness.Services.CreateScope())
+        {
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            uow.AccountingEventDbRepository.Add(above);
+            uow.AccountingEventDbRepository.Add(below);
+            await uow.SaveChangesAsync();
+        }
+
+        // Act
+        harness.Chain.Reorg(100, 3);
+        await harness.DeliverTipAsync();
+
+        // Assert: the close above the fork is reversed (its closing watch is pending again), the one below stands
+        var events = await LoadEventsAsync(harness);
+        var reversal = Assert.Single(events, e => e.Kind == AccountingEventKind.Reversal);
+        Assert.Equal(AccountingEventKeys.Reversal(above.EventKey, 102), reversal.EventKey);
+        Assert.Equal(above.EventKey, reversal.Details[AccountingConfirmations.ReversesDetail]);
+        Assert.Equal(-above.AmountMsat, reversal.AmountMsat);
+        Assert.Equal(-above.FeeMsat, reversal.FeeMsat);
+        var books = BooksSimulator.Of(events.Where(e => e.EventKey != below.EventKey));
+        Assert.All(books.Balances.Values, balance => Assert.Equal(0, balance));
+    }
+
+    [Fact]
     public async Task Given_ADepositAndItsSpendBothReorgedOut_When_TheyConfirmAgain_Then_BothAreReversedAndRecordedAgain()
     {
         // Arrange: 101 holds a deposit, 102 a foreign spend of it (our key signed it; not one of our rows)
@@ -669,6 +703,21 @@ public class ChainMonitorAccountingTests
                                             TestContext.Current.CancellationToken))
               .ToList();
     }
+
+    /// <summary>A mutual close of 500,000 sat (1,000 sat closing fee paid by us), as the channel manager records it.
+    /// </summary>
+    private static AccountingEventModel MutualClose(ChannelId channelId, Transaction closing, uint height) => new()
+    {
+        EventKey = AccountingEventKeys.ChannelClosedMutual(channelId, TxIdOf(closing)),
+        Kind = AccountingEventKind.ChannelClosedMutual,
+        OccurredAt = DateTimeOffset.UnixEpoch,
+        BlockHeight = height,
+        ChannelId = channelId,
+        TxId = TxIdOf(closing),
+        AmountMsat = -500_000_000,
+        FeeMsat = 1_000_000,
+        Finality = AccountingFinality.Confirmed
+    };
 
     /// <summary>Mines a block holding only <paramref name="transactions"/> (not the mempool) and delivers it.</summary>
     private static async Task MineOnlyAsync(ChainMonitorHarness harness, params Transaction[] transactions)

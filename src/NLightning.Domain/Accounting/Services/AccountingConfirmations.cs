@@ -2,6 +2,7 @@ using System.Globalization;
 
 namespace NLightning.Domain.Accounting.Services;
 
+using Channels.ValueObjects;
 using Constants;
 using Enums;
 using Models;
@@ -151,6 +152,47 @@ public static class AccountingConfirmations
             if (c is < '0' or > '9')
                 return false;
         return text.Length > 0;
+    }
+
+    /// <summary>The detail of a confirmation recorded again after a reorg moved its transaction to another block: the
+    /// key of the reversed confirmation it replaces (NL-607).</summary>
+    public const string ReconfirmsDetail = "reconfirms";
+
+    /// <summary>
+    /// The confirmation of the fact <paramref name="original"/> recorded again under <paramref name="key"/> (its next
+    /// confirmation key, <see cref="NextConfirmationKey"/>) after a reorg moved its transaction to the block at
+    /// <paramref name="height"/>: the same amounts and references, the new block and short channel id (NL-607).
+    /// </summary>
+    public static AccountingEventModel CreateReconfirmation(AccountingEventModel original, string key, uint height,
+                                                            ShortChannelId? shortChannelId,
+                                                            DateTimeOffset occurredAt)
+    {
+        ArgumentNullException.ThrowIfNull(original);
+        ArgumentException.ThrowIfNullOrEmpty(key);
+
+        var details = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (detailKey, value) in original.Details)
+            details[detailKey] = value;
+        details[ReconfirmsDetail] = original.EventKey;
+
+        return new AccountingEventModel
+        {
+            EventKey = key,
+            Kind = original.Kind,
+            OccurredAt = occurredAt,
+            BlockHeight = height,
+            ChannelId = original.ChannelId,
+            ShortChannelId = shortChannelId ?? original.ShortChannelId,
+            PaymentHash = original.PaymentHash,
+            TxId = original.TxId,
+            OutputIndex = original.OutputIndex,
+            Counterparty = original.Counterparty,
+            AmountMsat = original.AmountMsat,
+            FeeMsat = original.FeeMsat,
+            Finality = original.Finality,
+            Flags = original.Flags & ~AccountingEventFlags.Duplicate,
+            Details = details
+        };
     }
 
     /// <summary>

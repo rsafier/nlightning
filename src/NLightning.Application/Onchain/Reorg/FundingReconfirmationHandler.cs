@@ -4,8 +4,12 @@ using NBitcoin;
 
 namespace NLightning.Application.Onchain.Reorg;
 
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
@@ -123,6 +127,55 @@ public sealed class FundingReconfirmationHandler
         }
     }
 
+    /// <summary>
+    /// The accounting events of the funding (NL-607): the <see cref="AccountingEventKind.ChannelFunded"/> and push of the
+    /// open, or the <see cref="AccountingEventKind.SpliceLocked"/> of a spliced channel's current funding, recorded at the
+    /// old block, are reversed and recorded again at <paramref name="height"/> with the new short channel id under their
+    /// next confirmation key (<see cref="AccountingConfirmations.NextConfirmationKey"/>), in the move's save. A memo event
+    /// of the backfill posts nothing and is left alone. Never throws.
+    /// </summary>
+    private async Task StageFundingEventsMovedAsync(IUnitOfWork unitOfWork, ChannelId channelId, TxId fundingTxId,
+                                                    uint height, ShortChannelId moved,
+                                                    IServiceProvider serviceProvider,
+                                                    CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (unitOfWork.AccountingEventDbRepository is not { } accounting)
+                return;
+
+            var now = (serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow();
+            string[] baseKeys =
+            [
+                AccountingEventKeys.ChannelFunded(channelId, fundingTxId), AccountingEventKeys.Push(channelId),
+                AccountingEventKeys.SpliceLocked(channelId, fundingTxId)
+            ];
+            foreach (var baseKey in baseKeys)
+            {
+                var existing = (await accounting.GetByKeyPrefixAsync(baseKey, cancellationToken)).ToList();
+                var standing = AccountingConfirmations.FindStanding(baseKey, existing);
+                if (standing is null || standing.BlockHeight is not { } recordedHeight || recordedHeight == height
+                 || standing.TxId != fundingTxId
+                 || standing.Details.ContainsKey(AccountingDetailKeys.Memo))
+                    continue;
+
+                var reversal = AccountingConfirmations.CreateReversal(standing, now,
+                                                                      Math.Min(recordedHeight, height) - 1);
+                accounting.Add(reversal);
+                existing.Add(reversal);
+                if (AccountingConfirmations.NextConfirmationKey(baseKey, existing) is not { } key)
+                    continue;
+
+                accounting.Add(AccountingConfirmations.CreateReconfirmation(standing, key, height, moved, now));
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "The accounting events of channel {ChannelId}'s funding could not be moved to block "
+                              + "{Height}", channelId, height);
+        }
+    }
+
     private async Task<bool> MoveAsync(WatchedTransactionModel watch, uint height, uint index,
                                        CancellationToken cancellationToken)
     {
@@ -154,6 +207,10 @@ public sealed class FundingReconfirmationHandler
             stored.FundingCreatedAtBlockHeight = height;
             stored.ResetAnnouncementSignatures();
             await unitOfWork.ChannelDbRepository.UpdateAsync(stored);
+
+            // NL-607: the funding's accounting events move to the new block in the same save
+            await StageFundingEventsMovedAsync(unitOfWork, watch.ChannelId, fundingTxId, height, moved,
+                                               scope.ServiceProvider, cancellationToken);
             await unitOfWork.SaveChangesAsync();
 
             channel.ShortChannelId = moved;

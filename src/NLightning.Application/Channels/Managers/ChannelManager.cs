@@ -2157,6 +2157,17 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                     return;
                 }
 
+                // NL-607: the closing transaction of a Closed channel confirmed again after a reorg reversed its
+                // mutual close in the accounting feed: recorded again, and the channel stays out of memory
+                if (channel.State == ChannelState.Closed)
+                {
+                    if (confirmedTxId is { } closedTxId && channel.ClosingTransaction?.TxId == closedTxId)
+                        await ChannelAccountingEvents.RecordMutualCloseAgainAsync(
+                            uow, channel, firstSeenAtHeight,
+                            (_serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow(), _logger);
+                    return;
+                }
+
                 if (!SignerLoadsChannels)
                     _lightningSigner.RegisterChannel(channelId, channel.GetSigningInfo());
                 _channelMemoryRepository.AddChannel(channel);

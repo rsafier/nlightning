@@ -36,8 +36,8 @@ using Domain.Persistence.Interfaces;
 /// (<see cref="AccountingConfirmations.NextConfirmationKey"/>).</para>
 /// <para>Per rewind (same save as the rollback): the events of the facts the rollback undid are reversed with a
 /// <see cref="AccountingEventKind.Reversal"/>: every broadcast confirmation above the fork (the rows are pending
-/// again), the deposits the rollback removed, the spends of the outputs it restored, and a deposit and its spend that
-/// both sat above the fork. A spend above the fork of an output deposited at or below it stays (the UTXO stays spent:
+/// again), every mutual close confirmed above it (NL-607: its closing watch is pending again), the deposits the
+/// rollback removed, the spends of the outputs it restored, and a deposit and its spend that both sat above the fork. A spend above the fork of an output deposited at or below it stays (the UTXO stays spent:
 /// its spend is back in the mempool, NL-293). A fact that confirms again later is recorded under its next
 /// confirmation key.</para>
 /// <para>Nothing here may fail the block: every step catches and logs its own errors.</para>
@@ -48,7 +48,8 @@ public partial class BlockchainMonitorService
     private static readonly AccountingEventKind[] s_reorgReversibleKinds =
     [
         AccountingEventKind.WalletReceived, AccountingEventKind.WalletOutputSpent, AccountingEventKind.AnchorCpfpFee,
-        AccountingEventKind.SweepFeeBump, AccountingEventKind.WalletSent, AccountingEventKind.Reversal
+        AccountingEventKind.SweepFeeBump, AccountingEventKind.WalletSent, AccountingEventKind.ChannelClosedMutual,
+        AccountingEventKind.Reversal
     ];
 
     /// <summary>How many replaced rows are followed back to a sweep's original (a guard against a cycle).</summary>
@@ -331,6 +332,11 @@ public partial class BlockchainMonitorService
                                                                  or AccountingEventKind.SweepFeeBump
                                                                  or AccountingEventKind.WalletSent))
                 Reverse(confirmed);
+
+            // NL-607: a mutual close confirmed in the disconnected blocks (its watch is pending again; the channel
+            // manager records it again when it confirms again)
+            foreach (var closed in standingAbove.Where(e => e.Kind == AccountingEventKind.ChannelClosedMutual))
+                Reverse(closed);
 
             // The deposits the rollback removed (whatever height they were recorded at)
             var handled = new HashSet<(TxId, uint)>();

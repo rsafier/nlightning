@@ -331,6 +331,39 @@ internal static class ChannelAccountingEvents
     }
 
     /// <summary>
+    /// Records <see cref="AccountingEventKind.ChannelClosedMutual"/> again for a Closed channel whose closing transaction
+    /// confirmed again at <paramref name="blockHeight"/> after a reorg (NL-607): the chain monitor reversed the first
+    /// one when it rewound the closing watch. Under the next confirmation key
+    /// (<see cref="AccountingConfirmations.NextConfirmationKey"/>), so nothing is written while a confirmation stands;
+    /// in its own save; never throws.
+    /// </summary>
+    public static async Task RecordMutualCloseAgainAsync(IUnitOfWork unitOfWork, ChannelModel channel,
+                                                         uint blockHeight, DateTimeOffset occurredAt, ILogger logger)
+    {
+        try
+        {
+            if (unitOfWork.AccountingEventDbRepository is not { } events
+             || BuildMutualClose(channel, blockHeight, occurredAt, logger) is not { } built)
+                return;
+
+            var existing = await events.GetByKeyPrefixAsync(built.EventKey);
+            if (existing.Count == 0
+             || AccountingConfirmations.NextConfirmationKey(built.EventKey, existing) is not { } key)
+                return;
+
+            events.Add(AccountingConfirmations.CreateReconfirmation(built, key, blockHeight, null, occurredAt));
+            await unitOfWork.SaveChangesAsync();
+            logger.LogInformation("Recorded the mutual close of channel {ChannelId} again: its closing transaction "
+                                + "confirmed again at block {Height}", channel.ChannelId, blockHeight);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            logger.LogError(e, "Could not record the mutual close of channel {ChannelId} again in the accounting feed",
+                            channel.ChannelId);
+        }
+    }
+
+    /// <summary>
     /// The event <see cref="StageMutualClose"/> stages, built but not staged; null when the channel has no closing
     /// transaction. The backfill writes it as a memo event (NL-602 A1-T6). May throw.
     /// </summary>
