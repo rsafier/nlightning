@@ -13,6 +13,10 @@ using Application.Payments.Onion;
 using Application.Payments.Policy;
 using Application.Payments.Switch;
 using Channels.Handlers;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Interfaces;
+using Domain.Accounting.Models;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
@@ -330,6 +334,44 @@ public class OnchainEventsTests
         Assert.Contains($"HTLC {DownstreamHtlcId} on channel {s_downstreamChannelId}", alert,
                         StringComparison.Ordinal);
         Assert.Contains($"upstream HTLC {_incoming.Id} of channel {TestChannelId}", alert, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Given_UpstreamAlreadyFailed_When_PreimageRaisedOnChain_Then_TheLossIsRecordedOnceAcrossRestarts()
+    {
+        // Arrange - NL-602: the outgoing amount was paid downstream without reimbursement
+        _context.SetState(_context.State.SendFail(_incoming.Id, new byte[292]).Next);
+        _circuits.Setup(r => r.GetByIncomingAsync(TestChannelId, _incoming.Id))
+                 .ReturnsAsync(() => Circuit(ForwardCircuitStatus.Failed));
+        var recorded = new List<AccountingEventModel>();
+        var accounting = new Mock<IAccountingEventDbRepository>();
+        accounting.Setup(a => a.Add(It.IsAny<AccountingEventModel>())).Callback<AccountingEventModel>(recorded.Add);
+        accounting.Setup(a => a.ExistsAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                  .ReturnsAsync((string key, CancellationToken _) => recorded.Any(e => e.EventKey == key));
+        _context.UnitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(accounting.Object);
+        var fulfilled = new OutgoingHtlcFulfilled(s_downstreamChannelId, DownstreamHtlcId, HashOf(s_preimage),
+                                                  s_preimage);
+
+        // Act: the resolver raises the preimage in two blocks, then again after a restart (a new switch, whose
+        // in-memory alert guard is empty)
+        var htlcSwitch = CreateSwitch(height: 700);
+        await htlcSwitch.HandleAsync(fulfilled, TestContext.Current.CancellationToken);
+        await htlcSwitch.HandleAsync(fulfilled, TestContext.Current.CancellationToken);
+        await CreateSwitch(height: 701).HandleAsync(fulfilled, TestContext.Current.CancellationToken);
+
+        // Assert: one ForwardLostOnchain of the outgoing amount, on the downstream channel
+        var lost = Assert.Single(recorded);
+        Assert.Equal(AccountingEventKind.ForwardLostOnchain, lost.Kind);
+        Assert.Equal(AccountingEventKeys.ForwardLostOnchain(TestChannelId, _incoming.Id), lost.EventKey);
+        Assert.Equal(-29_000_000, lost.AmountMsat);
+        Assert.Equal(0, lost.FeeMsat);
+        Assert.Equal(s_downstreamChannelId, lost.ChannelId);
+        Assert.Equal(HashOf(s_preimage), lost.PaymentHash);
+        Assert.Equal(700u, lost.BlockHeight);
+        Assert.Equal(DownstreamHtlcId.ToString(), lost.Details["outgoingHtlcId"]);
+        Assert.Equal("30000000", lost.Details["incomingAmountMsat"]);
+        _operations.Verify(o => o.FulfillHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(), It.IsAny<Secret>(),
+                                                   It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

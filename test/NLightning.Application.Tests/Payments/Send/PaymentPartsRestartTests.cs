@@ -1,5 +1,7 @@
 namespace NLightning.Application.Tests.Payments.Send;
 
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
 using Domain.Channels.Commitments.Events;
 using Domain.Money;
 using Domain.Payments.Enums;
@@ -87,6 +89,13 @@ public class PaymentPartsRestartTests
         var failedParts = await harness.Bob.Parts.GetForPaymentAsync(invoice.PaymentHash);
         var failedPart = Assert.Single(failedParts, p => p.ChannelId == other.ChannelId && p.HtlcId == other.HtlcId);
         Assert.Equal(PaymentPartState.Failed, failedPart.State);
+
+        // NL-602: the session-less failure recorded the payment's final failure once; a replay of it adds nothing
+        var recorded = Assert.Single(harness.Bob.Accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentFailed, recorded.Kind);
+        Assert.Equal(AccountingEventKeys.PaymentFailed(invoice.PaymentHash, failed.CreatedAt.UtcTicks), recorded.EventKey);
+        Assert.False(await harness.Bob.RestartedPaymentOutcomeHandler().HandleOutgoingHtlcFailedAsync(other, ct));
+        Assert.Single(harness.Bob.Accounting.Saved);
     }
 
     [Fact]
@@ -112,6 +121,13 @@ public class PaymentPartsRestartTests
         var parts = await harness.Bob.Parts.GetForPaymentAsync(invoice.PaymentHash);
         Assert.Equal(2, parts.Count);
         Assert.All(parts, p => Assert.Equal(PaymentPartState.Failed, p.State));
+
+        // NL-602: the reconciliation's failure is recorded once; reconciling again adds nothing
+        var recorded = Assert.Single(harness.Bob.Accounting.Saved);
+        Assert.Equal(AccountingEventKind.PaymentFailed, recorded.Kind);
+        Assert.Contains("after the restart", recorded.Details["reason"]);
+        Assert.Equal(0, await harness.Bob.RestartedPaymentOutcomeHandler().ReconcileInFlightPaymentsAsync(ct));
+        Assert.Single(harness.Bob.Accounting.Saved);
     }
 
     [Fact]
@@ -144,5 +160,6 @@ public class PaymentPartsRestartTests
         Assert.Equal(2, parts.Count);
         Assert.Single(parts, p => p.State == PaymentPartState.Failed);
         Assert.Single(parts, p => p.State == PaymentPartState.InFlight);
+        Assert.Empty(harness.Bob.Accounting.Saved); // NL-602: still in flight, nothing final to record
     }
 }

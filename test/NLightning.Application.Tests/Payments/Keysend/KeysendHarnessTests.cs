@@ -6,6 +6,9 @@ namespace NLightning.Application.Tests.Payments.Keysend;
 using Application.Payments.Keysend;
 using Application.Payments.Send;
 using Channels.Harness;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Models;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.Options;
@@ -76,6 +79,39 @@ public class KeysendHarnessTests
         Assert.Equal(aliceBefore - aliceToBob + bobToAlice,
                      harness.Alice.Channel(ThreeNodeHarness.AliceBobChannelId).LocalBalance);
         Assert.Empty(harness.Alice.Channel(ThreeNodeHarness.AliceBobChannelId).Commitments!.Htlcs);
+
+        // NL-602: each side recorded its payment and its receipt once, with the keysend records' types
+        var aliceEvents = await AccountingEventsAsync(harness.Alice);
+        var sent = Assert.Single(aliceEvents, e => e.Kind == AccountingEventKind.PaymentSucceeded);
+        Assert.Equal(AccountingEventKeys.PaymentSucceeded(first.Payment.PaymentHash), sent.EventKey);
+        Assert.Equal(-(long)aliceToBob.MilliSatoshi, sent.AmountMsat);
+        Assert.Equal(0, sent.FeeMsat);
+        Assert.Equal(harness.Bob.NodeId, sent.Counterparty);
+        Assert.Equal(ThreeNodeHarness.AliceBobChannelId, sent.ChannelId);
+        Assert.Equal(first.Payment.PaymentHash, sent.PaymentHash);
+        Assert.Equal(AccountingFinality.Final, sent.Finality);
+        Assert.Equal("keysend", sent.Details["kind"]);
+        Assert.Equal("1", sent.Details["parts"]);
+        Assert.Equal("7629169,133773310", sent.Details["customRecords"]);
+        Assert.False(sent.Details.ContainsKey("selfPayment"));
+        Assert.Equal(stored.CompletedAt, sent.OccurredAt);
+        var aliceReceived = Assert.Single(aliceEvents, e => e.Kind == AccountingEventKind.InvoiceSettled);
+        Assert.Equal((long)bobToAlice.MilliSatoshi, aliceReceived.AmountMsat);
+        Assert.Equal(harness.Bob.NodeId, aliceReceived.Counterparty);
+        Assert.Equal(2, aliceEvents.Count);
+
+        var bobEvents = await AccountingEventsAsync(harness.Bob);
+        Assert.Equal(2, bobEvents.Count);
+        var received = Assert.Single(bobEvents, e => e.Kind == AccountingEventKind.InvoiceSettled);
+        Assert.Equal(AccountingEventKeys.InvoiceSettled(first.Payment.PaymentHash), received.EventKey);
+        Assert.Equal((long)aliceToBob.MilliSatoshi, received.AmountMsat);
+        Assert.Equal(harness.Alice.NodeId, received.Counterparty);
+        Assert.Equal(ThreeNodeHarness.AliceBobChannelId, received.ChannelId);
+        Assert.Equal("keysend", received.Details["kind"]);
+        Assert.Equal("7629169,133773310", received.Details["customRecords"]);
+        var bobSent = Assert.Single(bobEvents, e => e.Kind == AccountingEventKind.PaymentSucceeded);
+        Assert.Equal(-(long)bobToAlice.MilliSatoshi, bobSent.AmountMsat);
+        Assert.False(bobSent.Details.ContainsKey("customRecords"));
     }
 
     [Fact]
@@ -93,6 +129,19 @@ public class KeysendHarnessTests
         Assert.Equal(0, result.Payment.FailureSourceIndex);
         Assert.Null(await harness.Bob.InScopeAsync(u => u.InvoiceDbRepository
                                                           .GetByPaymentHashAsync(result.Payment.PaymentHash)));
+
+        // NL-602: the final failure is recorded once at Alice (no money moved), nothing at Bob
+        var failed = Assert.Single(await AccountingEventsAsync(harness.Alice));
+        Assert.Equal(AccountingEventKind.PaymentFailed, failed.Kind);
+        Assert.Equal(AccountingEventKeys.PaymentFailed(result.Payment.PaymentHash, result.Payment.CreatedAt.UtcTicks),
+                     failed.EventKey);
+        Assert.Equal(0, failed.AmountMsat);
+        Assert.Equal(0, failed.FeeMsat);
+        Assert.Equal(harness.Bob.NodeId, failed.Counterparty);
+        Assert.Equal(result.Payment.FailureReason, failed.Details["reason"]);
+        Assert.Equal(nameof(FailureCode.IncorrectOrUnknownPaymentDetails), failed.Details["failureCode"]);
+        Assert.Equal("keysend", failed.Details["kind"]);
+        Assert.Empty(await AccountingEventsAsync(harness.Bob));
     }
 
     [Fact]
@@ -181,6 +230,10 @@ public class KeysendHarnessTests
         var stored = Assert.Single(records);
         Assert.Equal((InvoiceKind.Keysend, InvoiceStatus.Settled), (stored.Kind, stored.Status));
         Assert.Equal(amount, stored.AmountReceived);
+        var settled = Assert.Single(await AccountingEventsAsync(harness.Carol));
+        Assert.Equal(AccountingEventKind.InvoiceSettled, settled.Kind);
+        Assert.Equal((long)amount.MilliSatoshi, settled.AmountMsat);
+        Assert.Equal("65537", settled.Details["customRecords"]);
     }
 
     [Fact]
@@ -219,6 +272,10 @@ public class KeysendHarnessTests
     }
 
     private static IPaymentService PaymentsOf(SwitchNode node) => node.Services.GetRequiredService<IPaymentService>();
+
+    /// <summary>The accounting events <paramref name="node"/> saved (NL-602; none is sealed in these tests).</summary>
+    private static Task<IReadOnlyList<AccountingEventModel>> AccountingEventsAsync(SwitchNode node) =>
+        node.InScopeAsync(u => u.AccountingEventDbRepository.GetUnsealedAsync(1_000));
 
     private static async Task<PayInvoiceResult> KeysendAsync(ThreeNodeHarness harness, SwitchNode from, SwitchNode to,
                                                              LightningMoney amount, IReadOnlyList<CustomRecord> records)

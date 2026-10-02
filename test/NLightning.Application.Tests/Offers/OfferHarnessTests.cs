@@ -11,6 +11,7 @@ using Application.Offers.Send;
 using Application.OnionMessages;
 using Application.Payments.Send;
 using Channels.Harness;
+using Domain.Accounting.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
@@ -82,6 +83,25 @@ public class OfferHarnessTests
         Assert.Equal(invoice.Bolt12.InvoiceBytes.ToArray(), stored.Bolt12.InvoiceBytes.ToArray());
         Assert.Equal("from alice", stored.Bolt12.PayerNote);
         Assert.Equal(32, stored.Bolt12.InvoiceRequestMetadata.Length);
+
+        // NL-602: Carol recorded what her invoice received with the offer's id and the payer's note; Alice recorded
+        // the payment with the offer she paid
+        var received = Assert.Single(await harness.Carol.InScopeAsync(u => u.AccountingEventDbRepository
+                                                                           .GetUnsealedAsync(1_000)));
+        Assert.Equal(AccountingEventKind.InvoiceSettled, received.Kind);
+        Assert.Equal((long)invoice.AmountReceived!.MilliSatoshi, received.AmountMsat);
+        Assert.Equal("bolt12", received.Details["kind"]);
+        Assert.Equal(offer.OfferId.ToString(), received.Details["offerId"]);
+        Assert.Equal("from alice", received.Details["payerNote"]);
+        var paid = Assert.Single(await harness.Alice.InScopeAsync(u => u.AccountingEventDbRepository
+                                                                       .GetUnsealedAsync(1_000)));
+        Assert.Equal(AccountingEventKind.PaymentSucceeded, paid.Kind);
+        Assert.Equal(-(long)stored.TotalAmount.MilliSatoshi, paid.AmountMsat);
+        Assert.Equal((long)stored.Fee.MilliSatoshi, paid.FeeMsat);
+        Assert.Equal(harness.Carol.NodeId, paid.Counterparty);
+        Assert.Equal("bolt12", paid.Details["kind"]);
+        Assert.Equal(offer.Bolt12, paid.Details["offer"]);
+        Assert.Equal("from alice", paid.Details["payerNote"]);
     }
 
     [Fact]
@@ -128,6 +148,9 @@ public class OfferHarnessTests
         Assert.Equal(InvoiceStatus.Settled, invoice!.Status);
         Assert.Equal(2UL, invoice.Bolt12!.Quantity);
         Assert.Equal(amount, invoice.Amount);
+        var received = Assert.Single(await harness.Carol.InScopeAsync(u => u.AccountingEventDbRepository
+                                                                           .GetUnsealedAsync(1_000)));
+        Assert.Equal("2", received.Details["quantity"]); // NL-602
     }
 
     [Fact]

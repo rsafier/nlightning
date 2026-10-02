@@ -351,6 +351,10 @@ internal sealed class PaymentHarnessNode : IDisposable
     public InMemoryPaymentDbRepository Payments { get; } = new();
     public InMemoryPaymentPartDbRepository Parts { get; } = new();
     public InMemoryInvoiceDbRepository Invoices { get; } = new();
+
+    /// <summary>The accounting events this node's saves committed (NL-602).</summary>
+    public RecordingAccountingEvents Accounting { get; } = new();
+
     public HarnessForwardingSwitch Switch { get; }
     public IPaymentService PaymentService => _provider.GetRequiredService<IPaymentService>();
     public IInvoiceService InvoiceService => _provider.GetRequiredService<IInvoiceService>();
@@ -547,9 +551,12 @@ internal sealed class PaymentHarnessNode : IDisposable
         unitOfWork.SetupGet(u => u.PaymentDbRepository).Returns(Payments);
         unitOfWork.SetupGet(u => u.PaymentPartDbRepository).Returns(Parts);
         unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(Invoices);
+        var accounting = Accounting.Begin();
+        unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(accounting.Repository);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             staged.Commit();
+            accounting.Commit();
             return Task.CompletedTask;
         });
         return unitOfWork.Object;

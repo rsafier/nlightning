@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Payments.Switch;
 
 using Channels.Interfaces;
+using Domain.Accounting.Constants;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
@@ -746,7 +747,9 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     {
         // The parts still held (just pruned) cover total_msat: the invoice receives their amounts
         var amount = set.HtlcSum;
-        Task Settle(IUnitOfWork unitOfWork) => SettleInvoiceAsync(unitOfWork, set.PaymentHash, amount);
+        var parts = set.Parts.Count;
+        Task Settle(IUnitOfWork unitOfWork) => SettleInvoiceAsync(unitOfWork, set.PaymentHash, amount, part.ChannelId,
+                                                                  parts);
 
         if (!IsOnchain(part.ChannelId))
         {
@@ -991,9 +994,12 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
     /// <summary>
     /// Stages <c>Open</c> → <c>Accepted</c> → <c>Settled</c> on the fulfill's unit of work (under the channel lock and
-    /// the payment hash lock), after checking again that the invoice is still <c>Open</c>.
+    /// the payment hash lock), after checking again that the invoice is still <c>Open</c>, with its
+    /// <c>InvoiceSettled</c> accounting event (NL-602): the settle happens once per invoice (MPP included, in the save
+    /// of the part that settles it), so the event does too.
     /// </summary>
-    private async Task SettleInvoiceAsync(IUnitOfWork unitOfWork, Hash paymentHash, LightningMoney amount)
+    private async Task SettleInvoiceAsync(IUnitOfWork unitOfWork, Hash paymentHash, LightningMoney amount,
+                                          ChannelId channelId, int parts)
     {
         var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(paymentHash);
         if (invoice is not { Status: InvoiceStatus.Open })
@@ -1002,6 +1008,12 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         invoice.Accept(amount);
         invoice.Settle(_timeProvider.GetUtcNow());
         await unitOfWork.InvoiceDbRepository.UpdateAsync(invoice);
+        PaymentAccountingEvents.TryStage(unitOfWork, () =>
+        {
+            _channelMemoryRepository.TryGetChannel(channelId, out var channel);
+            return PaymentAccountingEvents.InvoiceSettled(invoice, amount, channelId, channel, parts,
+                                                          IsOnchain(channelId), CurrentHeight);
+        }, _logger);
     }
 
     /// <summary>
@@ -1631,12 +1643,53 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
               + "failed: it cannot be fulfilled, so the amount was paid downstream without reimbursement. A close "
               + "replaced by a reorg can carry the HTLC again (NL-330); check both channels by hand",
                 fulfilled.HtlcId, fulfilled.ChannelId, fulfilled.PaymentHash, incomingHtlcId, incomingChannelId);
+            await RecordForwardLostOnchainAsync(incomingChannelId, incomingHtlcId, fulfilled);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             // The fulfill is a no-op either way; the alert must not break the switch's event handling
             _logger.LogWarning(e, "Could not check the upstream of HTLC {HtlcId} of channel {ChannelId} for the "
                               + "late preimage", incomingHtlcId, incomingChannelId);
+        }
+    }
+
+    /// <summary>
+    /// NL-602: records the loss <see cref="AlertUpstreamAlreadyFailedAsync"/> alerts about as a
+    /// <c>ForwardLostOnchain</c> accounting event, in its own save (no state changes with it: the upstream was failed
+    /// long before). Once per forward: the alert's memory guard holds within a run, the stored key across restarts
+    /// (the resolvers raise the fulfill on every block until the output is irrevocable). Best effort, never thrown.
+    /// </summary>
+    private async Task RecordForwardLostOnchainAsync(ChannelId incomingChannelId, ulong incomingHtlcId,
+                                                     OutgoingHtlcFulfilled fulfilled)
+    {
+        try
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var circuit = await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(incomingChannelId,
+                              incomingHtlcId);
+            if (circuit is null)
+            {
+                _logger.LogWarning("No circuit for upstream HTLC {HtlcId} of channel {ChannelId}: its on-chain loss is "
+                                 + "not recorded in the accounting feed", incomingHtlcId, incomingChannelId);
+                return;
+            }
+
+            var key = AccountingEventKeys.ForwardLostOnchain(incomingChannelId, incomingHtlcId);
+            if (await unitOfWork.AccountingEventDbRepository.ExistsAsync(key))
+                return;
+
+            _channelMemoryRepository.TryGetChannel(incomingChannelId, out var incoming);
+            _channelMemoryRepository.TryGetChannel(fulfilled.ChannelId, out var outgoing);
+            unitOfWork.AccountingEventDbRepository.Add(
+                PaymentAccountingEvents.ForwardLostOnchain(circuit, fulfilled.ChannelId, fulfilled.HtlcId, incoming,
+                                                           outgoing, _timeProvider.GetUtcNow(), CurrentHeight));
+            await unitOfWork.SaveChangesAsync();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "Could not record the on-chain loss of the forward of HTLC {HtlcId} of channel "
+                              + "{ChannelId}", incomingHtlcId, incomingChannelId);
         }
     }
 
@@ -2143,6 +2196,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         if (circuit is null || !when(circuit))
             return;
 
+        var before = circuit.Status;
         try
         {
             change(circuit);
@@ -2155,6 +2209,20 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         }
 
         await unitOfWork.ForwardCircuitDbRepository.UpdateAsync(circuit);
+        if (before != ForwardCircuitStatus.Fulfilled && circuit.Status == ForwardCircuitStatus.Fulfilled)
+        {
+            // NL-602: a circuit becomes Fulfilled once (its status only moves forward and was re-read here), so the
+            // forward's fee is recorded in this save, whichever path resolved it (live, replay, on chain)
+            PaymentAccountingEvents.TryStage(unitOfWork, () =>
+            {
+                _channelMemoryRepository.TryGetChannel(incomingChannelId, out var incoming);
+                ChannelModel? outgoing = null;
+                if (circuit.OutgoingChannelId is { } outgoingChannelId)
+                    _channelMemoryRepository.TryGetChannel(outgoingChannelId, out outgoing);
+                return PaymentAccountingEvents.ForwardSettled(circuit, incoming, outgoing);
+            }, _logger);
+        }
+
         await unitOfWork.SaveChangesAsync();
     }
 

@@ -6,6 +6,9 @@ namespace NLightning.Application.Tests.Payments.Switch;
 using Application.Payments.Routing;
 using Application.Payments.Switch;
 using Channels.Harness;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Models;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
@@ -76,6 +79,18 @@ public class MppReceiveTests
         Assert.Empty(CarolSwitch(harness).HeldPaymentHashes);
         Assert.Equal(0, _clock.PendingTimers);
         AssertNoHtlcs(harness);
+
+        // NL-602: one InvoiceSettled for the whole set (in the settling part's save), one ForwardSettled per part
+        var settled = Assert.Single(await AccountingEventsAsync(harness.Carol));
+        Assert.Equal(AccountingEventKind.InvoiceSettled, settled.Kind);
+        Assert.Equal(AccountingEventKeys.InvoiceSettled(invoice.PaymentHash), settled.EventKey);
+        Assert.Equal((long)s_amount.MilliSatoshi, settled.AmountMsat);
+        Assert.Equal("2", settled.Details["parts"]);
+        Assert.Equal(harness.Bob.NodeId, settled.Counterparty);
+        var forwards = await AccountingEventsAsync(harness.Bob);
+        Assert.Equal(2, forwards.Count);
+        Assert.All(forwards, f => Assert.Equal(AccountingEventKind.ForwardSettled, f.Kind));
+        Assert.Equal(2, forwards.Select(f => f.EventKey).Distinct().Count());
     }
 
     [Fact]
@@ -106,6 +121,7 @@ public class MppReceiveTests
         Assert.Equal(InvoiceStatus.Open, (await GetInvoiceAsync(harness, invoice)).Status);
         Assert.Empty(CarolSwitch(harness).HeldPaymentHashes);
         AssertNoHtlcs(harness);
+        Assert.Empty(await AccountingEventsAsync(harness.Carol));
 
         // And a new attempt with both parts still pays the invoice
         await PayPartAsync(harness, invoice, s_firstPart, s_amount);
@@ -113,6 +129,7 @@ public class MppReceiveTests
         await harness.PumpAsync();
         Assert.Equal(2, harness.Alice.PaymentHandler.Fulfilled.Count);
         Assert.Equal(InvoiceStatus.Settled, (await GetInvoiceAsync(harness, invoice)).Status);
+        Assert.Equal(AccountingEventKind.InvoiceSettled, Assert.Single(await AccountingEventsAsync(harness.Carol)).Kind);
     }
 
     [Fact]
@@ -242,6 +259,8 @@ public class MppReceiveTests
         Assert.Equal(2, harness.Alice.PaymentHandler.Fulfilled.Count);
         Assert.Equal(InvoiceStatus.Settled, (await GetInvoiceAsync(harness, invoice)).Status);
         AssertNoHtlcs(harness);
+        var settled = Assert.Single(await AccountingEventsAsync(harness.Carol));
+        Assert.Equal((long)s_amount.MilliSatoshi, settled.AmountMsat);
     }
 
     [Fact]
@@ -280,6 +299,11 @@ public class MppReceiveTests
         await AdvanceAsync(harness, TimeSpan.FromMinutes(2));
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
         AssertNoHtlcs(harness);
+
+        // NL-602: the held part's replay fulfilled a committed member and recorded nothing more
+        var settled = Assert.Single(await AccountingEventsAsync(harness.Carol));
+        Assert.Equal(AccountingEventKind.InvoiceSettled, settled.Kind);
+        Assert.Equal((long)s_amount.MilliSatoshi, settled.AmountMsat);
     }
 
     [Theory]
@@ -549,6 +573,10 @@ public class MppReceiveTests
 
     private static Task<InvoiceModel> GetInvoiceAsync(ThreeNodeHarness harness, InvoiceModel invoice) =>
         harness.Carol.InScopeAsync(async u => (await u.InvoiceDbRepository.GetByPaymentHashAsync(invoice.PaymentHash))!);
+
+    /// <summary>The accounting events <paramref name="node"/> saved (NL-602; none is sealed in these tests).</summary>
+    private static Task<IReadOnlyList<AccountingEventModel>> AccountingEventsAsync(SwitchNode node) =>
+        node.InScopeAsync(u => u.AccountingEventDbRepository.GetUnsealedAsync(1_000));
 
     private static DecryptedFailure Decrypt(ThreeNodeHarness harness, PaymentOnion onion, OutgoingHtlcFailed failed) =>
         Decrypt(harness, onion, failed, allowUnreadable: false)!;

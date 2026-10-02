@@ -6,6 +6,7 @@ namespace NLightning.Application.Tests.Payments.Switch;
 using Application.Payments.Routing;
 using Application.Payments.Switch;
 using Channels.Harness;
+using Domain.Accounting.Enums;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
@@ -78,6 +79,15 @@ public class OnchainFinalHopSwitchTests
         Assert.Empty(harness.Alice.PaymentHandler.Fulfilled);
         Assert.Empty(harness.Alice.PaymentHandler.Failed);
         Assert.Empty(CarolSwitch(harness).HeldPaymentHashes);
+
+        // NL-602: the settle is recorded once (the second round finds the invoice Settled), flagged as claimed on
+        // chain so the books do not count the on-chain claim again
+        var settled = Assert.Single(await harness.Carol.InScopeAsync(u => u.AccountingEventDbRepository
+                                                                          .GetUnsealedAsync(1_000)));
+        Assert.Equal(AccountingEventKind.InvoiceSettled, settled.Kind);
+        Assert.Equal((long)s_amount.MilliSatoshi, settled.AmountMsat);
+        Assert.Equal("onchainClaim", settled.Details["settledBy"]);
+        Assert.Equal(ThreeNodeHarness.BobCarolChannelId, settled.ChannelId);
     }
 
     [Theory]
@@ -140,6 +150,7 @@ public class OnchainFinalHopSwitchTests
         Assert.Null((await StoredIncomingAsync(harness, htlc.Id))!.KnownPreimage);
         Assert.Equal(sentBefore, harness.Sent.Count);
         Assert.Equal(InvoiceStatus.Open, (await GetInvoiceAsync(harness, invoice)).Status);
+        Assert.Empty(await harness.Carol.InScopeAsync(u => u.AccountingEventDbRepository.GetUnsealedAsync(1_000)));
     }
 
     [Fact]
