@@ -54,6 +54,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Transport.Interfaces;
 using Infrastructure.Transport.Services;
+using Infrastructure.Transport.Tor;
 using Mock;
 
 /// <summary>
@@ -328,6 +329,9 @@ public sealed class NLightningTestNode : IAsyncDisposable
             await Services.GetRequiredService<AccountingBackfillService>().EnsureCutoverAsync(cancellationToken);
             await PeerManager.StartAsync(cancellationToken);
             peerManagerStarted = true;
+            // As the daemon does: our Tor onion service, registered in the background once the listener is up (nothing
+            // unless Node:Tor turns it on; NL-572). Not tied to the caller's token: StopAsync takes it down
+            await Services.GetRequiredService<ITorOnionService>().StartAsync(CancellationToken.None);
             // As the daemon does: settle the payments a crash left without an HTLC id once every channel is loaded
             await Services.GetRequiredService<IPaymentOutcomeHandler>().ReconcileInFlightPaymentsAsync(cancellationToken);
             // As the daemon does: the N9 safety services and the update_fee rounds (off unless a test enables them)
@@ -400,6 +404,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
                                 ?? Task.CompletedTask,
                                    Services.GetService<AccountingBackfillService>()?.StopAsync()
                                 ?? Task.CompletedTask);
+                // As the daemon does: closing the control connection takes our onion service down before the listener
+                await Services.GetRequiredService<ITorOnionService>().StopAsync();
                 await Task.WhenAll(BlockchainMonitor.StopAsync(), _feeService!.StopAsync(), PeerManager.StopAsync());
                 // Peer storage writes its delayed blobs once the peers stopped, as the daemon does (NL-010)
                 await (Services.GetService<IPeerStorageService>()?.StopAsync() ?? Task.CompletedTask);
@@ -687,6 +693,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
             }
             if (peerManagerStarted)
             {
+                await Services.GetRequiredService<ITorOnionService>().StopAsync();
                 await PeerManager.StopAsync();
                 await (Services.GetService<IPeerStorageService>()?.StopAsync() ?? Task.CompletedTask);
             }
