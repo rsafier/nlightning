@@ -667,6 +667,18 @@ Owner decisions of 2026-09-28: implement NL-530 (the accepter may start the RBF 
 
 Gate (net10.0, Release): 0 errors, the 5 known CS86xx; Release.Native 0 errors; `dotnet format` clean; non-Docker 10,989 (Domain 3524, Application 2990, Integration 933, Serialization 613, Infrastructure 468, Bitcoin 1348, Bolt11 327, Daemon 786), green apart from `GossipGraphReloadTests` (NL-466, 3/3 alone). Docker: `ClnDualFundTests` 6/6; full CLN run 73/73 + 4 `Explicit` not run; `Day0FlowTests` + `Day0UpgradeInPlaceTests` 3/3 on the second run (the first failed at step 4 on NL-533, after step 1 (c) had passed). SQL Server not run (standard cycle); no migration, so no Postgres run.
 
+### Lane b10-splice-resume record (batch10, 2026-10-02; branch `b10-splice-resume` from `wip/batch10` at `44aeaf5f`)
+
+Tasks: NL-600 (a splice resumed after our restart failed signing our wallet input) and what in-process tests can close of NL-496. New: NL-698.
+
+| Task | Status | SHAs |
+|---|---|---|
+| NL-600 root cause and fix | done: both hosts started `PeerManager` before the chain monitor, whose `StartAsync` loaded the wallet UTXO set and the fee input reservations, so CLN's `tx_signatures` after `channel_reestablish` could reach `WalletInteractiveTxContributor.SignAsync` while the signer's UTXO set was still empty ("The signer found no wallet input in the transaction"). `IBlockchainMonitor.LoadWalletAsync` (the database half of the start: watched txs, addresses, UTXO set and reservations, funding locks, last processed height) runs before `PeerManager.StartAsync` in the daemon and `NLightningTestNode`; `SignAsync` names what the wallet holds of each input when the signer finds none. Proofs: Integration `Persistence/ChainMonitorWalletLoadTests` (the signer refuses before the load and signs after it, real SQLite and monitor), Daemon `Services/NltgDaemonServiceStartupOrderTests`, Application `WalletInteractiveTxContributorTests.Given_ARestartedProcessWhoseWalletIsNotLoadedYet_*` | a9fefca0, 655a8cc6 |
+| NL-698 crash between the splice CS saves | done: the peer's splice `commitment_signed` is saved in the engine (SP-I2) one save before the driver records it in the session row; a crash between them made us ask for it again and refuse the retransmission as SP-OP-05, failing the channel. `ReestablishService` counts it received from the engine's signatures and `SpliceService.EnsureLoadedAsync` replays the driver's step | 2aa992e5 |
+| NL-496 restart variants and crashes | done: SP-T-04 accepter restart, SP-T-05 sender and receiver restarts, SP-T-08 restarts of both sides, a crash at every save of a splice-in on both sides (`SpliceConformanceTests`); the harness restarts now restore pending fundings from their rows, SP-I1 marks per funding and a locked splice's funding (`TwoNodeHarness.BeforeRestore`) | 2aa992e5 |
+| NL-496 resolver on a splice funding | done: `LocalCommitSpliceHtlcTests` (HTLC-timeout on our commitment of a pending splice that confirmed instead, and of a locked splice) | 65c17739 |
+| NL-496 rest | open: a real lock then a real HTLC over the old SCID in one in-process test (needs splicing in the three-node harness), and the Docker cases (close reorged out for the splice, `OnchainSpliceTests` (c) with an HTLC in flight) | |
+
 ### Waves and lanes (for the multi-agent wave workflow)
 | Wave | Lane | Files owned (exclusive) | Depends on | Proof |
 |---|---|---|---|---|
