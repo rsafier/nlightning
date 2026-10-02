@@ -8,11 +8,14 @@ namespace NLightning.Application.Accounting;
 using Backfill;
 using Books;
 using Domain.Accounting.Books;
+using Domain.Accounting.Financial;
 using Domain.Accounting.Interfaces;
+using Domain.Accounting.Prices;
 using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Prices;
 using Reports;
 
 /// <summary>
@@ -60,6 +63,30 @@ public static class AccountingServiceCollectionExtensions
                                      sp.GetService<TimeProvider>()));
         services.TryAddSingleton<IAccountingBooks>(sp => sp.GetRequiredService<AccountingBooksService>());
         services.AddAccountingReportServices();
+        services.AddAccountingPriceValuation();
+
+        return services;
+    }
+
+    /// <summary>
+    /// The back-valuation of the financial books (NL-602 A3-T2): <see cref="PriceValuationService"/> as itself and as
+    /// <see cref="IAccountingPrices"/> (one instance; the host starts it after the books and stops it before), and the
+    /// period lock's adjustment rule <see cref="IAccountingAdjustmentSink"/> (default
+    /// <see cref="NullAccountingAdjustmentSink"/>; A3-T5 registers its own before this call, or replaces it). The price
+    /// sources (<see cref="IPriceSource"/>) come from the host (<c>AddAccountingPriceSources</c>, Infrastructure.Bitcoin);
+    /// without one the job values with stored prices only. Idempotent (TryAdd).
+    /// </summary>
+    public static IServiceCollection AddAccountingPriceValuation(this IServiceCollection services)
+    {
+        services.TryAddSingleton<IAccountingAdjustmentSink>(NullAccountingAdjustmentSink.Instance);
+        services.TryAddSingleton(sp => new PriceValuationService(
+                                     sp.GetRequiredService<IServiceScopeFactory>(),
+                                     sp.GetRequiredService<ILogger<PriceValuationService>>(),
+                                     sp.GetService<IOptions<AccountingOptions>>(),
+                                     sp.GetService<IOptions<AccountingPriceOptions>>(),
+                                     sp.GetService<IPriceSource>(), sp.GetService<IAccountingAdjustmentSink>(),
+                                     sp.GetService<TimeProvider>()));
+        services.TryAddSingleton<IAccountingPrices>(sp => sp.GetRequiredService<PriceValuationService>());
 
         return services;
     }

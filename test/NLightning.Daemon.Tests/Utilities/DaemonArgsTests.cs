@@ -243,6 +243,8 @@ public class DaemonArgsTests : IDisposable
         Assert.Equal(Path.Combine(configDir, "logs", "log-.txt"), config["Serilog:WriteTo:1:Args:path"]);
         Assert.Equal(Path.Combine(configDir, "fee_estimation_cache.bin"), config["FeeEstimation:CacheFile"]);
         Assert.Equal(Path.Combine(configDir, "tor_onion_v3.key"), config["Node:Tor:OnionServiceKeyFile"]);
+        // The financial books' price file (NL-602 A3-T2), also when the file does not name it
+        Assert.Equal(Path.Combine(configDir, "prices.csv"), config["Accounting:Prices:CsvFile"]);
     }
 
     [Fact]

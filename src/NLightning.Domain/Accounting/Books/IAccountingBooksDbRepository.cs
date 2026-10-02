@@ -75,8 +75,9 @@ public interface IAccountingBooksDbRepository
     }
 
     /// <summary>
-    /// Stages the fiat value of one posting (A3-T2's back-valuation) and adds it to its account's running fiat balance.
-    /// Returns false when the posting does not exist or is already valued.
+    /// Stages the fiat value of one posting (A3-T2's back-valuation) and adds it to its account's running fiat balance;
+    /// the entry loses <see cref="AccountingEntryFlags.Unvalued"/> once none of its postings is left unvalued. Returns
+    /// false when the posting does not exist or is already valued.
     /// </summary>
     Task<bool> SetPostingValueAsync(AccountingPostingKey posting, decimal fiatAmount, string fiatCurrency, long priceId,
                                     CancellationToken cancellationToken = default) =>
@@ -87,6 +88,16 @@ public interface IAccountingBooksDbRepository
     Task<IReadOnlyList<AccountingUnvaluedPosting>> ListUnvaluedPostingsAsync(
         AccountingBook book, int take, CancellationToken cancellationToken = default) =>
         throw NotSupported(book);
+
+    /// <summary>
+    /// Up to <paramref name="take"/> postings of the book without a fiat value that come after
+    /// <paramref name="after"/> in the work list's order (time, ledger sequence, adjustment, line), oldest first; null
+    /// starts at the beginning. A job pages past the postings it cannot value yet with it (A3-T2).
+    /// </summary>
+    Task<IReadOnlyList<AccountingUnvaluedPosting>> ListUnvaluedPostingsAsync(
+        AccountingBook book, AccountingUnvaluedPostingCursor? after, int take,
+        CancellationToken cancellationToken = default) =>
+        after is null ? ListUnvaluedPostingsAsync(book, take, cancellationToken) : throw NotSupported(book);
 
     /// <summary>Stages the closed period of every entry of the book that occurred in [start, end) and has none yet
     /// (A3-T5); returns how many.</summary>

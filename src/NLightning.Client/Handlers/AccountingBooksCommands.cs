@@ -14,7 +14,8 @@ using Transport.Ipc.Responses;
 /// <summary>
 /// The <c>accounting</c> verb family of the CLI (NL-602 A2): <c>accounting report &lt;kind&gt; [...]</c> (ClientCommand
 /// 43), <c>accounting export --format hledger|beancount|csv [--since] [--until] [--output &lt;file&gt;]</c> (44) and
-/// <c>accounting reconcile|rebuild|verify</c> (45).
+/// <c>accounting reconcile|rebuild|verify</c> (45); <c>accounting prices import|list|fetch</c> (45, A3-T2:
+/// <see cref="AccountingPricesCommands"/>).
 /// </summary>
 /// <remarks>
 /// An export is fetched page by page and written by the client, to standard output or to <c>--output</c> (a path on
@@ -29,7 +30,7 @@ internal static class AccountingBooksCommands
     internal const string Usage =
         "accounting report <balance|income|channels|peers|fees|register> [options] | accounting export --format "
       + "<hledger|beancount|csv> [--since <time>] [--until <time>] [--output <file>] | accounting "
-      + "<reconcile|rebuild|verify>";
+      + "<reconcile|rebuild|verify> | " + AccountingPricesCommands.Usage;
 
     /// <summary>The largest register page.</summary>
     internal const int MaxLimit = 1_000;
@@ -61,7 +62,8 @@ internal static class AccountingBooksCommands
         AccountingReportIpcRequest? Report = null,
         AccountingExportIpcRequest? Export = null,
         string? OutputPath = null,
-        AccountingAdminIpcRequest? Admin = null);
+        AccountingAdminIpcRequest? Admin = null,
+        string? PricesFile = null);
 
     /// <summary>Checks the arguments; an error message with the usage, or null when they are valid.</summary>
     internal static string? Validate(string[] commandArgs) =>
@@ -88,6 +90,8 @@ internal static class AccountingBooksCommands
                 return ParseReport(commandArgs[1..], out error);
             case "export":
                 return ParseExport(commandArgs[1..], out error);
+            case "prices":
+                return AccountingPricesCommands.Parse(commandArgs[1..], out error);
             case "reconcile":
             case "rebuild":
             case "verify":
@@ -146,6 +150,12 @@ internal static class AccountingBooksCommands
             File.Move(temporary, fullPath, overwrite: true);
             output.WriteLine(string.Format(CultureInfo.InvariantCulture, "Exported {0} entr{1} to {2}", entries,
                                            entries == 1 ? "y" : "ies", fullPath));
+            return;
+        }
+
+        if (arguments.Admin?.Prices is not null)
+        {
+            await AccountingPricesCommands.RunAsync(arguments, client.AccountingAdminAsync, output, cancellationToken);
             return;
         }
 
@@ -346,7 +356,7 @@ internal static class AccountingBooksCommands
 
     // The options in order as (lower-case name, value); each as --name value or --name=value, every one at most once
     // except --kind
-    private static List<(string Name, string Value)>? ParseOptions(string[] args, string[] allowed, out string? error)
+    internal static List<(string Name, string Value)>? ParseOptions(string[] args, string[] allowed, out string? error)
     {
         error = null;
         var options = new List<(string, string)>();
@@ -396,7 +406,7 @@ internal static class AccountingBooksCommands
         return options;
     }
 
-    private static bool TryParseTime(string name, string value, out long seconds, out string? error)
+    internal static bool TryParseTime(string name, string value, out long seconds, out string? error)
     {
         error = null;
         if (ClientApp.ParseTime(value) is { } parsed)

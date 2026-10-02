@@ -186,6 +186,12 @@ public static class ClientUtils
         Console.WriteLine("  accounting reconcile         Compare the books with the node's live balances");
         Console.WriteLine("  accounting rebuild           Clear the books and project the whole feed again");
         Console.WriteLine("  accounting verify            Walk the feed's hash chain and report the first break");
+        Console.WriteLine("  accounting prices import <file> [--currency <code>]");
+        Console.WriteLine("                               Store prices from a unixSeconds,price file (bad lines listed)");
+        Console.WriteLine("  accounting prices list [--since <time>] [--until <time>] [--limit <n>] [--currency <code>]");
+        Console.WriteLine("                               The stored BTC prices, oldest first");
+        Console.WriteLine("  accounting prices fetch --since <time> [--until <time>]");
+        Console.WriteLine("                               Ask the price sources for every hour of the range (31 days max)");
         Console.WriteLine();
         Console.WriteLine("Environment Variables:");
         Console.WriteLine("  NLTG_NETWORK               Network to use");

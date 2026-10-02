@@ -34,6 +34,7 @@ using Application.Payments.Switch;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
+using Domain.Accounting.Prices;
 using Domain.Channels.Interfaces;
 using Domain.Client.Constants;
 using Domain.Client.Exceptions;
@@ -265,10 +266,15 @@ public static class NodeServiceExtensions
         // snapshot source come from AddApplicationServices and read the Accounting section
         services.Configure<AccountingOptions>(configuration.GetSection(AccountingOptions.SectionName));
         services.AddAccountingIpcServices();
+        // The financial books' prices (NL-602 A3-T2, Accounting:Prices): the price file and mempool.space's historical
+        // price, asked only by the back-valuation job (PriceValuationService, from AddApplicationServices)
+        services.Configure<AccountingPriceOptions>(configuration.GetSection(AccountingPriceOptions.SectionName));
 
         // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
         // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate
         services.AddFeeServices();
+        // The price sources of the financial books, their HTTP client built like the fee service's (Tor in TorOnly)
+        services.AddAccountingPriceSources();
 
         // The node's services take ILogger<T>; AddHttpClient used to register logging implicitly (hosts add providers)
         services.AddLogging();

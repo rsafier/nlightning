@@ -56,6 +56,11 @@ public sealed class AccountingAdminIpcResponse
 
     [Key(3)] public AccountingVerificationIpcResponse? Verification { get; init; }
 
+    // Keys 4-9 are left to the period close and classification answers (A3-T3, A3-T5)
+
+    /// <summary>The answer of a <c>prices</c> action (NL-602 A3-T2).</summary>
+    [Key(10)] public AccountingPricesIpcResponse? Prices { get; init; }
+
     public static AccountingAdminIpcResponse FromClientResponse(AccountingAdminClientResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -99,7 +104,8 @@ public sealed class AccountingAdminIpcResponse
             Action = (int)response.Action,
             Reconcile = reconcile,
             RebuiltEntries = response.RebuiltEntries,
-            Verification = verification
+            Verification = verification,
+            Prices = response.Prices is { } prices ? AccountingPricesIpcResponse.FromClientResponse(prices) : null
         };
     }
 }

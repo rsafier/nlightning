@@ -8,4 +8,7 @@ using Enums;
 public sealed class AccountingAdminClientRequest
 {
     public AccountingAdminAction Action { get; init; } = AccountingAdminAction.Verify;
+
+    /// <summary>The arguments of the <c>prices</c> actions (NL-602 A3-T2).</summary>
+    public AccountingPricesClientRequest? Prices { get; init; }
 }

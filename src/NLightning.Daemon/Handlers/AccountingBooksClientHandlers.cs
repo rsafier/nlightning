@@ -6,6 +6,7 @@ using Application.Accounting;
 using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
+using Domain.Accounting.Prices;
 using Domain.Accounting.Services;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
@@ -185,14 +186,17 @@ public sealed class AccountingAdminClientHandler
 {
     private readonly IAccountingBooks? _books;
     private readonly AccountNames _names;
+    private readonly IAccountingPrices? _prices;
     private readonly IUnitOfWork _unitOfWork;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.AccountingAdmin;
 
     public AccountingAdminClientHandler(IUnitOfWork unitOfWork, IAccountingBooks? books,
-                                        IOptions<AccountingOptions>? options = null)
+                                        IOptions<AccountingOptions>? options = null,
+                                        IAccountingPrices? prices = null)
     {
+        _prices = prices;
         _unitOfWork = unitOfWork;
         _books = books;
         _names = (options?.Value ?? new AccountingOptions()).GetAccountNames();
@@ -216,6 +220,10 @@ public sealed class AccountingAdminClientHandler
                 return response with { Reconcile = await RequireBooks().ReconcileAsync(ct) };
             case AccountingAdminAction.Rebuild:
                 return response with { RebuiltEntries = await RequireBooks().RebuildAsync(ct) };
+            case AccountingAdminAction.PricesImport:
+            case AccountingAdminAction.PricesList:
+            case AccountingAdminAction.PricesFetch:
+                return response with { Prices = await AccountingPricesAdmin.HandleAsync(_prices, request, ct) };
             default:
                 throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown accounting action {request.Action}.");
         }

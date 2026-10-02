@@ -316,21 +316,58 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
         var balance = await FindOrAddBalanceAsync(entity.Book, entity.Account, entity.AccountName ?? string.Empty,
                                                   cancellationToken);
         balance.FiatAmount += fiatAmount;
+
+        // The entry is valued once none of its lines is left without a value (what this unit of work staged
+        // included: a tracked query returns the tracked instances as they are)
+        var lines = await _context.AccountingPostings
+                                  .Where(p => p.Book == entity.Book && p.LedgerSeq == entity.LedgerSeq
+                                           && p.Adjustment == entity.Adjustment)
+                                  .ToListAsync(cancellationToken);
+        if (lines.All(p => p.FiatAmount is not null))
+        {
+            var entry = await _context.AccountingEntries.FindAsync(
+                            [entity.Book, entity.LedgerSeq, entity.Adjustment], cancellationToken);
+            if (entry is not null && (entry.Flags & (int)AccountingEntryFlags.Unvalued) != 0)
+                entry.Flags &= ~(int)AccountingEntryFlags.Unvalued;
+        }
+
         return true;
     }
 
     /// <inheritdoc />
+    public Task<IReadOnlyList<AccountingUnvaluedPosting>> ListUnvaluedPostingsAsync(
+        AccountingBook book, int take, CancellationToken cancellationToken = default) =>
+        ListUnvaluedPostingsAsync(book, null, take, cancellationToken);
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<AccountingUnvaluedPosting>> ListUnvaluedPostingsAsync(
-        AccountingBook book, int take, CancellationToken cancellationToken = default)
+        AccountingBook book, AccountingUnvaluedPostingCursor? after, int take,
+        CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
 
         var bookValue = (byte)book;
-        var rows = await (from p in _context.AccountingPostings.AsNoTracking()
+        var postings = _context.AccountingPostings.AsNoTracking()
+                               .Where(p => p.Book == bookValue && p.PriceId == null && p.FiatAmount == null);
+        if (after is { } cursor)
+        {
+            // Keyset paging in the list's order (time, ledger sequence, adjustment, line)
+            var time = cursor.OccurredAt;
+            var seq = cursor.LedgerSeq;
+            var adjustment = cursor.Adjustment;
+            var index = cursor.Index;
+            postings = postings.Where(p => p.OccurredAt > time
+                                        || (p.OccurredAt == time
+                                         && (p.LedgerSeq > seq
+                                          || (p.LedgerSeq == seq
+                                           && (p.Adjustment > adjustment
+                                            || (p.Adjustment == adjustment && p.Index > index))))));
+        }
+
+        var rows = await (from p in postings
                           join e in _context.AccountingEntries.AsNoTracking()
                               on new { p.Book, p.LedgerSeq, p.Adjustment }
                               equals new { e.Book, e.LedgerSeq, e.Adjustment }
-                          where p.Book == bookValue && p.PriceId == null && p.FiatAmount == null
                           orderby p.OccurredAt, p.LedgerSeq, p.Adjustment, p.Index
                           select new { Posting = p, e.ClosedPeriodId })
                         .Take(take)

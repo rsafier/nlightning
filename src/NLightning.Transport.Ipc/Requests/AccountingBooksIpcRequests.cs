@@ -126,12 +126,21 @@ public sealed class AccountingAdminIpcRequest
     /// <summary>The <c>AccountingAdminAction</c> value (1 reconcile, 2 rebuild, 3 verify).</summary>
     [Key(0)] public int Action { get; set; } = (int)AccountingAdminAction.Verify;
 
-    /// <exception cref="ClientException">An unknown action.</exception>
+    // Keys 1-9 are left to the period close and classification arguments (A3-T3, A3-T5)
+
+    /// <summary>The arguments of the <c>prices</c> actions (10 import, 11 list, 12 fetch; NL-602 A3-T2).</summary>
+    [Key(10)] public AccountingPricesIpcRequest? Prices { get; set; }
+
+    /// <exception cref="ClientException">An unknown action, or bad <c>prices</c> arguments.</exception>
     public AccountingAdminClientRequest ToClientRequest()
     {
         if (!Enum.IsDefined(typeof(AccountingAdminAction), Action))
             throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown accounting action {Action}.");
 
-        return new AccountingAdminClientRequest { Action = (AccountingAdminAction)Action };
+        return new AccountingAdminClientRequest
+        {
+            Action = (AccountingAdminAction)Action,
+            Prices = Prices?.ToClientRequest()
+        };
     }
 }

@@ -18,4 +18,7 @@ public sealed record AccountingAdminClientResponse(AccountingAdminAction Action,
     public int? RebuiltEntries { get; init; }
 
     public AccountingChainVerification? Verification { get; init; }
+
+    /// <summary>The answer of a <c>prices</c> action (NL-602 A3-T2).</summary>
+    public AccountingPricesClientResponse? Prices { get; init; }
 }
