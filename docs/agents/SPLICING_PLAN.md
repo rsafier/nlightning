@@ -679,6 +679,8 @@ Tasks: NL-600 (a splice resumed after our restart failed signing our wallet inpu
 | NL-496 resolver on a splice funding | done: `LocalCommitSpliceHtlcTests` (HTLC-timeout on our commitment of a pending splice that confirmed instead, and of a locked splice) | 65c17739 |
 | NL-496 rest | open: a real lock then a real HTLC over the old SCID in one in-process test (needs splicing in the three-node harness), and the Docker cases (close reorged out for the splice, `OnchainSpliceTests` (c) with an HTLC in flight) | |
 
+Gate (net10.0, Release): 0 errors, 0 warnings (`--no-incremental`); `dotnet format` clean; `check-sln-configs.py` OK; non-Docker 13,064 passed, 6 skipped (Domain 4130, Application 3537, Integration 1032, Serialization 622, Infrastructure 635, Bitcoin 1532, Bolt11 337, Daemon 1233), no failure. Docker: `ClnSpliceReestablishTests` 11/11 three runs in a row at `655a8cc6` (`scripts/run-interop.sh cln Release -class ...ClnSpliceReestablishTests`, under the Docker lock).
+
 ### Waves and lanes (for the multi-agent wave workflow)
 | Wave | Lane | Files owned (exclusive) | Depends on | Proof |
 |---|---|---|---|---|
