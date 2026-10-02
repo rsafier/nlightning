@@ -538,6 +538,36 @@ public class GossipSyncManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ATimedOutScidQuery_When_ItsLateEndNeverArrives_Then_TheNextQueryFailsAndNothingMoreIsAsked()
+    {
+        // Arrange (NL-718: Eclair drops a query over its rate limit and never answers it)
+        var manager = CreateManager(o =>
+        {
+            o.SyncReplyTimeout = s_replyTimeout;
+            o.SyncPeers = 0;
+        });
+        var silent = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(silent);
+        await silent.NextAsync<GossipTimestampFilterMessage>();
+        var first = manager.QueryScidAsync(new ShortChannelId(200, 1, 0), TestContext.Current.CancellationToken);
+        await silent.NextAsync<QueryShortChannelIdsMessage>();
+        AdvancePast(s_replyTimeout);
+        Assert.False(await first.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        var waiting = manager.QueryScidAsync(new ShortChannelId(300, 1, 0), TestContext.Current.CancellationToken);
+        Assert.True(await silent.NothingSentWithinAsync(s_quiet));
+
+        // Act: another reply timeout without the late end
+        AdvancePast(s_replyTimeout);
+
+        // Assert: the waiting query fails without being sent, and the connection is asked nothing more
+        Assert.False(await waiting.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.False(await manager.QueryScidAsync(new ShortChannelId(400, 1, 0), TestContext.Current.CancellationToken)
+                                  .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.True(await silent.NothingSentWithinAsync(s_quiet));
+        Assert.Empty(silent.Warnings);
+    }
+
+    [Fact]
     public async Task Given_ATimedOutRangeQuery_When_ItsLateRepliesComplete_Then_TheConnectionQueriesAgain()
     {
         // Arrange (NL-365): the peer answers the range query after our timeout

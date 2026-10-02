@@ -152,7 +152,8 @@ public sealed class EclairGossipTests : IAsyncLifetime
     /// (c) NL-407 as it was: with <c>Gossip:MinQueryInterval</c> at zero the twelve queries go out as fast as Eclair
     /// answers, Eclair's rate limiter drops one without a <c>reply_short_channel_ids_end</c>, and that query is given up
     /// after the reply timeout (in the run that proved it: queries 0-4 answered within 3 ms each, query 5 given up after
-    /// the 15 s timeout; a later query would wait for the late end, NL-365, which Eclair never sends).
+    /// the 15 s timeout; a later query waits for the late end, NL-365, which Eclair never sends, for one more timeout
+    /// and then the connection is asked nothing more, NL-718).
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_UnpacedQueries_When_WeQueryEclairTwelveTimesInARow_Then_EclairLeavesOneUnanswered()
@@ -222,8 +223,8 @@ public sealed class EclairGossipTests : IAsyncLifetime
             var answered = await sync.QueryScidAsync(new ShortChannelId(500_000 + (uint)i, 1, 0), ct);
             answers.Add(new QueryAnswer(i, answered, started.Elapsed - at));
 
-            // An unanswered query poisons the connection's query slot: the next one waits for the late end (NL-365),
-            // which Eclair never sends
+            // After an unanswered query the next one first waits for the late end (NL-365), which Eclair never sends,
+            // for another reply timeout (NL-718)
             if (!answered)
                 break;
         }

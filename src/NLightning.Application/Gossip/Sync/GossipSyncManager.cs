@@ -627,6 +627,11 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                         // NL-365: the query given up on before may still be answered; its late reply goes first, so
                         // BOLT 7's one-outstanding-query rule holds and it never completes the wrong query
                         await ConsumeOutstandingRepliesAsync(session, cancellationToken);
+                        if (session.IsQuerySlotPoisoned)
+                        {
+                            (work as ScidQueryWork)?.Completion?.TrySetResult(false);
+                            continue;
+                        }
                     }
 
                     switch (work)
@@ -697,13 +702,24 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     /// Waits, before the next query on this connection (NL-365), for the outstanding reply of the query we gave up
     /// on: the late <c>reply_short_channel_ids_end</c>, or the rest of a late <c>reply_channel_range</c> stream,
     /// which is fed to the kept collector of that query until it completes. A late range reply that breaks the rules
-    /// ends the querying on this connection for good (the stream's position is then unknown).
+    /// ends the querying on this connection for good (the stream's position is then unknown), and so does a late reply
+    /// that does not come within another <see cref="GossipSyncOptions.SyncReplyTimeout"/> (NL-718: Eclair drops a query
+    /// over its rate limit without ever answering it, and the next query of the connection waited for it forever).
     /// </summary>
     private async Task ConsumeOutstandingRepliesAsync(PeerSession session, CancellationToken cancellationToken)
     {
         while (session.IsAwaitingOutstandingReply)
         {
-            var late = await session.Replies.ReadAsync(cancellationToken);
+            var late = await ReadReplyAsync(session, cancellationToken);
+            if (late is null)
+            {
+                session.PoisonQuerySlot();
+                _logger.LogInformation("Peer {Peer} never answered the query we gave up on (another {Timeout} passed); "
+                                     + "no more gossip queries on this connection", session.Peer.PeerPubKey,
+                                       _options.SyncReplyTimeout);
+                return;
+            }
+
             if (session.OutstandingCollector is not { } collector)
             {
                 session.OutstandingReplyConsumed();
