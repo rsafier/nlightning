@@ -136,6 +136,34 @@ public class RunLifecycleTests
     }
 
     [Fact(Explicit = true)]
+    public async Task Given_ANodeRemovalThatFailed_When_TheNameIsDeployedAgain_Then_TheRemovalIsFinishedFirst()
+    {
+        // Arrange: a node, and a removal cut short (as a DeletionTimeout under load would) while its pod terminates
+        var ct = TestContext.Current.CancellationToken;
+        await using var run = await TestRun.StartAsync(Options("remove", "remove-" + TestRunId.Generate()), ct);
+        var first = await run.DeployAsync(Busybox("extra"), s_readyTimeout, ct);
+        using (var cut = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            cut.CancelAfter(TimeSpan.FromMilliseconds(300));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run.RemoveNodeAsync("extra", cut.Token));
+        }
+
+        Assert.True(run.IsRemovalPending("extra"));
+        Assert.True(run.Nodes.ContainsKey("extra"));
+
+        // Act
+        var watch = Stopwatch.StartNew();
+        var second = await run.DeployAsync(Busybox("extra"), s_readyTimeout, ct);
+        Log($"{run.Namespace}: redeployed after the leftover removal in {watch.Elapsed.TotalSeconds:F1} s");
+
+        // Assert: a new pod under the same name, and nothing left pending
+        Assert.False(run.IsRemovalPending("extra"));
+        Assert.Same(second, run.GetNode("extra"));
+        Assert.NotNull(second.PodUid);
+        Assert.NotEqual(first.PodUid, second.PodUid);
+    }
+
+    [Fact(Explicit = true)]
     public async Task Given_ACapOfOneRun_When_TwoRunsStart_Then_TheSecondWaitsUntilTheFirstIsGone()
     {
         // Arrange: a private prefix, so the cap counts this test's runs only

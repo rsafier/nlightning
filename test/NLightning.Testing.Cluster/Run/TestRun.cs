@@ -25,6 +25,10 @@ using Runner;
 public sealed class TestRun : IAsyncDisposable
 {
     private readonly ConcurrentDictionary<string, KubeNodeHandle> _nodes = new(StringComparer.Ordinal);
+
+    // Nodes whose RemoveNodeAsync failed (timed out, cancelled): still registered, so the run's teardown of an adopted
+    // namespace deletes them, and a DeployAsync of the name finishes their removal first
+    private readonly ConcurrentDictionary<string, byte> _pendingRemovals = new(StringComparer.Ordinal);
     private readonly TestRunOptions _options;
     private int _disposed;
 
@@ -177,13 +181,22 @@ public sealed class TestRun : IAsyncDisposable
 
     /// <summary>
     /// Creates <paramref name="workload"/>'s Service and StatefulSet in the run's namespace and, with a
-    /// <paramref name="readyTimeout"/>, waits until its pod is ready.
+    /// <paramref name="readyTimeout"/>, waits until its pod is ready. A node of that name whose
+    /// <see cref="RemoveNodeAsync"/> failed is removed first (<see cref="TestRunOptions.DeletionTimeout"/>), so one
+    /// teardown hiccup does not fail every later deployment of the name.
     /// </summary>
     public async Task<KubeNodeHandle> DeployAsync(NodeWorkload workload, TimeSpan? readyTimeout,
                                                   CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(workload);
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
+
+        if (_pendingRemovals.ContainsKey(workload.Name))
+        {
+            _options.Log?.Invoke($"[nltg-cluster] run {Id}: node {workload.Name} was not fully removed; removing it "
+                               + "before it is deployed again");
+            await RemoveNodeAsync(workload.Name, cancellationToken).ConfigureAwait(false);
+        }
 
         var handle = new KubeNodeHandle(Client, Namespace, workload.Name, workload.Kind,
                                         workload.TerminationGracePeriodSeconds,
@@ -204,7 +217,8 @@ public sealed class TestRun : IAsyncDisposable
     /// Removes the deployed node <paramref name="name"/> (<see cref="RunNodeRemoval"/>: StatefulSet, pod stopped with
     /// <see cref="TestRunOptions.TeardownGracePeriodSeconds"/>, Services, data PVC) and forgets its handle; returns once
     /// it is gone, so a node of that name can be deployed again. For a node a test adds to a shared topology and must
-    /// take away again.
+    /// take away again. When it fails (a timeout, a cancellation, an API error) the handle stays registered and the
+    /// node is marked: the next <see cref="DeployAsync"/> of the name finishes the removal before it deploys.
     /// </summary>
     /// <exception cref="TimeoutException">It is still there after <see cref="TestRunOptions.DeletionTimeout"/>.</exception>
     public async Task RemoveNodeAsync(string name, CancellationToken cancellationToken)
@@ -212,12 +226,26 @@ public sealed class TestRun : IAsyncDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
 
-        await RunNodeRemoval.RemoveAsync(Client, Namespace, name, _options.TeardownGracePeriodSeconds ?? 1,
-                                         _options.DeletionTimeout, cancellationToken)
-                            .ConfigureAwait(false);
+        try
+        {
+            await RunNodeRemoval.RemoveAsync(Client, Namespace, name, _options.TeardownGracePeriodSeconds ?? 1,
+                                             _options.DeletionTimeout, cancellationToken)
+                                .ConfigureAwait(false);
+        }
+        catch
+        {
+            if (_nodes.ContainsKey(name))
+                _pendingRemovals[name] = 0;
+            throw;
+        }
+
         _nodes.TryRemove(name, out _);
+        _pendingRemovals.TryRemove(name, out _);
         _options.Log?.Invoke($"[nltg-cluster] run {Id}: node {name} removed from {Namespace}");
     }
+
+    /// <summary>True while a failed <see cref="RemoveNodeAsync"/> of <paramref name="name"/> waits to be finished.</summary>
+    public bool IsRemovalPending(string name) => _pendingRemovals.ContainsKey(name);
 
     /// <summary>The handle of a deployed node.</summary>
     public KubeNodeHandle GetNode(string name) =>

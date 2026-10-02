@@ -18,7 +18,9 @@ every implementation, our own node included, is driven through the same seams.
     it is gone; live tests assert "gone or terminating" (`Live/RunAssertions`).
   - `RemoveNodeAsync(name, ct)` (`RunNodeRemoval`): takes one node out of a live run (StatefulSet, pod with the
     teardown grace, headless and `-p2p` Services, data PVC) and waits until it is gone, for a node a test adds next to
-    a warm topology (the CLN suite's own CLNs) and must remove again.
+    a warm topology (the CLN suite's own CLNs) and must remove again. When it fails (timeout, cancellation) the handle
+    stays registered and is marked (`IsRemovalPending`); the next `DeployAsync` of the name finishes the removal first,
+    so one teardown hiccup never fails every later deployment of the name (`Live/RunLifecycleTests`).
   - `TestRunOptions.FromEnvironment(suite)`: `NLTG_TEST_RUN_ID` (run id; generated when unset),
     `NLTG_TEST_NAMESPACE_PREFIX` (default `nltg-spike`; the real harness uses `nltg`), `NLTG_KUBE_CONTEXT`,
     `NLTG_KEEP_NAMESPACE=1` (keep for debugging).
