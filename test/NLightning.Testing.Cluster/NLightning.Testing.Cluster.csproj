@@ -23,6 +23,9 @@
 
   <ItemGroup>
     <PackageReference Include="KubernetesClient" Version="19.0.2"/>
+    <!-- LND's generated gRPC client types (Lnrpc, Routerrpc, ...) for Nodes/Lnd, the same build the LNUnit fixtures
+         use; the plan replaces them with clients generated from LND's protos (§4 "The LND client"). -->
+    <PackageReference Include="LNUnit.LND" Version="3.0.4"/>
   </ItemGroup>
 
   <ItemGroup>
