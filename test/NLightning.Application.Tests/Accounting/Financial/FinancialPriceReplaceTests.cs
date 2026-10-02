@@ -1,6 +1,7 @@
 namespace NLightning.Application.Tests.Accounting.Financial;
 
 using Domain.Accounting.Books;
+using Domain.Accounting.Enums;
 using Domain.Accounting.Financial;
 using Domain.Accounting.Prices;
 
@@ -229,6 +230,53 @@ public sealed class FinancialPriceReplaceTests
         // again, or projected later) takes that correction back with the deposit: nothing is left of the deposit
         Assert.Equal(1, result.Adjustments);
         Assert.Equal(reversedFirst, result.ReplayFromLedgerSeq is not null);
+        var after = await BalancesAsync(kit);
+        Assert.Equal((0L, 0m), after["equity:transfers:in"]);
+        Assert.Equal(0m, after.GetValueOrDefault("assets:cost-basis").Fiat);
+        Assert.Equal(0m, after.Values.Sum(b => b.Fiat));
+        Assert.All(await kit.Periods.VerifyClosesAsync(TestContext.Current.CancellationToken),
+                   v => Assert.True(v.IsIntact, v.Problem));
+        var incremental = await kit.SnapshotFinancialAsync();
+        await kit.Periods.RebuildFinancialAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(incremental, await kit.SnapshotFinancialAsync());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_AClosedFactReversedLateInAClosedPeriod_When_ItsPriceIsReplaced_Then_NothingIsLeftOfIt(
+        bool reversalClosed)
+    {
+        // Arrange: a deposit of Jan 10 valued at the wrong 50,000, January closed; its reorg dated Jan 20 arrives after
+        // the close, so its reversal is a late fact of the open period; that period closed too, or not
+        await using var kit = await FinancialProjectorTestKit.CreateAsync(s_feb2);
+        await kit.AddPricesAsync((s_jan1, 40_000m), (s_jan10, 50_000m), (s_feb2.AddHours(-1), 70_000m));
+        var deposit = kit.Deposit(100_000_000, s_jan10.AddMinutes(30));
+        await kit.AddAsync(FinancialProjectorTestKit.Opening("wallet", 1_000_000_000, s_jan1.AddMinutes(30)),
+                           FinancialProjectorTestKit.Cutover(s_jan1.AddMinutes(30)), deposit);
+        await kit.ProjectAsync();
+        await kit.Periods.CloseAsync("2026-01", false, TestContext.Current.CancellationToken);
+        await kit.AddAsync(FinancialProjectorTestKit.Reversal(deposit, s_jan20, 799_999));
+        await kit.ProjectAsync();
+        var reversal = (await kit.ListEntriesAsync(AccountingBook.Financial))
+                      .Single(e => e.Kind == AccountingEventKind.Reversal);
+        Assert.True(reversal.Flags.HasFlag(AccountingEntryFlags.LateFact));
+        Assert.Contains("of a closed period", reversal.Note, StringComparison.Ordinal);
+        if (reversalClosed)
+        {
+            kit.Clock.Now = new DateTimeOffset(2026, 3, 2, 0, 0, 0, TimeSpan.Zero);
+            await kit.Periods.CloseAsync("2026-02", false, TestContext.Current.CancellationToken);
+        }
+
+        // Act
+        var result = await kit.Valuation.ReplaceAsync(new AccountingPriceReplacement(Usd, s_jan10, 45_000m),
+                                                      TestContext.Current.CancellationToken);
+        await kit.ProjectAsync();
+
+        // Assert: a closed late reversal leaves the closed deposit alone (the pair nets); an open one is projected
+        // again and takes the deposit's correction back with it
+        Assert.Equal(reversalClosed ? 0 : 1, result.Adjustments);
+        Assert.Equal(reversalClosed ? null : reversal.LedgerSeq, result.ReplayFromLedgerSeq);
         var after = await BalancesAsync(kit);
         Assert.Equal((0L, 0m), after["equity:transfers:in"]);
         Assert.Equal(0m, after.GetValueOrDefault("assets:cost-basis").Fiat);

@@ -814,17 +814,22 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
 
         // The reversals of closed facts (a reorg after the close): a closed one already took the fact's value back, so
         // the fact is left as it is; an open one is projected again after the correction, so it takes the corrected
-        // value back (the projector negates the fact's corrections with it)
+        // value back (the projector negates the fact's corrections with it). A reversal of a closed period itself is a
+        // late fact, an adjustment of the open period the projector stages again when it replays from its sequence
+        // (NL-766), and is treated the same: closed when that period is closed too
         var reversals = new Dictionary<string, AccountingEntry>(StringComparer.Ordinal);
         long afterSeq = 0;
+        var afterAdjustment = -1;
         while (true)
         {
             var page = await books.ListEntriesAsync(new AccountingEntryQuery(afterSeq, pageSize, stored.Time,
                                                                              Kinds: [AccountingEventKind.Reversal])
             {
-                Book = AccountingBook.Financial
+                Book = AccountingBook.Financial,
+                AfterAdjustment = afterAdjustment
             }, cancellationToken);
-            foreach (var reversal in page.Where(r => r.Adjustment == 0))
+            foreach (var reversal in page.Where(r => r.Adjustment == 0
+                                                  || r.Flags.HasFlag(AccountingEntryFlags.LateFact)))
             {
                 const string prefix = "reverses ";
                 var at = reversal.Note?.IndexOf(prefix, StringComparison.Ordinal) ?? -1;
@@ -836,10 +841,11 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             if (page.Count < pageSize)
                 break;
             afterSeq = page[^1].LedgerSeq;
+            afterAdjustment = page[^1].Adjustment;
         }
 
         afterSeq = 0;
-        var afterAdjustment = -1;
+        afterAdjustment = -1;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
