@@ -11,6 +11,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using InteractiveTx.TestDoubles;
+using NLightning.Tests.Utils;
 
 /// <summary>
 /// The safety rules of the dual-funded open (wave sp1 review of lane SP1-F) on <see cref="DualFundHarness"/>: an open
@@ -36,7 +37,13 @@ public class DualFundSafetyTests
         Assert.Contains(harness.Transcript, t => t is { From: "Alice", Message: TxSignaturesMessage });
         var channelId = SingleChannel(harness.Alice);
 
-        // Act
+        // Act: the open deadline fires on the stepped clock (NL-512), so nothing here races the wall clock
+        await WaitFor.TrueAsync(() =>
+        {
+            harness.Clock.Advance(TimeSpan.FromMilliseconds(100));
+            return open.IsCompleted;
+        }, TimeSpan.FromSeconds(10), "the open deadline on the stepped clock",
+                                  TestContext.Current.CancellationToken);
         var result = await open;
 
         // Assert: the open failed but the channel, its negotiation, its reservation and its funding watches stay
@@ -226,9 +233,14 @@ public class DualFundSafetyTests
         var channelId = SingleChannel(harness.Bob);
         Assert.True(harness.Bob.DualFund.IsOpening(channelId));
 
-        // Act
-        for (var i = 0; i < 100 && harness.Bob.DualFund.IsOpening(channelId); i++)
-            await Task.Delay(50, TestContext.Current.CancellationToken);
+        // Act: the accepter's watchdog fires on the stepped clock (NL-512); its deadline is also Alice's open
+        // deadline, so her open ends with it
+        await WaitFor.TrueAsync(() =>
+        {
+            harness.Clock.Advance(TimeSpan.FromMilliseconds(100));
+            return !harness.Bob.DualFund.IsOpening(channelId);
+        }, TimeSpan.FromSeconds(10), "the accepter's open watchdog on the stepped clock",
+                                  TestContext.Current.CancellationToken);
         await open;
 
         // Assert: Bob sent tx_abort after his accept_channel2 and kept nothing
