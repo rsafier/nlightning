@@ -303,7 +303,8 @@ public class GossipSyncPendingChannelsTests : IDisposable
     private GossipSyncManager CreateManager(Action<GossipSyncOptions>? configure = null,
                                             IEnumerable<IGossipPendingChannels>? pendingChannels = null)
     {
-        var options = new GossipSyncOptions();
+        // Back-to-back queries unless a test paces them (NL-407): the stepped clock would hold every paced query
+        var options = new GossipSyncOptions { MinQueryInterval = TimeSpan.Zero };
         configure?.Invoke(options);
         var manager = new GossipSyncManager(_graph.Store, Microsoft.Extensions.Options.Options.Create(options),
                                             Microsoft.Extensions.Options.Options.Create(new NodeOptions

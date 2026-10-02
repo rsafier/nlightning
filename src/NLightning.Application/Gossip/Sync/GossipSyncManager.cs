@@ -753,6 +753,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                     : null);
 
             var collector = new RangeReplyCollector(OurChain, 0, numberOfBlocks);
+            await PaceQueryAsync(session, cancellationToken);
             session.ExpectReplies(MessageTypes.ReplyChannelRange);
             var abandoned = false;
             try
@@ -1058,6 +1059,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             flags);
 
         await WaitForIngressAsync(session, cancellationToken);
+        await PaceQueryAsync(session, cancellationToken);
         session.ExpectReplies(MessageTypes.ReplyShortChannelIdsEnd);
         var abandoned = false;
         try
@@ -1137,6 +1139,27 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
 
             await Task.Delay(s_ingressPollInterval, _timeProvider, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// NL-407: keeps <see cref="GossipSyncOptions.MinQueryInterval"/> between two queries of ours
+    /// (<c>query_channel_range</c> and <c>query_short_channel_ids</c>) on one connection, counted from when the previous
+    /// one was queued. Eclair answers at most 5 gossip queries per second per connection (both kinds share
+    /// <c>router.sync.max-queries-per-second</c>, default 5) and silently drops the rest, without a
+    /// <c>reply_short_channel_ids_end</c>: back-to-back queries for small batches made the fifth query of a sync time
+    /// out and ended our querying of that connection. 250 ms keeps any five consecutive queries more than a second apart.
+    /// </summary>
+    private async Task PaceQueryAsync(PeerSession session, CancellationToken cancellationToken)
+    {
+        var interval = _options.MinQueryInterval;
+        if (interval > TimeSpan.Zero && session.LastQueryAt is { } last)
+        {
+            var wait = interval - (_timeProvider.GetUtcNow() - last);
+            if (wait > TimeSpan.Zero)
+                await Task.Delay(wait, _timeProvider, cancellationToken);
+        }
+
+        session.LastQueryAt = _timeProvider.GetUtcNow();
     }
 
     /// <summary>
@@ -1389,6 +1412,11 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         }
 
         public DateTimeOffset? LastRangeSyncAt { get; set; }
+
+        /// <summary>
+        /// When our last query went out on this connection (NL-407 pacing). Only the querier loop reads and writes it.
+        /// </summary>
+        public DateTimeOffset? LastQueryAt { get; set; }
         public int PendingWork => Volatile.Read(ref _pendingWork);
         public bool IsIdle => PendingWork == 0 && Volatile.Read(ref _queuedQueries) == 0;
 
