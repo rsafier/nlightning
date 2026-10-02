@@ -262,6 +262,6 @@ public class InProcessNodeClusterTests
         var ns = run.Namespace;
         watch.Restart();
         await run.DisposeAsync();
-        Log($"{ns}: deleted in {watch.Elapsed.TotalSeconds:F1} s");
+        Log($"{ns}: disposed in {watch.Elapsed.TotalSeconds:F1} s (the namespace terminates in the background)");
     }
 }

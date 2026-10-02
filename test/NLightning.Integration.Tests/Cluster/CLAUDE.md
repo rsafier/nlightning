@@ -22,6 +22,15 @@ the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `
   connected, reestablished), invoices, pay (`payinvoice`, then `listpayments` while in flight), block height (the chain
   monitor's), confirmed balance, `FindChannelAsync(fundingTxId)`, `CloseChannelAsync(channelId)` (cooperative, returns
   the closing txid), `RestartAsync` (stop + start on the same key, database and port), `TestNode` for the rest.
+- `InProcessTopologyFixture` (a `ClusterTopologyFixture` of the library: one warm topology per xunit collection, built
+  once, nothing reset, the isolation rules in the base class's XML docs): owns the `InProcessNodeDeployer`
+  (`CreateDeployer()` for its hooks), registers it after `ConfigureTopology(builder)` and disposes it in
+  `OnStoppingAsync`, i.e. after the topology's adapters and before the namespace is deleted. `fixture.InProcessNode(name)`
+  and `fixture.Node<T>(name)` read the nodes. Use it for every ported suite with a shared topology (the CLN port).
+- Diagnostics: `GlobalUsings.cs` applies `[assembly: ClusterDiagnostics]`, so a failed test dumps its live runs and its
+  collection fixture's run (pods, logs, events, node state) under `TestResults/cluster/` (or `NLTG_CLUSTER_DIAG_DIR`);
+  a `Poll`/`ClusterPoll` timeout or a failed topology build dumps by itself. Our in-process node is not in the dump
+  (its log goes to the test output).
 - `ClusterChainEndpoint`: the topology's bitcoind as a `RegtestBitcoinEndpoint` (RPC with the `miner` wallet, ZMQ raw
   block 28332 / raw tx 28333): by **pod IP** from the host, by headless Service name in the cluster. Read once: a test
   that restarts bitcoind must rebuild the node.
@@ -40,6 +49,7 @@ the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `
 ## Tests
 
 - `InProcessNodeTests`: the pure parts (host resolution, mappings, open request, chain endpoint, settings); normal CI.
+- `InProcessTopologyFixtureTests`: what the warm fixture declares and that it stops unstarted; normal CI.
 - `Live/InProcessNodeClusterTests` (`Category=Cluster`, `Explicit`, not under `Docker`, no Docker lock): CLN (dual-funded
   open, pay both ways, cooperative close) and LND (v1 open by the topology with a push, pay both ways, restart, pay,
   cooperative close). Run: `scripts/run-cluster.sh -n 3 -p integration --class

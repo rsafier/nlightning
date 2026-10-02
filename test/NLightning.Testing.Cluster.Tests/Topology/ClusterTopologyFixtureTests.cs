@@ -38,4 +38,29 @@ public class ClusterTopologyFixtureTests
         await fixture.DisposeAsync();
         await fixture.DisposeAsync();
     }
+
+    [Fact]
+    public async Task Given_AFixtureWithAStoppingHook_When_Disposed_Then_TheHookRunsOnce()
+    {
+        // Arrange
+        var fixture = new StoppingFixture();
+
+        // Act
+        await fixture.DisposeAsync();
+        await fixture.DisposeAsync();
+
+        // Assert
+        Assert.Equal(1, fixture.Stops);
+    }
+
+    private sealed class StoppingFixture : ClusterTopologyFixture<Pair>
+    {
+        public int Stops { get; private set; }
+
+        protected override ValueTask OnStoppingAsync()
+        {
+            Stops++;
+            return ValueTask.CompletedTask;
+        }
+    }
 }

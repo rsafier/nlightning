@@ -29,7 +29,8 @@ using Run;
 /// </list>
 /// <para>
 /// Use <see cref="ClusterTopologyFixture{TDefinition}"/> with an <see cref="IClusterTopologyDefinition"/>, or derive
-/// from this class for a fixture that does more after the build (<see cref="OnBuiltAsync"/>, e.g. an in-process node).
+/// from this class for a fixture that does more after the build (<see cref="OnBuiltAsync"/>) or stops something of its
+/// own before the namespace goes (<see cref="OnStoppingAsync"/>, e.g. in-process nodes).
 /// </para>
 /// </remarks>
 public abstract class ClusterTopologyFixture : IAsyncLifetime
@@ -110,10 +111,24 @@ public abstract class ClusterTopologyFixture : IAsyncLifetime
         }
         finally
         {
-            if (_run is not null)
-                await _run.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                await OnStoppingAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                if (_run is not null)
+                    await _run.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
+
+    /// <summary>
+    /// Runs when the fixture is disposed (also after a failed start), after the topology's adapters and before the
+    /// run's namespace is deleted: stop what the fixture started outside the namespace here (in-process nodes, which
+    /// would otherwise keep calling a bitcoind that is going away).
+    /// </summary>
+    protected virtual ValueTask OnStoppingAsync() => ValueTask.CompletedTask;
 
     /// <summary>Records <paramref name="line"/> in <see cref="StartLog"/> and as an xunit diagnostic message.</summary>
     protected void Log(string line)
