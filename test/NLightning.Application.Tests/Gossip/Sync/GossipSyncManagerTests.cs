@@ -441,6 +441,31 @@ public class GossipSyncManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_APeerThatIgnoresScidQueries_When_TheScidQueryTimesOut_Then_TheBacklogFilterAsksForItsGossip()
+    {
+        // Arrange (NL-722): an LDK peer answers query_channel_range but never query_short_channel_ids (rust-lightning
+        // 0.3 leaves it unimplemented); LDK streams its graph only to a filter that starts more than 6 h ago
+        var manager = CreateManager(o => o.SyncReplyTimeout = s_replyTimeout);
+        var peer = new FakeGossipPeer(1);
+        var startedAt = Now;
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+        manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, new ShortChannelId(200, 1, 0)));
+        Assert.Equal([new ShortChannelId(200, 1, 0)], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+
+        // Act: the scid query's reply timeout fires on the stepped clock
+        AdvancePast(s_replyTimeout);
+
+        // Assert: the backlog filter of a sync without timestamps, not a live filter from now
+        var filter = await peer.NextAsync<GossipTimestampFilterMessage>();
+        Assert.Equal(startedAt - 1_209_600, filter.Payload.FirstTimestamp);
+        Assert.Equal(uint.MaxValue, filter.Payload.TimestampRange);
+        Assert.True(await peer.NothingSentWithinAsync(s_quiet));
+        Assert.Empty(peer.Warnings);
+        Assert.False(manager.HasCompletedInitialSync);
+    }
+
+    [Fact]
     public async Task Given_ATimedOutScidQuery_When_ItsLateEndArrives_Then_TheNextQueryWaitsForItAndRuns()
     {
         // Arrange (NL-365; BOLT 7: MUST NOT send query_short_channel_ids before the previous one's

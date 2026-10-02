@@ -1,13 +1,10 @@
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Integration.Tests.Docker.Interop.Ldk;
 
 using Abcd;
-using Application.Gossip.Sync.Interfaces;
 using Application.Payments.Invoices;
-using Domain.Channels.ValueObjects;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Fixtures;
@@ -34,7 +31,7 @@ using Utils;
 [Trait("Category", LdkInteropCollection.Category)]
 public sealed class LdkGossipTests : IAsyncLifetime
 {
-    private const int TestTimeoutMs = 12 * 60 * 1_000;
+    private const int TestTimeoutMs = 16 * 60 * 1_000;
     private const int MaxAnnounceBlocks = 20;
 
     /// <summary>What our nodes announce in their <c>channel_update</c>s (not our defaults).</summary>
@@ -42,6 +39,9 @@ public sealed class LdkGossipTests : IAsyncLifetime
 
     private static readonly LightningMoney s_capacity = LightningMoney.Satoshis(1_000_000);
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>Our scid query to LDK times out after 2 min, then LDK streams its graph to our filter (NL-722).</summary>
+    private static readonly TimeSpan s_nodeAnnouncementTimeout = TimeSpan.FromMinutes(4);
 
     private readonly LdkFixture _fixture;
     private readonly List<LdkChannelSession> _sessions = [];
@@ -186,7 +186,7 @@ public sealed class LdkGossipTests : IAsyncLifetime
         Assert.Equal(alias, announcement["alias"]!.GetValue<string>());
         Assert.Equal(GossipTestNodes.Color.TrimStart('#'), announcement["rgb"]!.GetValue<string>(), ignoreCase: true);
 
-        await AssertOurGraphHasLdksNodeAsync(session, scid, ct);
+        await AssertOurGraphHasLdksNodeAsync(session, ct);
         return scid;
     }
 
@@ -196,11 +196,12 @@ public sealed class LdkGossipTests : IAsyncLifetime
     /// <c>announcement_signatures</c> exchange at 6 confirmations) and then at most once an hour
     /// (<c>NODE_ANN_BCAST_INTERVAL</c>); a node_announcement that comes before any channel_announcement of its node is
     /// ignored by BOLT 7 receivers (B7: SHOULD ignore), ours, LND's and LDK's own graph included. So when LDK's graph
-    /// has its own announcement we must get it, from the broadcast or by querying the channel's scid (BOLT 7: a reply to
-    /// <c>query_short_channel_ids</c> carries the nodes' announcements); when it does not, LDK has nothing to serve
-    /// until its next broadcast, which is logged.
+    /// has its own announcement we must get it, from the broadcast or from LDK's full sync: LDK never answers
+    /// <c>query_short_channel_ids</c>, and our sync then sends the backlog <c>gossip_timestamp_filter</c>, to which
+    /// LDK streams its whole graph (NL-722); when its graph has none, LDK has nothing to serve until its next
+    /// broadcast, which is logged.
     /// </summary>
-    private async Task AssertOurGraphHasLdksNodeAsync(LdkChannelSession session, ulong scid, CancellationToken ct)
+    private async Task AssertOurGraphHasLdksNodeAsync(LdkChannelSession session, CancellationToken ct)
     {
         var ldkSelf = await _fixture.Ldk.GraphGetNodeAsync(_fixture.LdkNodeId, ct);
         var info = await _fixture.Ldk.GetNodeInfoAsync(ct);
@@ -220,12 +221,15 @@ public sealed class LdkGossipTests : IAsyncLifetime
             return;
         }
 
-        var sync = session.Node.Services.GetRequiredService<IGossipSyncManager>();
-        var queried = await sync.QueryScidAsync(new ShortChannelId(scid), ct);
-        Console.WriteLine($"[ldk] queried {scid} for LDK's node_announcement: {queried}");
+        // LDK ignores query_short_channel_ids (rust-lightning 0.3: "Not implemented"), so our range sync with it
+        // times out after Gossip:SyncReplyTimeout (2 min) and asks for its gossip with the backlog
+        // gossip_timestamp_filter instead (NL-722), to which LDK streams its whole graph
         var ldkNode = await Poll.ForAsync(() => GossipGraphProbe.TryGetOurGraphNodeAsync(session.Node,
                                                                                        session.LdkPubKey),
-                                          s_timeout, "our graph has LDK's node_announcement", ct);
+                                          s_nodeAnnouncementTimeout, "our graph has LDK's node_announcement", ct,
+                                          TimeSpan.FromSeconds(2));
+        Console.WriteLine($"[ldk] our graph has LDK's node_announcement from its full sync: {ldkNode.AliasText}; "
+                        + $"fallback filter lines {session.Node.CountLogLines("(NL-722)")}");
         Assert.Equal(LdkFixture.LdkAlias, ldkNode.AliasText);
     }
 
