@@ -50,6 +50,10 @@ the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `
   reached only by CLN). On the cluster they go into the run's namespace and `TestRun.RemoveNodeAsync` takes them out.
 - `ClnClient` runs `lightning-cli` through a `ClnExec` delegate (`docker exec`, or `ClusterClnBackend.KubeExec`); the
   tests catch the Integration.Tests `ClnRpcException` on both backends.
+- ZMQ startup guard: `ClusterChainEndpoint` endpoints carry `RegtestBitcoinEndpoint.ZmqStartupGuard` (20 s); for that
+  long after each start `NLightningTestNode` hands the chain monitor bitcoind's tip when it stays 2 s behind without
+  moving (the ZMQ subscription to the pod lost a block published before it was up) and logs "ZMQ startup guard".
+  Docker endpoints have none.
 - The Tor interop suite (`Docker/Interop/Tor/`, `Category=Interop.Tor`) stays on Docker: on the cluster backend its
   fixture starts nothing and its tests skip with the reason (`TestBackend.SkipOnCluster`).
 - Run: `scripts/run-cluster.sh -n 3 --suite cln` (N processes, each its own run id and namespace, no Docker lock;

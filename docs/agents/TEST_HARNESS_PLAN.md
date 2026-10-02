@@ -560,6 +560,58 @@ process (`hp2i-c1`, over the cap of 6, 526 s): 33/34, the miss the reaper test a
 fix). Integration.Tests `Category=Cluster` (`hp2i-i2`): 4/4 (CLN dual-funded proof built in 15.3 s and closed at 23.3
 s, LND proof built in 19.3 s and closed at 22.1 s, the warm pair 13.4 s). Non-Docker suite on net10.0: all green.
 
+### Phase 2 lane B record: the CLN interop suite on the cluster (2026-10-02, `wip/harness-spike`)
+
+`wip/fafo` (1fee5a8d) was merged in first, so the port covers the current suite (`ClnCloseRestartTests`, the Tor
+interop suite). Then:
+
+- **Backend switch.** `NLTG_TEST_BACKEND=docker|cluster` (`Fixtures/TestBackend`, Docker when unset; a typo throws).
+  `ClnFixture` keeps every member the classes use and delegates to `Fixtures/Cln/IClnBackend`: `DockerClnBackend` is
+  the former fixture (same images, containers, flags and ports; its CLN command line is pinned by a unit test), and
+  `ClusterClnBackend` is a warm `ClusterTopologyFixture` (suite `cln-interop`: bitcoind `miner` + CLN `nltg-cln` on
+  `emptyDir`, the same CLN release by digest, the same flags and alias), with bitcoind and CLN reached by pod IP from the
+  host and CLN dialling us at `host.orb.internal` (`ClnFixture.HostAddressForCln`).
+- **CLNs of a class's own.** `ClnFixture.StartClnAsync(ClnNodeSpec)` replaces the containers three classes created
+  themselves: `ClnDualFundTests` (`nltg-cln-df` per test), `ClnSpliceReestablishTests` (`nltg-cln-sp2`, `Restartable`:
+  a PVC and its stable `<node>-p2p` ClusterIP name on the cluster, a fixed port on Docker; `RestartAsync`) and the
+  Explicit gossip captures (`nltg-cln2`, reached only by CLN). On the cluster `TestRun.RemoveNodeAsync` (new,
+  `RunNodeRemoval`) takes each out again.
+- **The rest of the seam.** `ClnClient` runs `lightning-cli` through a `ClnExec` delegate (`docker exec` or a Kubernetes
+  exec; `ExecAsync` for the onion message proof's raw call); `ClnFixture.DumpClnLogAsync` replaces the container log
+  dumps. Test bodies are unchanged apart from those calls.
+- **Tor stays on Docker.** On the cluster backend `TorInteropFixture` starts nothing and `ClnTorInteropTests` skip with
+  the reason (`TestBackend.SkipOnCluster`).
+- **Runner.** `scripts/run-cluster.sh -n 3 --suite cln` (N processes, each with its own run id and namespace, no Docker
+  lock; `--explicit on` adds the 4 captures). `scripts/run-interop.sh cln` is unchanged and stays on Docker.
+- **Found and fixed on the way.**
+  - ZMQ start race: a node funded right after its start never saw the 6 blocks. A subscriber gets only what is
+    published after its subscription reached bitcoind, and the subscription to a pod is slower to set up than to
+    Docker's 127.0.0.1 port. Two hits in the first 3-at-once batch (243 executions). Fixed with
+    `RegtestBitcoinEndpoint.ZmqStartupGuard` (20 s from `ClusterChainEndpoint`, null on Docker): for that long after a
+    start, `NLightningTestNode` hands the monitor bitcoind's tip when it stays 2 s behind without moving, and logs it.
+    The second batch had no hit and the guard fired once.
+  - `ClnCloseRestartTests` agreed-close case: CLN lists `CLOSINGD_COMPLETE` once it sent its `closing_signed`, which may
+    still be in flight; the test now waits for it before the same assertion.
+  - `ClnGossipCaptureTests` (Explicit): our node never funded the anchors reserve (NL-379), so CLN's open to it was
+    refused on either backend.
+
+Evidence (OrbStack, Release, net10.0; logs under `TestResults/cluster/hp2b-*`):
+
+| Run | Result | Time |
+|---|---|---|
+| Cluster, alone (`hp2b-full1`) | 81/81, 4 Explicit not run; topology up in 13.3 s | 964 s |
+| Cluster, the 4 Explicit captures (`hp2b-capt2`) | 4/4 | 46 s |
+| Cluster, 3 at once (`hp2b-cln3`, before the fixes) | 75, 76 and 75 of 81; topologies up in 5.0-6.8 s | 877-933 s |
+| Cluster, 3 at once (`hp2b-cln3b`, ZMQ guard) | 76, 76 and 75 of 81 | 864-886 s |
+| Docker (`run-interop.sh cln`, under the lock) | 81/81, 4 Explicit not run; matches the batch10 baseline | 876 s |
+
+Every 3-at-once run failed `ClnQuiescenceTests.Given_OurHtlcInFlight_*` (NL-477, closed in d13 as "not reproduced").
+CLN logs "STFU but you still have updates pending?" when its `update_fulfill_htlc` for our HTLC (sent about 24 ms
+after our `revoke_and_ack`) crosses our `stfu` on the wire (same millisecond in CLN's log). The pod's extra latency and
+the load make the crossing likely. It also failed once alone on the cluster (`hp2b-alone`) and passed in `hp2b-full1`
+and on Docker. This is a protocol and CLN question, not the harness's, so it is left failing and reported. The other
+cluster failures were the two fixed above.
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.
