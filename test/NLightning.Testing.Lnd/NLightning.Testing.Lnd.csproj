@@ -1,10 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    In-tree LND gRPC client for the test harness (a port of LNUnit.LND, nbd-wtf/LNUnit, MIT; see README.md and
-    THIRD_PARTY_NOTICES.md). A plain library: no product references, no Docker or Kubernetes code. The clients are
-    generated from Protos/ (scripts/lnd-protos/update.sh) into the NLightning.Testing.Lnd.<Package> namespaces, so this
-    assembly can sit next to lnunit.lnd (global Lnrpc/Routerrpc/...) in one test assembly.
+    In-tree LND gRPC client for the test harness. Third-party code, both MIT: the connection layer is a port of
+    LNUnit.LND (nbd-wtf/LNUnit; notice in LICENSE-LNUnit.txt) and the clients are generated from LND's protos
+    (lightningnetwork/lnd, Lightning Labs; notice in Protos/LICENSE-LND.txt). See README.md. A plain library: no
+    product references, no Docker or Kubernetes code. The clients are generated from Protos/
+    (scripts/lnd-protos/update.sh) into the NLightning.Testing.Lnd.<Package> namespaces, so this assembly can sit next
+    to lnunit.lnd (global Lnrpc/Routerrpc/...) in one test assembly.
   -->
   <PropertyGroup>
     <ImplicitUsings>enable</ImplicitUsings>

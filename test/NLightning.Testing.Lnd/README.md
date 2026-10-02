@@ -3,7 +3,16 @@
 The in-tree LND gRPC client of the test harness. It replaces the `lnunit.lnd` NuGet package (LNUnit.LND, nbd-wtf/LNUnit, MIT), which can no longer be published. It is a thin layer over gRPC, with no Docker or Kubernetes code and no product references:
 
 - **Generated clients.** The C# clients are generated with Grpc.Tools (client stubs only) from LND's own `.proto` files. The files are committed under `Protos/` and pinned to one LND tag.
-- **Connection layer.** `LndNodeConnection`, `LndSettings` and `LndNodePool` are ported from LNUnit.LND. Each file names its LNUnit source and lists what changed. The MIT notice is in `LICENSE-LNUnit.txt`.
+- **Connection layer.** `LndNodeConnection`, `LndSettings` and `LndNodePool` are ported from LNUnit.LND. Each file names its LNUnit source and lists what changed.
+
+## Licenses
+
+Both third-party parts are MIT, and their notices ship with them:
+
+| Part | Copyright | Notice |
+|---|---|---|
+| `Protos/**.proto` and the client code generated from them | Lightning Labs and The Lightning Network Developers (lightningnetwork/lnd) | `Protos/LICENSE-LND.txt`, LND's root `LICENSE` at the manifest's commit (the protos have no header of their own) |
+| The connection layer (`Lnd*.cs`), ported from LNUnit.LND | nbd (nbd-wtf/LNUnit) | `LICENSE-LNUnit.txt` |
 
 Tests are in `test/NLightning.Testing.Lnd.Tests`.
 
@@ -11,7 +20,7 @@ Tests are in `test/NLightning.Testing.Lnd.Tests`.
 
 | File | What it is |
 |---|---|
-| `Protos/**.proto`, `Protos/manifest.txt` | LND's protos at the tag in the manifest. The manifest also records the tag's commit and two sha256 per file: the upstream file and the committed one. |
+| `Protos/**.proto`, `Protos/manifest.txt`, `Protos/LICENSE-LND.txt` | LND's protos at the tag in the manifest, and LND's MIT notice. The manifest also records the tag's commit, two sha256 per proto (the upstream file and the committed one) and the notice's sha256. |
 | `LndSettings` | The endpoint, `tls.cert` (PEM or DER), the macaroon (optional), a custom certificate check, and the message size limits (128 MB by default, as in LNUnit). |
 | `LndGrpcChannelFactory` | Opens the `GrpcChannel`: `SocketsHttpHandler` with HTTP/2 keep-alive, TLS with the certificate check, and the macaroon call credentials. |
 | `LndCertificatePinning` | Accepts exactly the pinned certificate, whatever its chain or host name errors, or delegates to `LndSettings.ServerCertificateValidation`. |
@@ -30,16 +39,17 @@ dotnet test test/NLightning.Testing.Lnd.Tests -c Release --no-build -f net10.0
 
 The script does the following:
 
-1. It downloads every service proto under `lnrpc/` at the exact tag into a staging folder. That is LNUnit.LND's LND set plus `chainrpc/chainkit.proto`. It skips `lnclipb/lncli.proto`, which holds lncli's output types and no service.
+1. It resolves the tag to the commit it points to, and downloads every service proto under `lnrpc/` at that commit (never by the tag name, so the recorded commit is what was downloaded) into a staging folder. That is LNUnit.LND's LND set plus `chainrpc/chainkit.proto`. It skips `lnclipb/lncli.proto`, which holds lncli's output types and no service.
 2. It inserts one line after each file's `package` line and changes no other byte: `option csharp_namespace = "NLightning.Testing.Lnd.<Package>";`.
 3. It checks that every import resolves within the set.
-4. It replaces `Protos/` and writes the manifest.
+4. It downloads LND's root `LICENSE` at the same commit as `Protos/LICENSE-LND.txt`.
+5. It replaces `Protos/` and writes the manifest.
 
 It fails if a file already sets `csharp_namespace`, has more or fewer than one `package` line, or imports a file outside the set.
 
 After a tag change, these tests show what moved:
 
-- **`ProtoManifestTests`** checks each committed file against its manifest hash. It also removes the namespace line from each file and checks the result against the upstream hash.
+- **`ProtoManifestTests`** checks each committed file against its manifest hash. It also removes the namespace line from each file and checks the result against the upstream hash, and checks that LND's notice is there.
 - **`LnUnitCoexistenceTests`** pins the API that lnunit.lnd 3.0.4 (LND 0.20) has and the protos here lack. Update its list deliberately.
 
 Loop's protos (LNUnit's `LoopConnection`) are not fetched. They come from another repository, and nothing here uses Loop.
@@ -93,8 +103,10 @@ By the repo's convention these become relative `using Testing.Lnd.Lnrpc;` lines 
 
 Some code qualifies a type with the namespace, such as `Routerrpc.SendToRouteRequest`, `Lnrpc.Payment` or `Walletrpc.EstimateFeeRequest`. That happens in about 11 Docker test files. Inside an `NLightning.*` namespace, such a name no longer resolves on its own. Either:
 
-- write `Testing.Lnd.Routerrpc.SendToRouteRequest`, or
-- keep the code unchanged with project-wide aliases in the test csproj: `<Using Include="NLightning.Testing.Lnd.Routerrpc" Alias="Routerrpc"/>`, and the same for `Lnrpc`, `Walletrpc`, `Invoicesrpc` and the others that are used qualified.
+- write `Testing.Lnd.Routerrpc.SendToRouteRequest` (works at any time), or
+- use project-wide aliases in the test csproj, such as `<Using Include="NLightning.Testing.Lnd.Routerrpc" Alias="LndRouterrpc"/>`, and write `LndRouterrpc.SendToRouteRequest`.
+
+An alias with the old name (`Alias="Routerrpc"`, so the qualified code compiles unchanged) works only once neither LNUnit nor LNUnit.LND is referenced by the test assembly, directly or transitively (NLightning.Tests.Utils references LNUnit 3.0.4 today). While lnunit.lnd is there, its global `Routerrpc`/`Lnrpc`/... namespaces conflict with the alias at every use: `error CS0576: Namespace '<global namespace>' contains a definition conflicting with alias 'Routerrpc'`. So either drop the LNUnit package (the Docker fixture builder) in the same step as the swap, or use a non-clashing alias or the `Testing.Lnd.` prefix.
 
 ### Types and members
 

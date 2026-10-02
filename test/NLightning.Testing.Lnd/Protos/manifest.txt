@@ -1,5 +1,6 @@
 # Written by scripts/lnd-protos/update.sh; do not edit by hand.
 # file <path> <sha256 of the upstream file> <sha256 of the committed file (upstream + the csharp_namespace line)>
+# license <committed file> <upstream path at lnd_commit> <sha256 (committed byte for byte)>
 lnd_repo github.com/lightningnetwork/lnd
 lnd_tag v0.21.4-beta
 lnd_commit 390b2d2b7bdcc335c183962e483f5daeceb8f0e7
@@ -20,3 +21,4 @@ file verrpc/verrpc.proto 863423e1da01ff05693084bca27a6f0bdff0e8a470c9d9df9b6c56c
 file walletrpc/walletkit.proto 7594cc72a590ef58dc9de9eec9591fe9b383373ccbc024e5cdca1535b65b4087 2c0effe09c4434db97dbf8c22c41f96f362024b2ea454f25def16d5c46bc026e
 file watchtowerrpc/watchtower.proto 3d40ee86d9cb7817529cd4332c9f40f95b38224439a5c2d49cbb3b850808c787 a7072da885a9cf6cb79e39071964d2b78433e586b57267ebe34ff030f64f1e19
 file wtclientrpc/wtclient.proto 7c17b002827d9e19a0b2939766e6ac6dec244ff56f27eaa82a3c6179919069c2 4ad91036cc675f9917ea248a034e60407e5f5f423c8442548458c0dacb34d42b
+license LICENSE-LND.txt LICENSE 7ebd67c52a36357cb0c6c5e903ece047b195a6b8b04c6e7a8c820e01c884581c

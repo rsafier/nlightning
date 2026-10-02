@@ -61,6 +61,25 @@ public partial class ProtoManifestTests
         Assert.Empty(missing);
     }
 
+    [Fact]
+    public void Given_TheManifest_When_Read_Then_LndsMitNoticeIsCommittedNextToTheProtos()
+    {
+        // Arrange
+        var license = s_manifest.Value.License;
+        var bytes = File.ReadAllBytes(Path.Combine(s_protoRoot, license.File));
+
+        // Act
+        var hash = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        var text = Encoding.UTF8.GetString(bytes);
+
+        // Assert
+        Assert.Equal("LICENSE-LND.txt", license.File);
+        Assert.Equal("LICENSE", license.UpstreamPath);
+        Assert.Equal(license.Sha256, hash);
+        Assert.Contains("Lightning Labs and The Lightning Network Developers", text, StringComparison.Ordinal);
+        Assert.Contains("Permission is hereby granted, free of charge", text, StringComparison.Ordinal);
+    }
+
     [Theory]
     [MemberData(nameof(ManifestFiles))]
     public void Given_ACommittedProto_When_Hashed_Then_ItMatchesTheManifest(string file)
@@ -114,11 +133,13 @@ public partial class ProtoManifestTests
         string Tag,
         string Commit,
         string NamespacePrefix,
+        (string File, string UpstreamPath, string Sha256) License,
         IReadOnlyDictionary<string, (string Upstream, string Committed)> Files)
     {
         public static ProtoManifest Read(string protoRoot)
         {
             string? repository = null, tag = null, commit = null, prefix = null;
+            (string, string, string)? license = null;
             var files = new Dictionary<string, (string, string)>(StringComparer.Ordinal);
             foreach (var line in File.ReadAllLines(Path.Combine(protoRoot, "manifest.txt")))
             {
@@ -131,6 +152,7 @@ public partial class ProtoManifestTests
                     case "lnd_tag": tag = parts[1]; break;
                     case "lnd_commit": commit = parts[1]; break;
                     case "csharp_namespace_prefix": prefix = parts[1]; break;
+                    case "license": license = (parts[1], parts[2], parts[3]); break;
                     case "file": files.Add(parts[1], (parts[2], parts[3])); break;
                     default: throw new InvalidDataException($"Unknown manifest line: {line}");
                 }
@@ -140,6 +162,7 @@ public partial class ProtoManifestTests
                                      tag ?? throw new InvalidDataException("lnd_tag missing"),
                                      commit ?? throw new InvalidDataException("lnd_commit missing"),
                                      prefix ?? throw new InvalidDataException("csharp_namespace_prefix missing"),
+                                     license ?? throw new InvalidDataException("license missing"),
                                      files);
         }
     }

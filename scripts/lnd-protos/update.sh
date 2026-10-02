@@ -14,6 +14,12 @@
 # NLightning.Testing.Lnd.Routerrpc, ... and never collide with lnunit.lnd's global Lnrpc/Routerrpc/... namespaces in
 # the same assembly. Protos/manifest.txt records the tag, the commit it points to and, per file, the sha256 of the
 # upstream file and of the committed one; NLightning.Testing.Lnd.Tests checks both against the committed files.
+# Every file is downloaded by the commit the tag peels to (never by the tag name, which could move or be shadowed by a
+# branch of the same name), so the recorded commit is exactly what was downloaded.
+#
+# LND's protos are MIT ("Copyright (C) 2015-2022 Lightning Labs and The Lightning Network Developers") and carry no
+# license header of their own, so the script also writes LND's root LICENSE at the same commit to
+# Protos/LICENSE-LND.txt (manifest line `license`): the notice ships with the protos and the code generated from them.
 #
 # Needs curl, git, awk and sha256sum or shasum. Run it from anywhere; it writes only under Protos/.
 set -euo pipefail
@@ -66,6 +72,7 @@ MANIFEST="$STAGE/manifest.txt"
 {
   echo "# Written by scripts/lnd-protos/update.sh; do not edit by hand."
   echo "# file <path> <sha256 of the upstream file> <sha256 of the committed file (upstream + the csharp_namespace line)>"
+  echo "# license <committed file> <upstream path at lnd_commit> <sha256 (committed byte for byte)>"
   echo "lnd_repo github.com/$REPO"
   echo "lnd_tag $TAG"
   echo "lnd_commit $COMMIT"
@@ -76,7 +83,7 @@ for file in "${FILES[@]}"; do
   upstream="$STAGE/upstream/$file"
   target="$STAGE/protos/$file"
   mkdir -p "$(dirname "$upstream")" "$(dirname "$target")"
-  url="https://raw.githubusercontent.com/$REPO/$TAG/lnrpc/$file"
+  url="https://raw.githubusercontent.com/$REPO/$COMMIT/lnrpc/$file"
   if ! curl -fsSL --retry 3 -o "$upstream" "$url"; then
     echo "error: could not fetch $url" >&2
     exit 1
@@ -106,6 +113,18 @@ for file in "${FILES[@]}"; do
   echo "fetched $file ($package -> $namespace)"
 done
 
+# LND's MIT notice (lnrpc/ has no LICENSE of its own; the repository root's covers it).
+license_url="https://raw.githubusercontent.com/$REPO/$COMMIT/LICENSE"
+if ! curl -fsSL --retry 3 -o "$STAGE/LICENSE-LND.txt" "$license_url"; then
+  echo "error: could not fetch $license_url" >&2
+  exit 1
+fi
+if ! grep -q 'Lightning Labs' "$STAGE/LICENSE-LND.txt"; then
+  echo "error: $license_url does not name Lightning Labs; check LND's license before regenerating" >&2
+  exit 1
+fi
+echo "license LICENSE-LND.txt LICENSE $(sha256 "$STAGE/LICENSE-LND.txt")" >>"$MANIFEST"
+
 # Every import must be another file of the set or a well-known Google type, or the codegen would fail later.
 for file in "${FILES[@]}"; do
   while IFS= read -r import; do
@@ -121,5 +140,6 @@ find "$OUT" -name '*.proto' -delete 2>/dev/null || true
 mkdir -p "$OUT"
 cp -R "$STAGE/protos/." "$OUT/"
 cp "$MANIFEST" "$OUT/manifest.txt"
+cp "$STAGE/LICENSE-LND.txt" "$OUT/LICENSE-LND.txt"
 find "$OUT" -type d -empty -delete
 echo "LND $TAG ($COMMIT): ${#FILES[@]} protos written to ${OUT#"$ROOT"/}"
