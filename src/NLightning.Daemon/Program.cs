@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using MessagePack;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
@@ -55,6 +56,27 @@ try
         return 0;
     }
 
+    // Bind and validate the configuration, then exit (NL-338): no key, bitcoind or database needed
+    if (DaemonUtils.IsCheckConfigRequested(args))
+    {
+        var failures = ConfigurationCheck.Run(initialConfig, network);
+        foreach (var failure in failures)
+            Console.Error.WriteLine(failure);
+
+        Console.WriteLine(failures.Count == 0 ? "Configuration OK" : $"Configuration invalid: {failures.Count} error(s)");
+        return failures.Count == 0 ? 0 : 1;
+    }
+
+    // A NativeAOT build cannot run the node yet: EF Core needs a compiled model and precompiled queries when dynamic
+    // code is not supported (NL-708). Stop before the password prompt; the commands above work
+    if (!RuntimeFeature.IsDynamicCodeSupported)
+    {
+        Log.Error("This NativeAOT build of nltg cannot run the node yet: its database layer (EF Core) needs a compiled "
+                + "model and precompiled queries (NL-708). Use the JIT build to run the node; --help, --status, --stop "
+                + "and --check-config work in this build.");
+        return 1;
+    }
+
     SensitiveLoggingUtils.WarnIfSensitiveQueryLoggingEnabled(initialConfig, Log.Logger);
 
     // The database may sit outside the configuration directory (a Database:ConnectionString with a path), whose
@@ -91,9 +113,13 @@ try
             var walletLogger = loggerFactory.CreateLogger<BitcoinChainService>();
 
             // Bind options from initialConfig
-            var bitcoinOptions = initialConfig.GetSection("Bitcoin").Get<BitcoinOptions>()
+            var bitcoinOptions = initialConfig.GetSection(BitcoinOptions.SectionName).Get<BitcoinOptions>()
                               ?? throw new InvalidOperationException(
                                      "Bitcoin configuration section is missing or invalid.");
+            var bitcoinErrors = bitcoinOptions.GetValidationErrors();
+            if (bitcoinErrors.Count > 0)
+                throw new InvalidOperationException(string.Join(" ", bitcoinErrors));
+
             var nodeOptions = initialConfig.GetSection("Node").Get<NodeOptions>()
                            ?? throw new InvalidOperationException("Node configuration section is missing or invalid.");
 

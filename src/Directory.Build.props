@@ -15,6 +15,15 @@
         <TargetFramework Condition="'$(NltgTargetNet11)' != 'true'">net10.0</TargetFramework>
     </PropertyGroup>
 
+    <!--
+      NativeAOT (NL-338, CLAUDE.md "NativeAOT"): the configuration binding source generator is on in every build, not
+      only when PublishAot turns it on, so the JIT node, the tests and the AOT binary bind configuration with the same
+      generated code, and a type it cannot bind (SYSLIB1100/SYSLIB1101) shows in the ordinary warning gate.
+    -->
+    <PropertyGroup>
+        <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+    </PropertyGroup>
+
     <PropertyGroup>
         <LangVersion>14</LangVersion>
         <ImplicitUsings>enable</ImplicitUsings>
