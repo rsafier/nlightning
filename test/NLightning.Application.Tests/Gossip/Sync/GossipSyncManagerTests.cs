@@ -188,6 +188,70 @@ public class GossipSyncManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_AMinQueryInterval_When_AnsweredQueriesFollowEachOther_Then_EachWaitsForTheInterval()
+    {
+        // Arrange (NL-407: Eclair drops a sixth gossip query within a second without answering it)
+        var manager = CreateManager(o =>
+        {
+            o.MaxScidsPerQuery = 1;
+            o.MinQueryInterval = TimeSpan.FromMilliseconds(250);
+        });
+        var peer = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+        var ids = Enumerable.Range(0, 3).Select(i => new ShortChannelId(100 + (uint)i, 0, 0)).ToArray();
+
+        // Act / Assert: the range reply comes at once, so the first scid query waits for the interval, and so does
+        // each next one after an immediate reply_short_channel_ids_end
+        manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, ids));
+        foreach (var id in ids)
+        {
+            Assert.True(await peer.NothingSentWithinAsync(s_quiet), $"the query for {id} did not wait");
+            _syncClock.Advance(TimeSpan.FromMilliseconds(260));
+            Assert.Equal([id], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+            manager.HandleMessage(peer, End());
+        }
+
+        await peer.NextAsync<GossipTimestampFilterMessage>();
+        Assert.Empty(peer.Warnings);
+    }
+
+    [Fact]
+    public async Task Given_TheIntervalPassedWhileWaitingForTheReply_When_TheNextQueryGoesOut_Then_ItDoesNotWait()
+    {
+        // Arrange (NL-407): a slow reply already spaced the queries
+        var manager = CreateManager(o =>
+        {
+            o.MaxScidsPerQuery = 1;
+            o.MinQueryInterval = TimeSpan.FromMilliseconds(250);
+        });
+        var peer = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+        _syncClock.Advance(TimeSpan.FromMilliseconds(300));
+
+        // Act
+        manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, new ShortChannelId(100, 0, 0)));
+
+        // Assert
+        Assert.Equal([new ShortChannelId(100, 0, 0)], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+    }
+
+    [Fact]
+    public void Given_ANegativeMinQueryInterval_When_Validated_Then_AnError()
+    {
+        // Arrange
+        var options = new GossipSyncOptions { MinQueryInterval = TimeSpan.FromMilliseconds(-1) };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains(nameof(GossipSyncOptions.MinQueryInterval)));
+        Assert.Equal(TimeSpan.FromMilliseconds(250), new GossipSyncOptions().MinQueryInterval);
+    }
+
+    [Fact]
     public async Task Given_ChannelsLearnedDuringTheSync_When_TheNextBatchGoesOut_Then_TheyAreNotAskedForAgain()
     {
         // Arrange: NL-402, batches of 2; while the first batch is out, another sync peer delivers ids[2] and ids[3]
@@ -471,6 +535,36 @@ public class GossipSyncManagerTests : IDisposable
         manager.HandleMessage(slow, End());
         Assert.True(await waiting);
         Assert.Empty(slow.Warnings);
+    }
+
+    [Fact]
+    public async Task Given_ATimedOutScidQuery_When_ItsLateEndNeverArrives_Then_TheNextQueryFailsAndNothingMoreIsAsked()
+    {
+        // Arrange (NL-718: Eclair drops a query over its rate limit and never answers it)
+        var manager = CreateManager(o =>
+        {
+            o.SyncReplyTimeout = s_replyTimeout;
+            o.SyncPeers = 0;
+        });
+        var silent = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(silent);
+        await silent.NextAsync<GossipTimestampFilterMessage>();
+        var first = manager.QueryScidAsync(new ShortChannelId(200, 1, 0), TestContext.Current.CancellationToken);
+        await silent.NextAsync<QueryShortChannelIdsMessage>();
+        AdvancePast(s_replyTimeout);
+        Assert.False(await first.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        var waiting = manager.QueryScidAsync(new ShortChannelId(300, 1, 0), TestContext.Current.CancellationToken);
+        Assert.True(await silent.NothingSentWithinAsync(s_quiet));
+
+        // Act: another reply timeout without the late end
+        AdvancePast(s_replyTimeout);
+
+        // Assert: the waiting query fails without being sent, and the connection is asked nothing more
+        Assert.False(await waiting.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.False(await manager.QueryScidAsync(new ShortChannelId(400, 1, 0), TestContext.Current.CancellationToken)
+                                  .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        Assert.True(await silent.NothingSentWithinAsync(s_quiet));
+        Assert.Empty(silent.Warnings);
     }
 
     [Fact]
@@ -929,7 +1023,8 @@ public class GossipSyncManagerTests : IDisposable
                                             Func<CompactPubKey, bool>? hasChannelWith = null,
                                             FakeGossipSender? peerSender = null)
     {
-        var options = new GossipSyncOptions();
+        // Back-to-back queries unless a test paces them (NL-407): the stepped clock would hold every paced query
+        var options = new GossipSyncOptions { MinQueryInterval = TimeSpan.Zero };
         configure?.Invoke(options);
         var manager = new GossipSyncManager(_graph.Store, Microsoft.Extensions.Options.Options.Create(options),
                                             Microsoft.Extensions.Options.Options.Create(new NodeOptions

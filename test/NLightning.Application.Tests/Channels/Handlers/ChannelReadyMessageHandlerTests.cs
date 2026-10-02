@@ -21,6 +21,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
 using Domain.Protocol.Payloads;
+using Domain.Protocol.Tlv;
 
 public class ChannelReadyMessageHandlerTests
 {
@@ -158,6 +159,49 @@ public class ChannelReadyMessageHandlerTests
         Assert.Same(first, channel.Commitments);
         _mockChannelStateDbRepository.Verify(
             r => r.InitializeAsync(It.IsAny<ChannelCommitments>(), It.IsAny<ChannelStateExtras?>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(ChannelState.V1FundingSigned)]
+    [InlineData(ChannelState.ReadyForUs)]
+    [InlineData(ChannelState.ReadyForThem)]
+    [InlineData(ChannelState.Open)]
+    public async Task Given_AnAliasOnAChannelWithoutScidAlias_When_ChannelReady_Then_TheRemoteAliasIsStoredAndSaved(
+        ChannelState state)
+    {
+        // Arrange (NL-717: Eclair sends its alias on every channel and resolves a private one only by it)
+        var channel = CreateChannel(state);
+        SetupChannel(channel);
+        var alias = new ShortChannelId(0x0240b310846dca2aUL);
+        var message = new ChannelReadyMessage(new ChannelReadyPayload(channel.ChannelId, s_secondPoint),
+                                              new ShortChannelIdTlv(alias));
+
+        // Act
+        await _handler.HandleAsync(message, state, new FeatureOptions(), channel.RemoteNodeId);
+
+        // Assert
+        Assert.Equal(alias, channel.RemoteAlias);
+        Assert.Contains("save", _calls);
+        _mockChannelDbRepository.Verify(r => r.UpdateAsync(It.Is<ChannelModel>(c => c.RemoteAlias == alias)));
+    }
+
+    [Fact]
+    public async Task Given_AStoredAliasOnAChannelWithoutScidAlias_When_AnotherAliasArrives_Then_TheFirstIsKept()
+    {
+        // Arrange
+        var channel = CreateChannel(ChannelState.Open);
+        SetupChannel(channel);
+        var first = new ShortChannelId(0x0240b310846dca2aUL);
+        channel.RemoteAlias = first;
+        var message = new ChannelReadyMessage(new ChannelReadyPayload(channel.ChannelId, s_secondPoint),
+                                              new ShortChannelIdTlv(new ShortChannelId(0x0350e5426c59bbdaUL)));
+
+        // Act
+        await _handler.HandleAsync(message, ChannelState.Open, new FeatureOptions(), channel.RemoteNodeId);
+
+        // Assert
+        Assert.Equal(first, channel.RemoteAlias);
+        Assert.DoesNotContain("save", _calls);
     }
 
     private void SetupChannel(ChannelModel channel)

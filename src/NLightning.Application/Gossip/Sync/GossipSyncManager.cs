@@ -627,6 +627,11 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                         // NL-365: the query given up on before may still be answered; its late reply goes first, so
                         // BOLT 7's one-outstanding-query rule holds and it never completes the wrong query
                         await ConsumeOutstandingRepliesAsync(session, cancellationToken);
+                        if (session.IsQuerySlotPoisoned)
+                        {
+                            (work as ScidQueryWork)?.Completion?.TrySetResult(false);
+                            continue;
+                        }
                     }
 
                     switch (work)
@@ -697,13 +702,24 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     /// Waits, before the next query on this connection (NL-365), for the outstanding reply of the query we gave up
     /// on: the late <c>reply_short_channel_ids_end</c>, or the rest of a late <c>reply_channel_range</c> stream,
     /// which is fed to the kept collector of that query until it completes. A late range reply that breaks the rules
-    /// ends the querying on this connection for good (the stream's position is then unknown).
+    /// ends the querying on this connection for good (the stream's position is then unknown), and so does a late reply
+    /// that does not come within another <see cref="GossipSyncOptions.SyncReplyTimeout"/> (NL-718: Eclair drops a query
+    /// over its rate limit without ever answering it, and the next query of the connection waited for it forever).
     /// </summary>
     private async Task ConsumeOutstandingRepliesAsync(PeerSession session, CancellationToken cancellationToken)
     {
         while (session.IsAwaitingOutstandingReply)
         {
-            var late = await session.Replies.ReadAsync(cancellationToken);
+            var late = await ReadReplyAsync(session, cancellationToken);
+            if (late is null)
+            {
+                session.PoisonQuerySlot();
+                _logger.LogInformation("Peer {Peer} never answered the query we gave up on (another {Timeout} passed); "
+                                     + "no more gossip queries on this connection", session.Peer.PeerPubKey,
+                                       _options.SyncReplyTimeout);
+                return;
+            }
+
             if (session.OutstandingCollector is not { } collector)
             {
                 session.OutstandingReplyConsumed();
@@ -753,6 +769,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                     : null);
 
             var collector = new RangeReplyCollector(OurChain, 0, numberOfBlocks);
+            await PaceQueryAsync(session, cancellationToken);
             session.ExpectReplies(MessageTypes.ReplyChannelRange);
             var abandoned = false;
             try
@@ -1058,6 +1075,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             flags);
 
         await WaitForIngressAsync(session, cancellationToken);
+        await PaceQueryAsync(session, cancellationToken);
         session.ExpectReplies(MessageTypes.ReplyShortChannelIdsEnd);
         var abandoned = false;
         try
@@ -1137,6 +1155,27 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
 
             await Task.Delay(s_ingressPollInterval, _timeProvider, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// NL-407: keeps <see cref="GossipSyncOptions.MinQueryInterval"/> between two queries of ours
+    /// (<c>query_channel_range</c> and <c>query_short_channel_ids</c>) on one connection, counted from when the previous
+    /// one was queued. Eclair answers at most 5 gossip queries per second per connection (both kinds share
+    /// <c>router.sync.max-queries-per-second</c>, default 5) and silently drops the rest, without a
+    /// <c>reply_short_channel_ids_end</c>: back-to-back queries for small batches made the fifth query of a sync time
+    /// out and ended our querying of that connection. 250 ms keeps any five consecutive queries more than a second apart.
+    /// </summary>
+    private async Task PaceQueryAsync(PeerSession session, CancellationToken cancellationToken)
+    {
+        var interval = _options.MinQueryInterval;
+        if (interval > TimeSpan.Zero && session.LastQueryAt is { } last)
+        {
+            var wait = interval - (_timeProvider.GetUtcNow() - last);
+            if (wait > TimeSpan.Zero)
+                await Task.Delay(wait, _timeProvider, cancellationToken);
+        }
+
+        session.LastQueryAt = _timeProvider.GetUtcNow();
     }
 
     /// <summary>
@@ -1389,6 +1428,11 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         }
 
         public DateTimeOffset? LastRangeSyncAt { get; set; }
+
+        /// <summary>
+        /// When our last query went out on this connection (NL-407 pacing). Only the querier loop reads and writes it.
+        /// </summary>
+        public DateTimeOffset? LastQueryAt { get; set; }
         public int PendingWork => Volatile.Read(ref _pendingWork);
         public bool IsIdle => PendingWork == 0 && Volatile.Read(ref _queuedQueries) == 0;
 

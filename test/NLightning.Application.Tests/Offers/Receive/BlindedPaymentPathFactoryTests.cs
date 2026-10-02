@@ -111,6 +111,58 @@ public sealed class BlindedPaymentPathFactoryTests : IDisposable
         Assert.Equal(privatePeer, path.Path.FirstNodeId);
     }
 
+    [Theory]
+    [InlineData(false, true, "alias")]
+    [InlineData(false, false, "real")]
+    [InlineData(true, true, "real")]
+    public async Task Given_ThePeersAlias_When_CreatingPaths_Then_AnUnannouncedChannelIsNamedByIt(bool announced,
+        bool withAlias, string expected)
+    {
+        // Arrange (NL-717: Eclair resolves a private channel only by the alias it sent in channel_ready; a channel
+        // without option_scid_alias in its type)
+        var peerKeys = new TestNodeKeyManager(0x0e);
+        var realScid = new ShortChannelId(402, 2, 1);
+        var alias = new ShortChannelId(0x0240b310846dca2aUL);
+        var channel = AddChannel(peerKeys.NodeId, 2, realScid, 600_000, announced);
+        if (withAlias)
+            channel.RemoteAlias = alias;
+        SetPeerUpdate(channel);
+
+        // Act
+        var paths = await CreateFactory().CreateAsync(s_preimage, LightningMoney.Satoshis(50_000), 7_200,
+                                                      TestContext.Current.CancellationToken);
+
+        // Assert: the introduction node (the peer) reads the short channel id it must forward over
+        var path = Assert.Single(paths).Path;
+        var unblinded = _provider.GetRequiredService<IRouteBlindingService>()
+                                 .Unblind(peerKeys.GetNodeKeyPair().PrivKey, path.FirstPathKey,
+                                          path.Hops[0].EncryptedRecipientData);
+        Assert.Equal(expected == "alias" ? alias : realScid, unblinded.RecipientData.ShortChannelId);
+    }
+
+    [Fact]
+    public async Task Given_AnInvoiceOfTwoHours_When_CreatingPaths_Then_TheIntroductionAllowsAPayersRandomFinalDelta()
+    {
+        // Arrange (NL-719: Eclair adds 150 to 350 blocks to the final expiry; with a 144-block margin its HTLC was
+        // above max_cltv_expiry at our hop)
+        var peerKeys = new TestNodeKeyManager(0x0e);
+        var channel = AddChannel(peerKeys.NodeId, 2, new ShortChannelId(402, 2, 1), 600_000);
+        SetPeerUpdate(channel);
+
+        // Act
+        var paths = await CreateFactory().CreateAsync(s_preimage, LightningMoney.Satoshis(50_000), 7_200,
+                                                      TestContext.Current.CancellationToken);
+
+        // Assert: 800 + 12 blocks of invoice + the 1,008-block margin (+ our final delta and the dummy hop's)
+        var path = Assert.Single(paths).Path;
+        var unblinded = _provider.GetRequiredService<IRouteBlindingService>()
+                                 .Unblind(peerKeys.GetNodeKeyPair().PrivKey, path.FirstPathKey,
+                                          path.Hops[0].EncryptedRecipientData);
+        Assert.NotNull(unblinded.RecipientData.PaymentConstraints);
+        Assert.True(unblinded.RecipientData.PaymentConstraints.MaxCltvExpiry >= 800 + 12 + 1_008,
+                    $"max_cltv_expiry {unblinded.RecipientData.PaymentConstraints.MaxCltvExpiry}");
+    }
+
     private BlindedPaymentPathFactory CreateFactory() =>
         new(new BlindedPathBuilder(_provider.GetRequiredService<IRouteBlindingService>(), _us, _channels.Object,
                                    _updates.Object, NullLogger<BlindedPathBuilder>.Instance),

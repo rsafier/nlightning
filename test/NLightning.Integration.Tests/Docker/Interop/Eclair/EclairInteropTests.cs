@@ -319,7 +319,8 @@ public sealed class EclairInteropTests : IAsyncLifetime
     /// NL-557 evidence: a v1 open to Eclair from a node with our default features (a push amount keeps
     /// <c>openchannel</c> on v1, NL-551) is refused by Eclair, which treats the channel as dual-funded once
     /// <c>option_dual_fund</c> is negotiated. This is why the push opens of this class come from a node with
-    /// <c>DualFund = No</c>.
+    /// <c>DualFund = No</c>. Eclair 0.14.3 (and its master) takes DualFunding as a channel feature from both
+    /// <c>init</c>s and then refuses any custom reserve; our client error names the dual-funded open as the way out.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_DefaultFeatures_When_WeOpenWithAPush_Then_EclairRefusesTheV1Open()
@@ -350,6 +351,9 @@ public sealed class EclairInteropTests : IAsyncLifetime
         Console.WriteLine($"[eclair] v1 open with a push from a node with option_dual_fund: {refusal}");
         Assert.NotNull(refusal);
         Assert.Contains("dual-funded", refusal.Message);
+        // NL-557: the client error says why and how to open instead
+        Assert.Contains("negotiated option_dual_fund", refusal.Message);
+        Assert.Contains("without a push amount, zero-conf or --v1", refusal.Message);
         Assert.Empty((await node.ListChannelsAsync(ct)).Channels);
     }
 

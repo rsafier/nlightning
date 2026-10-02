@@ -53,6 +53,7 @@ public sealed class OpenChannelClientHandler
 
     private ChannelId _channelId = ChannelId.Zero;
     private ChannelId? _upgradedChannelId;
+    private bool _v1OpenWithDualFundNegotiated;
     private IPeerService? _peerService;
 
     /// <summary>The default of <see cref="OpenTimeout"/>.</summary>
@@ -150,6 +151,10 @@ public sealed class OpenChannelClientHandler
         var currentHeight = _blockchainMonitor.LastProcessedBlockHeight;
         if (_utxoMemoryRepository.GetConfirmedBalance(currentHeight) < request.FundingAmount)
             throw new ClientException(ErrorCodes.NotEnoughBalance, "We don't have enough balance to open this channel");
+
+        // NL-557: a v1 open (push, zero-conf or --v1) to a peer with which option_dual_fund is negotiated; Eclair refuses
+        // those, so a refusal names the way out
+        _v1OpenWithDualFundNegotiated = peer.NegotiatedFeatures.DualFund != FeatureSupport.No;
 
         // Since we're connected, let's open the channel
         var channel =
@@ -436,7 +441,24 @@ public sealed class OpenChannelClientHandler
             "Received attention message from peer {peerId} for channel {channelId}: {message}",
             args.PeerPubKey, args.ChannelId, args.Message);
 
-        tsc.TrySetException(new ChannelErrorException($"Error opening channel: {args.Message}"));
+        tsc.TrySetException(new ChannelErrorException(DescribeRefusal(args.Message)));
+    }
+
+    /// <summary>
+    /// The client error of a refused v1 open (NL-557): the peer's text, and, when <c>option_dual_fund</c> is negotiated
+    /// with the peer, that it may require a dual-funded open. Eclair (checked on 0.14.3 and its master, 2026-10-02)
+    /// treats every channel with a peer that negotiated <c>option_dual_fund</c> as dual-funded and refuses
+    /// <c>open_channel</c> ("custom remote channel reserve is incompatible with dual-funded channels"); BOLT 2 allows the
+    /// v1 open, and CLN and LDK accept it.
+    /// </summary>
+    internal string DescribeRefusal(string? peerMessage)
+    {
+        var message = $"Error opening channel: {peerMessage}";
+        if (!_v1OpenWithDualFundNegotiated)
+            return message;
+
+        return message + ". The peer negotiated option_dual_fund and may accept only a dual-funded (v2) open, as "
+             + "Eclair does: open without a push amount, zero-conf or --v1 to open it dual-funded";
     }
 
     private void HandlePeerDisconnection(PeerDisconnectedEventArgs args, CompactPubKey peerPubKey,
