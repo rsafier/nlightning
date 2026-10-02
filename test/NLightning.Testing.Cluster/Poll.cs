@@ -1,10 +1,17 @@
 namespace NLightning.Testing.Cluster;
 
+using Diagnostics;
+
 /// <summary>
 /// The harness's one deadline-bound polling helper (no fixed sleeps; a timeout says what was awaited and what was
 /// last seen), as the Docker tests' <c>Poll</c>. Every wait of the chain helpers, the topologies and the node adapters
 /// goes through it.
 /// </summary>
+/// <remarks>
+/// A timeout first dumps the live runs of the current test or fixture (<see cref="ClusterDiagnostics"/>; not with
+/// <c>NLTG_CLUSTER_DIAG=off</c> or inside <see cref="ClusterDiagnostics.SuppressPollCapture"/>) while the state that
+/// made it time out is still there, then throws.
+/// </remarks>
 public static class Poll
 {
     /// <summary>The interval when none is given.</summary>
@@ -20,7 +27,8 @@ public static class Poll
         while (!await condition(cancellationToken).ConfigureAwait(false))
         {
             if (DateTime.UtcNow >= deadline)
-                throw new TimeoutException($"Timed out after {timeout} waiting for: {description}");
+                throw await TimedOutAsync($"Timed out after {timeout} waiting for: {description}")
+                          .ConfigureAwait(false);
 
             await Task.Delay(interval, cancellationToken).ConfigureAwait(false);
         }
@@ -43,7 +51,8 @@ public static class Poll
             if (missing is null)
                 return;
             if (DateTime.UtcNow >= deadline)
-                throw new TimeoutException($"Timed out after {timeout} waiting for: {description}: {missing}");
+                throw await TimedOutAsync($"Timed out after {timeout} waiting for: {description}: {missing}")
+                          .ConfigureAwait(false);
 
             await Task.Delay(interval ?? DefaultInterval, cancellationToken).ConfigureAwait(false);
         }
@@ -66,10 +75,17 @@ public static class Poll
                 return value;
 
             if (DateTime.UtcNow >= deadline)
-                throw new TimeoutException($"Timed out after {timeout} waiting for: {description}"
-                                         + (describeLast is null ? string.Empty : $" ({describeLast()})"));
+                throw await TimedOutAsync($"Timed out after {timeout} waiting for: {description}"
+                                        + (describeLast is null ? string.Empty : $" ({describeLast()})"))
+                          .ConfigureAwait(false);
 
             await Task.Delay(interval, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private static async Task<TimeoutException> TimedOutAsync(string message)
+    {
+        await ClusterDiagnostics.OnPollTimeoutAsync(message).ConfigureAwait(false);
+        return new TimeoutException(message);
     }
 }

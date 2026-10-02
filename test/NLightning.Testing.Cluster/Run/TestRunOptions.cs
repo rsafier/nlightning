@@ -1,5 +1,7 @@
 namespace NLightning.Testing.Cluster.Run;
 
+using Diagnostics;
+
 /// <summary>
 /// How a <see cref="TestRun"/> is named and where it runs.
 /// </summary>
@@ -14,8 +16,14 @@ public sealed record TestRunOptions
     /// <summary>Overrides <see cref="NamespacePrefix"/> when set.</summary>
     public const string NamespacePrefixVariable = "NLTG_TEST_NAMESPACE_PREFIX";
 
-    /// <summary>Set to <c>1</c> or <c>true</c> to keep the namespace after the run, for debugging.</summary>
+    /// <summary>
+    /// Set to <c>1</c> or <c>true</c> to keep the namespace after the run, for debugging; <c>failure</c> to keep it
+    /// only when something failed in the run (<see cref="KeepNamespaceOnFailure"/>).
+    /// </summary>
     public const string KeepNamespaceVariable = "NLTG_KEEP_NAMESPACE";
+
+    /// <summary>The <see cref="KeepNamespaceVariable"/> value of <see cref="KeepNamespaceOnFailure"/>.</summary>
+    public const string KeepOnFailureValue = "failure";
 
     /// <summary>
     /// Set to <c>1</c> or <c>true</c> to adopt the run's existing namespace instead of creating one (the in-cluster
@@ -54,6 +62,17 @@ public sealed record TestRunOptions
     /// <summary>Keep the namespace when the run is disposed.</summary>
     public bool KeepNamespace { get; init; }
 
+    /// <summary>
+    /// Keep the namespace when the run is disposed after a failure was recorded on it
+    /// (<see cref="TestRun.Diagnostics"/>): it is annotated <see cref="RunAnnotations.Keep"/>, so the reaper removes it
+    /// only after its TTL.
+    /// </summary>
+    public bool KeepNamespaceOnFailure { get; init; }
+
+    /// <summary>When and where the run's diagnostics are written; <see cref="DiagnosticsSettings.FromEnvironment"/> by
+    /// default.</summary>
+    public DiagnosticsSettings Diagnostics { get; init; } = DiagnosticsSettings.FromEnvironment();
+
     /// <summary>Wait until the namespace is gone when the run is disposed.</summary>
     public bool WaitForDeletion { get; init; } = true;
 
@@ -80,7 +99,8 @@ public sealed record TestRunOptions
     /// <summary>
     /// Options for <paramref name="suite"/> with the environment applied: <see cref="TestRunId.EnvironmentVariable"/>,
     /// <see cref="NamespacePrefixVariable"/>, <see cref="KubeClientFactory.ContextVariable"/>,
-    /// <see cref="KeepNamespaceVariable"/>, <see cref="AdoptNamespaceVariable"/> and
+    /// <see cref="KeepNamespaceVariable"/>, <see cref="AdoptNamespaceVariable"/>, the diagnostics variables
+    /// (<see cref="DiagnosticsSettings.FromEnvironment"/>) and
     /// <see cref="RunAdmission.MaxRunsVariable"/> (default <see cref="RunAdmission.DefaultMaxRuns"/>).
     /// </summary>
     public static TestRunOptions FromEnvironment(string suite, Func<string, string?>? environment = null)
@@ -96,6 +116,8 @@ public sealed record TestRunOptions
             NamespacePrefix = string.IsNullOrWhiteSpace(prefix) ? SpikeNamespacePrefix : prefix.Trim(),
             KubeContext = environment(KubeClientFactory.ContextVariable),
             KeepNamespace = IsSet(keep),
+            KeepNamespaceOnFailure = keep?.Trim().Equals(KeepOnFailureValue, StringComparison.OrdinalIgnoreCase) == true,
+            Diagnostics = DiagnosticsSettings.FromEnvironment(environment),
             AdoptNamespace = IsSet(adopt),
             MaxConcurrentRuns = RunAdmission.ParseMaxRuns(environment(RunAdmission.MaxRunsVariable))
         };

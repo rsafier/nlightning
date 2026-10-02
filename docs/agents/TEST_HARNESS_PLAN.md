@@ -440,6 +440,26 @@ shrink; the porting of fixtures and suites is the real remaining cost):
 
 Total to replace the Docker suites: about 9.5-10.5 working days (the plan's §5 had 9-13 plus the spike).
 
+### Phase 2 lane D record: failure diagnostics (2026-10-02, branch `hp2-diag` from b379b779)
+
+`test/NLightning.Testing.Cluster/Diagnostics/` (details in that project's `CLAUDE.md`): on a failure the harness
+writes `<root>/<test or fixture>/<namespace>/` with every pod's describe-equivalent, current and previous logs, the
+namespace's events (oldest first), PVC/PV status, StatefulSets/Services/NetworkPolicies and each node's state
+(bitcoind `getblockchaininfo`/`getpeerinfo`, CLN `getinfo`/`listpeerchannels`, LND `getinfo`/`listchannels`), never a
+secret file and with passwords masked. Triggers: a `Poll` timeout, a failed readiness wait or topology build, and a
+failed test through the xunit v3 hook `[assembly: ClusterDiagnostics]` (runs still alive at the test's end: fixture
+runs); `run.DumpAsync` by hand; `NLTG_CLUSTER_DIAG=always|failure|off`; `NLTG_KEEP_NAMESPACE=failure` keeps a failed
+run's namespace (annotated `nltg.keep`, reaped after its TTL). `run-cluster.sh` writes the dumps under
+`<run>/diag/`, counts them per run and lists the folders of each failed run.
+
+Proofs on OrbStack (all net10.0, Release): `DiagnosticsClusterTests` 2/2 green in 168 s (manual dump of bitcoind +
+CLN + LND: 20 files, 0 errors, 0.4 s; a CLN node with an unknown option never becomes ready: the build fails after
+59.8 s, one dump of 15 files in 0.2 s with the crash in `alice.previous.log`, the namespace kept and annotated), run
+concurrently with `DiagnosticsFailureProofTests` (`--trait Category=ClusterFailureProof --keep-on-failure`, both fail
+on purpose as intended: the `Poll` timeout dumped at the timeout (14 files, 1.1 s) and the hook appended the test's
+failure; the assertion failure dumped by the hook (15 files, 0.7 s); both namespaces kept, then reaped by hand). No
+regression: the CLN pair test 3 times at once, 3/3 green in 65-84 s, no dumps.
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.
