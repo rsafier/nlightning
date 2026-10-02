@@ -603,7 +603,8 @@ Evidence (OrbStack, Release, net10.0; logs under `TestResults/cluster/hp2b-*`):
 | Cluster, the 4 Explicit captures (`hp2b-capt2`) | 4/4 | 46 s |
 | Cluster, 3 at once (`hp2b-cln3`, before the fixes) | 75, 76 and 75 of 81; topologies up in 5.0-6.8 s | 877-933 s |
 | Cluster, 3 at once (`hp2b-cln3b`, ZMQ guard) | 76, 76 and 75 of 81 | 864-886 s |
-| Docker (`run-interop.sh cln`, under the lock) | 81/81, 4 Explicit not run; matches the batch10 baseline | 876 s |
+| Docker (`run-interop.sh cln`, under the lock, at c71d9d39) | 81/81, 4 Explicit not run; matches the batch10 baseline | 876 s |
+| Docker again on the final test code (bca39fb6) | 81/81, 4 Explicit not run | 886 s |
 
 Every 3-at-once run failed `ClnQuiescenceTests.Given_OurHtlcInFlight_*` (NL-477, closed in d13 as "not reproduced").
 CLN logs "STFU but you still have updates pending?" when its `update_fulfill_htlc` for our HTLC (sent about 24 ms
