@@ -212,6 +212,12 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasColumnType("TEXT")
                         .IsFixedLength();
 
+                    b.Property<long?>("HeldSince")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("Lender")
+                        .HasColumnType("INTEGER");
+
                     b.Property<byte>("Origin")
                         .HasColumnType("INTEGER");
 
@@ -262,6 +268,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<decimal?>("FiatCostRelieved")
                         .HasPrecision(28, 8)
                         .HasColumnType("TEXT");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("LedgerSeq")
                         .HasColumnType("INTEGER");

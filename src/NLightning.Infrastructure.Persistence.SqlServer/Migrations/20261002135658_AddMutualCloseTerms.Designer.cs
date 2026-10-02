@@ -219,6 +219,12 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .HasColumnType("nchar(3)")
                         .IsFixedLength();
 
+                    b.Property<long?>("HeldSince")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("Lender")
+                        .HasColumnType("int");
+
                     b.Property<byte>("Origin")
                         .HasColumnType("tinyint");
 
@@ -271,6 +277,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<decimal?>("FiatCostRelieved")
                         .HasPrecision(28, 8)
                         .HasColumnType("decimal(28,8)");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("LedgerSeq")
                         .HasColumnType("bigint");

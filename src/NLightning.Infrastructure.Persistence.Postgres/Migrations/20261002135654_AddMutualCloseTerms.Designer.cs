@@ -275,6 +275,14 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnName("fiat_currency")
                         .IsFixedLength();
 
+                    b.Property<long?>("HeldSince")
+                        .HasColumnType("bigint")
+                        .HasColumnName("held_since");
+
+                    b.Property<int?>("Lender")
+                        .HasColumnType("integer")
+                        .HasColumnName("lender");
+
                     b.Property<byte>("Origin")
                         .HasColumnType("smallint")
                         .HasColumnName("origin");
@@ -343,6 +351,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasPrecision(28, 8)
                         .HasColumnType("numeric(28,8)")
                         .HasColumnName("fiat_cost_relieved");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("smallint")
+                        .HasColumnName("kind");
 
                     b.Property<long>("LedgerSeq")
                         .HasColumnType("bigint")
