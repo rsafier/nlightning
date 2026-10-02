@@ -129,16 +129,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 5 | 63 | 68 |
+| open | 0 | 0 | 3 | 64 | 67 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 170 | 318 | 564 |
+| fixed | 14 | 62 | 172 | 318 | 566 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **179** | **388** | **643** |
+| **Total** | **14** | **62** | **179** | **389** | **644** |
 
 ### Epics
 
-- NL-602: Accounting: core event feed and built-in books (fixed, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3 all built on `wip/acct-a3`: A1 feed, A2 operational books, A3 financial profile (labels, classification, prices, projector and lots, period close, financial reports, config/security/docs; merge `c62d861b`, review fixes `94af679d`, `ecd983b1`); data gaps NL-603..NL-605 and the plugin stub NL-151 done; open follow-ups NL-606..NL-608, NL-610..NL-613, NL-645, NL-657, NL-658, NL-660, NL-662, NL-665, NL-667 (partial), NL-674..NL-680, flakes NL-620, NL-653)
+- NL-602: Accounting: core event feed and built-in books (fixed, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3 all built on `wip/acct-a3`: A1 feed, A2 operational books, A3 financial profile (labels, classification, prices, projector and lots, period close, financial reports, config/security/docs; merge `c62d861b`, review fixes `94af679d`, `ecd983b1`); data gaps NL-603..NL-605 and the plugin stub NL-151 done; open follow-ups NL-606..NL-608, NL-610..NL-613, NL-645, NL-657, NL-658, NL-662, NL-674..NL-681 (NL-660, NL-665, NL-667 fixed on `wip/nl660`), flakes NL-620, NL-653)
 - NL-569: Tor: onion peers, our onion service, Tor-only mode (fixed, medium; lane tor, branch `wip/tor`: `Node:Tor` Off/Hybrid/TorOnly, SOCKS5 with isolation, control port with SAFECOOKIE, persisted v3 onion service announced in `node_announcement`, NL-542 and NL-178 fixed; `docs/agents/TOR.md`; follow-ups NL-571..NL-573; review fixes NL-575..NL-590)
 - NL-426: Static channel backup and restore (fixed, high; wave rf1: encrypted SCB, export/verify/restore IPC 21-23, recovery channels and the data-loss reestablish, proven against LND; wave lh1: NL-430, NL-431 old spends and every peer address, NL-432 persisted peer-storage retrievals with `listpeerstorage` (32); follow-up NL-435)
 - NL-031: HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee) (fixed, critical; N6 in wave 1, reestablish and switch in wave 2; the fail-the-channel broadcast is N9-T4 under NL-094)
@@ -5296,11 +5296,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-660 A reclassification of a closed period's entry posts no adjustment (`classify set` / rule changes vs the lock)
-- **Status:** open
+- **Status:** fixed (793931cb)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/Financial/AccountingClassificationService.cs` (`SetAsync` and the rule add/remove/enable/disable paths)
 - **Evidence:** Lane A3-T5: `SetAsync` stores the override and only warns that "the financial book posts the change as an adjustment in the open period"; nothing calls `IAccountingAdjustmentSink.StageAdjustmentAsync` (Reason `Override`/`RuleChange`), and the projector never re-projects closed entries, so the override of a closed fact is silently missing from the financial book.
+- **Fix:** `classify set|unset` and every rule add/remove/enable/disable stage, in the same save and under the period lock, one `Override`/`RuleChange` adjustment (`reclass:{n}`, dated now) per closed entry the new classification puts elsewhere, moving its classifiable lines (and their late `Price` values) from where the book holds them now to the new accounts at the original msat and fiat (Domain `AccountingReclassification`); no lot moves (NL-674 open); proof `FinancialReclassificationTests` (set/unset, rule add/disable/enable, verify, rebuild) and Domain `AccountingReclassificationTests`; follow-up NL-681.
 - **Fix sketch:** In `SetAsync` (and for rule changes) when the event's financial entry has a `ClosedPeriodId`: under `sink.EnterAsync`, build the reclassification delta (the old account name reversed, the new one posted, same msat and fiat) and stage it with `DedupeKey = override:{key}:{account}` in the same save; for rules, scan closed entries whose classification changes or add an explicit `classify apply`.
 - **Blocks/Blocked-by:** Part of NL-602; A3-T3/A3-T4 owner, A3-T7
 - **Plan ref:** ACCOUNTING_PLAN A3-T3, A3-T5 (D-A8)
@@ -5327,11 +5328,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Update (A3 final integration, 2026-10-02):** `RollbackOpenEntriesAsync` and `ResetToCloseAsync` now also select the open late facts by a `List<long>.Contains` over their ledger sequences and a bitwise flag test (NL-671); still proven on SQLite only, so the Postgres case of the next Docker pass should cover a reset and a rollback with a late fact.
 
 ### NL-665 The operational hledger export's header `commodity 1 msat` is rejected by hledger 1.52
-- **Status:** open
+- **Status:** fixed (be057b0e)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Accounting/Export/AccountingExportFormatter.cs` (`HledgerFormatter.WriteHeader`); golden `test/NLightning.Application.Tests/Accounting/Export/Golden/books.journal`
 - **Evidence:** Lane A3-T6: hledger 1.52.4 (mac-arm64) fails `hledger -f books.journal check` at 2:11 with "Please include a decimal point or decimal comma in commodity directives"; with `commodity 1. msat` the file passes. bean-check 3.2.3 accepts `books.beancount`. Left unfixed by the lane because the operational exports had to stay byte-for-byte unchanged.
+- **Fix:** `HledgerFormatter.WriteHeader` writes `commodity 1. msat` (a decimal mark, no decimals; exact integer msat); golden `books.journal` regenerated and checked by `hledger check --strict` 1.52.4, with a CI test of the directive and the `Explicit` `Given_TheRealHledger_*` (`NLTG_HLEDGER`); the financial journals already used it and pass `check --strict` too.
 - **Fix sketch:** Write `commodity 1. msat` (as the A3-T6 financial formatter does) and regenerate `books.journal`.
 - **Blocks/Blocked-by:** Part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN A2-T5, A3-T6
@@ -5347,11 +5349,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T6
 
 ### NL-667 An unclassified entry reclassified by a later adjustment stays in the unclassified listing
-- **Status:** fixed (partial, 77f455b0)
+- **Status:** fixed (793931cb)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** A3-T6 report kind `Unclassified` (`AccountingFinancialReportDispatcher`, `WithFlags = Unclassified`); A3-T3 `classify list --unclassified`
 - **Evidence:** Lane A3-T6: under D-A8 a reclassification posts an adjustment and leaves the original entry and its `Unclassified` flag unchanged, so the listing still shows it after an override or rule fixed it (the fixture's entry 7 shows this). T3's `classify list --unclassified` (IPC 45) and T6's report kind (IPC 43) both list unclassified rows.
+- **Fix:** the remainder is fixed with NL-660: the financial `Unclassified` report (`GetRegisterAsync` with `WithFlags = Unclassified`) leaves out a closed entry whose reclassification adjustments moved every classifiable line out of the unclassified accounts (`AccountingReclassification.IsStillUnclassified`), and lists it again if a later one moves it back; `classify list --unclassified` already classified now. Proof `FinancialReclassificationTests.Given_AnUnclassifiedClosedEntry_*`.
 - **Fix sketch:** Leave out entries whose event key has a later adjustment with classification Override or Rule, or have A3-T4 clear the flag on open-period entries it re-projects; T3 and T4 agree on one approach (and on which listing stays).
 - **Blocks/Blocked-by:** Part of NL-602; related NL-660
 - **Plan ref:** ACCOUNTING_PLAN A3-T3, A3-T6
@@ -5496,6 +5499,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** In the closed path, look a `LateFact` posting up at the fact's time too (`LateFactTimesAsync` without the open filter) for the price, and stage the lot's cost and the reliefs' gains in the same adjustment; or refuse `--force` while a late fact is unvalued.
 - **Blocks/Blocked-by:** Part of NL-602; follow-up of NL-672
 - **Plan ref:** ACCOUNTING_PLAN A3-T2, A3-T5
+
+### NL-681 A reclassification of a line left unvalued by a forced close moves its fiat at the adjustment's price
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Domain/Accounting/Financial/Classification/AccountingReclassification.cs` (`PlanMove`); `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs`; `AccountingPeriodService.AdjustLateValuationAsync`
+- **Evidence:** NL-660 fix (by code reading): a closed line that was unvalued at a forced close moves with no fiat, so the back-valuation values the two move lines at the adjustment's own time (they cancel in the entry, but shift that value between the accounts), and a `Price` adjustment found later for the closed line still lands on the line's original account (the next reclassification carries it over).
+- **Fix sketch:** Leave the move lines of an unvalued closed line out of the back-valuation (or value them at the fact's time), and post a later `Price` adjustment on the account the reclassifications hold the line in now; or refuse a reclassification of an unvalued closed line until it is valued.
+- **Blocks/Blocked-by:** Part of NL-602; related NL-680
+- **Plan ref:** ACCOUNTING_PLAN A3-T3, A3-T5 (D-A8)
 
 ## Crypto providers and key management
 
