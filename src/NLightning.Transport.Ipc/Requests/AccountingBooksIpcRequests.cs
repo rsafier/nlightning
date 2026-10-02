@@ -1,10 +1,13 @@
+using System.Globalization;
 using MessagePack;
 
 namespace NLightning.Transport.Ipc.Requests;
 
+using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Financial.Reports;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
 using Domain.Client.Exceptions;
@@ -42,11 +45,42 @@ public sealed class AccountingReportIpcRequest
     /// <summary>The register's page size.</summary>
     [Key(7)] public int Limit { get; set; } = 100;
 
-    /// <exception cref="ClientException">An unknown report or event kind, or a channel that is neither form.</exception>
+    /// <summary>The <c>AccountingBook</c> value (0 operational, 1 financial; NL-602 A3-T6), null = operational.</summary>
+    [Key(8)] public int? Book { get; set; }
+
+    /// <summary>The fiat currency of a financial report (an ISO 4217 code), null = the default (USD).</summary>
+    [Key(9)] public string? Currency { get; set; }
+
+    /// <summary>A BTC price for the market values, as an invariant decimal string (<c>86048.5</c>).</summary>
+    [Key(10)] public string? Price { get; set; }
+
+    /// <summary>The <c>AccountingGainsGrouping</c> value of the realized gains (1 month, 2 quarter, 3 year, 4 total),
+    /// null = month.</summary>
+    [Key(11)] public int? Grouping { get; set; }
+
+    /// <summary>The financial register's cursor adjustment (with <see cref="AfterLedgerSeq"/>), null = none.</summary>
+    [Key(12)] public int? AfterAdjustment { get; set; }
+
+    /// <exception cref="ClientException">An unknown report, event kind, book or grouping, a bad price, or a channel
+    /// that is neither form.</exception>
     public AccountingReportClientRequest ToClientRequest()
     {
         if (!Enum.IsDefined(typeof(AccountingReportKind), Kind))
             throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown accounting report {Kind}.");
+        if (Book is { } book && (book is < 0 or > byte.MaxValue || !Enum.IsDefined((AccountingBook)(byte)book)))
+            throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown accounting book {book}.");
+        if (Grouping is { } grouping && !Enum.IsDefined(typeof(AccountingGainsGrouping), grouping))
+            throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown gains grouping {grouping}.");
+
+        decimal? price = null;
+        if (!string.IsNullOrWhiteSpace(Price))
+        {
+            if (!decimal.TryParse(Price.Trim(), NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture,
+                                  out var parsed) || parsed <= 0m)
+                throw new ClientException(ErrorCodes.InvalidOperation,
+                                          $"Invalid price '{Price}': expected a number above zero such as 86048.5.");
+            price = parsed;
+        }
 
         var (channelId, channelScid) = ChannelFilterText.Parse(Channel);
         List<AccountingEventKind>? kinds = null;
@@ -72,7 +106,12 @@ public sealed class AccountingReportIpcRequest
             Account = string.IsNullOrWhiteSpace(Account) ? null : Account.Trim(),
             EventKinds = kinds,
             AfterLedgerSeq = AfterLedgerSeq,
-            Take = Limit
+            Take = Limit,
+            Book = Book is { } value ? (AccountingBook)value : AccountingBook.Operational,
+            Currency = string.IsNullOrWhiteSpace(Currency) ? null : Currency.Trim(),
+            Price = price,
+            Grouping = Grouping is { } periods ? (AccountingGainsGrouping)periods : AccountingGainsGrouping.Month,
+            AfterAdjustment = AfterAdjustment
         };
     }
 }
@@ -100,11 +139,23 @@ public sealed class AccountingExportIpcRequest
     /// <summary>The page size in entries.</summary>
     [Key(4)] public int Limit { get; set; } = 1_000;
 
-    /// <exception cref="ClientException">An unknown format.</exception>
+    /// <summary>The <c>AccountingBook</c> value (0 operational, 1 financial; NL-602 A3-T6), null = operational.</summary>
+    [Key(5)] public int? Book { get; set; }
+
+    /// <summary>The fiat currency of a financial export's costs and prices, null = the default (USD).</summary>
+    [Key(6)] public string? Currency { get; set; }
+
+    /// <summary>A financial export's cursor adjustment: the previous page's <c>NextAfterAdjustment</c>, null on the
+    /// first page.</summary>
+    [Key(7)] public int? AfterAdjustment { get; set; }
+
+    /// <exception cref="ClientException">An unknown format or book.</exception>
     public AccountingExportClientRequest ToClientRequest()
     {
         if (!Enum.IsDefined(typeof(AccountingExportFormat), Format))
             throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown export format {Format}.");
+        if (Book is { } book && (book is < 0 or > byte.MaxValue || !Enum.IsDefined((AccountingBook)(byte)book)))
+            throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown accounting book {book}.");
 
         return new AccountingExportClientRequest
         {
@@ -112,7 +163,10 @@ public sealed class AccountingExportIpcRequest
             Since = SinceUnixSeconds is { } since ? DateTimeOffset.FromUnixTimeSeconds(since) : null,
             Until = UntilUnixSeconds is { } until ? DateTimeOffset.FromUnixTimeSeconds(until) : null,
             AfterLedgerSeq = AfterLedgerSeq,
-            Take = Limit
+            Take = Limit,
+            Book = Book is { } value ? (AccountingBook)value : AccountingBook.Operational,
+            Currency = string.IsNullOrWhiteSpace(Currency) ? null : Currency.Trim(),
+            AfterAdjustment = AfterAdjustment
         };
     }
 }

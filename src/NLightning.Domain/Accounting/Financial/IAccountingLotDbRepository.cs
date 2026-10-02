@@ -45,4 +45,14 @@ public interface IAccountingLotDbRepository
 
     /// <summary>Deletes every lot and relief at once (a rebuild before any close; not staged).</summary>
     Task ClearAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The saved reliefs made in [<paramref name="since"/>, <paramref name="until"/>) with an id above
+    /// <paramref name="afterId"/>, by id, at most <paramref name="take"/> (A3-T6's realized gains, paged by id). The
+    /// default (test doubles) throws <see cref="NotSupportedException"/>.
+    /// </summary>
+    Task<IReadOnlyList<AccountingLotRelief>> ListReliefsAsync(DateTimeOffset? since, DateTimeOffset? until,
+                                                              long afterId, int take,
+                                                              CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This repository does not list reliefs by time.");
 }

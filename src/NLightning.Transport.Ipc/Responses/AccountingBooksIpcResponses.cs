@@ -26,6 +26,10 @@ public sealed class AccountingExportIpcResponse
     /// <summary>How many entries the page read.</summary>
     [Key(4)] public required int EntryCount { get; init; }
 
+    /// <summary>A financial export's next cursor adjustment (NL-602 A3-T6): pass it as <c>AfterAdjustment</c> with
+    /// <see cref="NextAfter"/>; null for the operational book.</summary>
+    [Key(5)] public int? NextAfterAdjustment { get; init; }
+
     public static AccountingExportIpcResponse FromClientResponse(AccountingExportClientResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -35,7 +39,8 @@ public sealed class AccountingExportIpcResponse
             Text = response.Chunk.Text,
             NextAfter = response.Chunk.NextAfter,
             HasMore = response.Chunk.HasMore,
-            EntryCount = response.Chunk.EntryCount
+            EntryCount = response.Chunk.EntryCount,
+            NextAfterAdjustment = response.NextAfterAdjustment
         };
     }
 }

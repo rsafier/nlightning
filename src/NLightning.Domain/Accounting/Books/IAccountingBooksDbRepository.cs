@@ -98,6 +98,22 @@ public interface IAccountingBooksDbRepository
     Task ClearAsync(AccountingBook book, CancellationToken cancellationToken = default) =>
         book == AccountingBook.Operational ? ClearAsync(cancellationToken) : throw NotSupported(book);
 
+    /// <summary>
+    /// The postings of the book that occurred in [<paramref name="since"/>, <paramref name="until"/>) summed per account
+    /// (role and name), in msat and in <paramref name="fiatCurrency"/> (A3-T6's financial reports; null = every valued
+    /// posting whatever its currency). Saved rows only. The default serves the operational book (no fiat).
+    /// </summary>
+    async Task<IReadOnlyList<AccountingAccountSum>> SumAccountPostingsAsync(
+        AccountingBook book, DateTimeOffset? since, DateTimeOffset? until, string? fiatCurrency,
+        CancellationToken cancellationToken = default)
+    {
+        if (book != AccountingBook.Operational)
+            throw NotSupported(book);
+
+        var sums = await SumPostingsAsync(since, until, cancellationToken);
+        return sums.Select(s => new AccountingAccountSum(book, s.Key, null, s.Value, 0m, 0)).ToList();
+    }
+
     private static NotSupportedException NotSupported(AccountingBook book) =>
         new($"This repository does not store the {book} book.");
 }

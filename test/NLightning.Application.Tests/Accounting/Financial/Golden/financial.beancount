@@ -1,0 +1,118 @@
+; NLightning accounting export, financial book (beancount, MSAT = millisatoshi, costs in USD)
+option "title" "NLightning financial books"
+option "operating_currency" "USD"
+
+2025-12-31 commodity MSAT
+2025-12-31 open Assets:Lightning:Channels "NONE"
+2025-12-31 open Assets:Onchain:Wallet "NONE"
+2025-12-31 open Equity:Fiat-rounding
+2025-12-31 open Equity:Opening-balances
+2025-12-31 open Equity:Transfers:In
+2025-12-31 open Equity:Transfers:Out
+2025-12-31 open Expenses:Fees:Funding
+2025-12-31 open Expenses:Fees:Routing
+2025-12-31 open Expenses:Fees:Withdraw
+2025-12-31 open Expenses:Payments
+2025-12-31 open Expenses:Unclassified
+2025-12-31 open Income:Gains:Realized
+2025-12-31 open Income:Routing
+2025-12-31 open Income:Sales
+
+2025-12-31 price MSAT 0.0000003 USD
+2026-01-01 price MSAT 0.0000004 USD
+2026-02-10 price MSAT 0.0000005 USD
+2026-03-01 price MSAT 0.0000006 USD
+2027-03-20 price MSAT 0.000001 USD
+2027-03-21 price MSAT 0.0000003333333333333 USD
+
+2025-12-31 * "OpeningBalance"
+  key: "fixture:1"
+  seq: 1
+  time: "2025-12-31T12:00:00.000Z"
+  annotations: "class Default"
+  Assets:Onchain:Wallet                               50000000 MSAT {{15 USD}}
+  Equity:Opening-balances                            -50000000 MSAT @@ 15 USD
+
+2026-01-01 * "WalletReceived"
+  key: "fixture:2"
+  seq: 2
+  time: "2026-01-01T00:10:00.000Z"
+  annotations: "class Default"
+  Assets:Onchain:Wallet                             1000000000 MSAT {{400 USD}}
+  Equity:Transfers:In                              -1000000000 MSAT @@ 400 USD
+
+2026-01-05 * "ChannelFunded"
+  key: "fixture:3"
+  seq: 3
+  time: "2026-01-05T00:00:00.000Z"
+  annotations: "class Default"
+  Assets:Lightning:Channels                          500000000 MSAT {{200 USD}}
+  Expenses:Fees:Funding                                1000000 MSAT @@ 0.4 USD
+  Assets:Onchain:Wallet                             -501000000 MSAT {{200.4 USD}}
+
+2026-02-10 * "InvoiceSettled: shop - Coffee; \"large\" with milk"
+  key: "fixture:4"
+  seq: 4
+  time: "2026-02-10T12:00:00.000Z"
+  annotations: "class Rule 7"
+  Assets:Lightning:Channels                          200000000 MSAT {{100 USD}}
+  Income:Sales                                      -200000000 MSAT @@ 100 USD
+
+2026-03-02 * "PaymentSucceeded"
+  key: "fixture:5"
+  seq: 5
+  time: "2026-03-02T00:00:00.000Z"
+  annotations: "class Default"
+  Expenses:Payments                                  100000000 MSAT @@ 60 USD
+  Expenses:Fees:Routing                                  10000 MSAT @@ 0.006 USD
+  Assets:Lightning:Channels                         -100010000 MSAT {{35.004 USD}}
+  Income:Gains:Realized                                -25.002 USD
+
+2026-03-05 ! "ForwardSettled"
+  key: "fixture:6"
+  seq: 6
+  time: "2026-03-05T00:00:00.000Z"
+  annotations: "flags Unvalued, class Default"
+  ; unvalued: not every line has a value in USD, written in MSAT only
+  Assets:Lightning:Channels                               5000 MSAT
+  Income:Routing                                         -5000 MSAT
+
+2026-03-06 ! "PaymentSucceeded"
+  key: "fixture:7"
+  seq: 7
+  time: "2026-03-06T00:00:00.000Z"
+  annotations: "flags Unclassified|Unvalued, class Default"
+  ; unvalued: not every line has a value in USD, written in MSAT only
+  Expenses:Unclassified                                1000000 MSAT
+  Assets:Lightning:Channels                           -1000000 MSAT
+
+2026-03-20 ! "PaymentSucceeded (adjustment 1)"
+  key: "fixture:7"
+  seq: 7
+  adjustment: 1
+  time: "2026-03-20T00:00:00.000Z"
+  annotations: "flags Adjustment|Unvalued, class Override"
+  ; unvalued: not every line has a value in USD, written in MSAT only
+  Expenses:Payments                                    1000000 MSAT
+  Expenses:Unclassified                               -1000000 MSAT
+
+2027-03-20 * "WalletSent"
+  key: "fixture:8"
+  seq: 8
+  time: "2027-03-20T06:00:00.000Z"
+  annotations: "class Default"
+  Equity:Transfers:Out                               300000000 MSAT @@ 300 USD
+  Expenses:Fees:Withdraw                                200000 MSAT @@ 0.2 USD
+  Assets:Onchain:Wallet                             -300200000 MSAT {{120.08 USD}}
+  Income:Gains:Realized                                -180.12 USD
+
+2027-03-21 * "PaymentSucceeded"
+  key: "fixture:9"
+  seq: 9
+  time: "2027-03-21T06:00:00.000Z"
+  annotations: "class Default"
+  Expenses:Payments                                          1 MSAT @@ 0.00000033 USD
+  Expenses:Fees:Routing                                      1 MSAT @@ 0.00000033 USD
+  Assets:Lightning:Channels                                 -2 MSAT {{0.00000067 USD}}
+  Equity:Fiat-rounding                              0.00000001 USD ; fiat rounding
+

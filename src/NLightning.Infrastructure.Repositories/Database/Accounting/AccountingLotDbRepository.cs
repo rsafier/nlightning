@@ -176,6 +176,23 @@ public class AccountingLotDbRepository : IAccountingLotDbRepository
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<AccountingLotRelief>> ListReliefsAsync(
+        DateTimeOffset? since, DateTimeOffset? until, long afterId, int take,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(take);
+
+        var reliefs = _context.AccountingLotReliefs.AsNoTracking().Where(r => r.Id > afterId);
+        if (since is { } from)
+            reliefs = reliefs.Where(r => r.RelievedAt >= from);
+        if (until is { } to)
+            reliefs = reliefs.Where(r => r.RelievedAt < to);
+
+        var entities = await reliefs.OrderBy(r => r.Id).Take(take).ToListAsync(cancellationToken);
+        return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
     public async Task<int> MarkClosedAsync(string periodId, DateTimeOffset end,
                                            CancellationToken cancellationToken = default)
     {

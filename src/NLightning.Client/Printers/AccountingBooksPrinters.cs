@@ -23,6 +23,13 @@ public sealed class AccountingReportPrinter : IPrinter<AccountingReportIpcRespon
     public void Print(AccountingReportIpcResponse item)
     {
         ArgumentNullException.ThrowIfNull(item);
+        if (item.Financial is { } financial)
+        {
+            // The financial book and the risk-weighted capital (NL-602 A3-T6)
+            new AccountingFinancialReportPrinter(_output).Print(item, financial);
+            return;
+        }
+
         if (item.BalanceSheet is { } sheet)
             PrintBalanceSheet(item, sheet);
         else if (item.IncomeStatement is { } statement)

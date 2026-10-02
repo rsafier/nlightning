@@ -11,6 +11,8 @@ using Daemon.Ipc.Interfaces;
 using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
+using Domain.Accounting.Financial.Export;
+using Domain.Accounting.Financial.Reports;
 using Domain.Accounting.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Client.Requests;
@@ -46,10 +48,12 @@ public static class AccountingIpcServiceExtensions
             AccountingReportClientResponse>>(sp => new AccountingReportClientHandler(
                                                  sp.GetService<IAccountingReports>(),
                                                  sp.GetService<IOptions<AccountingOptions>>(),
-                                                 sp.GetService<IChannelMemoryRepository>()));
+                                                 sp.GetService<IChannelMemoryRepository>(),
+                                                 sp.GetService<IAccountingFinancialReports>()));
         services.TryAddScoped<IClientCommandHandler<AccountingExportClientRequest,
             AccountingExportClientResponse>>(sp => new AccountingExportClientHandler(
-                                                 sp.GetService<IAccountingExports>()));
+                                                 sp.GetService<IAccountingExports>(),
+                                                 sp.GetService<IAccountingFinancialExports>()));
         services.TryAddScoped<IClientCommandHandler<AccountingAdminClientRequest,
             AccountingAdminClientResponse>>(sp => new AccountingAdminClientHandler(
                                                 sp.GetRequiredService<IUnitOfWork>(),

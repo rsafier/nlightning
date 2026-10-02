@@ -3,8 +3,10 @@ using System.Text;
 
 namespace NLightning.Client.Handlers;
 
+using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
+using Domain.Accounting.Financial.Reports;
 using Domain.Client.Enums;
 using Ipc;
 using Printers;
@@ -27,9 +29,10 @@ internal static class AccountingBooksCommands
 
     /// <summary>The usage of the verb family.</summary>
     internal const string Usage =
-        "accounting report <balance|income|channels|peers|fees|register> [options] | accounting export --format "
-      + "<hledger|beancount|csv> [--since <time>] [--until <time>] [--output <file>] | accounting "
-      + "<reconcile|rebuild|verify>";
+        "accounting report <balance|income|channels|peers|fees|register> [options] | accounting report "
+      + "<gains|unrealized|lots|unvalued|unclassified|risk> [options] (financial book, --currency, --price) | "
+      + "accounting export --format <hledger|beancount|csv> [--book operational|financial] [--currency <code>] "
+      + "[--since <time>] [--until <time>] [--output <file>] | accounting <reconcile|rebuild|verify>";
 
     /// <summary>The largest register page.</summary>
     internal const int MaxLimit = 1_000;
@@ -49,8 +52,22 @@ internal static class AccountingBooksCommands
             ["channels"] = AccountingReportKind.Channels,
             ["peers"] = AccountingReportKind.Peers,
             ["fees"] = AccountingReportKind.Fees,
-            ["register"] = AccountingReportKind.Register
+            ["register"] = AccountingReportKind.Register,
+            ["gains"] = AccountingReportKind.RealizedGains,
+            ["realized"] = AccountingReportKind.RealizedGains,
+            ["realized-gains"] = AccountingReportKind.RealizedGains,
+            ["unrealized"] = AccountingReportKind.UnrealizedGains,
+            ["unrealized-gains"] = AccountingReportKind.UnrealizedGains,
+            ["lots"] = AccountingReportKind.Lots,
+            ["unvalued"] = AccountingReportKind.Unvalued,
+            ["unclassified"] = AccountingReportKind.Unclassified,
+            ["risk"] = AccountingReportKind.RiskCapital,
+            ["risk-capital"] = AccountingReportKind.RiskCapital
         };
+
+    /// <summary>The report kinds as the usage names them.</summary>
+    private const string ReportKindNames =
+        "balance, income, channels, peers, fees, register, gains, unrealized, lots, unvalued, unclassified or risk";
 
     /// <summary>Whether <paramref name="cmd"/> is the <c>accounting</c> verb.</summary>
     internal static bool IsAccounting(string cmd) => cmd == Verb;
@@ -161,6 +178,7 @@ internal static class AccountingBooksCommands
         AccountingExportIpcRequest request, TextWriter output, CancellationToken cancellationToken)
     {
         var after = 0L;
+        int? afterAdjustment = null;
         var entries = 0;
         while (true)
         {
@@ -170,14 +188,22 @@ internal static class AccountingBooksCommands
                 SinceUnixSeconds = request.SinceUnixSeconds,
                 UntilUnixSeconds = request.UntilUnixSeconds,
                 AfterLedgerSeq = after,
-                Limit = request.Limit
+                Limit = request.Limit,
+                Book = request.Book,
+                Currency = request.Currency,
+                AfterAdjustment = afterAdjustment
             }, cancellationToken);
             await output.WriteAsync(page.Text.AsMemory(), cancellationToken);
             entries += page.EntryCount;
-            if (!page.HasMore || page.NextAfter <= after)
+
+            // The financial book pages by (sequence, adjustment): a page may end inside one sequence's adjustments
+            var advanced = page.NextAfter > after
+                        || (page.NextAfterAdjustment is { } next && page.NextAfter == after
+                                                                 && next > (afterAdjustment ?? -1));
+            if (!page.HasMore || !advanced)
                 break;
 
-            after = page.NextAfter;
+            (after, afterAdjustment) = (page.NextAfter, page.NextAfterAdjustment);
         }
 
         await output.FlushAsync(cancellationToken);
@@ -189,24 +215,31 @@ internal static class AccountingBooksCommands
         error = null;
         if (args.Length == 0 || args[0].StartsWith("--", StringComparison.Ordinal))
         {
-            error = "Missing report kind: balance, income, channels, peers, fees or register.";
+            error = $"Missing report kind: {ReportKindNames}.";
             return null;
         }
 
         if (!s_reportKinds.TryGetValue(args[0], out var kind))
         {
-            error = $"Unknown report '{args[0]}': expected balance, income, channels, peers, fees or register.";
+            error = $"Unknown report '{args[0]}': expected {ReportKindNames}.";
             return null;
         }
 
         string[] allowed = kind switch
         {
-            AccountingReportKind.BalanceSheet => ["--at", "--until"],
-            AccountingReportKind.IncomeStatement or AccountingReportKind.Fees => ["--since", "--until"],
+            AccountingReportKind.BalanceSheet => ["--at", "--until", "--book", "--currency", "--price"],
+            AccountingReportKind.IncomeStatement => ["--since", "--until", "--book", "--currency"],
+            AccountingReportKind.Fees => ["--since", "--until"],
             AccountingReportKind.Channels or AccountingReportKind.Peers => ["--since", "--until", "--channel"],
+            AccountingReportKind.RealizedGains => ["--since", "--until", "--by", "--currency"],
+            AccountingReportKind.UnrealizedGains or AccountingReportKind.Lots =>
+                ["--after", "--limit", "--currency", "--price"],
+            AccountingReportKind.Unvalued => ["--limit"],
+            AccountingReportKind.Unclassified => ["--since", "--until", "--channel", "--kind", "--after", "--limit"],
+            AccountingReportKind.RiskCapital => ["--currency", "--price"],
             _ =>
             [
-                "--since", "--until", "--channel", "--account", "--kind", "--after", "--limit"
+                "--since", "--until", "--channel", "--account", "--kind", "--after", "--limit", "--book"
             ]
         };
         var options = ParseOptions(args[1..], allowed, out error);
@@ -253,13 +286,68 @@ internal static class AccountingBooksCommands
 
                     break;
                 case "--after":
-                    if (!long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var after))
+                    // The financial book's cursor is <sequence>:<adjustment> (A3-T6); the lots' is a lot id
+                    var cursor = value.Split(':', 2);
+                    if (!long.TryParse(cursor[0], NumberStyles.None, CultureInfo.InvariantCulture, out var after))
                     {
                         error = $"Invalid after '{value}': expected a ledger sequence (0 or more).";
                         return null;
                     }
 
+                    if (cursor.Length == 2)
+                    {
+                        if (!int.TryParse(cursor[1], NumberStyles.None, CultureInfo.InvariantCulture,
+                                          out var adjustment))
+                        {
+                            error = $"Invalid after '{value}': expected <sequence> or <sequence>:<adjustment>.";
+                            return null;
+                        }
+
+                        request.AfterAdjustment = adjustment;
+                    }
+
                     request.AfterLedgerSeq = after;
+                    break;
+                case "--book":
+                    if (ParseBook(value) is not { } book)
+                    {
+                        error = $"Unknown book '{value}': expected operational or financial.";
+                        return null;
+                    }
+
+                    request.Book = (int)book;
+                    break;
+                case "--currency":
+                    if (!TryParseCurrency(value, out var currency, out error))
+                        return null;
+                    request.Currency = currency;
+                    break;
+                case "--price":
+                    if (!decimal.TryParse(value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture,
+                                          out var price) || price <= 0m)
+                    {
+                        error = $"Invalid price '{value}': expected the price of one BTC, such as 86048.5.";
+                        return null;
+                    }
+
+                    request.Price = price.ToString(CultureInfo.InvariantCulture);
+                    break;
+                case "--by":
+                    AccountingGainsGrouping? grouping = value.ToLowerInvariant() switch
+                    {
+                        "month" or "monthly" => AccountingGainsGrouping.Month,
+                        "quarter" or "quarterly" => AccountingGainsGrouping.Quarter,
+                        "year" or "yearly" => AccountingGainsGrouping.Year,
+                        "total" or "none" => AccountingGainsGrouping.Total,
+                        _ => null
+                    };
+                    if (grouping is null)
+                    {
+                        error = $"Unknown period '{value}': expected month, quarter, year or total.";
+                        return null;
+                    }
+
+                    request.Grouping = (int)grouping;
                     break;
                 case "--limit":
                     if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var limit)
@@ -280,13 +368,24 @@ internal static class AccountingBooksCommands
             return null;
         }
 
+        if (kind is AccountingReportKind.BalanceSheet or AccountingReportKind.IncomeStatement
+         && (request.Currency is not null || request.Price is not null)
+         && request.Book != (int)AccountingBook.Financial)
+        {
+            error = "--currency and --price need --book financial.";
+            return null;
+        }
+
         request.EventKinds = kinds;
+        if (kind == AccountingReportKind.Unclassified)
+            request.Book = (int)AccountingBook.Financial;
         return new AccountingArguments("report", Report: request);
     }
 
     private static AccountingArguments? ParseExport(string[] args, out string? error)
     {
-        var options = ParseOptions(args, ["--format", "--since", "--until", "--output"], out error);
+        var options = ParseOptions(args, ["--format", "--since", "--until", "--output", "--book", "--currency"],
+                                   out error);
         if (options is null)
             return null;
 
@@ -325,7 +424,27 @@ internal static class AccountingBooksCommands
                 case "--output":
                     outputPath = value;
                     break;
+                case "--book":
+                    if (ParseBook(value) is not { } book)
+                    {
+                        error = $"Unknown book '{value}': expected operational or financial.";
+                        return null;
+                    }
+
+                    request.Book = (int)book;
+                    break;
+                case "--currency":
+                    if (!TryParseCurrency(value, out var currency, out error))
+                        return null;
+                    request.Currency = currency;
+                    break;
             }
+        }
+
+        if (request.Currency is not null && request.Book != (int)AccountingBook.Financial)
+        {
+            error = "--currency needs --book financial.";
+            return null;
         }
 
         if (format is not { } chosen)
@@ -394,6 +513,25 @@ internal static class AccountingBooksCommands
         }
 
         return options;
+    }
+
+    private static AccountingBook? ParseBook(string value) => value.ToLowerInvariant() switch
+    {
+        "operational" or "ops" => AccountingBook.Operational,
+        "financial" or "fin" => AccountingBook.Financial,
+        _ => null
+    };
+
+    private static bool TryParseCurrency(string value, out string? currency, out string? error)
+    {
+        error = null;
+        currency = value.Trim().ToUpperInvariant();
+        if (currency.Length == 3 && currency.All(char.IsAsciiLetterUpper))
+            return true;
+
+        error = $"Invalid currency '{value}': expected a three-letter code such as USD.";
+        currency = null;
+        return false;
     }
 
     private static bool TryParseTime(string name, string value, out long seconds, out string? error)

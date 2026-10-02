@@ -6,6 +6,8 @@ using Application.Accounting;
 using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
+using Domain.Accounting.Financial.Export;
+using Domain.Accounting.Financial.Reports;
 using Domain.Accounting.Services;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
@@ -29,6 +31,7 @@ public sealed class AccountingReportClientHandler
     : IClientCommandHandler<AccountingReportClientRequest, AccountingReportClientResponse>
 {
     private readonly IChannelMemoryRepository? _channelMemoryRepository;
+    private readonly IAccountingFinancialReports? _financialReports;
     private readonly AccountNames _names;
     private readonly IAccountingReports? _reports;
 
@@ -36,11 +39,13 @@ public sealed class AccountingReportClientHandler
     public ClientCommand Command => ClientCommand.AccountingReport;
 
     public AccountingReportClientHandler(IAccountingReports? reports, IOptions<AccountingOptions>? options = null,
-                                         IChannelMemoryRepository? channelMemoryRepository = null)
+                                         IChannelMemoryRepository? channelMemoryRepository = null,
+                                         IAccountingFinancialReports? financialReports = null)
     {
         _reports = reports;
         _names = (options?.Value ?? new AccountingOptions()).GetAccountNames();
         _channelMemoryRepository = channelMemoryRepository;
+        _financialReports = financialReports;
     }
 
     /// <inheritdoc/>
@@ -54,6 +59,14 @@ public sealed class AccountingReportClientHandler
 
         var channelId = request.ChannelId
                      ?? AccountingChannelFilter.ResolveScid(_channelMemoryRepository, request.ChannelScid);
+
+        // The financial book and the snapshot views (NL-602 A3-T6)
+        if (AccountingFinancialReportDispatcher.IsFinancial(request))
+            return await AccountingFinancialReportDispatcher.HandleAsync(_financialReports, request, _names, channelId,
+                                                                         request.Account is { } name
+                                                                             ? ParseAccount(name)
+                                                                             : null, ct);
+
         try
         {
             var response = new AccountingReportClientResponse(request.Kind, _names);
@@ -135,13 +148,16 @@ public sealed class AccountingExportClientHandler
     : IClientCommandHandler<AccountingExportClientRequest, AccountingExportClientResponse>
 {
     private readonly IAccountingExports? _exports;
+    private readonly IAccountingFinancialExports? _financialExports;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.AccountingExport;
 
-    public AccountingExportClientHandler(IAccountingExports? exports)
+    public AccountingExportClientHandler(IAccountingExports? exports,
+                                         IAccountingFinancialExports? financialExports = null)
     {
         _exports = exports;
+        _financialExports = financialExports;
     }
 
     /// <inheritdoc/>
@@ -149,6 +165,9 @@ public sealed class AccountingExportClientHandler
                                                                   CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (request.Book == AccountingBook.Financial)
+            return await AccountingFinancialReportDispatcher.ExportAsync(_financialExports, request, ct);
+
         var exports = _exports ?? throw AccountingReportClientHandler.BooksDisabled();
         if (request.AfterLedgerSeq < 0)
             throw new ClientException(ErrorCodes.InvalidOperation,

@@ -1,7 +1,9 @@
 namespace NLightning.Domain.Client.Requests;
 
+using Accounting.Books;
 using Accounting.Books.Reports;
 using Accounting.Enums;
+using Accounting.Financial.Reports;
 using Channels.ValueObjects;
 
 /// <summary>
@@ -36,4 +38,21 @@ public sealed class AccountingReportClientRequest
 
     /// <summary>The register's page size.</summary>
     public int Take { get; init; } = 100;
+
+    /// <summary>The book (NL-602 A3-T6): the financial one for <c>--book financial</c>; the kinds from
+    /// <see cref="AccountingReportKind.RealizedGains"/> on are the financial book's whatever this says.</summary>
+    public AccountingBook Book { get; init; } = AccountingBook.Operational;
+
+    /// <summary>The fiat currency of a financial report (null = the default, USD).</summary>
+    public string? Currency { get; init; }
+
+    /// <summary>The BTC price of the market values (balance sheet, lots, unrealized gains, risk capital).</summary>
+    public decimal? Price { get; init; }
+
+    /// <summary>The periods of the realized gains.</summary>
+    public AccountingGainsGrouping Grouping { get; init; } = AccountingGainsGrouping.Month;
+
+    /// <summary>The financial register's cursor adjustment (with <see cref="AfterLedgerSeq"/>), or null for none of
+    /// that sequence's entries.</summary>
+    public int? AfterAdjustment { get; init; }
 }
