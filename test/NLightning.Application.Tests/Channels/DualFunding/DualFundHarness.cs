@@ -157,6 +157,8 @@ internal sealed class DualFundHarness : IAsyncDisposable
     {
         for (var steps = 0; steps < 10_000; steps++)
         {
+            // The nodes' clock is stepped: fire whatever debounced commits became due, deterministically
+            Clock.Advance(TimeSpan.FromMilliseconds(10));
             await WhenIdleAsync();
             var delivered = false;
             foreach (var key in _links.Keys.OrderBy(k => k.From).ToList())
@@ -184,6 +186,10 @@ internal sealed class DualFundHarness : IAsyncDisposable
     {
         for (var rounds = 0; rounds < 1_000 && !operation.IsCompleted; rounds++)
         {
+            System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"ROUND {rounds}\n");
+            // The nodes' clock is stepped: fire whatever debounced commits became due, and let opens whose deadline
+            // the test relies on (BOLT 2 gives the initiator up) reach it deterministically
+            Clock.Advance(TimeSpan.FromMilliseconds(10));
             await PumpAsync();
             if (!operation.IsCompleted)
                 await Task.WhenAny(operation, Task.Delay(10));
@@ -391,11 +397,15 @@ internal sealed class DualFundNode
                      })
                     .ReturnsAsync(true);
 
+        System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"BeforeBuildProvider {DateTime.UtcNow:HH:mm:ss.fff}\n");
         _provider = BuildProvider();
+        System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"AfterBuildProvider\n");
         if (migrate)
         {
             using var scope = _provider.CreateScope();
+            System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"BeforeMigrate\n");
             await scope.ServiceProvider.GetRequiredService<NLightningDbContext>().Database.MigrateAsync();
+            System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"AfterMigrate\n");
         }
 
         ChannelManager = _provider.GetRequiredService<ChannelManager>();
