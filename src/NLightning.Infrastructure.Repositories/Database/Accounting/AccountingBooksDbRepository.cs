@@ -541,7 +541,8 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
         // Lots: the reliefs of the open entries (and of the lots they opened) go, their amounts back to the lots that
         // stay (a closed period's lots, imported lots, the lots of a kept adjustment)
         var importOrigin = (byte)AccountingLotOrigin.Import;
-        var lotsToDelete = _context.AccountingLots.Where(l => l.ClosedPeriodId == null && l.Origin != importOrigin
+        var lotsToDelete = _context.AccountingLots.Where(l => l.ClosedPeriodId == null
+                                                           && (l.Origin != importOrigin || l.ParentLotId != null)
                                                            && (l.SourceAdjustment == 0
                                                             || (l.SourceAdjustment > 0
                                                              && lateSeqs.Contains(l.SourceLedgerSeq ?? 0))));
@@ -685,7 +686,7 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
         // that stay
         var importOrigin = (byte)AccountingLotOrigin.Import;
         var lotsToDelete = _context.AccountingLots.Where(l => l.ClosedPeriodId == null && l.SourceLedgerSeq >= from
-                                                           && l.Origin != importOrigin
+                                                           && (l.Origin != importOrigin || l.ParentLotId != null)
                                                            && (l.SourceAdjustment == 0
                                                             || (l.SourceAdjustment > 0
                                                              && lateSeqs.Contains(l.SourceLedgerSeq ?? 0))));

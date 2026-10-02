@@ -147,6 +147,10 @@ public sealed class AccountingFinancialReportService : IAccountingFinancialRepor
             var page = await lotsRepository.ListReliefsAsync(since, until, after, PageSize, cancellationToken);
             foreach (var relief in page)
             {
+                // A move between our buckets or a debt's settlement realizes nothing (NL-657)
+                if (!relief.IsDisposal)
+                    continue;
+
                 if (!lots.TryGetValue(relief.LotId, out var lot))
                     lots[relief.LotId] = lot = await lotsRepository.GetLotAsync(relief.LotId, cancellationToken);
 
@@ -191,6 +195,7 @@ public sealed class AccountingFinancialReportService : IAccountingFinancialRepor
                                   : null;
 
         var open = (await unitOfWork.AccountingLotDbRepository.ListOpenLotsAsync(null, cancellationToken))
+                  .Where(l => !l.IsDebt)
                   .OrderBy(l => l.Id)
                   .Select(l => Line(l, code, reportPrice))
                   .ToList();
@@ -423,7 +428,7 @@ public sealed class AccountingFinancialReportService : IAccountingFinancialRepor
             _cost += cost;
             _proceeds += proceeds;
             var gain = proceeds - cost;
-            if (lot is not null && relief.RelievedAt - lot.AcquiredAt > s_longTerm)
+            if (lot is not null && relief.RelievedAt - lot.HeldSinceOrAcquired > s_longTerm)
                 _longTerm += gain;
             else
                 _shortTerm += gain;

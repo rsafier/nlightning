@@ -59,8 +59,10 @@ public class AccountingLotDbRepository : IAccountingLotDbRepository
             Origin = (byte)lot.Origin,
             SourceLedgerSeq = lot.SourceLedgerSeq,
             SourceAdjustment = lot.SourceAdjustment,
-            Account = lot.Account is { } account ? (int)account : null,
+            Account = lot.Bucket is { } bucket ? (int)bucket : null,
             ParentLotId = lot.ParentLotId,
+            HeldSince = lot.HeldSince,
+            Lender = lot.Lender is { } lender ? (int)lender : null,
             OriginalMsat = lot.OriginalMsat,
             RemainingMsat = lot.RemainingMsat,
             FiatCost = lot.FiatCost,
@@ -85,7 +87,7 @@ public class AccountingLotDbRepository : IAccountingLotDbRepository
         entity.FiatCost = lot.FiatCost;
         entity.FiatCurrency = lot.FiatCurrency;
         entity.PriceId = lot.PriceId;
-        entity.Account = lot.Account is { } account ? (int)account : null;
+        entity.Account = lot.Bucket is { } bucket ? (int)bucket : null;
         entity.ClosedPeriodId = lot.ClosedPeriodId;
     }
 
@@ -102,10 +104,10 @@ public class AccountingLotDbRepository : IAccountingLotDbRepository
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<AccountingLot>> ListOpenLotsAsync(AccountRole? account = null,
+    public async Task<IReadOnlyList<AccountingLot>> ListOpenLotsAsync(AccountingLotBucket? bucket = null,
                                                                       CancellationToken cancellationToken = default)
     {
-        int? accountValue = account is { } role ? (int)role : null;
+        int? accountValue = bucket is { } value ? (int)value : null;
 
         var query = _context.AccountingLots.AsNoTracking().Where(l => l.RemainingMsat > 0);
         if (accountValue is not null)
@@ -148,7 +150,8 @@ public class AccountingLotDbRepository : IAccountingLotDbRepository
             Msat = relief.Msat,
             FiatCostRelieved = relief.FiatCostRelieved,
             Proceeds = relief.Proceeds,
-            ClosedPeriodId = relief.ClosedPeriodId
+            ClosedPeriodId = relief.ClosedPeriodId,
+            Kind = (byte)relief.Kind
         });
     }
 
@@ -260,7 +263,7 @@ public class AccountingLotDbRepository : IAccountingLotDbRepository
     {
         var value = (byte)origin;
         var entities = await _context.AccountingLots.AsNoTracking()
-                                     .Where(l => l.Origin == value)
+                                     .Where(l => l.Origin == value && l.ParentLotId == null)
                                      .OrderBy(l => l.Id)
                                      .ToListAsync(cancellationToken);
         return entities.Select(MapEntityToDomain).ToList();
@@ -318,11 +321,18 @@ public class AccountingLotDbRepository : IAccountingLotDbRepository
 
     private static AccountingLot MapEntityToDomain(AccountingLotEntity entity) =>
         new(entity.Id, entity.AcquiredAt, (AccountingLotOrigin)entity.Origin, entity.SourceLedgerSeq,
-            entity.SourceAdjustment, entity.Account is { } account ? (AccountRole)account : null, entity.ParentLotId,
-            entity.OriginalMsat, entity.RemainingMsat, entity.FiatCost, entity.FiatCurrency, entity.PriceId,
-            entity.BasisEstimated, entity.ClosedPeriodId);
+            entity.SourceAdjustment, entity.Account is { } account ? (AccountingLotBucket)account : null,
+            entity.ParentLotId, entity.OriginalMsat, entity.RemainingMsat, entity.FiatCost, entity.FiatCurrency,
+            entity.PriceId, entity.BasisEstimated, entity.ClosedPeriodId)
+        {
+            HeldSince = entity.HeldSince,
+            Lender = entity.Lender is { } lender ? (AccountingLotBucket)lender : null
+        };
 
     private static AccountingLotRelief MapEntityToDomain(AccountingLotReliefEntity entity) =>
         new(entity.Id, entity.LotId, entity.LedgerSeq, entity.Adjustment, entity.RelievedAt, entity.Msat,
-            entity.FiatCostRelieved, entity.Proceeds, entity.ClosedPeriodId);
+            entity.FiatCostRelieved, entity.Proceeds, entity.ClosedPeriodId)
+        {
+            Kind = (AccountingLotReliefKind)entity.Kind
+        };
 }

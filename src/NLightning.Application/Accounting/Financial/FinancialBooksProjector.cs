@@ -466,6 +466,7 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
         var cancelled = false;
         IReadOnlyList<AccountingPosting>? fixedPostings = null;
         var fixedFlags = AccountingEntryFlags.None;
+        long? correctionOf = null;
 
         var reversedKey = operational.Kind == AccountingEventKind.Reversal
                        && accountingEvent.Details.TryGetValue(AccountingConfirmations.ReversesDetail, out var key)
@@ -482,10 +483,12 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             lines = [];
         }
         else if (reversedKey is not null
-              && await ClosedFactLinesAsync(books, reversedKey, cancellationToken) is { } closedLines)
+              && await ClosedFactLinesAsync(books, reversedKey, cancellationToken) is { } closed)
         {
-            // The reversal of a closed period's fact: its lines negated at their values, in the open period
-            lines = closedLines;
+            // The reversal of a closed period's fact: its lines negated at their values, in the open period; what it
+            // takes back of the fact's acquisition is a correction at cost (NL-675)
+            lines = closed.Lines;
+            correctionOf = closed.LedgerSeq;
             extraFlags |= AccountingEntryFlags.Adjustment;
             notes.Add($"reverses {reversedKey} of a closed period");
         }
@@ -506,19 +509,11 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             }
         }
 
-        if (operational.EventKey == AccountingEventKeys.Cutover() && round.HasImportedLots)
-        {
-            var (importLines, pending) = await ImportedBasisLinesAsync(page, cancellationToken);
-            fixedPostings = importLines;
-            fixedFlags = pending ? AccountingEntryFlags.GainPending : AccountingEntryFlags.None;
-            notes.Add("the imported lots' basis (D-A9)");
-        }
-
         // Plan the entry (or take the fixed lines)
         FinancialEntryPlan plan;
         if (fixedPostings is not null)
         {
-            plan = new FinancialEntryPlan(fixedPostings, fixedFlags, [], null);
+            plan = new FinancialEntryPlan(fixedPostings, fixedFlags, [], []);
         }
         else
         {
@@ -530,7 +525,8 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             {
                 IsOpeningBalance = operational.Kind == AccountingEventKind.OpeningBalance,
                 OpeningLotsImported = round.HasImportedLots,
-                Cancelled = cancelled
+                Cancelled = cancelled,
+                CorrectionOf = correctionOf
             }, round.Pool, _chart);
         }
 
@@ -584,12 +580,11 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             RuleId = ruleId
         };
         await books.AddEntryAsync(financial, cancellationToken);
-        if (operational.Kind == AccountingEventKind.OpeningBalance)
-            page.StagedOpenings.Add(financial);
         await ApplyLotsAsync(page, plan, operational.LedgerSeq, 0, operational.OccurredAt, cancellationToken);
     }
 
-    /// <summary>Stages the plan's reliefs and lot and keeps the pool in step.</summary>
+    /// <summary>Stages the plan's reliefs (disposals, moves, settlements) and new lots (acquisitions, moved parts,
+    /// debts) and keeps the pool in step.</summary>
     private static async Task ApplyLotsAsync(PageState page, FinancialEntryPlan plan, long ledgerSeq, int adjustment,
                                              DateTimeOffset at, CancellationToken cancellationToken)
     {
@@ -602,16 +597,24 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
             var relieved = page.Round.Pool.Relieve(take.LotId, take.Msat);
             await lots.UpdateLotAsync(relieved, cancellationToken);
             lots.AddRelief(new AccountingLotRelief(0, take.LotId, ledgerSeq, adjustment, at, take.Msat, take.Cost,
-                                                   take.Proceeds, null));
+                                                   take.Proceeds, null)
+            {
+                Kind = take.Kind
+            });
         }
 
-        if (plan.NewLot is not { } spec)
-            return;
-
-        var lot = new AccountingLot(0, at, spec.Origin, ledgerSeq, adjustment, null, null, spec.Msat, spec.Msat,
-                                    spec.Cost, spec.Currency, spec.PriceId, spec.BasisEstimated, null);
-        var id = await lots.AddLotAsync(lot, cancellationToken);
-        page.Round.Pool.Add(lot with { Id = id });
+        foreach (var spec in plan.NewLots)
+        {
+            var lot = new AccountingLot(0, at, spec.Origin, ledgerSeq, adjustment, spec.Bucket, spec.ParentLotId,
+                                        spec.Msat, spec.Msat, spec.Cost, spec.Currency, spec.PriceId,
+                                        spec.BasisEstimated, null)
+            {
+                HeldSince = spec.HeldSince,
+                Lender = spec.Lender
+            };
+            var id = await lots.AddLotAsync(lot, cancellationToken);
+            page.Round.Pool.Add(lot with { Id = id });
+        }
     }
 
     /// <summary>
@@ -663,9 +666,9 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
         throw new RestartException(projected.LedgerSeq);
     }
 
-    /// <summary>The negated lines (at their values) of a closed period's fact, or null when the fact is not in a
-    /// closed period of the book.</summary>
-    private static async Task<IReadOnlyList<AccountingPosting>?> ClosedFactLinesAsync(
+    /// <summary>The negated lines (at their values) of a closed period's fact and its ledger sequence, or null when the
+    /// fact is not in a closed period of the book.</summary>
+    private static async Task<(IReadOnlyList<AccountingPosting> Lines, long LedgerSeq)?> ClosedFactLinesAsync(
         IAccountingBooksDbRepository books, string reversedKey, CancellationToken cancellationToken)
     {
         var entries = await books.GetEntriesByKeyAsync(AccountingBook.Financial, reversedKey, cancellationToken);
@@ -682,60 +685,12 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
                           .Where(s => s.Msat != 0)
                           .ToList();
         var valued = sums.All(s => s.Valued && s.Currency is not null);
-        return sums.Select(s => new AccountingPosting(s.Account, -s.Msat)
+        return (sums.Select(s => new AccountingPosting(s.Account, -s.Msat)
         {
             AccountName = s.AccountName,
             FiatAmount = valued ? -s.Fiat : null,
             FiatCurrency = valued ? s.Currency : null
-        }).ToList();
-    }
-
-    /// <summary>
-    /// The cutover marker's lines after a lot import: <c>assets:cost-basis</c> against the opening balances by the
-    /// imported cost less the opening balances' market value; pending when an opening balance or a lot is unvalued.
-    /// </summary>
-    private async Task<(IReadOnlyList<AccountingPosting> Lines, bool Pending)> ImportedBasisLinesAsync(
-        PageState page, CancellationToken cancellationToken)
-    {
-        var books = page.UnitOfWork.AccountingBooksDbRepository;
-        var openings = new List<AccountingEntry>(page.StagedOpenings);
-        var after = 0L;
-        while (true)
-        {
-            var saved = await books.ListEntriesAsync(new AccountingEntryQuery(after, 500,
-                                                                              Kinds: [AccountingEventKind.OpeningBalance])
-            {
-                Book = AccountingBook.Financial
-            }, cancellationToken);
-            openings.AddRange(saved.Where(e => e.Adjustment == 0));
-            if (saved.Count < 500)
-                break;
-
-            after = saved[^1].LedgerSeq;
-        }
-
-        var assetLines = openings.SelectMany(e => e.Postings).Where(p => FinancialLotRules.IsAsset(p.Account)
-                                                                      && p.AmountMsat != 0).ToList();
-        var lots = page.Round.ImportedLots;
-        if (assetLines.Any(p => p.FiatAmount is null || p.FiatCurrency != Currency)
-         || lots.Any(l => l.FiatCost is null || l.FiatCurrency != Currency))
-            return ([], true);
-
-        var difference = lots.Sum(l => l.FiatCost!.Value) - assetLines.Sum(p => p.FiatAmount!.Value);
-        if (difference == 0m)
-            return ([], false);
-
-        return (
-        [
-            new AccountingPosting(AccountRole.Opening, 0)
-            {
-                AccountName = _chart[FinancialAccount.CostBasis], FiatAmount = difference, FiatCurrency = Currency
-            },
-            new AccountingPosting(AccountRole.Opening, 0)
-            {
-                AccountName = _chart[FinancialAccount.Opening], FiatAmount = -difference, FiatCurrency = Currency
-            }
-        ], false);
+        }).ToList(), entries[0].LedgerSeq);
     }
 
     private static AccountingPosting Negate(AccountingPosting posting) =>
@@ -906,7 +861,6 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
         public ClassificationEngine Engine { get; } = engine;
         public IReadOnlyDictionary<string, AccountingOverride> Overrides { get; } = overrides;
         public FinancialPriceWindow Prices { get; } = prices;
-        public List<AccountingEntry> StagedOpenings { get; } = [];
     }
 
     /// <summary>A page found a fact projected before its reversal: roll back to it and start again.</summary>
