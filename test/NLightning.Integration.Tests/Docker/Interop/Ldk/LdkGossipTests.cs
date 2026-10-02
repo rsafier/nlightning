@@ -5,7 +5,9 @@ namespace NLightning.Integration.Tests.Docker.Interop.Ldk;
 
 using Abcd;
 using Application.Payments.Invoices;
+using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Node.ValueObjects;
 using Domain.Payments.Enums;
 using Fixtures;
 using Gossip;
@@ -21,6 +23,8 @@ using Utils;
 /// <c>max_htlc_value_in_flight_msat</c> of 25 % of the channel on announced channels (rust-lightning 0.3's
 /// <c>announced_channel_max_inbound_htlc_value_in_flight_percentage</c>; 100 % on unannounced ones), which our v1 accepter refused
 /// below 64 % before NL-552 and accepts now; the channel is announced on both ends and carries payments both ways.
+/// (a) also proves NL-722: a new node whose only peer is LDK syncs LDK's graph although LDK ignores
+/// <c>query_short_channel_ids</c>.
 /// </summary>
 /// <remarks>
 /// Each test builds its own node (gossip on, public channels accepted, its own alias, color and routing policy) and
@@ -94,6 +98,7 @@ public sealed class LdkGossipTests : IAsyncLifetime
         var scid = await WaitAnnouncedAsync(session, alias, ct);
         await AssertLdkPaysOurHintFreeInvoiceAsync(session, scid, LightningMoney.Satoshis(21_000), ct);
         await session.AssertWePayLdkAsync(LightningMoney.Satoshis(13_000), ct);
+        await AssertANewNodeSyncsLdksGraphAsync(scid, alias, ct);
     }
 
     /// <summary>
@@ -123,6 +128,38 @@ public sealed class LdkGossipTests : IAsyncLifetime
         var scid = await WaitAnnouncedAsync(session, alias, ct);
         await AssertLdkPaysOurHintFreeInvoiceAsync(session, scid, LightningMoney.Satoshis(30_000), ct);
         await session.AssertWePayLdkAsync(LightningMoney.Satoshis(10_000), ct);
+    }
+
+    /// <summary>
+    /// NL-722: a new node whose only peer is LDK syncs LDK's graph. LDK answers our <c>query_channel_range</c> but never
+    /// our <c>query_short_channel_ids</c>; after the reply timeout (10 s here) our sync sends the backlog
+    /// <c>gossip_timestamp_filter</c>, to which LDK streams its whole graph: the new node then has the announced
+    /// channel <paramref name="scid"/> with both policies and the <c>node_announcement</c> of our node
+    /// <paramref name="alias"/>.
+    /// </summary>
+    private async Task AssertANewNodeSyncsLdksGraphAsync(ulong scid, string alias, CancellationToken ct)
+    {
+        await using var node = await NLightningTestNode.CreateAsync(_fixture.Bitcoin, "nltg-ldk-sync");
+        node.ExtraConfiguration["Gossip:Enabled"] = "true";
+        node.ExtraConfiguration["Gossip:SyncReplyTimeout"] = "00:00:10";
+        await node.StartAsync(ct);
+        await _fixture.WaitAllAtTipAsync([node], ct);
+        await node.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(_fixture.LdkAddress)).WaitAsync(ct);
+
+        var channel = await Poll.ForAsync(async () => await GossipGraphProbe.TryGetOurGraphChannelAsync(node, scid) is
+        { Policy1: not null, Policy2: not null } c
+                                                          ? c
+                                                          : null,
+                                          s_timeout, $"the new node has {scid} from LDK", ct, TimeSpan.FromSeconds(1));
+        var ourNodeIds = new[] { channel.NodeId1, channel.NodeId2 }.Where(n => n != new CompactPubKey(
+                                                                                   Convert.FromHexString(
+                                                                                       _fixture.LdkNodeId)));
+        var announced = await Poll.ForAsync(() => GossipGraphProbe.TryGetOurGraphNodeAsync(node, ourNodeIds.Single()),
+                                            s_timeout, "the new node has our node's node_announcement", ct);
+        Assert.Equal(alias, announced.AliasText);
+        Console.WriteLine($"[ldk] the new node synced {scid} and {alias} from LDK; fallback filter lines "
+                        + $"{node.CountLogLines("(NL-722)")}");
+        Assert.True(node.CountLogLines("(NL-722)") > 0, "the new node did not fall back to the backlog filter");
     }
 
     private static void ConfigureGossipNode(NLightningTestNode node, string alias)

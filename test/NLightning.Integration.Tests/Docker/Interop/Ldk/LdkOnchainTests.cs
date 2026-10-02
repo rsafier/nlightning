@@ -227,7 +227,8 @@ public sealed class LdkOnchainTests : IAsyncLifetime
         var claim = await session.Ldk.Bolt11ClaimForIdAsync(ldkPaymentId, Convert.ToHexString(preimage), ct);
         Console.WriteLine($"[ldk] bolt11-claim-for-id after the close: {claim.ToJsonString()}");
 
-        // Assert: LDK's preimage spend of our HTLC output confirms and our payment succeeds with that preimage
+        // Assert: our payment succeeds with the preimage of LDK's spend of our HTLC output (read from the mempool by
+        // our O8 reaction or from the block), and that spend confirms
         var paymentHash = new Hash(SHA256.HashData(preimage));
         var payment = await MineUntilAsync(session, async () =>
                                                await session.Node.GetPaymentAsync(paymentHash, ct) is
@@ -241,8 +242,9 @@ public sealed class LdkOnchainTests : IAsyncLifetime
                                 r => r.Descriptor == OutputDescriptorKind.LocalOfferedHtlc);
         Console.WriteLine($"[ldk] our HTLC output {Describe(row)}");
         Assert.Equal(htlc.Id, row.HtlcId);
-        var spender = await FindChainSpenderAsync(new OutPoint(commitmentTxId, row.OutputIndex), ct);
-        Assert.NotNull(spender);
+        var spender = await MineUntilAsync(session, () => FindChainSpenderAsync(
+                                                         new OutPoint(commitmentTxId, row.OutputIndex), ct),
+                                           "LDK's preimage spend of our HTLC output confirmed", ct);
         Assert.Contains(spender.Inputs, i => i.WitScript.Pushes.Any(p => p.SequenceEqual(preimage)));
         await Poll.UntilAsync(async () => string.Equals(LdkClient.StatusOf(await session.Ldk.FindPaymentByHashAsync(
                                                             hashHex, ct)), "SUCCEEDED",
