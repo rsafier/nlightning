@@ -695,6 +695,30 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
             ClientCommand.AccountingSnapshot, new AccountingSnapshotIpcRequest(), ct);
 
     /// <summary>
+    /// A report of the operational books (ClientCommand 43, NL-602 A2).
+    /// </summary>
+    public Task<AccountingReportIpcResponse> AccountingReportAsync(AccountingReportIpcRequest request,
+                                                                   CancellationToken ct = default) =>
+        SendRequestAsync<AccountingReportIpcRequest, AccountingReportIpcResponse>(ClientCommand.AccountingReport,
+                                                                                  request, ct);
+
+    /// <summary>
+    /// One page of an export of the books (ClientCommand 44, NL-602 A2).
+    /// </summary>
+    public Task<AccountingExportIpcResponse> AccountingExportAsync(AccountingExportIpcRequest request,
+                                                                   CancellationToken ct = default) =>
+        SendRequestAsync<AccountingExportIpcRequest, AccountingExportIpcResponse>(ClientCommand.AccountingExport,
+                                                                                  request, ct);
+
+    /// <summary>
+    /// Reconcile, rebuild or verify the books (ClientCommand 45, NL-602 A2).
+    /// </summary>
+    public Task<AccountingAdminIpcResponse> AccountingAdminAsync(AccountingAdminIpcRequest request,
+                                                                 CancellationToken ct = default) =>
+        SendRequestAsync<AccountingAdminIpcRequest, AccountingAdminIpcResponse>(ClientCommand.AccountingAdmin,
+                                                                                request, ct);
+
+    /// <summary>
     /// Parses the `getaddress` argument. With no argument, the <see cref="GetAddressIpcRequest"/> default is used.
     /// </summary>
     internal static AddressType ParseAddressType(string? addressTypeString)

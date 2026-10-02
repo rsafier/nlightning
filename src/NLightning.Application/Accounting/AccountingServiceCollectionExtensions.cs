@@ -9,6 +9,7 @@ using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Reports;
 
 /// <summary>
 /// The accounting feed's services (NL-602, plan <c>docs/agents/ACCOUNTING_PLAN.md</c> §7).
@@ -35,6 +36,7 @@ public static class AccountingServiceCollectionExtensions
                                                           sp.GetRequiredService<IServiceScopeFactory>(),
                                                           sp.GetService<IBlockchainMonitor>(),
                                                           sp.GetService<TimeProvider>()));
+        services.AddAccountingReportServices();
 
         return services;
     }

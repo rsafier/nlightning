@@ -4,7 +4,7 @@ namespace NLightning.Domain.Client.Enums;
 /// Commands sent by a client.
 /// </summary>
 /// <remarks>
-/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 37.
+/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 46.
 /// </remarks>
 public enum ClientCommand
 {
@@ -91,5 +91,22 @@ public enum ClientCommand
     /// The node's live balances by bucket (<c>accountingsnapshot</c>, NL-602): each channel, pending on-chain funds and
     /// the wallet.
     /// </summary>
-    AccountingSnapshot = 42
+    AccountingSnapshot = 42,
+
+    /// <summary>
+    /// A report of the operational books (<c>accounting report</c>, NL-602 A2): balance sheet, income statement,
+    /// channels, peers, fees or the register.
+    /// </summary>
+    AccountingReport = 43,
+
+    /// <summary>
+    /// One page of an export of the books (<c>accounting export</c>, NL-602 A2): hledger, beancount or CSV text streamed
+    /// to the client, which writes it; the daemon never writes a file.
+    /// </summary>
+    AccountingExport = 44,
+
+    /// <summary>
+    /// The books' administration (<c>accounting reconcile|rebuild|verify</c>, NL-602 A2).
+    /// </summary>
+    AccountingAdmin = 45
 }
