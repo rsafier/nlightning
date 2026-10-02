@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Accounting.Interfaces;
 
+using Enums;
 using Models;
 
 /// <summary>
@@ -40,5 +41,13 @@ public sealed class NullAccountingEventDbRepository : IAccountingEventDbReposito
 
     public Task<IReadOnlyList<AccountingEventModel>> GetSealedRangeAsync(
         long fromLedgerSeq, int take, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<AccountingEventModel>>([]);
+
+    public Task<IReadOnlyList<AccountingEventModel>> GetAtOrAboveHeightAsync(
+        uint height, IReadOnlyCollection<AccountingEventKind> kinds, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<AccountingEventModel>>([]);
+
+    public Task<IReadOnlyList<AccountingEventModel>> GetByKeyPrefixAsync(
+        string keyPrefix, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<AccountingEventModel>>([]);
 }

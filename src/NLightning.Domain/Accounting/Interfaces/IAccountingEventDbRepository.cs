@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Accounting.Interfaces;
 
+using Enums;
 using Models;
 
 /// <summary>
@@ -42,4 +43,21 @@ public interface IAccountingEventDbRepository
     /// <summary>Sealed events from <paramref name="fromLedgerSeq"/> on, in ledger order, for a chain check.</summary>
     Task<IReadOnlyList<AccountingEventModel>> GetSealedRangeAsync(long fromLedgerSeq, int take,
                                                                   CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The events of <paramref name="kinds"/> whose block height is at or above <paramref name="height"/>, saved (sealed
+    /// or not) or staged in this unit of work, duplicates excluded: what a reorg's rewind reverses
+    /// (<see cref="Services.AccountingConfirmations"/>). Not indexed by height: for the rare rewind only.
+    /// </summary>
+    Task<IReadOnlyList<AccountingEventModel>> GetAtOrAboveHeightAsync(
+        uint height, IReadOnlyCollection<AccountingEventKind> kinds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The events whose key starts with <paramref name="keyPrefix"/> (ordinal), saved (sealed or not) or staged in this
+    /// unit of work, duplicates excluded: a fact's confirmations and their reversals
+    /// (<see cref="Services.AccountingConfirmations.NextConfirmationKey"/>).
+    /// </summary>
+    Task<IReadOnlyList<AccountingEventModel>> GetByKeyPrefixAsync(string keyPrefix,
+                                                                   CancellationToken cancellationToken = default);
 }
