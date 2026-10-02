@@ -229,6 +229,10 @@ public sealed class InvoiceRequestHandler : IOnionMessageHandler
                                          nodeOptions.Routing.InvoiceMinFinalCltvExpiry,
                                          new Bolt12InvoiceDetails(offer.OfferId, invoiceBytes, request.PayerId,
                                                                   request.Quantity, request.PayerNote));
+
+        // NL-602 A3-T1: the invoice carries its offer's label and tags, so its InvoiceSettled event does
+        invoice.Label = offer.Label;
+        invoice.Tags = offer.Tags;
         await unitOfWork.InvoiceDbRepository.AddAsync(invoice);
         await unitOfWork.SaveChangesAsync();
 

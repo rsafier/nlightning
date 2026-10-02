@@ -52,6 +52,7 @@ public sealed class PayOfferClientHandler : IClientCommandHandler<PayOfferClient
         if (request.MaxParts is 0 or > PaymentSendOptions.MaxPartsLimit)
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       $"The part limit must be between 1 and {PaymentSendOptions.MaxPartsLimit}.");
+        var labels = SourceLabelsGuard.Check(request.Label, request.Tags);
         if (_blockchainMonitor is { IsChainProcessingHalted: true })
             throw new ClientException(ErrorCodes.InvalidOperation, ChainProcessingHalt.Refusal("payoffer"));
 
@@ -61,7 +62,8 @@ public sealed class PayOfferClientHandler : IClientCommandHandler<PayOfferClient
             {
                 Timeout = TimeSpan.FromSeconds(timeoutSeconds),
                 MaxFee = request.MaxFee,
-                MaxParts = request.MaxParts is { } maxParts ? (int)maxParts : null
+                MaxParts = request.MaxParts is { } maxParts ? (int)maxParts : null,
+                Labels = labels
             }
         };
 

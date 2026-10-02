@@ -37,13 +37,25 @@ public sealed class KeysendIpcRequest
     /// </summary>
     [Key(4)] public LightningMoney? MaxFee { get; init; }
 
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, <c>--label</c>), or null; an older client sends none.
+    /// </summary>
+    [Key(5)] public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c> (NL-602 A3-T1, <c>--tag</c>), or null for none.
+    /// </summary>
+    [Key(6)] public List<string>? Tags { get; init; }
+
     public KeysendClientRequest ToClientRequest()
     {
         return new KeysendClientRequest(Destination, Amount)
         {
             CustomRecords = CustomRecordsIpc.ToRecords(CustomRecords),
             TimeoutSeconds = TimeoutSeconds,
-            MaxFee = MaxFee
+            MaxFee = MaxFee,
+            Label = Label,
+            Tags = Tags ?? []
         };
     }
 }

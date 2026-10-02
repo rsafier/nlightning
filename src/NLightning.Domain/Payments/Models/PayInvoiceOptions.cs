@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Payments.Models;
 
+using Accounting.Labels;
 using Channels.ValueObjects;
 using Money;
 
@@ -41,4 +42,11 @@ public sealed record PayInvoiceOptions
     /// (<c>payinvoice --in</c>).
     /// </summary>
     public ChannelId? IncomingChannelId { get; init; }
+
+    /// <summary>
+    /// The operator's label and tags (NL-602 A3-T1) the payment row (and its
+    /// <c>PaymentSucceeded</c>/<c>PaymentFailed</c> events) carries; also for keysend and BOLT 12 payments;
+    /// <see cref="SourceLabels.None"/> for none.
+    /// </summary>
+    public SourceLabels Labels { get; init; } = SourceLabels.None;
 }

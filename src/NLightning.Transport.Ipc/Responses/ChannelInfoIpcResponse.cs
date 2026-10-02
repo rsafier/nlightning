@@ -85,6 +85,16 @@ public sealed class ChannelInfoIpcResponse
     /// </summary>
     [Key(24)] public List<RetiredScidInfoIpcResponse>? RetiredShortChannelIds { get; init; }
 
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1), or null; an older daemon sends none.
+    /// </summary>
+    [Key(25)] public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c>, sorted by key (NL-602 A3-T1), or null for none.
+    /// </summary>
+    [Key(26)] public List<string>? Tags { get; init; }
+
     public static ChannelInfoIpcResponse FromClientResponse(ChannelInfoClientResponse channel)
     {
         return new ChannelInfoIpcResponse
@@ -117,7 +127,9 @@ public sealed class ChannelInfoIpcResponse
             HasPolicyOverride = channel.HasPolicyOverride,
             Fundings = channel.Fundings.Select(ChannelFundingInfoIpcResponse.FromClientResponse).ToList(),
             RetiredShortChannelIds = channel.RetiredShortChannelIds
-                                            .Select(RetiredScidInfoIpcResponse.FromClientResponse).ToList()
+                                            .Select(RetiredScidInfoIpcResponse.FromClientResponse).ToList(),
+            Label = channel.Label,
+            Tags = channel.Tags.Count == 0 ? null : [.. channel.Tags]
         };
     }
 }

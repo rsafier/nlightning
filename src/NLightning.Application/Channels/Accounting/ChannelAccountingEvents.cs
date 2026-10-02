@@ -6,6 +6,7 @@ namespace NLightning.Application.Channels.Accounting;
 
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Labels;
 using Domain.Accounting.Models;
 using Domain.Accounting.Services;
 using Domain.Bitcoin.ValueObjects;
@@ -170,6 +171,7 @@ internal static class ChannelAccountingEvents
             FeeMsat = feeMsat ?? 0,
             Finality = AccountingFinality.Confirmed,
             Details = AccountingDetailsCodec.Create(
+            [
                 (AccountingDetailKeys.BucketFrom, WalletBucket),
                 (AccountingDetailKeys.BucketTo, ChannelBucket),
                 ("capacitySat", Format(funding.Amount.Satoshi)),
@@ -181,7 +183,10 @@ internal static class ChannelAccountingEvents
                 ("fundingFeeSat", totalFeeSat is { } total ? Format(total) : null),
                 ("feeUnknown", feeMsat is null ? "true" : null),
                 ("pushMsat", push is null ? null : Format(push.MilliSatoshi)),
-                ("pushUnknown", push is null && !isDualFunded ? "true" : null))
+                ("pushUnknown", push is null && !isDualFunded ? "true" : null),
+                // NL-602 A3-T1: the operator's label and tags of the open (openchannel --label/--tag)
+                .. SourceLabels.FromStored(channel.Label, channel.Tags).ToDetailPairs()
+            ])
         };
         List<AccountingEventModel> built = [funded];
 

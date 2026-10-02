@@ -8,6 +8,7 @@ namespace NLightning.Integration.Tests.Persistence;
 using Domain.Accounting.Books;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Labels;
 using Domain.Accounting.Models;
 using Domain.Accounting.Services;
 using Domain.Bitcoin.Enums;
@@ -196,6 +197,38 @@ public class ChainMonitorAccountingTests
         var change = Assert.Single(inBlock, e => e.Kind == AccountingEventKind.WalletReceived);
         Assert.Equal(nameof(BroadcastPurpose.Splice), change.Details["purpose"]);
         Assert.DoesNotContain(inBlock, e => e.Kind == AccountingEventKind.WalletSent);
+    }
+
+    [Fact]
+    public async Task Given_ALabelledWithdrawal_When_ItConfirms_Then_WalletSentCarriesTheLabelAndTags()
+    {
+        // Arrange (NL-602 A3-T1): withdraw --label/--tag stores them on the WalletSend row
+        await using var harness = new ChainMonitorHarness();
+        var wallet = await SeedWalletAsync(harness, 2);
+        await harness.StartAsync(95);
+        var deposit = CreateDeposit(0x03, wallet[0], DepositSat);
+        await harness.MineAndDeliverAsync(deposit);
+        var external = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var withdrawal = CreateWithdrawal(deposit, 1, wallet[0], external, wallet[1]);
+        var labels = SourceLabels.Create("cold storage", ["category=savings", "vault=b"]);
+        var row = WalletSendRow(withdrawal);
+        row.Label = labels.Label;
+        row.Tags = labels.CanonicalTags;
+        await harness.Monitor.SaveAndPublishAsync(row);
+
+        // Act
+        await harness.MineAndDeliverAsync();
+
+        // Assert: the send carries them; the wallet movements of the same transaction do not (they are transfers)
+        var events = await LoadEventsAsync(harness);
+        var sent = Assert.Single(events, e => e.Kind == AccountingEventKind.WalletSent);
+        Assert.Equal("cold storage", sent.Details[AccountingDetailKeys.Label]);
+        Assert.Equal("savings", sent.Details[AccountingDetailKeys.TagPrefix + "category"]);
+        Assert.Equal("b", sent.Details["tag.vault"]);
+        Assert.Equal("cold storage", SourceLabels.FromDetails(sent.Details).Label);
+        Assert.Equal(labels.CanonicalTags, SourceLabels.FromDetails(sent.Details).CanonicalTags);
+        Assert.All(events.Where(e => e.Kind != AccountingEventKind.WalletSent),
+                   e => Assert.False(e.Details.ContainsKey(AccountingDetailKeys.Label)));
     }
 
     [Fact]

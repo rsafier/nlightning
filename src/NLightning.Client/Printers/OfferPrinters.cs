@@ -34,6 +34,7 @@ internal static class OfferPrintFormat
         if (offer.PaidInvoices is { } paid)
             output.WriteLine("  Invoices:           {0} paid, {1} unpaid", Invariant((ulong)paid),
                              Invariant((ulong)(offer.UnpaidInvoices ?? 0)));
+        PaymentsPrintFormat.WriteLabels(output, offer.Label, offer.Tags);
     }
 
     private static string Invariant(ulong value) => value.ToString(CultureInfo.InvariantCulture);

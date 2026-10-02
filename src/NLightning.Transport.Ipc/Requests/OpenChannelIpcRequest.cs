@@ -36,6 +36,16 @@ public sealed class OpenChannelIpcRequest
     /// </summary>
     [Key(6)] public bool ForceV1 { get; init; }
 
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, <c>--label</c>), or null; an older client sends none.
+    /// </summary>
+    [Key(7)] public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c> (NL-602 A3-T1, <c>--tag</c>), or null for none.
+    /// </summary>
+    [Key(8)] public List<string>? Tags { get; init; }
+
     public OpenChannelClientRequest ToClientRequest()
     {
         return new OpenChannelClientRequest(NodeInfo, Amount)
@@ -43,7 +53,9 @@ public sealed class OpenChannelIpcRequest
             PushAmount = PushAmount,
             IsPublic = IsPublic,
             IsDualFunded = IsDualFunded,
-            ForceV1 = ForceV1
+            ForceV1 = ForceV1,
+            Label = Label,
+            Tags = Tags ?? []
         };
     }
 }

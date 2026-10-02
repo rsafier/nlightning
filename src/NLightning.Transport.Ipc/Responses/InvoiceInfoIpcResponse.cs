@@ -57,6 +57,16 @@ public sealed class InvoiceInfoIpcResponse
     /// </summary>
     [Key(12)] public Dictionary<ulong, byte[]>? CustomRecords { get; init; }
 
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1), or null; an older daemon sends none.
+    /// </summary>
+    [Key(13)] public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c>, sorted by key (NL-602 A3-T1), or null for none.
+    /// </summary>
+    [Key(14)] public List<string>? Tags { get; init; }
+
     public static InvoiceInfoIpcResponse FromClientResponse(InvoiceInfoClientResponse invoice)
     {
         ArgumentNullException.ThrowIfNull(invoice);
@@ -74,7 +84,9 @@ public sealed class InvoiceInfoIpcResponse
             SettledAt = invoice.SettledAt,
             Kind = invoice.Kind,
             OfferId = invoice.OfferId,
-            CustomRecords = CustomRecordsIpc.FromRecords(invoice.CustomRecords)
+            CustomRecords = CustomRecordsIpc.FromRecords(invoice.CustomRecords),
+            Label = invoice.Label,
+            Tags = invoice.Tags.Count == 0 ? null : [.. invoice.Tags]
         };
     }
 }

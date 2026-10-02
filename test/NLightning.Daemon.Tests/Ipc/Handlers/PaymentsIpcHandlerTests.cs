@@ -9,6 +9,7 @@ using Daemon.Handlers;
 using Daemon.Interfaces;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
+using Domain.Accounting.Labels;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
 using Domain.Client.Requests;
@@ -48,6 +49,7 @@ public class PaymentsIpcHandlerTests
     {
         // Arrange
         _invoiceServiceMock.Setup(x => x.CreateInvoiceAsync(It.IsAny<LightningMoney?>(), "tea", 900U,
+                                                            It.Is<SourceLabels>(l => l.IsEmpty),
                                                             It.IsAny<CancellationToken>()))
                            .ReturnsAsync(CreateInvoice());
         var handler = new CreateInvoiceIpcHandler(NullLogger<CreateInvoiceIpcHandler>.Instance, BuildProvider());
@@ -70,7 +72,8 @@ public class PaymentsIpcHandlerTests
         Assert.Equal(InvoiceStatus.Open, payload.Invoice.Status);
         _invoiceServiceMock.Verify(x => x.CreateInvoiceAsync(
                                        It.Is<LightningMoney?>(a => a!.MilliSatoshi == 21_000), "tea", 900U,
-                                       It.IsAny<CancellationToken>()), Times.Once);
+                                       It.Is<SourceLabels>(l => l.IsEmpty), It.IsAny<CancellationToken>()),
+                                   Times.Once);
     }
 
     [Fact]

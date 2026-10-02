@@ -60,6 +60,7 @@ public sealed class KeysendClientHandler : IClientCommandHandler<KeysendClientRe
             throw new ClientException(ErrorCodes.InvalidOperation, $"Invalid custom record: {e.Message}", e);
         }
 
+        var labels = SourceLabelsGuard.Check(request.Label, request.Tags);
         if (_blockchainMonitor is { IsChainProcessingHalted: true })
             throw new ClientException(ErrorCodes.InvalidOperation, ChainProcessingHalt.Refusal("keysend"));
 
@@ -67,7 +68,8 @@ public sealed class KeysendClientHandler : IClientCommandHandler<KeysendClientRe
         {
             Timeout = TimeSpan.FromSeconds(timeoutSeconds),
             MaxFee = request.MaxFee,
-            MaxParts = 1
+            MaxParts = 1,
+            Labels = labels
         };
 
         try

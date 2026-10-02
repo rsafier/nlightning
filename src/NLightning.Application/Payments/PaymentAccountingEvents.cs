@@ -5,6 +5,7 @@ namespace NLightning.Application.Payments;
 
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Labels;
 using Domain.Accounting.Models;
 using Domain.Accounting.Services;
 using Domain.Channels.Models;
@@ -60,6 +61,7 @@ internal static class PaymentAccountingEvents
         var requested = invoice.Amount is { } amount && amount != received ? Msat(amount) : null;
         var customRecords = invoice.Keysend?.CustomRecords;
         var details = AccountingDetailsCodec.Create(
+        [
             (AccountingDetailKeys.Kind, KindName(invoice.Kind)),
             (AccountingDetailKeys.Description,
              string.IsNullOrEmpty(invoice.Description) ? null : invoice.Description),
@@ -72,7 +74,10 @@ internal static class PaymentAccountingEvents
             ("customRecords", customRecords is { Count: > 0 } records
                                   ? string.Join(',', records.Select(r => r.Type.ToString(CultureInfo.InvariantCulture)))
                                   : null),
-            (AccountingDetailKeys.SelfPayment, selfPayment ? AccountingDetailKeys.True : null));
+            (AccountingDetailKeys.SelfPayment, selfPayment ? AccountingDetailKeys.True : null),
+            // A3-T1: the operator's label and tags (a BOLT 12 invoice got its offer's when it was issued)
+            .. SourceLabels.FromStored(invoice.Label, invoice.Tags).ToDetailPairs()
+        ]);
 
         return new AccountingEventModel
         {
@@ -102,6 +107,7 @@ internal static class PaymentAccountingEvents
                                                         string? description)
     {
         var details = AccountingDetailsCodec.Create(
+        [
             (AccountingDetailKeys.Kind, PaymentKindName(payment)),
             (AccountingDetailKeys.Description, string.IsNullOrEmpty(description) ? null : description),
             ("parts", Math.Max(1, parts).ToString(CultureInfo.InvariantCulture)),
@@ -110,7 +116,9 @@ internal static class PaymentAccountingEvents
             ("payerNote", payment.Bolt12?.PayerNote),
             ("customRecords", payment.Keysend?.CustomRecords is { Count: > 0 } records
                                   ? string.Join(',', records.Select(r => r.Type.ToString(CultureInfo.InvariantCulture)))
-                                  : null));
+                                  : null),
+            .. SourceLabels.FromStored(payment.Label, payment.Tags).ToDetailPairs()
+        ]);
 
         return new AccountingEventModel
         {
@@ -134,12 +142,15 @@ internal static class PaymentAccountingEvents
     public static AccountingEventModel PaymentFailed(PaymentModel payment)
     {
         var details = AccountingDetailsCodec.Create(
+        [
             (AccountingDetailKeys.Kind, PaymentKindName(payment)),
             (AccountingDetailKeys.Reason, payment.FailureReason),
             ("failureCode", payment.FailureCode?.ToString()),
             ("failureSourceIndex", payment.FailureSourceIndex?.ToString(CultureInfo.InvariantCulture)),
             ("amountMsat", Msat(payment.Amount)),
-            ("offer", payment.Bolt12?.Offer));
+            ("offer", payment.Bolt12?.Offer),
+            .. SourceLabels.FromStored(payment.Label, payment.Tags).ToDetailPairs()
+        ]);
 
         return new AccountingEventModel
         {

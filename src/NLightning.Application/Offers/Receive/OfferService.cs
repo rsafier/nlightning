@@ -127,7 +127,12 @@ public sealed class OfferService : IOfferService
                                        ? DateTimeOffset.FromUnixTimeSeconds(expiry.ToUnixTimeSeconds())
                                        : null,
                                    metadata, OfferIssuerKind.NodeId, paths.Count > 0,
-                                   DateTimeOffset.FromUnixTimeSeconds(now.ToUnixTimeSeconds()));
+                                   DateTimeOffset.FromUnixTimeSeconds(now.ToUnixTimeSeconds()))
+        {
+            // NL-602 A3-T1: the operator's label and tags (never part of the offer's bytes)
+            Label = request.Labels.Label,
+            Tags = request.Labels.CanonicalTags
+        };
 
         cancellationToken.ThrowIfCancellationRequested();
         using (var scope = _serviceScopeFactory.CreateScope())

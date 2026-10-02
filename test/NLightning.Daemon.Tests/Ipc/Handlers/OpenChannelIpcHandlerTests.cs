@@ -125,11 +125,13 @@ public class OpenChannelIpcHandlerTests
                 Amount = LightningMoney.Satoshis(1_000),
                 PushAmount = LightningMoney.Satoshis(10)
             }, s_options, TestContext.Current.CancellationToken);
-        Assert.Equal(0x97, current[0]); // fixarray of 7 (keys 0-6)
-        Assert.Equal(0xC2, current[^3]); // key 4: false
-        Assert.Equal(0xC2, current[^2]); // key 5: false
-        Assert.Equal(0xC2, current[^1]); // key 6: false
-        byte[] older = [0x94, .. current[1..^3]];
+        Assert.Equal(0x99, current[0]); // fixarray of 9 (keys 0-8; 7 and 8 are the label and tags, NL-602 A3-T1)
+        Assert.Equal(0xC2, current[^5]); // key 4: false
+        Assert.Equal(0xC2, current[^4]); // key 5: false
+        Assert.Equal(0xC2, current[^3]); // key 6: false
+        Assert.Equal(0xC0, current[^2]); // key 7: nil
+        Assert.Equal(0xC0, current[^1]); // key 8: nil
+        byte[] older = [0x94, .. current[1..^5]];
 
         // Act
         var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(
@@ -154,9 +156,9 @@ public class OpenChannelIpcHandlerTests
                 IsPublic = true,
                 IsDualFunded = true
             }, s_options, TestContext.Current.CancellationToken);
-        Assert.Equal(0xC3, current[^2]); // key 5: true
-        Assert.Equal(0xC2, current[^1]); // key 6: false
-        byte[] older = [0x95, .. current[1..^2]];
+        Assert.Equal(0xC3, current[^4]); // key 5: true
+        Assert.Equal(0xC2, current[^3]); // key 6: false
+        byte[] older = [0x95, .. current[1..^4]];
 
         // Act
         var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(
@@ -178,8 +180,8 @@ public class OpenChannelIpcHandlerTests
                 Amount = LightningMoney.Satoshis(1_000),
                 ForceV1 = true
             }, s_options, TestContext.Current.CancellationToken);
-        Assert.Equal(0xC3, current[^1]); // key 6: true
-        byte[] older = [0x96, .. current[1..^1]];
+        Assert.Equal(0xC3, current[^3]); // key 6: true
+        byte[] older = [0x96, .. current[1..^3]];
 
         // Act
         var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(

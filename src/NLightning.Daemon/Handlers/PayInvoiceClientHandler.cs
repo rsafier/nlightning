@@ -90,6 +90,7 @@ public sealed class PayInvoiceClientHandler
         if (request.MaxParts is 0 or > PaymentSendOptions.MaxPartsLimit)
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       $"The part limit must be between 1 and {PaymentSendOptions.MaxPartsLimit}.");
+        var labels = SourceLabelsGuard.Check(request.Label, request.Tags);
         if (_blockchainMonitor is { IsChainProcessingHalted: true })
             throw new ClientException(ErrorCodes.InvalidOperation, ChainProcessingHalt.Refusal("payinvoice"));
 
@@ -99,7 +100,8 @@ public sealed class PayInvoiceClientHandler
             MaxFee = request.MaxFee,
             MaxParts = request.MaxParts is { } maxParts ? (int)maxParts : null,
             OutgoingChannelId = ResolveChannel(request.OutgoingChannel, "outgoing"),
-            IncomingChannelId = ResolveChannel(request.IncomingChannel, "incoming")
+            IncomingChannelId = ResolveChannel(request.IncomingChannel, "incoming"),
+            Labels = labels
         };
 
         try

@@ -10,6 +10,7 @@ using Domain.Client.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.ValueObjects;
+using Handlers;
 using Transport.Ipc;
 using Transport.Ipc.Requests;
 using Transport.Ipc.Responses;
@@ -174,7 +175,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
                                                                string? pushSats = null,
                                                                CancellationToken ct = default,
                                                                bool isPublic = false, bool isDualFunded = false,
-                                                               bool forceV1 = false)
+                                                               bool forceV1 = false, LabelArguments? labels = null)
     {
         var req = new OpenChannelIpcRequest
         {
@@ -183,7 +184,9 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
             PushAmount = pushSats is null ? null : LightningMoney.Satoshis(Convert.ToInt64(pushSats)),
             IsPublic = isPublic,
             IsDualFunded = isDualFunded,
-            ForceV1 = forceV1
+            ForceV1 = forceV1,
+            Label = labels?.Label,
+            Tags = labels?.TagsOrNull
         };
         var payload = MessagePackSerializer.Serialize(req, cancellationToken: ct);
         var env = new IpcEnvelope
@@ -244,14 +247,18 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="description">BOLT 11 <c>d</c>; may be empty.</param>
     /// <param name="expirySeconds">BOLT 11 <c>x</c>, or null for the node default.</param>
     /// <param name="ct">Cancels the call.</param>
+    /// <param name="labels">The operator's label and tags (NL-602 A3-T1), or null for none.</param>
     public Task<CreateInvoiceIpcResponse> CreateInvoiceAsync(LightningMoney? amount, string description,
-                                                             uint? expirySeconds, CancellationToken ct = default)
+                                                             uint? expirySeconds, CancellationToken ct = default,
+                                                             LabelArguments? labels = null)
     {
         var req = new CreateInvoiceIpcRequest
         {
             Amount = amount,
             Description = description,
-            ExpirySeconds = expirySeconds
+            ExpirySeconds = expirySeconds,
+            Label = labels?.Label,
+            Tags = labels?.TagsOrNull
         };
         return SendRequestAsync<CreateInvoiceIpcRequest, CreateInvoiceIpcResponse>(ClientCommand.CreateInvoice, req,
                                                                                     ct);
@@ -268,10 +275,15 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="maxParts">The most HTLCs in flight at once (1 never splits), or null for the daemon's default.
     /// </param>
     /// <param name="ct">Cancels the call (the payment itself keeps going in the daemon).</param>
+    /// <param name="outgoingChannel">The only channel the payment may leave through (NL-609, <c>--out</c>), or null.
+    /// </param>
+    /// <param name="incomingChannel">For our own invoice, the only channel the payment may come back in through
+    /// (NL-609, <c>--in</c>), or null.</param>
+    /// <param name="labels">The operator's label and tags (NL-602 A3-T1), or null for none.</param>
     public Task<PayInvoiceIpcResponse> PayInvoiceAsync(string bolt11, LightningMoney? amount, uint? timeoutSeconds,
                                                        ulong? maxFeeMsat = null, uint? maxParts = null,
                                                        CancellationToken ct = default, string? outgoingChannel = null,
-                                                       string? incomingChannel = null)
+                                                       string? incomingChannel = null, LabelArguments? labels = null)
     {
         var req = new PayInvoiceIpcRequest
         {
@@ -281,7 +293,9 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
             MaxFee = maxFeeMsat is { } fee ? LightningMoney.MilliSatoshis(fee) : null,
             MaxParts = maxParts,
             OutgoingChannel = outgoingChannel,
-            IncomingChannel = incomingChannel
+            IncomingChannel = incomingChannel,
+            Label = labels?.Label,
+            Tags = labels?.TagsOrNull
         };
         return SendRequestAsync<PayInvoiceIpcRequest, PayInvoiceIpcResponse>(ClientCommand.PayInvoice, req, ct);
     }
@@ -340,10 +354,18 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="amountSat">The amount in sats; null sends everything the wallet may spend ("all").</param>
     /// <param name="satPerVbyte">The fee rate in sat/vB; null for the node's estimate.</param>
     /// <param name="ct">Cancels the call.</param>
+    /// <param name="labels">The operator's label and tags (NL-602 A3-T1), or null for none.</param>
     public Task<WithdrawIpcResponse> WithdrawAsync(string address, ulong? amountSat, ulong? satPerVbyte,
-                                                   CancellationToken ct = default)
+                                                   CancellationToken ct = default, LabelArguments? labels = null)
     {
-        var req = new WithdrawIpcRequest { Address = address, AmountSat = amountSat, SatPerVbyte = satPerVbyte };
+        var req = new WithdrawIpcRequest
+        {
+            Address = address,
+            AmountSat = amountSat,
+            SatPerVbyte = satPerVbyte,
+            Label = labels?.Label,
+            Tags = labels?.TagsOrNull
+        };
         return SendRequestAsync<WithdrawIpcRequest, WithdrawIpcResponse>(ClientCommand.Withdraw, req, ct);
     }
 
@@ -495,7 +517,9 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// </summary>
     /// <param name="arguments">The parsed <c>keysend</c> arguments.</param>
     /// <param name="ct">Cancels the call (the payment itself keeps going in the daemon).</param>
-    public Task<PayInvoiceIpcResponse> KeysendAsync(KeysendArguments arguments, CancellationToken ct = default)
+    /// <param name="labels">The operator's label and tags (NL-602 A3-T1), or null for none.</param>
+    public Task<PayInvoiceIpcResponse> KeysendAsync(KeysendArguments arguments, CancellationToken ct = default,
+                                                    LabelArguments? labels = null)
     {
         ArgumentNullException.ThrowIfNull(arguments);
         var req = new KeysendIpcRequest
@@ -506,7 +530,9 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
                                 ? null
                                 : arguments.CustomRecords.ToDictionary(pair => pair.Key, pair => pair.Value),
             TimeoutSeconds = arguments.TimeoutSeconds,
-            MaxFee = arguments.MaxFeeMsat is { } fee ? LightningMoney.MilliSatoshis(fee) : null
+            MaxFee = arguments.MaxFeeMsat is { } fee ? LightningMoney.MilliSatoshis(fee) : null,
+            Label = labels?.Label,
+            Tags = labels?.TagsOrNull
         };
         return SendRequestAsync<KeysendIpcRequest, PayInvoiceIpcResponse>(ClientCommand.Keysend, req, ct);
     }
@@ -516,8 +542,11 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// </summary>
     /// <param name="arguments">The parsed <c>payoffer</c> arguments.</param>
     /// <param name="ct">Cancels the call (a payment already started keeps going in the daemon).</param>
-    public Task<PayOfferIpcResponse> PayOfferAsync(PayOfferArguments arguments, CancellationToken ct = default) =>
-        SendRequestAsync<PayOfferIpcRequest, PayOfferIpcResponse>(ClientCommand.PayOffer, ToRequest(arguments), ct);
+    /// <param name="labels">The operator's label and tags of the payment (NL-602 A3-T1), or null for none.</param>
+    public Task<PayOfferIpcResponse> PayOfferAsync(PayOfferArguments arguments, CancellationToken ct = default,
+                                                   LabelArguments? labels = null)
+        => SendRequestAsync<PayOfferIpcRequest, PayOfferIpcResponse>(ClientCommand.PayOffer,
+                                                                     ToRequest(arguments, labels), ct);
 
     /// <summary>
     /// Fetches and verifies an invoice for a BOLT 12 offer without paying it (ClientCommand 30).
@@ -529,7 +558,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
         SendRequestAsync<PayOfferIpcRequest, FetchInvoiceIpcResponse>(ClientCommand.FetchInvoice, ToRequest(arguments),
                                                                       ct);
 
-    private static PayOfferIpcRequest ToRequest(PayOfferArguments arguments) => new()
+    private static PayOfferIpcRequest ToRequest(PayOfferArguments arguments, LabelArguments? labels = null) => new()
     {
         Offer = arguments.Offer,
         Amount = arguments.AmountMsat is { } amount ? LightningMoney.MilliSatoshis(amount) : null,
@@ -537,7 +566,9 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
         PayerNote = arguments.PayerNote,
         TimeoutSeconds = arguments.TimeoutSeconds,
         MaxFee = arguments.MaxFeeMsat is { } fee ? LightningMoney.MilliSatoshis(fee) : null,
-        MaxParts = arguments.MaxParts
+        MaxParts = arguments.MaxParts,
+        Label = labels?.Label,
+        Tags = labels?.TagsOrNull
     };
 
     /// <summary>

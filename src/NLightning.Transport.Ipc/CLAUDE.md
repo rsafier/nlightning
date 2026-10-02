@@ -57,3 +57,7 @@ There is no onion code here. `PayInvoice` waits for the outcome (bounded by `Tim
 
 ## PayInvoice channel pins (NL-609)
 - `Requests/PayInvoiceIpcRequest` keys 7 `OutgoingChannel` and 8 `IncomingChannel` (`string?`: a channel id or a short channel id; the daemon resolves them). Keys 5 and 6 are left to the label and tags of accounting A3-T1 (NL-602).
+
+## Labels and tags at the source (NL-602 A3-T1)
+- Requests (appended keys; an older client omits them = no label): `CreateInvoiceIpcRequest` 3 `Label`, 4 `Tags`; `PayInvoiceIpcRequest` 5/6; `KeysendIpcRequest` 5/6; `PayOfferIpcRequest` 7/8 (`FetchInvoice` ignores them); `WithdrawIpcRequest` 3/4; `OpenChannelIpcRequest` 7/8; `CreateOfferIpcRequest` 6/7. `Label` is `string?`, `Tags` `List<string>?` of `key=value` (checked by the daemon; `ToClientRequest` maps null to an empty list). A lane that appends another key to one of these requests (NL-609 may add one to `PayInvoiceIpcRequest`) takes the next free key after these.
+- Responses (appended keys, null for none): `InvoiceInfoIpcResponse` 13/14, `PaymentInfoIpcResponse` 16/17, `OfferInfoIpcResponse` 14/15, `ChannelInfoIpcResponse` 25/26 (`Label`, `Tags` sorted `key=value`). The array-layout tests (`OpenChannelIpcHandlerTests` key 4-6, `KeysendIpcHandlerTests` key 11/12) count them.

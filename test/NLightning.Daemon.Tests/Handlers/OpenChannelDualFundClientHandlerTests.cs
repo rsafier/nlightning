@@ -22,6 +22,7 @@ using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
+using Domain.Node.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -260,6 +261,52 @@ public class OpenChannelDualFundClientHandlerTests
         Assert.Equal(ErrorCodes.InvalidOperation, exception.ErrorCode);
         _dualFund.VerifyNoOtherCalls();
         _channelFactory.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_ALabelAndTags_When_ADualFundRequestIsHandled_Then_TheOpenRequestCarriesThem()
+    {
+        // Arrange (NL-602 A3-T1): the channel built at accept_channel2 takes them from the open request
+        DualFundedOpenRequest? open = null;
+        _dualFund.Setup(s => s.OpenAsync(It.IsAny<DualFundedOpenRequest>(), It.IsAny<CancellationToken>()))
+                 .Callback<DualFundedOpenRequest, CancellationToken>((r, _) => open = r)
+                 .ReturnsAsync(new DualFundedOpenResult(new ChannelId(new byte[32]), new TxId(new byte[32])));
+        var request = new OpenChannelClientRequest(s_peer.ToString(), LightningMoney.Satoshis(400_000))
+        {
+            IsDualFunded = true,
+            Label = "liquidity",
+            Tags = ["peer=acme", "purpose=routing"]
+        };
+
+        // Act
+        await CreateHandler().HandleAsync(request, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotNull(open);
+        Assert.Equal("liquidity", open.Labels.Label);
+        Assert.Equal("peer=acme\npurpose=routing", open.Labels.CanonicalTags);
+    }
+
+    [Fact]
+    public async Task Given_ABrokenLabel_When_AnOpenIsHandled_Then_RefusedBeforeAnything()
+    {
+        // Arrange (NL-602 A3-T1): a control character in the label
+        var request = new OpenChannelClientRequest(s_peer.ToString(), LightningMoney.Satoshis(400_000))
+        {
+            IsDualFunded = true,
+            Label = "line\nbreak"
+        };
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ClientException>(
+                            () => CreateHandler().HandleAsync(request, TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal(ErrorCodes.InvalidOperation, exception.ErrorCode);
+        Assert.Contains("control characters", exception.Message);
+        _dualFund.VerifyNoOtherCalls();
+        _channelFactory.VerifyNoOtherCalls();
+        _peerManager.Verify(m => m.ConnectToPeerAsync(It.IsAny<PeerAddressInfo>()), Times.Never);
     }
 
     private void SetPeerFeatures(FeatureOptions features)

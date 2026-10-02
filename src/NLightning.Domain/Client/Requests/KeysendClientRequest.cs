@@ -36,4 +36,16 @@ public sealed class KeysendClientRequest
     /// The most the payment may pay in routing fees, or null for the node's default (max(0.5 %, 5000 msat)).
     /// </summary>
     public LightningMoney? MaxFee { get; init; }
+
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, <c>--label</c>): stored on the row and copied into the accounting event's
+    /// details; null for none. Checked by the daemon (<c>SourceLabelRules</c>).
+    /// </summary>
+    public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c> (NL-602 A3-T1, <c>--tag</c>, repeatable); empty for none. Checked by the
+    /// daemon (<c>SourceLabelRules</c>).
+    /// </summary>
+    public IReadOnlyList<string> Tags { get; init; } = [];
 }

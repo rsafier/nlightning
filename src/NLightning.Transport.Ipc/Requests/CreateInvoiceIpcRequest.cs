@@ -26,13 +26,25 @@ public sealed class CreateInvoiceIpcRequest
     /// </summary>
     [Key(2)] public uint? ExpirySeconds { get; init; }
 
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, <c>--label</c>), or null; an older client sends none.
+    /// </summary>
+    [Key(3)] public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c> (NL-602 A3-T1, <c>--tag</c>), or null for none.
+    /// </summary>
+    [Key(4)] public List<string>? Tags { get; init; }
+
     public CreateInvoiceClientRequest ToClientRequest()
     {
         return new CreateInvoiceClientRequest
         {
             Amount = Amount,
             Description = Description ?? string.Empty,
-            ExpirySeconds = ExpirySeconds
+            ExpirySeconds = ExpirySeconds,
+            Label = Label,
+            Tags = Tags ?? []
         };
     }
 }

@@ -92,6 +92,11 @@ internal static class ClientApp
 
             await using var client = new NamedPipeIpcClient(namedPipeFilePath, cookieFilePath);
 
+            // NL-602 A3-T1: --label/--tag are taken out before the command's own parser runs (checked above)
+            var labels = LabelArguments.None;
+            if (LabelOptions.IsLabelledCommand(cmd))
+                commandArgs = LabelOptions.Extract(commandArgs, out labels, out _)!;
+
             switch (cmd)
             {
                 case "info":
@@ -139,12 +144,12 @@ internal static class ClientApp
                 case "sendcoins":
                     var withdrawArgs = ParseWithdrawOptions(commandArgs, out _)!;
                     var withdrawal = await client.WithdrawAsync(withdrawArgs.Address, withdrawArgs.AmountSat,
-                                                                withdrawArgs.SatPerVbyte, cancellationToken);
+                                                                withdrawArgs.SatPerVbyte, cancellationToken, labels);
                     new WithdrawPrinter().Print(withdrawal);
                     break;
                 case "openchannel":
                 case "open-channel":
-                    await OpenChannelMessageHandler.HandleAsync(commandArgs, client, cancellationToken);
+                    await OpenChannelMessageHandler.HandleAsync(commandArgs, client, cancellationToken, labels);
                     break;
                 case "createinvoice":
                 case "create-invoice":
@@ -154,7 +159,7 @@ internal static class ClientApp
                                                                   commandArgs.Length > 2
                                                                       ? ParseUInt(commandArgs[2])
                                                                       : null,
-                                                                  cancellationToken);
+                                                                  cancellationToken, labels);
                     new CreateInvoicePrinter().Print(invoice);
                     break;
                 case "payinvoice":
@@ -164,7 +169,8 @@ internal static class ClientApp
                     var payment = await client.PayInvoiceAsync(payOptions.Bolt11, payOptions.Amount,
                                                                payOptions.TimeoutSeconds, payOptions.MaxFeeMsat,
                                                                payOptions.MaxParts, cancellationToken,
-                                                               payOptions.OutgoingChannel, payOptions.IncomingChannel);
+                                                               payOptions.OutgoingChannel, payOptions.IncomingChannel,
+                                                               labels);
                     new PayInvoicePrinter().Print(payment);
                     if (payment.Payment.Status == PaymentStatus.Failed)
                         return Failure;
@@ -172,14 +178,14 @@ internal static class ClientApp
                 case "payoffer":
                 case "pay-offer":
                     var offerPayment = await client.PayOfferAsync(ParsePayOfferOptions(commandArgs, true, out _)!,
-                                                                  cancellationToken);
+                                                                  cancellationToken, labels);
                     new PayOfferPrinter().Print(offerPayment);
                     if (offerPayment.Payment is not { Status: not PaymentStatus.Failed })
                         return Failure;
                     break;
                 case "keysend":
                     var keysendPayment = await client.KeysendAsync(ParseKeysendOptions(commandArgs, out _)!,
-                                                                   cancellationToken);
+                                                                   cancellationToken, labels);
                     new PayInvoicePrinter().Print(keysendPayment);
                     if (keysendPayment.Payment.Status == PaymentStatus.Failed)
                         return Failure;
@@ -285,7 +291,7 @@ internal static class ClientApp
                 case "list-offers":
                 case "disableoffer":
                 case "disable-offer":
-                    await OfferCommands.RunAsync(cmd, commandArgs, MaxListCount, client, cancellationToken);
+                    await OfferCommands.RunAsync(cmd, commandArgs, MaxListCount, client, cancellationToken, labels);
                     break;
                 case "listpeerstorage":
                 case "list-peer-storage":
@@ -370,6 +376,16 @@ internal static class ClientApp
     /// <returns>An error message, or null when the arguments are valid.</returns>
     internal static string? ValidateArguments(string cmd, string[] commandArgs)
     {
+        // NL-602 A3-T1: --label/--tag first, with the daemon's rules; the command's parser checks the rest
+        if (LabelOptions.IsLabelledCommand(cmd))
+        {
+            var rest = LabelOptions.Extract(commandArgs, out _, out var labelError);
+            if (rest is null)
+                return $"{labelError} Usage: {cmd} <arguments> {LabelOptions.Usage}";
+
+            commandArgs = rest;
+        }
+
         switch (cmd)
         {
             case "info":

@@ -36,7 +36,7 @@ internal class OpenChannelMessageHandler
     internal const string Usage = "<node> <amount_sats> [push_sats] [--public] [--dual-fund|--v1] [--no-wait]";
 
     internal static async Task HandleAsync(string[] commandArgs, NamedPipeIpcClient client,
-                                           CancellationToken cancellationToken)
+                                           CancellationToken cancellationToken, LabelArguments? labels = null)
     {
         var positional = ParseArguments(commandArgs, out var isPublic, out var isDualFunded, out var forceV1,
                                         out var noWait, out var error);
@@ -48,7 +48,7 @@ internal class OpenChannelMessageHandler
 
         await RunAsync(ct => client.OpenChannelAsync(positional[0], positional[1],
                                                      positional.Length > 2 ? positional[2] : null, ct, isPublic,
-                                                     isDualFunded, forceV1),
+                                                     isDualFunded, forceV1, labels),
                        client.OpenChannelSubscriptionAsync, noWait, Console.Out, cancellationToken);
     }
 

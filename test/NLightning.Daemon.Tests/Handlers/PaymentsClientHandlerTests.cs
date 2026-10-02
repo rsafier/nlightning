@@ -1,6 +1,7 @@
 namespace NLightning.Daemon.Tests.Handlers;
 
 using Daemon.Handlers;
+using Domain.Accounting.Labels;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -37,7 +38,7 @@ public class PaymentsClientHandlerTests
         var invoice = CreateInvoiceModel(LightningMoney.MilliSatoshis(50_000_123), s_now.AddSeconds(-10), 600);
         _invoiceServiceMock
            .Setup(x => x.CreateInvoiceAsync(LightningMoney.MilliSatoshis(50_000_123), "coffee", 600U,
-                                            It.IsAny<CancellationToken>()))
+                                            It.Is<SourceLabels>(l => l.IsEmpty), It.IsAny<CancellationToken>()))
            .ReturnsAsync(invoice);
         var handler = new CreateInvoiceClientHandler(_invoiceServiceMock.Object, _timeProvider);
 
@@ -63,7 +64,9 @@ public class PaymentsClientHandlerTests
     public async Task Given_AnyAmountAndDefaultExpiry_When_CreateInvoice_Then_NullsArePassedThrough()
     {
         // Arrange
-        _invoiceServiceMock.Setup(x => x.CreateInvoiceAsync(null, string.Empty, null, It.IsAny<CancellationToken>()))
+        _invoiceServiceMock.Setup(x => x.CreateInvoiceAsync(null, string.Empty, null,
+                                                            It.Is<SourceLabels>(l => l.IsEmpty),
+                                                            It.IsAny<CancellationToken>()))
                            .ReturnsAsync(CreateInvoiceModel(null, s_now, 3_600));
         var handler = new CreateInvoiceClientHandler(_invoiceServiceMock.Object, _timeProvider);
 
@@ -73,8 +76,9 @@ public class PaymentsClientHandlerTests
 
         // Assert
         Assert.Null(response.Invoice.Amount);
-        _invoiceServiceMock.Verify(x => x.CreateInvoiceAsync(null, string.Empty, null, It.IsAny<CancellationToken>()),
-                                   Times.Once);
+        _invoiceServiceMock.Verify(x => x.CreateInvoiceAsync(null, string.Empty, null,
+                                                             It.Is<SourceLabels>(l => l.IsEmpty),
+                                                             It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -117,7 +121,8 @@ public class PaymentsClientHandlerTests
     {
         // Arrange
         _invoiceServiceMock.Setup(x => x.CreateInvoiceAsync(It.IsAny<LightningMoney?>(), It.IsAny<string>(),
-                                                            It.IsAny<uint?>(), It.IsAny<CancellationToken>()))
+                                                            It.IsAny<uint?>(), It.Is<SourceLabels>(l => l.IsEmpty),
+                                                            It.IsAny<CancellationToken>()))
                            .ThrowsAsync(new ArgumentException("description too long"));
         var handler = new CreateInvoiceClientHandler(_invoiceServiceMock.Object, _timeProvider);
 

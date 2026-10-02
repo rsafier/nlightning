@@ -30,6 +30,16 @@ public sealed class CreateOfferIpcRequest
     /// <summary>Add <c>offer_paths</c> even with a public channel.</summary>
     [Key(5)] public bool ForcePaths { get; init; }
 
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, <c>--label</c>), or null; an older client sends none.
+    /// </summary>
+    [Key(6)] public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c> (NL-602 A3-T1, <c>--tag</c>), or null for none.
+    /// </summary>
+    [Key(7)] public List<string>? Tags { get; init; }
+
     public CreateOfferClientRequest ToClientRequest() => new()
     {
         Amount = Amount,
@@ -37,7 +47,9 @@ public sealed class CreateOfferIpcRequest
         Issuer = Issuer,
         QuantityMax = QuantityMax,
         AbsoluteExpiry = AbsoluteExpiry,
-        ForcePaths = ForcePaths
+        ForcePaths = ForcePaths,
+        Label = Label,
+        Tags = Tags ?? []
     };
 }
 

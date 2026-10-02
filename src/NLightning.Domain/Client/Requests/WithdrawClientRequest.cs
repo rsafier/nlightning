@@ -21,4 +21,16 @@ public sealed class WithdrawClientRequest
 
     /// <summary>The fee rate in sat/vB; null for the node's fee estimate.</summary>
     public ulong? SatPerVbyte { get; }
+
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, <c>--label</c>): stored on the row and copied into the accounting event's
+    /// details; null for none. Checked by the daemon (<c>SourceLabelRules</c>).
+    /// </summary>
+    public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c> (NL-602 A3-T1, <c>--tag</c>, repeatable); empty for none. Checked by the
+    /// daemon (<c>SourceLabelRules</c>).
+    /// </summary>
+    public IReadOnlyList<string> Tags { get; init; } = [];
 }

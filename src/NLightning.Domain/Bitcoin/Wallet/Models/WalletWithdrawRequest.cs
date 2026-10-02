@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Bitcoin.Wallet.Models;
 
+using Accounting.Labels;
 using Money;
 
 /// <summary>
@@ -13,4 +14,10 @@ public sealed record WalletWithdrawRequest(string Address, LightningMoney? Amoun
 {
     /// <summary>True when the request sends everything the wallet may spend.</summary>
     public bool SendAll => Amount is null;
+
+    /// <summary>
+    /// The operator's label and tags (NL-602 A3-T1) the <c>WalletSend</c> broadcast row (and its <c>WalletSent</c>
+    /// event) carries; <see cref="SourceLabels.None"/> for none.
+    /// </summary>
+    public SourceLabels Labels { get; init; } = SourceLabels.None;
 }

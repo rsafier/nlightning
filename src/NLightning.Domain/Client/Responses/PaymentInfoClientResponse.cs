@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Client.Responses;
 
+using Accounting.Labels;
 using Channels.ValueObjects;
 using Crypto.ValueObjects;
 using Money;
@@ -60,6 +61,16 @@ public sealed class PaymentInfoClientResponse
     /// </summary>
     public IReadOnlyList<CustomRecord> CustomRecords { get; init; } = [];
 
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1), or null.
+    /// </summary>
+    public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c>, sorted by key (NL-602 A3-T1); empty for none.
+    /// </summary>
+    public IReadOnlyList<string> Tags { get; init; } = [];
+
     public static PaymentInfoClientResponse FromModel(PaymentModel payment)
     {
         ArgumentNullException.ThrowIfNull(payment);
@@ -80,7 +91,9 @@ public sealed class PaymentInfoClientResponse
             CreatedAt = payment.CreatedAt,
             CompletedAt = payment.CompletedAt,
             IsKeysend = payment.Keysend is not null,
-            CustomRecords = payment.Keysend?.CustomRecords ?? []
+            CustomRecords = payment.Keysend?.CustomRecords ?? [],
+            Label = payment.Label,
+            Tags = SourceLabels.FromStored(null, payment.Tags).TagStrings
         };
     }
 }

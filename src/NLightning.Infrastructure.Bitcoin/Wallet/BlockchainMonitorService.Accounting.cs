@@ -7,6 +7,7 @@ namespace NLightning.Infrastructure.Bitcoin.Wallet;
 using Domain.Accounting.Constants;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Interfaces;
+using Domain.Accounting.Labels;
 using Domain.Accounting.Models;
 using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
@@ -173,12 +174,15 @@ public partial class BlockchainMonitorService
             destination = address;
         }
 
-        var details = AccountingDetailsCodec.Create(("purpose", nameof(BroadcastPurpose.WalletSend)),
-                                                    (AccountingDetailKeys.Destination,
-                                                     externalOutputs == 1 ? destination : null),
-                                                    ("externalOutputs",
-                                                     externalOutputs.ToString(CultureInfo.InvariantCulture)),
-                                                    ("feeUnknown", stored.Fee is null ? "true" : null));
+        var details = AccountingDetailsCodec.Create(
+        [
+            ("purpose", nameof(BroadcastPurpose.WalletSend)),
+            (AccountingDetailKeys.Destination, externalOutputs == 1 ? destination : null),
+            ("externalOutputs", externalOutputs.ToString(CultureInfo.InvariantCulture)),
+            ("feeUnknown", stored.Fee is null ? "true" : null),
+            // NL-602 A3-T1: the operator's label and tags of the withdrawal
+            .. SourceLabels.FromStored(stored.Label, stored.Tags).ToDetailPairs()
+        ]);
         var feeMsat = ToMsat(stored.Fee);
         effects.Accounting.Add(new AccountingCandidate(
                                    AccountingEventKeys.WalletSent(stored.TransactionId),

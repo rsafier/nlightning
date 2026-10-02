@@ -1,5 +1,6 @@
 namespace NLightning.Application.Payments.Send;
 
+using Domain.Accounting.Labels;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -47,6 +48,9 @@ internal sealed class PaymentSession
     /// for an invoice payment.
     /// </summary>
     public KeysendFinalRecords? Keysend { get; init; }
+
+    /// <summary>The operator's label and tags every stored row of the payment carries (NL-602 A3-T1).</summary>
+    public SourceLabels Labels { get; init; } = SourceLabels.None;
 
     /// <summary>
     /// What the stored row keeps of <see cref="Keysend"/> (its custom records), or null.

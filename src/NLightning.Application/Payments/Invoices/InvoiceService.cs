@@ -8,6 +8,7 @@ namespace NLightning.Application.Payments.Invoices;
 
 using Bolt11.Models;
 using Channels.Interfaces;
+using Domain.Accounting.Labels;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
@@ -148,10 +149,22 @@ public sealed class InvoiceService : IInvoiceService
     /// bytes).</exception>
     /// <exception cref="Bolt11.Exceptions.InvoiceSerializationException">If the invoice fails the BOLT 11 writer
     /// rules. Nothing is persisted in any of these cases.</exception>
+    public Task<InvoiceModel> CreateInvoiceAsync(LightningMoney? amount, string description, uint? expirySeconds,
+                                                 CancellationToken cancellationToken = default) =>
+        CreateInvoiceAsync(amount, description, expirySeconds, SourceLabels.None, cancellationToken);
+
+    /// <inheritdoc />
+    /// <exception cref="ArgumentOutOfRangeException">If the amount or the expiry is zero.</exception>
+    /// <exception cref="ArgumentException">If the description is longer than BOLT 11 allows (639 UTF-8
+    /// bytes).</exception>
+    /// <exception cref="Bolt11.Exceptions.InvoiceSerializationException">If the invoice fails the BOLT 11 writer
+    /// rules. Nothing is persisted in any of these cases.</exception>
     public async Task<InvoiceModel> CreateInvoiceAsync(LightningMoney? amount, string description, uint? expirySeconds,
+                                                       SourceLabels labels,
                                                        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(description);
+        ArgumentNullException.ThrowIfNull(labels);
         if (amount is { IsZero: true })
             throw new ArgumentOutOfRangeException(nameof(amount), "An invoice amount must be positive; use null for "
                                                                 + "any amount.");
@@ -198,7 +211,11 @@ public sealed class InvoiceService : IInvoiceService
 
         var model = new InvoiceModel(new Hash(paymentHash), new Secret(preimage), new Secret(paymentSecret), amount,
                                      description, bolt11, DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp),
-                                     expiry, routing.InvoiceMinFinalCltvExpiry);
+                                     expiry, routing.InvoiceMinFinalCltvExpiry)
+        {
+            Label = labels.Label,
+            Tags = labels.CanonicalTags
+        };
 
         cancellationToken.ThrowIfCancellationRequested();
 

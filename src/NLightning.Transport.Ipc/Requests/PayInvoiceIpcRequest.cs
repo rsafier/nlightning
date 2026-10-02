@@ -36,7 +36,15 @@ public sealed class PayInvoiceIpcRequest
     /// </summary>
     [Key(4)] public uint? MaxParts { get; init; }
 
-    // Keys 5 and 6 are left to the label and tags of accounting A3-T1 (NL-602).
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, <c>--label</c>), or null; an older client sends none.
+    /// </summary>
+    [Key(5)] public string? Label { get; init; }
+
+    /// <summary>
+    /// The operator's tags as <c>key=value</c> (NL-602 A3-T1, <c>--tag</c>), or null for none.
+    /// </summary>
+    [Key(6)] public List<string>? Tags { get; init; }
 
     /// <summary>
     /// The only channel of ours the payment may leave through (a channel id or a short channel id
@@ -59,7 +67,9 @@ public sealed class PayInvoiceIpcRequest
             MaxFee = MaxFee,
             MaxParts = MaxParts,
             OutgoingChannel = OutgoingChannel,
-            IncomingChannel = IncomingChannel
+            IncomingChannel = IncomingChannel,
+            Label = Label,
+            Tags = Tags ?? []
         };
     }
 }

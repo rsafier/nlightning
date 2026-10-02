@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Handlers;
 
 using Application.Channels.RoutingPolicies;
+using Domain.Accounting.Labels;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
@@ -224,7 +225,9 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
                 ShortChannelId = r.ShortChannelId,
                 RetiredAtHeight = r.RetiredAtHeight,
                 ExpiresAtHeight = r.ExpiresAtHeight
-            }).ToList()
+            }).ToList(),
+            Label = channel.Label,
+            Tags = SourceLabels.FromStored(null, channel.Tags).TagStrings
         };
     }
 

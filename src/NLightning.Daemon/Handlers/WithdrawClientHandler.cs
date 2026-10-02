@@ -63,12 +63,16 @@ public sealed class WithdrawClientHandler : IClientCommandHandler<WithdrawClient
                                       $"The fee rate {request.SatPerVbyte} sat/vB is above the cap of "
                                     + $"{MaxSatPerVbyte} sat/vB.");
 
+        var labels = SourceLabelsGuard.Check(request.Label, request.Tags);
         var spendRequest = new WalletWithdrawRequest(
             request.Address,
             request.AmountSat is { } amount ? LightningMoney.Satoshis((long)amount) : null,
             request.SatPerVbyte is { } satPerVbyte
                 ? LightningMoney.Satoshis(FeeRateConverter.SatPerVByteToSatPerKw(satPerVbyte))
-                : null);
+                : null)
+        {
+            Labels = labels
+        };
 
         WalletWithdrawResult result;
         try

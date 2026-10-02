@@ -183,7 +183,7 @@ public class KeysendIpcHandlerTests
         var key12Entries = reader.ReadMapHeader();
 
         // Assert
-        Assert.Equal(13, count);
+        Assert.Equal(15, count); // keys 13 and 14 are the label and tags (NL-602 A3-T1)
         Assert.True(key11IsNil);
         Assert.Equal(1, key12Entries);
     }

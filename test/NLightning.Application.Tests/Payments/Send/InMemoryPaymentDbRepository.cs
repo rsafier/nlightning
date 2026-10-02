@@ -86,8 +86,14 @@ internal sealed class InMemoryPaymentDbRepository : IPaymentDbRepository
                 _payments.Values.OrderByDescending(p => p.CreatedAt).Skip(skip).Take(take).Select(Copy).ToList());
     }
 
-    private static PaymentModel Copy(PaymentModel p) =>
-        PaymentModel.Restore(p.PaymentHash, p.Bolt11, p.PayeeNodeId, p.Amount, p.Fee, p.CreatedAt, p.Status,
-                             p.OutgoingChannelId, p.OutgoingHtlcId, p.Preimage, p.FailureCode, p.FailureSourceIndex,
-                             p.FailureReason, p.CompletedAt, p.Route);
+    private static PaymentModel Copy(PaymentModel p)
+    {
+        var copy = PaymentModel.Restore(p.PaymentHash, p.Bolt11, p.PayeeNodeId, p.Amount, p.Fee, p.CreatedAt, p.Status,
+                                        p.OutgoingChannelId, p.OutgoingHtlcId, p.Preimage, p.FailureCode,
+                                        p.FailureSourceIndex, p.FailureReason, p.CompletedAt, p.Route);
+        // NL-602 A3-T1: the operator's label and tags are stored like the EF repository stores them
+        copy.Label = p.Label;
+        copy.Tags = p.Tags;
+        return copy;
+    }
 }

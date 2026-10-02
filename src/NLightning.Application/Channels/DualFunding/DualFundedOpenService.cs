@@ -196,7 +196,12 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         var localKeySet = CreateLocalKeySet(keyIndex, basepoints, firstPoint);
         var placeholder = new ChannelModel(channelParams, temporaryId, null, null, true, null, null,
                                            request.LocalFundingAmount, localKeySet, 0, 0, LightningMoney.Zero, null, 0,
-                                           request.PeerNodeId, 0, ChannelState.V1Opening, ChannelVersion.V2);
+                                           request.PeerNodeId, 0, ChannelState.V1Opening, ChannelVersion.V2)
+        {
+            // NL-602 A3-T1: carried to the channel built at accept_channel2, stored with its first save
+            Label = request.Labels.Label,
+            Tags = request.Labels.CanonicalTags
+        };
 
         var negotiation = new DualFundNegotiation(temporaryId, temporaryId, request.PeerNodeId, true)
         {
@@ -318,6 +323,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                         CreateLocalKeySet(pending.KeyIndex, pending.Basepoints,
                                                           pending.FirstPerCommitmentPoint), remoteKeySet, peerPubKey,
                                         true, negotiation.LocalShare, negotiation.RemoteShare);
+            channel.Label = negotiation.Channel?.Label;
+            channel.Tags = negotiation.Channel?.Tags;
             if (!_negotiations.TryAdd(channelId, negotiation))
                 throw new ChannelErrorException($"Channel {channelId} is already being opened", temporaryId);
 
