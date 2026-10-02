@@ -12,6 +12,7 @@ using Domain.Accounting.Interfaces;
 using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
+using Financial;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Reports;
 
@@ -60,6 +61,7 @@ public static class AccountingServiceCollectionExtensions
                                      sp.GetService<TimeProvider>()));
         services.TryAddSingleton<IAccountingBooks>(sp => sp.GetRequiredService<AccountingBooksService>());
         services.AddAccountingReportServices();
+        services.AddAccountingClassificationServices();
 
         return services;
     }

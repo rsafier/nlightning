@@ -13,5 +13,9 @@ public enum AccountingAdminAction
     Rebuild = 2,
 
     /// <summary>Walk the feed's hash chain from the first sealed event.</summary>
-    Verify = 3
+    Verify = 3,
+
+    /// <summary>The financial book's classification: rules, overrides, a test and the unclassified listing
+    /// (<see cref="AccountingClassifyAction"/>, NL-602 A3-T3). 4 is left to the period close of A3-T5.</summary>
+    Classify = 5
 }

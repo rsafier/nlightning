@@ -18,4 +18,7 @@ public sealed record AccountingAdminClientResponse(AccountingAdminAction Action,
     public int? RebuiltEntries { get; init; }
 
     public AccountingChainVerification? Verification { get; init; }
+
+    /// <summary>The answer of a classify action (A3-T3).</summary>
+    public AccountingClassifyClientResponse? Classify { get; init; }
 }

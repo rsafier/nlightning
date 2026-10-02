@@ -1,6 +1,8 @@
 namespace NLightning.Application.Accounting;
 
 using Domain.Accounting.Books;
+using Domain.Accounting.Financial;
+using Domain.Accounting.Financial.Classification;
 
 /// <summary>
 /// Options of the accounting feed and books (section <see cref="SectionName"/>, plan
@@ -42,4 +44,22 @@ public sealed class AccountingOptions
 
     /// <summary>Whether the books run (<see cref="Enabled"/> unset = on).</summary>
     public bool AreBooksEnabled => Enabled ?? true;
+
+    /// <summary>
+    /// Which books are kept (<c>Accounting:Profile</c>, plan §6.2, §7, D-A5): <see cref="AccountingProfile.Operational"/>
+    /// (the default) or <see cref="AccountingProfile.Financial"/>, which adds the financial book next to the
+    /// operational one (D-A7). The classification rules and overrides are stored and managed either way (NL-602
+    /// A3-T3).
+    /// </summary>
+    public AccountingProfile Profile { get; set; } = AccountingProfile.Operational;
+
+    /// <summary>
+    /// The financial chart's name overrides by account (A3-T3; e.g. <c>Accounting:FinancialAccountNames:Sales</c> =
+    /// <c>income:consulting</c>); accounts not named keep their default, invalid names are ignored (and reported).
+    /// </summary>
+    public Dictionary<FinancialAccount, string> FinancialAccountNames { get; set; } = [];
+
+    /// <summary>The financial chart in effect (its assets, opening balances and transfers follow
+    /// <see cref="GetAccountNames"/>).</summary>
+    public FinancialChart GetFinancialChart() => new(GetAccountNames(), FinancialAccountNames);
 }
