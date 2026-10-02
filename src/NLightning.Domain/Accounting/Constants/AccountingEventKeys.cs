@@ -81,4 +81,12 @@ public static class AccountingEventKeys
     /// another block): <paramref name="originalKey"/> alone would be sealed as a duplicate.
     /// </summary>
     public static string Reemitted(string originalKey, uint height) => $"{originalKey}:re:{height}";
+
+    /// <summary>The backfill's cutover marker (NL-602 A1-T6): the feed starts with opening balances here, written once
+    /// per node.</summary>
+    public static string Cutover() => "open:cutover";
+
+    /// <summary>The marker the backfill writes once every memo event of the history before the cutover is written.
+    /// </summary>
+    public static string MemoComplete() => "open:memo:complete";
 }

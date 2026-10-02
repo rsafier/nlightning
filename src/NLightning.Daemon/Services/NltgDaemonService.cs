@@ -16,6 +16,7 @@ using Application.Node.Services;
 using Application.Onchain.Fees;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
+using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Splicing.Interfaces;
@@ -64,6 +65,7 @@ public class NltgDaemonService : BackgroundService
     private readonly INodeDrainState? _nodeDrainState;
     private readonly ShutdownDrainWaiter? _drainWaiter;
     private readonly AccountingEventSealerService? _accountingEventSealer;
+    private readonly IAccountingBackfill? _accountingBackfill;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
                              IConfiguration configuration, IFeeService feeService,
@@ -86,9 +88,11 @@ public class NltgDaemonService : BackgroundService
                              INodeBusyStateMonitor? busyStateMonitor = null,
                              INodeDrainState? nodeDrainState = null,
                              ShutdownDrainWaiter? drainWaiter = null,
-                             AccountingEventSealerService? accountingEventSealer = null)
+                             AccountingEventSealerService? accountingEventSealer = null,
+                             IAccountingBackfill? accountingBackfill = null)
     {
         _accountingEventSealer = accountingEventSealer;
+        _accountingBackfill = accountingBackfill;
         _feeEstimationOptions = feeEstimationOptions?.Value;
         _busyStateMonitor = busyStateMonitor;
         _nodeDrainState = nodeDrainState;
@@ -145,6 +149,10 @@ public class NltgDaemonService : BackgroundService
 
             // Never hand out a channel key index a stored channel already uses (SECURITY_REVIEW SR-19)
             await ReconcileChannelKeyIndexAsync();
+
+            // Open the accounting feed with the node's balances, once per node (NL-602 A1-T6): before the peers
+            // connect and the chain monitor runs, so the database does not change while it is read
+            await EnsureAccountingCutoverAsync(stoppingToken);
 
             // Load the per-channel routing policies before any forward or channel_update (wave sp1 SP1-G); a failure
             // fails the start
@@ -206,6 +214,9 @@ public class NltgDaemonService : BackgroundService
             // Seal the accounting events committed so far and every SealInterval from now on (NL-602)
             _accountingEventSealer?.Start();
 
+            // Write the history before the cutover as memo events, in the background (resumes at the next start)
+            _accountingBackfill?.StartMemoBackfill();
+
             // Bump stale splices of ours (wave SPR, SPR-T3); does nothing while Splice:AutoBumpAfterBlocks is unset
             _spliceAutoBumper?.Start();
 
@@ -218,6 +229,26 @@ public class NltgDaemonService : BackgroundService
         catch (OperationCanceledException)
         {
             _logger.LogInformation("Stopping NLTG daemon service");
+        }
+    }
+
+    /// <summary>
+    /// The accounting cutover (NL-602 A1-T6). A failure is logged and the node starts anyway: the node must run to
+    /// protect its channels, and the cutover is tried again at the next start.
+    /// </summary>
+    private async Task EnsureAccountingCutoverAsync(CancellationToken cancellationToken)
+    {
+        if (_accountingBackfill is null)
+            return;
+
+        try
+        {
+            await _accountingBackfill.EnsureCutoverAsync(cancellationToken);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "The accounting cutover failed; the node starts without it and tries again at the "
+                              + "next start");
         }
     }
 
@@ -262,7 +293,8 @@ public class NltgDaemonService : BackgroundService
         // The replay pruner and the mempool reactor stop before the chain monitor that drives them
         await Task.WhenAll(_onionReplayBlockPruner.StopAsync(), _mempoolReactor.StopAsync(),
                            _spliceAutoBumper?.StopAsync() ?? Task.CompletedTask,
-                           _accountingEventSealer?.StopAsync() ?? Task.CompletedTask);
+                           _accountingEventSealer?.StopAsync() ?? Task.CompletedTask,
+                           _accountingBackfill?.StopAsync() ?? Task.CompletedTask);
 
         // The bootstrap dials through the peer manager, so it stops first (NL-113)
         if (_peerBootstrapService is not null)

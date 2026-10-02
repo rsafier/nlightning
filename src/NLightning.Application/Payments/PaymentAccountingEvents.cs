@@ -46,13 +46,13 @@ internal static class PaymentAccountingEvents
     /// </summary>
     /// <param name="invoice">The invoice, already <c>Settled</c>.</param>
     /// <param name="received">What the HTLC set carried.</param>
-    /// <param name="channelId">The channel of the part that settled the invoice.</param>
+    /// <param name="channelId">The channel of the part that settled the invoice (null: unknown, the backfill).</param>
     /// <param name="channel">That channel, when loaded.</param>
     /// <param name="parts">How many HTLCs the set had.</param>
     /// <param name="claimedOnchain">The settling part's channel is closing on chain: its amount is claimed there.</param>
     /// <param name="blockHeight">The current height, when known (0 = unknown).</param>
     public static AccountingEventModel InvoiceSettled(InvoiceModel invoice, LightningMoney received,
-                                                      ChannelId channelId, ChannelModel? channel, int parts,
+                                                      ChannelId? channelId, ChannelModel? channel, int parts,
                                                       bool claimedOnchain, uint blockHeight)
     {
         var requested = invoice.Amount is { } amount && amount != received ? Msat(amount) : null;

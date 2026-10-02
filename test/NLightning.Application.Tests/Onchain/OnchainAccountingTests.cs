@@ -7,6 +7,7 @@ using NBitcoin;
 
 namespace NLightning.Application.Tests.Onchain;
 
+using Application.Accounting.Backfill;
 using Application.Channels.Safety.Interfaces;
 using Application.Channels.Services;
 using Application.Onchain;
@@ -310,6 +311,70 @@ public sealed class OnchainAccountingTests : IDisposable
 
         // Assert: nothing new
         Assert.Equal(5, _store.Events.Count);
+    }
+
+    [Fact]
+    public async Task Given_ACloseFromBeforeTheFeed_When_ResolvedAfterTheCutover_Then_ThePendingOpeningBalanceNetsToZero()
+    {
+        // Arrange: our commitment and our HTLC-timeout confirmed before the feed existed (no event of them is kept)
+        var local = _pair.Alice.State.LocalCommit;
+        var commitment = BuildCommitment(CommitmentSide.Local, local.Spec, local.Number, null);
+        await Watcher.HandleFundingSpentAsync(SpentBy(commitment), TestContext.Current.CancellationToken);
+        var toLocal = Row(OutputDescriptorKind.DelayedToLocal);
+        var offered = Row(OutputDescriptorKind.LocalOfferedHtlc);
+        var received = Row(OutputDescriptorKind.LocalReceivedHtlc);
+        var executor = CreateExecutor();
+        var htlcTimeout = Stored(Spend([(commitment.TxId, offered.OutputIndex)], OurHtlcSat - 300),
+                                 BroadcastPurpose.HtlcTransaction);
+        _resolver.OnSpent = (_, row, spender) => row.OutputIndex == offered.OutputIndex
+                                                 && row.TransactionId == commitment.TxId
+                                                     ?
+                                                     [
+                                                         new UpsertOutputAction(SecondLevelRow(spender, offered)),
+                                                         new WatchOutpointAction(new WatchedOutpointModel(
+                                                             spender.TxId, 0, _channel.ChannelId,
+                                                             WatchedOutpointPurpose.ResolutionOutput))
+                                                     ]
+                                                     : [];
+        await MineSpendAsync(executor, htlcTimeout, commitment.TxId, offered.OutputIndex, SpendHeight + 160);
+        _store.AccountingEvents.Clear();
+
+        // Act: the backfill's cutover (NL-602 A1-T6) from the stored close and rows
+        var cutover = AccountingCutoverEvents.ResolvingChannel(_channel, _store.Closes[_channel.ChannelId],
+                                                               _store.Outputs.Values.ToList(), s_now,
+                                                               SpendHeight + 170);
+        _store.AccountingEvents.Add((cutover.Opening, _store.Saves.Count - 1));
+        _store.AccountingEvents.Add((cutover.Close, _store.Saves.Count - 1));
+
+        // Assert: pending = to_local + our second-level output; only to_local is a counted vout of the commitment
+        var secondLevelMsat = ((long)OurHtlcSat - 300) * 1_000;
+        Assert.Equal(ValueMsat(toLocal) + secondLevelMsat, cutover.PendingMsat);
+        Assert.Equal(cutover.PendingMsat, cutover.Opening.AmountMsat);
+        Assert.Equal(toLocal.OutputIndex.ToString(CultureInfo.InvariantCulture),
+                     cutover.Close.Details[OnchainAccounting.CountedVoutsKey]);
+        Assert.Equal(AccountingEventKeys.ChannelForceClosed(_channel.ChannelId, commitment.TxId),
+                     cutover.Close.EventKey);
+
+        // Act: every output left is resolved after the cutover
+        var toLocalSat = Sat(toLocal);
+        var sweep = Stored(Spend([(commitment.TxId, toLocal.OutputIndex)], toLocalSat - 500), BroadcastPurpose.Sweep);
+        await MineSpendAsync(executor, sweep, commitment.TxId, toLocal.OutputIndex, SpendHeight + 180);
+        var secondSweep = Stored(Spend([(htlcTimeout.TxId, 0)], OurHtlcSat - 500), BroadcastPurpose.Sweep);
+        await MineSpendAsync(executor, secondSweep, htlcTimeout.TxId, 0, SpendHeight + 310);
+        var theirTimeout = Spend([(commitment.TxId, received.OutputIndex)], TheirHtlcSat - 300);
+        await MineSpendAsync(executor, theirTimeout, commitment.TxId, received.OutputIndex, SpendHeight + 320);
+
+        // Assert: three resolutions, the counted ones taken out of the pending bucket the opening balance filled
+        var resolutions = _store.Events.Where(e => e.Kind == AccountingEventKind.OutputResolved).ToList();
+        Assert.Equal(3, resolutions.Count);
+        Assert.All(resolutions.Where(e => e.TxId != commitment.TxId || e.OutputIndex != received.OutputIndex),
+                   e => Assert.Equal("true", e.Details[OnchainAccounting.CountedKey]));
+        var flows = resolutions.Sum(e => Msat(e, OnchainAccounting.PendingInKey)
+                                       - Msat(e, OnchainAccounting.PendingOutKey));
+        Assert.Equal(0, cutover.Opening.AmountMsat + flows);
+
+        // What left the bucket reached the wallet or paid fees
+        Assert.Equal(cutover.Opening.AmountMsat, resolutions.Sum(e => e.AmountMsat + e.FeeMsat));
     }
 
     [Fact]

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Tests.Extensions;
 
 using Application.Accounting;
+using Application.Accounting.Backfill;
 using Application.Channels.Fees;
 using Application.Channels.Interfaces;
 using Application.Channels.Quiescence;
@@ -352,6 +353,8 @@ public class NodeServiceExtensionsTests
         Assert.Equal(TimeSpan.FromSeconds(2), sealer.Interval);
         Assert.Equal(7, provider.GetRequiredService<IOptions<AccountingOptions>>().Value.SealBatchSize);
         Assert.NotNull(provider.GetRequiredService<INodeSnapshotSource>());
+        Assert.Same(provider.GetRequiredService<AccountingBackfillService>(),
+                    provider.GetRequiredService<IAccountingBackfill>());
         Assert.NotNull(scope.ServiceProvider
                             .GetRequiredService<IClientCommandHandler<ListAccountingEventsClientRequest,
                                  ListAccountingEventsClientResponse>>());
