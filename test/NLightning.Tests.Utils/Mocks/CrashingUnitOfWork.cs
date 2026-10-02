@@ -1,3 +1,4 @@
+using NLightning.Domain.Accounting.Interfaces;
 using NLightning.Domain.Bitcoin.Interfaces;
 using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Bitcoin.Wallet.Models;
@@ -78,6 +79,7 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
 
     public IChannelFundingDbRepository ChannelFundingDbRepository => inner.ChannelFundingDbRepository;
     public IChannelPolicyDbRepository ChannelPolicyDbRepository => inner.ChannelPolicyDbRepository;
+    public IAccountingEventDbRepository AccountingEventDbRepository => inner.AccountingEventDbRepository;
 
     public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
 
