@@ -320,7 +320,7 @@ public static class NodeConfigurationExtensions
     /// <c>Node:Network</c> <c>signet</c> and <c>Node:CustomSignet:Name</c> <c>mutinynet</c>).</param>
     /// <remarks>
     /// <c>Node:EnableHtlcs</c> is always present so the switch is visible: true on regtest and signets (test coins).
-    /// On mainnet and testnet it is <c>null</c>, which binds as unset: the code default of
+    /// On mainnet, testnet and testnet4 it is <c>null</c>, which binds as unset: the code default of
     /// <see cref="NodeOptions.HtlcsEnabled"/> applies (the BOLT 5 O6-T4 gate decides it; write true or false to
     /// override). <c>Gossip</c> carries the BOLT 7 mainnet gate (plan D12, G5-T5): <c>Enabled</c> (the graph),
     /// <c>SyncEnabled</c> and <c>RelayEnabled</c> are true on every network (the relay on mainnet since the NL-417 proof), and
@@ -355,8 +355,8 @@ public static class NodeConfigurationExtensions
         var offers = new OfferOptions();
         var accounting = new AccountingOptions();
         var prices = new AccountingPriceOptions();
-        // Regtest and signets switch HTLCs on explicitly; mainnet and testnet leave the switch to NodeOptions' code
-        // default (null binds as unset), so the BOLT 5 O6-T4 gate decides both
+        // Regtest and signets switch HTLCs on explicitly; mainnet, testnet and testnet4 leave the switch to NodeOptions'
+        // code default (null binds as unset), so the BOLT 5 O6-T4 gate decides them
         var enableHtlcs = resolved == BitcoinNetwork.Regtest || isSignet ? "true" : "null";
         // BOLT 7 plan D12 (decided in wave d12): the graph and gossip sync are on everywhere, mainnet included; the
         // relay of others' gossip too since the NL-417 mainnet relay proof (owner decision 2026-09-28); public channels
@@ -369,6 +369,8 @@ public static class NodeConfigurationExtensions
             NetworkConstants.Regtest => (FeeEstimationOptions.SourceFixed, fees.Url),
             NetworkConstants.Testnet => (FeeEstimationOptions.SourceHttp,
                                          "https://mempool.space/testnet/api/v1/fees/recommended"),
+            NetworkConstants.Testnet4 => (FeeEstimationOptions.SourceHttp,
+                                          "https://mempool.space/testnet4/api/v1/fees/recommended"),
             NetworkConstants.Signet => (FeeEstimationOptions.SourceHttp,
                                         "https://mempool.space/signet/api/v1/fees/recommended"),
             NetworkConstants.Mutinynet => (FeeEstimationOptions.SourceHttp,
@@ -380,6 +382,7 @@ public static class NodeConfigurationExtensions
         var rpcPort = resolved.Name switch
         {
             NetworkConstants.Testnet => 18332,
+            NetworkConstants.Testnet4 => 48332,
             NetworkConstants.Regtest => 18443,
             NetworkConstants.Signet => 38332,
             _ => 8332

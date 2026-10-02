@@ -25,8 +25,7 @@ public class BootstrapOptions
 
     /// <summary>
     /// The testnet4 seed LND ships with (`test4.nodes.lightning.wiki`; checked on 2026-09-30: it answers BOLT 10 SRV
-    /// with bech32 node ids, NL-545). Testnet4 itself is not a supported network yet (NL-012); the list is the
-    /// plumbing for when it is (a custom registration of the name already picks it up). Bitcoin Core's testnet4 DNS
+    /// with bech32 node ids, NL-545); testnet4 is a built-in network since NL-012. Bitcoin Core's testnet4 DNS
     /// seeds (`seed.testnet4.bitcoin.sprovoost.nl`, `seed.testnet4.wiz.biz`) are P2P seeds, not BOLT 10, and are not
     /// usable here.
     /// </summary>
@@ -67,8 +66,8 @@ public class BootstrapOptions
 
     /// <summary>
     /// The effective switch on <paramref name="network"/>: <see cref="Enabled"/> when set, otherwise true on mainnet
-    /// only (testnet has a seed but stays off: testnet3 is being replaced by testnet4, whose network support is still
-    /// open, NL-012/NL-545).
+    /// only (testnet and testnet4 have a seed but stay off, as every non-mainnet network, owner decision 2026-09-28;
+    /// set <see cref="Enabled"/> to use them, NL-012/NL-545).
     /// </summary>
     public bool IsEnabledOn(BitcoinNetwork network) => Enabled ?? network.Name == NetworkConstants.Mainnet;
 

@@ -5,8 +5,8 @@ namespace NLightning.Domain.Protocol.ValueObjects;
 using Constants;
 
 /// <summary>
-/// A Bitcoin network by name (<c>mainnet</c>, <c>testnet</c>, <c>regtest</c>, <c>signet</c> or a registered custom
-/// network). Names are case-insensitive and stored in lower case.
+/// A Bitcoin network by name (<c>mainnet</c>, <c>testnet</c>, <c>testnet4</c>, <c>regtest</c>, <c>signet</c> or a
+/// registered custom network). Names are case-insensitive and stored in lower case.
 /// </summary>
 /// <remarks>
 /// Custom signets (Mutinynet and any registered with <see cref="RegisterCustomSignet"/>) share the signet genesis block,
@@ -22,6 +22,11 @@ public readonly struct BitcoinNetwork : IEquatable<BitcoinNetwork>
     public static readonly BitcoinNetwork Testnet = new(NetworkConstants.Testnet);
     public static readonly BitcoinNetwork Regtest = new(NetworkConstants.Regtest);
     public static readonly BitcoinNetwork Signet = new(NetworkConstants.Signet);
+
+    /// <summary>
+    /// Testnet4 (BIP 94). Its own chain hash, but testnet3's address and invoice prefixes (<c>tb</c>, <c>lntb</c>).
+    /// </summary>
+    public static readonly BitcoinNetwork Testnet4 = new(NetworkConstants.Testnet4);
 
     static BitcoinNetwork()
     {
@@ -57,6 +62,7 @@ public readonly struct BitcoinNetwork : IEquatable<BitcoinNetwork>
             {
                 NetworkConstants.Mainnet => ChainConstants.Main,
                 NetworkConstants.Testnet => ChainConstants.Testnet,
+                NetworkConstants.Testnet4 => ChainConstants.Testnet4,
                 NetworkConstants.Regtest => ChainConstants.Regtest,
                 NetworkConstants.Signet => ChainConstants.Signet,
                 _ => s_customChainHashes.TryGetValue(Name, out var hash)
@@ -74,12 +80,13 @@ public readonly struct BitcoinNetwork : IEquatable<BitcoinNetwork>
     public override string ToString() => Name;
 
     /// <summary>
-    /// True when <paramref name="name"/> is one of the four built-in networks.
+    /// True when <paramref name="name"/> is one of the five built-in networks (mainnet, testnet, testnet4, regtest,
+    /// signet).
     /// </summary>
     public static bool IsBuiltIn(string? name)
     {
-        return Normalize(name) is NetworkConstants.Mainnet or NetworkConstants.Testnet or NetworkConstants.Regtest
-                                  or NetworkConstants.Signet;
+        return Normalize(name) is NetworkConstants.Mainnet or NetworkConstants.Testnet or NetworkConstants.Testnet4
+                                  or NetworkConstants.Regtest or NetworkConstants.Signet;
     }
 
     /// <summary>
@@ -114,7 +121,7 @@ public readonly struct BitcoinNetwork : IEquatable<BitcoinNetwork>
 
         throw new ArgumentException(
             $"Unknown Bitcoin network '{name}'. Use {NetworkConstants.Mainnet}, {NetworkConstants.Testnet}, "
-          + $"{NetworkConstants.Regtest}, {NetworkConstants.Signet} or a registered custom signet "
+          + $"{NetworkConstants.Testnet4}, {NetworkConstants.Regtest}, {NetworkConstants.Signet} or a registered custom signet "
           + $"({string.Join(", ", s_customSignets.Keys.Order())}).", nameof(name));
     }
 
