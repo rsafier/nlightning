@@ -166,6 +166,10 @@ public class NltgDaemonService : BackgroundService
             // connect and the chain monitor runs, so the database does not change while it is read
             await EnsureAccountingCutoverAsync(stoppingToken);
 
+            // Load the wallet (UTXO set, fee input reservations, channel locks, last processed height) before any peer
+            // connects: a splice a peer resumes right after the restart signs reserved wallet inputs (NL-600)
+            await _blockchainMonitor.LoadWalletAsync(stoppingToken);
+
             // Load the per-channel routing policies before any forward or channel_update (wave sp1 SP1-G); a failure
             // fails the start
             if (_channelPolicyStore is not null)

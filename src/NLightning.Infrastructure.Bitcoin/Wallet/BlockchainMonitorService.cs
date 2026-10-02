@@ -73,6 +73,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _newBlockSemaphore = new(1, 1);
     private readonly SemaphoreSlim _blockBacklogSemaphore = new(1, 1);
+    private readonly SemaphoreSlim _walletLoadSemaphore = new(1, 1);
     private readonly ConcurrentDictionary<uint256, WatchedTransactionModel> _watchedTransactions = new();
     private readonly ConcurrentDictionary<string, WalletAddressModel> _watchedAddresses = new();
     private readonly ConcurrentDictionary<OutPoint, ChannelId> _watchedOutpoints = new();
@@ -93,6 +94,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
     private Task? _mempoolTask;
     private uint _lastProcessedBlockHeight;
     private uint _catchUpHeight;
+    private bool _walletLoaded;
     private SubscriberSocket? _blockSocket;
     private SubscriberSocket? _txSocket;
 
@@ -165,22 +167,55 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
         _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
     }
 
-    public async Task StartAsync(uint heightOfBirth, CancellationToken cancellationToken)
+    /// <inheritdoc />
+    public async Task LoadWalletAsync(CancellationToken cancellationToken = default)
     {
-        _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-
-        using (var scope = _serviceProvider.CreateScope())
+        await _walletLoadSemaphore.WaitAsync(cancellationToken);
+        try
         {
+            if (_walletLoaded)
+                return;
+
+            using var scope = _serviceProvider.CreateScope();
             using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
             await LoadPendingWatchedTransactionsAsync(uow);
             LoadBitcoinAddresses(uow);
             await LoadUtxoSetAsync(uow);
 
-            // Read once: the channel locks are restored from the funding ones (NL-462), and every still pending one is
-            // sent again after the start
+            // The channel locks are restored from the pending funding broadcasts (NL-462)
             var pendingBroadcasts = await uow.BroadcastTransactionDbRepository.GetPendingAsync();
             await RestoreChannelUtxoLocksAsync(uow, pendingBroadcasts);
+
+            // The last processed height, so what runs before the start (the peers' first messages, the retired SCID
+            // map) does not see height 0; StartAsync reads the state again (or creates it at the height of birth)
+            var state = await uow.BlockchainStateDbRepository.GetStateAsync();
+            if (state is not null)
+                _lastProcessedBlockHeight = state.LastProcessedHeight;
+
+            // The fee input reservations whose inputs are all spent are deleted in this save
+            await uow.SaveChangesAsync();
+            _walletLoaded = true;
+        }
+        finally
+        {
+            _walletLoadSemaphore.Release();
+        }
+    }
+
+    public async Task StartAsync(uint heightOfBirth, CancellationToken cancellationToken)
+    {
+        _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // The host loads the wallet before the peers connect (NL-600); a host that did not gets it loaded here
+        await LoadWalletAsync(cancellationToken);
+
+        using (var scope = _serviceProvider.CreateScope())
+        {
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+            // Every still pending broadcast is sent again after the start
+            var pendingBroadcasts = await uow.BroadcastTransactionDbRepository.GetPendingAsync();
 
             // Every channel past funding_created that is not closed gets its funding output watched (backfill for
             // channels stored before the watch existed, or whose watch was never saved)
@@ -268,6 +303,9 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
             throw new InvalidOperationException("Service is not running");
 
         await _cts.CancelAsync();
+
+        // A later start on this instance loads the wallet again, as a new process does
+        _walletLoaded = false;
 
         foreach (var task in new[] { _monitoringTask, _mempoolTask })
         {

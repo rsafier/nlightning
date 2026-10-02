@@ -337,6 +337,53 @@ public class WalletInteractiveTxContributorTests
     }
 
     [Fact]
+    public async Task Given_ARestartedProcessWhoseWalletIsNotLoadedYet_When_SigningTheResumedNegotiation_Then_NothingIsSignedUntilTheWalletIsLoaded()
+    {
+        // Arrange (NL-600): the negotiation reserved our output and was stored, then the process restarted; the new
+        // process's UTXO set and fee reservations stay empty until the chain monitor's wallet load, which the hosts ran
+        // after the peers could already resume the splice
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
+        var contribution = await _contributor.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
+        var reservationId = contribution.ReservationId!.Value;
+        var (constructed, peerSpent) = Construct(contribution);
+        var restartedUtxos = new UtxoMemoryRepository();
+        var restartedSigner = new LocalLightningSigner(Mock.Of<IFundingOutputBuilder>(),
+                                                       Mock.Of<IKeyDerivationService>(),
+                                                       NullLogger<LocalLightningSigner>.Instance,
+                                                       new NodeOptions { BitcoinNetwork = NetworkConstants.Regtest },
+                                                       _keyManager.Object, restartedUtxos);
+        var restarted = new WalletInteractiveTxContributor(Mock.Of<IFeeInputSelector>(), restartedSigner,
+                                                           restartedUtxos, _prevTxSource, new PrevTxInspector(),
+                                                           new InteractiveTxTransactionParser());
+
+        // Act: the peer's tx_signatures arrive before the wallet is loaded
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => restarted.SignAsync(constructed, contribution, [peerSpent], TestContext.Current.CancellationToken));
+
+        // Assert: the error names our input and what the wallet holds of it
+        Assert.Contains("The signer found no wallet input in the transaction", refused.Message);
+        Assert.Contains($"{utxo.Model.TxId}:{utxo.Model.Index} (in wallet: False, reservation: none)", refused.Message);
+
+        // Act: the wallet is loaded as the chain monitor's LoadWalletAsync does (the UTXO set, then the reservations)
+        restartedUtxos.Load([utxo.Model]);
+        restartedUtxos.LoadFeeReservations([(utxo.Model.TxId, utxo.Model.Index, reservationId)]);
+        var witnesses = await restarted.SignAsync(constructed, contribution, [peerSpent],
+                                                  TestContext.Current.CancellationToken);
+
+        // Assert: our input is signed and verifies
+        var signed = new InteractiveTxBuilder().Finalize(constructed, new Dictionary<ulong, Witness>
+        {
+            [0] = Assert.Single(witnesses),
+            [1] = new Witness([0x01, 0x01, 0x00])
+        });
+        var tx = Transaction.Load(signed.RawTxBytes, Network.RegTest);
+        var validator = tx.CreateValidator([utxo.TxOut, new TxOut(Money.Satoshis(peerSpent.Amount.Satoshi),
+                                                                  new Script((byte[])peerSpent.ScriptPubKey))]);
+        var ours = validator.ValidateInput(0);
+        Assert.True(ours.Error is null or ScriptError.OK, $"our input: {ours.Error}");
+    }
+
+    [Fact]
     public async Task Given_OurSignaturesWereProduced_When_Releasing_Then_TheReservationIsKeptUntilAnInputIsSpent()
     {
         // Arrange
