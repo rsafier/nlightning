@@ -8,7 +8,6 @@ using NBitcoin;
 
 namespace NLightning.Application.Tests.Payments.Send.Harness;
 
-using NLightning.Tests.Utils;
 using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
 using Application.Channels.Interfaces;
@@ -57,6 +56,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Protocol.Onion;
 using Infrastructure.Serialization;
+using NLightning.Tests.Utils;
 
 /// <summary>
 /// Three in-process nodes for the W2-C send proof: Bob, Carol and David, with channels Bob–Carol and Carol–David (and a
