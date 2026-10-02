@@ -270,7 +270,8 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="ct">Cancels the call (the payment itself keeps going in the daemon).</param>
     public Task<PayInvoiceIpcResponse> PayInvoiceAsync(string bolt11, LightningMoney? amount, uint? timeoutSeconds,
                                                        ulong? maxFeeMsat = null, uint? maxParts = null,
-                                                       CancellationToken ct = default)
+                                                       CancellationToken ct = default, string? outgoingChannel = null,
+                                                       string? incomingChannel = null)
     {
         var req = new PayInvoiceIpcRequest
         {
@@ -278,7 +279,9 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
             Amount = amount,
             TimeoutSeconds = timeoutSeconds,
             MaxFee = maxFeeMsat is { } fee ? LightningMoney.MilliSatoshis(fee) : null,
-            MaxParts = maxParts
+            MaxParts = maxParts,
+            OutgoingChannel = outgoingChannel,
+            IncomingChannel = incomingChannel
         };
         return SendRequestAsync<PayInvoiceIpcRequest, PayInvoiceIpcResponse>(ClientCommand.PayInvoice, req, ct);
     }

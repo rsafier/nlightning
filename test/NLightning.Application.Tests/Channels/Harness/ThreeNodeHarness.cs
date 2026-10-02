@@ -100,6 +100,12 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
     public static readonly ShortChannelId AliceBobScid = new(400, 1, 0);
     public static readonly ShortChannelId BobCarolScid = new(400, 2, 1);
 
+    /// <summary>The optional Carol-Alice channel (Carol funds), which closes the triangle (NL-609 rebalances).</summary>
+    public static readonly ChannelId CarolAliceChannelId = new(Enumerable.Repeat((byte)0xCA, 32).ToArray());
+
+    /// <summary>The short channel id of <see cref="CarolAliceChannelId"/>.</summary>
+    public static readonly ShortChannelId CarolAliceScid = new(400, 3, 0);
+
     /// <summary>Bob's alias of the Bob-Carol channel (the scid Carol puts in her route hints).</summary>
     public static readonly ShortChannelId BobCarolBobAlias = new(16_000_000, 1, 1);
 
@@ -138,8 +144,11 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
     /// <param name="bobCarolScidAlias">The Bob-Carol channel's <c>option_scid_alias</c>: <c>No</c>, negotiated only
     /// (<c>Optional</c>) or in its channel type (<c>Compulsory</c>). Unless <c>No</c>, both ends carry aliases
     /// (<see cref="BobCarolBobAlias"/>, <see cref="BobCarolCarolAlias"/>).</param>
+    /// <param name="carolAlice">Also open <see cref="CarolAliceChannelId"/> (Carol funds and pushes, as the others),
+    /// so the three nodes form a triangle (NL-609).</param>
     public static async Task<ThreeNodeHarness> CreateAsync(Action<ThreeNodeHarness>? beforeStart = null,
-                                                           FeatureSupport bobCarolScidAlias = FeatureSupport.No)
+                                                           FeatureSupport bobCarolScidAlias = FeatureSupport.No,
+                                                           bool carolAlice = false)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"nltg-three-node-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
@@ -151,6 +160,9 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
         await harness.OpenChannelAsync(harness.Alice, 1, harness.Bob, 1, AliceBobChannelId, AliceBobScid, 0x71);
         await harness.OpenChannelAsync(harness.Bob, 2, harness.Carol, 1, BobCarolChannelId, BobCarolScid, 0x72,
                                        bobCarolScidAlias, BobCarolBobAlias, BobCarolCarolAlias);
+        if (carolAlice)
+            await harness.OpenChannelAsync(harness.Carol, 2, harness.Alice, 2, CarolAliceChannelId, CarolAliceScid,
+                                           0x73);
         return harness;
     }
 

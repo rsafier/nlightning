@@ -1,6 +1,10 @@
 namespace NLightning.Daemon.Tests.Handlers;
 
 using Daemon.Handlers;
+using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Client.Constants;
 using Domain.Client.Exceptions;
 using Domain.Client.Requests;
@@ -182,6 +186,61 @@ public class PaymentsClientHandlerTests
                                                               o => o.Timeout == TimeSpan.FromSeconds(5)),
                                                           It.IsAny<CancellationToken>()),
                                    Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ChannelPins_When_PayInvoice_Then_AChannelIdAndAShortChannelIdAreResolved()
+    {
+        // Arrange - NL-609: --out by short channel id (of a channel in memory), --in by channel id
+        var outgoing = CreateChannel(0x0A, new ShortChannelId(500, 1, 0));
+        var incomingId = new ChannelId(Enumerable.Repeat((byte)0x0B, 32).ToArray());
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+              .Returns((Func<ChannelModel, bool> predicate) => new[] { outgoing }.Where(predicate).ToList());
+        _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
+                                                         It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
+                           .ReturnsAsync(new PayInvoiceResult(CreatePayment(), 1, 1));
+        var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object, null, memory.Object);
+
+        // Act
+        await handler.HandleAsync(new PayInvoiceClientRequest("lnbcrt1pay")
+        {
+            OutgoingChannel = "500x1x0",
+            IncomingChannel = Convert.ToHexString(incomingId)
+        }, TestContext.Current.CancellationToken);
+
+        // Assert
+        _paymentServiceMock.Verify(x => x.PayInvoiceAsync("lnbcrt1pay", null,
+                                                          It.Is<PayInvoiceOptions>(
+                                                              o => o.OutgoingChannelId == outgoing.ChannelId
+                                                                && o.IncomingChannelId == incomingId),
+                                                          It.IsAny<CancellationToken>()),
+                                   Times.Once);
+    }
+
+    [Theory]
+    [InlineData("600x1x0")]
+    [InlineData("not-a-channel")]
+    public async Task Given_APinThatNamesNoChannelOfOurs_When_PayInvoice_Then_InvalidOperationAndNothingPaid(
+        string pin)
+    {
+        // Arrange
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>())).Returns([]);
+        var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object, null, memory.Object);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ClientException>(() => handler.HandleAsync(
+                                                                       new PayInvoiceClientRequest("lnbcrt1pay")
+                                                                       {
+                                                                           OutgoingChannel = pin
+                                                                       }, TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal(ErrorCodes.InvalidOperation, exception.ErrorCode);
+        _paymentServiceMock.Verify(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
+                                                          It.IsAny<PayInvoiceOptions>(),
+                                                          It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -451,6 +510,19 @@ public class PaymentsClientHandlerTests
                                                    uint expirySeconds) =>
         new(s_paymentHash, s_preimage, new Secret(Enumerable.Repeat((byte)0xef, 32).ToArray()), amount,
             amount is null ? null : "coffee", "lnbcrt1test", createdAt, expirySeconds, 40);
+
+    /// <summary>An open channel with <paramref name="shortChannelId"/> (what the pin resolution reads).</summary>
+    private static ChannelModel CreateChannel(byte tag, ShortChannelId shortChannelId)
+    {
+        var peerId = new CompactPubKey([0x02, .. Enumerable.Repeat((byte)0x11, 32)]);
+        return new ChannelModel(new ChannelParams(), new ChannelId(Enumerable.Repeat(tag, 32).ToArray()), null, null,
+                                true, null, null, LightningMoney.Satoshis(100_000),
+                                new ChannelKeySetModel(0, peerId, peerId, peerId, peerId, peerId, peerId), 0, 0,
+                                LightningMoney.Zero, null, 0, peerId, 0, ChannelState.Open, ChannelVersion.V1)
+        {
+            ShortChannelId = shortChannelId
+        };
+    }
 
     private static PaymentModel CreatePayment() =>
         new(s_paymentHash, "lnbcrt1pay", s_payee, LightningMoney.MilliSatoshis(50_000_123),

@@ -30,6 +30,18 @@ public sealed class PayInvoiceClientRequest
     /// </summary>
     public uint? MaxParts { get; init; }
 
+    /// <summary>
+    /// The only channel of ours the payment may leave through, as a channel id (64 hex characters) or a short channel id
+    /// (<c>BLOCKxTXxOUTPUT</c>); null for any (NL-609).
+    /// </summary>
+    public string? OutgoingChannel { get; init; }
+
+    /// <summary>
+    /// For an invoice of our own (a circular rebalance, NL-609): the only channel of ours the payment may come back in
+    /// through, as a channel id or a short channel id; null for any.
+    /// </summary>
+    public string? IncomingChannel { get; init; }
+
     public PayInvoiceClientRequest(string bolt11)
     {
         Bolt11 = bolt11;

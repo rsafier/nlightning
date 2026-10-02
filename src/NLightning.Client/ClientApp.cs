@@ -164,7 +164,8 @@ internal static class ClientApp
                     var payOptions = ParsePayInvoiceOptions(commandArgs, out _)!;
                     var payment = await client.PayInvoiceAsync(payOptions.Bolt11, payOptions.Amount,
                                                                payOptions.TimeoutSeconds, payOptions.MaxFeeMsat,
-                                                               payOptions.MaxParts, cancellationToken);
+                                                               payOptions.MaxParts, cancellationToken,
+                                                               payOptions.OutgoingChannel, payOptions.IncomingChannel);
                     new PayInvoicePrinter().Print(payment);
                     if (payment.Payment.Status == PaymentStatus.Failed)
                         return Failure;
@@ -421,7 +422,8 @@ internal static class ClientApp
             case "pay":
                 if (commandArgs.Length < 1)
                     return $"Missing argument. Usage: {cmd} <bolt11> [amount_msat] [timeout_seconds] "
-                         + "[--max-fee-msat <msat>] [--max-parts <n>] [--timeout <seconds>]";
+                         + "[--max-fee-msat <msat>] [--max-parts <n>] [--timeout <seconds>] [--out <channel>] "
+                         + "[--in <channel>]";
                 return ParsePayInvoiceOptions(commandArgs, out var payError) is null ? payError : null;
             case "payoffer":
             case "pay-offer":
@@ -884,8 +886,10 @@ internal static class ClientApp
     /// The arguments of payinvoice: <c>&lt;bolt11&gt; [amount_msat|any] [timeout_seconds]</c> positionally, and the
     /// options <c>--max-fee-msat &lt;msat&gt;</c> (the per-call fee limit, 0 for fee-free routes only, NL-270),
     /// <c>--max-parts &lt;n&gt;</c> (1 to <see cref="MaxPayParts"/>; 1 never splits) and <c>--timeout &lt;seconds&gt;</c>
-    /// (1 to <see cref="MaxPayTimeoutSeconds"/>, instead of the positional timeout), each also as
-    /// <c>--option=value</c>, anywhere after the command.
+    /// (1 to <see cref="MaxPayTimeoutSeconds"/>, instead of the positional timeout), <c>--out &lt;channel&gt;</c> (the
+    /// only channel the payment may leave through) and <c>--in &lt;channel&gt;</c> (for an invoice of our own, a
+    /// circular rebalance: the only channel it may come back in through; NL-609), a channel being a channel id or a
+    /// short channel id, each also as <c>--option=value</c>, anywhere after the command.
     /// </summary>
     /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
     internal static PayInvoiceArguments? ParsePayInvoiceOptions(string[] commandArgs, out string? error)
@@ -894,6 +898,8 @@ internal static class ClientApp
         ulong? maxFeeMsat = null;
         uint? maxParts = null;
         uint? timeout = null;
+        string? outgoingChannel = null;
+        string? incomingChannel = null;
         for (var i = 0; i < commandArgs.Length; i++)
         {
             var argument = commandArgs[i];
@@ -950,10 +956,32 @@ internal static class ClientApp
 
                     timeout = seconds;
                     break;
+                case "--out":
+                case "--in":
+                    if (!TryParseChannelId(value, out _) && !TryParseShortChannelId(value, out _))
+                    {
+                        error = $"Invalid channel '{value}' for {name}: expected a channel id (64 hex characters) or a "
+                              + "short channel id (BLOCKxTXxOUTPUT).";
+                        return null;
+                    }
+
+                    if (name.Equals("--out", StringComparison.OrdinalIgnoreCase))
+                        outgoingChannel = value;
+                    else
+                        incomingChannel = value;
+                    break;
                 default:
-                    error = $"Unknown option '{name}': expected --max-fee-msat, --max-parts or --timeout.";
+                    error = $"Unknown option '{name}': expected --max-fee-msat, --max-parts, --timeout, --out or --in.";
                     return null;
             }
+        }
+
+        if (outgoingChannel is not null
+         && string.Equals(outgoingChannel, incomingChannel, StringComparison.OrdinalIgnoreCase))
+        {
+            error = "--out and --in name the same channel: a rebalance leaves through one channel and comes back "
+                  + "through another.";
+            return null;
         }
 
         if (positional.Count is < 1 or > 3)
@@ -990,7 +1018,11 @@ internal static class ClientApp
         }
 
         error = null;
-        return new PayInvoiceArguments(positional[0], amount, timeout, maxFeeMsat, maxParts);
+        return new PayInvoiceArguments(positional[0], amount, timeout, maxFeeMsat, maxParts)
+        {
+            OutgoingChannel = outgoingChannel,
+            IncomingChannel = incomingChannel
+        };
     }
 
     /// <summary>The arguments of keysend.</summary>
@@ -1715,7 +1747,14 @@ internal sealed record PayInvoiceArguments(
     LightningMoney? Amount,
     uint? TimeoutSeconds,
     ulong? MaxFeeMsat,
-    uint? MaxParts);
+    uint? MaxParts)
+{
+    /// <summary><c>--out</c>: the only channel the payment may leave through (NL-609).</summary>
+    public string? OutgoingChannel { get; init; }
+
+    /// <summary><c>--in</c>: for an invoice of our own, the only channel it may come back in through (NL-609).</summary>
+    public string? IncomingChannel { get; init; }
+}
 
 /// <summary>
 /// The parsed arguments of keysend: the payee, the amount in sats and the custom records by type.

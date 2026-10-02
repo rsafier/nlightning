@@ -51,9 +51,11 @@ internal static class PaymentAccountingEvents
     /// <param name="parts">How many HTLCs the set had.</param>
     /// <param name="claimedOnchain">The settling part's channel is closing on chain: its amount is claimed there.</param>
     /// <param name="blockHeight">The current height, when known (0 = unknown).</param>
+    /// <param name="selfPayment">We paid the invoice ourselves (the incoming side of a circular rebalance, NL-609):
+    /// the books take it as no income (<c>selfPayment</c> detail).</param>
     public static AccountingEventModel InvoiceSettled(InvoiceModel invoice, LightningMoney received,
                                                       ChannelId? channelId, ChannelModel? channel, int parts,
-                                                      bool claimedOnchain, uint blockHeight)
+                                                      bool claimedOnchain, uint blockHeight, bool selfPayment = false)
     {
         var requested = invoice.Amount is { } amount && amount != received ? Msat(amount) : null;
         var customRecords = invoice.Keysend?.CustomRecords;
@@ -69,7 +71,8 @@ internal static class PaymentAccountingEvents
             ("quantity", invoice.Bolt12?.Quantity?.ToString(CultureInfo.InvariantCulture)),
             ("customRecords", customRecords is { Count: > 0 } records
                                   ? string.Join(',', records.Select(r => r.Type.ToString(CultureInfo.InvariantCulture)))
-                                  : null));
+                                  : null),
+            (AccountingDetailKeys.SelfPayment, selfPayment ? AccountingDetailKeys.True : null));
 
         return new AccountingEventModel
         {

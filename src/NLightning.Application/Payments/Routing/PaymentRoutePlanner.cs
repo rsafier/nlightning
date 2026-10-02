@@ -9,6 +9,7 @@ using Domain.Gossip.Graph;
 using Domain.Models;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Payments.Policies;
 using Domain.Routing.Pathfinding;
 
 /// <summary>
@@ -49,6 +50,13 @@ using Domain.Routing.Pathfinding;
 /// parts together, for the capacity) must respect, and its payee CLTV carries the shadow offset
 /// (<see cref="GraphRoutingContext.ShadowCltvOffset"/>, cut to the CLTV limit). A graph path found then is used alone
 /// when it carries the amount, else the split combines it with the direct and hint paths.</para>
+/// <para>Circular payments (NL-609, a rebalance: the payee is us, <see cref="PaymentPlanRequest.IncomingChannels"/>
+/// set): every path leaves through one of our channels and comes back through another, never the same one. The last
+/// hop is the incoming channel's peer forwarding to us over it, under the peer's policy (its <c>channel_update</c>),
+/// with that channel's <c>htlc_minimum_msat</c>, <c>htlc_maximum_msat</c> and what the peer can send us on it as its
+/// limits. Paths, in order: through the incoming channel's own peer over another channel of ours to it (no graph
+/// needed), then, with a graph, a graph route from us to that peer (our incoming channel excluded) followed by the
+/// last hop. The single-part and split rules are the same; the invoice's route hints are not used.</para>
 /// </remarks>
 public sealed class PaymentRoutePlanner
 {
@@ -78,21 +86,27 @@ public sealed class PaymentRoutePlanner
     /// <param name="request">What to plan.</param>
     /// <param name="parts">The parts, when the amount can be covered.</param>
     /// <param name="failureReason">Why it cannot be.</param>
-    /// <exception cref="ArgumentException">A zero amount, a payee that is us, or fewer than one part allowed.</exception>
+    /// <exception cref="ArgumentException">A zero amount, a payee that is us without
+    /// <see cref="PaymentPlanRequest.IncomingChannels"/> (a circular payment), or fewer than one part allowed.
+    /// </exception>
     public bool TryPlan(PaymentPlanRequest request, [NotNullWhen(true)] out IReadOnlyList<PlannedPart>? parts,
                         [NotNullWhen(false)] out string? failureReason)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (request.AmountMsat == 0)
             throw new ArgumentException("The amount to plan must be positive.", nameof(request));
-        if (request.Target.PayeeNodeId == request.OurNodeId)
-            throw new ArgumentException("Cannot pay ourselves.", nameof(request));
+        var circular = request.Target.PayeeNodeId == request.OurNodeId;
+        if (circular && request.IncomingChannels is null)
+            throw new ArgumentException("Cannot pay ourselves without the channels to come back in through.",
+                                        nameof(request));
         if (request.MaxParts < 1)
             throw new ArgumentException("At least one part must be allowed.", nameof(request));
 
         var inFlight = request.HintForwardsInFlightMsat ?? s_noHintAssigned;
         var reasons = new List<string>();
-        var paths = BuildPaths(request, reasons);
+        var paths = circular ? BuildCircularPaths(request, reasons) : BuildPaths(request, reasons);
+        var target = circular ? "No circular route back to us" : "No route to the payee";
+        var usableTarget = circular ? "No usable circular route back to us" : "No usable route to the payee";
 
         // One part, when one direct or hint path can carry the whole amount (they come first: the payee's own hints)
         var singleReasons = new List<string>();
@@ -109,7 +123,9 @@ public sealed class PaymentRoutePlanner
         var seen = new HashSet<string>(paths.Select(Signature));
         if (useGraph)
         {
-            graphPaths.AddRange(BuildGraphPaths(request, request.AmountMsat, seen));
+            graphPaths.AddRange(circular
+                                    ? BuildCircularGraphPaths(request, request.AmountMsat, seen)
+                                    : BuildGraphPaths(request, request.AmountMsat, seen));
             if (TryFitSingle(request, graphPaths, inFlight, singleReasons, out parts))
             {
                 failureReason = null;
@@ -130,7 +146,9 @@ public sealed class PaymentRoutePlanner
                 if (amount == 0 || amount < request.MinPartMsat)
                     break;
 
-                graphPaths.AddRange(BuildGraphPaths(request, amount, seen));
+                graphPaths.AddRange(circular
+                                        ? BuildCircularGraphPaths(request, amount, seen)
+                                        : BuildGraphPaths(request, amount, seen));
             }
         }
 
@@ -139,8 +157,11 @@ public sealed class PaymentRoutePlanner
         {
             parts = null;
             failureReason = reasons.Count == 0
-                                ? "No route to the payee: it is not our peer and the invoice has no usable route hints."
-                                : "No route to the payee: " + string.Join("; ", reasons) + ".";
+                                ? circular
+                                      ? "No circular route back to us: no channel of ours can take the payment back in."
+                                      : "No route to the payee: it is not our peer and the invoice has no usable route "
+                                      + "hints."
+                                : target + ": " + string.Join("; ", reasons) + ".";
             return false;
         }
 
@@ -151,7 +172,7 @@ public sealed class PaymentRoutePlanner
             var splitNote = request.Target.SupportsMpp
                                 ? " (splitting is turned off for this payment)"
                                 : " (the invoice does not offer basic_mpp, so the payment cannot be split)";
-            failureReason = "No usable route to the payee: " + string.Join("; ", reasons) + "." + splitNote;
+            failureReason = usableTarget + ": " + string.Join("; ", reasons) + "." + splitNote;
             return false;
         }
 
@@ -161,7 +182,7 @@ public sealed class PaymentRoutePlanner
             return true;
         }
 
-        failureReason = "No usable route to the payee: " + string.Join("; ", reasons) + "; " + splitReason + ".";
+        failureReason = usableTarget + ": " + string.Join("; ", reasons) + "; " + splitReason + ".";
         return false;
     }
 
@@ -491,26 +512,11 @@ public sealed class PaymentRoutePlanner
                                    + constraints.ExtraCltvDelta);
 
         // Our usable channels are the first hops, by their live sendable amount (their gossip state never applies)
-        var locals = new Dictionary<ShortChannelId, (LocalChannelCandidate Channel, ulong Sendable)>();
-        foreach (var channel in request.Channels)
-        {
-            if (constraints.ExcludedLocalChannels.Contains(channel.ChannelId) || channel.ShortChannelId == default)
-                continue;
-
-            var sendable = request.MaxSendableMsat(channel.ChannelId, []);
-            if (constraints.LocalLiquidityBoundsMsat.TryGetValue(channel.ChannelId, out var localBound)
-             && localBound <= sendable)
-                sendable = localBound == 0 ? 0 : localBound - 1;
-            if (!locals.TryGetValue(channel.ShortChannelId, out var existing) || existing.Sendable < sendable)
-                locals[channel.ShortChannelId] = (channel, sendable);
-        }
-
+        var locals = BuildGraphLocals(request, null);
         if (locals.Count == 0)
             return result;
 
-        var extraEdges = new List<ExtraEdge>();
-        foreach (var (scid, local) in locals)
-            extraEdges.Add(new ExtraEdge(request.OurNodeId, local.Channel.PeerNodeId, scid, s_ownFirstHopPolicy));
+        var extraEdges = OwnFirstHopEdges(request, locals);
 
         // The route hints: each entry's node forwards to the next entry's node (the payee after the last)
         foreach (var (_, hintIndex, hintPath) in HintRouteBuilder.GetCandidates(request.Target, request.OurNodeId))
@@ -559,17 +565,7 @@ public sealed class PaymentRoutePlanner
             if (!locals.TryGetValue(path.FirstChannel, out var local))
                 continue;
 
-            var hops = path.ToRoutingInfos();
-            var limits = new List<HopLimit>(hops.Count);
-            for (var i = 0; i < hops.Count; i++)
-            {
-                var policy = path.Hops[i + 1].Policy;
-                var capacity = graph.Graph.TryGetChannel(hops[i].ShortChannelId, out var graphChannel)
-                                   ? graphChannel.CapacityMsat
-                                   : null;
-                limits.Add(new HopLimit(policy.HtlcMinimumMsat, policy.HtlcMaximumMsat, capacity));
-            }
-
+            var (hops, limits) = GraphHops(graph, path);
             var total = (ulong)path.TotalCltvDelta;
             var shadow = total >= maxCltvDistance ? 0 : (uint)Math.Min(graph.ShadowCltvOffset, maxCltvDistance - total);
             var candidate = new CandidatePath(local.Channel, hops,
@@ -581,6 +577,234 @@ public sealed class PaymentRoutePlanner
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// The circular candidates without a graph (NL-609, see the class remarks): for each incoming channel, every other
+    /// usable channel of ours to the same peer, then the incoming channel's last hop.
+    /// </summary>
+    private List<CandidatePath> BuildCircularPaths(PaymentPlanRequest request, List<string> reasons)
+    {
+        var constraints = request.Constraints;
+        var maxCltvDistance = _nodeOptions.Value.Routing.MaxCltvExpiryDistance;
+        var finalCltv = FinalCltv(request);
+        var result = new List<CandidatePath>();
+        var incomingChannels = request.IncomingChannels!;
+        if (incomingChannels.Count == 0)
+        {
+            reasons.Add("no channel of ours can take it back in (open, link up, the peer's channel_update known)");
+            return result;
+        }
+
+        for (var index = 0; index < incomingChannels.Count; index++)
+        {
+            var incoming = incomingChannels[index];
+            if (!TryGetIncomingHop(incoming, constraints, reasons, out var hop, out var limit))
+                continue;
+
+            var description = $"back in over {incoming.ShortChannelId}";
+            var probe = HintRouteBuilder.BuildAlong([hop], request.Target, LightningMoney.MilliSatoshis(1), finalCltv);
+            var totalCltvDelta = (ulong)probe.FirstHopCltvExpiry - request.Height;
+            if (totalCltvDelta > maxCltvDistance)
+            {
+                reasons.Add($"{description}: total CLTV delta {totalCltvDelta} exceeds {maxCltvDistance} blocks");
+                continue;
+            }
+
+            var candidates = new List<CandidatePath>();
+            foreach (var channel in request.Channels)
+            {
+                if (channel.PeerNodeId != incoming.PeerNodeId || channel.ChannelId == incoming.ChannelId
+                                                             || constraints.ExcludedLocalChannels
+                                                                           .Contains(channel.ChannelId))
+                    continue;
+
+                candidates.Add(new CandidatePath(channel, [hop], $"out over {channel.ShortChannelId}, {description}",
+                                                 index, request.MaxSendableMsat(channel.ChannelId, []), [limit]));
+            }
+
+            // Without another channel to the same peer only a graph route can reach it; say so only without a graph
+            if (candidates.Count == 0 && request.Graph is null)
+                reasons.Add($"{description}: no other usable channel of ours to {incoming.PeerNodeId}");
+            result.AddRange(candidates.OrderByDescending(p => p.Sendable));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// The circular graph candidates for <paramref name="amountMsat"/> (NL-609): for each incoming channel, graph
+    /// routes from us to its peer that do not start over it, followed by its last hop; without the paths in
+    /// <paramref name="seen"/> (which it extends). None without a graph.
+    /// </summary>
+    private List<CandidatePath> BuildCircularGraphPaths(PaymentPlanRequest request, ulong amountMsat,
+                                                        HashSet<string> seen)
+    {
+        var result = new List<CandidatePath>();
+        if (request.Graph is not { } graph)
+            return result;
+
+        var constraints = request.Constraints;
+        var maxCltvDistance = _nodeOptions.Value.Routing.MaxCltvExpiryDistance;
+        var finalCltvDelta = checked(request.Target.MinFinalCltvExpiryDelta + HintRouteBuilder.FinalCltvSafetyOffset
+                                   + constraints.ExtraCltvDelta);
+        var ignored = new List<string>();
+        foreach (var incoming in request.IncomingChannels!)
+        {
+            if (!TryGetIncomingHop(incoming, constraints, ignored, out var hop, out var limit))
+                continue;
+
+            var locals = BuildGraphLocals(request, incoming.ChannelId);
+            if (locals.Count == 0)
+                continue;
+
+            // The peer must receive what it forwards to us plus its fee, with its CLTV delta above our final CLTV
+            var lastHopIncoming = ForwardingFee.RequiredIncomingMsat(hop.FeeBaseMsat, hop.FeeProportionalMillionths,
+                                                                     amountMsat);
+            var lastHopFee = lastHopIncoming - amountMsat;
+            if (lastHopFee > request.MaxFeeMsat)
+                continue;
+
+            var excludedChannels = new HashSet<ShortChannelId>(constraints.ExcludedChannels) { incoming.ShortChannelId };
+            foreach (var channel in request.Channels.Where(c => c.ChannelId == incoming.ChannelId
+                                                             && c.ShortChannelId != default))
+                excludedChannels.Add(channel.ShortChannelId);
+
+            var excludedNodes = new HashSet<CompactPubKey>(graph.PenalizedNodes);
+            foreach (var (_, local) in locals)
+                excludedNodes.Remove(local.Channel.PeerNodeId);
+            excludedNodes.Remove(incoming.PeerNodeId);
+            excludedNodes.UnionWith(constraints.ExcludedNodes);
+            var pathfinding = new PathfindingRequest(request.OurNodeId, incoming.PeerNodeId, lastHopIncoming,
+                                                     checked(finalCltvDelta + hop.CltvExpiryDelta))
+            {
+                MaxTotalCltvDelta = maxCltvDistance,
+                MaxFeeMsat = request.MaxFeeMsat - lastHopFee,
+                ExcludedNodes = excludedNodes,
+                ExcludedChannels = excludedChannels,
+                PolicyOverrides = constraints.GraphPolicyOverrides,
+                ExtraEdges = OwnFirstHopEdges(request, locals),
+                LocalChannels = locals.ToDictionary(pair => pair.Key,
+                                                    pair => new LocalChannelState(pair.Value.Sendable > 0,
+                                                                                  pair.Value.Sendable)),
+                Liquidity = graph.Liquidity,
+                NowUnixSeconds = graph.NowUnixSeconds,
+                StaleAfter = graph.StaleAfter,
+                CostModel = graph.CostModel
+            };
+
+            foreach (var path in _pathfinder.FindPaths(graph.Graph, pathfinding, Math.Max(1, graph.PathsPerAmount)))
+            {
+                if (!locals.TryGetValue(path.FirstChannel, out var local))
+                    continue;
+
+                var (graphHops, graphLimits) = GraphHops(graph, path);
+                var hops = graphHops.Append(hop).ToList();
+                var limits = graphLimits.Append(limit).ToList();
+                var through = hops.Count == 1
+                                  ? string.Empty
+                                  : " through " + string.Join(", ", hops.Take(hops.Count - 1)
+                                                                       .Select(h => h.ShortChannelId.ToString()));
+                var candidate = new CandidatePath(local.Channel, hops,
+                                                  $"graph route out over {local.Channel.ShortChannelId}{through}, "
+                                                + $"back in over {incoming.ShortChannelId}", int.MaxValue,
+                                                  local.Sendable, limits);
+                if (seen.Add(Signature(candidate)))
+                    result.Add(candidate);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// The last hop of a circular path over <paramref name="incoming"/>: its peer forwarding to us under its policy (a
+    /// verified failure's update replaces it), and that hop's limits; false (with the reason) when the payment
+    /// avoids the peer or the channel after a failure.
+    /// </summary>
+    private static bool TryGetIncomingHop(IncomingChannelCandidate incoming, RouteConstraints constraints,
+                                          List<string> reasons, out RoutingInfo hop, out HopLimit limit)
+    {
+        hop = default!;
+        limit = default;
+        var description = $"back in over {incoming.ShortChannelId}";
+        if (constraints.ExcludedNodes.Contains(incoming.PeerNodeId))
+        {
+            reasons.Add($"{description}: node {incoming.PeerNodeId} failed earlier");
+            return false;
+        }
+
+        if (constraints.ExcludedChannels.Contains(incoming.ShortChannelId))
+        {
+            reasons.Add($"{description}: channel {incoming.ShortChannelId} failed earlier");
+            return false;
+        }
+
+        if (constraints.PolicyOverrides.TryGetValue(incoming.ShortChannelId, out var policy))
+        {
+            hop = new RoutingInfo(incoming.PeerNodeId, incoming.ShortChannelId, policy.FeeBaseMsat,
+                                  policy.FeeProportionalMillionths, policy.CltvExpiryDelta);
+            limit = new HopLimit(policy.HtlcMinimumMsat, policy.HtlcMaximumMsat, incoming.ReceivableMsat);
+            return true;
+        }
+
+        hop = new RoutingInfo(incoming.PeerNodeId, incoming.ShortChannelId, incoming.FeeBaseMsat,
+                              incoming.FeeProportionalMillionths, incoming.CltvExpiryDelta);
+        limit = new HopLimit(incoming.HtlcMinimumMsat, incoming.HtlcMaximumMsat, incoming.ReceivableMsat);
+        return true;
+    }
+
+    /// <summary>
+    /// Our usable channels as graph first hops, by short channel id, each with its live sendable amount (bounded by a
+    /// learnt local bound); <paramref name="without"/> is left out (a circular payment's incoming channel).
+    /// </summary>
+    private static Dictionary<ShortChannelId, (LocalChannelCandidate Channel, ulong Sendable)> BuildGraphLocals(
+        PaymentPlanRequest request, ChannelId? without)
+    {
+        var constraints = request.Constraints;
+        var locals = new Dictionary<ShortChannelId, (LocalChannelCandidate Channel, ulong Sendable)>();
+        foreach (var channel in request.Channels)
+        {
+            if (constraints.ExcludedLocalChannels.Contains(channel.ChannelId) || channel.ShortChannelId == default
+                                                                               || channel.ChannelId == without)
+                continue;
+
+            var sendable = request.MaxSendableMsat(channel.ChannelId, []);
+            if (constraints.LocalLiquidityBoundsMsat.TryGetValue(channel.ChannelId, out var localBound)
+             && localBound <= sendable)
+                sendable = localBound == 0 ? 0 : localBound - 1;
+            if (!locals.TryGetValue(channel.ShortChannelId, out var existing) || existing.Sendable < sendable)
+                locals[channel.ShortChannelId] = (channel, sendable);
+        }
+
+        return locals;
+    }
+
+    private static List<ExtraEdge> OwnFirstHopEdges(
+        PaymentPlanRequest request, Dictionary<ShortChannelId, (LocalChannelCandidate Channel, ulong Sendable)> locals)
+    {
+        var extraEdges = new List<ExtraEdge>();
+        foreach (var (scid, local) in locals)
+            extraEdges.Add(new ExtraEdge(request.OurNodeId, local.Channel.PeerNodeId, scid, s_ownFirstHopPolicy));
+
+        return extraEdges;
+    }
+
+    /// <summary>A graph path's hops after our first channel and their limits (see <see cref="HopLimit"/>).</summary>
+    private static (List<RoutingInfo> Hops, List<HopLimit> Limits) GraphHops(GraphRoutingContext graph, GraphPath path)
+    {
+        var hops = path.ToRoutingInfos().ToList();
+        var limits = new List<HopLimit>(hops.Count);
+        for (var i = 0; i < hops.Count; i++)
+        {
+            var policy = path.Hops[i + 1].Policy;
+            var capacity = graph.Graph.TryGetChannel(hops[i].ShortChannelId, out var graphChannel)
+                               ? graphChannel.CapacityMsat
+                               : null;
+            limits.Add(new HopLimit(policy.HtlcMinimumMsat, policy.HtlcMaximumMsat, capacity));
+        }
+
+        return (hops, limits);
     }
 
     private static GraphPolicy HintPolicy(RoutingInfo entry, RouteConstraints constraints)
@@ -630,6 +854,31 @@ public sealed record LocalChannelCandidate(ChannelId ChannelId, CompactPubKey Pe
 public sealed record PlannedPart(LocalChannelCandidate Channel, PaymentRoute Route, string Description);
 
 /// <summary>
+/// One of our channels a circular payment (our own invoice, NL-609) may come back in through: <c>Open</c>, its link
+/// up and the peer's <c>channel_update</c> known (the peer forwards the last hop to us over it, under that policy).
+/// </summary>
+/// <param name="ChannelId">The channel.</param>
+/// <param name="PeerNodeId">Our peer on it (the last forwarding node).</param>
+/// <param name="ShortChannelId">The short channel id the peer forwards over (the peer's alias for an alias channel,
+/// as in our route hints).</param>
+/// <param name="FeeBaseMsat">The peer's <c>fee_base_msat</c> on it.</param>
+/// <param name="FeeProportionalMillionths">The peer's <c>fee_proportional_millionths</c> on it.</param>
+/// <param name="CltvExpiryDelta">The peer's <c>cltv_expiry_delta</c> on it.</param>
+/// <param name="HtlcMinimumMsat">The peer's <c>htlc_minimum_msat</c>.</param>
+/// <param name="HtlcMaximumMsat">The peer's <c>htlc_maximum_msat</c>.</param>
+/// <param name="ReceivableMsat">About what the peer can still send us on it, the parts of the payment together.</param>
+public sealed record IncomingChannelCandidate(
+    ChannelId ChannelId,
+    CompactPubKey PeerNodeId,
+    ShortChannelId ShortChannelId,
+    uint FeeBaseMsat,
+    uint FeeProportionalMillionths,
+    ushort CltvExpiryDelta,
+    ulong HtlcMinimumMsat,
+    ulong HtlcMaximumMsat,
+    ulong ReceivableMsat);
+
+/// <summary>
 /// The input of <see cref="PaymentRoutePlanner.TryPlan"/>.
 /// </summary>
 /// <param name="Target">What to pay.</param>
@@ -649,6 +898,8 @@ public sealed record PlannedPart(LocalChannelCandidate Channel, PaymentRoute Rou
 /// <see cref="RouteConstraints.ChannelLiquidityBoundsMsat"/>. Null: none in flight.</param>
 /// <param name="Graph">The gossip graph and mission control's estimates for graph paths; null routes only over our
 /// direct channels and the route hints.</param>
+/// <param name="IncomingChannels">For a circular payment (the payee is us, NL-609): the channels it may come back in
+/// through; null for any other payment.</param>
 public sealed record PaymentPlanRequest(
     PaymentTarget Target,
     ulong AmountMsat,
@@ -662,4 +913,5 @@ public sealed record PaymentPlanRequest(
     RouteConstraints Constraints,
     ulong MinPartMsat,
     IReadOnlyDictionary<ShortChannelId, ulong>? HintForwardsInFlightMsat = null,
-    GraphRoutingContext? Graph = null);
+    GraphRoutingContext? Graph = null,
+    IReadOnlyList<IncomingChannelCandidate>? IncomingChannels = null);

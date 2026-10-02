@@ -388,11 +388,13 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
                 if (invoice is not { Status: InvoiceStatus.Settled, SettledAt: { } settledAt } || settledAt > cutoverAt)
                     continue;
 
+                // NL-609: an invoice we paid ourselves (a rebalance) is flagged as the live writer flags it
+                var paidByUs = await IsPaidByUsAsync(unitOfWork, invoice);
                 var built = Build("invoice", invoice.PaymentHash.ToString(), () =>
                                       PaymentAccountingEvents.InvoiceSettled(
                                           invoice, invoice.AmountReceived ?? invoice.Amount
                                                 ?? throw new InvalidOperationException("No amount received"),
-                                          null, null, 1, false, 0));
+                                          null, null, 1, false, 0, paidByUs));
                 if (built is null || !await TryAddMemoAsync(events, built, tally, cancellationToken,
                                                             s_invoiceDetailsUnknown))
                     continue;
@@ -603,6 +605,24 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
         if (_logger.IsEnabled(LogLevel.Debug))
             _logger.LogDebug("Accounting memo backfill: {Written} {Source} event(s) saved ({Total} so far)", written,
                              source, total);
+    }
+
+    /// <summary>Whether one of our own payments of <paramref name="invoice"/> succeeded (a rebalance, NL-609).</summary>
+    private async Task<bool> IsPaidByUsAsync(IUnitOfWork unitOfWork, InvoiceModel invoice)
+    {
+        try
+        {
+            return await unitOfWork.PaymentDbRepository.GetByPaymentHashAsync(invoice.PaymentHash) is
+            {
+                Status: PaymentStatus.Succeeded
+            };
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogDebug(e, "Accounting memo backfill: could not check whether invoice {PaymentHash} was paid by us",
+                             invoice.PaymentHash);
+            return false;
+        }
     }
 
     private async Task<bool> IsOurInvoiceAsync(IUnitOfWork unitOfWork, PaymentModel payment)

@@ -52,13 +52,16 @@ public static class ClientUtils
         Console.WriteLine("  createinvoice <msat|any> [description] [expiry_seconds]");
         Console.WriteLine("                               Create an invoice (alias: addinvoice)");
         Console.WriteLine("  payinvoice <bolt11> [msat] [timeout_seconds] [--max-fee-msat <msat>] [--max-parts <n>]");
-        Console.WriteLine("             [--timeout <seconds>]");
+        Console.WriteLine("             [--timeout <seconds>] [--out <channel>] [--in <channel>]");
         Console.WriteLine("                               Pay an invoice and wait for the outcome (alias: pay); the");
         Console.WriteLine("                               amount is only for invoices without one; exit code 1 if it");
         Console.WriteLine("                               failed; timeout 1-300 s [default: 60], also the end of the");
         Console.WriteLine("                               retries, then it stays in flight and listpayments shows the");
         Console.WriteLine("                               outcome; fee limit [default: max(0.5%, 5000 msat)]; parts:");
-        Console.WriteLine("                               HTLCs in flight at once, 1-128, 1 never splits [default: 16]");
+        Console.WriteLine("                               HTLCs in flight at once, 1-128, 1 never splits [default: 16];");
+        Console.WriteLine("                               --out: the channel to leave through (channel id or scid); an");
+        Console.WriteLine("                               invoice of our own is a rebalance over a circular route, --in");
+        Console.WriteLine("                               the channel it comes back in through");
         Console.WriteLine("  payoffer <offer> [msat] [--quantity <n>] [--note <text>] [--max-fee-msat <msat>]");
         Console.WriteLine("           [--max-parts <n>] [--timeout <seconds>]");
         Console.WriteLine("                               Fetch an invoice for a BOLT 12 offer and pay it over its");

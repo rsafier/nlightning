@@ -78,7 +78,9 @@ public class PaymentsMessagePackTests
             Amount = LightningMoney.MilliSatoshis(1_001),
             TimeoutSeconds = 30,
             MaxFee = LightningMoney.MilliSatoshis(7_500),
-            MaxParts = 5
+            MaxParts = 5,
+            OutgoingChannel = "500x1x0",
+            IncomingChannel = "501x2x1"
         };
 
         // Act
@@ -92,8 +94,11 @@ public class PaymentsMessagePackTests
         Assert.Equal(30U, clientRequest.TimeoutSeconds);
         Assert.Equal(7_500UL, clientRequest.MaxFee!.MilliSatoshi);
         Assert.Equal(5U, clientRequest.MaxParts);
+        Assert.Equal(("500x1x0", "501x2x1"), (clientRequest.OutgoingChannel, clientRequest.IncomingChannel));
         Assert.Null(defaults.MaxFee);
         Assert.Null(defaults.MaxParts);
+        Assert.Null(defaults.OutgoingChannel);
+        Assert.Null(defaults.IncomingChannel);
     }
 
     [Fact]

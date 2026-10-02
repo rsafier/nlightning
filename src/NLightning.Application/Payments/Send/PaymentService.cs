@@ -40,8 +40,10 @@ using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
 using Domain.Protocol.Tlv;
 using Domain.Routing.Pathfinding;
+using Gossip.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Invoices;
 using Keysend;
 using Routing;
 using Routing.Interfaces;
@@ -55,8 +57,13 @@ using Routing.Interfaces;
 /// <para><see cref="PayInvoiceAsync(string, LightningMoney?, PayInvoiceOptions, CancellationToken)"/>, in order:</para>
 /// <list type="number">
 ///   <item>Decode the BOLT 11 invoice for our network (signature, features, required fields; <c>Invoice.Decode</c>),
-///   refuse it when expired, when it is ours, or when the amount is missing or differs from the invoice's, or an
-///   option is out of range (<see cref="ArgumentException"/>, nothing persisted).</item>
+///   refuse it when expired, when the amount is missing or differs from the invoice's, or an option is out of range
+///   (<see cref="ArgumentException"/>, nothing persisted). An invoice of ours (NL-609) is paid over a circular route
+///   (a rebalance): it must be in our invoice table and <c>Open</c>, its route hints are ignored, and every round plans
+///   over the channels it may come back in through (<see cref="IncomingChannelCandidate"/>: usable, with the peer's
+///   <c>channel_update</c>, <see cref="PayInvoiceOptions.IncomingChannelId"/> when pinned); our switch settles the
+///   invoice as the final hop of the incoming side while this service records the outgoing payment.
+///   <see cref="PayInvoiceOptions.OutgoingChannelId"/> limits every payment's first hop to that channel.</item>
 ///   <item>Under a per-payment-hash lock: refuse a hash whose stored payment is <c>InFlight</c> or <c>Succeeded</c>, or
 ///   that a call of this process is still paying (<see cref="InvalidOperationException"/>); a <c>Failed</c> one is
 ///   replaced by the new attempt. An <c>InFlight</c> payment without a recorded HTLC id (a crash or a failed save
@@ -136,6 +143,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
     private readonly IAttributionDataService? _attributionDataService;
     private readonly GraphPathSource? _graphPathSource;
     private readonly IRouteBlindingService? _routeBlindingService;
+    private readonly IChannelUpdateService? _channelUpdateService;
 
     /// <summary>
     /// The engine's sender rules (<c>UpdateValidator.ValidateSendAdd</c>) that a smaller HTLC on the same channel may
@@ -165,9 +173,11 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                           IServiceScopeFactory serviceScopeFactory, TimeProvider timeProvider,
                           IAttributionDataService? attributionDataService = null,
                           GraphPathSource? graphPathSource = null, IGossipScidRefresher? scidRefresher = null,
-                          IRouteBlindingService? routeBlindingService = null)
+                          IRouteBlindingService? routeBlindingService = null,
+                          IChannelUpdateService? channelUpdateService = null)
     {
         _routeBlindingService = routeBlindingService;
+        _channelUpdateService = channelUpdateService;
         _attributionDataService = attributionDataService;
         _graphPathSource = graphPathSource;
         _blockchainMonitor = blockchainMonitor;
@@ -239,19 +249,41 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             throw new ArgumentOutOfRangeException(nameof(options),
                                                   $"The part limit must be 1 to {PaymentSendOptions.MaxPartsLimit}.");
 
+        if (options.OutgoingChannelId is { } outPin && options.IncomingChannelId == outPin)
+            throw new ArgumentException("A payment cannot leave and come back through the same channel.",
+                                        nameof(options));
+
         var invoice = DecodeInvoice(bolt11);
 
         // bLIP 39 (NL-440): an invoice with blinded paths names its recipient only through them (it is signed by an
         // ephemeral key and carries no payment secret), so it is paid over the paths
         if (invoice.BlindedPaymentPaths.Count > 0)
+        {
+            if (options.OutgoingChannelId is not null || options.IncomingChannelId is not null)
+                throw new ArgumentException("Channel pins are not supported for an invoice with blinded paths.",
+                                            nameof(options));
             return await PayBlindedInvoiceAsync(invoice, bolt11, amount, options, cancellationToken);
+        }
 
         var target = PaymentTarget.FromInvoice(invoice);
         var paymentAmount = ResolveAmount(target.Amount, amount);
         var ourNodeId = _secureKeyManager.GetNodePubKey();
-        if (target.PayeeNodeId == ourNodeId)
-            throw new ArgumentException("The invoice is ours; a node cannot pay itself.", nameof(bolt11));
+        var circular = target.PayeeNodeId == ourNodeId;
+        if (circular)
+        {
+            // NL-609: our own invoice is a rebalance, over a circular route; the incoming side is chosen from our live
+            // channels each round, never from the invoice's own route hints
+            await ThrowUnlessOpenInvoiceOfOursAsync(target.PaymentHash);
+            target = target with { RouteHints = [] };
+        }
+        else if (options.IncomingChannelId is not null)
+        {
+            throw new ArgumentException("An incoming channel can only be pinned for an invoice of our own (a "
+                                      + "rebalance).", nameof(options));
+        }
 
+        ThrowUnlessOurChannel(options.OutgoingChannelId, "outgoing");
+        ThrowUnlessOurChannel(options.IncomingChannelId, "incoming");
         if (_blockchainMonitor.LastProcessedBlockHeight == 0)
             throw new InvalidOperationException("No block has been processed yet; cannot set the HTLC expiry.");
 
@@ -262,9 +294,37 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                          options.MaxFee ?? sendOptions.GetMaxFee(paymentAmount),
                                          options.MaxParts ?? Math.Clamp(sendOptions.MaxParts, 1,
                                                                         PaymentSendOptions.MaxPartsLimit),
-                                         Math.Max(1, sendOptions.MaxAttempts), deadline, now);
+                                         Math.Max(1, sendOptions.MaxAttempts), deadline, now)
+        {
+            IsCircular = circular,
+            OutgoingChannelId = options.OutgoingChannelId,
+            IncomingChannelId = options.IncomingChannelId
+        };
 
         return await RunSessionAsync(session, options.Timeout, cancellationToken);
+    }
+
+    /// <summary>
+    /// Refuses an invoice signed with our node key that is not an <c>Open</c> invoice of our invoice table (NL-609):
+    /// only an open invoice of ours can be paid back to us.
+    /// </summary>
+    private async Task ThrowUnlessOpenInvoiceOfOursAsync(Hash paymentHash)
+    {
+        using var scope = _serviceScopeFactory.CreateScope();
+        var invoice = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().InvoiceDbRepository
+                                 .GetByPaymentHashAsync(paymentHash)
+                   ?? throw new ArgumentException("The invoice is signed with our node key but is not one of our "
+                                                + "invoices; a node pays itself only its own open invoices.", "bolt11");
+        if (invoice.Status != InvoiceStatus.Open)
+            throw new ArgumentException($"The invoice is ours and {invoice.Status}; only an open invoice of ours can be "
+                                      + "paid back to us (a rebalance).", "bolt11");
+    }
+
+    /// <summary>Refuses a pin that names none of our channels.</summary>
+    private void ThrowUnlessOurChannel(ChannelId? channelId, string side)
+    {
+        if (channelId is { } id && !_channelMemoryRepository.TryGetChannel(id, out _))
+            throw new ArgumentException($"The {side} channel {id} is not one of our channels.", "options");
     }
 
     /// <inheritdoc />
@@ -868,6 +928,12 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                               : 0;
             var height = _blockchainMonitor.LastProcessedBlockHeight;
             var channels = await GetUsableChannelsAsync(CancellationToken.None);
+            var incomingChannels = session.IsCircular
+                                       ? BuildIncomingCandidates(channels, session.IncomingChannelId)
+                                       : null;
+            var outgoingChannels = session.OutgoingChannelId is { } outPin
+                                       ? channels.Where(c => c.ChannelId == outPin).ToList()
+                                       : channels;
             GraphRoutingContext? graph = null;
             if (_graphPathSource is { IsAvailable: true })
             {
@@ -887,11 +953,12 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             {
                 var request = new PaymentPlanRequest(session.Target, remaining, session.Amount.MilliSatoshi, feeLeft,
                                                      partsAllowed, height, _secureKeyManager.GetNodePubKey(),
-                                                     channels.Select(ToCandidate).ToList(),
+                                                     outgoingChannels.Select(ToCandidate).ToList(),
                                                      CreateLiquidityProbe(channels, height), session.Constraints,
                                                      _sendOptions.Value.MinPartMsat,
                                                      PaymentRoutePlanner.SumHintForwards(
-                                                         session.InFlightParts.Select(p => p.Route)), graph);
+                                                         session.InFlightParts.Select(p => p.Route)), graph,
+                                                     incomingChannels);
                 _planner.TryPlan(request, out planned, out noRouteReason);
             }
 
@@ -2153,6 +2220,41 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
 
     private static LocalChannelCandidate ToCandidate(ChannelModel channel) =>
         new(channel.ChannelId, channel.RemoteNodeId, channel.ShortChannelId);
+
+    /// <summary>
+    /// The channels a circular payment may come back in through (NL-609): every usable channel (or only
+    /// <paramref name="pin"/>) whose peer's <c>channel_update</c> we hold and that is not disabled, under the short
+    /// channel id the peer forwards over (its alias for an alias channel, as in our route hints), the one the peer can
+    /// send us the most first. None without the channel update service.
+    /// </summary>
+    private List<IncomingChannelCandidate> BuildIncomingCandidates(IEnumerable<ChannelModel> channels, ChannelId? pin)
+    {
+        var result = new List<IncomingChannelCandidate>();
+        if (_channelUpdateService is null)
+            return result;
+
+        foreach (var channel in channels)
+        {
+            if (pin is { } pinned && channel.ChannelId != pinned)
+                continue;
+            if (!_channelUpdateService.TryGetRemoteChannelUpdate(channel.ChannelId, out var update)
+             || update is null || update.IsDisabled)
+                continue;
+
+            var shortChannelId = channel.ChannelParams.UseScidAlias > FeatureSupport.No
+                                     ? channel.RemoteAlias ?? default
+                                     : channel.ShortChannelId;
+            if (shortChannelId == default)
+                continue;
+
+            result.Add(new IncomingChannelCandidate(channel.ChannelId, channel.RemoteNodeId, shortChannelId,
+                                                    update.FeeBaseMsat, update.FeeProportionalMillionths,
+                                                    update.CltvExpiryDelta, update.HtlcMinimumMsat,
+                                                    update.HtlcMaximumMsat, InvoiceService.GetPeerSpendable(channel)));
+        }
+
+        return result.OrderByDescending(c => c.ReceivableMsat).ToList();
+    }
 
     /// <summary>
     /// What each usable channel can send (the engine's dry run), cached for the no-HTLC-planned case.

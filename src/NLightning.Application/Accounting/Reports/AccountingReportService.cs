@@ -300,8 +300,14 @@ public sealed class AccountingReportService : IAccountingReports
                         return;
 
                     channel.Observe(accountingEvent);
-                    channel.PaymentsReceivedMsat += accountingEvent.AmountMsat;
-                    channel.PaymentsReceived++;
+                    // NL-609: the incoming side of our own rebalance is no payment received (its cost is the
+                    // outgoing PaymentSucceeded's fee)
+                    if (accountingEvent.Details.GetValueOrDefault("selfPayment") != "true")
+                    {
+                        channel.PaymentsReceivedMsat += accountingEvent.AmountMsat;
+                        channel.PaymentsReceived++;
+                    }
+
                     active.Add(channel.ChannelId);
                     return;
                 }

@@ -98,8 +98,11 @@ public static class AccountingPostingRules
         var kind = Text(accountingEvent, AccountingDetailKeys.Kind);
         return accountingEvent.Kind switch
         {
-            AccountingEventKind.InvoiceSettled => WithDetail(kind == "keysend" ? "Keysend received" : "Invoice settled",
-                                                             description),
+            AccountingEventKind.InvoiceSettled => WithDetail(IsSet(accountingEvent, AccountingDetailKeys.SelfPayment)
+                                                                 ? "Rebalance received"
+                                                                 : kind == "keysend"
+                                                                     ? "Keysend received"
+                                                                     : "Invoice settled", description),
             AccountingEventKind.PaymentSucceeded => WithDetail(IsSet(accountingEvent, AccountingDetailKeys.SelfPayment)
                                                                    ? "Rebalance"
                                                                    : kind == "keysend"
@@ -145,21 +148,32 @@ public static class AccountingPostingRules
 
     #region Off-chain
 
+    /// <summary>Dr Channels a; Cr Received a. Our own invoice paid by ourselves (a rebalance's incoming side, flagged
+    /// <c>selfPayment</c>, NL-609) is no income: Cr Rebalance a, which the payment's Dr Rebalance (a + fee) offsets, so
+    /// the rebalance account keeps only the route fee.</summary>
     private static string? PostInvoiceSettled(AccountingEventModel e, Lines lines)
     {
         lines.Add(AccountRole.Channels, e.AmountMsat);
-        lines.Add(AccountRole.Received, -e.AmountMsat);
+        lines.Add(IsSet(e, AccountingDetailKeys.SelfPayment) ? AccountRole.Rebalance : AccountRole.Received,
+                  -e.AmountMsat);
         return null;
     }
 
-    /// <summary>AmountMsat = −(amount + fee): Cr Channels (a + fee); Dr Sent a (Rebalance for a self-payment); Dr
-    /// RoutingFees fee.</summary>
+    /// <summary>AmountMsat = −(amount + fee): Cr Channels (a + fee); Dr Sent a; Dr RoutingFees fee. A self-payment (a
+    /// rebalance, NL-609): Cr Channels (a + fee); Dr Rebalance (a + fee), the amount coming back through the incoming
+    /// side's <c>InvoiceSettled</c> (Cr Rebalance a), so only the route fee stays an expense.</summary>
     private static string? PostPaymentSucceeded(AccountingEventModel e, Lines lines)
     {
         var fee = e.FeeMsat;
         var amount = checked(-e.AmountMsat - fee);
         lines.Add(AccountRole.Channels, e.AmountMsat);
-        lines.Add(IsSet(e, AccountingDetailKeys.SelfPayment) ? AccountRole.Rebalance : AccountRole.Sent, amount);
+        if (IsSet(e, AccountingDetailKeys.SelfPayment))
+        {
+            lines.Add(AccountRole.Rebalance, checked(amount + fee));
+            return null;
+        }
+
+        lines.Add(AccountRole.Sent, amount);
         lines.Add(AccountRole.RoutingFees, fee);
         return null;
     }
