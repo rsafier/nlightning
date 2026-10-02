@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using NLightning.Tests.Utils;
 using NLightning.Tests.Utils.Channels;
 
 namespace NLightning.Application.Tests.Gossip.Graph;
@@ -509,10 +510,11 @@ public class GossipIngressTests
                                                                        s_bobFunding).Payload,
                                 LightningMoney.Satoshis(1)), TestContext.Current.CancellationToken);
 
-        // Assert
-        var completed = await Task.WhenAny(call, Task.Delay(TimeSpan.FromSeconds(5),
-                                                            TestContext.Current.CancellationToken));
-        Assert.Same(call, completed);
+        // Assert: the call is back at once, while the store's load never ends
+        await WaitFor.TrueAsync(() => call.IsCompleted, TimeSpan.FromSeconds(5),
+                                "the own-gossip call to return while the store is still loading",
+                                TestContext.Current.CancellationToken);
+        await call;
     }
 
     [Theory]
@@ -595,8 +597,10 @@ public class GossipIngressTests
     public async Task Given_AnAnnouncementGivenUpAfterItsRetries_When_ItsUpdateArrivesAgainLater_Then_ItIsMissedUntilStored()
     {
         // Arrange: bitcoind is down and no retry is allowed; NL-406: the update that promotes the announcement runs
-        // the chain lookup, so the update is what is given up
-        var kit = new GraphTestKit(configure: o => o.MaxRetries = 0);
+        // the chain lookup, so the update is what is given up. The kit's stepped timers keep every scheduling of
+        // this ingress (the retry queue, the write-behind round) on the clock the test moves, so a loaded run can
+        // not stretch or reorder it (NL-445)
+        var kit = new GraphTestKit(configure: o => o.MaxRetries = 0, steppedTimers: true);
         kit.FundingFails(FundingOutputStatus.ChainUnavailable);
         await kit.Ingress.StartAsync();
         var announcement = GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
@@ -607,7 +611,9 @@ public class GossipIngressTests
         // Act
         Assert.True(kit.Ingress.TryEnqueue(GraphTestKit.CreatePeer().Object, announcement));
         Assert.True(kit.Ingress.TryEnqueue(GraphTestKit.CreatePeer().Object, update));
-        await WaitUntilAsync(() => kit.Ingress.DroppedCount == 1);
+        await WaitFor.TrueAsync(() => kit.Ingress.DroppedCount == 1, TimeSpan.FromSeconds(30),
+                                "the deferred update to be given up after its retries",
+                                TestContext.Current.CancellationToken);
         Assert.True(kit.Ingress.IsPendingAnnouncement(s_scid));
         kit.FundingFound();
         await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object, update, 1,
@@ -687,9 +693,11 @@ public class GossipIngressTests
                                            GraphTestKit.SignedChannelAnnouncement(
                                                s_scid, s_alice, s_bob, s_aliceFunding, s_bobFunding)));
         Assert.True(kit.Ingress.TryEnqueue(peer.Object, GraphTestKit.SignedNodeAnnouncement(s_bob, s_now)));
-        await WaitUntilAsync(() => kit.Store.NodeCount == 1
+        await WaitFor.TrueAsync(() => kit.Store.NodeCount == 1
                                 && kit.Store.TryGetChannel(s_scid, out var c)
-                                && c.GetPolicy(GraphTestKit.DirectionOf(s_alice, s_bob)) is not null);
+                                && c.GetPolicy(GraphTestKit.DirectionOf(s_alice, s_bob)) is not null,
+                                TimeSpan.FromSeconds(30), "the workers to apply the queued gossip",
+                                TestContext.Current.CancellationToken);
         await kit.Ingress.StopAsync();
 
         // Assert
@@ -701,12 +709,12 @@ public class GossipIngressTests
     [Fact]
     public async Task Given_TransientChainAnswer_When_TheFirstUpdatePromotesTheAnnouncement_Then_ItIsRetriedLater()
     {
-        // Arrange
+        // Arrange: the retry timer is the kit's stepped clock, so the retry fires on Advance, not in real time
         var kit = new GraphTestKit(configure: o =>
         {
             o.RetryDelay = TimeSpan.FromMilliseconds(20);
             o.MaxRetries = 5;
-        });
+        }, steppedTimers: true);
         kit.FundingFails(FundingOutputStatus.ChainUnavailable);
         await kit.Ingress.StartAsync();
 
@@ -717,9 +725,17 @@ public class GossipIngressTests
         Assert.True(kit.Ingress.TryEnqueue(GraphTestKit.CreatePeer().Object,
                                            GraphTestKit.SignedChannelUpdate(
                                                s_scid, s_alice, GraphTestKit.DirectionOf(s_alice, s_bob), s_now)));
-        await WaitUntilAsync(() => kit.FundingLookup.Invocations.Count >= 1);
+        await WaitFor.TrueAsync(() => kit.FundingLookup.Invocations.Count >= 1, TimeSpan.FromSeconds(30),
+                                "the first chain lookup of the promoted announcement",
+                                TestContext.Current.CancellationToken);
         kit.FundingFound();
-        await WaitUntilAsync(() => kit.Store.ChannelCount == 1);
+        // The deferred update is re-queued after RetryDelay on the kit's clock: advance past the retry window (in
+        // steps, until the retry the worker had scheduled exists) instead of waiting for a real timer (NL-445)
+        await WaitFor.TrueAsync(() =>
+        {
+            kit.Clock.Advance(TimeSpan.FromMilliseconds(20));
+            return kit.Store.ChannelCount == 1;
+        }, TimeSpan.FromSeconds(30), "the retried update to store the channel", TestContext.Current.CancellationToken);
         await kit.Ingress.StopAsync();
 
         // Assert
@@ -793,16 +809,5 @@ public class GossipIngressTests
                                         Microsoft.Extensions.Options.Options.Create(nodeOptions),
                                         NullLogger<GossipIngress>.Instance);
         return (ingress, store);
-    }
-
-    private static async Task WaitUntilAsync(Func<bool> condition)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(10);
-        while (!condition())
-        {
-            if (DateTime.UtcNow > deadline)
-                Assert.Fail("Timed out waiting for the ingress");
-            await Task.Delay(10, TestContext.Current.CancellationToken);
-        }
     }
 }
