@@ -10,6 +10,7 @@ using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using InteractiveTx.TestDoubles;
+using NLightning.Tests.Utils;
 
 /// <summary>
 /// The refusals of the dual-funded open (splicing plan wave DF, BOLT 2 "Channel Establishment v2") on
@@ -192,18 +193,32 @@ public class DualFundRefusalTests
         var result = await harness.RunAsync(open);
 
         // Assert: the receiver answered tx_abort (never a channel failure) and forgot the unsigned open: persisted
-        // Stale, its negotiation Aborted, nothing published
+        // Stale, its negotiation Aborted, nothing published. The open's 2 s deadline sits on the harness's stepped
+        // clock (nothing advances it), so the negotiation ends through the tx_abort exchange alone, and the
+        // forgetting runs behind the handler: wait for the whole aborted state instead of racing it (NL-499)
         Assert.True(genuine < harness.Transcript.Count);
         var receiver = harness.Other(sender);
         Assert.Contains(harness.Transcript, t => t.From == receiver.Name && t.Message is TxAbortMessage);
         Assert.NotNull(result.FailureReason);
+        await WaitFor.TrueAsync(async () =>
+        {
+            if (receiver.Memory.TryGetChannel(channelId, out _))
+                return false;
+            var stored = await receiver.InScopeAsync(u => u.ChannelDbRepository.GetByIdAsync(channelId));
+            if (stored is not null && stored.State != ChannelState.Stale)
+                return false;
+            var sessions = await receiver.InScopeAsync(u => u.InteractiveTxSessionDbRepository
+                                                              .GetByChannelIdAsync(channelId));
+            return sessions.All(x => x.State == InteractiveTxSessionState.Aborted);
+        }, TimeSpan.FromSeconds(15), $"{receiver.Name} to forget the aborted open (memory, row, sessions)",
+                                  TestContext.Current.CancellationToken);
         Assert.False(receiver.Memory.TryGetChannel(channelId, out var kept),
                      $"{receiver.Name} kept {kept?.State}\n{harness.Describe()}");
-        var stored = await receiver.InScopeAsync(u => u.ChannelDbRepository.GetByIdAsync(channelId));
-        Assert.True(stored is null or { State: ChannelState.Stale });
-        var sessions = await receiver.InScopeAsync(u => u.InteractiveTxSessionDbRepository
-                                                          .GetByChannelIdAsync(channelId));
-        Assert.All(sessions, x => Assert.Equal(InteractiveTxSessionState.Aborted, x.State));
+        var storedAfter = await receiver.InScopeAsync(u => u.ChannelDbRepository.GetByIdAsync(channelId));
+        Assert.True(storedAfter is null or { State: ChannelState.Stale });
+        var sessionsAfter = await receiver.InScopeAsync(u => u.InteractiveTxSessionDbRepository
+                                                                .GetByChannelIdAsync(channelId));
+        Assert.All(sessionsAfter, x => Assert.Equal(InteractiveTxSessionState.Aborted, x.State));
         Assert.Empty(receiver.Published);
 
         // The sender verified the receiver's genuine commitment_signed and, signing first, sent tx_signatures: from
