@@ -82,6 +82,14 @@ public class NLightningDbContext : DbContext
     public DbSet<AccountingBalanceEntity> AccountingBalances { get; set; }
     public DbSet<AccountingCursorEntity> AccountingCursor { get; set; }
 
+    // Accounting financial books (NL-602 A3, migration AddAccountingFinancial)
+    public DbSet<AccountingPriceEntity> AccountingPrices { get; set; }
+    public DbSet<AccountingRuleEntity> AccountingRules { get; set; }
+    public DbSet<AccountingOverrideEntity> AccountingOverrides { get; set; }
+    public DbSet<AccountingLotEntity> AccountingLots { get; set; }
+    public DbSet<AccountingLotReliefEntity> AccountingLotReliefs { get; set; }
+    public DbSet<AccountingPeriodEntity> AccountingPeriods { get; set; }
+
     // Gossip graph DbSets (BOLT 7 plan G2-T3)
     public DbSet<GraphNodeEntity> GraphNodes { get; set; }
     public DbSet<GraphChannelEntity> GraphChannels { get; set; }
@@ -138,6 +146,7 @@ public class NLightningDbContext : DbContext
 
         // Accounting books (NL-602 A2)
         modelBuilder.ConfigureAccountingBooksEntities(_databaseType);
+        modelBuilder.ConfigureAccountingFinancialEntities(_databaseType);
 
         // Gossip graph entities
         modelBuilder.ConfigureGraphNodeEntity(_databaseType);

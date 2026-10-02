@@ -12,6 +12,7 @@ using Database.Node;
 using Database.Onchain;
 using Database.Payment;
 using Domain.Accounting.Books;
+using Domain.Accounting.Financial;
 using Domain.Accounting.Interfaces;
 using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
@@ -93,6 +94,13 @@ public class UnitOfWork : IUnitOfWork
     private readonly AccountingFeedGate? _accountingFeedGate;
     private AccountingBooksDbRepository? _accountingBooksDbRepository;
 
+    // Accounting financial books (NL-602 A3, migration AddAccountingFinancial)
+    private AccountingPriceDbRepository? _accountingPriceDbRepository;
+    private AccountingRuleDbRepository? _accountingRuleDbRepository;
+    private AccountingOverrideDbRepository? _accountingOverrideDbRepository;
+    private AccountingLotDbRepository? _accountingLotDbRepository;
+    private AccountingPeriodDbRepository? _accountingPeriodDbRepository;
+
     public IBlockchainStateDbRepository BlockchainStateDbRepository =>
         _blockchainStateDbRepository ??= new BlockchainStateDbRepository(_context);
 
@@ -171,6 +179,21 @@ public class UnitOfWork : IUnitOfWork
 
     public IAccountingBooksDbRepository AccountingBooksDbRepository =>
         _accountingBooksDbRepository ??= new AccountingBooksDbRepository(_context);
+
+    public IAccountingPriceDbRepository AccountingPriceDbRepository =>
+        _accountingPriceDbRepository ??= new AccountingPriceDbRepository(_context);
+
+    public IAccountingRuleDbRepository AccountingRuleDbRepository =>
+        _accountingRuleDbRepository ??= new AccountingRuleDbRepository(_context);
+
+    public IAccountingOverrideDbRepository AccountingOverrideDbRepository =>
+        _accountingOverrideDbRepository ??= new AccountingOverrideDbRepository(_context);
+
+    public IAccountingLotDbRepository AccountingLotDbRepository =>
+        _accountingLotDbRepository ??= new AccountingLotDbRepository(_context);
+
+    public IAccountingPeriodDbRepository AccountingPeriodDbRepository =>
+        _accountingPeriodDbRepository ??= new AccountingPeriodDbRepository(_context);
 
     public IInteractiveTxSessionDbRepository InteractiveTxSessionDbRepository =>
         _interactiveTxSessionDbRepository ??= new InteractiveTxSessionDbRepository(_context);

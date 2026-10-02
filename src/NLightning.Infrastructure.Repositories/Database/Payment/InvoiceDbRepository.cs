@@ -65,7 +65,9 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
             MinFinalCltvExpiry = invoice.MinFinalCltvExpiry,
             Status = (byte)invoice.Status,
             AmountReceivedMsat = ToMsat(invoice.AmountReceived),
-            SettledAt = invoice.SettledAt
+            SettledAt = invoice.SettledAt,
+            Label = invoice.Label,
+            Tags = invoice.Tags
         });
     }
 
@@ -169,7 +171,11 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
                                 ToMoney(entity.AmountMsat), entity.Description, entity.Bolt11, entity.CreatedAt,
                                 entity.ExpirySeconds, entity.MinFinalCltvExpiry, (InvoiceStatus)entity.Status,
                                 ToMoney(entity.AmountReceivedMsat), entity.SettledAt, MapBolt12(entity),
-                                MapKeysend(entity));
+                                MapKeysend(entity))
+        {
+            Label = entity.Label,
+            Tags = entity.Tags
+        };
     }
 
     private static KeysendDetails? MapKeysend(InvoiceEntity entity)

@@ -139,14 +139,17 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
                                                     h.HoldTimeMs is { } ms ? TimeSpan.FromMilliseconds(ms) : null))
                         .ToList();
 
-        return PaymentModel.Restore(entity.PaymentHash, entity.Bolt11, entity.PayeeNodeId,
-                                    LightningMoney.MilliSatoshis(checked((ulong)entity.AmountMsat)),
-                                    LightningMoney.MilliSatoshis(checked((ulong)entity.FeeMsat)), entity.CreatedAt,
-                                    (PaymentStatus)entity.Status, entity.OutgoingChannelId, entity.OutgoingHtlcId,
-                                    entity.Preimage is { } preimage ? new Secret(preimage) : (Secret?)null,
-                                    entity.FailureCode is { } code ? (FailureCode)code : (FailureCode?)null,
-                                    entity.FailureSourceIndex, entity.FailureReason, entity.CompletedAt, route,
-                                    MapBolt12(entity), MapKeysend(entity));
+        var payment = PaymentModel.Restore(entity.PaymentHash, entity.Bolt11, entity.PayeeNodeId,
+                                           LightningMoney.MilliSatoshis(checked((ulong)entity.AmountMsat)),
+                                           LightningMoney.MilliSatoshis(checked((ulong)entity.FeeMsat)), entity.CreatedAt,
+                                           (PaymentStatus)entity.Status, entity.OutgoingChannelId, entity.OutgoingHtlcId,
+                                           entity.Preimage is { } preimage ? new Secret(preimage) : (Secret?)null,
+                                           entity.FailureCode is { } code ? (FailureCode)code : (FailureCode?)null,
+                                           entity.FailureSourceIndex, entity.FailureReason, entity.CompletedAt, route,
+                                           MapBolt12(entity), MapKeysend(entity));
+        payment.Label = entity.Label;
+        payment.Tags = entity.Tags;
+        return payment;
     }
 
     private static KeysendDetails? MapKeysend(PaymentEntity entity)
@@ -180,6 +183,8 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
                                    : null;
         entity.InvoiceRequestMetadata = payment.Bolt12?.InvoiceRequestMetadata.ToArray();
         entity.PayerNote = payment.Bolt12?.PayerNote;
+        entity.Label = payment.Label;
+        entity.Tags = payment.Tags;
         entity.AmountMsat = checked((long)payment.Amount.MilliSatoshi);
         entity.FeeMsat = checked((long)payment.Fee.MilliSatoshi);
         MapMutableFields(payment, entity);

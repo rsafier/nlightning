@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace NLightning.Infrastructure.Persistence.EntityConfiguration.Bitcoin;
 
+using Domain.Accounting.Constants;
 using Domain.Bitcoin.Transactions.Constants;
 using Domain.Channels.Constants;
 using Domain.Crypto.Constants;
@@ -42,6 +43,12 @@ public static class BroadcastTransactionEntityConfiguration
                   .IsRequired();
             entity.Property(e => e.CommitmentNumber).IsRequired(false);
             entity.Property(e => e.FeeSat).IsRequired(false);
+            entity.Property(e => e.Label)
+                  .HasMaxLength(AccountingSchemaLimits.LabelMaxBytes)
+                  .IsRequired(false);
+            entity.Property(e => e.Tags)
+                  .HasMaxLength(AccountingSchemaLimits.TagsMaxBytes)
+                  .IsRequired(false);
 
             // Every block reads the pending set; a reorg unconfirms the ones above the fork
             entity.HasIndex(e => e.State);

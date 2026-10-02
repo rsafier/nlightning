@@ -1,4 +1,5 @@
 using NLightning.Domain.Accounting.Books;
+using NLightning.Domain.Accounting.Financial;
 using NLightning.Domain.Accounting.Interfaces;
 using NLightning.Domain.Bitcoin.Interfaces;
 using NLightning.Domain.Bitcoin.ValueObjects;
@@ -82,6 +83,11 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IChannelPolicyDbRepository ChannelPolicyDbRepository => inner.ChannelPolicyDbRepository;
     public IAccountingEventDbRepository AccountingEventDbRepository => inner.AccountingEventDbRepository;
     public IAccountingBooksDbRepository AccountingBooksDbRepository => inner.AccountingBooksDbRepository;
+    public IAccountingPriceDbRepository AccountingPriceDbRepository => inner.AccountingPriceDbRepository;
+    public IAccountingRuleDbRepository AccountingRuleDbRepository => inner.AccountingRuleDbRepository;
+    public IAccountingOverrideDbRepository AccountingOverrideDbRepository => inner.AccountingOverrideDbRepository;
+    public IAccountingLotDbRepository AccountingLotDbRepository => inner.AccountingLotDbRepository;
+    public IAccountingPeriodDbRepository AccountingPeriodDbRepository => inner.AccountingPeriodDbRepository;
 
     public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
 

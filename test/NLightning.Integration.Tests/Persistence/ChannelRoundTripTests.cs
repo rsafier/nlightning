@@ -317,6 +317,25 @@ public class ChannelRoundTripTests
         Assert.Null(unknown);
     }
 
+    [Fact]
+    public async Task Given_ALabelledChannel_When_AModelWithoutTheLabelIsUpdated_Then_TheLabelAndTagsAreKept()
+    {
+        // Arrange: NL-602 A3-T0: the label and tags are written with the new channel only
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        await AddChangeAddressAsync(db);
+        var channel = CreateFullChannel(true);
+        await SaveAndReloadAsync(db, channel);
+
+        // Act: a model that lost them (a flow that rebuilt it without copying them) is saved
+        channel.Label = null;
+        channel.Tags = null;
+        var reloaded = await UpdateAndReloadAsync(db, channel);
+
+        // Assert
+        Assert.Equal("liquidity for the café", reloaded.Label);
+        Assert.Equal("peer=acme\nproject=routing", reloaded.Tags);
+    }
+
     private static TxId TxIdOf(byte seed) => new(Enumerable.Repeat(seed, 32).ToArray());
 
     private static async Task<ChannelModel> SaveAndReloadAsync(SqliteDbTestContext db, ChannelModel channel)
@@ -405,7 +424,9 @@ public class ChannelRoundTripTests
             FundingCreatedAtBlockHeight = 812_340,
             ChangeAddress = s_changeAddress,
             LocalAliases = [new ShortChannelId(16_000_001, 1, 1), new ShortChannelId(16_000_002, 2, 2)],
-            RemoteAlias = new ShortChannelId(16_000_003, 3, 3)
+            RemoteAlias = new ShortChannelId(16_000_003, 3, 3),
+            Label = "liquidity for the café",
+            Tags = "peer=acme\nproject=routing"
         };
 
         // The commitment state (N5): HTLCs both ways, one locked in, and an unacked commitment_signed of ours. The
@@ -515,6 +536,10 @@ public class ChannelRoundTripTests
         Assert.Equal(expected.AnnounceChannel, actual.AnnounceChannel);
         Assert.Equal(expected.RemoteAnnouncementSignatures, actual.RemoteAnnouncementSignatures);
         Assert.Equal(expected.LocalAnnouncementSignaturesSentAt, actual.LocalAnnouncementSignaturesSentAt);
+
+        // The operator's label and tags (NL-602 A3-T0)
+        Assert.Equal(expected.Label, actual.Label);
+        Assert.Equal(expected.Tags, actual.Tags);
     }
 
     private static void AssertKeySetsEqual(ChannelKeySetModel expected, ChannelKeySetModel actual)

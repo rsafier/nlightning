@@ -87,6 +87,17 @@ public sealed class InvoiceModel
                              : Keysend is not null ? InvoiceKind.Keysend
                              : InvoiceKind.Bolt11;
 
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, migration <c>AddAccountingFinancial</c>; at most 256 UTF-8 bytes), or null.
+    /// The accounting writers copy it into the event's details.
+    /// </summary>
+    public string? Label { get; set; }
+
+    /// <summary>
+    /// The operator's tags as one canonical <c>k=v</c> list (NL-602 A3-T1, at most 1 KiB), or null.
+    /// </summary>
+    public string? Tags { get; set; }
+
     public InvoiceModel(Hash paymentHash, Secret preimage, Secret paymentSecret, LightningMoney? amount,
                         string? description, string? bolt11, DateTimeOffset createdAt, uint expirySeconds,
                         ushort minFinalCltvExpiry, InvoiceStatus status = InvoiceStatus.Open,

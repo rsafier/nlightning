@@ -82,6 +82,8 @@ internal static class Bolt12SchemaRoundTrip
         // Arrange: a full offer (every optional field, the largest quantity) and a minimal one
         var full = CreateOffer(0x01, LightningMoney.MilliSatoshis(123_456_789), "USD", "coffee ☕", "Café ACME",
                                ulong.MaxValue, s_now.AddDays(30), OfferIssuerKind.NodeId, true, s_now);
+        full.Label = "café menu offer";
+        full.Tags = "channel=web\nshop=acme";
         var minimal = CreateOffer(0x02, null, null, null, null, null, null, OfferIssuerKind.BlindedPaths, true,
                                   s_now.AddMinutes(1));
         await using (var context = contextFactory())
@@ -424,6 +426,8 @@ internal static class Bolt12SchemaRoundTrip
         Assert.Equal(expected.CreatedAt.UtcTicks, actual.CreatedAt.UtcTicks);
         Assert.Equal(expected.Status, actual.Status);
         Assert.Equal(expected.DisabledAt, actual.DisabledAt);
+        Assert.Equal(expected.Label, actual.Label);
+        Assert.Equal(expected.Tags, actual.Tags);
     }
 
     private static void AssertInvoice(InvoiceModel expected, InvoiceModel? actual)

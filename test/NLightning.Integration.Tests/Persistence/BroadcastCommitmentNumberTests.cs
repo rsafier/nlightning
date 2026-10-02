@@ -74,6 +74,39 @@ public class BroadcastCommitmentNumberTests
     }
 
     [Fact]
+    public async Task Given_AWithdrawWithALabelAndTags_When_Reloaded_Then_TheyAreKept()
+    {
+        // Arrange: NL-602 A3-T0: the withdraw's broadcast row carries the operator's label and tags
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        var labelled = ChainMonitorPersistenceTests.CreateTransaction(0x63);
+        var plain = ChainMonitorPersistenceTests.CreateTransaction(0x64);
+        await using (var context = harness.Context())
+        {
+            var repository = new BroadcastTransactionDbRepository(context);
+            repository.Add(new BroadcastTransactionModel(ToSigned(labelled), BroadcastPurpose.WalletSend, null, 100)
+            {
+                Label = "rent, October",
+                Tags = "category=rent\nmonth=2026-10"
+            });
+            repository.Add(new BroadcastTransactionModel(ToSigned(plain), BroadcastPurpose.WalletSend, null, 100));
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Act
+        await using var readContext = harness.Context();
+        var repositoryAfter = new BroadcastTransactionDbRepository(readContext);
+        var reloadedLabelled = await repositoryAfter.GetByTransactionIdAsync(new TxId(labelled.GetHash().ToBytes()));
+        var reloadedPlain = await repositoryAfter.GetByTransactionIdAsync(new TxId(plain.GetHash().ToBytes()));
+
+        // Assert
+        Assert.Equal("rent, October", reloadedLabelled!.Label);
+        Assert.Equal("category=rent\nmonth=2026-10", reloadedLabelled.Tags);
+        Assert.Null(reloadedPlain!.Label);
+        Assert.Null(reloadedPlain.Tags);
+    }
+
+    [Fact]
     public async Task Given_PendingBroadcast_When_Abandoned_Then_ItLeavesThePendingSetAndOnlyOnce()
     {
         // Arrange

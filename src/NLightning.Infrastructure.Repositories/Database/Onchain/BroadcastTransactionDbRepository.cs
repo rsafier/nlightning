@@ -44,7 +44,9 @@ public class BroadcastTransactionDbRepository
             ConfirmedBlockHash = transaction.ConfirmedBlockHash,
             CreatedAt = transaction.CreatedAt,
             CommitmentNumber = transaction.CommitmentNumber is { } number ? (long)number : null,
-            FeeSat = transaction.Fee is { } fee ? checked((long)fee.Satoshi) : null
+            FeeSat = transaction.Fee is { } fee ? checked((long)fee.Satoshi) : null,
+            Label = transaction.Label,
+            Tags = transaction.Tags
         });
     }
 
@@ -146,13 +148,18 @@ public class BroadcastTransactionDbRepository
 
     private static BroadcastTransactionModel MapEntityToDomain(BroadcastTransactionEntity entity)
     {
-        return BroadcastTransactionModel.Restore(entity.TransactionId, entity.RawTransaction,
-                                                 (BroadcastPurpose)entity.Purpose, entity.ChannelId,
-                                                 (uint)entity.FeeratePerKw, entity.ReplacesTransactionId,
-                                                 entity.FirstBroadcastHeight, (BroadcastState)entity.State,
-                                                 entity.ConfirmedHeight, entity.ConfirmedBlockHash,
-                                                 entity.CreatedAt,
-                                                 entity.CommitmentNumber is { } number ? (ulong)number : null,
-                                                 entity.FeeSat is { } feeSat ? LightningMoney.Satoshis(feeSat) : null);
+        var model = BroadcastTransactionModel.Restore(entity.TransactionId, entity.RawTransaction,
+                                                      (BroadcastPurpose)entity.Purpose, entity.ChannelId,
+                                                      (uint)entity.FeeratePerKw, entity.ReplacesTransactionId,
+                                                      entity.FirstBroadcastHeight, (BroadcastState)entity.State,
+                                                      entity.ConfirmedHeight, entity.ConfirmedBlockHash,
+                                                      entity.CreatedAt,
+                                                      entity.CommitmentNumber is { } number ? (ulong)number : null,
+                                                      entity.FeeSat is { } feeSat
+                                                          ? LightningMoney.Satoshis(feeSat)
+                                                          : null);
+        model.Label = entity.Label;
+        model.Tags = entity.Tags;
+        return model;
     }
 }

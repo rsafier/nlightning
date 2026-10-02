@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Persistence.Interfaces;
 
 using Accounting.Books;
+using Accounting.Financial;
 using Accounting.Interfaces;
 using Bitcoin.Interfaces;
 using Bitcoin.ValueObjects;
@@ -100,6 +101,23 @@ public interface IUnitOfWork : IDisposable
     // The operational books (NL-602 A2, migration AddAccountingBooks); the default is for test doubles that store none
     IAccountingBooksDbRepository AccountingBooksDbRepository =>
         throw new NotSupportedException("This unit of work does not store the accounting books.");
+
+    // The financial books (NL-602 A3, migration AddAccountingFinancial): prices, classification rules, overrides,
+    // cost-basis lots and periods; the defaults are for test doubles that store none
+    IAccountingPriceDbRepository AccountingPriceDbRepository =>
+        throw new NotSupportedException("This unit of work does not store accounting prices.");
+
+    IAccountingRuleDbRepository AccountingRuleDbRepository =>
+        throw new NotSupportedException("This unit of work does not store accounting rules.");
+
+    IAccountingOverrideDbRepository AccountingOverrideDbRepository =>
+        throw new NotSupportedException("This unit of work does not store accounting overrides.");
+
+    IAccountingLotDbRepository AccountingLotDbRepository =>
+        throw new NotSupportedException("This unit of work does not store accounting lots.");
+
+    IAccountingPeriodDbRepository AccountingPeriodDbRepository =>
+        throw new NotSupportedException("This unit of work does not store accounting periods.");
 
     /// <summary>
     /// Every saved peer with its channels, plus a peer marked <see cref="PeerModel.IsInboundOnly"/> for every channel

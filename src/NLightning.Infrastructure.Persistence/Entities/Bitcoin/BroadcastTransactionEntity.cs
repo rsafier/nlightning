@@ -38,6 +38,16 @@ public class BroadcastTransactionEntity
     /// </summary>
     public long? FeeSat { get; set; }
 
+    /// <summary>
+    /// The operator's label (NL-602 A3-T1, migration <c>AddAccountingFinancial</c>; at most 256 UTF-8 bytes), or null.
+    /// </summary>
+    public string? Label { get; set; }
+
+    /// <summary>
+    /// The operator's tags as one canonical <c>k=v</c> list (NL-602 A3-T1, at most 1 KiB), or null.
+    /// </summary>
+    public string? Tags { get; set; }
+
     // Default constructor for EF Core
     internal BroadcastTransactionEntity() { }
 }

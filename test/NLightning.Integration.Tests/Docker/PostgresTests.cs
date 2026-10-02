@@ -141,6 +141,21 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresBooksFromBeforeAddAccountingFinancial_When_MigratedAndRolledBack_Then_TheyKeepTheirValues()
+    {
+        // Arrange (NL-602 A3-T0: A2's books move into the operational book, the financial tables round-trip and the
+        // rollback keeps the operational book, on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_accounting_financial");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await AccountingFinancialSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options,
+                                                                                           databaseTypeProvider),
+                                                             DatabaseType.PostgreSql,
+                                                             TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresRowsFromBeforeAddPaymentCustomRecords_When_Migrated_Then_KeysendRecordsMoveIntoTheirColumn()
     {
         // Arrange (NL-460: the keysend rows' custom records move out of the borrowed BOLT 12 invoice bytes and then

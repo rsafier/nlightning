@@ -224,6 +224,16 @@ public class ChannelEntity
     public long? PushAmountMsat { get; set; }
 
     /// <summary>
+    /// The operator's label (NL-602 A3-T1, migration <c>AddAccountingFinancial</c>; at most 256 UTF-8 bytes), or null.
+    /// </summary>
+    public string? Label { get; set; }
+
+    /// <summary>
+    /// The operator's tags as one canonical <c>k=v</c> list (NL-602 A3-T1, at most 1 KiB), or null.
+    /// </summary>
+    public string? Tags { get; set; }
+
+    /// <summary>
     /// The (Index, IsChange, AddressType) foreign key to the change address used by the funding transaction, if
     /// there's one (NL-134: the IsChange and AddressType legs used to exist only as EF shadow properties).
     /// </summary>

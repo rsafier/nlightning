@@ -59,7 +59,9 @@ public class OfferDbRepository : BaseDbRepository<OfferEntity>, IOfferDbReposito
             HasPaths = offer.HasPaths,
             Status = (byte)offer.Status,
             CreatedAt = offer.CreatedAt,
-            DisabledAt = offer.DisabledAt
+            DisabledAt = offer.DisabledAt,
+            Label = offer.Label,
+            Tags = offer.Tags
         });
     }
 
@@ -166,6 +168,10 @@ public class OfferDbRepository : BaseDbRepository<OfferEntity>, IOfferDbReposito
                               entity.AmountMsat is { } msat ? LightningMoney.MilliSatoshis(checked((ulong)msat)) : null,
                               entity.Currency, entity.Issuer, entity.QuantityMax, entity.AbsoluteExpiry,
                               entity.Metadata, (OfferIssuerKind)entity.IssuerKind, entity.HasPaths,
-                              entity.CreatedAt, (OfferStatus)entity.Status, entity.DisabledAt);
+                              entity.CreatedAt, (OfferStatus)entity.Status, entity.DisabledAt)
+        {
+            Label = entity.Label,
+            Tags = entity.Tags
+        };
     }
 }

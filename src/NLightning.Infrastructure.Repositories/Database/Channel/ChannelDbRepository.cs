@@ -55,7 +55,12 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         nameof(ChannelEntity.RemoteFundingContributionSatoshis),
 
         // Written only through ChannelFundingDbRepository.SetPushAmountAsync (NL-605, migration AddAccountingEvents)
-        nameof(ChannelEntity.PushAmountMsat)
+        nameof(ChannelEntity.PushAmountMsat),
+
+        // The operator's label and tags (NL-602 A3-T1, migration AddAccountingFinancial): written by AddAsync only, so
+        // a model that lost them (rebuilt by a flow that does not copy them) never clears them
+        nameof(ChannelEntity.Label),
+        nameof(ChannelEntity.Tags)
     ];
 
     /// <summary>
@@ -505,6 +510,9 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             RemoteAnnouncementBitcoinSig = channelModel.RemoteAnnouncementSignatures?.BitcoinSignature.Value,
             LocalAnnouncementSigsSentAt = channelModel.LocalAnnouncementSignaturesSentAt,
 
+            Label = channelModel.Label,
+            Tags = channelModel.Tags,
+
             Config = config,
             KeySets = keySets,
             LocalAliases = localAliasEntities
@@ -583,7 +591,9 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             ShortChannelId = channelEntity.ShortChannelId ?? default,
             ChangeAddress = channelEntity.ChangeAddress is null
                                 ? null
-                                : WalletAddressesDbRepository.MapEntityToModel(channelEntity.ChangeAddress)
+                                : WalletAddressesDbRepository.MapEntityToModel(channelEntity.ChangeAddress),
+            Label = channelEntity.Label,
+            Tags = channelEntity.Tags
         };
         // The current funding's key index (NL-495): the signer's view of a spliced channel uses its rotated key
         channelModel.SetLocalFundingKeyIndex(splicedFunding?.LocalFundingKeyIndex ?? 0);

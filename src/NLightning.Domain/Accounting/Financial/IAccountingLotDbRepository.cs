@@ -1,0 +1,48 @@
+namespace NLightning.Domain.Accounting.Financial;
+
+using Books;
+
+/// <summary>
+/// The cost-basis lots and their reliefs (<c>AccountingLots</c>, <c>AccountingLotReliefs</c>, A3-T4). Writes are staged
+/// and committed by the unit of work's save, so a projector saves its lots and reliefs with its entries and cursor.
+/// </summary>
+/// <remarks>
+/// Lot ids are assigned here, not by the database (<see cref="AddLotAsync"/>), so a relief can name a lot opened in the
+/// same save; the financial projector is the only writer of lots.
+/// </remarks>
+public interface IAccountingLotDbRepository
+{
+    /// <summary>Stages a lot and returns its id: the lot's own when not 0, else one past the highest saved or staged.</summary>
+    Task<long> AddLotAsync(AccountingLot lot, CancellationToken cancellationToken = default);
+
+    /// <summary>Stages a lot's mutable fields (remaining amount, cost, currency, price, account, closed period).</summary>
+    Task UpdateLotAsync(AccountingLot lot, CancellationToken cancellationToken = default);
+
+    /// <summary>The lot (saved or staged), or null.</summary>
+    Task<AccountingLot?> GetLotAsync(long id, CancellationToken cancellationToken = default);
+
+    /// <summary>The lots with something left (saved, overlaid with what this unit of work staged), oldest first (by
+    /// acquisition time, then id); only those held by <paramref name="account"/> when set.</summary>
+    Task<IReadOnlyList<AccountingLot>> ListOpenLotsAsync(AccountRole? account = null,
+                                                         CancellationToken cancellationToken = default);
+
+    /// <summary>Stages a relief (its <see cref="AccountingLotRelief.Id"/> is ignored and assigned by the save).</summary>
+    void AddRelief(AccountingLotRelief relief);
+
+    /// <summary>The saved reliefs of one lot, in disposal order.</summary>
+    Task<IReadOnlyList<AccountingLotRelief>> ListReliefsByLotAsync(long lotId,
+                                                                   CancellationToken cancellationToken = default);
+
+    /// <summary>The saved reliefs of one disposing entry.</summary>
+    Task<IReadOnlyList<AccountingLotRelief>> ListReliefsByEntryAsync(long ledgerSeq, int adjustment,
+                                                                     CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stages the closed period of every lot acquired and every relief made before <paramref name="end"/> that has none
+    /// yet (A3-T5); returns how many rows.
+    /// </summary>
+    Task<int> MarkClosedAsync(string periodId, DateTimeOffset end, CancellationToken cancellationToken = default);
+
+    /// <summary>Deletes every lot and relief at once (a rebuild before any close; not staged).</summary>
+    Task ClearAsync(CancellationToken cancellationToken = default);
+}

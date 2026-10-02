@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace NLightning.Infrastructure.Persistence.EntityConfiguration.Payment;
 
+using Domain.Accounting.Constants;
 using Domain.Crypto.Constants;
 using Entities.Payment;
 using Enums;
@@ -22,6 +23,12 @@ public static class OfferEntityConfiguration
             entity.Property(e => e.Bolt12).IsRequired();
             entity.Property(e => e.OfferBytes).IsRequired();
             entity.Property(e => e.Description).IsRequired(false);
+            entity.Property(e => e.Label)
+                  .HasMaxLength(AccountingSchemaLimits.LabelMaxBytes)
+                  .IsRequired(false);
+            entity.Property(e => e.Tags)
+                  .HasMaxLength(AccountingSchemaLimits.TagsMaxBytes)
+                  .IsRequired(false);
             entity.Property(e => e.AmountMsat).IsRequired(false);
             entity.Property(e => e.Currency).IsRequired(false);
             entity.Property(e => e.Issuer).IsRequired(false);

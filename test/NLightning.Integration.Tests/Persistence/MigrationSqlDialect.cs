@@ -22,6 +22,12 @@ internal sealed class MigrationSqlDialect(DatabaseType databaseType)
         $"UPDATE {Name(table)} SET {Name(set.Column)} = {set.Value} " +
         $"WHERE {string.Join(" AND ", where.Select(w => $"{Name(w.Column)} = {w.Value}"))}";
 
+    public string Select(string table, string column, params (string Column, string Value)[] where) =>
+        $"SELECT {Name(column)} FROM {Name(table)}" +
+        (where.Length == 0 ? "" : $" WHERE {string.Join(" AND ", where.Select(w => $"{Name(w.Column)} = {w.Value}"))}");
+
+    public string Count(string table) => $"SELECT COUNT(*) FROM {Name(table)}";
+
     public string Delete(string table, params (string Column, string Value)[] where) =>
         $"DELETE FROM {Name(table)} WHERE {string.Join(" AND ", where.Select(w => $"{Name(w.Column)} = {w.Value}"))}";
 

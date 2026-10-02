@@ -118,8 +118,11 @@ internal static class PaymentSchemaRoundTrip
     public static async Task AssertTablesRoundTripAsync(Func<NLightningDbContext> contextFactory,
                                                         CancellationToken cancellationToken)
     {
-        // Invoice: open -> accepted -> settled
+        // Invoice: open -> accepted -> settled, with the operator's label and tags (NL-602 A3-T0), which the updates
+        // keep
         var invoice = CreateInvoice(0x11, LightningMoney.MilliSatoshis(50_000_123));
+        invoice.Label = "coffee ☕ for table 7";
+        invoice.Tags = "customer=acme\nproject=café";
         await SaveAsync(contextFactory, c => new InvoiceDbRepository(c).AddAsync(invoice), cancellationToken);
         await AssertInvoiceAsync(contextFactory, invoice);
 
@@ -138,8 +141,10 @@ internal static class PaymentSchemaRoundTrip
         await SaveAsync(contextFactory, c => new InvoiceDbRepository(c).AddAsync(anyAmount), cancellationToken);
         await AssertInvoiceAsync(contextFactory, anyAmount);
 
-        // Payment: in flight with a route -> HTLC recorded -> succeeded
+        // Payment: in flight with a route -> HTLC recorded -> succeeded, labelled and tagged
         var payment = CreatePayment(0x31);
+        payment.Label = "supplier invoice 42";
+        payment.Tags = "category=supplies";
         await SaveAsync(contextFactory, c => new PaymentDbRepository(c).AddAsync(payment), cancellationToken);
         await AssertPaymentAsync(contextFactory, payment);
 
@@ -300,6 +305,8 @@ internal static class PaymentSchemaRoundTrip
         Assert.Equal(expected.Status, actual.Status);
         Assert.Equal(expected.AmountReceived, actual.AmountReceived);
         Assert.Equal(expected.SettledAt, actual.SettledAt);
+        Assert.Equal(expected.Label, actual.Label);
+        Assert.Equal(expected.Tags, actual.Tags);
     }
 
     internal static void AssertPayment(PaymentModel expected, PaymentModel? actual)
@@ -321,6 +328,8 @@ internal static class PaymentSchemaRoundTrip
         Assert.Equal(expected.CompletedAt, actual.CompletedAt);
         Assert.Equal(expected.Route, actual.Route);
         Assert.Equal(expected.HopSharedSecrets, actual.HopSharedSecrets);
+        Assert.Equal(expected.Label, actual.Label);
+        Assert.Equal(expected.Tags, actual.Tags);
     }
 
     internal static void AssertPart(PaymentPartModel expected, PaymentPartModel? actual)

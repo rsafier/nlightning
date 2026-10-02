@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace NLightning.Infrastructure.Persistence.EntityConfiguration.Channel;
 
+using Domain.Accounting.Constants;
 using Domain.Bitcoin.Transactions.Constants;
 using Domain.Channels.Constants;
 using Domain.Channels.ValueObjects;
@@ -87,6 +88,12 @@ public static class ChannelEntityConfiguration
             entity.Property(e => e.LocalFundingContributionSatoshis).IsRequired(false);
             entity.Property(e => e.RemoteFundingContributionSatoshis).IsRequired(false);
             entity.Property(e => e.PushAmountMsat).IsRequired(false);
+            entity.Property(e => e.Label)
+                  .HasMaxLength(AccountingSchemaLimits.LabelMaxBytes)
+                  .IsRequired(false);
+            entity.Property(e => e.Tags)
+                  .HasMaxLength(AccountingSchemaLimits.TagsMaxBytes)
+                  .IsRequired(false);
 
             // Configure the relationship with the funding change address (optional, many-to-one from the wallet
             // address keyed by (Index, IsChange, AddressType)). Configured explicitly (NL-134): the IsChange and

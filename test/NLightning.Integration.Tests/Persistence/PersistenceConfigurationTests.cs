@@ -171,8 +171,13 @@ public class PersistenceConfigurationTests
         // RemoveShadowForeignKeyColumns' sqlite body: a hand rebuild that keeps the Channels column defaults EF's
         // generic rebuild would lose (NL-134); the same model transition is still verified against structured
         // operations on the other two providers, and the snapshot check below covers every provider.
+        // AddAccountingFinancial's sqlite body (NL-602 A3-T0) is the same kind: the books' three tables are rebuilt
+        // by hand (their new key, the new columns' defaults and the price foreign key).
         var providerSpecificBodies = new HashSet<(string Migration, string Provider)>
-            { ("20261001223444_RemoveShadowForeignKeyColumns", "sqlite") };
+        {
+            ("20261001223444_RemoveShadowForeignKeyColumns", "sqlite"),
+            ("20261002090548_AddAccountingFinancial", "sqlite")
+        };
 
         // Act
         foreach (var (id, type) in migrationsAssembly.Migrations)

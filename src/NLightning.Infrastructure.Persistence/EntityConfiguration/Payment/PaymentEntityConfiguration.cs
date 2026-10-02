@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace NLightning.Infrastructure.Persistence.EntityConfiguration.Payment;
 
+using Domain.Accounting.Constants;
 using Domain.Channels.Constants;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Constants;
@@ -27,6 +28,12 @@ public static class PaymentEntityConfiguration
             entity.Property(e => e.CustomRecords).IsRequired(false);
             entity.Property(e => e.InvoiceRequestMetadata).IsRequired(false);
             entity.Property(e => e.PayerNote).IsRequired(false);
+            entity.Property(e => e.Label)
+                  .HasMaxLength(AccountingSchemaLimits.LabelMaxBytes)
+                  .IsRequired(false);
+            entity.Property(e => e.Tags)
+                  .HasMaxLength(AccountingSchemaLimits.TagsMaxBytes)
+                  .IsRequired(false);
             entity.Property(e => e.PayeeNodeId)
                   .HasConversion<CompactPubKeyConverter>()
                   .IsRequired();

@@ -23,6 +23,7 @@ using Application.Payments.Routing;
 using Application.Payments.Switch;
 using Application.Protocol.Factories;
 using Domain.Accounting.Books;
+using Domain.Accounting.Financial;
 using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Factories;
@@ -772,6 +773,11 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IChannelPolicyDbRepository ChannelPolicyDbRepository => inner.ChannelPolicyDbRepository;
     public IAccountingEventDbRepository AccountingEventDbRepository => inner.AccountingEventDbRepository;
     public IAccountingBooksDbRepository AccountingBooksDbRepository => inner.AccountingBooksDbRepository;
+    public IAccountingPriceDbRepository AccountingPriceDbRepository => inner.AccountingPriceDbRepository;
+    public IAccountingRuleDbRepository AccountingRuleDbRepository => inner.AccountingRuleDbRepository;
+    public IAccountingOverrideDbRepository AccountingOverrideDbRepository => inner.AccountingOverrideDbRepository;
+    public IAccountingLotDbRepository AccountingLotDbRepository => inner.AccountingLotDbRepository;
+    public IAccountingPeriodDbRepository AccountingPeriodDbRepository => inner.AccountingPeriodDbRepository;
 
     public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
     public void AddUtxo(UtxoModel utxoModel) => inner.AddUtxo(utxoModel);
