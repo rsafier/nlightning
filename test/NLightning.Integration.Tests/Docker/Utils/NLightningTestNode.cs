@@ -755,6 +755,9 @@ public sealed class NLightningTestNode : IAsyncDisposable
             // Deterministic Docker runs: no periodic update_fee (FeeUpdateFlowTests run rounds by hand; a test can turn
             // it on through configureNodeOptions)
             new("Node:FeeUpdates:Enabled", "false"),
+            // Hermetic Docker runs: the financial books never ask mempool.space for prices (NL-641); a test that
+            // runs Profile=Financial imports its prices (or sets a source through ExtraConfiguration)
+            new("Accounting:Prices:Source", "None"),
             new("Bitcoin:WatchMempool", WatchMempool ? "true" : "false")
         ];
         // A later source overrides an earlier one, so ExtraConfiguration wins over the defaults above

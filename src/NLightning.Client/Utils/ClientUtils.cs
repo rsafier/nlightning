@@ -182,8 +182,15 @@ public static class ClientUtils
         Console.WriteLine("                               register [--since] [--until] [--channel] [--account");
         Console.WriteLine("                               <account>] [--kind <kind>[,...]] [--after <seq>] [--limit");
         Console.WriteLine("                               <n>]; amounts in msat and sat");
+        Console.WriteLine("  accounting report <balance|income|register|gains|unrealized|lots|unvalued|unclassified|risk>");
+        Console.WriteLine("                   --book financial [--currency <code>] [--price <price>] [--by <month|");
+        Console.WriteLine("                   quarter|year|total>] [options]");
+        Console.WriteLine("                               Report from the financial book (Accounting:Profile=");
+        Console.WriteLine("                               Financial): msat and fiat, realized gains, open lots,");
+        Console.WriteLine("                               unrealized gains at a price, rows to review, and the");
+        Console.WriteLine("                               risk-weighted capital");
         Console.WriteLine("  accounting export --format <hledger|beancount|csv> [--since <time>] [--until <time>]");
-        Console.WriteLine("                   [--output <file>]");
+        Console.WriteLine("                   [--output <file>] [--book financial [--currency <code>]]");
         Console.WriteLine("                               Export the books (exact msat amounts) to standard output");
         Console.WriteLine("                               or a file written by this client");
         Console.WriteLine("  accounting reconcile         Compare the books with the node's live balances");
@@ -221,6 +228,9 @@ public static class ClientUtils
         Console.WriteLine("                               The stored BTC prices, oldest first");
         Console.WriteLine("  accounting prices fetch --since <time> [--until <time>]");
         Console.WriteLine("                               Ask the price sources for every hour of the range (31 days max)");
+        Console.WriteLine("  accounting lots import <file> [--currency <code>]");
+        Console.WriteLine("                               Replace the opening balances' estimated cost basis with");
+        Console.WriteLine("                               time,sats,cost lots (before the first close only)");
         Console.WriteLine();
         Console.WriteLine("Labels and tags (createinvoice, payinvoice, keysend, createoffer, payoffer, withdraw,");
         Console.WriteLine("openchannel):");

@@ -336,7 +336,11 @@ public static class NodeConfigurationExtensions
     /// <c>Offers</c> carries the <see cref="OfferOptions"/> defaults (BOLT 12 offers, wave B12; NL-454).
     /// <c>Node:Bootstrap</c> (BOLT 10, NL-113) is on on mainnet and off elsewhere (D-B10-1 as reversed on 2026-09-28),
     /// with the network's seeds and the public fallback resolvers (D-B10-7). <c>Node:Tor</c> is off, with Tor's usual
-    /// SOCKS5 and control ports and the onion key next to the node key.
+    /// SOCKS5 and control ports and the onion key next to the node key. <c>Accounting</c> (NL-602) carries the feed's
+    /// sealer and snapshot defaults, <c>Profile</c> <c>Operational</c> (the financial book is opt-in, D-A5),
+    /// <c>CostBasis</c> <c>Fifo</c> (D-A2) and every <see cref="AccountingPriceOptions"/> default under <c>Prices</c>
+    /// (D-A1, D-A11: USD, the operator's <c>prices.csv</c> first, then mempool.space's historical price API, through
+    /// Tor in <c>TorOnly</c>; nothing is asked while the financial book has no unvalued posting).
     /// </remarks>
     /// <exception cref="ArgumentException">The network is unknown.</exception>
     internal static string CreateDefaultConfigJson(string network)
@@ -350,6 +354,7 @@ public static class NodeConfigurationExtensions
         var onionMessages = new OnionMessageOptions();
         var offers = new OfferOptions();
         var accounting = new AccountingOptions();
+        var prices = new AccountingPriceOptions();
         // Regtest and signets switch HTLCs on explicitly; mainnet and testnet leave the switch to NodeOptions' code
         // default (null binds as unset), so the BOLT 5 O6-T4 gate decides both
         var enableHtlcs = resolved == BitcoinNetwork.Regtest || isSignet ? "true" : "null";
@@ -566,7 +571,18 @@ public static class NodeConfigurationExtensions
                    "Enabled": true,
                    "SealInterval": "{{AC_SEAL_INTERVAL}}",
                    "SealBatchSize": {{AC_SEAL_BATCH}},
-                   "SnapshotInterval": "{{AC_SNAPSHOT_INTERVAL}}"
+                   "SnapshotInterval": "{{AC_SNAPSHOT_INTERVAL}}",
+                   "Profile": "{{AC_PROFILE}}",
+                   "CostBasis": "{{AC_COST_BASIS}}",
+                   "Prices": {
+                     "Currency": "{{AC_PRICE_CURRENCY}}",
+                     "Source": "{{AC_PRICE_SOURCE}}",
+                     "Url": "{{AC_PRICE_URL}}",
+                     "CsvFile": "{{AC_PRICE_CSV}}",
+                     "MaxAge": "{{AC_PRICE_MAX_AGE}}",
+                     "FetchInterval": "{{AC_PRICE_FETCH_INTERVAL}}",
+                     "MaxFetchesPerRound": {{AC_PRICE_MAX_FETCHES}}
+                   }
                  },
                  "FeeEstimation": {
                    "Source": "{{FEE_SOURCE}}",
@@ -659,6 +675,15 @@ public static class NodeConfigurationExtensions
                   .Replace("{{AC_SEAL_INTERVAL}}", Invariant(accounting.SealInterval))
                   .Replace("{{AC_SEAL_BATCH}}", Invariant(accounting.SealBatchSize))
                   .Replace("{{AC_SNAPSHOT_INTERVAL}}", Invariant(accounting.SnapshotInterval))
+                  .Replace("{{AC_PROFILE}}", accounting.Profile.ToString())
+                  .Replace("{{AC_COST_BASIS}}", accounting.CostBasis.ToString())
+                  .Replace("{{AC_PRICE_CURRENCY}}", prices.Currency)
+                  .Replace("{{AC_PRICE_SOURCE}}", prices.Source.ToString())
+                  .Replace("{{AC_PRICE_URL}}", prices.Url)
+                  .Replace("{{AC_PRICE_CSV}}", prices.CsvFile)
+                  .Replace("{{AC_PRICE_MAX_AGE}}", Invariant(prices.MaxAge))
+                  .Replace("{{AC_PRICE_FETCH_INTERVAL}}", Invariant(prices.FetchInterval))
+                  .Replace("{{AC_PRICE_MAX_FETCHES}}", Invariant(prices.MaxFetchesPerRound))
                   .Replace("{{OF_PRUNE_GRACE}}", Invariant(offers.ExpiredInvoicePruneGrace))
                   .Replace("{{FEE_SOURCE}}", feeSource)
                   .Replace("{{FEE_URL}}", feeUrl)
