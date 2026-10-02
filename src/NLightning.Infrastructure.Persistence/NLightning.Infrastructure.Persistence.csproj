@@ -12,6 +12,15 @@
     <Optimize Condition=" '$(Optimize)' == '' ">true</Optimize>
   </PropertyGroup>
 
+  <!--
+    NativeAOT (NL-338): EF Core runs under NativeAOT only with a compiled model and precompiled queries (NL-708), and
+    the AOT daemon stops before it opens the database, so the trim/AOT analyzer warnings of this EF code are expected
+    in a PublishAot build. They are silenced there only, so the AOT build's warning list stays meaningful.
+  -->
+  <PropertyGroup Condition="'$(PublishAot)' == 'true'">
+    <NoWarn>$(NoWarn);IL2026;IL2087;IL2091;IL3050</NoWarn>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.12"/>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12"/>

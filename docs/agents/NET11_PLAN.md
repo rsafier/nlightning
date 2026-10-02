@@ -37,6 +37,7 @@ User decision: **drop .NET 9 entirely**; multi-target `net10.0;net11.0`, with ne
 
 ### Still open
 - Docker suite on net11.0, NativeAOT publish, Wasm on SDK 11.
+- Update (batch 10, lane aot, NL-338/NL-300): the NativeAOT compile failure (CS9035 on `BitcoinOptions`, SYSLIB1100/1101 on `NodeOptions`) is fixed and the trim/AOT analyzers are clean with `-p:PublishAot=true` on SDK 10.0.103 (net10.0) and SDK 11 rc.1 (net11.0); SDK 11 builds the whole solution for net10.0 and net11.0 without warnings; `IStartupValidator` is obsolete on net11.0 (SYSLIB0066), so `--check-config` uses `IAsyncStartupValidator` there. `scripts/aot-smoke.sh --emulate` passes on both SDKs (net10.0 and net11.0). A real `dotnet publish` was not run by the lane (agent sessions here may not run `dotnet publish`); CI's native workflows now publish and smoke linux-x64. The AOT daemon cannot run the node until EF Core runs without dynamic code (NL-708). See CLAUDE.md "NativeAOT".
 - Package bumps owned by W4-A: EF Core 10.0.12, Npgsql 10.0.3, Npgsql.EFCore 10.0.3.
 - After GA: `allowPrerelease: false` in `global.json`, drop `dotnet-quality: preview` in CI. Revisit EF 11 when EFCore.NamingConventions 11 ships.
 - The SDK 11 rc.1 symlinked-path `CopyToOutputDirectory` regression (below) was not reproduced here (built from the real path only); still worth reporting upstream.

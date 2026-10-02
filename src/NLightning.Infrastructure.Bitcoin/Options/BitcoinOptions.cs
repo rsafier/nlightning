@@ -1,13 +1,29 @@
 namespace NLightning.Infrastructure.Bitcoin.Options;
 
+/// <summary>
+/// The bitcoind connection (configuration section <c>Bitcoin</c>).
+/// </summary>
+/// <remarks>
+/// The members are not <c>required</c>: the configuration binding source generator (on in every build of the src
+/// projects, NativeAOT included, NL-338) cannot construct a type with required members, so the daemon checks them at
+/// start with <see cref="GetValidationErrors"/> instead. An unset value stays null, as it did with the reflection
+/// binder.
+/// </remarks>
 public class BitcoinOptions
 {
-    public required string RpcEndpoint { get; set; }
-    public required string RpcUser { get; set; }
-    public required string RpcPassword { get; set; }
-    public required string ZmqHost { get; set; }
-    public required int ZmqBlockPort { get; set; }
-    public required int ZmqTxPort { get; set; }
+    public const string SectionName = "Bitcoin";
+
+    public string? RpcEndpoint { get; set; }
+    public string? RpcUser { get; set; }
+    public string? RpcPassword { get; set; }
+    public string? ZmqHost { get; set; }
+    public int ZmqBlockPort { get; set; }
+
+    /// <summary>
+    /// bitcoind's ZMQ <c>rawtx</c> port, read when <see cref="WatchMempool"/> is on. 0 (unset) is accepted for
+    /// configuration files written before BOLT 5 O8.
+    /// </summary>
+    public int ZmqTxPort { get; set; }
 
     /// <summary>
     /// Subscribes to bitcoind's ZMQ <c>rawtx</c> on <see cref="ZmqTxPort"/> to react to unconfirmed spends of watched
@@ -15,4 +31,34 @@ public class BitcoinOptions
     /// correctness, so this only lowers latency. Default true.
     /// </summary>
     public bool WatchMempool { get; set; } = true;
+
+    /// <summary>
+    /// The settings the node cannot run without: an absolute http(s) RPC endpoint, the RPC user and password, the ZMQ
+    /// host and block port, and a ZMQ tx port in range.
+    /// </summary>
+    /// <returns>One message per problem, empty when the section is usable.</returns>
+    public IReadOnlyList<string> GetValidationErrors()
+    {
+        var errors = new List<string>();
+        if (!Uri.TryCreate(RpcEndpoint, UriKind.Absolute, out var endpoint)
+         || (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps))
+            errors.Add($"{SectionName}:{nameof(RpcEndpoint)} must be an absolute http or https URL.");
+
+        if (string.IsNullOrEmpty(RpcUser))
+            errors.Add($"{SectionName}:{nameof(RpcUser)} is required.");
+
+        if (string.IsNullOrEmpty(RpcPassword))
+            errors.Add($"{SectionName}:{nameof(RpcPassword)} is required.");
+
+        if (string.IsNullOrWhiteSpace(ZmqHost))
+            errors.Add($"{SectionName}:{nameof(ZmqHost)} is required.");
+
+        if (ZmqBlockPort is < 1 or > 65535)
+            errors.Add($"{SectionName}:{nameof(ZmqBlockPort)} must be a port between 1 and 65535.");
+
+        if (ZmqTxPort is < 0 or > 65535)
+            errors.Add($"{SectionName}:{nameof(ZmqTxPort)} must be a port between 1 and 65535 (0 = unset).");
+
+        return errors;
+    }
 }

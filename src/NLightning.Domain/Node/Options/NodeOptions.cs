@@ -72,6 +72,14 @@ public class NodeOptions
 
     public bool MustTrimHtlcOutputs { get; set; }
 
+    /// <summary>
+    /// The <see cref="LightningMoney"/> members (<see cref="DustLimitAmount"/>, <see cref="HtlcMinimumAmount"/>,
+    /// <see cref="MinimumChannelSize"/>), which the configuration cannot set: a <see cref="LightningMoney"/> has no
+    /// settable members, so the binder leaves them unchanged, and the daemon refuses a file that names one (NL-338).
+    /// </summary>
+    public static readonly IReadOnlyList<string> UnboundMoneyKeys =
+        [nameof(DustLimitAmount), nameof(HtlcMinimumAmount), nameof(MinimumChannelSize)];
+
     public LightningMoney DustLimitAmount { get; set; } = LightningMoney.Satoshis(354);
 
     public ulong DefaultCltvExpiry { get; set; }

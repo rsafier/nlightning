@@ -300,7 +300,20 @@ public static class NodeServiceExtensions
         services.AddOnchainBitcoinServices();
 
         // Register options with values from configuration
-        services.AddOptions<BitcoinOptions>().BindConfiguration("Bitcoin").ValidateOnStart();
+        // The members are checked here, not marked required: the binding source generator cannot build a type with
+        // required members (NL-338)
+        services.AddOptions<BitcoinOptions>()
+                .BindConfiguration(BitcoinOptions.SectionName)
+                .Validate(options =>
+                 {
+                     var errors = options.GetValidationErrors();
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(BitcoinOptions.SectionName, typeof(BitcoinOptions),
+                                                              errors);
+
+                     return true;
+                 })
+                .ValidateOnStart();
         services.AddOptions<FeeEstimationOptions>().BindConfiguration("FeeEstimation").ValidateOnStart();
         services.AddOptions<ChannelCloseOptions>().BindConfiguration(ChannelCloseOptions.SectionName);
         services.Configure<ChannelSafetyOptions>(configuration.GetSection(ChannelSafetyOptions.SectionName));
@@ -312,6 +325,9 @@ public static class NodeServiceExtensions
         services.Configure<RevokedCommitResolverOptions>(configuration.GetSection(OnchainOptions.SectionName));
         // O7-T2: the anchor CPFP knobs (Node:Onchain:Anchors)
         services.Configure<AnchorCpfpOptions>(configuration.GetSection(AnchorCpfpOptions.SectionName));
+        // NodeOptions' LightningMoney members (DustLimitAmount, HtlcMinimumAmount, MinimumChannelSize) are not
+        // configuration keys: LightningMoney has no settable members, so the binding generator leaves them as they are,
+        // and the validation below refuses a file that sets one instead of ignoring it (NL-338)
         services.AddOptions<NodeOptions>()
                 .BindConfiguration("Node")
                 .PostConfigure(options =>
@@ -356,6 +372,10 @@ public static class NodeServiceExtensions
                      // BOLT 9: every advertised feature must have its dependencies set; BOLT 7 routing policy and
                      // reconnect delays must be sane (e.g. cltv_expiry_delta >= 34)
                      var errors = options.Features.GetValidationErrors().Concat(options.GetValidationErrors()).ToList();
+                     errors.AddRange(NodeOptions.UnboundMoneyKeys
+                                                .Where(key => configuration.GetSection($"Node:{key}").Exists())
+                                                .Select(key => $"Node:{key} cannot be set in the configuration "
+                                                             + "(NL-338)."));
                      if (errors.Count > 0)
                          throw new OptionsValidationException("Node", typeof(NodeOptions), errors);
 

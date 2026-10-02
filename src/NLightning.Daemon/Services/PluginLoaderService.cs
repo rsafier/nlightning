@@ -1,3 +1,5 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -23,9 +25,22 @@ public class PluginLoaderService : IHostedService
         _logger = logger;
     }
 
+    // Loading assemblies at run time needs dynamic code and unreferenced metadata: a NativeAOT build skips the
+    // plugins (the guard below), and trimmed JIT builds are not a supported target (NL-338)
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "NativeAOT skips plugins; no trimmed JIT build")]
+    [UnconditionalSuppressMessage("Trimming", "IL2072", Justification = "NativeAOT skips plugins; no trimmed JIT build")]
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         var entries = _config.GetSection("Plugins").Get<List<PluginEntry>>() ?? [];
+        if (!RuntimeFeature.IsDynamicCodeSupported)
+        {
+            if (entries.Count > 0)
+                _logger.LogWarning("Plugins cannot be loaded in a NativeAOT build; {Count} configured plugin(s) skipped",
+                                   entries.Count);
+
+            return;
+        }
+
         foreach (var entry in entries)
         {
             try

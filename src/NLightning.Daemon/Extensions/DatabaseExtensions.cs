@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,6 +28,11 @@ public static class DatabaseExtensions
             logger.LogInformation("Database migrations are disabled in configuration");
             return;
         }
+
+        // EF Core migrations need dynamic code; a NativeAOT build never gets here (Program stops it first, NL-708)
+        if (!RuntimeFeature.IsDynamicCodeSupported)
+            throw new PlatformNotSupportedException(
+                "EF Core migrations cannot run in a NativeAOT build (NL-708); apply them with the JIT build.");
 
         try
         {
