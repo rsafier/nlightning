@@ -3,9 +3,11 @@ using System.Text;
 
 namespace NLightning.Client.Handlers;
 
+using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Enums;
+using Domain.Accounting.Financial;
 using Domain.Client.Enums;
 using Ipc;
 using Printers;
@@ -16,7 +18,8 @@ using Transport.Ipc.Responses;
 /// The <c>accounting</c> verb family of the CLI (NL-602 A2): <c>accounting report &lt;kind&gt; [...]</c> (ClientCommand
 /// 43), <c>accounting export --format hledger|beancount|csv [--since] [--until] [--output &lt;file&gt;]</c> (44) and
 /// <c>accounting reconcile|rebuild|verify</c> (45); <c>accounting prices import|list|fetch</c> (45, A3-T2:
-/// <see cref="AccountingPricesCommands"/>).
+/// <see cref="AccountingPricesCommands"/>); since A3-T5 also <c>accounting close &lt;period&gt; [--force]</c>,
+/// <c>close list</c>, <c>close show &lt;period&gt;</c> and <c>rebuild --book financial</c> (45).
 /// </summary>
 /// <remarks>
 /// An export is fetched page by page and written by the client, to standard output or to <c>--output</c> (a path on
@@ -31,7 +34,8 @@ internal static class AccountingBooksCommands
     internal const string Usage =
         "accounting report <balance|income|channels|peers|fees|register> [options] | accounting export --format "
       + "<hledger|beancount|csv> [--since <time>] [--until <time>] [--output <file>] | accounting "
-      + "<reconcile|rebuild|verify> | " + AccountingClassifyCommands.Usage + " | "
+      + "<reconcile|rebuild [--book operational|financial]|verify> | accounting close <period> [--force] | accounting "
+      + "close list | accounting close show <period> | " + AccountingClassifyCommands.Usage + " | "
       + AccountingPricesCommands.Usage;
 
     /// <summary>The largest register page.</summary>
@@ -98,6 +102,10 @@ internal static class AccountingBooksCommands
                            : null;
             case "prices":
                 return AccountingPricesCommands.Parse(commandArgs[1..], out error);
+            case "close":
+                return ParseClose(commandArgs[1..], out error);
+            case "rebuild" when commandArgs.Length > 1:
+                return ParseRebuild(commandArgs[1..], out error);
             case "reconcile":
             case "rebuild":
             case "verify":
@@ -119,6 +127,98 @@ internal static class AccountingBooksCommands
                 error = $"Unknown accounting subcommand '{commandArgs[0]}'.";
                 return null;
         }
+    }
+
+    /// <summary>
+    /// Parses <c>close &lt;period&gt; [--force]</c>, <c>close list</c> and <c>close show &lt;period&gt;</c> (A3-T5); the
+    /// period is <c>YYYY-MM</c> or <c>YYYY-MM-DD..YYYY-MM-DD</c> (the last day included).
+    /// </summary>
+    private static AccountingArguments? ParseClose(string[] args, out string? error)
+    {
+        error = null;
+        if (args.Length == 0)
+        {
+            error = "Missing period: accounting close <period> [--force] | close list | close show <period>.";
+            return null;
+        }
+
+        var verb = args[0].ToLowerInvariant();
+        if (verb == "list")
+        {
+            if (args.Length > 1)
+            {
+                error = $"Unexpected argument '{args[1]}'.";
+                return null;
+            }
+
+            return new AccountingArguments("close",
+                                           Admin: new AccountingAdminIpcRequest
+                                           {
+                                               Action = (int)AccountingAdminAction.CloseList
+                                           });
+        }
+
+        var show = verb == "show";
+        var rest = show ? args[1..] : args;
+        string? period = null;
+        var force = false;
+        foreach (var arg in rest)
+        {
+            if (!show && string.Equals(arg, "--force", StringComparison.OrdinalIgnoreCase))
+            {
+                force = true;
+                continue;
+            }
+
+            if (period is not null || arg.StartsWith("--", StringComparison.Ordinal))
+            {
+                error = $"Unexpected argument '{arg}'.";
+                return null;
+            }
+
+            period = arg;
+        }
+
+        if (!AccountingPeriodRange.TryParse(period, out var range, out error))
+            return null;
+
+        return new AccountingArguments("close",
+                                       Admin: new AccountingAdminIpcRequest
+                                       {
+                                           Action = (int)(show
+                                                              ? AccountingAdminAction.CloseShow
+                                                              : AccountingAdminAction.Close),
+                                           Period = range!.PeriodId,
+                                           Force = force
+                                       });
+    }
+
+    /// <summary>Parses <c>rebuild --book operational|financial</c> (A3-T5).</summary>
+    private static AccountingArguments? ParseRebuild(string[] args, out string? error)
+    {
+        var options = ParseOptions(args, ["--book"], out error);
+        if (options is null)
+            return null;
+
+        var value = options[0].Value;
+        AccountingBook? book = value.ToLowerInvariant() switch
+        {
+            "operational" => AccountingBook.Operational,
+            "financial" => AccountingBook.Financial,
+            _ => null
+        };
+        if (book is not { } chosen)
+        {
+            error = $"Unknown book '{value}': expected operational or financial.";
+            return null;
+        }
+
+        return new AccountingArguments("rebuild",
+                                       Admin: new AccountingAdminIpcRequest
+                                       {
+                                           Action = (int)AccountingAdminAction.Rebuild,
+                                           Book = (int)chosen
+                                       });
     }
 
     /// <summary>

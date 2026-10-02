@@ -8,6 +8,7 @@ using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Financial.Classification;
 using Domain.Accounting.Prices;
+using Domain.Accounting.Financial;
 using Domain.Accounting.Services;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
@@ -180,14 +181,20 @@ public sealed class AccountingExportClientHandler
 /// <summary>
 /// The books' administration (ClientCommand 45, NL-602 A2): <c>accounting reconcile</c> and <c>rebuild</c> call the
 /// books (refused when they are off); <c>accounting verify</c> walks the feed's hash chain in pages
-/// (<see cref="AccountingChainVerifier"/>), books on or off.
+/// (<see cref="AccountingChainVerifier"/>), books on or off, and (A3-T5) checks every period close.
 /// </summary>
+/// <remarks>
+/// A3-T5: <c>close &lt;period&gt; [--force]</c>, <c>close list</c>, <c>close show &lt;period&gt;</c> and
+/// <c>rebuild --book financial</c> go to <see cref="IAccountingPeriods"/>; a refused close, a bad period or the
+/// financial book off is <c>invalid_operation</c> with the reason.
+/// </remarks>
 public sealed class AccountingAdminClientHandler
     : IClientCommandHandler<AccountingAdminClientRequest, AccountingAdminClientResponse>
 {
     private readonly IAccountingBooks? _books;
     private readonly AccountNames _names;
     private readonly IAccountingPrices? _prices;
+    private readonly IAccountingPeriods? _periods;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAccountingClassificationAdmin? _classification;
 
@@ -197,13 +204,15 @@ public sealed class AccountingAdminClientHandler
     public AccountingAdminClientHandler(IUnitOfWork unitOfWork, IAccountingBooks? books,
                                         IOptions<AccountingOptions>? options = null,
                                         IAccountingClassificationAdmin? classification = null,
-                                        IAccountingPrices? prices = null)
+                                        IAccountingPrices? prices = null,
+                                        IAccountingPeriods? periods = null)
     {
         _prices = prices;
         _unitOfWork = unitOfWork;
         _books = books;
         _names = (options?.Value ?? new AccountingOptions()).GetAccountNames();
         _classification = classification;
+        _periods = periods;
     }
 
     /// <inheritdoc/>
@@ -218,10 +227,16 @@ public sealed class AccountingAdminClientHandler
                 return response with
                 {
                     Verification = await AccountingChainVerifier.VerifyAsync(_unitOfWork.AccountingEventDbRepository,
-                                                                             cancellationToken: ct)
+                                                                             cancellationToken: ct),
+                    PeriodVerifications = _periods is null ? null : await _periods.VerifyClosesAsync(ct)
                 };
             case AccountingAdminAction.Reconcile:
                 return response with { Reconcile = await RequireBooks().ReconcileAsync(ct) };
+            case AccountingAdminAction.Rebuild when request.Book is AccountingBook.Financial:
+            case AccountingAdminAction.Close:
+            case AccountingAdminAction.CloseList:
+            case AccountingAdminAction.CloseShow:
+                return await HandlePeriodsAsync(request, response, ct);
             case AccountingAdminAction.Rebuild:
                 return response with { RebuiltEntries = await RequireBooks().RebuildAsync(ct) };
             case AccountingAdminAction.Classify:
@@ -243,8 +258,55 @@ public sealed class AccountingAdminClientHandler
         }
     }
 
+    /// <summary>The period close's actions (A3-T5); a refusal or a bad period is <c>invalid_operation</c>.</summary>
+    private async Task<AccountingAdminClientResponse> HandlePeriodsAsync(AccountingAdminClientRequest request,
+                                                                         AccountingAdminClientResponse response,
+                                                                         CancellationToken ct)
+    {
+        try
+        {
+            switch (request.Action)
+            {
+                case AccountingAdminAction.Rebuild:
+                    RequireBooks();
+                    return response with { RebuiltEntries = await RequirePeriods().RebuildFinancialAsync(ct) };
+                case AccountingAdminAction.Close:
+                    return response with
+                    {
+                        Period = await RequirePeriods().CloseAsync(RequirePeriod(request), request.Force, ct)
+                    };
+                case AccountingAdminAction.CloseList:
+                    return response with { Periods = await RequirePeriods().ListAsync(ct) };
+                default:
+                    var period = RequirePeriod(request);
+                    return response with
+                    {
+                        Period = await RequirePeriods().GetAsync(period, ct)
+                              ?? throw new ClientException(ErrorCodes.InvalidOperation,
+                                                           $"No accounting period {period}.")
+                    };
+            }
+        }
+        catch (AccountingCloseRefusedException e)
+        {
+            throw new ClientException(ErrorCodes.InvalidOperation, e.Message);
+        }
+        catch (ArgumentException e)
+        {
+            throw new ClientException(ErrorCodes.InvalidOperation, e.Message);
+        }
+    }
+
     private IAccountingBooks RequireBooks() =>
         _books is { IsEnabled: true } books ? books : throw AccountingReportClientHandler.BooksDisabled();
+
+    private IAccountingPeriods RequirePeriods() =>
+        _periods ?? throw new ClientException(ErrorCodes.InvalidOperation,
+                                              "This daemon does not serve accounting period closes.");
+
+    private static string RequirePeriod(AccountingAdminClientRequest request) =>
+        request.Period ?? throw new ClientException(ErrorCodes.InvalidOperation,
+                                                    "A period is required: YYYY-MM or YYYY-MM-DD..YYYY-MM-DD.");
 }
 
 /// <summary>The <c>short_channel_id</c> form of an accounting channel filter, resolved through the loaded channels.</summary>

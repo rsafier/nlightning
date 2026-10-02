@@ -34,7 +34,10 @@ public static class AccountingServiceCollectionExtensions
     /// <see cref="AccountingOptions"/> from <see cref="AccountingOptions.SectionName"/>; without a binding the
     /// defaults apply. Also the backfill (<see cref="AccountingBackfillService"/> as itself and as
     /// <see cref="IAccountingBackfill"/>: the host awaits its cutover before the peers start and starts its memo pass
-    /// after the chain monitor).
+    /// after the chain monitor). And the period close (A3-T5): <see cref="AccountingPeriodService"/> as itself, as
+    /// <see cref="IAccountingPeriods"/> and as the lock's <see cref="IAccountingAdjustmentSink"/> (one instance), with
+    /// the off <see cref="NullFinancialBooksProjector"/> as <see cref="IFinancialBooksProjector"/> until A3-T4 registers
+    /// its own.
     /// </summary>
     public static IServiceCollection AddAccountingServices(this IServiceCollection services)
     {
@@ -66,6 +69,7 @@ public static class AccountingServiceCollectionExtensions
         services.AddAccountingReportServices();
         services.AddAccountingClassificationServices();
         services.AddAccountingPriceValuation();
+        services.AddAccountingPeriodServices();
 
         return services;
     }
@@ -89,6 +93,28 @@ public static class AccountingServiceCollectionExtensions
                                      sp.GetService<IPriceSource>(), sp.GetService<IAccountingAdjustmentSink>(),
                                      sp.GetService<TimeProvider>()));
         services.TryAddSingleton<IAccountingPrices>(sp => sp.GetRequiredService<PriceValuationService>());
+
+        return services;
+    }
+
+    /// <summary>
+    /// Period close, lock and signed digests (NL-602 A3-T5): <see cref="AccountingPeriodService"/> as itself, as
+    /// <see cref="IAccountingPeriods"/> and as the period lock's <see cref="IAccountingAdjustmentSink"/> (replacing the
+    /// off default of <see cref="AddAccountingPriceValuation"/> whatever the order). The financial projector is A3-T4's:
+    /// until it registers its own (before this call, or with Replace), the default is off and closes are refused.
+    /// </summary>
+    public static IServiceCollection AddAccountingPeriodServices(this IServiceCollection services)
+    {
+        services.TryAddSingleton<IFinancialBooksProjector, NullFinancialBooksProjector>();
+        services.TryAddSingleton(sp => new AccountingPeriodService(
+                                     sp.GetRequiredService<IServiceScopeFactory>(),
+                                     sp.GetRequiredService<ILogger<AccountingPeriodService>>(),
+                                     sp.GetService<IAccountingBooks>(), sp.GetService<IFinancialBooksProjector>(),
+                                     sp.GetService<ILightningSigner>(), sp.GetService<TimeProvider>()));
+        services.TryAddSingleton<IAccountingPeriods>(sp => sp.GetRequiredService<AccountingPeriodService>());
+        // Replace, not TryAdd: the lock must win over the off NullAccountingAdjustmentSink default whatever the order
+        services.Replace(ServiceDescriptor.Singleton<IAccountingAdjustmentSink>(
+                             sp => sp.GetRequiredService<AccountingPeriodService>()));
 
         return services;
     }

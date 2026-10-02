@@ -2,6 +2,7 @@ using MessagePack;
 
 namespace NLightning.Transport.Ipc.Requests;
 
+using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Enums;
@@ -123,7 +124,8 @@ public sealed class AccountingExportIpcRequest
 [MessagePackObject]
 public sealed class AccountingAdminIpcRequest
 {
-    /// <summary>The <c>AccountingAdminAction</c> value (1 reconcile, 2 rebuild, 3 verify).</summary>
+    /// <summary>The <c>AccountingAdminAction</c> value (1 reconcile, 2 rebuild, 3 verify, 20 close, 21 close list,
+    /// 22 close show).</summary>
     [Key(0)] public int Action { get; set; } = (int)AccountingAdminAction.Verify;
 
     /// <summary>The classify action (action 5, NL-602 A3-T3).</summary>
@@ -132,17 +134,33 @@ public sealed class AccountingAdminIpcRequest
     /// <summary>The arguments of the <c>prices</c> actions (10 import, 11 list, 12 fetch; NL-602 A3-T2).</summary>
     [Key(10)] public AccountingPricesIpcRequest? Prices { get; set; }
 
-    /// <exception cref="ClientException">An unknown action, or bad <c>prices</c> arguments.</exception>
+    // Keys 20-22 are A3-T5's (period close), apart from the other A3 lanes' keys
+
+    /// <summary>The period of <c>close</c> and <c>close show</c>: <c>YYYY-MM</c> or <c>YYYY-MM-DD..YYYY-MM-DD</c>.</summary>
+    [Key(20)] public string? Period { get; set; }
+
+    /// <summary><c>close --force</c>.</summary>
+    [Key(21)] public bool Force { get; set; }
+
+    /// <summary>The <c>AccountingBook</c> of <c>rebuild --book</c> (0 operational, 1 financial; null = operational).</summary>
+    [Key(22)] public int? Book { get; set; }
+
+    /// <exception cref="ClientException">An unknown action or book, or bad <c>prices</c> arguments.</exception>
     public AccountingAdminClientRequest ToClientRequest()
     {
         if (!Enum.IsDefined(typeof(AccountingAdminAction), Action))
             throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown accounting action {Action}.");
+        if (Book is { } book && (book is < 0 or > byte.MaxValue || !Enum.IsDefined((AccountingBook)(byte)book)))
+            throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown accounting book {Book}.");
 
         return new AccountingAdminClientRequest
         {
             Action = (AccountingAdminAction)Action,
             Classify = Classify?.ToClientRequest(),
-            Prices = Prices?.ToClientRequest()
+            Prices = Prices?.ToClientRequest(),
+            Period = string.IsNullOrWhiteSpace(Period) ? null : Period.Trim(),
+            Force = Force,
+            Book = Book is { } value ? (AccountingBook)value : null
         };
     }
 }

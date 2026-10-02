@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Client.Responses;
 
 using Accounting.Books;
+using Accounting.Financial;
 using Accounting.Models;
 using Enums;
 
@@ -24,4 +25,13 @@ public sealed record AccountingAdminClientResponse(AccountingAdminAction Action,
 
     /// <summary>The answer of a <c>prices</c> action (NL-602 A3-T2).</summary>
     public AccountingPricesClientResponse? Prices { get; init; }
+
+    /// <summary><c>close list</c>: every period, oldest first (A3-T5).</summary>
+    public IReadOnlyList<AccountingCloseReport>? Periods { get; init; }
+
+    /// <summary><c>close</c> and <c>close show</c>: the period (A3-T5).</summary>
+    public AccountingCloseReport? Period { get; init; }
+
+    /// <summary><c>verify</c>: every closed period checked (A3-T5); null when the closes are not served.</summary>
+    public IReadOnlyList<AccountingCloseVerification>? PeriodVerifications { get; init; }
 }

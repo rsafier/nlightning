@@ -594,6 +594,14 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
             return Task.FromResult<IDisposable>(new Release(this));
         }
 
+        public Task<AccountingPeriod?> GetLockingPeriodAsync(DateTimeOffset time,
+                                                             CancellationToken cancellationToken = default) =>
+            Task.FromResult<AccountingPeriod?>(null);
+
+        public Task<AccountingEntry?> StageAdjustmentAsync(IUnitOfWork unitOfWork, AccountingAdjustment adjustment,
+                                                           CancellationToken cancellationToken = default) =>
+            Task.FromResult<AccountingEntry?>(null);
+
         public Task<bool> AdjustLateValuationAsync(IUnitOfWork unitOfWork, AccountingLateValuation valuation,
                                                    CancellationToken cancellationToken = default)
         {

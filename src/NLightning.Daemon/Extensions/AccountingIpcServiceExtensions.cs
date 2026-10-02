@@ -12,6 +12,7 @@ using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Financial.Classification;
+using Domain.Accounting.Financial;
 using Domain.Accounting.Interfaces;
 using Domain.Accounting.Prices;
 using Domain.Channels.Interfaces;
@@ -58,7 +59,8 @@ public static class AccountingIpcServiceExtensions
                                                 sp.GetService<IAccountingBooks>(),
                                                 sp.GetService<IOptions<AccountingOptions>>(),
                                                 sp.GetService<IAccountingClassificationAdmin>(),
-                                                sp.GetService<IAccountingPrices>()));
+                                                sp.GetService<IAccountingPrices>(),
+                                                sp.GetService<IAccountingPeriods>()));
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIpcCommandHandler, ListAccountingEventsIpcHandler>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIpcCommandHandler, AccountingSnapshotIpcHandler>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IIpcCommandHandler, AccountingReportIpcHandler>());
