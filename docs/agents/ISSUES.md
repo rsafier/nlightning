@@ -125,12 +125,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 53 | 56 |
+| open | 0 | 0 | 3 | 57 | 60 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 62 | 164 | 298 | 538 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **172** | **358** | **606** |
+| **Total** | **14** | **62** | **172** | **362** | **610** |
 
 ### Epics
 
@@ -4574,6 +4574,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ACCOUNTING_PLAN A0-A3
 - **Update (A1-T1, 2026-10-02):** Domain `Accounting/` (event model, kinds, keys, canonical hasher, sealer, details codec, `IAccountingEventDbRepository` with a null default on `IUnitOfWork`), table `AccountingEvents` with migration `AddAccountingEvents` on all three providers (also `Channels.PushAmountMsat` for NL-605 and `BroadcastTransactions.FeeSat` for NL-604, no writers yet); SQLite round trip and sealer tests.
 - **Update (A1-T2, A1-T4, A1-T5, 2026-10-02):** writers in the saves of every money transition: `InvoiceSettled`, `PaymentSucceeded`/`PaymentFailed`, `ForwardSettled`, `ForwardLostOnchain` (Application `Payments/PaymentAccountingEvents`); `ChannelFunded` with push and our fee share, `SpliceLocked`, `ChannelClosedMutual` (`Channels/Accounting/ChannelAccountingEvents`); `ChannelForceClosed`, `OutputResolved`/`PenaltyClaimed`/`BreachLoss`/`OutputIgnored` and reversals of a replaced close or a reorged resolution (`Onchain/Accounting/`); wallet deposits and spends, `AnchorCpfpFee`, `SweepFeeBump`, `WalletSent` and rewind reversals in the chain monitor (NL-603, NL-604, NL-605 fixed). The sealer service (`Application/Accounting/AccountingEventSealerService`, `Accounting` options), the live balance snapshot (`INodeSnapshotSource`) and IPC `listaccountingevents` (41) / `accountingsnapshot` (42). Remaining in A1: the backfill (A1-T6; closes recorded before the feed have no `ChannelForceClosed`, so their sweeps would read as gains), the flat-startup proof, and follow-ups NL-606..NL-613. Notes for A2: wallet events overlap the channel and fee events (the books use `source` and kind), a pending funding is in both the channel and the wallet buckets of a snapshot until it confirms, a splice-out to an outside address shows as wallet outputs in the details.
+- **Update (A1-T6, A2 lanes B1/B2, 2026-10-02):** the cutover (`Application/Accounting/Backfill/`: opening balances by bucket and a synthetic close per resolving channel, once, before `PeerManager.StartAsync`; memo history of earlier facts after the chain monitor) and the flat-startup proof (indexed startup queries on 50,000 rows; marker check plus an empty sealer round 2.0 ms at 10,000 rows, 3.1 ms at 1,000,000) are done, which completes A1. A2: posting rules (`Domain/Accounting/Books/AccountingPostingRules`, proven against the real writers' events), the books' tables (migration `AddAccountingBooks`), the projector, rebuild and reconcile (`Application/Accounting/Books/AccountingBooksService`). Follow-ups NL-616..NL-620; memo gaps (spliced channels' funding skipped, a failed payment retried after the cutover can lose its memo, a close retired for a splice gets no pending opening balance) are logged, not filed.
 
 ### NL-152 Missing IPC commands: close, list channels, invoice, pay, disconnect
 - **Status:** fixed (5611156, 2ede2ee, 6cfbcd1, c10a78e, c50fc7b, f2f1ef6, 6d81ecd, c2ae40a, d60c4be5, aa9d67e0)
@@ -5107,6 +5108,46 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** For `RevokedCommitment` closes, take our latest local commitment's balance as the amount leaving Channels and put L - B into `lostMsat` (gain or loss against the penalty outcome), so every case nets.
 - **Blocks/Blocked-by:** Related NL-602
 - **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-617 A channel failed before its funding confirmed never records ChannelFunded
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Handlers/FundingConfirmedMessageHandler.cs` (~:51, only V1FundingSigned/ReadyForThem), `Channels/Accounting/ChannelAccountingEvents.cs`
+- **Evidence:** NL-602 A1-T6: a channel that turns Failed before its funding reaches depth skips the confirmation handler, so no `ChannelFunded` is written; if its funding later confirms and the channel force-closes, `ChannelForceClosed` takes our balance out of a Channels bucket that never received it.
+- **Fix sketch:** Write `ChannelFunded` at the funding's confirmation for a Failed (or OnchainResolving) channel too, from the chain monitor's confirmation path, under the channel lock.
+- **Blocks/Blocked-by:** Related NL-602
+- **Plan ref:** ACCOUNTING_PLAN A1
+
+### NL-618 Reconcile compares Pending against outputs the books never counted
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Accounting/NodeSnapshotSource.cs` (`IsOurs`), `Accounting/Books/AccountingBooksService.BuildReconcileLines`
+- **Evidence:** NL-602 A2: the snapshot's pending on-chain amount counts every unresolved output of ours (both HTLC directions, a revoked commitment's outputs, a fundee's anchor), the books' Pending only the outputs counted at the close (`OnchainAccounting.CountsAtClose`, the close's `countedVouts`), so the node side can legitimately exceed the books while such outputs are unresolved; the reconcile line only notes it.
+- **Fix sketch:** Have the snapshot report the counted subset (read the close event's `countedVouts`, or apply `CountsAtClose`) and reconcile against it.
+- **Blocks/Blocked-by:** Related NL-602
+- **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-619 A failed cutover followed by live events leaves the books without opening balances
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Accounting/Backfill/AccountingBackfillService.cs` (`EnsureCutoverAsync`), `src/NLightning.Daemon/Services/NltgDaemonService.cs`
+- **Evidence:** NL-602 A1-T6: the daemon logs a failed cutover and starts anyway; once live writers have added events, the next start takes the dev-node path (`skippedOpening=true`) and never writes the opening balances, so every bucket starts at zero.
+- **Fix sketch:** Refuse to start (or keep the live writers' events out of the check by flag) when the cutover failed; or let the next start write the opening balances as of its own cutover and mark the earlier live events memo.
+- **Blocks/Blocked-by:** Related NL-602
+- **Plan ref:** ACCOUNTING_PLAN A1-T6
+
+### NL-620 Two Application tests failed once each under a loaded host after the de-timing pass
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests` (`PendingAnnouncementTests.Given_AChannelQueuedBehindABusyWorker_*`, `PeerManagerConnectTests.Given_ATorOnlyNode_*`)
+- **Evidence:** Each failed once in a full Application run during the NL-602 A1-T6 lane (2026-10-02, 4-core cloud host with several builds running) and passed alone; neither is in the de-timing pass's list.
+- **Fix sketch:** Look for the wait each races (as in the de-timing pass); rerun alone before treating it as a regression.
+- **Blocks/Blocked-by:** Related NL-565
+- **Plan ref:** —
 
 ## Crypto providers and key management
 
