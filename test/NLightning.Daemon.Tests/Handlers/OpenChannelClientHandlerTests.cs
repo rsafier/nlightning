@@ -801,6 +801,40 @@ public class OpenChannelClientHandlerTests
                                             Times.Once);
     }
 
+    [Theory]
+    [InlineData(FeatureSupport.Optional, true)]
+    [InlineData(FeatureSupport.No, false)]
+    public async Task Given_AV1OpenRefused_When_DualFundIsOrIsNotNegotiated_Then_TheErrorNamesTheDualFundedOpen(
+        FeatureSupport dualFund, bool hinted)
+    {
+        // Arrange (NL-557: Eclair refuses a v1 open once option_dual_fund is negotiated)
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount)
+        {
+            PushAmount = LightningMoney.Satoshis(10_000)
+        };
+        var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: false);
+        Assert.True(_peerManagerMock.Object.GetPeer(peerId)!.TryGetPeerService(out var peerService));
+        var peerServiceMock = Mock.Get(peerService);
+        peerServiceMock.Setup(x => x.Features).Returns(new FeatureOptions { DualFund = dualFund });
+        const string eclairText = "requirement failed: custom remote channel reserve is incompatible with dual-funded "
+                                + "channels";
+
+        // Act
+        var handleTask = _handler.HandleAsync(request, CancellationToken.None);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        peerServiceMock.Raise(x => x.OnAttentionMessageReceived += null, null!,
+                              new AttentionMessageEventArgs(eclairText, peerId, channelModel.ChannelId));
+
+        // Assert
+        var error = await Assert.ThrowsAsync<ChannelErrorException>(() => handleTask);
+        Assert.Contains(eclairText, error.Message);
+        Assert.Equal(hinted, error.Message.Contains("option_dual_fund", StringComparison.Ordinal));
+        if (hinted)
+            Assert.Contains("without a push amount, zero-conf or --v1", error.Message);
+    }
+
     [Fact]
     public async Task Given_AcceptChannelHoldsTheLock_When_TheOpenTimesOutAndTheHandlerUpgrades_Then_OpenSucceeds()
     {
