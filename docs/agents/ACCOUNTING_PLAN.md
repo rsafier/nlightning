@@ -1,6 +1,6 @@
 # Accounting plan (NL-602)
 
-Status: **A1 done, A2 built** (2026-10-02): the feed with every writer, the sealer, the cutover and the flat-startup proof (A1); the operational books with posting rules, projector, rebuild, reconcile, reports, exports and IPC 41-45 (A2). A3 (financial profile) is next. The §8 recommendations are the defaults until the owner decides otherwise. Open owner decisions are marked **D-Ax** in §8.
+Status: **A1 done, A2 built** (2026-10-02): the feed with every writer, the sealer, the cutover and the flat-startup proof (A1); the operational books with posting rules, projector, rebuild, reconcile, reports, exports and IPC 41-45 (A2). A3 (financial profile) is next, broken down for hand-off in §9 (A3-T0..T7, decisions D-A7..D-A13 in §8). The §8 recommendations are the defaults until the owner decides otherwise. Open owner decisions are marked **D-Ax** in §8.
 
 ## 1. Goal
 
@@ -250,6 +250,7 @@ The journal tables live in the **node's own `NLightningDbContext`**, with ordina
 - `AccountingLots`
 - `AccountingPrices`
 - `AccountingPeriods`
+- `AccountingRules` (D-A10)
 
 The journal is a projection of the feed plus the overrides, so `nltg accounting rebuild` can always regenerate it. The projector saves its cursor (`LastLedgerSeq`) in the same save as the entries it produced, which makes the projection exactly-once.
 
@@ -291,6 +292,13 @@ The journal is a projection of the feed plus the overrides, so `nltg accounting 
 | D-A4 | Post on-chain events at 1 confirmation (with reversal) or at N | 1 confirmation with compensating reversals. Financial reports can filter on `Finality`. |
 | D-A5 | Defaults | The feed is always on, on every network, mainnet included. The books are on by default with `Operational`; `Accounting:Enabled=false` turns them off. `Financial` is opt-in. |
 | D-A6 | Export delivery | Stream to the client by default. The daemon writes to disk only under the config directory, so no arbitrary paths. |
+| D-A7 | How the financial books relate to the operational ones | A second book next to the operational one, never instead of it: `Profile=Financial` adds a financial projector that reads the **operational entries** in ledger order (not the raw feed) and writes its own entries and postings, told apart by a `Book` column (0 operational, 1 financial) with its own cursor row. Reconcile keeps using the operational book. |
+| D-A8 | A locked period against `rebuild` | A closed period is never rewritten. The financial rebuild starts from the state stored at the last close (balances, open lots, digest) and replays only the open period; the operational rebuild is unchanged (it has no judgement in it). Anything that would change a closed period (a new override, a rule change, a price filled in later) posts an **adjustment** in the open period, dated now. |
+| D-A9 | Cost basis of the opening balances (the cutover) | Opening lots at the BTC price of the cutover time, flagged `basisEstimated=true`. Before the first period close the operator may replace them with `nltg accounting lots import <csv>` (date, sats, fiat cost); after it, only through an adjustment. |
+| D-A10 | Classification rules: format and storage | A database table `AccountingRules`, managed over IPC 45 (`classify rule add/list/remove/test`), ordered by priority, first match wins. Match on kind, label regex (`RegexOptions.NonBacktracking`, 100 ms timeout), tag key and value glob, counterparty, offer id, channel; the target is one financial account name. In the database so it is in the node's backups and changes without a restart. |
+| D-A11 | Price sources and precision | An operator CSV (`<configPath>/prices.csv`, `unixSeconds,price`) and one HTTP source, mempool.space's historical price API (`/api/v1/historical-price?currency=USD&timestamp=t`, the host we already use for fees, through Tor in `TorOnly`), queried only by the back-valuation job. A posting takes the nearest price at or before `OccurredAt` within `Accounting:Prices:MaxAge` (26 h), else it stays unvalued. Prices and fiat amounts are `decimal` (8 places stored, rounded to the currency's minor unit only in reports). |
+| D-A12 | Which events open and close lots | Acquisitions open a lot at the fiat value of the time: a deposit (`WalletReceived` from outside), and income at fair value (`InvoiceSettled`, `PushReceived`, routing fees earned, `OnchainGain`). Disposals relieve lots: payments (amount and fee), every fee kind, withdrawals to outside, `PushSent`, losses (`LossOnchain`, breach losses at zero proceeds). Everything between our own wallet, channels, pending and clearing is a transfer: the lot moves, nothing is realized, only its fee disposes. Methods FIFO, LIFO, HIFO; specific-id is left out of A3. |
+| D-A13 | Signing the period close | The close digest is SHA-256 over the period, its last `LedgerSeq`, the feed's chain hash at that sequence and the hashes of the period's financial entries and of the open lots at the close; it is signed with the node key (`ILightningSigner.SignNodeMessage`), so anyone with the node id can check it. An OpenTimestamps anchor stays a later option. |
 
 ## 9. Phases
 
@@ -342,20 +350,68 @@ Proofs:
 
 ### A3: financial profile
 
-Tasks:
+**Scope status (2026-10-02):** broken down into tasks for hand-off. Owner decisions D-A1, D-A2 and D-A7..D-A13 (§8) hold at their recommendations unless the owner says otherwise. `verify` of the feed's hash chain was built in A2 (IPC 45); A3 adds only the signed period digests. Cite NL-602 in commits; open a new `NL-###` for each bug or gap found, as A1/A2 did (the accounting follow-ups still open are NL-606..NL-613 and NL-620: read them first, several touch what A3 values).
 
-- Labels and tags on the IPC commands.
-- Classification rules and overrides.
-- `IPriceSource` and back-valuation.
-- Lots and gains.
-- Period close and lock.
-- `verify`.
+**Base:** branch `claude/youthful-hamilton-x4ngo7` at or after `79ed8b1a` (A1 + A2 + NL-615..NL-619). Standard cycle: net10.0 tests, no Docker unless a task says so, `dotnet format` clean.
 
-Proofs:
+**Order:** A3-T0 first (alone: it owns every schema change, so the lanes never fight over the three model snapshots). Then A3-T1, A3-T2 and A3-T3 in parallel. A3-T4 after T2 and T3. Then A3-T5 and A3-T6 in parallel. A3-T7 last.
 
-- Hand-computed lot and gain fixtures: FIFO and HIFO, and transfers that are not disposals.
-- Period-lock tests.
-- Hash-chain tamper tests.
+#### A3-T0: schema (one migration, all three providers)
+
+Migration `AddAccountingFinancial` (`./scripts/add_migration.sh`, Postgres/Sqlite/SqlServer committed together, `HasPendingModelChanges` false for all three):
+
+- **Labels and tags:** nullable `Label` (UTF-8, at most 256 bytes) and `Tags` (text, a canonical `k=v` list, at most 1 KiB) on `Invoices`, `Payments`, `Offers`, `Channels` and `BroadcastTransactions` (the withdraw row). Domain models and repositories carry them; `ChannelRoundTripTests` and the payment/invoice round trips extend to them.
+- **`AccountingEntries`/`AccountingPostings`:** a `Book` column (byte, 0 operational, default 0 for existing rows) and, on postings, nullable `FiatAmount` (decimal), `FiatCurrency` (3 chars) and `PriceId`. The cursor table gets one row per book.
+- **New tables:** `AccountingPrices` (currency, time, price, source, fetched at; unique currency + time), `AccountingRules` (id, priority, match fields of D-A10, target account, enabled, created at), `AccountingOverrides` (event key → target account, note, created at; unique key), `AccountingLots` (id, acquired at, source entry, sats or msat remaining and original, fiat cost, currency, `basisEstimated`, closed by period), `AccountingLotReliefs` (lot, disposing entry, msat, fiat cost relieved, proceeds), `AccountingPeriods` (period id `YYYY-MM` or a date range, closed at, last `LedgerSeq`, chain hash, digest, signature, state).
+- Repositories on `IUnitOfWork` with a throwing default (as `AccountingBooksDbRepository`), and the `IUnitOfWork` wrappers in the tests (`CrashingUnitOfWork`, `HookedUnitOfWork`, the harness stores) forward them.
+- Proof: seeded-migration round trip on SQLite (`Integration.Tests/Persistence`), plus the Postgres one in `Docker/PostgresTests` when Docker is run.
+
+#### A3-T1: labels and tags at the source
+
+- IPC: the next free key of each request (today `CreateInvoiceIpcRequest` 3, `PayInvoiceIpcRequest` 5, `KeysendIpcRequest` 5, `PayOfferIpcRequest` 7, `WithdrawIpcRequest` 3, `OpenChannelIpcRequest` 7, `CreateOfferIpcRequest` 6) for `Label` and `Tags`; client flags `--label <text>` and repeatable `--tag k=v` on `createinvoice`, `payinvoice`, `keysend`, `createoffer`, `payoffer`, `withdraw`, `openchannel`. Validation (shared, Domain): label at most 256 UTF-8 bytes, no control characters; at most 16 tags, key `[a-z0-9_.-]{1,32}`, value at most 128 bytes.
+- The services persist them on the row (`InvoiceService`, `PaymentService` incl. keysend and offers, `OfferService`, the open path, `WalletSpendService`), and the list commands show them.
+- The writers copy them into the event's details (`label`, `tag.<k>`; constants in `AccountingDetailKeys`): `InvoiceSettled` from the invoice (a BOLT 12 invoice from its offer), `PaymentSucceeded`/`PaymentFailed` from the payment, `ChannelFunded` from the channel, `WalletSent` from the broadcast row.
+- Proof: IPC round trip with labels and tags (Daemon.Tests), and the events carrying them on SQLite (Integration).
+
+#### A3-T2: prices and back-valuation
+
+- Domain: `IPriceSource` (`GetPriceAsync(currency, time)` → price or null), `AccountingPrice`. Infrastructure.Bitcoin (the HTTP client setup next to the fee service, Tor-aware): `CsvPriceSource` (read once and on change of the file's mtime), `HttpPriceSource` (D-A11), `CompositePriceSource` (CSV first).
+- Options `Accounting:Prices` (`Currency` USD, `Source` `Csv`/`Http`/`Both`/`None`, `Url`, `CsvFile`, `MaxAge` 26 h, `FetchInterval`, `MaxFetchesPerRound`).
+- `PriceValuationService` (Application, singleton timer like the sealer, started after the projector, never on a hot path): finds financial postings without a price, groups them by hour, fetches each hour once, stores the price, fills `FiatAmount`/`PriceId` in one save per batch. A posting in a closed period is never filled: it raises an adjustment through A3-T5's rule.
+- IPC 45: `prices import <csv>` (client reads the file, sends rows), `prices list`, `prices fetch --since`.
+- Proof: the nearest-price rule at the `MaxAge` boundary, CSV parse errors reported by line, the HTTP source against a fake handler, back-valuation filling and never touching a closed period, and no request at all with `Source=None`.
+
+#### A3-T3: financial chart, classification and overrides
+
+- `Accounting:Profile` (`Operational` default, `Financial`). The financial chart (Domain, configurable names like `AccountNames`): assets as the operational buckets; `income:sales` (default for received payments), `income:routing`, `income:other`; `expenses:fees:*` (one per operational fee role), `expenses:payments` (default for sent payments), `expenses:losses`; `income:unclassified` and `expenses:unclassified`; `equity:opening-balances`; `income:gains:realized`, `expenses:losses:realized`.
+- `ClassificationEngine` (pure, Domain): given an operational entry and its event, the first matching enabled rule (D-A10), else an override by event key (overrides win over rules), else the default account of the kind; returns the account and why (rule id, override, default).
+- IPC 45: `classify rule add|list|remove|test`, `classify set <event key> <account>`, `classify list --unclassified`.
+- Proof: the rule table (each match field, priority, disabled rule, regex timeout), override precedence, and the unclassified listing.
+
+#### A3-T4: financial projector, lots and gains
+
+- `FinancialProjector` (Application, next to the operational projector, same cursor pattern, own cursor row): reads operational entries in ledger order, classifies (A3-T3), values (A3-T2 prices, or leaves the posting unvalued), and maintains the lots (D-A12) with `Accounting:CostBasis` (`Fifo` default, `Lifo`, `Hifo`): a transfer moves value without touching lots; a disposal relieves lots in method order and posts realized gain or loss; an acquisition opens a lot. One save per batch: entries, postings, lots, reliefs, cursor.
+- Opening balances: lots at the cutover price (D-A9), `basisEstimated`; `lots import` replaces them before the first close.
+- Reversals (reorgs): the projection of a reversal in the open period rebuilds the lots of the open period from the period's start state (cheap: one period); a reversal of a closed period's fact is an adjustment (A3-T5).
+- Unvalued postings keep their msat and are valued later; gains of a disposal whose lots are unvalued are reported as pending valuation, never as zero.
+- Proof (the plan's own): hand-computed fixtures for FIFO, LIFO and HIFO; a deposit, a channel open, payments, a close and a withdrawal where only the fees and the payments dispose; a rebalance (only the fee disposes); a reorg reversal in the open period; rebuild equals incremental; the operational book unchanged by the financial one.
+
+#### A3-T5: period close, lock and signed digests
+
+- `nltg accounting close <period> [--force]` (IPC 45 `close`): refuses while the period has unvalued postings or unclassified entries unless `--force`, seals and projects first, writes the `AccountingPeriods` row with the digest and signature (D-A13), and marks the period's entries and lots closed. `close list`, `close show <period>`.
+- The lock: no write of the operational or financial projector, of an override or of a price changes a closed period; each becomes an adjustment entry in the open period (D-A8). `rebuild --book financial` starts from the last close.
+- `verify` (IPC 45) also checks every close: the digest recomputed from the stored entries and lots, the signature against our node id, and the chain hash against the feed.
+- Proof: period-lock tests (each late write lands as an adjustment), tampering with a closed entry, a lot or the stored digest detected by `verify`, and a rebuild after a close equal to the incremental books.
+
+#### A3-T6: financial reports and exports
+
+- Reports (IPC 43, `--book financial` and `--currency`): balance sheet and income statement in msat and fiat, realized gains by period, unrealized gains at a given price, open lots, unvalued and unclassified rows, and the risk-weighted capital view from the snapshot (§6.2 Audit).
+- Exports (IPC 44): hledger with `@@` costs and `P` price directives, beancount with cost `{}` and `price` lines, CSV with fiat columns; golden files checked by `bean-check` (hledger where available).
+- Proof: golden files for the A3-T4 fixtures, and report totals equal to the books.
+
+#### A3-T7: integration
+
+- The daemon config template (`Accounting:Profile`, `CostBasis`, `Prices`), `SECURITY_REVIEW.md` (the price source's privacy, regex DoS, the lot import file), this plan's status, `CLAUDE.md` and `src/NLightning.Application/CLAUDE.md`, the ledger (NL-602 to fixed when A3 closes, with its follow-ups), and one Docker smoke on the ABCD or LND suite with `Profile=Financial` (reconcile clean, financial books balanced).
 
 The order is A1 → A2 → A3. A1-T3 (the data gaps) can start right away, in parallel with the rest of A1.
 
