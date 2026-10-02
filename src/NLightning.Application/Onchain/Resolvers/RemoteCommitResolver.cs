@@ -6,6 +6,7 @@ using NBitcoin;
 
 namespace NLightning.Application.Onchain.Resolvers;
 
+using Application.Onchain.Anchors;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.ValueObjects;
@@ -27,6 +28,7 @@ using Domain.Onchain.Planners;
 using Domain.Payments.Enums;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
+using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Onchain.Interfaces;
 using Remote;
@@ -58,7 +60,10 @@ using Remote;
 /// preimage the HTLC switch persisted on it after accepting it as our final hop (NL-316; the switch is asked to decide
 /// every round while the HTLC pays an <c>Open</c> invoice of ours, <see cref="FinalHopClaims"/>), or the preimage its
 /// forward learnt downstream (off chain or on chain), never an invoice preimage alone (B5-LCL-RO-02). One transaction
-/// per output.
+/// per output. Our anchor on the peer's commitment is not swept here: it waits for the anchor sweep (O7, NL-381) as
+/// <see cref="OutputResolutionState.Waiting"/> until the sweep falls due, 16 blocks after the commitment confirmed, and
+/// the executor records whoever's spend — our sweep's or the peer's racing one — as
+/// <see cref="OutputResolutionState.Resolved"/> (NL-601); still unspent at the irrevocable depth, it is ignored.
 /// </para>
 /// <para>
 /// Upstream: a preimage of our offered HTLC (from the peer's spend on chain, or known off chain) is staged into the
@@ -97,6 +102,7 @@ public sealed class RemoteCommitResolver : IOutputResolver
     private readonly ICommitmentOutputMapper _mapper;
     private readonly ICommitmentTransactionModelFactory? _modelFactory;
     private readonly RemoteResolutionOptions _options;
+    private readonly AnchorCpfpOptions _anchorCpfpOptions;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ILightningSigner _signer;
     private readonly ISweepTransactionBuilder _sweepBuilder;
@@ -107,7 +113,8 @@ public sealed class RemoteCommitResolver : IOutputResolver
                                 IOptions<RemoteResolutionOptions>? options = null,
                                 ILogger<RemoteCommitResolver>? logger = null, SweepFeePolicy? feePolicy = null,
                                 IChannelMemoryRepository? channelMemoryRepository = null,
-                                ICommitmentTransactionModelFactory? modelFactory = null)
+                                ICommitmentTransactionModelFactory? modelFactory = null,
+                                IOptions<AnchorCpfpOptions>? anchorCpfpOptions = null)
     {
         _mapper = mapper;
         _modelFactory = modelFactory;
@@ -118,6 +125,7 @@ public sealed class RemoteCommitResolver : IOutputResolver
         _commitmentSource = commitmentSource;
         _serviceScopeFactory = serviceScopeFactory;
         _options = options?.Value ?? new RemoteResolutionOptions();
+        _anchorCpfpOptions = anchorCpfpOptions?.Value ?? new AnchorCpfpOptions();
         _logger = logger ?? NullLogger<RemoteCommitResolver>.Instance;
         _feePolicy = feePolicy ?? new SweepFeePolicy();
         _channelMemoryRepository = channelMemoryRepository;
@@ -496,8 +504,31 @@ public sealed class RemoteCommitResolver : IOutputResolver
     {
         switch (row.Descriptor)
         {
+            case OutputDescriptorKind.OurAnchor when _anchorCpfpOptions.SweepAnchors:
+                // O7: the anchor sweep spends it 16 blocks after the commitment confirmed (NL-381), and the executor
+                // records whoever's spend — our sweep's or the peer's racing one — as Resolved (NL-601). Still
+                // unspent at the irrevocable depth (our sweep was refused or lost and the peer left it alone), it is
+                // ignored.
+                if (Depth(context.Height, context.Close.SpentAtHeight) >= _options.IrrevocableDepth)
+                {
+                    if (row.State is OutputResolutionState.Pending or OutputResolutionState.Waiting)
+                        ReplaceRow(context, row with { State = OutputResolutionState.Ignored, WaitUntilHeight = null },
+                                   actions);
+                }
+                else if (row.State == OutputResolutionState.Pending)
+                {
+                    ReplaceRow(context, row with
+                    {
+                        State = OutputResolutionState.Waiting,
+                        WaitUntilHeight = context.Close.SpentAtHeight + AnchorChildTransactionBuilder.AnchorCsvSequence
+                    }, actions);
+                }
+
+                return;
+
             case OutputDescriptorKind.PeerOutput or OutputDescriptorKind.PeerAnchor or OutputDescriptorKind.OurAnchor:
-                // Not ours (B5-RMT-02; our anchor waits for O7): nothing to resolve
+                // Not ours (B5-RMT-02), and with the anchor sweep off nothing of ours spends the anchor either:
+                // nothing to resolve
                 if (row.State is OutputResolutionState.Pending or OutputResolutionState.Waiting)
                     ReplaceRow(context, row with { State = OutputResolutionState.Ignored, WaitUntilHeight = null },
                                actions);

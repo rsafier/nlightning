@@ -2,6 +2,7 @@ using NBitcoin;
 
 namespace NLightning.Application.Tests.Onchain.Resolvers.Remote;
 
+using Application.Onchain.Anchors;
 using Application.Onchain.Resolvers.Remote;
 using Channels.Services;
 using Domain.Channels.Commitments;
@@ -84,6 +85,77 @@ public sealed class RemoteCommitResolverTests : IDisposable
         // Assert
         Assert.Equal(OutputResolutionState.Irrevocable, _context.ToRemoteRow().State);
         Assert.True(final.AllIrrevocablyResolved);
+    }
+
+    [Fact]
+    public async Task Given_PeerCommitmentWithAnchors_When_Confirmed_Then_OurAnchorWaitsForTheAnchorSweep()
+    {
+        // Arrange (NL-601): an anchored channel, Bob closes; the watcher recorded our anchor before the first round
+        _context.Dispose();
+        _context = new RemoteResolutionTestContext(true);
+        _context.UseSnapshot();
+        _context.CloseWith(Pair.Alice.State.RemoteCommit, ChannelCloseKind.RemoteCommitment);
+        var anchor = await _context.SeedAnchorRowAsync();
+
+        // Act: the first round, then a block short of the anchor sweep's due height (+16)
+        await _context.BeginAsync(RemoteResolutionTestContext.CloseHeight);
+        await _context.ResolveAsync(RemoteResolutionTestContext.CloseHeight + 15);
+
+        // Assert: the anchor waits for the anchor sweep, and only to_remote was built
+        var row = _context.Row(anchor.OutputIndex);
+        Assert.Equal(OutputResolutionState.Waiting, row.State);
+        Assert.Equal(RemoteResolutionTestContext.CloseHeight + 16, row.WaitUntilHeight);
+        Assert.Single(_context.Published);
+
+        // Act: the anchor sweep (ours or the peer's racing one) spends the anchor 17 blocks in
+        await _context.SpendAsync(anchor.OutputIndex, _context.PeerSpend(anchor.OutputIndex),
+                                  RemoteResolutionTestContext.CloseHeight + 17);
+
+        // Assert: the spend is recorded Resolved, and 100 blocks on irrevocable
+        Assert.Equal(OutputResolutionState.Resolved, _context.Row(anchor.OutputIndex).State);
+        await _context.ResolveAsync(RemoteResolutionTestContext.CloseHeight + 17 + 99);
+        Assert.Equal(OutputResolutionState.Irrevocable, _context.Row(anchor.OutputIndex).State);
+    }
+
+    [Fact]
+    public async Task Given_AnchorSweepOff_When_PeerCommitmentConfirms_Then_OurAnchorIgnored()
+    {
+        // Arrange (NL-601): the anchor sweep is configured off, so nothing of ours will spend the anchor
+        _context.Dispose();
+        _context = new RemoteResolutionTestContext(true) { AnchorCpfpOptions = new AnchorCpfpOptions { SweepAnchors = false } };
+        _context.UseSnapshot();
+        _context.CloseWith(Pair.Alice.State.RemoteCommit, ChannelCloseKind.RemoteCommitment);
+        var anchor = await _context.SeedAnchorRowAsync();
+
+        // Act
+        await _context.BeginAsync(RemoteResolutionTestContext.CloseHeight);
+
+        // Assert: as before the fix, the anchor is nothing to resolve
+        var row = _context.Row(anchor.OutputIndex);
+        Assert.Equal(OutputResolutionState.Ignored, row.State);
+        Assert.Null(row.WaitUntilHeight);
+        Assert.Single(_context.Published);
+    }
+
+    [Fact]
+    public async Task Given_OurAnchorNeverSpent_When_TheCommitmentIsIrrevocablyDeep_Then_TheAnchorRowIsIgnored()
+    {
+        // Arrange (NL-601): the sweep is on but never lands (refused or lost) and the peer leaves the anchor alone
+        _context.Dispose();
+        _context = new RemoteResolutionTestContext(true);
+        _context.UseSnapshot();
+        _context.CloseWith(Pair.Alice.State.RemoteCommit, ChannelCloseKind.RemoteCommitment);
+        var anchor = await _context.SeedAnchorRowAsync();
+
+        // Act: the first round waits for the sweep, then 100 blocks pass without any spend
+        await _context.BeginAsync(RemoteResolutionTestContext.CloseHeight);
+        Assert.Equal(OutputResolutionState.Waiting, _context.Row(anchor.OutputIndex).State);
+        await _context.ResolveAsync(RemoteResolutionTestContext.CloseHeight + 99);
+
+        // Assert: the row settles instead of waiting forever
+        var row = _context.Row(anchor.OutputIndex);
+        Assert.Equal(OutputResolutionState.Ignored, row.State);
+        Assert.Null(row.WaitUntilHeight);
     }
 
     [Fact]
