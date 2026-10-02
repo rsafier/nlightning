@@ -36,6 +36,17 @@ public static class FinancialLotRules
     public static bool IsAsset(AccountRole role) =>
         role is AccountRole.Channels or AccountRole.Pending or AccountRole.Wallet or AccountRole.Clearing;
 
+    /// <summary>
+    /// Whether the line debits the opening balances (NL-673): only the reversal of a wallet fact from before the feed
+    /// does that (the cutover counted sats that never arrived). Such a disposal is a correction of the cutover, not a
+    /// sale: it relieves the opening (or imported) lots first at their cost and realizes no gain.
+    /// </summary>
+    public static bool IsOpeningCorrection(AccountingPosting posting)
+    {
+        ArgumentNullException.ThrowIfNull(posting);
+        return posting.Account == AccountRole.Opening && posting.AmountMsat > 0;
+    }
+
     /// <summary>Whether a disposal of <paramref name="role"/> fetches nothing (D-A12: losses, breach losses).</summary>
     public static bool HasZeroProceeds(AccountRole role) => role == AccountRole.LossOnchain;
 

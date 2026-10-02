@@ -535,13 +535,20 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
+        // The open late facts after the replay point go with the open entries: the replay stages them again (NL-671)
+        var lateSeqs = await OpenLateFactSeqsAsync(bookValue, reset.CursorLedgerSeq + 1, cancellationToken);
+
         // Lots: the reliefs of the open entries (and of the lots they opened) go, their amounts back to the lots that
         // stay (a closed period's lots, imported lots, the lots of a kept adjustment)
         var importOrigin = (byte)AccountingLotOrigin.Import;
-        var lotsToDelete = _context.AccountingLots.Where(l => l.ClosedPeriodId == null && l.SourceAdjustment == 0
-                                                           && l.Origin != importOrigin);
+        var lotsToDelete = _context.AccountingLots.Where(l => l.ClosedPeriodId == null && l.Origin != importOrigin
+                                                           && (l.SourceAdjustment == 0
+                                                            || (l.SourceAdjustment > 0
+                                                             && lateSeqs.Contains(l.SourceLedgerSeq ?? 0))));
         var reliefsToDelete = _context.AccountingLotReliefs
-                                      .Where(r => (r.ClosedPeriodId == null && r.Adjustment == 0)
+                                      .Where(r => (r.ClosedPeriodId == null
+                                                && (r.Adjustment == 0
+                                                 || (r.Adjustment > 0 && lateSeqs.Contains(r.LedgerSeq))))
                                                || lotsToDelete.Any(l => l.Id == r.LotId));
         var givenBack = await reliefsToDelete.Where(r => !lotsToDelete.Any(l => l.Id == r.LotId))
                                              .GroupBy(r => r.LotId)
@@ -560,17 +567,19 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
         await reliefsToDelete.ExecuteDeleteAsync(cancellationToken);
         await lotsToDelete.ExecuteDeleteAsync(cancellationToken);
 
-        // Entries: the open ones but the adjustments, postings first
+        // Entries: the open ones but the adjustments (the open late facts after the replay point included), postings
+        // first
+        var lateFlag = (int)AccountingEntryFlags.LateFact;
+        var resetEntries = _context.AccountingEntries
+                                   .Where(e => e.Book == bookValue && e.ClosedPeriodId == null
+                                            && (e.Adjustment == 0
+                                             || (e.Adjustment > 0 && (e.Flags & lateFlag) == lateFlag
+                                              && lateSeqs.Contains(e.LedgerSeq))));
         await _context.AccountingPostings
-                      .Where(p => p.Book == bookValue && p.Adjustment == 0
-                               && _context.AccountingEntries.Any(e => e.Book == bookValue
-                                                                   && e.LedgerSeq == p.LedgerSeq
-                                                                   && e.Adjustment == 0
-                                                                   && e.ClosedPeriodId == null))
+                      .Where(p => p.Book == bookValue
+                               && resetEntries.Any(e => e.LedgerSeq == p.LedgerSeq && e.Adjustment == p.Adjustment))
                       .ExecuteDeleteAsync(cancellationToken);
-        await _context.AccountingEntries
-                      .Where(e => e.Book == bookValue && e.Adjustment == 0 && e.ClosedPeriodId == null)
-                      .ExecuteDeleteAsync(cancellationToken);
+        await resetEntries.ExecuteDeleteAsync(cancellationToken);
 
         // Balances: the closing ones plus the open adjustments (the fiat sums in memory: SQLite keeps decimals as text)
         var balances = reset.ClosingBalances
@@ -616,11 +625,26 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
     public async Task<long> GetLastOpenEntrySeqAsync(AccountingBook book, CancellationToken cancellationToken = default)
     {
         var bookValue = (byte)book;
+        var lateFlag = (int)AccountingEntryFlags.LateFact;
         return await _context.AccountingEntries.AsNoTracking()
-                             .Where(e => e.Book == bookValue && e.Adjustment == 0 && e.ClosedPeriodId == null)
+                             .Where(e => e.Book == bookValue && e.ClosedPeriodId == null
+                                      && (e.Adjustment == 0 || (e.Flags & lateFlag) == lateFlag))
                              .OrderByDescending(e => e.LedgerSeq)
                              .Select(e => (long?)e.LedgerSeq)
                              .FirstOrDefaultAsync(cancellationToken) ?? 0;
+    }
+
+    /// <summary>The ledger sequences of the open late facts (<see cref="AccountingEntryFlags.LateFact"/> adjustments in
+    /// no closed period) at or after <paramref name="from"/> (NL-671): one late fact per sequence.</summary>
+    private async Task<List<long>> OpenLateFactSeqsAsync(byte bookValue, long from, CancellationToken cancellationToken)
+    {
+        var lateFlag = (int)AccountingEntryFlags.LateFact;
+        return await _context.AccountingEntries.AsNoTracking()
+                             .Where(e => e.Book == bookValue && e.Adjustment > 0 && e.ClosedPeriodId == null
+                                      && e.LedgerSeq >= from && (e.Flags & lateFlag) == lateFlag)
+                             .Select(e => e.LedgerSeq)
+                             .Distinct()
+                             .ToListAsync(cancellationToken);
     }
 
     /// <inheritdoc />
@@ -653,15 +677,22 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
 
         await using var transaction = await _context.Database.BeginTransactionAsync(cancellationToken);
 
+        // The open late facts from there on are rolled back too: the replay stages them again (NL-671), so their
+        // reliefs are never lost with a lot the replay opens again
+        var lateSeqs = await OpenLateFactSeqsAsync(bookValue, from, cancellationToken);
+
         // Lots: the reliefs of the rolled-back entries (and of the lots they opened) go, their msat back to the lots
         // that stay
         var importOrigin = (byte)AccountingLotOrigin.Import;
-        var lotsToDelete = _context.AccountingLots.Where(l => l.ClosedPeriodId == null && l.SourceAdjustment == 0
-                                                           && l.SourceLedgerSeq >= from
-                                                           && l.Origin != importOrigin);
+        var lotsToDelete = _context.AccountingLots.Where(l => l.ClosedPeriodId == null && l.SourceLedgerSeq >= from
+                                                           && l.Origin != importOrigin
+                                                           && (l.SourceAdjustment == 0
+                                                            || (l.SourceAdjustment > 0
+                                                             && lateSeqs.Contains(l.SourceLedgerSeq ?? 0))));
         var reliefsToDelete = _context.AccountingLotReliefs
-                                      .Where(r => (r.ClosedPeriodId == null && r.Adjustment == 0
-                                                && r.LedgerSeq >= from)
+                                      .Where(r => (r.ClosedPeriodId == null && r.LedgerSeq >= from
+                                                && (r.Adjustment == 0
+                                                 || (r.Adjustment > 0 && lateSeqs.Contains(r.LedgerSeq))))
                                                || lotsToDelete.Any(l => l.Id == r.LotId));
         var givenBack = await reliefsToDelete.Where(r => !lotsToDelete.Any(l => l.Id == r.LotId))
                                              .GroupBy(r => r.LotId)
@@ -681,11 +712,16 @@ public class AccountingBooksDbRepository : IAccountingBooksDbRepository
         await lotsToDelete.ExecuteDeleteAsync(cancellationToken);
 
         // Balances: the rolled-back postings come out of them
-        var entries = _context.AccountingEntries.Where(e => e.Book == bookValue && e.Adjustment == 0
-                                                         && e.ClosedPeriodId == null && e.LedgerSeq >= from);
+        var lateFlag = (int)AccountingEntryFlags.LateFact;
+        var entries = _context.AccountingEntries.Where(e => e.Book == bookValue && e.ClosedPeriodId == null
+                                                         && e.LedgerSeq >= from
+                                                         && (e.Adjustment == 0
+                                                          || (e.Adjustment > 0 && (e.Flags & lateFlag) == lateFlag
+                                                           && lateSeqs.Contains(e.LedgerSeq))));
         var postings = _context.AccountingPostings
-                               .Where(p => p.Book == bookValue && p.Adjustment == 0 && p.LedgerSeq >= from
-                                        && entries.Any(e => e.LedgerSeq == p.LedgerSeq));
+                               .Where(p => p.Book == bookValue && p.LedgerSeq >= from
+                                        && entries.Any(e => e.LedgerSeq == p.LedgerSeq
+                                                         && e.Adjustment == p.Adjustment));
         var removed = (await postings.Select(p => new { p.Account, p.AccountName, p.AmountMsat, p.FiatAmount })
                                      .ToListAsync(cancellationToken))
                      .GroupBy(p => (p.Account, Name: p.AccountName ?? string.Empty))

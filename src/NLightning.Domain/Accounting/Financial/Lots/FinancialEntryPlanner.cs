@@ -136,9 +136,21 @@ public static class FinancialEntryPlanner
             return new FinancialEntryPlan(lines, flags, [], null);
         }
 
-        var takes = pool.PlanRelief(disposed, input.At, out var shortfall);
+        // A debit of the opening balances (the reversal of a wallet fact from before the feed, NL-673) corrects the
+        // cutover: it relieves the opening (or imported) lots first and fetches their cost, so it realizes nothing
+        var openingCorrection = disposed > 0 && lines.All(l => FinancialLotRules.KindOf(l) != FinancialLineKind.Disposal
+                                                     || FinancialLotRules.IsOpeningCorrection(l));
+        var takes = openingCorrection
+                        ? pool.PlanRelief(disposed, input.At, out var shortfall,
+                                          l => l.Origin is AccountingLotOrigin.Opening or AccountingLotOrigin.Import)
+                        : pool.PlanRelief(disposed, input.At, out shortfall);
         if (valued && disposed > 0)
-            takes = ShareProceeds(takes, shortfall, disposed, proceeds);
+        {
+            if (openingCorrection && takes.All(t => t.Cost is not null))
+                (takes, proceeds) = AtCost(lines, takes, shortfall, disposed, proceeds);
+            else
+                takes = ShareProceeds(takes, shortfall, disposed, proceeds);
+        }
 
         FinancialLotSpec? newLot = null;
         if (acquired > 0 && !(input.IsOpeningBalance && input.OpeningLotsImported))
@@ -253,6 +265,36 @@ public static class FinancialEntryPlanner
         }
 
         return true;
+    }
+
+    // A correction's proceeds are the cost of what it relieves (the shortfall keeps its market share): the disposal
+    // lines are revalued to that total, shared by msat (telescoping), and each take fetches its own cost
+    private static (IReadOnlyList<FinancialLotTake> Takes, decimal Proceeds) AtCost(
+        List<AccountingPosting> lines, IReadOnlyList<FinancialLotTake> takes, long shortfall, long disposed,
+        decimal marketProceeds)
+    {
+        var cost = takes.Sum(t => t.Cost!.Value);
+        var shortfallShare = shortfall == 0
+                                 ? 0m
+                                 : marketProceeds - AccountingFiat.RoundStored(
+                                       marketProceeds * ((decimal)(disposed - shortfall) / disposed));
+        var total = cost + shortfallShare;
+        var cumulative = 0L;
+        var before = 0m;
+        for (var i = 0; i < lines.Count; i++)
+        {
+            if (FinancialLotRules.KindOf(lines[i]) != FinancialLineKind.Disposal)
+                continue;
+
+            cumulative += lines[i].AmountMsat;
+            var upTo = cumulative == disposed
+                           ? total
+                           : AccountingFiat.RoundStored(total * ((decimal)cumulative / disposed));
+            lines[i] = lines[i] with { FiatAmount = upTo - before };
+            before = upTo;
+        }
+
+        return (takes.Select(t => t with { Proceeds = t.Cost }).ToList(), total);
     }
 
     // The proceeds shared by msat (telescoping, so the shares add up to the proceeds; the shortfall keeps the rest)

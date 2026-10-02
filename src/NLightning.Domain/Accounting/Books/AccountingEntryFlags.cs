@@ -33,5 +33,14 @@ public enum AccountingEntryFlags
     /// The entry disposed of lots of which one has no fiat cost (A3-T4): its realized gain is pending valuation (never
     /// zero) until the lot's acquisition is valued; the entry carries no gain line meanwhile.
     /// </summary>
-    GainPending = 1 << 4
+    GainPending = 1 << 4,
+
+    /// <summary>
+    /// The adjustment projects an operational entry dated in a closed period (A3-T5's <c>LateFact</c>, NL-671): it is a
+    /// projection of the feed like an entry of the open period, so a rollback or a rebuild of the open period deletes
+    /// it (with its lots and reliefs) and the replay stages it again, valued at the price of the fact's own time. With
+    /// <see cref="PendingValuation"/> its lines wait for a price usable at the fact's time; the back-valuation never
+    /// values them in place (it would use the adjustment's date) but lowers the financial cursor to the fact.
+    /// </summary>
+    LateFact = 1 << 5
 }

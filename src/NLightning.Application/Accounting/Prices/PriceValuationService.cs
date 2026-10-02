@@ -499,6 +499,14 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             cursor = AccountingUnvaluedPostingCursor.After(postings[^1]);
             listed += postings.Count;
 
+            // A late fact's lines (NL-671) are valued at the fact's time, never the adjustment's: they stand at the
+            // fact's time here, and a price found for them replays the fact (the projector stages it again)
+            var lateFacts = await LateFactTimesAsync(books, postings, cancellationToken);
+            if (lateFacts.Count > 0)
+                postings = postings.Select(p => lateFacts.TryGetValue(p.Key, out var factAt)
+                                                    ? p with { OccurredAt = factAt }
+                                                    : p).ToList();
+
             var resolved = await ResolvePricesAsync(prices, currency, postings, maxAge, cancellationToken);
 
             // The hours still without their own price, each asked once (at its earliest posting's time)
@@ -551,6 +559,14 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                 if (WaitsForItsHour(posting))
                 {
                     deferred++;
+                    continue;
+                }
+
+                if (lateFacts.ContainsKey(posting.Key))
+                {
+                    // Never filled in place: the projector stages the late fact again at this price
+                    if (replayFrom is null || posting.Key.LedgerSeq < replayFrom)
+                        replayFrom = posting.Key.LedgerSeq;
                     continue;
                 }
 
@@ -647,6 +663,43 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
         {
             Deferred = deferred
         };
+    }
+
+    /// <summary>
+    /// The fact's time of every posting of an open late fact waiting for its price (an adjustment flagged
+    /// <see cref="AccountingEntryFlags.LateFact"/> and <see cref="AccountingEntryFlags.PendingValuation"/>, NL-671):
+    /// the time of the operational entry it projects. Postings whose operational entry cannot be found are left out.
+    /// </summary>
+    private static async Task<Dictionary<AccountingPostingKey, DateTimeOffset>> LateFactTimesAsync(
+        IAccountingBooksDbRepository books, IReadOnlyList<AccountingUnvaluedPosting> postings,
+        CancellationToken cancellationToken)
+    {
+        const AccountingEntryFlags pendingLateFact = AccountingEntryFlags.LateFact
+                                                   | AccountingEntryFlags.PendingValuation;
+        var result = new Dictionary<AccountingPostingKey, DateTimeOffset>();
+        var factTimes = new Dictionary<long, DateTimeOffset?>();
+        foreach (var posting in postings)
+        {
+            if (posting.Key is not { Book: AccountingBook.Financial, Adjustment: > 0 } key
+             || posting.ClosedPeriodId is not null
+             || (posting.EntryFlags & pendingLateFact) != pendingLateFact)
+                continue;
+
+            if (!factTimes.TryGetValue(key.LedgerSeq, out var factAt))
+            {
+                var operational = await books.ListEntriesAsync(new AccountingEntryQuery(key.LedgerSeq - 1, 1),
+                                                               cancellationToken);
+                factAt = operational.Count == 1 && operational[0].LedgerSeq == key.LedgerSeq
+                             ? operational[0].OccurredAt
+                             : null;
+                factTimes[key.LedgerSeq] = factAt;
+            }
+
+            if (factAt is { } at)
+                result[key] = at;
+        }
+
+        return result;
     }
 
     /// <summary>The stored price of every posting (null where none is usable): one window query for the page, or one

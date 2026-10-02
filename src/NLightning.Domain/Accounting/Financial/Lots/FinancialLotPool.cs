@@ -81,7 +81,13 @@ public sealed class FinancialLotPool
     /// each take; the pool is not changed (<see cref="Relieve"/> applies a take). What no lot covers is
     /// <paramref name="shortfallMsat"/>.
     /// </summary>
-    public IReadOnlyList<FinancialLotTake> PlanRelief(long msat, DateTimeOffset at, out long shortfallMsat)
+    /// <param name="msat">The msat disposed of.</param>
+    /// <param name="at">The disposal's time.</param>
+    /// <param name="shortfallMsat">What no lot covers.</param>
+    /// <param name="preferred">When set, the lots it accepts are taken first (in the same order), the others only for
+    /// what they do not cover (a correction of the opening balances relieves the opening lots first, NL-673).</param>
+    public IReadOnlyList<FinancialLotTake> PlanRelief(long msat, DateTimeOffset at, out long shortfallMsat,
+                                                      Func<AccountingLot, bool>? preferred = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(msat);
         var takes = new List<FinancialLotTake>();
@@ -89,7 +95,11 @@ public sealed class FinancialLotPool
         if (left > 0)
         {
             // The lots acquired by then first; the later ones only for what they do not cover
-            foreach (var lot in _ordered.Where(l => l.AcquiredAt <= at).Concat(_ordered.Where(l => l.AcquiredAt > at)))
+            var order = _ordered.Where(l => l.AcquiredAt <= at).Concat(_ordered.Where(l => l.AcquiredAt > at));
+            if (preferred is not null)
+                order = order.Where(preferred).Concat(order.Where(l => !preferred(l)));
+
+            foreach (var lot in order)
             {
                 var take = Math.Min(left, lot.RemainingMsat);
                 takes.Add(new FinancialLotTake(lot.Id, take, CostOf(lot, take, Currency)));

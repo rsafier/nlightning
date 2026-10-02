@@ -44,7 +44,11 @@ using Prices;
 /// <para><b>The period lock</b> (A3-T5): each page holds <see cref="IAccountingAdjustmentSink.EnterAsync"/> from its
 /// checks to its save; an operational entry dated in a locked period goes to
 /// <see cref="IAccountingAdjustmentSink.StageAdjustmentAsync"/> as a <see cref="AccountingAdjustmentReason.LateFact"/>
-/// (valued at any usable price, never replayed), its lots and reliefs dated as the adjustment.</para>
+/// (valued at any usable price of the fact's time, flagged <see cref="AccountingEntryFlags.LateFact"/>), its lots and
+/// reliefs dated as the adjustment. A rollback or a rebuild of the open period from before it deletes it with its lots
+/// and reliefs, and the replay stages it again (NL-671); one projected without a price keeps
+/// <see cref="AccountingEntryFlags.PendingValuation"/>, and the back-valuation lowers the cursor to it once a price of
+/// the fact's time is stored, so it is staged again at that price.</para>
 /// <para><b>Opening balances</b> (D-A9) open lots at the cutover price, <c>BasisEstimated</c>. After a lot import
 /// (<see cref="ImportAsync"/>) they open none: the imported lots replace them, and the cutover marker's entry moves the
 /// assets' fiat from the opening balances' market value to the imported cost (<c>assets:cost-basis</c> against
@@ -545,7 +549,9 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
 
         if (locked)
         {
-            // A late fact of a closed period: an adjustment of the open period (A3-T5), never replayed
+            // A late fact of a closed period: an adjustment of the open period (A3-T5), flagged LateFact so a rollback
+            // or a rebuild of the open period from before it stages it again (NL-671); unvalued, it keeps
+            // PendingValuation and waits for a price of the fact's own time (the back-valuation lowers the cursor)
             if (plan.Postings.Count == 0)
                 return;
 
@@ -558,7 +564,7 @@ public sealed class FinancialBooksProjector : IFinancialBooksProjector, IAccount
                 ChannelId = operational.ChannelId,
                 PaymentHash = operational.PaymentHash,
                 Note = note,
-                Flags = flags & ~AccountingEntryFlags.PendingValuation,
+                Flags = flags | AccountingEntryFlags.LateFact,
                 Classification = classificationSource,
                 RuleId = ruleId
             }, cancellationToken);

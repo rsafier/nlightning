@@ -121,7 +121,9 @@ public interface IAccountingBooksDbRepository
     /// <summary>
     /// Resets the book to its state at the last close (A3-T5, D-A8) at once, in one database transaction (not staged):
     /// deletes the book's entries in no closed period except the adjustments (<see cref="AccountingEntry.Adjustment"/>
-    /// &gt; 0) with their postings; rolls the lots back (deletes the reliefs of the deleted entries and gives their
+    /// &gt; 0) with their postings, the late facts (<see cref="AccountingEntryFlags.LateFact"/>) after
+    /// <see cref="AccountingBookReset.CursorLedgerSeq"/> included (the replay stages them again, NL-671); rolls the lots
+    /// back (deletes the reliefs of the deleted entries and gives their
     /// amounts back to the lots that stay, deletes the lots those entries opened, imported lots and lots of a closed
     /// period kept); sets the book's balances to <see cref="AccountingBookReset.ClosingBalances"/> plus the kept open
     /// adjustments' postings; and sets the book's cursor to <see cref="AccountingBookReset.CursorLedgerSeq"/>. A crash
@@ -148,8 +150,9 @@ public interface IAccountingBooksDbRepository
     }
 
     /// <summary>
-    /// The highest ledger sequence of the book's entries projected from an event (adjustment 0) that are in no closed
-    /// period, or 0 (A3-T4: an open entry above the book's cursor means the cursor was lowered for a replay).
+    /// The highest ledger sequence of the book's entries projected from an event (adjustment 0, or a late fact flagged
+    /// <see cref="AccountingEntryFlags.LateFact"/>, NL-671) that are in no closed period, or 0 (A3-T4: an open entry
+    /// above the book's cursor means the cursor was lowered for a replay).
     /// </summary>
     Task<long> GetLastOpenEntrySeqAsync(AccountingBook book, CancellationToken cancellationToken = default) =>
         throw NotSupported(book);
@@ -157,11 +160,12 @@ public interface IAccountingBooksDbRepository
     /// <summary>
     /// Rolls the book back to just before <paramref name="fromLedgerSeq"/> (A3-T4: the financial projector's replay of a
     /// valuation found late, a reversal or a reclassification in the open period), at once and in one database
-    /// transaction (not staged): deletes the entries projected from an event (adjustment 0) at or after
-    /// <paramref name="fromLedgerSeq"/> that are in no closed period, with their postings, and takes those postings out
-    /// of the running balances; deletes their reliefs (giving the msat back to the lots that stay) and the lots they
-    /// opened (with every relief of those lots); sets the book's cursor to <paramref name="fromLedgerSeq"/> − 1. The
-    /// adjustments and the closed entries stay. A crash leaves the book as it was before the call.
+    /// transaction (not staged): deletes the entries projected from an event (adjustment 0) and the late facts
+    /// (<see cref="AccountingEntryFlags.LateFact"/> adjustments, NL-671) at or after <paramref name="fromLedgerSeq"/>
+    /// that are in no closed period, with their postings, and takes those postings out of the running balances; deletes
+    /// their reliefs (giving the msat back to the lots that stay) and the lots they opened (with every relief of those
+    /// lots); sets the book's cursor to <paramref name="fromLedgerSeq"/> − 1. The other adjustments and the closed
+    /// entries stay. A crash leaves the book as it was before the call.
     /// </summary>
     Task RollbackOpenEntriesAsync(AccountingBook book, long fromLedgerSeq,
                                   CancellationToken cancellationToken = default) =>

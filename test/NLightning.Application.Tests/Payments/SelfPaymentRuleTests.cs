@@ -5,10 +5,10 @@ namespace NLightning.Application.Tests.Payments;
 using Application.Payments;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Offers.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Keysend;
 using Domain.Payments.Models;
-using Domain.Offers.Models;
 
 /// <summary>
 /// NL-670: both halves of a rebalance flag <c>selfPayment</c> by one rule, "our node is the payee", never by the

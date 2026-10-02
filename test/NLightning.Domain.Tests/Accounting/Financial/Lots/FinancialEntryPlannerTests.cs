@@ -309,6 +309,35 @@ public class FinancialEntryPlannerTests
         Assert.Equal(1L, Assert.Single(plan.Reliefs).LotId);
     }
 
+    [Fact]
+    public void Given_ADebitOfTheOpeningBalances_When_Planned_Then_ItRelievesTheOpeningLotAtItsCostAndRealizesNothing()
+    {
+        // Arrange - NL-673: the reversal of a wallet receive from before the feed; LIFO would take the newest lot (L3)
+        var opening = Lot(4, new DateTimeOffset(2025, 12, 31, 0, 0, 0, TimeSpan.Zero), 30m) with
+        {
+            Origin = AccountingLotOrigin.Opening,
+            BasisEstimated = true
+        };
+        var pool = new FinancialLotPool([.. ThreeLots(AccountingCostBasisMethod.Lifo).OpenLots, opening],
+                                        AccountingCostBasisMethod.Lifo, Usd);
+        var lines = new[]
+        {
+            Line(AccountRole.Wallet, "assets:onchain:wallet", -150_000_000),
+            Line(AccountRole.Opening, "equity:opening-balances", 150_000_000)
+        };
+
+        // Act
+        var plan = FinancialEntryPlanner.Plan(new FinancialEntryPlanInput(lines, s_price70K, s_april), pool, s_chart);
+
+        // Assert: the opening lot (1e8 for 30) first, then L3 (5e7 of 1e8 for 50: 25), each at its cost; the opening
+        // line takes the cost relieved (55), the cost-basis line the rest of the market value (105 - 55); no gain
+        Assert.Equal([(4L, 100_000_000L, (decimal?)30m, (decimal?)30m), (3L, 50_000_000L, 25m, 25m)],
+                     plan.Reliefs.Select(r => (r.LotId, r.Msat, r.Cost, r.Proceeds)).ToArray());
+        Assert.Equal([-105m, 55m, 50m], plan.Postings.Select(p => p.FiatAmount!.Value).ToArray());
+        Assert.Equal(0m, plan.RealizedGain);
+        Assert.Equal(0m, plan.FiatSum);
+    }
+
     private static FinancialLotPool ThreeLots(AccountingCostBasisMethod method) =>
         new([
             Lot(1, new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero), 40m),
