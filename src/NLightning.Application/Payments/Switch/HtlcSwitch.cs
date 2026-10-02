@@ -199,7 +199,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         _serviceScopeFactory = serviceScopeFactory;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _acceptMultiPart = (nodeOptions?.Value.Features.BasicMpp ?? FeatureSupport.Optional) != FeatureSupport.No;
-        _advertisesAttribution = (nodeOptions?.Value.Features.OptionAttributionData ?? FeatureSupport.No)
+        _advertisesAttribution = (nodeOptions?.Value.Features.OptionAttributionData ?? FeatureSupport.Optional)
                               != FeatureSupport.No;
         var mppTimeout = switchOptions?.Value.MppTimeout ?? HtlcSwitchOptions.DefaultMppTimeout;
         _mppTimeout = mppTimeout > TimeSpan.Zero ? mppTimeout : HtlcSwitchOptions.DefaultMppTimeout;

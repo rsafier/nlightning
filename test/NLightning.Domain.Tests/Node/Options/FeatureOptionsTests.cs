@@ -66,7 +66,6 @@ public class FeatureOptionsTests
     }
 
     [Theory]
-    [InlineData(Feature.OptionAttributionData)]
     [InlineData(Feature.OptionScidAlias)]
     [InlineData(Feature.OptionUpfrontShutdownScript)]
     public void Given_DefaultOptions_When_GetNodeFeatures_Then_UnimplementedFeatureIsNotAdvertised(Feature feature)
@@ -252,10 +251,58 @@ public class FeatureOptionsTests
         Assert.Null(negotiated);
     }
 
-    public static TheoryData<Feature> RequiredExperimentalFeatures =>
+    /// <summary>
+    /// Features the experimental gate is tested with. <see cref="FeatureOptions.ExperimentalFeatures"/> is empty since
+    /// NL-332, so these tests gate a feature through <c>ExperimentalFeatureSet</c> to keep the gate itself covered.
+    /// </summary>
+    public static TheoryData<Feature> GatedFeatures =>
     [
-        Feature.OptionAttributionData
+        Feature.OptionAttributionData,
+        Feature.OptionSplice
     ];
+
+    [Fact]
+    public void Given_DefaultOptions_When_GetNodeFeatures_Then_AttributionDataIsAdvertisedOptionalAndNotExperimental()
+    {
+        // Arrange (NL-332, owner decision 2026-10-02: BOLT 9 bits 36/37, contexts init and node_announcement)
+        var options = new FeatureOptions();
+
+        // Act
+        var init = options.GetNodeFeatures(FeatureContext.Init);
+        var nodeAnnouncement = options.GetNodeFeatures(FeatureContext.NodeAnnouncement);
+
+        // Assert
+        Assert.Equal(FeatureSupport.Optional, options.OptionAttributionData);
+        Assert.DoesNotContain(Feature.OptionAttributionData, FeatureOptions.ExperimentalFeatures);
+        Assert.True(init.IsFeatureSet(Feature.OptionAttributionData, false));
+        Assert.False(init.IsFeatureSet(Feature.OptionAttributionData, true));
+        Assert.True(nodeAnnouncement.IsFeatureSet(Feature.OptionAttributionData, false));
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_APeerWithoutAttributionData_When_Negotiating_Then_ItIsCompatibleAndNotNegotiated()
+    {
+        // Arrange (the odd bit: a peer that does not know it, such as LND 0.20, ignores it)
+        var local = new FeatureOptions().GetNodeFeatures();
+        var remote = new FeatureOptions { OptionAttributionData = FeatureSupport.No }.GetNodeFeatures();
+
+        // Act
+        var result = local.IsCompatible(remote, out var negotiatedFeatureSet);
+        var negotiated = FeatureOptions.GetNodeOptions(negotiatedFeatureSet!, null);
+
+        // Assert
+        Assert.True(result);
+        Assert.Equal(FeatureSupport.No, negotiated.OptionAttributionData);
+    }
+
+    [Fact]
+    public void Given_TheShippedOptions_When_CheckingExperimentalFeatures_Then_NoneIsLeft()
+    {
+        // Act & Assert (NL-332: attribution_data was the last one)
+        Assert.Empty(FeatureOptions.ExperimentalFeatures);
+        Assert.Same(FeatureOptions.ExperimentalFeatures, new FeatureOptions().ExperimentalFeatureSet);
+    }
 
     [Fact]
     public void Given_DefaultOptions_When_GetNodeFeatures_Then_BasicMppIsAdvertisedOptionalAndNotExperimental()
@@ -335,20 +382,12 @@ public class FeatureOptionsTests
     }
 
     [Theory]
-    [MemberData(nameof(RequiredExperimentalFeatures))]
-    public void Given_UnimplementedFeature_When_CheckingExperimentalFeatures_Then_ItIsExperimental(Feature feature)
-    {
-        // Act & Assert
-        Assert.Contains(feature, FeatureOptions.ExperimentalFeatures);
-    }
-
-    [Theory]
-    [MemberData(nameof(RequiredExperimentalFeatures))]
+    [MemberData(nameof(GatedFeatures))]
     public void Given_ExperimentalFeatureEnabledWithoutOptIn_When_Validating_Then_ErrorAndNotAdvertised(
         Feature feature)
     {
         // Arrange
-        var options = new FeatureOptions();
+        var options = new FeatureOptions { ExperimentalFeatureSet = new HashSet<Feature> { feature } };
         Enable(options, feature, FeatureSupport.Optional);
 
         // Act
@@ -365,11 +404,15 @@ public class FeatureOptionsTests
     }
 
     [Theory]
-    [MemberData(nameof(RequiredExperimentalFeatures))]
+    [MemberData(nameof(GatedFeatures))]
     public void Given_ExperimentalFeatureEnabledWithOptIn_When_Validating_Then_NoErrorAndAdvertised(Feature feature)
     {
         // Arrange
-        var options = new FeatureOptions { AllowExperimentalFeatures = true };
+        var options = new FeatureOptions
+        {
+            AllowExperimentalFeatures = true,
+            ExperimentalFeatureSet = new HashSet<Feature> { feature }
+        };
         Enable(options, feature, FeatureSupport.Optional);
 
         // Act

@@ -38,6 +38,9 @@ close and CPFP fees.
     `Node:Features:OptionOnionMessages`) are no longer experimental and are advertised Optional by default on every
     network. Onion messages are forwarded only to connected peers, within `OnionMessages` rate limits; set
     `OptionOnionMessages=No` for the canary if the owner wants them off.
+  - Note (NL-332, 2026-10-02): attribution_data is no longer experimental either and is advertised Optional by
+    default (`Node:Features:OptionAttributionData`); our fulfills and failures then carry the odd TLV 1, which peers
+    without the feature ignore. Set `OptionAttributionData=No` for the canary if the owner wants it off.
 - [ ] **Known gaps accepted** (from [`ISSUES.md`](ISSUES.md) and [`REMAINING_WORK.md`](REMAINING_WORK.md)):
   - ~~**No on-chain send or withdraw over IPC**~~ **Landed after this runbook was written** (wave M6, `withdraw`, ClientCommand 25, NL-441; proven against LND in `WithdrawFlowTests`). Original note: after the close, the
     coins stay in the nltg wallet. They can only leave through another channel open until a send command lands.
