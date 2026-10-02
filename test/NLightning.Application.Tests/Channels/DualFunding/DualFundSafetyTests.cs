@@ -35,7 +35,7 @@ public class DualFundSafetyTests
                                                     TestContext.Current.CancellationToken);
         // Pump with Bob's TxSignatures never delivered, until Alice's own tx_signatures is in the
         // transcript: one pump pass can stop at Bob's outbox head before the scheduler flushed
-        // Alice's signature under load, so the check is awaited on the pump, not raced (NL-512)
+        // Alice's signature under load, so the transcript check is awaited on the pump, not raced (NL-512)
         await WaitFor.TrueAsync(async () =>
         {
             await harness.PumpAsync((from, message) => from == "Bob" && message is TxSignaturesMessage);
