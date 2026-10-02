@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 namespace NLightning.Domain.Accounting.Financial.Classification;
 
 using Constants;
+using Labels;
 
 /// <summary>
 /// What a classification rule may hold (NL-602 A3-T3, D-A10), checked before it is stored.
@@ -107,7 +108,5 @@ public static class AccountingRuleValidator
     }
 
     /// <summary>Whether <paramref name="key"/> is a tag key: <c>[a-z0-9_.-]{1,32}</c> (A3-T1).</summary>
-    public static bool IsTagKey(string key) =>
-        key.Length is > 0 and <= AccountingSchemaLimits.TagKeyMaxLength
-     && key.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '_' or '.' or '-');
+    public static bool IsTagKey(string key) => SourceLabelRules.ValidateTagKey(key) is null;
 }

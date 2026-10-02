@@ -2,6 +2,7 @@ using MessagePack;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -239,8 +240,22 @@ public class AccountingFinancialIpcRoundTripTests : IAsyncLifetime
                                                              sp.GetRequiredService<IUtxoMemoryRepository>()));
         services.AddSingleton(Options.Create(new AccountingOptions()));
         services.AddAccountingServices();
+        // The financial book is on (A3-T4's projector; the production default is the off NullFinancialBooksProjector,
+        // which refuses the financial reports): the seeded book stands for what the projector stored
+        services.Replace(ServiceDescriptor.Singleton<IFinancialBooksProjector, StoredBookProjector>());
         services.AddAccountingIpcServices();
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+    }
+
+    private sealed class StoredBookProjector : IFinancialBooksProjector
+    {
+        public bool IsEnabled => true;
+
+        public Task<int> ProjectAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
+
+        public Task<T> RunExclusiveAsync<T>(Func<CancellationToken, Task<T>> action,
+                                            CancellationToken cancellationToken = default) =>
+            action(cancellationToken);
     }
 
     private NLightningDbContext CreateContext() => new(_dbOptions, new DatabaseTypeProvider(DatabaseType.Sqlite));

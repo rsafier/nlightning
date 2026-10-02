@@ -32,10 +32,10 @@ using Services;
 public sealed class ClassificationEngine
 {
     /// <summary>The label of an event (A3-T1 copies it from the source row).</summary>
-    public const string LabelDetail = "label";
+    public const string LabelDetail = AccountingDetailKeys.Label;
 
     /// <summary>The prefix of a tag's detail (<c>tag.&lt;key&gt;</c>, A3-T1).</summary>
-    public const string TagDetailPrefix = "tag.";
+    public const string TagDetailPrefix = AccountingDetailKeys.TagPrefix;
 
     /// <summary>The BOLT 12 offer id of a received payment (hex).</summary>
     public const string OfferIdDetail = "offerId";

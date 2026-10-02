@@ -6,6 +6,7 @@ namespace NLightning.Application.Accounting.Export.Financial;
 using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
+using Domain.Accounting.Constants;
 using Domain.Accounting.Financial;
 using Domain.Accounting.Financial.Reports;
 using Domain.Accounting.Models;
@@ -134,7 +135,7 @@ internal abstract class AccountingFinancialExportFormatter
     public const string DefaultRoundingAccount = "equity:fiat-rounding";
 
     protected const string Header = "NLightning accounting export, financial book";
-    protected const string LabelDetail = "label";
+    protected const string LabelDetail = AccountingDetailKeys.Label;
     protected const int AccountWidth = 44;
 
     protected static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;

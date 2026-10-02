@@ -8,6 +8,7 @@ namespace NLightning.Daemon.Tests.Extensions;
 using Application.Accounting;
 using Application.Accounting.Backfill;
 using Application.Accounting.Books;
+using Application.Accounting.Financial;
 using Application.Accounting.Prices;
 using Application.Channels.Fees;
 using Application.Channels.Interfaces;
@@ -424,13 +425,15 @@ public class NodeServiceExtensionsTests
         var valuation = provider.GetRequiredService<PriceValuationService>();
         var source = Assert.IsType<CompositePriceSource>(provider.GetRequiredService<IPriceSource>());
 
-        // Assert (NL-602 A3-T2: one instance behind IAccountingPrices, the file only, no adjustment rule yet)
+        // Assert (NL-602 A3-T2: one instance behind IAccountingPrices, the file only; the adjustment rule is A3-T5's
+        // period lock, which replaces the off default)
         Assert.Same(valuation, provider.GetRequiredService<IAccountingPrices>());
         Assert.True(valuation.IsEnabled);
         Assert.Equal("EUR", valuation.Currency);
         Assert.Equal(TimeSpan.FromMinutes(5), valuation.Interval);
         Assert.IsType<CsvPriceSource>(Assert.Single(source.Sources));
-        Assert.IsType<NullAccountingAdjustmentSink>(provider.GetRequiredService<IAccountingAdjustmentSink>());
+        var periods = Assert.IsType<AccountingPeriodService>(provider.GetRequiredService<IAccountingAdjustmentSink>());
+        Assert.Same(periods, provider.GetRequiredService<IAccountingPeriods>());
     }
 
     [Fact]
