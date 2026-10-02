@@ -7,6 +7,7 @@ namespace NLightning.Infrastructure.Bitcoin.Services;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Node.Options;
+using Infrastructure.Transport.Http;
 using Infrastructure.Transport.Tor;
 using Options;
 
@@ -43,7 +44,11 @@ public static class FeeServiceCollectionExtensions
         {
             var handler = primaryHandler?.Invoke(sp)
                        ?? TorHttpHandler.Create(sp, s_connectionLifetime);
-            var httpClient = new HttpClient(handler) { Timeout = s_requestTimeout };
+            var httpClient = new HttpClient(handler)
+            {
+                Timeout = s_requestTimeout,
+                MaxResponseContentBufferSize = HttpResponseLimits.SmallResponseMaxBytes
+            };
             httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
 
             return new FeeService(sp.GetRequiredService<IOptions<FeeEstimationOptions>>(), httpClient,

@@ -415,6 +415,77 @@ public class FeeServiceSourceTests
         Assert.Equal(2_500, service.GetCachedFeeRatePerKw().Satoshi);
     }
 
+    [Fact]
+    public async Task Given_AnAnswerOverTheCap_When_Refreshed_Then_ItIsRefusedAndTheFallbackIsUsed()
+    {
+        // Arrange - NL-678: a valid rate padded past 64 KiB is never read whole
+        var (handler, _) = CreateHandler("{ \"fastestFee\": 40, \"pad\": \""
+                                       + new string('x', FeeService.MaxResponseBytes) + "\" }");
+        var service = CreateService(new FeeEstimationOptions
+        {
+            FallbackFeeRatePerKw = 1_000,
+            CacheFile = Path.Combine(Path.GetTempPath(), $"fee-cap-{Guid.NewGuid():N}.bin")
+        }, handler);
+
+        // Act
+        var feeRate = await service.GetFeeRatePerKwAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1_000, feeRate.Satoshi);
+    }
+
+    [Fact]
+    public async Task Given_APostSource_When_Refreshed_Then_TheBodyIsSentAndTheAnswerRead()
+    {
+        // Arrange - the POST path reads its answer bounded too (NL-678)
+        string? sent = null;
+        var handler = new Mock<HttpMessageHandler>(MockBehavior.Strict);
+        handler.Protected()
+               .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(),
+                                                 ItExpr.IsAny<CancellationToken>())
+               .Returns(async (HttpRequestMessage request, CancellationToken ct) =>
+               {
+                   Assert.Equal(HttpMethod.Post, request.Method);
+                   sent = await request.Content!.ReadAsStringAsync(ct);
+                   return new HttpResponseMessage(HttpStatusCode.OK)
+                   {
+                       Content = new StringContent("{ \"fastestFee\": 40 }")
+                   };
+               });
+        var service = CreateService(new FeeEstimationOptions
+        {
+            Method = "POST",
+            Body = "{\"q\":1}",
+            CacheFile = Path.Combine(Path.GetTempPath(), $"fee-post-{Guid.NewGuid():N}.bin")
+        }, handler.Object);
+
+        // Act
+        var feeRate = await service.GetFeeRatePerKwAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(10_000, feeRate.Satoshi);
+        Assert.Equal("{\"q\":1}", sent);
+    }
+
+    [Theory]
+    [InlineData("http://mempool.space/api/v1/fees/recommended", false, false)]
+    [InlineData("http://mempool.space/api/v1/fees/recommended", true, true)]
+    [InlineData("http://192.168.1.10:8999/api/v1/fees/recommended", false, false)]
+    [InlineData("http://127.0.0.1:8999/api/v1/fees/recommended", false, true)]
+    [InlineData("ftp://mempool.space/fees", true, false)]
+    public void Given_AFeeUrl_When_Constructed_Then_PlainHttpIsOnlyAcceptedLocallyOrWhenAllowed(string url, bool allow,
+                                                                                              bool valid)
+    {
+        // Arrange - NL-678
+        var options = new FeeEstimationOptions { Url = url, AllowPlainHttp = allow };
+
+        // Act & Assert
+        Assert.Equal(valid, options.GetValidationErrors().Count == 0);
+        if (!valid)
+            Assert.Throws<InvalidOperationException>(() => CreateService(options,
+                                                                        new Mock<HttpMessageHandler>().Object));
+    }
+
     private static FeeService CreateService(FeeEstimationOptions options, HttpMessageHandler handler)
     {
         return new FeeService(new OptionsWrapper<FeeEstimationOptions>(options), new HttpClient(handler), NullLogger<FeeService>.Instance);

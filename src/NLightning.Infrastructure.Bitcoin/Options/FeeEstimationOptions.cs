@@ -1,5 +1,6 @@
 namespace NLightning.Infrastructure.Bitcoin.Options;
 
+using Domain.Node.Options;
 using Services;
 
 /// <summary>
@@ -22,7 +23,17 @@ public class FeeEstimationOptions
     /// </summary>
     public string Source { get; set; } = SourceHttp;
 
+    /// <summary>
+    /// <see cref="SourceHttp"/>: the API. <c>https://</c>, or plain <c>http://</c> only to a loopback or <c>.onion</c>
+    /// host unless <see cref="AllowPlainHttp"/> (NL-678); the answer is read up to 64 KiB.
+    /// </summary>
     public string Url { get; set; } = "https://mempool.space/api/v1/fees/recommended";
+
+    /// <summary>
+    /// Allow a plain <c>http://</c> <see cref="Url"/> to any host (a fee server you trust on your own network). Default
+    /// false: an unauthenticated fee rate could be raised or lowered by anyone on the path (NL-678).
+    /// </summary>
+    public bool AllowPlainHttp { get; set; }
     public string Method { get; set; } = "GET";
     public string Body { get; set; } = string.Empty;
     public string ContentType { get; set; } = "application/json";
@@ -82,8 +93,9 @@ public class FeeEstimationOptions
 
         if (IsSource(SourceHttp))
         {
-            if (!Uri.TryCreate(Url, UriKind.Absolute, out _))
-                errors.Add($"FeeEstimation:Url '{Url}' is not an absolute URL.");
+            if (HttpUrlPolicy.GetError(Url, AllowPlainHttp, "FeeEstimation:Url", "FeeEstimation:AllowPlainHttp") is
+                { } urlError)
+                errors.Add(urlError + ".");
             if (!FeeRateConverter.IsKnownUnit(RateUnit))
                 errors.Add($"FeeEstimation:RateUnit '{RateUnit}' is not one of {FeeRateConverter.KnownUnitsText}.");
         }

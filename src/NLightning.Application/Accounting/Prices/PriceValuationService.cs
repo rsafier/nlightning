@@ -99,6 +99,7 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
     private readonly Counter<long> _valuedCounter;
     private readonly Counter<long> _lateCounter;
     private readonly Counter<long> _failureCounter;
+    private readonly Counter<long> _rejectedCounter;
 
     private TaskCompletionSource _wake = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Task? _loop;
@@ -138,6 +139,8 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                                                  "Postings of a closed period handed to the adjustment rule");
         _failureCounter = Meter.CreateCounter<long>("nlightning.accounting.valuation.failures", "{failure}",
                                                     "Back-valuation rounds that failed");
+        _rejectedCounter = Meter.CreateCounter<long>("nlightning.accounting.prices.rejected", "{price}",
+                                                     "Fetched prices refused by the sanity bound (NL-678)");
     }
 
     /// <summary>Unvalued postings per page (one save each; <see cref="DefaultPageSize"/>, smaller in tests).</summary>
@@ -352,6 +355,8 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                 {
                     requested++;
                     var price = await AskSourceAsync(currency, hour, cancellationToken);
+                    if (price is not null && !await IsPlausibleAsync(prices, price, cancellationToken))
+                        price = null;
                     if (price is null)
                     {
                         unavailable++;
@@ -525,6 +530,8 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
                     fetchBudget--;
                     fetched++;
                     var price = await AskSourceAsync(currency, at, cancellationToken);
+                    if (price is not null && !await IsPlausibleAsync(prices, price, cancellationToken))
+                        price = null;
                     if (price is not null && price.Time >= hour && AccountingValuation.IsUsable(price.Time, at, maxAge))
                         _retryAfter.Remove(hour);
                     else
@@ -741,6 +748,40 @@ public sealed class PriceValuationService : IAccountingPrices, IAsyncDisposable,
             Price = RoundPrice(price.Price),
             FetchedAt = _timeProvider.GetUtcNow()
         };
+    }
+
+    /// <summary>
+    /// The sanity bound of a fetched price (NL-678): a price from the HTTP source that differs from the nearest saved
+    /// price within <see cref="AccountingPriceOptions.MaxAge"/> before or after its time by more than
+    /// <see cref="AccountingPriceOptions.MaxPriceJumpFactor"/> is refused (logged, counted, never stored), so a stored
+    /// price, which is never replaced, cannot come from a source's decimal-point or unit mistake next to good ones.
+    /// Imported and file prices are the operator's and are not checked; nor is a price without a saved neighbor.
+    /// </summary>
+    private async Task<bool> IsPlausibleAsync(IAccountingPriceDbRepository prices, AccountingPrice price,
+                                              CancellationToken cancellationToken)
+    {
+        if (price.Source != AccountingPriceSource.Http || _priceOptions.MaxPriceJumpFactor == 0)
+            return true;
+
+        var maxAge = _priceOptions.MaxAge;
+        var before = await prices.GetAtOrBeforeAsync(price.Currency, price.Time, maxAge, cancellationToken);
+        var neighbor = before;
+        if (before is null || _priceOptions.IsPlausibleNext(price.Price, before.Price))
+        {
+            var until = DateTimeOffset.MaxValue - price.Time > maxAge ? price.Time + maxAge : DateTimeOffset.MaxValue;
+            var after = await prices.ListAsync(price.Currency, price.Time.AddTicks(1), until, 1, cancellationToken);
+            neighbor = after.Count > 0 ? after[0] : null;
+            if (neighbor is null || _priceOptions.IsPlausibleNext(price.Price, neighbor.Price))
+                return true;
+        }
+
+        _rejectedCounter.Add(1);
+        _logger.LogWarning(
+            "Refused the price source's {Currency} price {Price} at {Time:O}: it is more than {Factor} times away from "
+          + "the stored {Neighbor} at {NeighborTime:O} ({Section}:MaxPriceJumpFactor); import the right price with "
+          + "'accounting prices import' if the source is right", price.Currency, price.Price, price.Time,
+            _priceOptions.MaxPriceJumpFactor, neighbor!.Price, neighbor.Time, AccountingPriceOptions.SectionName);
+        return false;
     }
 
     private async Task<IReadOnlyList<AccountingPeriod>> GetClosedPeriodsAsync(CancellationToken cancellationToken)

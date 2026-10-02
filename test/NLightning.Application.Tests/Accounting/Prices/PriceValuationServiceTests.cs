@@ -423,6 +423,61 @@ public sealed class PriceValuationServiceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Given_AFetchedPriceFarFromAStoredOne_When_Fetched_Then_ItIsRefusedAndNeverStored()
+    {
+        // Arrange - NL-678: 10:00 stored; the source answers 100 times the price at 11:00 (a decimal-point mistake)
+        // and a real move at 12:00
+        await StorePricesAsync((s_hour, 86_000m));
+        var source = new StubPriceSource(at => Price(at, at == s_hour.AddHours(1) ? 8_600_000m : 87_000m));
+        await using var service = CreateService(new AccountingPriceOptions(), source);
+
+        // Act
+        var result = await service.FetchAsync(s_hour, s_hour.AddHours(3), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(2, result.Requested);
+        Assert.Equal(1, result.Stored);
+        Assert.Equal(1, result.Unavailable);
+        Assert.Equal([(s_hour, 86_000m), (s_hour.AddHours(2), 87_000m)],
+                     (await ListPricesAsync()).Select(p => (p.Time, p.Price)));
+    }
+
+    [Fact]
+    public async Task Given_AFetchedPriceFarFromALaterStoredOne_When_ARoundRuns_Then_ItIsRefusedAndThePostingWaits()
+    {
+        // Arrange - NL-678: a posting at 11:30, only a later stored price (13:00); the source answers a hundredth of it
+        await StorePricesAsync((s_hour.AddHours(3), 86_000m));
+        var seq = await AddEntryAsync(s_hour.AddHours(1).AddMinutes(30), 1_000);
+        var source = new StubPriceSource(at => Price(AccountingValuationHour(at), 860m));
+        await using var service = CreateService(new AccountingPriceOptions(), source);
+
+        // Act
+        var round = await service.ValueNowAsync(TestContext.Current.CancellationToken);
+
+        // Assert: asked, refused, nothing stored, the posting still unvalued
+        Assert.Equal(1, round.Fetched);
+        Assert.Equal(0, round.Stored);
+        Assert.Equal(0, round.Valued);
+        Assert.Single(await ListPricesAsync());
+        Assert.All((await GetEntryAsync(seq)).Postings, p => Assert.Null(p.FiatAmount));
+    }
+
+    [Fact]
+    public async Task Given_TheSanityBoundOff_When_AFarPriceIsFetched_Then_ItIsStored()
+    {
+        // Arrange
+        await StorePricesAsync((s_hour, 86_000m));
+        var source = new StubPriceSource(at => Price(at, 8_600_000m));
+        await using var service = CreateService(new AccountingPriceOptions { MaxPriceJumpFactor = 0 }, source);
+
+        // Act
+        var result = await service.FetchAsync(s_hour, s_hour.AddHours(2), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1, result.Stored);
+    }
+
+    [Fact]
     public async Task Given_TheBooksOff_When_AskedToValue_Then_NothingRuns()
     {
         // Arrange

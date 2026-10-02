@@ -7,12 +7,13 @@ namespace NLightning.Infrastructure.Bitcoin.Services;
 
 using Accounting.Prices;
 using Domain.Accounting.Prices;
+using Infrastructure.Transport.Http;
 using Infrastructure.Transport.Tor;
 
 /// <summary>
 /// Registers the price sources of the financial books (NL-602 A3-T2, D-A11), next to the fee service: the HTTP client
-/// is built the same way (<see cref="TorHttpHandler"/>: through Tor in <c>TorOnly</c>) and only when the HTTP source
-/// is configured.
+/// is built through <see cref="TorHttpHandler"/>, but through Tor whenever Tor is on (<c>Hybrid</c> included, NL-677),
+/// with a 64 KiB answer cap (NL-678), and only when the HTTP source is configured.
 /// </summary>
 public static class PriceSourceServiceCollectionExtensions
 {
@@ -39,8 +40,14 @@ public static class PriceSourceServiceCollectionExtensions
                                                        sp.GetService<TimeProvider>()));
         services.AddSingleton(sp =>
         {
-            var handler = primaryHandler?.Invoke(sp) ?? TorHttpHandler.Create(sp, s_connectionLifetime);
-            var httpClient = new HttpClient(handler) { Timeout = s_requestTimeout };
+            // NL-677: through Tor whenever Node:Tor:Mode is not Off (the asked hours mark when the node moved money)
+            var handler = primaryHandler?.Invoke(sp)
+                       ?? TorHttpHandler.Create(sp, s_connectionLifetime, throughTorWhenEnabled: true);
+            var httpClient = new HttpClient(handler)
+            {
+                Timeout = s_requestTimeout,
+                MaxResponseContentBufferSize = HttpResponseLimits.SmallResponseMaxBytes
+            };
             httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
             return new HttpPriceSource(httpClient, GetOptions(sp), sp.GetRequiredService<ILogger<HttpPriceSource>>(),
                                        sp.GetService<TimeProvider>());

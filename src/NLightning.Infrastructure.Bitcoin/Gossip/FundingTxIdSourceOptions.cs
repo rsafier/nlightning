@@ -1,5 +1,7 @@
 namespace NLightning.Infrastructure.Bitcoin.Gossip;
 
+using Domain.Node.Options;
+
 /// <summary>Where the funding output lookup reads the txid at a short channel id's position.</summary>
 public enum FundingTxIdSourceKind
 {
@@ -27,10 +29,19 @@ public sealed class FundingTxIdSourceOptions
 
     /// <summary>
     /// <c>Gossip:EsploraUrl</c>: the API base, e.g. <c>https://mempool.space/api</c>,
-    /// <c>https://mempool.space/signet/api</c> or a self-hosted <c>http://127.0.0.1:3002</c>. Required for Esplora. It
-    /// must serve the same network as our bitcoind (a block of another chain never matches our header).
+    /// <c>https://mempool.space/signet/api</c> or a self-hosted <c>http://127.0.0.1:3002</c> (plain <c>http://</c> only
+    /// to a loopback or <c>.onion</c> host unless <see cref="EsploraAllowPlainHttp"/>, NL-678). Required for Esplora.
+    /// It must serve the same network as our bitcoind (a block of another chain never matches our header).
     /// </summary>
     public string? EsploraUrl { get; set; }
+
+    /// <summary>
+    /// <c>Gossip:EsploraAllowPlainHttp</c>: allow a plain <c>http://</c> <see cref="EsploraUrl"/> to any host (an index
+    /// you trust on your own network). Default false: plain HTTP only to a loopback or <c>.onion</c> host (NL-678; the
+    /// merkle proof is checked against our own header either way, but the index's answers would be open to anyone on
+    /// the path).
+    /// </summary>
+    public bool EsploraAllowPlainHttp { get; set; }
 
     /// <summary>
     /// <c>Gossip:EsploraRequestsPerSecond</c>: HTTP requests started per second (burst the same), default 2, polite for
@@ -93,8 +104,11 @@ public sealed class FundingTxIdSourceOptions
         if (FundingTxIdSource != FundingTxIdSourceKind.Esplora)
             return errors;
 
-        if (GetEsploraBaseUri() is null)
+        if (GetEsploraBaseUri() is not { } baseUri)
             errors.Add($"{nameof(EsploraUrl)} must be an absolute http(s) URL when {nameof(FundingTxIdSource)} is Esplora");
+        else if (HttpUrlPolicy.GetError(baseUri, EsploraAllowPlainHttp, $"Gossip:{nameof(EsploraUrl)}",
+                                        $"Gossip:{nameof(EsploraAllowPlainHttp)}") is { } urlError)
+            errors.Add(urlError);
         if (EsploraRequestsPerSecond < 1)
             errors.Add($"{nameof(EsploraRequestsPerSecond)} must be at least 1");
         if (EsploraMaxRetries < 0)

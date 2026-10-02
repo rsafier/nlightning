@@ -340,7 +340,9 @@ public static class NodeConfigurationExtensions
     /// sealer and snapshot defaults, <c>Profile</c> <c>Operational</c> (the financial book is opt-in, D-A5),
     /// <c>CostBasis</c> <c>Fifo</c> (D-A2) and every <see cref="AccountingPriceOptions"/> default under <c>Prices</c>
     /// (D-A1, D-A11: USD, the operator's <c>prices.csv</c> first, then mempool.space's historical price API, through
-    /// Tor in <c>TorOnly</c>; nothing is asked while the financial book has no unvalued posting).
+    /// Tor whenever Tor is on (NL-677); nothing is asked while the financial book has no unvalued posting; plain
+    /// <c>http://</c> refused and fetched prices sanity-bounded, NL-678). <c>FeeEstimation:AllowPlainHttp</c> is false
+    /// (NL-678).
     /// </remarks>
     /// <exception cref="ArgumentException">The network is unknown.</exception>
     internal static string CreateDefaultConfigJson(string network)
@@ -578,6 +580,8 @@ public static class NodeConfigurationExtensions
                      "Currency": "{{AC_PRICE_CURRENCY}}",
                      "Source": "{{AC_PRICE_SOURCE}}",
                      "Url": "{{AC_PRICE_URL}}",
+                     "AllowPlainHttp": false,
+                     "MaxPriceJumpFactor": {{AC_PRICE_MAX_JUMP}},
                      "CsvFile": "{{AC_PRICE_CSV}}",
                      "MaxAge": "{{AC_PRICE_MAX_AGE}}",
                      "FetchInterval": "{{AC_PRICE_FETCH_INTERVAL}}",
@@ -587,6 +591,7 @@ public static class NodeConfigurationExtensions
                  "FeeEstimation": {
                    "Source": "{{FEE_SOURCE}}",
                    "Url": "{{FEE_URL}}",
+                   "AllowPlainHttp": false,
                    "Method": "GET",
                    "ContentType": "application/json",
                    "PreferredFeeRate": "fastestFee",
@@ -684,6 +689,7 @@ public static class NodeConfigurationExtensions
                   .Replace("{{AC_PRICE_MAX_AGE}}", Invariant(prices.MaxAge))
                   .Replace("{{AC_PRICE_FETCH_INTERVAL}}", Invariant(prices.FetchInterval))
                   .Replace("{{AC_PRICE_MAX_FETCHES}}", Invariant(prices.MaxFetchesPerRound))
+                  .Replace("{{AC_PRICE_MAX_JUMP}}", Invariant(prices.MaxPriceJumpFactor))
                   .Replace("{{OF_PRUNE_GRACE}}", Invariant(offers.ExpiredInvoicePruneGrace))
                   .Replace("{{FEE_SOURCE}}", feeSource)
                   .Replace("{{FEE_URL}}", feeUrl)
