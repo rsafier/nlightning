@@ -11,6 +11,7 @@ using Database.Gossip;
 using Database.Node;
 using Database.Onchain;
 using Database.Payment;
+using Domain.Accounting.Books;
 using Domain.Accounting.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
@@ -88,6 +89,7 @@ public class UnitOfWork : IUnitOfWork
 
     // Accounting feed (NL-602)
     private AccountingEventDbRepository? _accountingEventDbRepository;
+    private AccountingBooksDbRepository? _accountingBooksDbRepository;
 
     public IBlockchainStateDbRepository BlockchainStateDbRepository =>
         _blockchainStateDbRepository ??= new BlockchainStateDbRepository(_context);
@@ -164,6 +166,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IAccountingEventDbRepository AccountingEventDbRepository =>
         _accountingEventDbRepository ??= new AccountingEventDbRepository(_context);
+
+    public IAccountingBooksDbRepository AccountingBooksDbRepository =>
+        _accountingBooksDbRepository ??= new AccountingBooksDbRepository(_context);
 
     public IInteractiveTxSessionDbRepository InteractiveTxSessionDbRepository =>
         _interactiveTxSessionDbRepository ??= new InteractiveTxSessionDbRepository(_context);

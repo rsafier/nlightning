@@ -76,6 +76,12 @@ public class NLightningDbContext : DbContext
     // Accounting feed (NL-602)
     public DbSet<AccountingEventEntity> AccountingEvents { get; set; }
 
+    // Accounting books (NL-602 A2)
+    public DbSet<AccountingEntryEntity> AccountingEntries { get; set; }
+    public DbSet<AccountingPostingEntity> AccountingPostings { get; set; }
+    public DbSet<AccountingBalanceEntity> AccountingBalances { get; set; }
+    public DbSet<AccountingCursorEntity> AccountingCursor { get; set; }
+
     // Gossip graph DbSets (BOLT 7 plan G2-T3)
     public DbSet<GraphNodeEntity> GraphNodes { get; set; }
     public DbSet<GraphChannelEntity> GraphChannels { get; set; }
@@ -129,6 +135,9 @@ public class NLightningDbContext : DbContext
 
         // Accounting feed (NL-602)
         modelBuilder.ConfigureAccountingEventEntity(_databaseType);
+
+        // Accounting books (NL-602 A2)
+        modelBuilder.ConfigureAccountingBooksEntities(_databaseType);
 
         // Gossip graph entities
         modelBuilder.ConfigureGraphNodeEntity(_databaseType);

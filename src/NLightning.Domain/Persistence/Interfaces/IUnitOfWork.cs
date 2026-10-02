@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Persistence.Interfaces;
 
+using Accounting.Books;
 using Accounting.Interfaces;
 using Bitcoin.Interfaces;
 using Bitcoin.ValueObjects;
@@ -95,6 +96,10 @@ public interface IUnitOfWork : IDisposable
     // The accounting feed (NL-602, migration AddAccountingEvents); the default is for test doubles that store none:
     // writes go nowhere
     IAccountingEventDbRepository AccountingEventDbRepository => NullAccountingEventDbRepository.Instance;
+
+    // The operational books (NL-602 A2, migration AddAccountingBooks); the default is for test doubles that store none
+    IAccountingBooksDbRepository AccountingBooksDbRepository =>
+        throw new NotSupportedException("This unit of work does not store the accounting books.");
 
     /// <summary>
     /// Every saved peer with its channels, plus a peer marked <see cref="PeerModel.IsInboundOnly"/> for every channel

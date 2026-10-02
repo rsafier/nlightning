@@ -53,9 +53,11 @@ using Infrastructure.Transport.Interfaces;
 using Tests.Gossip.Metrics;
 
 // ReSharper disable AccessToDisposedClosure
+[Collection("timing-serial")]
 public partial class PeerManagerTests
 {
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan s_stableWindow = TimeSpan.FromMilliseconds(500);
 
     /// <summary>Sorts below <see cref="_compactPubKey"/> (02 3d.. &lt; 02 8d..).</summary>
     private static readonly CompactPubKey s_lowerNodeKey =
@@ -305,7 +307,9 @@ public partial class PeerManagerTests
         _mockChannelManager.Setup(cm => cm.RegisterExistingChannelAsync(It.IsAny<ChannelModel>()))
                            .Returns(async () =>
                             {
-                                await Task.Delay(20);
+                                // Still asynchronous (the registration completes on the pool) without a sleep to
+                                // race: the manager must await it at whatever speed the machine runs (NL-565)
+                                await Task.Yield();
                                 Interlocked.Increment(ref registered);
                             });
 
@@ -374,8 +378,10 @@ public partial class PeerManagerTests
         await peerManager.StartAsync(TestContext.Current.CancellationToken);
         await WaitUntilAsync(() => peerManager.GetPeer(_compactPubKey) is not null);
 
-        // Assert: the startup attempt, two failed retries, then the successful one; no more after that
-        await Task.Delay(100, TestContext.Current.CancellationToken);
+        // Assert: the startup attempt, two failed retries, then the successful one; no more after that — watched,
+        // not slept: a spurious retry fails the test the moment it shows (NL-565)
+        await AssertStaysAtAsync(() => Volatile.Read(ref attempts), 4,
+                                 "retry attempts after the successful connect");
         Assert.Equal(4, Volatile.Read(ref attempts));
     }
 
@@ -602,16 +608,21 @@ public partial class PeerManagerTests
                                                      It.IsAny<CompactPubKey>()))
            .Callback(() => RaiseResponse(messages[3]))
            .Returns(Task.CompletedTask);
-        var sent = CaptureSentMessages(4, slowFirstSend: true);
+        var firstSendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstSend = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sent = CaptureSentMessages(4, firstSendStarted: firstSendStarted,
+                                       releaseFirstSend: releaseFirstSend.Task);
 
-        // Act
+        // Act: the interleaving traffic is raised while the first send is held in flight on the gate — no sleep
+        // decides how long the test has to raise it (NL-565)
         RaiseChannelMessage(firstMessage);
-        await WaitUntilAsync(() => _sendsStarted >= 1);
+        await firstSendStarted.Task.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
         RaiseResponse(messages[2]); // a block event on another thread, while the first send is still in flight
         RaiseChannelMessage(secondMessage);
+        releaseFirstSend.TrySetResult();
 
         // Assert
-        Assert.Equal(messages, await sent.WaitAsync(s_timeout, TestContext.Current.CancellationToken));
+        Assert.Equal(messages, await sent.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken));
         Assert.Equal(1, _maxConcurrentSends);
     }
 
@@ -2340,10 +2351,13 @@ public partial class PeerManagerTests
     }
 
     /// <summary>
-    /// Records what the peer service sends, tracking how many sends overlap. The first send can be made slow, so
-    /// anything enqueued meanwhile has to wait behind it.
+    /// Records what the peer service sends, tracking how many sends overlap. The first send can be made slow, or be
+    /// held on a gate the test releases once the interleaving traffic is queued: anything enqueued meanwhile has to
+    /// wait behind it, and no fixed sleep decides how long the test has (NL-565).
     /// </summary>
-    private Task<List<IChannelMessage>> CaptureSentMessages(int count, bool slowFirstSend = false)
+    private Task<List<IChannelMessage>> CaptureSentMessages(int count, bool slowFirstSend = false,
+                                                            TaskCompletionSource? firstSendStarted = null,
+                                                            Task? releaseFirstSend = null)
     {
         var sent = new List<IChannelMessage>();
         var done = new TaskCompletionSource<List<IChannelMessage>>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2353,7 +2367,17 @@ public partial class PeerManagerTests
                              var started = Interlocked.Increment(ref _sendsStarted);
                              var inFlight = Interlocked.Increment(ref _sendsInFlight);
                              InterlockedMax(ref _maxConcurrentSends, inFlight);
-                             await Task.Delay(slowFirstSend && started == 1 ? 150 : 5);
+                             if (started == 1 && firstSendStarted is not null)
+                             {
+                                 firstSendStarted.TrySetResult();
+                                 await releaseFirstSend!.WaitAsync(TimeSpan.FromSeconds(15),
+                                                                   TestContext.Current.CancellationToken);
+                             }
+                             else
+                             {
+                                 await Task.Delay(slowFirstSend && started == 1 ? 150 : 5);
+                             }
+
                              Interlocked.Decrement(ref _sendsInFlight);
                              lock (sent)
                              {
@@ -2413,6 +2437,29 @@ public partial class PeerManagerTests
             if (DateTime.UtcNow > deadline)
                 throw new TimeoutException("Condition not met in time");
             await Task.Delay(5);
+        }
+    }
+
+    /// <summary>
+    /// Watches a counter for a window (NL-565): it must stay at <paramref name="expected"/>, and a violation fails
+    /// the test the moment it shows. The window only has to outlast the background work it guards against, so the
+    /// machine's speed decides how far the work gets, never whether the test passes.
+    /// </summary>
+    private static async Task AssertStaysAtAsync(Func<int> value, int expected, string what)
+    {
+        var until = DateTime.UtcNow + s_stableWindow;
+        while (DateTime.UtcNow < until)
+        {
+            try
+            {
+                Assert.Equal(expected, value());
+            }
+            catch (Xunit.Sdk.XunitException)
+            {
+                throw new Xunit.Sdk.XunitException($"{what}: expected {expected}, saw {value()}");
+            }
+
+            await Task.Delay(10, TestContext.Current.CancellationToken);
         }
     }
 

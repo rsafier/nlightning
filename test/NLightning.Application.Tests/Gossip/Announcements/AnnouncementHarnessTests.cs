@@ -178,8 +178,17 @@ public class AnnouncementHarnessTests
 
         // Assert: our public channel_update (dont_forward clear, real scid, our node's signature). The update the
         // channel's open made precedes it (NL-491: the harness's repository raises OnChannelUpdated like the real
-        // one now, so the at-open update goes out too); the announcement's own is the newer one
-        var updates = Sink(harness.Alice).ChannelUpdates;
+        // one now, so the at-open update goes out too); the announcement's own is the newer one. The at-open one is
+        // built on a send task that only then takes the channel's lock, so the recorded outbox is awaited, not
+        // raced (NL-561)
+        var sink = Sink(harness.Alice);
+        var relay = Relay(harness.Alice);
+        await harness.PumpUntilAsync(() => sink.ChannelUpdates.Count == 2 && sink.NodeAnnouncements.Count == 1
+                                        && relay.Queued.Count == 4,
+                                     TimeSpan.FromSeconds(30),
+                                     "the public channel_update and the node announcement to be recorded",
+                                     TestContext.Current.CancellationToken);
+        var updates = sink.ChannelUpdates;
         Assert.Equal(2, updates.Count);
         var update = updates.OrderBy(u => u.Timestamp).Last();
         Assert.False(update.DontForward);
@@ -196,7 +205,7 @@ public class AnnouncementHarnessTests
 
         // The relay got the at-open update and the announcement's three (256, 258, 257 in that order among
         // themselves); where the at-open one landed between them depends on which send task ran first
-        var queued = Relay(harness.Alice).Queued;
+        var queued = relay.Queued;
         Assert.Equal(4, queued.Count);
         Assert.Single(queued, p => p is ChannelAnnouncementPayload);
         Assert.Equal(2, queued.Count(p => p is ChannelUpdatePayload));

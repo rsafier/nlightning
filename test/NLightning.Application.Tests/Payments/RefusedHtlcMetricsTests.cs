@@ -6,31 +6,36 @@ using Application.Payments;
 
 /// <summary>
 /// The counter of incoming HTLCs refused before a forward circuit (NL-598): one count per reason, in memory from
-/// process start, mirrored onto the <c>NLightning.Payments</c> meter with a <c>reason</c> tag.
+/// process start, mirrored onto the <c>NLightning.Payments</c> meter with a <c>reason</c> tag. The listener keys its
+/// readings by instrument instance — parallel test classes run their own <c>RefusedHtlcMetrics</c> under the same
+/// meter name, and their measurements must not bleed into these readings.
 /// </summary>
 public sealed class RefusedHtlcMetricsTests : IDisposable
 {
     private readonly RefusedHtlcMetrics _metrics = new();
     private readonly MeterListener _listener = new();
-    private readonly Dictionary<(string Meter, string Instrument, string? Reason), long> _readings = [];
+    private readonly Dictionary<string, long> _readings = [];
 
     public RefusedHtlcMetricsTests()
     {
         _listener.InstrumentPublished = (instrument, listener) =>
         {
-            if (instrument.Meter.Name == RefusedHtlcMetrics.MeterName)
+            if (ReferenceEquals(instrument.Meter, _metrics.Meter))
                 listener.EnableMeasurementEvents(instrument);
         };
         _listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, _) =>
         {
+            if (!ReferenceEquals(instrument.Meter, _metrics.Meter))
+                return;
+
             string? reason = null;
             for (var i = 0; i < tags.Length; i++)
             {
                 if (tags[i].Key == RefusedHtlcMetrics.ReasonTag)
                     reason = tags[i].Value as string;
             }
-            var key = (instrument.Meter.Name, instrument.Name, reason);
-            _readings[key] = _readings.GetValueOrDefault(key) + measurement;
+
+            _readings[reason ?? "?"] = _readings.GetValueOrDefault(reason ?? "?") + measurement;
         });
         _listener.Start();
     }
@@ -61,10 +66,8 @@ public sealed class RefusedHtlcMetricsTests : IDisposable
         Assert.Equal(2, snapshot[RefusedHtlcReason.ShutdownDrain]);
         Assert.Equal(1, snapshot[RefusedHtlcReason.UnknownPaymentHash]);
         Assert.Equal(3, _metrics.Total());
-        Assert.Equal(2, _readings[(RefusedHtlcMetrics.MeterName, "nlightning.payments.htlcs.refused",
-                                   nameof(RefusedHtlcReason.ShutdownDrain))]);
-        Assert.Equal(1, _readings[(RefusedHtlcMetrics.MeterName, "nlightning.payments.htlcs.refused",
-                                   nameof(RefusedHtlcReason.UnknownPaymentHash))]);
+        Assert.Equal(2, _readings.GetValueOrDefault(nameof(RefusedHtlcReason.ShutdownDrain)));
+        Assert.Equal(1, _readings.GetValueOrDefault(nameof(RefusedHtlcReason.UnknownPaymentHash)));
     }
 
     public void Dispose()

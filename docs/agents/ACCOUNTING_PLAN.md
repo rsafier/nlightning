@@ -161,36 +161,64 @@ A mismatch is a bug, never an adjustment.
 
 ## 6. The books
 
-### 6.1 Operational profile (default)
+### 6.1 Operational profile (default): accounts and posting rules (A2 as designed)
 
-The default chart of accounts uses hledger names, and every name is configurable. The commodity is `msat`, displayed as sats.
+**Accounts.** One aggregate account per bucket; per-channel views come from the events' details (reports), not from sub-accounts, because a multi-part payment or invoice spans channels in one event. Names are hledger-style and configurable per role (`Accounting:AccountNames:<Role>`):
 
-```
-assets:lightning:channel:<scid|short channel id>
-assets:onchain:wallet
-assets:onchain:pending              ; force-closed funds in timelocks / sweeps
-income:lightning:routing            ; ForwardSettled fee
-income:lightning:received           ; InvoiceSettled (op profile: one bucket)
-income:onchain:penalty
-expenses:lightning:sent             ; PaymentSucceeded amount (op profile: one bucket)
-expenses:lightning:routing-fees     ; fees we paid; SelfPayment → expenses:lightning:rebalance
-expenses:onchain:fees:{funding,splice,close,sweep,cpfp,withdraw}
-expenses:lightning:push             ; push we gave (or income: if received)
-expenses:losses:{htlc-onchain,breach,dust}
-equity:opening-balances             ; backfill / wallet opening
-equity:transfers                    ; wallet deposits/withdrawals to external wallets
-```
+| Role | Default name | Kind |
+|---|---|---|
+| Channels | `assets:lightning:channels` | asset: our gross local balance of every channel past funding confirmation |
+| Pending | `assets:onchain:pending` | asset: force-closed funds not yet in the wallet |
+| Wallet | `assets:onchain:wallet` | asset: confirmed wallet outputs |
+| Clearing | `assets:onchain:clearing` | asset, nets to zero: see below |
+| Received | `income:lightning:received` | income |
+| Routing | `income:lightning:routing` | income |
+| PushReceived | `income:lightning:push` | income |
+| OnchainGain | `income:onchain:gain` | income (penalties, outputs of the peer we claimed) |
+| Sent | `expenses:lightning:sent` | expense |
+| RoutingFees | `expenses:lightning:routing-fees` | expense |
+| Rebalance | `expenses:lightning:rebalance` | expense (self-payments) |
+| PushSent | `expenses:lightning:push` | expense |
+| FeeFunding, FeeSplice, FeeClose, FeeCommitment, FeeSweep, FeeCpfp, FeeWithdraw | `expenses:onchain:fees:{funding,splice,close,commitment,sweep,cpfp,withdraw}` | expense |
+| LossOnchain | `expenses:losses:onchain` | expense (trimmed/dust value, given-up outputs, breaches, forwards lost) |
+| TransfersIn / TransfersOut | `equity:transfers:in` / `equity:transfers:out` | equity (external deposits / withdrawals) |
+| Opening | `equity:opening-balances` | equity (cutover) |
 
-**Reports**, available over IPC, as CLI tables and as CSV:
+**The clearing account.** The wallet events (`WalletReceived`, `WalletOutputSpent`) are the only postings to `Wallet`, at the UTXO level. Every other event that moves value to or from the wallet posts that side to `Clearing` instead. A funding then posts `Clearing −(contribution + fee)`, and the wallet events of the same transaction post `Clearing +spent −change`, which nets to zero. A non-zero clearing balance after the confirmations settle is a reconcile finding (an output the books cannot see, such as a splice-out to an address outside the wallet).
 
-- balance sheet
-- income statement by period
-- per-channel P&L: routing earned in and out, rebalance cost, open and close fees, lifetime yield on deployed capital (APR)
-- per-peer summary
-- fee and cost breakdown
-- plain register with filters
+**Rules** (amounts are the event's msat; Dr = debit, positive; Cr = credit, negative; every entry sums to zero):
 
-Commands: `export --format hledger|beancount|csv`, `reconcile`.
+| Event | Postings |
+|---|---|
+| `InvoiceSettled` | Dr Channels a; Cr Received a |
+| `PaymentSucceeded` (amount a = −AmountMsat − fee) | Cr Channels (a + fee); Dr Sent a (Rebalance when `selfPayment`); Dr RoutingFees fee |
+| `PaymentFailed` | none |
+| `ForwardSettled` | Dr Channels fee; Cr Routing fee |
+| `ForwardLostOnchain` | Cr Channels v; Dr LossOnchain v |
+| `ChannelFunded` | Dr Channels c; Dr FeeFunding fee; Cr Clearing (c + fee) |
+| `PushSent` / `PushReceived` | Cr Channels p; Dr PushSent p / Dr Channels p; Cr PushReceived p |
+| `SpliceLocked` (delta d, fee already out of d) | Dr Channels d; Dr FeeSplice fee; Cr Clearing (d + fee) |
+| `ChannelClosedMutual` (AmountMsat = −balance) | Cr Channels balance; Dr FeeClose fee; Dr Clearing (balance − fee) |
+| `ChannelForceClosed` (AmountMsat = −B; details `pendingMsat`, `lostMsat`) | Cr Channels B; Dr Pending pendingMsat; Dr FeeCommitment fee; Dr LossOnchain lostMsat (Cr OnchainGain when negative). An event flagged `openingBalance` (backfill) posts nothing. |
+| `OutputResolved` / `PenaltyClaimed` / `BreachLoss` / `OutputIgnored` | from the details: Cr Pending `pendingOutMsat`; Dr Pending `pendingInMsat`; Dr Clearing `walletMsat`; Dr FeeSweep fee. The difference d = debits − credits balances the entry: d > 0 → Cr Channels when `valueBookedBy` is set (incoming HTLC whose income an invoice or forward already booked), else Cr OnchainGain; d < 0 → Dr Channels when `valueBookedBy` is set (our offered HTLC the peer claimed: its payment or forward already took it out of Channels), else Dr LossOnchain. A row merged into our CPFP child (note "merged") posts its d to Clearing. |
+| `AnchorCpfpFee` | Dr FeeCpfp fee; Cr Clearing fee |
+| `SweepFeeBump` | none (the resolution's fee already holds the whole fee, `includesFeeBump`); fee breakdown report only |
+| `WalletReceived` | Dr Wallet v; Cr TransfersIn v when `source=external`, else Cr Clearing v |
+| `WalletOutputSpent` | Cr Wallet v; Dr Clearing v |
+| `WalletSent` (external amount x) | Dr TransfersOut x; Dr FeeWithdraw fee; Cr Clearing (x + fee) |
+| `OpeningBalance` | Dr the bucket's account v; Cr Opening v (marker and memo rows: none) |
+| any event with `memo=true` | none (statistics only) |
+| `Reversal` | the exact negation of the postings of the entry it reverses (`reverses` key); none if that entry posted nothing |
+
+**Reconcile** (every `SnapshotInterval` and on demand): `Channels` = Σ gross local balances of channels past funding confirmation and not on chain; `Pending` = Σ of our unresolved counted outputs; `Wallet` = the confirmed wallet balance; `Clearing` = 0 (allowing the outputs of unconfirmed transactions). Differences are reported per bucket and metered, never posted.
+
+**Reports**, each as IPC plus CLI output and CSV:
+
+- balance sheet (account balances at a time), income statement by period
+- per-channel view from the event details: routing earned in and out, rebalance cost, open, splice and close fees, lifetime yield on capital
+- per-peer summary, fee breakdown (including `SweepFeeBump`), plain register with filters
+
+Commands: `export --format hledger|beancount|csv`, `reconcile`, `rebuild`.
 
 ### 6.2 Financial profile (opt-in, `Accounting:Profile=Financial`)
 

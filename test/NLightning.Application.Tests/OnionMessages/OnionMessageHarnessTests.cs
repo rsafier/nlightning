@@ -12,6 +12,7 @@ using Domain.Gossip.Graph;
 using Domain.Protocol.OnionMessages;
 using Domain.Protocol.OnionMessages.Enums;
 using Harness;
+using NLightning.Tests.Utils;
 
 /// <summary>
 /// Plan OM2-T5: three in-process nodes (Alice - Bob - Carol, no channels) with the production
@@ -65,22 +66,27 @@ public sealed class OnionMessageHarnessTests
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
+        var clock = new SteppedTimeProvider();
         var handler = new RecordingHandler(RequestType)
         {
             ReplyWith = OnionMessageContents.Single(ReplyType, "pong"u8.ToArray())
         };
-        using var alice = new OnionMessageTestNode("alice", 1);
+        using var alice = new OnionMessageTestNode("alice", 1, timeProvider: clock);
         using var bob = new OnionMessageTestNode("bob", 2);
         using var carol = new OnionMessageTestNode("carol", 3, [handler]);
         OnionMessageTestNode.Connect(alice, bob);
         OnionMessageTestNode.Connect(bob, carol);
         var path = carol.PathBuilder.CreateMessagePath([bob.NodeId, carol.NodeId]);
 
-        // Act
-        var result = await alice.Service.SendAndWaitForReplyAsync(
+        // Act: the reply deadline sits on Alice's stepped clock, so under a loaded run it cannot fire before the
+        // reply arrives; the only thing waited for is the reply itself (NL-500)
+        var pending = alice.Service.SendAndWaitForReplyAsync(
                          OnionMessageDestination.ToBlindedPath(WireBlindedPath.FromBlindedPath(path)),
                          OnionMessageContents.Single(RequestType, "ping"u8.ToArray()), [ReplyType],
                          TimeSpan.FromSeconds(10), ct);
+        await WaitFor.TrueAsync(() => pending.IsCompleted, TimeSpan.FromSeconds(30),
+                                "carol's reply through bob", ct);
+        var result = await pending;
 
         // Assert
         Assert.Equal(OnionMessageSendStatus.Replied, result.Status);
@@ -262,10 +268,12 @@ public sealed class OnionMessageHarnessTests
         // Act
         var result = await alice.Service.SendAsync(OnionMessageDestination.ToNode(carol.NodeId),
                                                    OnionMessageContents.Single(RequestType, new byte[] { 5 }), null, ct);
-        await handler.WaitForAsync(1, ct);
 
-        // Assert
+        // Assert: the forwarded message at Carol and Bob's forward counter, waited for by name — nothing here is
+        // left to the machine's timing (NL-500)
         Assert.Equal(OnionMessageSendStatus.Sent, result.Status);
+        await WaitFor.TrueAsync(() => handler.Received.Count == 1 && bob.Metrics.Forwarded == 1,
+                                TimeSpan.FromSeconds(30), "the graph path to carol delivered through bob", ct);
         Assert.Equal(bob.NodeId, Assert.Single(handler.Received).FromPeer);
         Assert.Equal(1, bob.Metrics.Forwarded);
     }

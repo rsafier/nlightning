@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Services;
 
 using Application.Accounting;
+using Application.Accounting.Books;
 using Application.Channels.Fees;
 using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
@@ -65,6 +66,7 @@ public class NltgDaemonService : BackgroundService
     private readonly INodeDrainState? _nodeDrainState;
     private readonly ShutdownDrainWaiter? _drainWaiter;
     private readonly AccountingEventSealerService? _accountingEventSealer;
+    private readonly AccountingBooksService? _accountingBooks;
     private readonly IAccountingBackfill? _accountingBackfill;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
@@ -89,9 +91,11 @@ public class NltgDaemonService : BackgroundService
                              INodeDrainState? nodeDrainState = null,
                              ShutdownDrainWaiter? drainWaiter = null,
                              AccountingEventSealerService? accountingEventSealer = null,
+                             AccountingBooksService? accountingBooks = null,
                              IAccountingBackfill? accountingBackfill = null)
     {
         _accountingEventSealer = accountingEventSealer;
+        _accountingBooks = accountingBooks;
         _accountingBackfill = accountingBackfill;
         _feeEstimationOptions = feeEstimationOptions?.Value;
         _busyStateMonitor = busyStateMonitor;
@@ -214,6 +218,10 @@ public class NltgDaemonService : BackgroundService
             // Seal the accounting events committed so far and every SealInterval from now on (NL-602)
             _accountingEventSealer?.Start();
 
+            // Post the sealed events to the books and reconcile them every SnapshotInterval (NL-602 A2); nothing while
+            // Accounting:Enabled=false
+            _accountingBooks?.Start();
+
             // Write the history before the cutover as memo events, in the background (resumes at the next start)
             _accountingBackfill?.StartMemoBackfill();
 
@@ -289,6 +297,10 @@ public class NltgDaemonService : BackgroundService
         // The safety services and the fee rounds stop before the chain monitor and the peers they use
         await Task.WhenAll(_htlcExpiryMonitor.StopAsync(), _feeUpdateScheduler.StopAsync());
         _channelFailureService.Stop();
+
+        // The books stop before the sealer that feeds them (NL-602 A2)
+        if (_accountingBooks is not null)
+            await _accountingBooks.StopAsync();
 
         // The replay pruner and the mempool reactor stop before the chain monitor that drives them
         await Task.WhenAll(_onionReplayBlockPruner.StopAsync(), _mempoolReactor.StopAsync(),

@@ -22,6 +22,83 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingBalanceEntity", b =>
+                {
+                    b.Property<int>("Account")
+                        .HasColumnType("integer")
+                        .HasColumnName("account");
+
+                    b.Property<long>("BalanceMsat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("balance_msat");
+
+                    b.HasKey("Account")
+                        .HasName("pk_accounting_balances");
+
+                    b.ToTable("accounting_balances", (string)null);
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingCursorEntity", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    b.Property<long>("LastLedgerSeq")
+                        .HasColumnType("bigint")
+                        .HasColumnName("last_ledger_seq");
+
+                    b.HasKey("Id")
+                        .HasName("pk_accounting_cursor");
+
+                    b.ToTable("accounting_cursor", (string)null);
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingEntryEntity", b =>
+                {
+                    b.Property<long>("LedgerSeq")
+                        .HasColumnType("bigint")
+                        .HasColumnName("ledger_seq");
+
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("bytea")
+                        .HasColumnName("channel_id");
+
+                    b.Property<string>("EventKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("event_key");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("integer")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("Note")
+                        .HasColumnType("text")
+                        .HasColumnName("note");
+
+                    b.Property<long>("OccurredAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("bytea")
+                        .HasColumnName("payment_hash");
+
+                    b.HasKey("LedgerSeq")
+                        .HasName("pk_accounting_entries");
+
+                    b.HasIndex("EventKey")
+                        .IsUnique()
+                        .HasDatabaseName("ix_accounting_entries_event_key");
+
+                    b.HasIndex("OccurredAt")
+                        .HasDatabaseName("ix_accounting_entries_occurred_at");
+
+                    b.ToTable("accounting_entries", (string)null);
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingEventEntity", b =>
                 {
                     b.Property<long>("Id")
@@ -117,6 +194,37 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasDatabaseName("ix_accounting_events_occurred_at");
 
                     b.ToTable("accounting_events", (string)null);
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingPostingEntity", b =>
+                {
+                    b.Property<long>("LedgerSeq")
+                        .HasColumnType("bigint")
+                        .HasColumnName("ledger_seq");
+
+                    b.Property<int>("Index")
+                        .HasColumnType("integer")
+                        .HasColumnName("index");
+
+                    b.Property<int>("Account")
+                        .HasColumnType("integer")
+                        .HasColumnName("account");
+
+                    b.Property<long>("AmountMsat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount_msat");
+
+                    b.Property<long>("OccurredAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("occurred_at");
+
+                    b.HasKey("LedgerSeq", "Index")
+                        .HasName("pk_accounting_postings");
+
+                    b.HasIndex("Account", "OccurredAt")
+                        .HasDatabaseName("ix_accounting_postings_account_occurred_at");
+
+                    b.ToTable("accounting_postings", (string)null);
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.BlockHeaderEntity", b =>
@@ -2195,6 +2303,16 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasName("pk_payment_part_hops");
 
                     b.ToTable("payment_part_hops", (string)null);
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingPostingEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingEntryEntity", null)
+                        .WithMany()
+                        .HasForeignKey("LedgerSeq")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_accounting_postings_accounting_entries_ledger_seq");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.FeeInputReservationInputEntity", b =>
