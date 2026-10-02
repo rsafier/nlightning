@@ -202,6 +202,11 @@ public sealed class ClnCloseRestartTests : IAsyncLifetime
         // in CLOSINGD_SIGEXCHANGE), and its answer carries the agreed fee
         await Poll.UntilAsync(async () => (await session.GetClnChannelAsync(ct))["state"]?.GetValue<string>()
                                        is "CLOSINGD_COMPLETE", s_closeTimeout, "CLN at CLOSINGD_COMPLETE", ct);
+        // CLN lists CLOSINGD_COMPLETE once it sent its answer, which may still be on the wire to us
+        await Poll.UntilAsync(() => cutter.Snapshot().Any(m => m.Message.Sequence >= from && m.Message.Inbound
+                                                            && !m.Dropped
+                                                            && m.Message.Type == (ushort)MessageTypes.ClosingSigned),
+                              s_closeTimeout, "CLN's closing_signed after the restart received", ct);
         AssertReceived(cutter, from, MessageTypes.ClosingSigned);
         Assert.All(cutter.Snapshot().Where(m => m.Message.Sequence >= from && m.Message.Inbound
                                              && m.Message.Type == (ushort)MessageTypes.ClosingSigned),
