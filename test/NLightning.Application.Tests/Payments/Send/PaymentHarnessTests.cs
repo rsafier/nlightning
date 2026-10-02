@@ -2,8 +2,6 @@ using System.Security.Cryptography;
 
 namespace NLightning.Application.Tests.Payments.Send;
 
-using NLightning.Tests.Utils;
-
 using Application.Payments.Send.Interfaces;
 using Bolt11.Models;
 using Domain.Channels.Commitments;
@@ -16,6 +14,7 @@ using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
 using Harness;
+using NLightning.Tests.Utils;
 
 /// <summary>
 /// ABCD W2-C proof, in process with real crypto and real onions: Bob pays Carol directly and pays David through Carol
