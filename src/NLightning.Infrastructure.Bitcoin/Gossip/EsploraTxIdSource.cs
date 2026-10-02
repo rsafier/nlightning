@@ -8,6 +8,7 @@ using NBitcoin.Crypto;
 
 namespace NLightning.Infrastructure.Bitcoin.Gossip;
 
+using Infrastructure.Transport.Http;
 using Wallet.Interfaces;
 
 /// <summary>
@@ -246,8 +247,9 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
 
         try
         {
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            // Bounded (NL-678): a block's list is at most about 1.1 MB, anything past the cap is not one
+            var body = await ReadBoundedAsync(response, HttpResponseLimits.TxIdListMaxBytes, cancellationToken);
+            using var document = JsonDocument.Parse(body);
             if (document.RootElement.ValueKind != JsonValueKind.Array)
                 return [];
 
@@ -490,7 +492,30 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
                                                bool skipInitialPause = false)
     {
         using var response = await SendAsync(path, cancellationToken, skipInitialPause);
-        return response is null ? null : await response.Content.ReadAsStringAsync(cancellationToken);
+        if (response is null)
+            return null;
+
+        var body = await ReadBoundedAsync(response, HttpResponseLimits.SmallResponseMaxBytes, cancellationToken);
+        return System.Text.Encoding.UTF8.GetString(body);
+    }
+
+    /// <summary>
+    /// A 2xx answer's body, at most <paramref name="maxBytes"/> (NL-678); a longer one, or a body that breaks off, is
+    /// <see cref="EsploraUnavailableException"/> (the index's fault, transient for the lookup).
+    /// </summary>
+    private static async Task<byte[]> ReadBoundedAsync(HttpResponseMessage response, int maxBytes,
+                                                       CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await HttpResponseLimits.ReadBoundedAsync(response.Content, maxBytes, cancellationToken);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException
+                                    || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            throw new EsploraUnavailableException(
+                $"GET {response.RequestMessage?.RequestUri} answered a body that could not be read: {ex.Message}", ex);
+        }
     }
 
     /// <summary>Starts (or extends) the pause every request waits for after a 429 and returns its length.</summary>

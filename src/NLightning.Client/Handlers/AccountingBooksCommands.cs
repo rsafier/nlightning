@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace NLightning.Client.Handlers;
@@ -264,17 +265,10 @@ internal static class AccountingBooksCommands
                 return;
             }
 
-            // Written next to the target first, so an interrupted export never leaves a truncated file in its place
             var fullPath = Path.GetFullPath(path);
-            var temporary = fullPath + ".part";
-            int entries;
-            await using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None))
-            await using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
-            {
-                entries = await ExportAsync(client.AccountingExportAsync, export, writer, cancellationToken);
-            }
-
-            File.Move(temporary, fullPath, overwrite: true);
+            var entries = await WriteExportFileAsync(
+                fullPath, writer => ExportAsync(client.AccountingExportAsync, export, writer, cancellationToken),
+                cancellationToken);
             output.WriteLine(string.Format(CultureInfo.InvariantCulture, "Exported {0} entr{1} to {2}", entries,
                                            entries == 1 ? "y" : "ies", fullPath));
             return;
@@ -294,6 +288,65 @@ internal static class AccountingBooksCommands
         }
 
         new AccountingAdminPrinter(output).Print(await client.AccountingAdminAsync(arguments.Admin!, cancellationToken));
+    }
+
+    /// <summary>
+    /// Writes an export to <paramref name="fullPath"/> (NL-679, SECURITY_REVIEW SR-26): first to a new temporary file
+    /// next to it, <c>&lt;file&gt;.&lt;random&gt;.part</c>, created exclusively (<see cref="FileMode.CreateNew"/>: an
+    /// existing file or a planted symlink at that name makes the create fail, it is never followed or truncated) and
+    /// owner-only (0600 on Unix, whatever the umask), then renamed over the target (the rename replaces a link at the
+    /// target, never its target), so an interrupted export never leaves a truncated file in its place. The temporary
+    /// file is removed when writing fails.
+    /// </summary>
+    /// <returns>What <paramref name="write"/> returned (the number of entries).</returns>
+    internal static async Task<int> WriteExportFileAsync(string fullPath, Func<TextWriter, Task<int>> write,
+                                                         CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(write);
+        var temporary = $"{fullPath}.{Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(8))}.part";
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None
+        };
+        if (!OperatingSystem.IsWindows())
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+        // Throws (and leaves whatever is there alone) when the name exists, a symlink included
+        var stream = new FileStream(temporary, options);
+        try
+        {
+            int entries;
+            await using (stream)
+            await using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+            {
+                entries = await write(writer);
+                await writer.FlushAsync(cancellationToken);
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temporary, fullPath, overwrite: true);
+            return entries;
+        }
+        catch
+        {
+            TryDelete(temporary);
+            throw;
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            // The file we created (a path, not a link we followed)
+            File.Delete(path);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // Left behind; the next export uses another random name
+        }
     }
 
     /// <summary>

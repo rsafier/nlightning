@@ -1087,6 +1087,7 @@ public class NodeServiceExtensionsTests
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(("Gossip:FundingTxIdSource", "Esplora"),
                                                         ("Gossip:EsploraUrl", "http://esplora.test/api"),
+                                                        ("Gossip:EsploraAllowPlainHttp", "true"),
                                                         ("Gossip:EsploraMaxInlineWait", "00:00:03")),
                                      new Mock<ISecureKeyManager>().Object);
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
@@ -1104,6 +1105,7 @@ public class NodeServiceExtensionsTests
         // Assert
         Assert.Equal(FundingTxIdSourceKind.Esplora, options.FundingTxIdSource);
         Assert.Equal("http://esplora.test/api", options.EsploraUrl);
+        Assert.True(options.EsploraAllowPlainHttp); // NL-678: plain HTTP to a non-local index only when allowed
         Assert.Equal(TimeSpan.FromSeconds(3), options.EsploraMaxInlineWait);
         Assert.IsType<FundingOutputLookup>(lookup);
         Assert.Same(provider.GetRequiredService<EsploraTxIdSource>(), source);

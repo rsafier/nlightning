@@ -10,6 +10,7 @@ namespace NLightning.Infrastructure.Bitcoin.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Money;
 using Domain.Node.Options;
+using Infrastructure.Transport.Http;
 using Networks;
 using Options;
 
@@ -30,6 +31,9 @@ using Options;
 /// </remarks>
 public class FeeService : IFeeService
 {
+    /// <summary>The longest HTTP answer read (64 KiB, NL-678): a mempool.space fee answer is about 100 bytes.</summary>
+    public const int MaxResponseBytes = HttpResponseLimits.SmallResponseMaxBytes;
+
     private const string FeeCacheFileName = "fee_cache.bin";
     private static readonly string[] s_httpBuckets = ["fastestFee", "halfHourFee", "hourFee", "economyFee"];
     private static readonly TimeSpan s_defaultCacheExpiration = TimeSpan.FromMinutes(5);
@@ -282,18 +286,22 @@ public class FeeService : IFeeService
 
         try
         {
+            // ResponseHeadersRead: the body is read bounded below (NL-678), never buffered whole by the client
             if (_feeEstimationOptions.Method.Equals("GET", StringComparison.CurrentCultureIgnoreCase))
             {
-                response = await _httpClient.GetAsync(_feeEstimationOptions.Url, cancellationToken);
+                response = await _httpClient.GetAsync(_feeEstimationOptions.Url,
+                                                      HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             }
             else // POST
             {
-                var content = new StringContent(
+                using var request = new HttpRequestMessage(HttpMethod.Post, _feeEstimationOptions.Url);
+                request.Content = new StringContent(
                     _feeEstimationOptions.Body,
                     System.Text.Encoding.UTF8,
                     _feeEstimationOptions.ContentType);
 
-                response = await _httpClient.PostAsync(_feeEstimationOptions.Url, content, cancellationToken);
+                response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
+                                                       cancellationToken);
             }
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -301,12 +309,15 @@ public class FeeService : IFeeService
             throw new InvalidOperationException("Error fetching from API", e);
         }
 
-        response.EnsureSuccessStatusCode();
-        var jsonResponseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        byte[] body;
+        using (response)
+        {
+            response.EnsureSuccessStatusCode();
+            body = await HttpResponseLimits.ReadBoundedAsync(response.Content, MaxResponseBytes, cancellationToken);
+        }
 
         // Parse the JSON response
-        using var document =
-            await JsonDocument.ParseAsync(jsonResponseStream, cancellationToken: cancellationToken);
+        using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
 
         // Extract the preferred fee rate from the JSON response

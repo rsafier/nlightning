@@ -138,9 +138,74 @@ public class HttpPriceSourceTests
         Assert.Equal("https://prices.example/api?key=1&currency=EUR&timestamp=1759406400", uri.ToString());
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_AnAnswerOverTheCap_When_APriceIsAsked_Then_ItIsNullAndNotReadWhole(bool declared)
+    {
+        // Arrange - NL-678: a valid point padded past 64 KiB, with or without its Content-Length
+        var body = "{\"prices\":[{\"time\":1759406400,\"USD\":86000}],\"pad\":\""
+                 + new string('x', HttpPriceSource.MaxResponseBytes) + "\"}";
+        var handler = new BodyHandler(body, declared);
+        var source = CreateSource(handler);
+
+        // Act
+        var price = await source.GetPriceAsync("USD", s_at, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Null(price);
+        Assert.True(handler.BytesServed <= HttpPriceSource.MaxResponseBytes + 1);
+    }
+
+    [Fact]
+    public async Task Given_AnAnswerWithinTheCap_When_APriceIsAsked_Then_ItIsRead()
+    {
+        // Arrange
+        var handler = new BodyHandler("{\"prices\":[{\"time\":1759406400,\"USD\":86000}]}", false);
+
+        // Act
+        var price = await CreateSource(handler).GetPriceAsync("USD", s_at, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(86_000m, price?.Price);
+    }
+
     private static HttpPriceSource CreateSource(HttpMessageHandler handler) =>
         new(new HttpClient(handler), MsOptions.Create(new AccountingPriceOptions()),
             NullLogger<HttpPriceSource>.Instance);
+
+    /// <summary>Answers one body as a stream, counting the bytes the reader took.</summary>
+    private sealed class BodyHandler(string body, bool declareLength) : HttpMessageHandler
+    {
+        private readonly byte[] _bytes = System.Text.Encoding.UTF8.GetBytes(body);
+        private CountingStream? _stream;
+
+        public long BytesServed => _stream?.Served ?? 0;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+                                                               CancellationToken cancellationToken)
+        {
+            _stream = new CountingStream(_bytes);
+            var content = new StreamContent(_stream);
+            content.Headers.ContentLength = declareLength ? _bytes.Length : null;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+        }
+    }
+
+    /// <summary>Every read path ends in <see cref="Read(byte[], int, int)"/> for a derived memory stream.</summary>
+    private sealed class CountingStream(byte[] data) : MemoryStream(data)
+    {
+        public long Served { get; private set; }
+
+        public override bool CanSeek => false;
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = base.Read(buffer, offset, count);
+            Served += read;
+            return read;
+        }
+    }
 
     private sealed class ThrowingHandler(Exception exception) : HttpMessageHandler
     {

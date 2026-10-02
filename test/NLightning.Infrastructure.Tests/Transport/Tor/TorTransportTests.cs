@@ -217,16 +217,102 @@ public sealed class TorTransportTests : IAsyncDisposable
     }
 
     [Fact]
-    public void Given_Hybrid_When_TheHttpHandlerIsMade_Then_ItConnectsDirectly()
+    public async Task Given_Hybrid_When_TheNodeMakesAnHttpRequestToALocalServer_Then_ItConnectsDirectly()
     {
         // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var serve = ServeOneAsync(ct);
         var provider = CreateProvider(TorMode.Hybrid, _proxy.EndPoint);
+        using var http = new HttpClient(TorHttpHandler.Create(provider, TimeSpan.FromMinutes(1)));
 
         // Act
-        using var handler = TorHttpHandler.Create(provider, TimeSpan.FromMinutes(1));
+        var body = await http.GetStringAsync($"http://127.0.0.1:{TargetEndPoint.Port}/api", ct);
+
+        // Assert
+        Assert.Equal("ok", body);
+        Assert.Empty(_proxy.Requests);
+        await serve;
+    }
+
+    [Fact]
+    public async Task Given_HybridAndAClientThatAsksForTor_When_ItMakesAnHttpRequest_Then_ItGoesThroughTorByName()
+    {
+        // Arrange - NL-677: the price source goes through Tor whenever Tor is on, not only in TorOnly
+        var ct = TestContext.Current.CancellationToken;
+        var serve = ServeOneAsync(ct);
+        var provider = CreateProvider(TorMode.Hybrid, _proxy.EndPoint);
+        using var http = new HttpClient(TorHttpHandler.Create(provider, TimeSpan.FromMinutes(1),
+                                                              throughTorWhenEnabled: true));
+
+        // Act
+        var body = await http.GetStringAsync("http://prices.invalid:8080/api", ct);
+
+        // Assert
+        Assert.Equal("ok", body);
+        var request = Assert.Single(_proxy.Requests);
+        Assert.Equal(("prices.invalid", 8080), (request.Host, request.Port));
+        await serve;
+    }
+
+    [Fact]
+    public async Task Given_TorOnly_When_TheNodeMakesAnHttpRequestToALoopbackAddress_Then_ItConnectsDirectly()
+    {
+        // Arrange - Tor refuses loopback and private addresses; they never leave the host (as for peers, NL-588)
+        var ct = TestContext.Current.CancellationToken;
+        var serve = ServeOneAsync(ct);
+        var provider = CreateProvider(TorMode.TorOnly, _proxy.EndPoint);
+        using var http = new HttpClient(TorHttpHandler.Create(provider, TimeSpan.FromMinutes(1)));
+
+        // Act
+        var body = await http.GetStringAsync($"http://127.0.0.1:{TargetEndPoint.Port}/api", ct);
+
+        // Assert
+        Assert.Equal("ok", body);
+        Assert.Empty(_proxy.Requests);
+        await serve;
+    }
+
+    [Fact]
+    public void Given_TorOff_When_TheHttpHandlerIsMade_Then_ItIsAPlainHandler()
+    {
+        // Arrange
+        var provider = CreateProvider(TorMode.Off, _proxy.EndPoint);
+
+        // Act
+        using var handler = TorHttpHandler.Create(provider, TimeSpan.FromMinutes(1), throughTorWhenEnabled: true);
 
         // Assert
         Assert.Null(handler.ConnectCallback);
+    }
+
+    [Theory]
+    [InlineData("mempool.space", false, false)]
+    [InlineData("mempool.space", true, true)]
+    [InlineData(Onion, false, true)]
+    [InlineData("127.0.0.1", true, false)]
+    [InlineData("[::1]", true, false)]
+    [InlineData("192.168.1.20", true, false)]
+    [InlineData("localhost", true, false)]
+    [InlineData("203.0.113.5", true, true)]
+    [InlineData("203.0.113.5", false, false)]
+    public void Given_AHost_When_Routed_Then_OnlyNonLocalHostsGoThroughTor(string host, bool allTraffic, bool expected)
+    {
+        // Act & Assert
+        Assert.Equal(expected, TorHttpHandler.RoutesThroughTor(host, allTraffic));
+    }
+
+    [Fact]
+    public void Given_HybridWithoutADialerAndAClientThatAsksForTor_When_TheHttpHandlerIsMade_Then_ItRefuses()
+    {
+        // Arrange - NL-677 with NL-580: never a silent clearnet fallback
+        var services = new ServiceCollection();
+        services.AddSingleton(Options.Create(CreateOptions(TorMode.Hybrid, _proxy.EndPoint, null)));
+        using var provider = services.BuildServiceProvider();
+
+        // Act & Assert
+        var e = Assert.Throws<InvalidOperationException>(
+            () => TorHttpHandler.Create(provider, TimeSpan.FromMinutes(1), throughTorWhenEnabled: true));
+        Assert.Contains("ITorSocksDialer", e.Message);
     }
 
     [Fact]
@@ -241,6 +327,17 @@ public sealed class TorTransportTests : IAsyncDisposable
         var e = Assert.Throws<InvalidOperationException>(() => TorHttpHandler.Create(provider, TimeSpan.FromMinutes(1)));
         Assert.Contains("ITorSocksDialer", e.Message);
     }
+
+    /// <summary>The "web server" answers one request with "ok".</summary>
+    private Task ServeOneAsync(CancellationToken ct) => Task.Run(async () =>
+    {
+        using var client = await _target.AcceptTcpClientAsync(ct);
+        var stream = client.GetStream();
+        var buffer = new byte[4096];
+        _ = await stream.ReadAsync(buffer, ct);
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(
+                                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"), ct);
+    }, ct);
 
     public async ValueTask DisposeAsync()
     {
