@@ -11,7 +11,8 @@ using Enums;
 /// </summary>
 /// <remarks>
 /// <para>Amounts are signed millisatoshi from our point of view (<see cref="AmountMsat"/> &gt; 0 means more of our
-/// money), which is why they are <c>long</c> and not <c>LightningMoney</c>; <see cref="FeeMsat"/> is never negative.
+/// money), which is why they are <c>long</c> and not <c>LightningMoney</c>; <see cref="FeeMsat"/> is never negative
+/// except on a <see cref="AccountingEventKind.Reversal"/>, which negates both amounts of the event it reverses.
 /// </para>
 /// <para><see cref="EventKey"/> names the fact: every writer derives it from the fact alone
 /// (<see cref="Constants.AccountingEventKeys"/>), so a fact written twice carries the same key and the sealer marks the
@@ -45,7 +46,7 @@ public sealed class AccountingEventModel
     /// <summary>Our balance change in msat (signed).</summary>
     public long AmountMsat { get; init; }
 
-    /// <summary>The fee we paid in msat (never negative).</summary>
+    /// <summary>The fee we paid in msat (negative only on a reversal).</summary>
     public long FeeMsat { get; init; }
 
     public AccountingFinality Finality { get; init; }
