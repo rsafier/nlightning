@@ -48,9 +48,9 @@ public class BitcoinOptionsTests
         // Act: what the binder leaves when the section is missing (NL-338: the members are no longer required)
         var errors = new BitcoinOptions().GetValidationErrors();
 
-        // Assert
-        Assert.Equal(5, errors.Count);
-        Assert.Contains(errors, e => e.StartsWith("Bitcoin:RpcEndpoint", StringComparison.Ordinal));
+        // Assert: no RpcEndpoint means 127.0.0.1 on the network's RPC port, as NBitcoin's RPC client takes it (NL-740)
+        Assert.Equal(4, errors.Count);
+        Assert.DoesNotContain(errors, e => e.StartsWith("Bitcoin:RpcEndpoint", StringComparison.Ordinal));
         Assert.Contains(errors, e => e.StartsWith("Bitcoin:RpcUser", StringComparison.Ordinal));
         Assert.Contains(errors, e => e.StartsWith("Bitcoin:RpcPassword", StringComparison.Ordinal));
         Assert.Contains(errors, e => e.StartsWith("Bitcoin:ZmqHost", StringComparison.Ordinal));
@@ -59,8 +59,27 @@ public class BitcoinOptionsTests
 
     [Theory]
     [InlineData("localhost:18443")]
+    [InlineData("127.0.0.1:8332")]
+    [InlineData("bitcoind")]
+    [InlineData("http://127.0.0.1:8332/wallet/nltg")]
+    [InlineData("")]
+    public void Given_AnEndpointTheRpcClientAccepts_When_Validated_Then_ItIsNotReported(string endpoint)
+    {
+        // Arrange (NL-740): NBitcoin's RPCClient adds http:// to a host[:port] and takes empty as 127.0.0.1
+        var options = Valid();
+        options.RpcEndpoint = endpoint;
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Empty(errors);
+    }
+
+    [Theory]
     [InlineData("ftp://localhost:18443")]
     [InlineData("/rpc")]
+    [InlineData("localhost:notaport")]
     public void Given_AnEndpointThatIsNotAnHttpUrl_When_Validated_Then_ItIsReported(string endpoint)
     {
         // Arrange
