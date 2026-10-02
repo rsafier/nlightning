@@ -1,5 +1,7 @@
 namespace NLightning.Application.Accounting;
 
+using Domain.Accounting.Books;
+
 /// <summary>
 /// Options of the accounting feed and books (section <see cref="SectionName"/>, plan
 /// <c>docs/agents/ACCOUNTING_PLAN.md</c> §7, NL-602). The feed and its sealer are always on (D-A5); only the books
@@ -28,6 +30,15 @@ public sealed class AccountingOptions
 
     /// <summary>How often the books take a balance snapshot to reconcile against (1 h; used by the books).</summary>
     public TimeSpan SnapshotInterval { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Account name overrides by role (plan §6.1; e.g. <c>Accounting:AccountNames:Routing</c> =
+    /// <c>income:routing</c>); roles not named keep their default.
+    /// </summary>
+    public Dictionary<AccountRole, string> AccountNames { get; set; } = [];
+
+    /// <summary>The account names in effect.</summary>
+    public AccountNames GetAccountNames() => new(AccountNames);
 
     /// <summary>Whether the books run (<see cref="Enabled"/> unset = on).</summary>
     public bool AreBooksEnabled => Enabled ?? true;
