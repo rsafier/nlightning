@@ -28,6 +28,7 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
 {
     private const byte Bolt12Kind = (byte)InvoiceKind.Bolt12;
     private const byte OpenStatus = (byte)InvoiceStatus.Open;
+    private const byte SettledStatus = (byte)InvoiceStatus.Settled;
 
     public InvoiceDbRepository(NLightningDbContext context) : base(context)
     {
@@ -99,6 +100,27 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
         var entities = await DbSet.AsNoTracking()
                                   .OrderByDescending(e => e.CreatedAt)
                                   .ThenByDescending(e => e.PaymentHash)
+                                  .Skip(skip)
+                                  .Take(take)
+                                  .ToListAsync();
+
+        return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<InvoiceModel>> ListSettledAsync(DateTimeOffset settledAtOrBefore, int skip,
+                                                                    int take)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(skip);
+        ArgumentOutOfRangeException.ThrowIfNegative(take);
+        if (take == 0)
+            return [];
+
+        var entities = await DbSet.AsNoTracking()
+                                  .Where(e => e.Status == SettledStatus && e.SettledAt != null
+                                           && e.SettledAt <= settledAtOrBefore)
+                                  .OrderBy(e => e.SettledAt)
+                                  .ThenBy(e => e.PaymentHash)
                                   .Skip(skip)
                                   .Take(take)
                                   .ToListAsync();

@@ -104,7 +104,7 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
                                              ulong localCommitmentNumber = 0, ulong remoteCommitmentNumber = 0,
                                              ulong? localRevocationNumber = null,
                                              ulong? remoteRevocationNumber = null, uint localKeyIndex = 0,
-                                             uint remoteKeyIndex = 0)
+                                             uint remoteKeyIndex = 0, byte channelTag = 0)
     {
         var sha256 = new Sha256();
         var config = TestChannelParams.Create(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(253),
@@ -125,11 +125,13 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
 
         var fundingTxId = new byte[32];
         fundingTxId[0] = 0xAB;
+        fundingTxId[1] = channelTag;
         var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(1_000_000), LocalFundingPubKey,
                                                   RemoteFundingPubKey, fundingTxId, 1);
 
         var channelIdBytes = new byte[32];
         channelIdBytes[31] = isInitiator ? (byte)1 : (byte)2;
+        channelIdBytes[30] = channelTag;
         var channelId = new ChannelId(channelIdBytes);
 
         // At rest a side's current commitment number equals the number of commitments it has revoked; mid-dance

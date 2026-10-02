@@ -120,6 +120,7 @@ internal static class OnchainAccounting
     public const string IncomingHtlc = "incoming";
     public const string ReversesKey = AccountingConfirmations.ReversesDetail;
     public const string OriginalKindKey = AccountingConfirmations.OriginalKindDetail;
+    public const string OpeningBalanceKey = AccountingDetailKeys.OpeningBalance;
 
     public const string BalanceFromCommitment = "commitment";
     public const string BalanceFromLatestLocal = "latest-local-commitment";
@@ -128,15 +129,21 @@ internal static class OnchainAccounting
     public static bool CountsAtClose(CommitmentOutputDescriptor descriptor, bool weFund)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
-        return descriptor.Kind switch
+        return CountsAtClose(descriptor.Kind, descriptor.Htlc?.Direction, weFund);
+    }
+
+    /// <summary>Whether an output of the close of this kind (and HTLC direction, for an HTLC output) counts in the
+    /// pending bucket (see the remarks): the rule of <see cref="CountsAtClose(CommitmentOutputDescriptor, bool)"/> for a
+    /// stored row (the backfill's cutover, NL-602 A1-T6).</summary>
+    public static bool CountsAtClose(OutputDescriptorKind kind, HtlcDirection? htlcDirection, bool weFund) =>
+        kind switch
         {
             OutputDescriptorKind.DelayedToLocal or OutputDescriptorKind.PaymentToRemote
                 or OutputDescriptorKind.LocalOfferedHtlc or OutputDescriptorKind.RemoteReceivedHtlc => true,
-            OutputDescriptorKind.RevokedHtlc => descriptor.Htlc?.Direction == HtlcDirection.Outgoing,
+            OutputDescriptorKind.RevokedHtlc => htlcDirection == HtlcDirection.Outgoing,
             OutputDescriptorKind.OurAnchor => weFund,
             _ => false
         };
-    }
 
     /// <summary>Our gross balance per a commitment spec: our net balance plus the HTLCs we offered.</summary>
     public static long OurBalanceMsat(CommitmentTxSpec spec)

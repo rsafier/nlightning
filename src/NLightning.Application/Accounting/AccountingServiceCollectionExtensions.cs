@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Accounting;
 
+using Backfill;
 using Books;
 using Domain.Accounting.Books;
 using Domain.Accounting.Interfaces;
@@ -24,7 +25,9 @@ public static class AccountingServiceCollectionExtensions
     /// (<see cref="AccountingBooksService"/> as itself and as <see cref="IAccountingBooks"/>, one instance; the host
     /// starts it after the sealer and stops it before). Idempotent (TryAdd). The host binds
     /// <see cref="AccountingOptions"/> from <see cref="AccountingOptions.SectionName"/>; without a binding the
-    /// defaults apply.
+    /// defaults apply. Also the backfill (<see cref="AccountingBackfillService"/> as itself and as
+    /// <see cref="IAccountingBackfill"/>: the host awaits its cutover before the peers start and starts its memo pass
+    /// after the chain monitor).
     /// </summary>
     public static IServiceCollection AddAccountingServices(this IServiceCollection services)
     {
@@ -39,6 +42,11 @@ public static class AccountingServiceCollectionExtensions
                                                           sp.GetRequiredService<IServiceScopeFactory>(),
                                                           sp.GetService<IBlockchainMonitor>(),
                                                           sp.GetService<TimeProvider>()));
+        services.TryAddSingleton(sp => new AccountingBackfillService(
+                                     sp.GetRequiredService<IServiceScopeFactory>(),
+                                     sp.GetRequiredService<ILogger<AccountingBackfillService>>(),
+                                     sp.GetService<TimeProvider>()));
+        services.TryAddSingleton<IAccountingBackfill>(sp => sp.GetRequiredService<AccountingBackfillService>());
         services.TryAddSingleton(sp => new AccountingBooksService(
                                      sp.GetRequiredService<IServiceScopeFactory>(),
                                      sp.GetRequiredService<ILogger<AccountingBooksService>>(),

@@ -57,104 +57,120 @@ internal static class ChannelAccountingEvents
     {
         try
         {
-            if (unitOfWork.AccountingEventDbRepository is not { } events
-             || channel.FundingOutput is not { TransactionId: { } fundingTxId } funding)
+            if (unitOfWork.AccountingEventDbRepository is not { } events)
                 return;
 
-            var capacityMsat = checked((long)funding.Amount.MilliSatoshi);
-            var isDualFunded = channel.Version == ChannelVersion.V2;
-            var contributionMsat = 0L;
-            long? feeMsat = null;
-            ulong? totalFeeSat = null;
-            if (isDualFunded)
-            {
-                var attempt = await FindAttemptAsync(unitOfWork, channel.ChannelId, fundingTxId);
-                contributionMsat = attempt?.LocalFundingSatoshis is { } localSat
-                                       ? checked(localSat * 1_000)
-                                       : checked((long)channel.LocalBalance.MilliSatoshi);
-                if (attempt?.ConstructedTx is { } transaction)
-                {
-                    totalFeeSat = SpliceService.GetTotalFee(transaction);
-                    feeMsat = GetLocalFeeShareMsat(transaction, contributionMsat);
-                }
-            }
-            else if (channel.IsInitiator)
-            {
-                contributionMsat = capacityMsat;
-                if (unitOfWork.BroadcastTransactionDbRepository is { } broadcasts
-                 && await broadcasts.GetByTransactionIdAsync(fundingTxId) is { Fee: { } fee })
-                {
-                    feeMsat = checked((long)fee.MilliSatoshi);
-                    totalFeeSat = (ulong)fee.Satoshi;
-                }
-            }
-            else
-            {
-                // A v1 fundee adds nothing and pays nothing
-                feeMsat = 0;
-            }
-
-            var push = await GetPushAmountAsync(unitOfWork, channel.ChannelId);
-            var height = channel.FundingCreatedAtBlockHeight > 0 ? channel.FundingCreatedAtBlockHeight : (uint?)null;
-            var shortChannelId = IsSet(channel.ShortChannelId) ? channel.ShortChannelId : (ShortChannelId?)null;
-            events.Add(new AccountingEventModel
-            {
-                EventKey = AccountingEventKeys.ChannelFunded(channel.ChannelId, fundingTxId),
-                Kind = AccountingEventKind.ChannelFunded,
-                OccurredAt = occurredAt,
-                BlockHeight = height,
-                ChannelId = channel.ChannelId,
-                ShortChannelId = shortChannelId,
-                TxId = fundingTxId,
-                OutputIndex = funding.Index,
-                Counterparty = channel.RemoteNodeId,
-                AmountMsat = contributionMsat,
-                FeeMsat = feeMsat ?? 0,
-                Finality = AccountingFinality.Confirmed,
-                Details = AccountingDetailsCodec.Create(
-                    (AccountingDetailKeys.BucketFrom, WalletBucket),
-                    (AccountingDetailKeys.BucketTo, ChannelBucket),
-                    ("capacitySat", Format(funding.Amount.Satoshi)),
-                    ("isInitiator", Format(channel.IsInitiator)),
-                    (AccountingDetailKeys.DualFunded, Format(isDualFunded)),
-                    ("public", Format(channel.AnnounceChannel)),
-                    ("anchors", Format(channel.ChannelParams.OptionAnchorOutputs)),
-                    ("scidAlias", Format(channel.ChannelParams.UseScidAlias > FeatureSupport.No)),
-                    ("fundingFeeSat", totalFeeSat is { } total ? Format(total) : null),
-                    ("feeUnknown", feeMsat is null ? "true" : null),
-                    ("pushMsat", push is null ? null : Format(push.MilliSatoshi)),
-                    ("pushUnknown", push is null && !isDualFunded ? "true" : null))
-            });
-
-            // The push is its own fact: value that changed hands at the open (NL-605); a dual-funded open has none
-            if (push is not { IsZero: false })
-                return;
-
-            var pushMsat = checked((long)push.MilliSatoshi);
-            events.Add(new AccountingEventModel
-            {
-                EventKey = AccountingEventKeys.Push(channel.ChannelId),
-                Kind = channel.IsInitiator ? AccountingEventKind.PushSent : AccountingEventKind.PushReceived,
-                OccurredAt = occurredAt,
-                BlockHeight = height,
-                ChannelId = channel.ChannelId,
-                ShortChannelId = shortChannelId,
-                TxId = fundingTxId,
-                OutputIndex = funding.Index,
-                Counterparty = channel.RemoteNodeId,
-                AmountMsat = channel.IsInitiator ? -pushMsat : pushMsat,
-                FeeMsat = 0,
-                Finality = AccountingFinality.Confirmed,
-                Details = AccountingDetailsCodec.Create(channel.IsInitiator
-                                                            ? (AccountingDetailKeys.BucketFrom, ChannelBucket)
-                                                            : (AccountingDetailKeys.BucketTo, ChannelBucket))
-            });
+            foreach (var accountingEvent in await BuildChannelFundedAsync(unitOfWork, channel, occurredAt))
+                events.Add(accountingEvent);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             logger.LogError(e, "Could not record the funding of channel {ChannelId} in the accounting feed",
                             channel.ChannelId);
         }
+    }
+
+    /// <summary>
+    /// The events <see cref="StageChannelFundedAsync"/> stages (<see cref="AccountingEventKind.ChannelFunded"/>, then the
+    /// push when one was recorded and is not zero), read from <paramref name="unitOfWork"/> but not staged; empty when
+    /// the channel has no funding outpoint. The backfill writes them as memo events (NL-602 A1-T6). May throw.
+    /// </summary>
+    public static async Task<IReadOnlyList<AccountingEventModel>> BuildChannelFundedAsync(
+        IUnitOfWork unitOfWork, ChannelModel channel, DateTimeOffset occurredAt)
+    {
+        if (channel.FundingOutput is not { TransactionId: { } fundingTxId } funding)
+            return [];
+
+        var capacityMsat = checked((long)funding.Amount.MilliSatoshi);
+        var isDualFunded = channel.Version == ChannelVersion.V2;
+        var contributionMsat = 0L;
+        long? feeMsat = null;
+        ulong? totalFeeSat = null;
+        if (isDualFunded)
+        {
+            var attempt = await FindAttemptAsync(unitOfWork, channel.ChannelId, fundingTxId);
+            contributionMsat = attempt?.LocalFundingSatoshis is { } localSat
+                                   ? checked(localSat * 1_000)
+                                   : checked((long)channel.LocalBalance.MilliSatoshi);
+            if (attempt?.ConstructedTx is { } transaction)
+            {
+                totalFeeSat = SpliceService.GetTotalFee(transaction);
+                feeMsat = GetLocalFeeShareMsat(transaction, contributionMsat);
+            }
+        }
+        else if (channel.IsInitiator)
+        {
+            contributionMsat = capacityMsat;
+            if (unitOfWork.BroadcastTransactionDbRepository is { } broadcasts
+             && await broadcasts.GetByTransactionIdAsync(fundingTxId) is { Fee: { } fee })
+            {
+                feeMsat = checked((long)fee.MilliSatoshi);
+                totalFeeSat = (ulong)fee.Satoshi;
+            }
+        }
+        else
+        {
+            // A v1 fundee adds nothing and pays nothing
+            feeMsat = 0;
+        }
+
+        var push = await GetPushAmountAsync(unitOfWork, channel.ChannelId);
+        var height = channel.FundingCreatedAtBlockHeight > 0 ? channel.FundingCreatedAtBlockHeight : (uint?)null;
+        var shortChannelId = IsSet(channel.ShortChannelId) ? channel.ShortChannelId : (ShortChannelId?)null;
+        var funded = new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.ChannelFunded(channel.ChannelId, fundingTxId),
+            Kind = AccountingEventKind.ChannelFunded,
+            OccurredAt = occurredAt,
+            BlockHeight = height,
+            ChannelId = channel.ChannelId,
+            ShortChannelId = shortChannelId,
+            TxId = fundingTxId,
+            OutputIndex = funding.Index,
+            Counterparty = channel.RemoteNodeId,
+            AmountMsat = contributionMsat,
+            FeeMsat = feeMsat ?? 0,
+            Finality = AccountingFinality.Confirmed,
+            Details = AccountingDetailsCodec.Create(
+                (AccountingDetailKeys.BucketFrom, WalletBucket),
+                (AccountingDetailKeys.BucketTo, ChannelBucket),
+                ("capacitySat", Format(funding.Amount.Satoshi)),
+                ("isInitiator", Format(channel.IsInitiator)),
+                (AccountingDetailKeys.DualFunded, Format(isDualFunded)),
+                ("public", Format(channel.AnnounceChannel)),
+                ("anchors", Format(channel.ChannelParams.OptionAnchorOutputs)),
+                ("scidAlias", Format(channel.ChannelParams.UseScidAlias > FeatureSupport.No)),
+                ("fundingFeeSat", totalFeeSat is { } total ? Format(total) : null),
+                ("feeUnknown", feeMsat is null ? "true" : null),
+                ("pushMsat", push is null ? null : Format(push.MilliSatoshi)),
+                ("pushUnknown", push is null && !isDualFunded ? "true" : null))
+        };
+        List<AccountingEventModel> built = [funded];
+
+        // The push is its own fact: value that changed hands at the open (NL-605); a dual-funded open has none
+        if (push is not { IsZero: false })
+            return built;
+
+        var pushMsat = checked((long)push.MilliSatoshi);
+        built.Add(new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.Push(channel.ChannelId),
+            Kind = channel.IsInitiator ? AccountingEventKind.PushSent : AccountingEventKind.PushReceived,
+            OccurredAt = occurredAt,
+            BlockHeight = height,
+            ChannelId = channel.ChannelId,
+            ShortChannelId = shortChannelId,
+            TxId = fundingTxId,
+            OutputIndex = funding.Index,
+            Counterparty = channel.RemoteNodeId,
+            AmountMsat = channel.IsInitiator ? -pushMsat : pushMsat,
+            FeeMsat = 0,
+            Finality = AccountingFinality.Confirmed,
+            Details = AccountingDetailsCodec.Create(channel.IsInitiator
+                                                        ? (AccountingDetailKeys.BucketFrom, ChannelBucket)
+                                                        : (AccountingDetailKeys.BucketTo, ChannelBucket))
+        });
+        return built;
     }
 
     /// <summary>
@@ -260,73 +276,84 @@ internal static class ChannelAccountingEvents
     {
         try
         {
-            if (unitOfWork.AccountingEventDbRepository is not { } events
-             || channel.ClosingTransaction is not { } closingTransaction)
-                return;
-
-            var balanceMsat = checked((long)channel.LocalBalance.MilliSatoshi);
-            long? ourOutputSat = null;
-            uint? ourOutputIndex = null;
-            long? closingFeeSat = null;
-            try
-            {
-                var transaction = Transaction.Load(closingTransaction.RawTxBytes, Network.Main);
-                var outputsSat = transaction.Outputs.Sum(o => o.Value.Satoshi);
-                if (channel.FundingOutput is { } funding)
-                    closingFeeSat = Math.Max(0, funding.Amount.Satoshi - outputsSat);
-
-                if (channel.LocalShutdownScript is { } script)
-                {
-                    var scriptBytes = (byte[])script;
-                    ourOutputSat = 0;
-                    for (var i = 0; i < transaction.Outputs.Count; i++)
-                    {
-                        if (!transaction.Outputs[i].ScriptPubKey.ToBytes().AsSpan().SequenceEqual(scriptBytes))
-                            continue;
-
-                        ourOutputSat += transaction.Outputs[i].Value.Satoshi;
-                        ourOutputIndex ??= (uint)i;
-                    }
-                }
-            }
-            catch (Exception e) when (e is FormatException or ArgumentException or InvalidOperationException
-                                          or EndOfStreamException)
-            {
-                logger.LogWarning(e, "The closing transaction {TxId} of channel {ChannelId} could not be read for the "
-                                   + "accounting feed", closingTransaction.TxId, channel.ChannelId);
-            }
-
-            long? feeMsat = ourOutputSat is { } output ? Math.Max(0, balanceMsat - checked(output * 1_000)) : null;
-            events.Add(new AccountingEventModel
-            {
-                EventKey = AccountingEventKeys.ChannelClosedMutual(channel.ChannelId, closingTransaction.TxId),
-                Kind = AccountingEventKind.ChannelClosedMutual,
-                OccurredAt = occurredAt,
-                BlockHeight = blockHeight,
-                ChannelId = channel.ChannelId,
-                ShortChannelId = IsSet(channel.ShortChannelId) ? channel.ShortChannelId : (ShortChannelId?)null,
-                TxId = closingTransaction.TxId,
-                OutputIndex = ourOutputIndex,
-                Counterparty = channel.RemoteNodeId,
-                AmountMsat = -balanceMsat,
-                FeeMsat = feeMsat ?? 0,
-                Finality = AccountingFinality.Confirmed,
-                Details = AccountingDetailsCodec.Create(
-                    (AccountingDetailKeys.BucketFrom, ChannelBucket),
-                    (AccountingDetailKeys.BucketTo, WalletBucket),
-                    ("balanceMsat", Format(balanceMsat)),
-                    ("ourOutputSat", ourOutputSat is { } ours ? Format(ours) : null),
-                    ("closingFeeSat", closingFeeSat is { } fee ? Format(fee) : null),
-                    ("feePaidByUs", feeMsat is { } paid ? Format(paid >= 1_000) : null),
-                    ("isInitiator", Format(channel.IsInitiator)),
-                    ("feeUnknown", feeMsat is null ? "true" : null))
-            });
+            if (unitOfWork.AccountingEventDbRepository is { } events
+             && BuildMutualClose(channel, blockHeight, occurredAt, logger) is { } accountingEvent)
+                events.Add(accountingEvent);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             logger.LogError(e, "Could not record the mutual close of channel {ChannelId} in the accounting feed",
                             channel.ChannelId);
         }
+    }
+
+    /// <summary>
+    /// The event <see cref="StageMutualClose"/> stages, built but not staged; null when the channel has no closing
+    /// transaction. The backfill writes it as a memo event (NL-602 A1-T6). May throw.
+    /// </summary>
+    public static AccountingEventModel? BuildMutualClose(ChannelModel channel, uint? blockHeight,
+                                                         DateTimeOffset occurredAt, ILogger logger)
+    {
+        if (channel.ClosingTransaction is not { } closingTransaction)
+            return null;
+
+        var balanceMsat = checked((long)channel.LocalBalance.MilliSatoshi);
+        long? ourOutputSat = null;
+        uint? ourOutputIndex = null;
+        long? closingFeeSat = null;
+        try
+        {
+            var transaction = Transaction.Load(closingTransaction.RawTxBytes, Network.Main);
+            var outputsSat = transaction.Outputs.Sum(o => o.Value.Satoshi);
+            if (channel.FundingOutput is { } funding)
+                closingFeeSat = Math.Max(0, funding.Amount.Satoshi - outputsSat);
+
+            if (channel.LocalShutdownScript is { } script)
+            {
+                var scriptBytes = (byte[])script;
+                ourOutputSat = 0;
+                for (var i = 0; i < transaction.Outputs.Count; i++)
+                {
+                    if (!transaction.Outputs[i].ScriptPubKey.ToBytes().AsSpan().SequenceEqual(scriptBytes))
+                        continue;
+
+                    ourOutputSat += transaction.Outputs[i].Value.Satoshi;
+                    ourOutputIndex ??= (uint)i;
+                }
+            }
+        }
+        catch (Exception e) when (e is FormatException or ArgumentException or InvalidOperationException
+                                      or EndOfStreamException)
+        {
+            logger.LogWarning(e, "The closing transaction {TxId} of channel {ChannelId} could not be read for the "
+                               + "accounting feed", closingTransaction.TxId, channel.ChannelId);
+        }
+
+        long? feeMsat = ourOutputSat is { } output ? Math.Max(0, balanceMsat - checked(output * 1_000)) : null;
+        return new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.ChannelClosedMutual(channel.ChannelId, closingTransaction.TxId),
+            Kind = AccountingEventKind.ChannelClosedMutual,
+            OccurredAt = occurredAt,
+            BlockHeight = blockHeight,
+            ChannelId = channel.ChannelId,
+            ShortChannelId = IsSet(channel.ShortChannelId) ? channel.ShortChannelId : (ShortChannelId?)null,
+            TxId = closingTransaction.TxId,
+            OutputIndex = ourOutputIndex,
+            Counterparty = channel.RemoteNodeId,
+            AmountMsat = -balanceMsat,
+            FeeMsat = feeMsat ?? 0,
+            Finality = AccountingFinality.Confirmed,
+            Details = AccountingDetailsCodec.Create(
+                (AccountingDetailKeys.BucketFrom, ChannelBucket),
+                (AccountingDetailKeys.BucketTo, WalletBucket),
+                ("balanceMsat", Format(balanceMsat)),
+                ("ourOutputSat", ourOutputSat is { } ours ? Format(ours) : null),
+                ("closingFeeSat", closingFeeSat is { } fee ? Format(fee) : null),
+                ("feePaidByUs", feeMsat is { } paid ? Format(paid >= 1_000) : null),
+                ("isInitiator", Format(channel.IsInitiator)),
+                ("feeUnknown", feeMsat is null ? "true" : null))
+        };
     }
 
     /// <summary>
