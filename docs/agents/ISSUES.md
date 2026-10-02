@@ -6813,7 +6813,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** ACCOUNTING_PLAN A2
 
 ### NL-749 Cost-basis lots landed in the wrong bucket when the clearing account was spent before the event that pays it
-- **Status:** fixed (this commit on `wip/nl749`)
+- **Status:** fixed (fa6aeeba)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Accounting/Financial/Lots/FinancialEntryPlanner.cs` (`FromBucket`, `FromAcquisition`, the new `Repay`, `ValueBucket`)
