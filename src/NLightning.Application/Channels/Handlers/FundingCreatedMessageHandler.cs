@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Channels.Handlers;
 
+using Accounting;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Interfaces;
@@ -132,8 +133,11 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         // confirms (BOLT 2: the fundee SHOULD forget the channel after 2016 blocks)
         channel.FundingCreatedAtBlockHeight = _blockchainMonitor.LastProcessedBlockHeight;
 
-        // Save to the database
+        // Save to the database, with the opener's push (NL-605): as fundee our balance at the open is exactly what the
+        // opener pushed to us (ChannelFactory.CreateChannelV1AsNonInitiatorAsync), 0 for none
         await _unitOfWork.ChannelDbRepository.AddAsync(channel);
+        await ChannelAccountingEvents.StagePushAmountAsync(_unitOfWork, channel.ChannelId, channel.LocalBalance,
+                                                           _logger);
         await _unitOfWork.SaveChangesAsync();
 
         // Create the funding signed message

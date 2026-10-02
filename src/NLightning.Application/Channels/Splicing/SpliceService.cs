@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Channels.Splicing;
 
+using Accounting;
 using Channels.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
@@ -628,9 +629,13 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         // until it confirms, O0) and its confirmation watched for splice_locked (D8), all in the driver's save
         var fundings = _statePort.AddPending(_statePort.GetFundings(channel), funding);
         await _statePort.StageFundingsAsync(channel, fundings, [], unitOfWork, cancellationToken);
+        // The row carries the splice transaction's whole fee (every input's value is known: the shared input is the
+        // current capacity, NL-604); our share of it is the accounting feed's, at the lock
         var broadcast = new BroadcastTransactionModel(completion.SignedTransaction, BroadcastPurpose.Funding,
                                                       channel.ChannelId, GetTip(), completion.FeeratePerKw,
-                                                      negotiation.Model.RbfOf);
+                                                      negotiation.Model.RbfOf,
+                                                      fee: LightningMoney.Satoshis(
+                                                          GetTotalFee(completion.Transaction)));
         unitOfWork.BroadcastTransactionDbRepository.Add(broadcast);
 
         // SPR-T1: the attempt it bumps stays pending too (the row names it in ReplacesTransactionId), so the chain
@@ -918,6 +923,13 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         }
 
         await _statePort.StageFundingsAsync(channel, next, retired, unitOfWork, cancellationToken);
+
+        // The accounting feed's SpliceLocked (NL-602) rides in the lock's save; a lock happens once per funding (the
+        // funding is current afterwards, never pending again). Its delta is relative to the funding it replaces
+        if (retired.Count > 0)
+            await ChannelAccountingEvents.StageSpliceLockedAsync(
+                unitOfWork, channel, updated, fundings.Current,
+                (_serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow(), _logger);
 
         // SP-LK-03 with RBF siblings (NL-489): the lock discards the other attempts of the splice in the same save, and
         // their transactions, which double-spend the locked one, are no longer rebroadcast

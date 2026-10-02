@@ -42,6 +42,16 @@ public class DualFundRbfFollowTests
         // Assert: both on the first attempt, with its capacity and balances, open, and payments both ways
         await AssertOnFundingAsync(harness, first.ChannelId, first.FundingTxId.Value, s_aliceShare,
                                    LightningMoney.Zero);
+
+        // The accounting feed (NL-602) follows the attempt that confirmed: Alice funded it alone and paid its whole fee,
+        // Bob's 400,000 sat of the replacement never left his wallet
+        var aliceFunded = await DualFundHarnessTests.AssertChannelFundedAsync(
+                              harness.Alice, first.ChannelId, first.FundingTxId.Value, s_aliceShare);
+        var firstFee = harness.Alice.Published.First(p => p.TransactionId == first.FundingTxId.Value).Fee!;
+        Assert.Equal(checked((long)firstFee.MilliSatoshi), aliceFunded.FeeMsat);
+        var bobFunded = await DualFundHarnessTests.AssertChannelFundedAsync(
+                            harness.Bob, first.ChannelId, first.FundingTxId.Value, LightningMoney.Zero);
+        Assert.Equal(0, bobFunded.FeeMsat);
         await AssertOpenAndPayBothWaysAsync(harness, first.ChannelId);
     }
 

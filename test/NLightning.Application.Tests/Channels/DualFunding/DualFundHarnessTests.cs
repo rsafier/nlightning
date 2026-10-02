@@ -2,8 +2,13 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Application.Tests.Channels.DualFunding;
 
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Models;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
+using Domain.Channels.ValueObjects;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Onchain.Enums;
@@ -22,6 +27,28 @@ public class DualFundHarnessTests
 {
     private static readonly LightningMoney s_aliceShare = LightningMoney.Satoshis(600_000);
     private const long BobShareSat = 400_000;
+
+    /// <summary>
+    /// The node saved exactly one accounting event, the ChannelFunded of <paramref name="fundingTxId"/> moving
+    /// <paramref name="contribution"/> from the wallet into the channel, with a known fee share (NL-602).
+    /// </summary>
+    internal static async Task<AccountingEventModel> AssertChannelFundedAsync(DualFundNode node, ChannelId channelId,
+                                                                             TxId fundingTxId,
+                                                                             LightningMoney contribution)
+    {
+        var events = await node.InScopeAsync(u => u.AccountingEventDbRepository.GetUnsealedAsync(100));
+        var funded = Assert.Single(events);
+        Assert.Equal(AccountingEventKind.ChannelFunded, funded.Kind);
+        Assert.Equal(AccountingEventKeys.ChannelFunded(channelId, fundingTxId), funded.EventKey);
+        Assert.Equal(fundingTxId, funded.TxId);
+        Assert.Equal(checked((long)contribution.MilliSatoshi), funded.AmountMsat);
+        Assert.Equal(DualFundHarness.FundingHeight, funded.BlockHeight);
+        Assert.Equal(AccountingFinality.Confirmed, funded.Finality);
+        Assert.Equal("true", funded.Details["dualFunded"]);
+        Assert.False(funded.Details.ContainsKey("feeUnknown"));
+        Assert.False(funded.Details.ContainsKey("pushUnknown"));
+        return funded;
+    }
 
     [Fact]
     public async Task Given_BothNodesContribute_When_AliceOpensDualFunded_Then_TheChannelOpensAndCarriesPayments()
@@ -96,6 +123,17 @@ public class DualFundHarnessTests
         Assert.Equal(ChannelState.Open, harness.Bob.Channel(channelId).State);
         Assert.NotNull(harness.Alice.Channel(channelId).Commitments);
         Assert.NotNull(harness.Bob.Channel(channelId).Commitments);
+
+        // Assert (NL-602, NL-604): each side's ChannelFunded saved with the confirmation, its own share moved into the
+        // channel and its own share of the fee; the two shares make the funding row's total fee, and nothing is pushed
+        var totalFee = harness.Alice.Published.Single().Fee!;
+        Assert.Equal(totalFee, harness.Bob.Published.Single().Fee);
+        var aliceFunded = await AssertChannelFundedAsync(harness.Alice, channelId, result.FundingTxId.Value,
+                                                         s_aliceShare);
+        var bobFunded = await AssertChannelFundedAsync(harness.Bob, channelId, result.FundingTxId.Value,
+                                                       LightningMoney.Satoshis(BobShareSat));
+        Assert.True(aliceFunded.FeeMsat > 0 && bobFunded.FeeMsat > 0, $"{aliceFunded.FeeMsat}, {bobFunded.FeeMsat}");
+        Assert.Equal(checked((long)totalFee.MilliSatoshi), aliceFunded.FeeMsat + bobFunded.FeeMsat);
 
         // Act: a payment each way
         var toBob = LightningMoney.Satoshis(50_000);

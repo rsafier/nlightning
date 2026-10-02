@@ -8,6 +8,10 @@ using Application.Channels.Close;
 using Application.Channels.Managers;
 using Application.Channels.Reestablish;
 using Application.Channels.Services;
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Interfaces;
+using Domain.Accounting.Models;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
@@ -42,9 +46,21 @@ public class ClosingLifecycleTests
     private readonly Mock<IBitcoinChainService> _chain = new();
     private readonly ClosingNegotiationRegistry _registry = new();
     private readonly List<ChannelState> _persisted = [];
+    private readonly Mock<IAccountingEventDbRepository> _accounting = new();
+    private readonly List<AccountingEventModel> _accountingEvents = [];
+    private readonly List<string> _saveOrder = [];
 
     public ClosingLifecycleTests()
     {
+        _unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(_accounting.Object);
+        _accounting.Setup(a => a.Add(It.IsAny<AccountingEventModel>()))
+                   .Callback((AccountingEventModel e) =>
+                    {
+                        _accountingEvents.Add(e);
+                        _saveOrder.Add("event");
+                    });
+        _unitOfWork.Setup(u => u.SaveChangesAsync()).Callback(() => _saveOrder.Add("save"))
+                   .Returns(Task.CompletedTask);
         _unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(_channelDb.Object);
         _unitOfWork.SetupGet(u => u.WatchedTransactionDbRepository).Returns(_watchedDb.Object);
         _unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(_sessionsDb.Object);
@@ -80,6 +96,87 @@ public class ClosingLifecycleTests
     }
 
     [Fact]
+    public async Task Given_Closing_When_ClosingTransactionConfirmed_Then_OneMutualCloseEventRidesInTheClosedSave()
+    {
+        // Arrange: our whole 1,000,000 sat balance, 999,000 sat to our shutdown script, 1,000 sat closing fee (ours)
+        var channel = CreateClosingChannel(ChannelState.Closing);
+        var closing = ClosingTx(channel, 999_000, null);
+        channel.SetClosingTransaction(closing);
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, closing.TxId));
+
+        // Assert
+        await WaitUntilAsync(() => channel.State == ChannelState.Closed);
+        var closed = Assert.Single(_accountingEvents);
+        Assert.Equal(AccountingEventKind.ChannelClosedMutual, closed.Kind);
+        Assert.Equal(AccountingEventKeys.ChannelClosedMutual(channelId, closing.TxId), closed.EventKey);
+        Assert.Equal(-1_000_000_000, closed.AmountMsat);
+        Assert.Equal(1_000_000, closed.FeeMsat);
+        Assert.Equal(AccountingFinality.Confirmed, closed.Finality);
+        Assert.Equal(600U, closed.BlockHeight);
+        Assert.Equal(closing.TxId, closed.TxId);
+        Assert.Equal(0U, closed.OutputIndex);
+        Assert.Equal(channelId, closed.ChannelId);
+        Assert.Equal(NormalOperationTestContext.PeerNodeId, closed.Counterparty);
+        Assert.Equal("999000", closed.Details["ourOutputSat"]);
+        Assert.Equal("1000", closed.Details["closingFeeSat"]);
+        Assert.Equal("true", closed.Details["feePaidByUs"]);
+        Assert.Equal(["event", "save"], _saveOrder);
+
+        // A confirmation raised again (a replayed block) finds the channel Closed: nothing more
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, closing.TxId));
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+        Assert.Single(_accountingEvents);
+    }
+
+    [Fact]
+    public async Task Given_ThePeerPaidTheClosingFee_When_ClosingTransactionConfirmed_Then_OnlyTheMsatWeCouldNotCarryAreOurFee()
+    {
+        // Arrange: 600,000.5 sat ours, the peer funded and pays the fee: our output carries the whole satoshis
+        var channel = CreateClosingChannel(ChannelState.Closing, LightningMoney.MilliSatoshis(600_000_500));
+        var closing = ClosingTx(channel, 600_000, 399_000);
+        channel.SetClosingTransaction(closing);
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, closing.TxId));
+
+        // Assert
+        await WaitUntilAsync(() => channel.State == ChannelState.Closed);
+        var closed = Assert.Single(_accountingEvents);
+        Assert.Equal(-600_000_500, closed.AmountMsat);
+        Assert.Equal(500, closed.FeeMsat);
+        Assert.Equal("1000", closed.Details["closingFeeSat"]);
+        Assert.Equal("false", closed.Details["feePaidByUs"]);
+    }
+
+    [Fact]
+    public async Task Given_ClosingAtStartupWithCompletedWatch_When_Registered_Then_OneMutualCloseEventAtTheWatchHeight()
+    {
+        // Arrange
+        var channel = CreateClosingChannel(ChannelState.Closing);
+        var closing = ClosingTx(channel, 999_000, null);
+        channel.SetClosingTransaction(closing);
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(closing.TxId))
+                  .ReturnsAsync(Confirmed(channel.ChannelId, closing.TxId).WatchedTransaction);
+        var manager = CreateManager();
+
+        // Act
+        await manager.RegisterExistingChannelAsync(channel);
+
+        // Assert
+        var closed = Assert.Single(_accountingEvents);
+        Assert.Equal(AccountingEventKind.ChannelClosedMutual, closed.Kind);
+        Assert.Equal(600U, closed.BlockHeight);
+    }
+
+    [Fact]
     public async Task Given_Closing_When_AnotherTransactionConfirmed_Then_StillClosing()
     {
         // Arrange
@@ -97,6 +194,7 @@ public class ClosingLifecycleTests
         // Assert
         Assert.Equal(ChannelState.Closing, channel.State);
         Assert.Empty(_persisted);
+        Assert.Empty(_accountingEvents);
     }
 
     [Fact]
@@ -411,9 +509,22 @@ public class ClosingLifecycleTests
                                   services.BuildServiceProvider());
     }
 
-    private static ChannelModel CreateClosingChannel(ChannelState state)
+    /// <summary>A closing transaction of <paramref name="channel"/> paying our and (when given) the peer's script.</summary>
+    private static SignedTransaction ClosingTx(ChannelModel channel, long ourSat, long? theirSat)
     {
-        var channel = CreateChannel(state);
+        var tx = Transaction.Create(Network.RegTest);
+        tx.Version = 2;
+        tx.Inputs.Add(new OutPoint(new uint256((byte[])channel.FundingOutput!.TransactionId!.Value), 0),
+                      sequence: Sequence.Final);
+        tx.Outputs.Add(new TxOut(Money.Satoshis(ourSat), new Script((byte[])channel.LocalShutdownScript!)));
+        if (theirSat is { } their)
+            tx.Outputs.Add(new TxOut(Money.Satoshis(their), new Script((byte[])channel.RemoteShutdownScript!)));
+        return new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes());
+    }
+
+    private static ChannelModel CreateClosingChannel(ChannelState state, LightningMoney? localBalance = null)
+    {
+        var channel = CreateChannel(state, localBalance);
         channel.SetLocalShutdownScript(Convert.FromHexString("0014" + new string('1', 40)));
         channel.SetRemoteShutdownScript(Convert.FromHexString("0014" + new string('2', 40)));
         return channel;
@@ -473,13 +584,17 @@ public class ClosingLifecycleTests
         return tx.ToBytes();
     }
 
-    private static ChannelModel CreateChannel(ChannelState state)
+    /// <summary>A channel we funded with the whole capacity ours, or, with <paramref name="localBalance"/>, a channel
+    /// the peer funded with that balance ours.</summary>
+    private static ChannelModel CreateChannel(ChannelState state, LightningMoney? localBalance = null)
     {
+        var capacity = LightningMoney.Satoshis(1_000_000);
+        var local = localBalance ?? capacity;
         var party = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(10_000),
                                      LightningMoney.MilliSatoshis(1_000), 30, LightningMoney.Satoshis(1_000_000), 144);
         var channelParams = new ChannelParams(party, party, LightningMoney.Satoshis(2_500), 3, false,
                                               FeatureSupport.No);
-        var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(1_000_000),
+        var fundingOutput = new FundingOutputInfo(capacity,
                                                   NormalOperationTestContext.Point(0x01),
                                                   NormalOperationTestContext.Point(0x02))
         {
@@ -493,8 +608,8 @@ public class ClosingLifecycleTests
                                             NormalOperationTestContext.Point(0x06),
                                             NormalOperationTestContext.Point(0x07));
         return new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray()), null,
-                                fundingOutput, true, null, null, LightningMoney.Satoshis(1_000_000), keySet, 0, 0,
-                                LightningMoney.Zero, keySet, 0, NormalOperationTestContext.PeerNodeId, 0, state,
+                                fundingOutput, localBalance is null, null, null, local, keySet, 0, 0,
+                                capacity - local, keySet, 0, NormalOperationTestContext.PeerNodeId, 0, state,
                                 ChannelVersion.V1);
     }
 }

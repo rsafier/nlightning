@@ -41,6 +41,8 @@ public class FundingSignedMessageHandlerTests
     private readonly Mock<ILightningSigner> _mockLightningSigner = new();
     private readonly Mock<IChannelDbRepository> _mockChannelDbRepository = new();
     private readonly Mock<IBroadcastTransactionDbRepository> _mockBroadcastRepository = new();
+    private readonly Mock<IChannelFundingDbRepository> _mockFundingRepository = new();
+    private readonly List<string> _saveOrder = [];
     private readonly FundingSignedMessageHandler _handler;
     private readonly ChannelModel _channel;
     private readonly FundingSignedMessage _message;
@@ -126,6 +128,12 @@ public class FundingSignedMessageHandlerTests
         mockUnitOfWork.Setup(x => x.WatchedTransactionDbRepository)
                       .Returns(new Mock<IWatchedTransactionDbRepository>().Object);
         mockUnitOfWork.Setup(x => x.BroadcastTransactionDbRepository).Returns(_mockBroadcastRepository.Object);
+        mockUnitOfWork.Setup(x => x.ChannelFundingDbRepository).Returns(_mockFundingRepository.Object);
+        mockUnitOfWork.Setup(x => x.SaveChangesAsync()).Callback(() => _saveOrder.Add("save"))
+                      .Returns(Task.CompletedTask);
+        _mockFundingRepository.Setup(x => x.SetPushAmountAsync(It.IsAny<ChannelId>(), It.IsAny<LightningMoney>()))
+                              .Callback(() => _saveOrder.Add("push"))
+                              .Returns(Task.CompletedTask);
         mockUnitOfWork.Setup(x => x.WatchedOutpointDbRepository)
                       .Returns(new Mock<IWatchedOutpointDbRepository>().Object);
         _mockBlockchainMonitor.Setup(x => x.PublishAsync(It.IsAny<BroadcastTransactionModel>())).ReturnsAsync(true);
@@ -169,6 +177,26 @@ public class FundingSignedMessageHandlerTests
                                                                           fundingTransaction.RawTxBytes))),
             Times.Once);
         Assert.Equal(ChannelState.V1FundingSigned, _channel.State);
+    }
+
+    [Fact]
+    public async Task Given_OurFunding_When_Handling_Then_TheFundingFeeAndThePushAreStagedInTheChannelsFirstSave()
+    {
+        // Arrange: the model factory's fee is 1,000 sat, and the channel pushed nothing (the peer's balance is 0)
+        _mockFundingTransactionBuilder
+           .Setup(x => x.Build(It.IsAny<FundingTransactionModel>()))
+           .Returns(new FundingTransactionBuildResult(new SignedTransaction(_fundingTxId, [0x02, 0x00]),
+                                                      FundingOutputIndex));
+
+        // Act
+        await _handler.HandleAsync(_message, ChannelState.V1FundingCreated, new FeatureOptions(), _peerPubKey);
+
+        // Assert (NL-604, NL-605): 0 is recorded for no push, so null keeps meaning "opened before it was recorded"
+        _mockBroadcastRepository.Verify(
+            x => x.Add(It.Is<BroadcastTransactionModel>(b => !ReferenceEquals(b.Fee, null)
+                                                          && b.Fee!.Satoshi == 1_000)), Times.Once);
+        _mockFundingRepository.Verify(x => x.SetPushAmountAsync(_channel.ChannelId, LightningMoney.Zero), Times.Once);
+        Assert.Equal(["push", "save"], _saveOrder);
     }
 
     [Fact]

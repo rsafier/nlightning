@@ -6,6 +6,7 @@ using NBitcoin;
 
 namespace NLightning.Application.Channels.Managers;
 
+using Accounting;
 using Backup;
 using Close;
 using Domain.Bitcoin.Events;
@@ -779,7 +780,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         var watch = await unitOfWork.WatchedTransactionDbRepository.GetByTransactionIdAsync(closingTransaction.TxId);
         if (watch is { IsCompleted: true })
         {
-            await CompleteCloseAsync(scope, channel);
+            await CompleteCloseAsync(scope, channel, watch.FirstSeenAtHeight);
             return;
         }
 
@@ -810,10 +811,16 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// The mutual close transaction reached its depth: the channel is <see cref="ChannelState.Closed"/>, persisted,
     /// and forgotten in memory (and in the close registry). Call it under the channel's lock.
     /// </summary>
-    private async Task CompleteCloseAsync(IServiceScope scope, ChannelModel channel)
+    private async Task CompleteCloseAsync(IServiceScope scope, ChannelModel channel, uint? closingTxHeight)
     {
-        channel.UpdateState(ChannelState.Closed);
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        // The accounting feed's mutual close (NL-602) rides in the save that makes the channel Closed (once: a Closed
+        // channel never comes here again); its balance is read before the state moves
+        ChannelAccountingEvents.StageMutualClose(unitOfWork, channel, closingTxHeight,
+                                                 (_serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System)
+                                                .GetUtcNow(), _logger);
+        channel.UpdateState(ChannelState.Closed);
         await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
 
         // BOLT 2 interactive-tx (NL-470): the closed channel's negotiations can never finish, and the table has no FK
@@ -2160,7 +2167,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             if (channel.State is ChannelState.Closing or ChannelState.Failed && confirmedTxId is { } txId
              && channel.ClosingTransaction?.TxId == txId)
             {
-                await CompleteCloseAsync(scope, channel);
+                await CompleteCloseAsync(scope, channel, firstSeenAtHeight);
                 return;
             }
 

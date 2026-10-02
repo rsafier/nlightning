@@ -887,8 +887,12 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         var index = completion.Transaction.SharedOutputIndex!.Value;
         var height = GetMonitor()?.LastProcessedBlockHeight ?? 0;
 
+        // The row carries the funding transaction's whole fee (both sides' inputs are known, NL-604); our share of it is
+        // the accounting feed's, at the confirmation
         var broadcast = new BroadcastTransactionModel(completion.SignedTransaction, BroadcastPurpose.Funding,
-                                                      channel.ChannelId, height);
+                                                      channel.ChannelId, height,
+                                                      fee: LightningMoney.Satoshis(
+                                                          Splicing.SpliceService.GetTotalFee(completion.Transaction)));
         unitOfWork.BroadcastTransactionDbRepository.Add(broadcast);
 
         // The watches were stored with our commitment_signed; a negotiation stored by an older build has none
