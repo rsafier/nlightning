@@ -41,3 +41,5 @@ dotnet ef migrations remove --framework "$Framework" \
 unset NLIGHTNING_POSTGRES
 unset NLIGHTNING_SQLITE
 unset NLIGHTNING_SQLSERVER
+
+echo "Revert the model change by hand, then run scripts/optimize_model.sh to regenerate the compiled models (NL-708)."
