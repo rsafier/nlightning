@@ -1,5 +1,10 @@
+using System.Globalization;
+
 namespace NLightning.Application.Tests.Channels.Splicing;
 
+using Domain.Accounting.Constants;
+using Domain.Accounting.Enums;
+using Domain.Accounting.Models;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
@@ -106,6 +111,16 @@ public class SpliceHarnessTests
             Assert.Equal(new TxId(Enumerable.Repeat((byte)0x77, 32).ToArray()), replaced.FundingTxId);
         }
 
+        // Assert (NL-602): one SpliceLocked per side in the lock's save; Alice put 100,000 sat in and paid the whole
+        // splice fee from her wallet inputs (the broadcast row's total, NL-604), Bob moved nothing and paid nothing
+        var spliceFee = harness.Alice.Broadcasts.Single(b => b.TransactionId == spliceTxId).Fee!;
+        Assert.True(spliceFee.Satoshi > 0);
+        var aliceLock = AssertSpliceLocked(harness.Alice, spliceTxId, 100_000_000);
+        Assert.Equal(checked((long)spliceFee.MilliSatoshi), aliceLock.FeeMsat);
+        Assert.Equal(spliceFee.Satoshi.ToString(CultureInfo.InvariantCulture), aliceLock.Details["spliceFeeSat"]);
+        Assert.Equal("true", aliceLock.Details["isInitiator"]);
+        Assert.Equal(0, AssertSpliceLocked(harness.Bob, spliceTxId, 0).FeeMsat);
+
         // Act / Assert: the channel keeps working after the lock
         await PayAsync(harness, harness.Alice, harness.Bob, 10_000_000, 3);
         Assert.Empty(harness.Failures);
@@ -164,6 +179,19 @@ public class SpliceHarnessTests
                                                       (byte[])harness.Alice.Destination.Script));
         Assert.Equal(fee, (long)TwoNodeHarness.FundingSatoshis - transaction.Outputs.Sum(o => o.Value.Satoshi));
         AssertPending(harness, result.SpliceTxId!.Value, contribution * 1_000, 0);
+
+        // Act: the splice locks
+        await harness.ConfirmAsync(result.SpliceTxId!.Value, TwoNodeHarness.BlockHeight + 3, harness.Alice,
+                                   harness.Bob);
+
+        // Assert (NL-602): the channel bucket lost the amount out and the fee (the delta includes the fee, D16), the
+        // fee is counted once, as hers; the wallet side follows as -(AmountMsat + FeeMsat) = +200,000 sat
+        var aliceLock = AssertSpliceLocked(harness.Alice, result.SpliceTxId!.Value, contribution * 1_000);
+        Assert.Equal(fee * 1_000, aliceLock.FeeMsat);
+        Assert.Equal("true", aliceLock.Details["deltaIncludesFee"]);
+        Assert.Equal("200000", aliceLock.Details["walletOutputsSat"]);
+        Assert.Equal(200_000_000, -(aliceLock.AmountMsat + aliceLock.FeeMsat));
+        Assert.Equal(0, AssertSpliceLocked(harness.Bob, result.SpliceTxId!.Value, 0).FeeMsat);
     }
 
     [Fact]
@@ -219,6 +247,9 @@ public class SpliceHarnessTests
             Assert.Single(node.Port.Retired);
         }
 
+        // Each side records its lock once, although both splice_locked crossed (NL-602)
+        AssertSpliceLocked(harness.Alice, spliceTxId, 100_000_000);
+        AssertSpliceLocked(harness.Bob, spliceTxId, 0);
         Assert.Empty(harness.Failures);
     }
 
@@ -620,6 +651,22 @@ public class SpliceHarnessTests
     }
 
     #endregion
+
+    /// <summary>The node saved exactly one accounting event, the SpliceLocked of <paramref name="spliceTxId"/> with our
+    /// balance change.</summary>
+    private static AccountingEventModel AssertSpliceLocked(SpliceNode node, TxId spliceTxId, long amountMsat)
+    {
+        var locked = Assert.Single(node.AccountingEvents);
+        Assert.Equal(AccountingEventKind.SpliceLocked, locked.Kind);
+        Assert.Equal(AccountingEventKeys.SpliceLocked(node.Node.Channel.ChannelId, spliceTxId), locked.EventKey);
+        Assert.Equal(spliceTxId, locked.TxId);
+        Assert.Equal(amountMsat, locked.AmountMsat);
+        Assert.Equal(AccountingFinality.Confirmed, locked.Finality);
+        Assert.NotNull(locked.BlockHeight);
+        Assert.Equal(amountMsat.ToString(CultureInfo.InvariantCulture), locked.Details["grossDeltaMsat"]);
+        Assert.False(locked.Details.ContainsKey("feeUnknown"));
+        return locked;
+    }
 
     private static void AssertPending(SpliceHarness harness, TxId spliceTxId, long aliceDeltaMsat, long bobDeltaMsat)
     {

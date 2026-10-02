@@ -192,8 +192,25 @@ public class ChannelFundingDbRepository : IChannelFundingDbRepository
     /// <inheritdoc />
     public async Task<LightningMoney?> GetPushAmountAsync(ChannelId channelId)
     {
-        var channel = await _context.Channels.FindAsync(channelId);
-        return channel?.PushAmountMsat is { } pushMsat ? LightningMoney.MilliSatoshis(pushMsat) : null;
+        // A row this unit of work tracks because ChannelDbRepository.UpdateAsync staged the model holds the model's
+        // values, and the model never carries the push (written only by SetPushAmountAsync): the tracked value counts
+        // only for a row added here or a push set here, else the stored one is read
+        var tracked = _context.Channels.Local.FirstOrDefault(c => c.ChannelId == channelId);
+        if (tracked is not null)
+        {
+            var entry = _context.Entry(tracked);
+            if (entry.State == EntityState.Added || entry.Property(c => c.PushAmountMsat).IsModified)
+                return ToMoney(tracked.PushAmountMsat);
+        }
+
+        var stored = await _context.Channels.AsNoTracking()
+                                   .Where(c => c.ChannelId == channelId)
+                                   .Select(c => c.PushAmountMsat)
+                                   .FirstOrDefaultAsync();
+        return ToMoney(stored);
+
+        static LightningMoney? ToMoney(long? pushMsat) =>
+            pushMsat is { } msat ? LightningMoney.MilliSatoshis(msat) : null;
     }
 
     /// <summary>

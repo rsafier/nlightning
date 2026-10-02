@@ -161,6 +161,49 @@ public class FundingCreatedMessageHandlerTests
     }
 
     [Fact]
+    public async Task Given_TheOpenerPushedToUs_When_HandleAsync_Then_ThePushIsStagedInTheChannelsFirstSave()
+    {
+        // Arrange: as fundee our balance at the open is what the opener pushed (ChannelFactory)
+        var push = LightningMoney.Satoshis(3_000);
+        var channel = new ChannelModel(_channel.ChannelParams, _tempChannelId, _channel.CommitmentNumber,
+                                       _channel.FundingOutput, false, null, null, push, _channel.LocalKeySet, 1, 0,
+                                       LightningMoney.Satoshis(7_000), _channel.RemoteKeySet, 1, _peerPubKey, 0,
+                                       ChannelState.V1Opening, ChannelVersion.V1);
+        _mockChannelMemoryRepository
+           .Setup(x => x.TryGetTemporaryChannelState(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                                     out It.Ref<ChannelState>.IsAny))
+           .Callback((CompactPubKey _, ChannelId _, out ChannelState state) =>
+            {
+                state = ChannelState.V1Opening;
+            })
+           .Returns(true);
+        _mockChannelMemoryRepository
+           .Setup(x => x.TryGetTemporaryChannel(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+#pragma warning disable CS8601 // Possible null reference assignment.
+                                                out It.Ref<ChannelModel>.IsAny))
+#pragma warning restore CS8601 // Possible null reference assignment.
+           .Callback((CompactPubKey _, ChannelId _, out ChannelModel? found) =>
+            {
+                found = channel;
+            })
+           .Returns(true);
+        var order = new List<string>();
+        var fundings = new Mock<IChannelFundingDbRepository>();
+        fundings.Setup(x => x.SetPushAmountAsync(It.IsAny<ChannelId>(), It.IsAny<LightningMoney>()))
+                .Callback(() => order.Add("push"))
+                .Returns(Task.CompletedTask);
+        _mockUnitOfWork.Setup(x => x.ChannelFundingDbRepository).Returns(fundings.Object);
+        _mockUnitOfWork.Setup(x => x.SaveChangesAsync()).Callback(() => order.Add("save")).Returns(Task.CompletedTask);
+
+        // Act
+        await _handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures, _peerPubKey);
+
+        // Assert (NL-605): recorded under the real channel id, before the channel's one save
+        fundings.Verify(x => x.SetPushAmountAsync(_newChannelId, push), Times.Once);
+        Assert.Equal(["push", "save"], order);
+    }
+
+    [Fact]
     public async Task HandleAsync_ValidMessage_ProcessesChannelAndReturnsFundingSignedMessage()
     {
         // Arrange

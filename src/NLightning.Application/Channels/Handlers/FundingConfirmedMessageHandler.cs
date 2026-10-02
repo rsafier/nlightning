@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Channels.Handlers;
 
+using Accounting;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
@@ -24,6 +25,7 @@ public class FundingConfirmedMessageHandler
     private readonly ILightningSigner _lightningSigner;
     private readonly ILogger<FundingConfirmedMessageHandler> _logger;
     private readonly IMessageFactory _messageFactory;
+    private readonly TimeProvider _timeProvider;
     private readonly IUnitOfWork _uow;
 
     public event EventHandler<IChannelMessage>? OnMessageReady;
@@ -32,13 +34,14 @@ public class FundingConfirmedMessageHandler
                                           ILightningSigner lightningSigner,
                                           ILogger<FundingConfirmedMessageHandler> logger,
                                           IMessageFactory messageFactory,
-                                          IUnitOfWork uow)
+                                          IUnitOfWork uow, TimeProvider? timeProvider = null)
     {
         _channelMemoryRepository = channelMemoryRepository;
         _lightningSigner = lightningSigner;
         _logger = logger;
         _messageFactory = messageFactory;
         _uow = uow;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task HandleAsync(ChannelModel channel)
@@ -210,10 +213,15 @@ public class FundingConfirmedMessageHandler
         return true;
     }
 
+    /// <summary>
+    /// Persists the channel's move out of V1FundingSigned/ReadyForThem: the one transition per channel at which its
+    /// funding confirmed for us, so the accounting feed's ChannelFunded (and push) ride in this save (NL-602).
+    /// </summary>
     private async Task PersistChannelAsync(ChannelModel channel)
     {
         _channelMemoryRepository.UpdateChannel(channel);
         await _uow.ChannelDbRepository.UpdateAsync(channel);
+        await ChannelAccountingEvents.StageChannelFundedAsync(_uow, channel, _timeProvider.GetUtcNow(), _logger);
 
         await _uow.SaveChangesAsync();
     }

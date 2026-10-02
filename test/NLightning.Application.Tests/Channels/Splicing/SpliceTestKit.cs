@@ -18,6 +18,8 @@ using Application.Channels.Splicing.Handlers;
 using Application.Channels.Splicing.Interfaces;
 using Application.InteractiveTx;
 using Application.InteractiveTx.Interfaces;
+using Domain.Accounting.Interfaces;
+using Domain.Accounting.Models;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
@@ -346,6 +348,9 @@ internal sealed class SpliceNode(string name)
     /// <summary>The broadcast rows the node's unit of work saved.</summary>
     public List<BroadcastTransactionModel> Broadcasts { get; } = [];
 
+    /// <summary>The accounting events the node's unit of work saved (NL-602).</summary>
+    public List<AccountingEventModel> AccountingEvents { get; } = [];
+
     /// <summary>The watched transactions the node's unit of work saved.</summary>
     public List<WatchedTransactionModel> Watches { get; } = [];
 
@@ -393,6 +398,10 @@ internal sealed class SpliceNode(string name)
         var stagedBroadcasts = new List<BroadcastTransactionModel>();
         var stagedWatches = new List<WatchedTransactionModel>();
         var stagedOutpoints = new List<WatchedOutpointModel>();
+        var stagedEvents = new List<AccountingEventModel>();
+        var accounting = new Mock<IAccountingEventDbRepository>();
+        accounting.Setup(a => a.Add(It.IsAny<AccountingEventModel>())).Callback<AccountingEventModel>(stagedEvents.Add);
+        unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(accounting.Object);
         var outpoints = new Mock<IWatchedOutpointDbRepository>();
         outpoints.Setup(o => o.Add(It.IsAny<WatchedOutpointModel>())).Callback<WatchedOutpointModel>(stagedOutpoints.Add);
         outpoints.Setup(o => o.GetAsync(It.IsAny<TxId>(), It.IsAny<uint>()))
@@ -434,6 +443,7 @@ internal sealed class SpliceNode(string name)
                 stagedBroadcasts.Clear();
                 stagedWatches.Clear();
                 stagedOutpoints.Clear();
+                stagedEvents.Clear();
                 throw;
             }
 
@@ -443,9 +453,11 @@ internal sealed class SpliceNode(string name)
             Broadcasts.AddRange(stagedBroadcasts);
             Watches.AddRange(stagedWatches);
             WatchedOutpoints.AddRange(stagedOutpoints);
+            AccountingEvents.AddRange(stagedEvents);
             stagedBroadcasts.Clear();
             stagedWatches.Clear();
             stagedOutpoints.Clear();
+            stagedEvents.Clear();
             return Task.CompletedTask;
         });
     }

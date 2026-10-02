@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Channels.Handlers;
 
+using Accounting;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Interfaces;
@@ -12,6 +13,7 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.Money;
 using Domain.Node.Options;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
@@ -76,6 +78,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
 
         SignedTransaction unsignedFundingTransaction;
         uint fundingOutputIndex;
+        LightningMoney fundingFee;
         try
         {
             // Generate the base commitment transactions
@@ -100,6 +103,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
             var fundingTransaction = _fundingTransactionBuilder.Build(fundingTransactionModel);
             unsignedFundingTransaction = fundingTransaction.Transaction;
             fundingOutputIndex = fundingTransaction.FundingOutputIndex;
+            fundingFee = fundingTransactionModel.Fee;
 
             // The rebuilt funding transaction must be the one the peer signed a commitment for
             if (channel.FundingOutput?.TransactionId != unsignedFundingTransaction.TxId
@@ -128,17 +132,22 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
         channel.UpdateState(ChannelState.V1FundingSigned);
         var fundingWatch = new WatchedTransactionModel(channel.ChannelId, unsignedFundingTransaction.TxId,
                                                        channel.ChannelParams.MinimumDepth);
+        // The funding fee is known exactly here (every input is one of our wallet outputs; NL-604), and the push is the
+        // peer's balance at the open (ChannelFactory.CreateChannelV1AsInitiatorAsync), 0 for none (NL-605)
         var fundingBroadcast = new BroadcastTransactionModel(unsignedFundingTransaction, BroadcastPurpose.Funding,
                                                              channel.ChannelId,
-                                                             _blockchainMonitor.LastProcessedBlockHeight);
+                                                             _blockchainMonitor.LastProcessedBlockHeight,
+                                                             fee: fundingFee);
         var fundingOutputWatch = new WatchedOutpointModel(unsignedFundingTransaction.TxId,
                                                           fundingOutputIndex, channel.ChannelId,
                                                           WatchedOutpointPurpose.FundingOutput);
-        await PersistChannelAsync(channel, uow =>
+        var push = channel.RemoteBalance;
+        await PersistChannelAsync(channel, async uow =>
         {
             uow.WatchedTransactionDbRepository.Add(fundingWatch);
             uow.BroadcastTransactionDbRepository.Add(fundingBroadcast);
             uow.WatchedOutpointDbRepository.Add(fundingOutputWatch);
+            await ChannelAccountingEvents.StagePushAmountAsync(uow, channel.ChannelId, push, _logger);
         });
 
         _blockchainMonitor.TrackWatchedTransaction(fundingWatch);
@@ -159,7 +168,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
     /// Persists a channel, with the rows <paramref name="stageWithChannel"/> stages, in one save of the scoped unit of
     /// work
     /// </summary>
-    private async Task PersistChannelAsync(ChannelModel channel, Action<IUnitOfWork> stageWithChannel)
+    private async Task PersistChannelAsync(ChannelModel channel, Func<IUnitOfWork, Task> stageWithChannel)
     {
         try
         {
@@ -170,7 +179,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
             else
                 await _unitOfWork.ChannelDbRepository.AddAsync(channel);
 
-            stageWithChannel(_unitOfWork);
+            await stageWithChannel(_unitOfWork);
             await _unitOfWork.SaveChangesAsync();
 
             if (_logger.IsEnabled(LogLevel.Debug))
