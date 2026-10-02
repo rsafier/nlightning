@@ -17,5 +17,14 @@ public enum AccountingAdminAction
 
     /// <summary>The financial book's classification: rules, overrides, a test and the unclassified listing
     /// (<see cref="AccountingClassifyAction"/>, NL-602 A3-T3). 4 is left to the period close of A3-T5.</summary>
-    Classify = 5
+    Classify = 5,
+
+    /// <summary>Store the operator's prices (<c>accounting prices import</c>, NL-602 A3-T2).</summary>
+    PricesImport = 10,
+
+    /// <summary>List the stored prices (<c>accounting prices list</c>, NL-602 A3-T2).</summary>
+    PricesList = 11,
+
+    /// <summary>Ask the price sources for a range of hours (<c>accounting prices fetch</c>, NL-602 A3-T2).</summary>
+    PricesFetch = 12
 }

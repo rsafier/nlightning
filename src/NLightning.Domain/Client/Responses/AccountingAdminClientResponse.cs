@@ -21,4 +21,7 @@ public sealed record AccountingAdminClientResponse(AccountingAdminAction Action,
 
     /// <summary>The answer of a classify action (A3-T3).</summary>
     public AccountingClassifyClientResponse? Classify { get; init; }
+
+    /// <summary>The answer of a <c>prices</c> action (NL-602 A3-T2).</summary>
+    public AccountingPricesClientResponse? Prices { get; init; }
 }

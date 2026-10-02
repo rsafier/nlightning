@@ -10,6 +10,7 @@ namespace NLightning.Daemon.Extensions;
 using Application.Accounting;
 using Application.Offers.Receive;
 using Application.OnionMessages;
+using Domain.Accounting.Prices;
 using Domain.Node.Options;
 using Domain.Protocol.Constants;
 using Domain.Protocol.ValueObjects;
@@ -26,6 +27,7 @@ public static class NodeConfigurationExtensions
     private const string CustomSignetNameKey = "Node:CustomSignet:Name";
     private const string FeeCacheFileKey = "FeeEstimation:CacheFile";
     private const string OnionKeyFileKey = "Node:Tor:OnionServiceKeyFile";
+    private const string PriceFileKey = "Accounting:Prices:CsvFile";
 
     /// <summary>
     /// Configures the host builder with NLTG configuration and Serilog
@@ -248,6 +250,15 @@ public static class NodeConfigurationExtensions
         if (!Path.IsPathRooted(onionKeyFile))
             yield return new KeyValuePair<string, string?>(OnionKeyFileKey,
                                                            Path.GetFullPath(Path.Combine(configPath, onionKeyFile)));
+
+        // The price file of the financial books sits in the configuration directory, also when the file does not name
+        // it (NL-602 A3-T2, D-A11: <configPath>/prices.csv)
+        var priceFile = fileConfiguration[PriceFileKey];
+        if (string.IsNullOrWhiteSpace(priceFile))
+            priceFile = AccountingPriceOptions.DefaultCsvFile;
+        if (!Path.IsPathRooted(priceFile))
+            yield return new KeyValuePair<string, string?>(PriceFileKey,
+                                                           Path.GetFullPath(Path.Combine(configPath, priceFile)));
 
         // The file sinks of Serilog's WriteTo array ("WriteTo": [ { "Name": "File", ... } ]) or named object
         // ("WriteTo": { "File": ... }); both flatten to a section per sink with Args:path

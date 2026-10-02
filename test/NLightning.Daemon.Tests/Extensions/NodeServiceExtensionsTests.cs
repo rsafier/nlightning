@@ -8,6 +8,7 @@ namespace NLightning.Daemon.Tests.Extensions;
 using Application.Accounting;
 using Application.Accounting.Backfill;
 using Application.Accounting.Books;
+using Application.Accounting.Prices;
 using Application.Channels.Fees;
 using Application.Channels.Interfaces;
 using Application.Channels.Quiescence;
@@ -39,7 +40,9 @@ using Daemon.Ipc.Interfaces;
 using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
+using Domain.Accounting.Financial;
 using Domain.Accounting.Interfaces;
+using Domain.Accounting.Prices;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
@@ -63,6 +66,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.ValueObjects;
+using Infrastructure.Bitcoin.Accounting.Prices;
 using Infrastructure.Bitcoin.Gossip;
 using Infrastructure.Bitcoin.InteractiveTx;
 using Infrastructure.Bitcoin.Onion;
@@ -401,6 +405,32 @@ public class NodeServiceExtensionsTests
         Assert.Same(books, provider.GetRequiredService<IAccountingBooks>());
         Assert.True(books.IsEnabled);
         Assert.Equal(TimeSpan.FromSeconds(3), books.Interval);
+    }
+
+    [Fact]
+    public async Task Given_NodeServices_When_Composed_Then_ThePriceValuationIsWiredToTheConfiguredSources()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Accounting:Prices:Source", "Csv"),
+                                                        ("Accounting:Prices:Currency", "eur"),
+                                                        ("Accounting:Prices:FetchInterval", "00:05:00")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var valuation = provider.GetRequiredService<PriceValuationService>();
+        var source = Assert.IsType<CompositePriceSource>(provider.GetRequiredService<IPriceSource>());
+
+        // Assert (NL-602 A3-T2: one instance behind IAccountingPrices, the file only, no adjustment rule yet)
+        Assert.Same(valuation, provider.GetRequiredService<IAccountingPrices>());
+        Assert.True(valuation.IsEnabled);
+        Assert.Equal("EUR", valuation.Currency);
+        Assert.Equal(TimeSpan.FromMinutes(5), valuation.Interval);
+        Assert.IsType<CsvPriceSource>(Assert.Single(source.Sources));
+        Assert.IsType<NullAccountingAdjustmentSink>(provider.GetRequiredService<IAccountingAdjustmentSink>());
     }
 
     [Fact]

@@ -8,6 +8,7 @@ namespace NLightning.Daemon.Services;
 
 using Application.Accounting;
 using Application.Accounting.Books;
+using Application.Accounting.Prices;
 using Application.Channels.Fees;
 using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
@@ -67,6 +68,7 @@ public class NltgDaemonService : BackgroundService
     private readonly ShutdownDrainWaiter? _drainWaiter;
     private readonly AccountingEventSealerService? _accountingEventSealer;
     private readonly AccountingBooksService? _accountingBooks;
+    private readonly PriceValuationService? _priceValuation;
     private readonly IAccountingBackfill? _accountingBackfill;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
@@ -92,8 +94,10 @@ public class NltgDaemonService : BackgroundService
                              ShutdownDrainWaiter? drainWaiter = null,
                              AccountingEventSealerService? accountingEventSealer = null,
                              AccountingBooksService? accountingBooks = null,
-                             IAccountingBackfill? accountingBackfill = null)
+                             IAccountingBackfill? accountingBackfill = null,
+                             PriceValuationService? priceValuation = null)
     {
+        _priceValuation = priceValuation;
         _accountingEventSealer = accountingEventSealer;
         _accountingBooks = accountingBooks;
         _accountingBackfill = accountingBackfill;
@@ -222,6 +226,10 @@ public class NltgDaemonService : BackgroundService
             // Accounting:Enabled=false
             _accountingBooks?.Start();
 
+            // Give the financial postings their fiat value every Accounting:Prices:FetchInterval (NL-602 A3-T2), after
+            // the books; nothing while the books are off
+            _priceValuation?.Start();
+
             // Write the history before the cutover as memo events, in the background (resumes at the next start)
             _accountingBackfill?.StartMemoBackfill();
 
@@ -299,7 +307,9 @@ public class NltgDaemonService : BackgroundService
         await Task.WhenAll(_htlcExpiryMonitor.StopAsync(), _feeUpdateScheduler.StopAsync());
         _channelFailureService.Stop();
 
-        // The books stop before the sealer that feeds them (NL-602 A2)
+        // The back-valuation stops before the books (NL-602 A3-T2), the books before the sealer that feeds them (A2)
+        if (_priceValuation is not null)
+            await _priceValuation.StopAsync();
         if (_accountingBooks is not null)
             await _accountingBooks.StopAsync();
 

@@ -7,6 +7,7 @@ using Domain.Accounting.Books;
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
 using Domain.Accounting.Financial.Classification;
+using Domain.Accounting.Prices;
 using Domain.Accounting.Services;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
@@ -186,6 +187,7 @@ public sealed class AccountingAdminClientHandler
 {
     private readonly IAccountingBooks? _books;
     private readonly AccountNames _names;
+    private readonly IAccountingPrices? _prices;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IAccountingClassificationAdmin? _classification;
 
@@ -194,8 +196,10 @@ public sealed class AccountingAdminClientHandler
 
     public AccountingAdminClientHandler(IUnitOfWork unitOfWork, IAccountingBooks? books,
                                         IOptions<AccountingOptions>? options = null,
-                                        IAccountingClassificationAdmin? classification = null)
+                                        IAccountingClassificationAdmin? classification = null,
+                                        IAccountingPrices? prices = null)
     {
+        _prices = prices;
         _unitOfWork = unitOfWork;
         _books = books;
         _names = (options?.Value ?? new AccountingOptions()).GetAccountNames();
@@ -230,6 +234,10 @@ public sealed class AccountingAdminClientHandler
                                             ?? throw new ClientException(ErrorCodes.InvalidOperation,
                                                                          "A classify action is required."), ct)
                 };
+            case AccountingAdminAction.PricesImport:
+            case AccountingAdminAction.PricesList:
+            case AccountingAdminAction.PricesFetch:
+                return response with { Prices = await AccountingPricesAdmin.HandleAsync(_prices, request, ct) };
             default:
                 throw new ClientException(ErrorCodes.InvalidOperation, $"Unknown accounting action {request.Action}.");
         }

@@ -129,7 +129,10 @@ public sealed class AccountingAdminIpcRequest
     /// <summary>The classify action (action 5, NL-602 A3-T3).</summary>
     [Key(2)] public AccountingClassifyIpcRequest? Classify { get; set; }
 
-    /// <exception cref="ClientException">An unknown action.</exception>
+    /// <summary>The arguments of the <c>prices</c> actions (10 import, 11 list, 12 fetch; NL-602 A3-T2).</summary>
+    [Key(10)] public AccountingPricesIpcRequest? Prices { get; set; }
+
+    /// <exception cref="ClientException">An unknown action, or bad <c>prices</c> arguments.</exception>
     public AccountingAdminClientRequest ToClientRequest()
     {
         if (!Enum.IsDefined(typeof(AccountingAdminAction), Action))
@@ -138,7 +141,8 @@ public sealed class AccountingAdminIpcRequest
         return new AccountingAdminClientRequest
         {
             Action = (AccountingAdminAction)Action,
-            Classify = Classify?.ToClientRequest()
+            Classify = Classify?.ToClientRequest(),
+            Prices = Prices?.ToClientRequest()
         };
     }
 }
