@@ -29,17 +29,56 @@ public class ConfigurationCheckTests
         Assert.Empty(failures);
     }
 
-    [Fact]
-    public void Given_ABitcoinEndpointWithoutScheme_When_Checked_Then_ItIsReported()
+    [Theory]
+    [InlineData("localhost:18443")]
+    [InlineData("127.0.0.1:8332")]
+    [InlineData("localhost")]
+    [InlineData("")]
+    [InlineData("https://node.example:8332")]
+    public void Given_ABitcoinEndpointTheRpcClientAccepts_When_Checked_Then_ItIsNotReported(string endpoint)
+    {
+        // Arrange (NL-740): NBitcoin's RPCClient adds http:// to a host[:port] and takes empty as 127.0.0.1, and nodes
+        // configured that way ran before the start-up check existed
+        var configuration = BuildTemplateConfiguration("regtest", ("Bitcoin:RpcEndpoint", endpoint));
+
+        // Act
+        var failures = ConfigurationCheck.Run(configuration, "regtest");
+
+        // Assert
+        Assert.DoesNotContain(failures, f => f.StartsWith("Bitcoin:RpcEndpoint", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("ftp://localhost:18443")]
+    [InlineData("localhost:notaport")]
+    [InlineData("http://")]
+    public void Given_ABitcoinEndpointTheRpcClientCannotUse_When_Checked_Then_ItIsReported(string endpoint)
     {
         // Arrange
-        var configuration = BuildTemplateConfiguration("regtest", ("Bitcoin:RpcEndpoint", "localhost:18443"));
+        var configuration = BuildTemplateConfiguration("regtest", ("Bitcoin:RpcEndpoint", endpoint));
 
         // Act
         var failures = ConfigurationCheck.Run(configuration, "regtest");
 
         // Assert
         Assert.Contains(failures, f => f.StartsWith("Bitcoin:RpcEndpoint", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("Node:MinimumDepth", "three")]
+    [InlineData("Node:ReconnectInitialDelay", "5 seconds")]
+    public void Given_AValueTheBinderCannotConvert_When_Checked_Then_ItIsReportedInsteadOfThrown(string key,
+                                                                                                string value)
+    {
+        // Arrange (NL-741): the binding generator throws while the options are first built, outside the validation
+        var configuration = BuildTemplateConfiguration("regtest", (key, value));
+
+        // Act
+        var failures = ConfigurationCheck.Run(configuration, "regtest");
+
+        // Assert
+        Assert.Contains(failures, f => f.Contains(value, StringComparison.Ordinal)
+                                    || f.Contains(key.Split(':')[^1], StringComparison.Ordinal));
     }
 
     [Fact]
@@ -59,7 +98,7 @@ public class ConfigurationCheckTests
         var failures = ConfigurationCheck.Run(configuration, "regtest");
 
         // Assert
-        Assert.Contains(failures, f => f.StartsWith("Bitcoin:RpcEndpoint", StringComparison.Ordinal));
+        Assert.Contains(failures, f => f.StartsWith("Bitcoin:RpcUser", StringComparison.Ordinal));
         Assert.Contains(failures, f => f.StartsWith("Bitcoin:ZmqBlockPort", StringComparison.Ordinal));
     }
 

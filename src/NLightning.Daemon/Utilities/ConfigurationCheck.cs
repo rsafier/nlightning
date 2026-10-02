@@ -66,5 +66,11 @@ internal static class ConfigurationCheck
                     .Distinct()
                     .ToList();
         }
+        catch (Exception e) when (e is InvalidOperationException or FormatException or ArgumentException)
+        {
+            // A value the binder cannot convert ("three" for a number, "5 seconds" for a TimeSpan) throws when the
+            // options are first built, outside the validation: reported like a failure, not as a crash (NL-741)
+            return [e.InnerException is { } inner ? $"{e.Message} {inner.Message}" : e.Message];
+        }
     }
 }

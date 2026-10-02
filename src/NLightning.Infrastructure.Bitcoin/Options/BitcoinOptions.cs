@@ -33,16 +33,16 @@ public class BitcoinOptions
     public bool WatchMempool { get; set; } = true;
 
     /// <summary>
-    /// The settings the node cannot run without: an absolute http(s) RPC endpoint, the RPC user and password, the ZMQ
-    /// host and block port, and a ZMQ tx port in range.
+    /// The settings the node cannot run without: a usable RPC endpoint (<see cref="IsUsableRpcEndpoint"/>), the RPC user
+    /// and password, the ZMQ host and block port, and a ZMQ tx port in range.
     /// </summary>
     /// <returns>One message per problem, empty when the section is usable.</returns>
     public IReadOnlyList<string> GetValidationErrors()
     {
         var errors = new List<string>();
-        if (!Uri.TryCreate(RpcEndpoint, UriKind.Absolute, out var endpoint)
-         || (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps))
-            errors.Add($"{SectionName}:{nameof(RpcEndpoint)} must be an absolute http or https URL.");
+        if (!IsUsableRpcEndpoint(RpcEndpoint))
+            errors.Add($"{SectionName}:{nameof(RpcEndpoint)} must be an http or https URL or a host[:port] (empty means "
+                     + "127.0.0.1 on the network's RPC port).");
 
         if (string.IsNullOrEmpty(RpcUser))
             errors.Add($"{SectionName}:{nameof(RpcUser)} is required.");
@@ -60,5 +60,26 @@ public class BitcoinOptions
             errors.Add($"{SectionName}:{nameof(ZmqTxPort)} must be a port between 1 and 65535 (0 = unset).");
 
         return errors;
+    }
+
+    /// <summary>
+    /// True for what NBitcoin's <c>RPCClient</c> accepts as its endpoint (NL-740: configurations written before the
+    /// start-up check keep starting): an absolute <c>http://</c> or <c>https://</c> URL, a scheme-less <c>host</c> or
+    /// <c>host:port</c> (the client adds <c>http://</c>), or nothing (127.0.0.1 on the network's default RPC port).
+    /// Another scheme, or a value that is no host, is refused.
+    /// </summary>
+    public static bool IsUsableRpcEndpoint(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+
+        var trimmed = value.Trim();
+        if (trimmed.Contains("://", StringComparison.Ordinal))
+            return Uri.TryCreate(trimmed, UriKind.Absolute, out var url)
+                && (url.Scheme == Uri.UriSchemeHttp || url.Scheme == Uri.UriSchemeHttps)
+                && !string.IsNullOrEmpty(url.Host);
+
+        return Uri.TryCreate($"http://{trimmed}", UriKind.Absolute, out var hostPort)
+            && !string.IsNullOrEmpty(hostPort.Host);
     }
 }
