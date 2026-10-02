@@ -124,12 +124,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 53 | 56 |
+| open | 0 | 0 | 3 | 54 | 57 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 62 | 164 | 281 | 521 |
 | wontfix | 0 | 0 | 3 | 5 | 8 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **171** | **341** | **588** |
+| **Total** | **14** | **62** | **171** | **342** | **589** |
 
 ### Epics
 
@@ -6104,6 +6104,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Done: a connection dialed through the SOCKS port (`TorTcpClient`) or received from loopback while our onion service is on uses `TorOptions.GetNetworkTimeout` = max(`NetworkTimeout`, `Tor:ConnectTimeout` / 2) (30 s by default); documented in TOR.md. Tests: `TorTransportTests.Given_AConnection_When_ItsNetworkTimeoutIsChosen_*`, `TorOptionsTests.Given_TheTimeouts_*`.
 - **Blocks/Blocked-by:** Related NL-569
 - **Plan ref:** `docs/agents/TOR.md`
+
+### NL-599 `LocalLightningSignerWalletTests.Given_ExtendedKeyBytes_When_Signing_Then_TheKeyManagerBufferIsWiped` failed once in a full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test-flake
+- **Location:** `test/NLightning.Infrastructure.Bitcoin.Tests/Signers/LocalLightningSignerWalletTests.cs`
+- **Evidence:** batch9 integration (2026-10-01, tree `3249b45c`): failed once in the full solution `dotnet test` run (net10.0 Release); green alone 3/3 and in 5 consecutive full runs of the Infrastructure.Bitcoin.Tests project. The test asserts every byte of the extended key handed to the signer is zero after signing; batch9 did not touch the signer or this test (NL-083 pools Sphinx key buffers, a possible but unconfirmed interaction). Message not captured.
+- **Fix sketch:** Capture the assertion message on the next occurrence; check whether a pooled buffer (NL-083 `SphinxKeyGenerator.Rent()`) or another test can share the handed-out array.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
 
 ## Docs
 
