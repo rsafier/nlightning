@@ -1,8 +1,13 @@
 using System.Runtime.CompilerServices;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace NLightning.Infrastructure.Persistence.CompiledModels;
 
+using Domain.Bitcoin.Enums;
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Enums;
 
 /// <summary>
@@ -14,6 +19,29 @@ using Enums;
 /// </summary>
 public static class CompiledModelCatalog
 {
+    /// <summary>
+    /// A provider's default type mapping (<c>SqliteDecimalTypeMapping.Default</c>, ...) creates its comparer on first use
+    /// through <c>ValueComparer.CreateDefault(Type, bool)</c>, i.e. <c>MakeGenericMethod</c> over the property type.
+    /// NativeAOT can only invoke instantiations it compiled, so the value types of our model are referenced here (a
+    /// real AOT binary failed on <c>CreateDefault&lt;decimal&gt;</c> while initializing the SQLite model, NL-708).
+    /// Reference types share one instantiation and need no entry.
+    /// </summary>
+    private static readonly Func<bool, ValueComparer>[] s_defaultComparerRoots =
+    [
+        ValueComparer.CreateDefault<bool>, ValueComparer.CreateDefault<byte>, ValueComparer.CreateDefault<ushort>,
+        ValueComparer.CreateDefault<int>, ValueComparer.CreateDefault<uint>, ValueComparer.CreateDefault<long>,
+        ValueComparer.CreateDefault<ulong>, ValueComparer.CreateDefault<decimal>, ValueComparer.CreateDefault<DateTime>,
+        ValueComparer.CreateDefault<DateTimeOffset>, ValueComparer.CreateDefault<Guid>,
+        ValueComparer.CreateDefault<AddressType>, ValueComparer.CreateDefault<ChannelId>,
+        ValueComparer.CreateDefault<CompactPubKey>, ValueComparer.CreateDefault<Hash>,
+        ValueComparer.CreateDefault<ShortChannelId>, ValueComparer.CreateDefault<TxId>
+    ];
+
+    /// <summary>The value types whose default comparer a NativeAOT binary can create (CompiledModelTests checks the
+    /// model's value types are all here).</summary>
+    public static IReadOnlyList<Type> RootedComparerTypes
+        => s_defaultComparerRoots.Select(root => root.Method.GetGenericArguments()[0]).ToList();
+
     /// <summary>
     /// Whether the node uses the compiled model: <paramref name="configured"/> (<c>Database:UseCompiledModel</c>) when
     /// set, otherwise only when dynamic code is not supported (NativeAOT).
@@ -31,6 +59,9 @@ public static class CompiledModelCatalog
         throw new InvalidOperationException(
             $"This build has no compiled models (NLTG_NO_COMPILED_MODELS); cannot use one for {databaseType}.");
 #else
+        // Keeps the comparer instantiations above in a NativeAOT binary
+        GC.KeepAlive(s_defaultComparerRoots);
+
         return databaseType switch
         {
             DatabaseType.Sqlite => Sqlite.NLightningDbContextModel.Instance,

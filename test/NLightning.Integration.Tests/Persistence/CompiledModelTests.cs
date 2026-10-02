@@ -81,6 +81,29 @@ public class CompiledModelTests
         AssertSameText(string.Join('\n', runtimeProperties), string.Join('\n', compiledProperties), provider);
     }
 
+    [Theory]
+    [MemberData(nameof(Providers))]
+    public void Given_TheCompiledModel_When_ListingItsValueTypes_Then_NativeAotCanCreateEachDefaultComparer(
+        string provider, string connectionString)
+    {
+        // Arrange
+        using var compiled = OpenContext(provider, connectionString, useCompiledModel: true);
+        var rooted = CompiledModelCatalog.RootedComparerTypes.ToHashSet();
+
+        // Act
+        var missing = compiled.Context.Model.GetEntityTypes()
+                              .SelectMany(entityType => entityType.GetProperties())
+                              .Select(property => Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType)
+                              .Where(type => type.IsValueType && !rooted.Contains(type))
+                              .Select(type => type.Name)
+                              .Distinct()
+                              .Order()
+                              .ToList();
+
+        // Assert: add them to CompiledModelCatalog's comparer roots
+        Assert.Empty(missing);
+    }
+
     [Fact]
     public void Given_ThePersistenceAssembly_When_LookingForAutomaticallyDiscoveredModels_Then_ThereAreNone()
     {
