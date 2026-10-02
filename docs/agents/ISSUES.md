@@ -5035,11 +5035,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 ### NL-609 Rebalances cannot be recorded: the node refuses to pay its own invoices
 - **Status:** fixed (5812ac5e)
-- **Fix:** An Open invoice of our own is paid over a circular route (out one channel, back in another; same-peer or graph paths to the incoming peer, last hop priced with the peer's `channel_update`), `payinvoice --out/--in` (IPC `PayInvoiceIpcRequest` keys 7/8); both halves flagged `selfPayment` and only the route fee stays in `expenses:lightning:rebalance` (the A3 integration also splits it into `expenses:fees:routing` in the financial book, D-A12). Proof `RebalanceHarnessTests`, `CircularRoutePlannerTests`.
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`PayInvoiceAsync` "a node cannot pay itself", keysend and blinded payee checks)
 - **Evidence:** NL-602 A1-T2 wires `selfPayment=true` on `PaymentSucceeded` when the hash is one of our invoices, but a circular rebalance is refused before it starts, so the operational books' rebalance cost (plan §6.1) stays empty.
+- **Fix:** An Open invoice of our own is paid over a circular route (out one channel, back in another; same-peer or graph paths to the incoming peer, last hop priced with the peer's `channel_update`), `payinvoice --out/--in` (IPC `PayInvoiceIpcRequest` keys 7/8); both halves flagged `selfPayment` and only the route fee stays in `expenses:lightning:rebalance` (the A3 integration also splits it into `expenses:fees:routing` in the financial book, D-A12). Proof `RebalanceHarnessTests`, `CircularRoutePlannerTests`.
 - **Fix sketch:** A rebalance command (or allowing self-payment over an explicit route out one channel and in another), recorded with `selfPayment`.
 - **Blocks/Blocked-by:** Related NL-602
 - **Plan ref:** ACCOUNTING_PLAN A2
@@ -5157,88 +5157,88 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 ### NL-621 `accounting reconcile` reports an expected in-flight clearing balance as `DRIFT`
 - **Status:** fixed (42915f80)
-- **Fix:** `ClearingOutstandingReader` reads the clearing held by transactions the node knows in flight (pending broadcasts, incomplete watches, pending fundings) by exact key and reports it as `AccountingReconcileLine.OutstandingMsat` (IPC 45 line key 6, gauge `reconcile.outstanding_msat`); drift is only the unexplained remainder. Lane commit 97a57ee4.
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Accounting/Books/AccountingBooksService.cs` (reconcile), `src/NLightning.Client/Printers/AccountingBooksPrinters.cs`
 - **Evidence:** Live review of the accounting features on Mutinynet (FAFO/FAFO2 at `344675a9`, 2026-10-02; PR #17 comment): while a 10,000-sat splice-in was below its lock depth, reconcile printed `DRIFT` with `assets:onchain:clearing` books 10,252,000 msat, node 0 (the contribution and fee: wallet inputs spent, channel not booked yet). Its own help text calls this a normal outstanding state, and it reconciled clean once the splice locked. The `nlightning.accounting.reconcile.drift_msat` metric presumably fires too, so every funding, splice or withdrawal raises a false alarm.
+- **Fix:** `ClearingOutstandingReader` reads the clearing held by transactions the node knows in flight (pending broadcasts, incomplete watches, pending fundings) by exact key and reports it as `AccountingReconcileLine.OutstandingMsat` (IPC 45 line key 6, gauge `reconcile.outstanding_msat`); drift is only the unexplained remainder. Lane commit 97a57ee4.
 - **Fix sketch:** Classify clearing amounts explained by unconfirmed or below-depth transactions the node knows about (pending fundings, splices, closes, sweeps, withdrawals) as "outstanding", reported apart; report `DRIFT` and meter `drift_msat` only for the unexplained remainder.
 - **Blocks/Blocked-by:** Part of NL-602 (accounting); related NL-609 (rebalances, the review's point 6)
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-622 `accounting report channels` shows `Capacity: unknown` and no scid or peer for channels without a `ChannelFunded` event
 - **Status:** fixed (64cb9db0)
-- **Fix:** `OpeningBalance` joins the channels view's lifecycle kinds: its scid, counterparty, `capacitySat` and `isInitiator` are the fallback when no `ChannelFunded`/`SpliceLocked` gives them. Lane commit 385dd9c8.
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Accounting/Reports/AccountingReportService.cs`
 - **Evidence:** Live review of the accounting features on Mutinynet (FAFO/FAFO2 at `344675a9`, 2026-10-02; PR #17 comment): the open dual-funded lattice channel `7687b560…` (3469150x25x1) and the force-closed `fede6471…` (3462164x1x0) print `Capacity: unknown`, `Open: - to now` and no scid or peer, although their `OpeningBalance` events carry `scid`, `capacitySat`, the counterparty and `state`, and `accountingsnapshot` shows them fully.
+- **Fix:** `OpeningBalance` joins the channels view's lifecycle kinds: its scid, counterparty, `capacitySat` and `isInitiator` are the fallback when no `ChannelFunded`/`SpliceLocked` gives them. Lane commit 385dd9c8.
 - **Fix sketch:** Fall back to the newest `OpeningBalance` details (and `SpliceLocked`'s `capacitySat`/scid) when no `ChannelFunded` exists.
 - **Blocks/Blocked-by:** Part of NL-602 (accounting); related NL-609 (rebalances, the review's point 6)
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-623 `accounting report channels` shows the feed's cutover time as a backfilled channel's open time
 - **Status:** fixed (64cb9db0)
-- **Fix:** Memo/backfilled fundings and opening balances set `TrackedSince` and `OpenedAtBlockHeight`, never `OpenedAt`; `OpenedAt` comes from the funding block's header time through the new optional Domain port `IBlockTimeSource` (`ChainBlockTimeSource`), else "before the feed began"; yields are annualized only over a window inside the tracked time (IPC keys 32/33). Lane commits 385dd9c8, 3ecaa65d.
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Accounting/Reports/AccountingReportService.cs`
 - **Evidence:** Live review of the accounting features on Mutinynet (FAFO/FAFO2 at `344675a9`, 2026-10-02; PR #17 comment): every channel that got an opening balance prints `Open: 2026-10-02 08:11:41 UTC to now` (the cutover), not when it was funded; the yield and annualized figures are then based on that window.
+- **Fix:** Memo/backfilled fundings and opening balances set `TrackedSince` and `OpenedAtBlockHeight`, never `OpenedAt`; `OpenedAt` comes from the funding block's header time through the new optional Domain port `IBlockTimeSource` (`ChainBlockTimeSource`), else "before the feed began"; yields are annualized only over a window inside the tracked time (IPC keys 32/33). Lane commits 385dd9c8, 3ecaa65d.
 - **Fix sketch:** Use the funding confirmation (channel row or memo `ChannelFunded` height/time) as the open time, and say "since the feed began" when only the cutover is known.
 - **Blocks/Blocked-by:** Part of NL-602 (accounting); related NL-609 (rebalances, the review's point 6)
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-624 A force close from before the accounting cutover has no memo history (close and sweep fees missing, channel shown open)
 - **Status:** fixed (42915f80)
-- **Fix:** `ForceCloseMemoEvents` writes memo `ChannelForceClosed`, the final outputs' resolution events and confirmed CPFP fees from `ChannelCloses`/`OutputResolutions`/`BroadcastTransactions` for channels Closed (or still resolving) at the cutover, under the live keys, resumable. Lane commit cab1c9b0.
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Accounting/Backfill/AccountingBackfillService.cs`
 - **Evidence:** Live review of the accounting features on Mutinynet (FAFO/FAFO2 at `344675a9`, 2026-10-02; PR #17 comment): channel `fede6471…`, force-closed and `Closed` before the cutover (commitment `c99b4521…`, sweeps `e63d3664…`, `2c10a02b…`, anchors `725834f2…`), shows `Open: - to now` and 0 commitment/sweep fees in `report channels`. The memo backfill writes `ChannelClosedMutual` only for closes without a `ChannelCloses` row.
+- **Fix:** `ForceCloseMemoEvents` writes memo `ChannelForceClosed`, the final outputs' resolution events and confirmed CPFP fees from `ChannelCloses`/`OutputResolutions`/`BroadcastTransactions` for channels Closed (or still resolving) at the cutover, under the live keys, resumable. Lane commit cab1c9b0.
 - **Fix sketch:** Write memo `ChannelForceClosed` and `OutputResolved` events from `ChannelCloses`/`OutputResolutions` (and `BroadcastTransactions` fees) for channels Closed at the cutover, under the live keys, flagged `memo=true` like the other memo history.
 - **Blocks/Blocked-by:** Part of NL-602 (accounting); related NL-609 (rebalances, the review's point 6)
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-625 The channel report's yield ignores on-chain fees, so a negative Net shows a positive yield
 - **Status:** fixed (64cb9db0)
-- **Fix:** `NetYieldOnCapacity`/`NetAnnualizedYield` (Net over capacity) print on the Net line; the routing yield is labelled "routing out only, before costs" (IPC keys 34/35). Lane commits 385dd9c8, 3ecaa65d.
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Accounting/Reports/AccountingReportService.cs`
 - **Evidence:** Live review of the accounting features on Mutinynet (FAFO/FAFO2 at `344675a9`, 2026-10-02; PR #17 comment): `3463271x11x0` prints `Net: -152995 msat` (155,000 msat funding fee against 2,005 msat routing earned) and `yield 0.0006 %`.
+- **Fix:** `NetYieldOnCapacity`/`NetAnnualizedYield` (Net over capacity) print on the Net line; the routing yield is labelled "routing out only, before costs" (IPC keys 34/35). Lane commits 385dd9c8, 3ecaa65d.
 - **Fix sketch:** Compute yield from Net, or label the figure (e.g. "routing yield, before on-chain fees").
 - **Blocks/Blocked-by:** Part of NL-602 (accounting); related NL-609 (rebalances, the review's point 6)
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-626 A splice's wallet events carry `purpose=Funding`
 - **Status:** fixed (42915f80)
-- **Fix:** `BroadcastPurpose.Splice = 11` (appended) for every splice and splice RBF row; `BroadcastRefusalRules.IsFunding`/`MayAbandon` and `DiscardConflictingSplicesAsync` include it, so abandonment and lock release are unchanged; old rows stay `Funding`. Lane commit 052fa218.
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Splicing/SpliceService.cs` (~634: the splice broadcast row is saved as `BroadcastPurpose.Funding`)
 - **Evidence:** Live review of the accounting features on Mutinynet (FAFO/FAFO2 at `344675a9`, 2026-10-02; PR #17 comment): the `WalletReceived`/`WalletOutputSpent` events of splice `957cac3e…` (#152, #153 on FAFO) show `purpose=Funding`; the accounting payload, `pendingsweeps` and the broadcast row cannot tell a splice transaction from a channel open.
+- **Fix:** `BroadcastPurpose.Splice = 11` (appended) for every splice and splice RBF row; `BroadcastRefusalRules.IsFunding`/`MayAbandon` and `DiscardConflictingSplicesAsync` include it, so abandonment and lock release are unchanged; old rows stay `Funding`. Lane commit 052fa218.
 - **Fix sketch:** Add a `Splice` broadcast purpose (append-only enum value) used by `SpliceService`, and check what keys off `Funding` (rebroadcast, abandonment rules, NL-294/NL-461) before switching.
 - **Blocks/Blocked-by:** Part of NL-602 (accounting); related NL-609 (rebalances, the review's point 6)
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-627 `accounting report balance --at <past time>` prints "books through #N" of the present
 - **Status:** fixed (64cb9db0)
-- **Fix:** `AccountingBalanceSheet.LastLedgerSeqAt` (IPC key 8): a past balance prints "last entry #M; books through #N". Lane commits 385dd9c8, 3ecaa65d.
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Client/Printers/AccountingBooksPrinters.cs`
 - **Evidence:** Live review of the accounting features on Mutinynet (FAFO/FAFO2 at `344675a9`, 2026-10-02; PR #17 comment): `report balance --at 2026-10-02T08:13:00Z` printed `Balance sheet at 2026-10-02 08:13:00 UTC (books through #156)` although only entries up to #146 were in that state.
+- **Fix:** `AccountingBalanceSheet.LastLedgerSeqAt` (IPC key 8): a past balance prints "last entry #M; books through #N". Lane commits 385dd9c8, 3ecaa65d.
 - **Fix sketch:** Print the last entry at or before `--at` (or omit the books tip for a past balance).
 - **Blocks/Blocked-by:** Part of NL-602 (accounting); related NL-609 (rebalances, the review's point 6)
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
 
 ### NL-628 An unknown `--kind` prints the error followed by the whole client help
 - **Status:** fixed (64cb9db0)
-- **Fix:** `ClientApp.WriteUsageError`: an error carrying the command's own usage ends with a pointer to `nltg --help`; `accounting report register --kind` lists the valid kinds. Lane commit 3ecaa65d.
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Client/Handlers/AccountingCommands.cs` (~132), `AccountingBooksCommands.cs` (~246)
 - **Evidence:** Live review of the accounting features on Mutinynet (FAFO/FAFO2 at `344675a9`, 2026-10-02; PR #17 comment): `listaccountingevents --kind NotAKind` prints the precise error (valid kinds and the command's usage) and then the full `nltg` help.
+- **Fix:** `ClientApp.WriteUsageError`: an error carrying the command's own usage ends with a pointer to `nltg --help`; `accounting report register --kind` lists the valid kinds. Lane commit 3ecaa65d.
 - **Fix sketch:** Return after the command's own usage, as other argument errors do.
 - **Blocks/Blocked-by:** Part of NL-602 (accounting); related NL-609 (rebalances, the review's point 6)
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md`
