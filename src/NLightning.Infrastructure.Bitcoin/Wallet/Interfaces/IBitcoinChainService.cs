@@ -86,4 +86,18 @@ public interface IBitcoinChainService
 
         return (block.GetHash(), block.Transactions.Select(t => t.GetHash()).ToList());
     }
+
+    /// <summary>
+    /// The header timestamp of the active chain's block at <paramref name="height"/> (<c>getblockhash</c> +
+    /// <c>getblockheader</c>; a pruned node keeps every header), or null when the height is above the tip (NL-623, the
+    /// accounting channel report's open time of a channel funded before the feed began). The default reads the whole
+    /// block through <see cref="GetBlockAsync(uint)"/>.
+    /// </summary>
+    async Task<DateTimeOffset?> GetBlockTimeAsync(uint height)
+    {
+        if (height > await GetCurrentBlockHeightAsync())
+            return null;
+
+        return (await GetBlockAsync(height))?.Header.BlockTime;
+    }
 }

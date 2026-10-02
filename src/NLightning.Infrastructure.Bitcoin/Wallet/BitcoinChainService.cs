@@ -206,6 +206,27 @@ public class BitcoinChainService : IBitcoinChainService
             ?? throw new InvalidOperationException($"getblockheader {blockHash} returned no height");
     }
 
+    public async Task<DateTimeOffset?> GetBlockTimeAsync(uint height)
+    {
+        uint256 blockHash;
+        try
+        {
+            blockHash = await _rpcClient.GetBlockHashAsync((int)height);
+        }
+        catch (RPCException ex) when (ex.RPCCode == RPCErrorCode.RPC_INVALID_PARAMETER)
+        {
+            return null; // "Block height out of range"
+        }
+
+        var response = await _rpcClient.SendCommandAsync("getblockheader", blockHash.ToString(), true);
+        return ParseBlockHeaderTime(response.Result);
+    }
+
+    /// <summary>The <c>time</c> of a <c>getblockheader &lt;hash&gt; true</c> answer (Unix seconds), null when missing.
+    /// </summary>
+    internal static DateTimeOffset? ParseBlockHeaderTime(JToken? result) =>
+        result?["time"]?.Value<long?>() is { } seconds ? DateTimeOffset.FromUnixTimeSeconds(seconds) : null;
+
     public async Task<(uint256 MerkleRoot, int TxCount)?> GetBlockHeaderSummaryAsync(uint256 blockHash)
     {
         try

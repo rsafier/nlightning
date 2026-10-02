@@ -11,6 +11,7 @@ using Domain.Accounting.Enums;
 using Domain.Accounting.Interfaces;
 using Domain.Accounting.Models;
 using Domain.Accounting.Services;
+using Domain.Bitcoin.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Persistence.Interfaces;
@@ -24,6 +25,9 @@ using Domain.Persistence.Interfaces;
 /// Every call refuses when the books are off (<see cref="AccountingBooksDisabledException"/>), then seals what was
 /// committed and projects it (<see cref="IAccountingBooks.ProjectNowAsync"/>), then reads through a scope of its own.
 /// The channel view reads the feed in pages of <see cref="PageSize"/>: it is an on-demand report, never on a hot path.
+/// A channel the feed only knows from the cutover (an opening balance, a memo funding) takes its scid, peer, capacity
+/// and initiator from its <c>OpeningBalance</c> when no <c>ChannelFunded</c> gives them (NL-622), and its open time from
+/// its funding block through the optional <see cref="IBlockTimeSource"/>, never from the cutover (NL-623).
 /// </remarks>
 public sealed class AccountingReportService : IAccountingReports
 {
@@ -31,6 +35,7 @@ public sealed class AccountingReportService : IAccountingReports
     internal const int PageSize = 500;
 
     private const string OnchainLostDetail = "lostMsat";
+    private const string MemoDetail = "memo";
 
     private static readonly TimeSpan s_minimumYieldPeriod = TimeSpan.FromHours(1);
     private static readonly TimeSpan s_year = TimeSpan.FromDays(365.25);
@@ -38,10 +43,12 @@ public sealed class AccountingReportService : IAccountingReports
     private static readonly AccountingEventKind[] s_channelMetadataKinds =
     [
         AccountingEventKind.ChannelFunded, AccountingEventKind.SpliceLocked, AccountingEventKind.ChannelClosedMutual,
-        AccountingEventKind.ChannelForceClosed
+        AccountingEventKind.ChannelForceClosed, AccountingEventKind.OpeningBalance
     ];
 
     private readonly AccountingBooksAccess _access;
+    private readonly IBlockTimeSource? _blockTimes;
+    private readonly ILogger<AccountingReportService> _logger;
     private readonly AccountNames _names;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly TimeProvider _timeProvider;
@@ -49,9 +56,12 @@ public sealed class AccountingReportService : IAccountingReports
     public AccountingReportService(IServiceScopeFactory scopeFactory, IAccountingBooks? books,
                                    ILogger<AccountingReportService> logger,
                                    IOptions<AccountingOptions>? options = null,
-                                   IAccountingEventSealer? sealer = null, TimeProvider? timeProvider = null)
+                                   IAccountingEventSealer? sealer = null, TimeProvider? timeProvider = null,
+                                   IBlockTimeSource? blockTimes = null)
     {
         _scopeFactory = scopeFactory;
+        _logger = logger;
+        _blockTimes = blockTimes;
         _access = new AccountingBooksAccess(books, sealer, logger);
         _names = (options?.Value ?? new AccountingOptions()).GetAccountNames();
         _timeProvider = timeProvider ?? TimeProvider.System;
@@ -68,12 +78,16 @@ public sealed class AccountingReportService : IAccountingReports
         var balances = at is { } time
                            ? await books.SumPostingsAsync(null, time, cancellationToken)
                            : await books.GetBalancesAsync(cancellationToken);
+        long? lastAt = at is { } past ? await GetLastLedgerSeqBeforeAsync(books, past, cancellationToken) : null;
 
         return new AccountingBalanceSheet(at, cursor, Lines(balances, AccountingAccountCategory.Assets, 1),
                                           Lines(balances, AccountingAccountCategory.Liabilities, -1),
                                           Lines(balances, AccountingAccountCategory.Equity, -1),
                                           -Sum(balances, AccountingAccountCategory.Income)
-                                        - Sum(balances, AccountingAccountCategory.Expenses));
+                                        - Sum(balances, AccountingAccountCategory.Expenses))
+        {
+            LastLedgerSeqAt = lastAt
+        };
     }
 
     /// <inheritdoc/>
@@ -162,6 +176,9 @@ public sealed class AccountingReportService : IAccountingReports
                                                               cancellationToken))
             ApplyLifecycle(GetOrAdd(channels, accountingEvent.ChannelId), accountingEvent);
 
+        // A channel the feed knows only from the cutover is dated by its funding block, never by the cutover (NL-623)
+        await ResolveOpenTimesAsync(channels.Values, cancellationToken);
+
         // The money of the period
         var active = new HashSet<ChannelId>();
         await foreach (var accountingEvent in ReadEventsAsync(events, null, null, since, until, cancellationToken))
@@ -189,6 +206,49 @@ public sealed class AccountingReportService : IAccountingReports
 
     private static long Sum(IReadOnlyDictionary<AccountRole, long> balances, AccountingAccountCategory category) =>
         balances.Where(b => AccountingAccountCategories.Of(b.Key) == category).Sum(b => b.Value);
+
+    // The highest sequence of the entries that occurred before `until`: the entries SumPostingsAsync counts (NL-627)
+    private static async Task<long> GetLastLedgerSeqBeforeAsync(IAccountingBooksDbRepository books,
+                                                                DateTimeOffset until,
+                                                                CancellationToken cancellationToken)
+    {
+        var last = 0L;
+        while (true)
+        {
+            var page = await books.ListEntriesAsync(new AccountingEntryQuery(last, PageSize, Until: until),
+                                                    cancellationToken);
+            if (page.Count == 0 || page[^1].LedgerSeq <= last)
+                return last;
+
+            last = page[^1].LedgerSeq;
+            if (page.Count < PageSize)
+                return last;
+        }
+    }
+
+    private async Task ResolveOpenTimesAsync(IEnumerable<ChannelAccumulator> channels,
+                                             CancellationToken cancellationToken)
+    {
+        if (_blockTimes is null)
+            return;
+
+        foreach (var channel in channels)
+        {
+            if (channel.OpenedAt is not null || channel.OpenedAtBlockHeight is not { } height)
+                continue;
+
+            try
+            {
+                channel.OpenedAt = await _blockTimes.GetBlockTimeAsync(height, cancellationToken);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                // The report still answers: the channel is shown as open since the feed began
+                _logger.LogDebug(e, "Could not read the time of block {Height}, the funding of channel {ChannelId}",
+                                 height, channel.ChannelId);
+            }
+        }
+    }
 
     private static void ThrowIfEmptyWindow(DateTimeOffset? since, DateTimeOffset? until)
     {
@@ -226,9 +286,24 @@ public sealed class AccountingReportService : IAccountingReports
         {
             case AccountingEventKind.ChannelFunded:
                 channel.CapacityMsat = SatDetail(accountingEvent, "capacitySat") ?? channel.CapacityMsat;
-                channel.OpenedAt ??= accountingEvent.OccurredAt;
+                channel.OpenedAtBlockHeight ??= FundingHeight(accountingEvent);
+                // A memo funding (the backfill's) is dated at the cutover, not when the channel opened (NL-623)
+                if (IsFromCutover(accountingEvent))
+                    channel.ObserveCutover(accountingEvent.OccurredAt);
+                else
+                    channel.OpenedAt ??= accountingEvent.OccurredAt;
                 if (bool.TryParse(accountingEvent.Details.GetValueOrDefault("isInitiator"), out var isInitiator))
                     channel.IsInitiator = isInitiator;
+                break;
+            case AccountingEventKind.OpeningBalance:
+                // The cutover's opening balance of a channel (or of its force close's pending outputs): the fallback
+                // for what no ChannelFunded gives (NL-622); a later ChannelFunded or SpliceLocked replaces the capacity
+                channel.ObserveCutover(accountingEvent.OccurredAt);
+                channel.ObserveScid(accountingEvent.Details.GetValueOrDefault("scid"));
+                channel.CapacityMsat ??= SatDetail(accountingEvent, "capacitySat");
+                if (channel.IsInitiator is null
+                 && bool.TryParse(accountingEvent.Details.GetValueOrDefault("isInitiator"), out var openedByUs))
+                    channel.IsInitiator = openedByUs;
                 break;
             case AccountingEventKind.SpliceLocked:
                 channel.CapacityMsat = SatDetail(accountingEvent, "capacitySat") ?? channel.CapacityMsat;
@@ -384,9 +459,20 @@ public sealed class AccountingReportService : IAccountingReports
         }
     }
 
+    // A channel open before the feed began counts as open since then when its open time is unknown (NL-623)
     private static bool WasOpenDuring(ChannelAccumulator channel, DateTimeOffset? since, DateTimeOffset asOf) =>
-        channel.OpenedAt is { } opened && opened < asOf && (channel.ClosedAt is not { } closed || since is not { } start
-                                                          || closed >= start);
+        (channel.OpenedAt ?? channel.TrackedSince) is { } opened && opened < asOf
+     && (channel.ClosedAt is not { } closed || since is not { } start || closed >= start);
+
+    // The funding's block: its short channel id's, else the event's; null when unknown (0)
+    private static uint? FundingHeight(AccountingEventModel accountingEvent) =>
+        accountingEvent.ShortChannelId is { BlockHeight: > 0 } scid
+            ? scid.BlockHeight
+            : accountingEvent.BlockHeight is > 0 ? accountingEvent.BlockHeight : null;
+
+    private static bool IsFromCutover(AccountingEventModel accountingEvent) =>
+        accountingEvent.Flags.HasFlag(AccountingEventFlags.Backfilled)
+     || accountingEvent.Details.GetValueOrDefault(MemoDetail) == "true";
 
     private static IReadOnlyList<AccountingPeerLine> SumPerPeer(IReadOnlyList<AccountingChannelLine> lines) =>
         lines.GroupBy(l => l.Counterparty?.ToString())
@@ -468,6 +554,8 @@ public sealed class AccountingReportService : IAccountingReports
         public long? CapacityMsat { get; set; }
         public bool? IsInitiator { get; set; }
         public DateTimeOffset? OpenedAt { get; set; }
+        public uint? OpenedAtBlockHeight { get; set; }
+        public DateTimeOffset? TrackedSince { get; private set; }
         public DateTimeOffset? ClosedAt { get; set; }
         public long RoutingInMsat { get; set; }
         public long RoutingOutMsat { get; set; }
@@ -509,20 +597,16 @@ public sealed class AccountingReportService : IAccountingReports
                 ShortChannelId ??= scid;
         }
 
+        // The cutover: the channel was open at least since then
+        public void ObserveCutover(DateTimeOffset at)
+        {
+            if (TrackedSince is not { } known || at < known)
+                TrackedSince = at;
+        }
+
         public AccountingChannelLine ToLine(DateTimeOffset? since, DateTimeOffset asOf)
         {
-            double? yieldOnCapacity = CapacityMsat is > 0 ? (double)RoutingOutMsat / CapacityMsat.Value : null;
-            double? annualized = null;
-            if (yieldOnCapacity is { } yield && OpenedAt is { } opened)
-            {
-                var start = since is { } periodStart && periodStart > opened ? periodStart : opened;
-                var end = ClosedAt is { } closed && closed < asOf ? closed : asOf;
-                var open = end - start;
-                if (open >= s_minimumYieldPeriod)
-                    annualized = yield * (s_year / open);
-            }
-
-            return new AccountingChannelLine
+            var line = new AccountingChannelLine
             {
                 ChannelId = ChannelId,
                 ShortChannelId = ShortChannelId,
@@ -530,6 +614,8 @@ public sealed class AccountingReportService : IAccountingReports
                 CapacityMsat = CapacityMsat,
                 IsInitiator = IsInitiator,
                 OpenedAt = OpenedAt,
+                OpenedAtBlockHeight = OpenedAtBlockHeight,
+                TrackedSince = TrackedSince,
                 ClosedAt = ClosedAt,
                 RoutingInMsat = RoutingInMsat,
                 RoutingOutMsat = RoutingOutMsat,
@@ -551,10 +637,41 @@ public sealed class AccountingReportService : IAccountingReports
                 CommitmentFeeMsat = CommitmentFeeMsat,
                 SweepFeeMsat = SweepFeeMsat,
                 CpfpFeeMsat = CpfpFeeMsat,
-                OnchainLossMsat = OnchainLossMsat,
-                YieldOnCapacity = yieldOnCapacity,
-                AnnualizedYield = annualized
+                OnchainLossMsat = OnchainLossMsat
             };
+            if (CapacityMsat is not > 0)
+                return line;
+
+            // The routing yield before costs, and the yield of Net (NL-625), over the same time
+            var capacity = (double)CapacityMsat.Value;
+            var routingYield = RoutingOutMsat / capacity;
+            var netYield = line.NetMsat / capacity;
+            double? years = null;
+            if (YieldStart(since) is { } start)
+            {
+                var end = ClosedAt is { } closed && closed < asOf ? closed : asOf;
+                var open = end - start;
+                if (open >= s_minimumYieldPeriod)
+                    years = open / s_year;
+            }
+
+            return line with
+            {
+                YieldOnCapacity = routingYield,
+                AnnualizedYield = routingYield / years,
+                NetYieldOnCapacity = netYield,
+                NetAnnualizedYield = netYield / years
+            };
+        }
+
+        // The start of the time the channel was open within the period: its open time or the period's start, whichever
+        // is later; with the open time unknown, only a period that starts after the feed began following it (NL-623)
+        private DateTimeOffset? YieldStart(DateTimeOffset? since)
+        {
+            if (OpenedAt is { } opened)
+                return since is { } periodStart && periodStart > opened ? periodStart : opened;
+
+            return since is { } start && TrackedSince is { } tracked && start >= tracked ? start : null;
         }
     }
 }

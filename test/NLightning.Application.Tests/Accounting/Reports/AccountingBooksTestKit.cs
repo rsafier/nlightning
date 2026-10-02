@@ -10,6 +10,7 @@ using Domain.Accounting.Books;
 using Domain.Accounting.Enums;
 using Domain.Accounting.Interfaces;
 using Domain.Accounting.Models;
+using Domain.Bitcoin.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Persistence.Interfaces;
@@ -43,10 +44,10 @@ internal sealed class AccountingBooksTestKit
         _provider = services.BuildServiceProvider();
     }
 
-    public AccountingReportService CreateReports(bool withBooks = true) =>
+    public AccountingReportService CreateReports(bool withBooks = true, IBlockTimeSource? blockTimes = null) =>
         new(_provider.GetRequiredService<IServiceScopeFactory>(), withBooks ? Books.Object : null,
             NullLogger<AccountingReportService>.Instance, Microsoft.Extensions.Options.Options.Create(Options), null,
-            Clock);
+            Clock, blockTimes);
 
     public AccountingExportService CreateExports() =>
         new(_provider.GetRequiredService<IServiceScopeFactory>(), Books.Object,
@@ -77,6 +78,21 @@ internal sealed class AccountingBooksTestKit
                                                         postings.Select(p => new AccountingPosting(p.Account,
                                                                                                    p.AmountMsat))
                                                                 .ToList()));
+        return accountingEvent;
+    }
+
+    /// <summary>
+    /// Adds a sealed event built by <paramref name="build"/> from the next ledger sequence (for the fields
+    /// <see cref="Add"/> does not take: flags, short channel id, block height), with an entry without postings.
+    /// </summary>
+    public AccountingEventModel AddBuilt(Func<long, AccountingEventModel> build)
+    {
+        var seq = Feed.Events.Count + 1L;
+        var accountingEvent = build(seq);
+        Feed.Events.Add(accountingEvent);
+        BooksRepository.Entries.Add(new AccountingEntry(seq, accountingEvent.EventKey, accountingEvent.Kind,
+                                                        accountingEvent.OccurredAt, accountingEvent.ChannelId, null,
+                                                        []));
         return accountingEvent;
     }
 

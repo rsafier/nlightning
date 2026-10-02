@@ -29,6 +29,13 @@ public sealed record AccountingBalanceSheet(
     public long TotalLiabilitiesMsat => Liabilities.Sum(a => a.AmountMsat);
     public long TotalEquityMsat => Equity.Sum(a => a.AmountMsat);
 
+    /// <summary>
+    /// For a balance at a past <see cref="At"/>: the highest ledger sequence of the entries it counts (those that
+    /// occurred before <see cref="At"/>), 0 when none (NL-627). Null for a balance of now, which counts every entry up to
+    /// <see cref="ProjectedLedgerSeq"/>.
+    /// </summary>
+    public long? LastLedgerSeqAt { get; init; }
+
     /// <summary>Whether assets equal liabilities, equity and earnings (always, unless the books are corrupt).</summary>
     public bool IsBalanced => TotalAssetsMsat == TotalLiabilitiesMsat + TotalEquityMsat + RetainedEarningsMsat;
 }

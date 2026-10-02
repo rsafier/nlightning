@@ -50,9 +50,9 @@ public sealed class AccountingReportPrinter : IPrinter<AccountingReportIpcRespon
 
     private void PrintBalanceSheet(AccountingReportIpcResponse item, AccountingBalanceSheetIpcResponse sheet)
     {
-        _output.WriteLine(string.Format(s_inv, "Balance sheet at {0} (books through #{1})",
+        _output.WriteLine(string.Format(s_inv, "Balance sheet at {0} ({1})",
                                         item.UntilUnixMilliseconds is null ? "now" : Time(item.UntilUnixMilliseconds),
-                                        item.ProjectedLedgerSeq));
+                                        BalanceSheetEntries(item, sheet)));
         Section("Assets", sheet.Assets, sheet.TotalAssetsMsat);
         Section("Liabilities", sheet.Liabilities, sheet.TotalLiabilitiesMsat);
         Section("Equity", sheet.Equity, sheet.TotalEquityMsat);
@@ -87,7 +87,7 @@ public sealed class AccountingReportPrinter : IPrinter<AccountingReportIpcRespon
                                             channel.IsInitiator is { } initiator
                                                 ? initiator ? ", opened by us" : ", opened by the peer"
                                                 : string.Empty));
-            _output.WriteLine(string.Format(s_inv, "    Open:            {0} to {1}", Time(channel.OpenedAtUnixMilliseconds),
+            _output.WriteLine(string.Format(s_inv, "    Open:            {0} to {1}", OpenedAt(channel),
                                             channel.ClosedAtUnixMilliseconds is null
                                                 ? "now"
                                                 : Time(channel.ClosedAtUnixMilliseconds)));
@@ -110,8 +110,12 @@ public sealed class AccountingReportPrinter : IPrinter<AccountingReportIpcRespon
                                             channel.SweepFeeMsat, channel.CpfpFeeMsat));
             if (channel.OnchainLossMsat != 0)
                 _output.WriteLine(string.Format(s_inv, "    On-chain loss:   {0}", Amount(channel.OnchainLossMsat)));
-            _output.WriteLine(string.Format(s_inv, "    Net:             {0}; yield {1}, annualized {2}",
-                                            Amount(channel.NetMsat), Percent(channel.YieldOnCapacity),
+            // NL-625: the yield next to Net is Net's; the routing yield is labelled as before costs
+            _output.WriteLine(string.Format(s_inv, "    Net:             {0}; net yield {1}, annualized {2}",
+                                            Amount(channel.NetMsat), Percent(channel.NetYieldOnCapacity),
+                                            Percent(channel.NetAnnualizedYield)));
+            _output.WriteLine(string.Format(s_inv, "    Routing yield:   {0}, annualized {1} (routing out only, before "
+                                                 + "costs)", Percent(channel.YieldOnCapacity),
                                             Percent(channel.AnnualizedYield)));
         }
     }
@@ -181,6 +185,38 @@ public sealed class AccountingReportPrinter : IPrinter<AccountingReportIpcRespon
             _output.WriteLine(string.Format(s_inv, "    {0}{1}", account.Name.PadRight(NameWidth),
                                             Amount(account.AmountMsat)));
         _output.WriteLine(string.Format(s_inv, "    {0}{1}", "Total".PadRight(NameWidth), Amount(totalMsat)));
+    }
+
+    // NL-627: a past balance names the last entry it counts, not only the books' present tip
+    private static string BalanceSheetEntries(AccountingReportIpcResponse item,
+                                              AccountingBalanceSheetIpcResponse sheet)
+    {
+        if (item.UntilUnixMilliseconds is null)
+            return string.Format(s_inv, "books through #{0}", item.ProjectedLedgerSeq);
+
+        return sheet.LastLedgerSeqAt switch
+        {
+            null => string.Format(s_inv, "books now through #{0}", item.ProjectedLedgerSeq),
+            0 => string.Format(s_inv, "no entries before it; books through #{0}", item.ProjectedLedgerSeq),
+            { } last => string.Format(s_inv, "last entry #{0}; books through #{1}", last, item.ProjectedLedgerSeq)
+        };
+    }
+
+    // NL-623: a channel open before the feed began is dated by its funding block, or said to be open since the feed
+    // began, never at the cutover
+    internal static string OpenedAt(AccountingChannelIpcResponse channel)
+    {
+        var block = channel.OpenedAtBlockHeight is { } height
+                        ? string.Format(s_inv, "block {0}", height)
+                        : null;
+        if (channel.OpenedAtUnixMilliseconds is { } opened)
+            return block is null ? Time(opened) : string.Format(s_inv, "{0} ({1})", Time(opened), block);
+
+        if (channel.TrackedSinceUnixMilliseconds is { } tracked)
+            return string.Format(s_inv, "before the feed began ({0}{1})", Time(tracked),
+                                 block is null ? string.Empty : ", funded at " + block);
+
+        return block ?? "-";
     }
 
     private static string Period(AccountingReportIpcResponse item) =>
