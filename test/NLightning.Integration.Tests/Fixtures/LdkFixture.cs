@@ -17,9 +17,11 @@ using Domain.Money;
 /// build takes 10-20 min; <c>scripts/run-interop.sh ldk --build</c> prebuilds it.</para>
 /// <para>LDK follows bitcoind over RPC (it polls the tip every few seconds) and funds channels from its own BDK wallet.
 /// It is driven through <c>ldk-server-cli</c> in the container (<see cref="LdkClient"/>), so only its p2p port is
-/// published, on a fixed <see cref="PortPoolUtil"/> port that survives <see cref="RestartLdkAsync"/>. No alias and no
-/// announcement address are configured: LDK then keeps its channels unannounced and refuses announced ones
-/// (<c>force_announced_channel_preference</c>), which matches our private opens.</para>
+/// published, on a fixed <see cref="PortPoolUtil"/> port that survives <see cref="RestartLdkAsync"/>. LDK has an alias
+/// (<see cref="LdkAlias"/>) and announces <c>127.0.0.1:&lt;host port&gt;</c> (NL-556): LDK Node may then announce
+/// channels, so it accepts both our private and our public opens (without an alias it refuses announced ones,
+/// <c>force_announced_channel_preference</c>) and opens a public channel on <c>open-channel --announce-channel</c>;
+/// its own <c>open-channel</c> without that flag and every private open of ours stay unannounced.</para>
 /// </remarks>
 // ReSharper disable once ClassNeverInstantiated.Global
 public sealed class LdkFixture : IAsyncLifetime
@@ -31,6 +33,9 @@ public sealed class LdkFixture : IAsyncLifetime
     public const string LdkImage = "nltg-ldk-server";
     public const string LdkTag = "dc02b76c";
     public const string ConfigPath = "/data/config.toml";
+
+    /// <summary>The alias LDK announces (an alias is what lets LDK Node announce channels).</summary>
+    public const string LdkAlias = "nltg-ldk";
 
     private const int P2PPort = 9735;
 
@@ -183,11 +188,13 @@ public sealed class LdkFixture : IAsyncLifetime
         }, s_readyTimeout);
     }
 
-    private static string BuildConfig() =>
+    private string BuildConfig() =>
         $"""
          [node]
          network = "regtest"
          listening_addresses = ["0.0.0.0:{P2PPort}"]
+         announcement_addresses = ["127.0.0.1:{_p2pHostPort}"]
+         alias = "{LdkAlias}"
 
          [storage.disk]
          dir_path = "/data/ldk"
