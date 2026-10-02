@@ -100,10 +100,13 @@ public sealed class ClnFixture : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             await _backend.StartAsync(TestContext.Current.CancellationToken);
             await WaitAllAtTipAsync([], CancellationToken.None);
+            // One comparable line per backend (test harness phase 2: fixture start, Docker against the cluster)
+            Console.WriteLine($"[fixture] CLN fixture ({Backend}) ready in {watch.Elapsed.TotalSeconds:F1} s");
         }
         catch
         {
