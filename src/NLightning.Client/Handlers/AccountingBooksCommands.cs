@@ -5,6 +5,7 @@ namespace NLightning.Client.Handlers;
 
 using Domain.Accounting.Books.Export;
 using Domain.Accounting.Books.Reports;
+using Domain.Accounting.Enums;
 using Domain.Client.Enums;
 using Ipc;
 using Printers;
@@ -243,7 +244,8 @@ internal static class AccountingBooksCommands
                     {
                         if (!AccountingCommands.TryParseKind(text, out var eventKind))
                         {
-                            error = $"Unknown kind '{text}'.";
+                            error = $"Unknown kind '{text}': expected one of "
+                                  + string.Join(", ", Enum.GetNames<AccountingEventKind>()) + ".";
                             return null;
                         }
 

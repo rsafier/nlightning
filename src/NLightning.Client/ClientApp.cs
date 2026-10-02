@@ -81,8 +81,7 @@ internal static class ClientApp
             var usageError = ValidateArguments(cmd, commandArgs);
             if (usageError is not null)
             {
-                Console.Error.WriteLine(usageError);
-                ClientUtils.ShowUsage();
+                WriteUsageError(usageError, Console.Error, ClientUtils.ShowUsage);
                 return UsageError;
             }
 
@@ -348,6 +347,20 @@ internal static class ClientApp
         }
 
         return Success;
+    }
+
+    /// <summary>
+    /// Writes an argument error. An error that carries the command's own usage (<c>Usage: ...</c>) ends there with a
+    /// pointer to the full help; any other is followed by the whole client help (<paramref name="showFullUsage"/>)
+    /// (NL-628).
+    /// </summary>
+    internal static void WriteUsageError(string usageError, TextWriter error, Action showFullUsage)
+    {
+        error.WriteLine(usageError);
+        if (usageError.Contains("Usage: ", StringComparison.Ordinal))
+            error.WriteLine("Run 'nltg --help' for every command.");
+        else
+            showFullUsage();
     }
 
     /// <summary>
