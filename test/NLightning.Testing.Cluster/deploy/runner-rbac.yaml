@@ -3,6 +3,10 @@
 # Run namespaces are created at runtime, so the role is a ClusterRole bound cluster-wide; the harness itself only
 # touches namespaces under its prefix that carry its run label (RunNamespace.IsOwnedBy).
 #
+# The spike's runner uses the namespaced variant instead (Runner/RunnerRbac.cs: ServiceAccount, Role, RoleBinding in
+# the run's namespace, created by InClusterTestRunner; the host creates the namespace and the runner adopts it). This
+# cluster-wide one is for a runner that creates its own run namespaces.
+#
 # NOT applied by the spike (the spike creates no cluster-scoped objects). Apply it only on a cluster dedicated to the
 # harness: kubectl apply -f runner-rbac.yaml
 ---

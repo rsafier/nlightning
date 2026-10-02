@@ -36,6 +36,23 @@ every implementation, our own node included, is driven through the same seams.
     channels, invoice, pay). Implementations live per kind (`Nodes/<Kind>/`), amounts in `Sat`/`Msat` longs, node ids
     lower-case hex.
   - `NodeKind` (also the `nltg.kind` label value, lower case).
+- `Reach/` (spike check 1; matrix in the plan's "Spike check 1 record")
+  - `HostEndpoints.ForPods()`: the name pods dial to reach a listener in the test process (`host.orb.internal`, or
+    `NLTG_HOST_ADDRESS`); `BindAddressFor` says what to bind (loopback for OrbStack's names). On OrbStack the peer
+    shows up as 127.0.0.1 (our node: NL-497 inbound-only), so let our node dial out to the peers.
+  - `ReachabilityCheck.RunAsync(run, ct)` (echo node + ClusterIP Service, both directions, `ReachabilityResult.Placement`
+    Host or InCluster), `TcpProbe`, `PodProbe` (busybox `nc` in a pod), `HostListener`, `EchoNode`.
+  - A new ClusterIP is routed only 4-9 s after the Service is created: address nodes by their headless Service name.
+- `Runner/` (the in-cluster fallback, plan R5)
+  - `InClusterTestRunner.RunAsync(run, new TestRunnerJob { ... }, onLine, ct)`: creates `RunnerRbac` (ServiceAccount,
+    Role, RoleBinding `nltg-test-runner`, all in the run's namespace, nothing cluster-scoped) and the Job (one pod, no
+    retry, `activeDeadlineSeconds`), streams the log, returns the exit code.
+  - Inside, `TestRunOptions.AdoptNamespace` (`NLTG_ADOPT_NAMESPACE=1`, set by the Job with `NLTG_TEST_RUN_ID` and
+    the prefix) makes `TestRun` adopt the host-created namespace (ownership checked), skip the quota, and on dispose
+    delete only the nodes it deployed (`AdoptedNamespace`); `TestRun.OwnsNamespace` is false then.
+  - Image: `Runner/image/build.sh [Release]` builds `nltg-spike-runner:latest` (SDK 10.0 + the built
+    `bin/<config>/net10.0` of the tests, no restore in the image); `RunnerImage.FromEnvironment()` takes
+    `NLTG_RUNNER_IMAGE` for a pushed image. Rebuild it after changing the tests.
 - `Images/ImageVersions`: the one version table (bitcoind 29.0 Polar and 31.1 official by digest, `custom_lnd:latest`
   Never, CLN v26.06.8 by digest, `nltg-eclair:0.14.3` Never, `nltg-ldk-server:dc02b76c` Never, postgres, busybox).
 - `deploy/runner-rbac.yaml`: the in-cluster runner's RBAC (ported from PR #10). Not applied by the spike.
@@ -54,3 +71,5 @@ every implementation, our own node included, is driven through the same seams.
 - Live tests carry `[Trait("Category", "Cluster")]` and `[Fact(Explicit = true)]`:
   `NLTG_KUBE_CONTEXT=orbstack dotnet run --project test/NLightning.Testing.Cluster.Tests -c Release -f net10.0 -- -explicit only -trait Category=Cluster`
   (or the built `bin/Release/net10.0/NLightning.Testing.Cluster.Tests` with the same arguments).
+- `Live/InClusterRunnerTests` need the runner image (`Runner/image/build.sh` first); `Live/ReachabilityTests` assert
+  OrbStack's matrix and only record it on another context.

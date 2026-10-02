@@ -250,6 +250,54 @@ The same topology model, sized up, on a multi-node cluster.
    - A first 100-node run on OrbStack, then a multi-machine cluster for 1,000.
 8. **Facade convergence (incremental).** Rewrite duplicated interop flows once against `ILightningTestPeer` and run them per implementation, which raises Eclair/LDK coverage (NL-554, NL-556).
 
+### Spike check 1 record: host ↔ pod reachability and the in-cluster Job (2026-10-02, branch `harness-reach`)
+
+Measured on OrbStack (k8s v1.35.6+orb1, one node at 192.168.139.2, Docker runtime) by `ReachabilityCheck`
+(`test/NLightning.Testing.Cluster/Reach/`): a busybox echo node (`tcpsvd`) plus a ClusterIP Service, probed from the
+host test process, and a TCP listener in the host test process probed from the pod with busybox `nc`. Live tests:
+`Live/ReachabilityTests` (one run, then 3 runs at once), `Live/InClusterRunnerTests`.
+
+**Host → cluster** (all from the macOS test process, no port forwarding):
+
+| Target | Result |
+|---|---|
+| Pod IP (192.168.194.x) | works, 2-3 ms; a pod that just turned ready answered only on the 3rd attempt (about 2 s) once, while 3 runs started at once |
+| `<pod>.<svc>.<ns>.svc.cluster.local`, `<svc>.<ns>.svc.cluster.local` (headless) | resolve on the Mac to the pod IP and work, 50-200 ms with the lookup |
+| ClusterIP and its `svc.cluster.local` name | work, but only **4-9 s after the Service is created** (kube-proxy's sync; pods see the same delay, so it is not a host limit). Headless Services do not have it, which is one more reason the harness uses them |
+| `<svc>.<ns>.k8s.orb.local` | resolves (OrbStack's ingress address 192.168.138.3) but is refused: only LoadBalancer/ingress objects use it |
+
+**Pod → host** (the LND/CLN dial-back to the in-process NLightning node):
+
+| Pod dials | Listener on 127.0.0.1 | Listener on 0.0.0.0 | Peer address the listener sees |
+|---|---|---|---|
+| `host.orb.internal` (cluster DNS → 0.250.250.254) | works, 30-60 ms | works | 127.0.0.1 |
+| `host.docker.internal` (same address) | works | works | 127.0.0.1 |
+| The Mac's LAN IP (192.168.1.173) | refused | works | the LAN IP |
+| The Mac's OrbStack bridge IP (192.168.139.3) | refused | works | the node IP 192.168.139.2 |
+| The node IP (192.168.139.2), the Mac's 192.168.194.0 / 192.168.97.0 | refused / 3 s timeout | refused / 3 s timeout | — |
+
+Conclusions:
+- On OrbStack the test process stays on the host. In-process nodes listen on **loopback** and are announced to the
+  peers as `host.orb.internal:<port>` (`HostEndpoints.ForPods`, `NLTG_HOST_ADDRESS` overrides it); nothing is exposed
+  on the LAN.
+- OrbStack forwards `host.orb.internal` to the Mac's loopback, so **our node sees every pod peer as 127.0.0.1**. A
+  loopback peer is saved `IsInboundOnly` without an address (NL-497), so tests where LND/CLN connect to us must still
+  have our node dial out (or reconnect) to them. Their addresses are stable DNS names, so that works.
+- Elsewhere (kind, k3d, a real cluster) none of this holds. The fallback is proven: `InClusterTestRunner` runs the
+  test assembly as a Job in the run's namespace. The pieces are the image `nltg-spike-runner` (`Runner/image/build.sh`:
+  the SDK 10.0 image plus `bin/Release/net10.0`, built in about 2 s from a build) and a namespaced
+  ServiceAccount/Role/RoleBinding (`RunnerRbac`, ported from PR #10 and narrowed). The tests adopt the namespace that
+  the host created (`NLTG_ADOPT_NAMESPACE=1`): they do not create or delete namespaces, and on dispose they remove only
+  their own nodes.
+- Job proof: the scaffold's namespace smoke test ran in the Job. The runner pod was running 1.8 s after the Job was
+  created. Inside it the run adopted the namespace (`InCluster` config), deployed the busybox StatefulSet (ready in
+  7.3 s), removed it, and exited 0 after 11.9 s. The whole host-side test took 26 s, including namespace creation and
+  deletion. A bad runner argument returned exit 3, and the Job ended Failed with no retry.
+- Access reviews for the runner's ServiceAccount:
+  - allowed: StatefulSets and pod exec in its namespace, and `get` on its own namespace object;
+  - denied: creating, listing or deleting namespaces, reading `default`, anything in `default` or `kube-system`,
+    creating Roles, and deleting the ResourceQuota.
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.
