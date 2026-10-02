@@ -1,6 +1,6 @@
 # Accounting plan (NL-602)
 
-Status: **A1 in progress** (2026-10-02). A1-T1 (domain, table `AccountingEvents`, migration `AddAccountingEvents`, sealer and hasher) is done; the writers, sealer service and IPC follow. The §8 recommendations are taken as the defaults until the owner decides otherwise. Open owner decisions are marked **D-Ax** in §8.
+Status: **A1 done, A2 built** (2026-10-02): the feed with every writer, the sealer, the cutover and the flat-startup proof (A1); the operational books with posting rules, projector, rebuild, reconcile, reports, exports and IPC 41-45 (A2). A3 (financial profile) is next. The §8 recommendations are the defaults until the owner decides otherwise. Open owner decisions are marked **D-Ax** in §8.
 
 ## 1. Goal
 
@@ -268,9 +268,9 @@ The journal is a projection of the feed plus the overrides, so `nltg accounting 
 |---|---|---|
 | 41 | `listaccountingevents` | the raw feed, paged by `LedgerSeq` (built, A1-T5): `[--after <seq>] [--limit <n>] [--kind <kind>[,...]] [--channel <id or scid>] [--since <time>] [--until <time>]`; the daemon seals what was committed first (`SealNowAsync`), then answers the page, `NextAfter` (the next `--after`), `HasMore` and the sealed tip; each event carries its key, kind, time (ms), block, signed amount, fee, channel and scid, payment hash, txid:vout, counterparty, finality, flags, details and chain hash |
 | 42 | `accountingsnapshot` | the live balances by bucket (built, A1-T5): one bucket per channel (state, peer, capacity, gross local and remote balance, in-flight HTLCs each way; for a force-closed channel our unspent outputs as pending on chain, HTLC outputs apart) and the wallet (confirmed, unconfirmed, locked), with totals; not persisted |
-| 43 | `accountingreport` | kind = balance, income, channels, peers, fees or register; period; profile |
-| 44 | `accountingexport` | hledger, beancount or CSV, written by the daemon to a path under the config directory, or streamed to the client |
-| 45 | `accountingadmin` | subcommands reconcile, rebuild, verify, close, classify |
+| 43 | `accountingreport` | built (A2): `nltg accounting report <balance|income|channels|peers|fees|register>` with period, channel, account, kind and paging filters; projects what is sealed first; refuses when the books are off |
+| 44 | `accountingexport` | built (A2): hledger, beancount or CSV in exact msat, streamed to the client in pages by ledger sequence; `nltg accounting export --format ... [--output f]` writes the file on the client side (the daemon writes no file) |
+| 45 | `accountingadmin` | built (A2): `nltg accounting reconcile|rebuild|verify` (verify walks the feed's hash chain and reports the first break; works with the books off); `close` and `classify` come with A3 |
 
   The client gets the `nltg accounting <sub>` verb family. Every command uses the existing cookie authentication.
 - **The old plugin stub is deleted (NL-151).** This removes:
