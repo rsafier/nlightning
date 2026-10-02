@@ -10,6 +10,7 @@ using Domain.Protocol.OnionMessages.Enums;
 using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.Payloads;
 using Harness;
+using NLightning.Tests.Utils;
 
 /// <summary>
 /// The BOLT 4 onion-message reader rules (plan §1.3 OM-R-02..OM-R-07, OM2-T3) on the harness nodes: every ignored
@@ -334,11 +335,16 @@ public sealed class OnionMessageServiceTests : IDisposable
 
         // Act
         await AliceSendsToBobAsync(CraftStandard(path));
-        await OnionMessageTestWaits.UntilAsync(() => _bob.Metrics.Forwarded == 1,
-                                               TestContext.Current.CancellationToken);
 
-        // Assert
-        Assert.Equal(overrideKey, Assert.Single(_bob.LinkTo(_carol).Sent).Payload.PathKey);
+        // Assert: the forward is counted when the message is queued on the outbox, so the message's arrival on the
+        // link is waited for itself (NL-471: the old poll on Forwarded raced the pump that moves the message)
+        var forwarded = await WaitFor.ValueAsync(
+            () => _bob.LinkTo(_carol).Sent.FirstOrDefault(m => m.Payload.PathKey == overrideKey),
+            TimeSpan.FromSeconds(30), "bob's forward carrying the overridden path key",
+            TestContext.Current.CancellationToken);
+        Assert.NotNull(forwarded);
+        Assert.Equal(overrideKey, forwarded.Payload.PathKey);
+        Assert.Single(_bob.LinkTo(_carol).Sent);
         // Carol cannot peel with a path key that is not hers
         await ExpectDropAsync(_carol, OnionMessageDropReasons.Undecryptable);
     }
