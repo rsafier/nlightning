@@ -63,10 +63,11 @@ public sealed partial class AnchorCpfpService
     /// <summary>
     /// Stores the hand-over (NL-390): the peer's commitment bytes as a pending <see cref="BroadcastPurpose.PeerCommitment"/>
     /// row, so a restart keeps the bump even when bitcoind does not have the commitment (below its mempool minimum).
-    /// The monitor sends the row again after every block until it confirms, which helps the peer's close propagate.
-    /// In the background; a failed store is logged once (the restart then looks for the commitment in the mempool
-    /// only). Whether the commitment is the peer's next one is not stored: it is derived again at the next round from
-    /// the rebuilt txids.
+    /// The row is handed to the chain monitor, which sends it again after every block until a processed block holds it
+    /// (then it is confirmed), which helps the peer's close propagate. Nothing is stored once a funding spend is recorded
+    /// for the channel (NL-779: that commitment, or another, is already confirmed). In the background; a failed store is
+    /// logged once (the restart then looks for the commitment in the mempool only). Whether the commitment is the peer's
+    /// next one is not stored: it is derived again at the next round from the rebuilt txids.
     /// </summary>
     private async Task PersistPeerCommitmentAsync(ChannelId channelId, TxId txId, byte[] rawTransaction)
     {
@@ -79,16 +80,36 @@ public sealed partial class AnchorCpfpService
             var existing = await repository.GetByTransactionIdAsync(txId);
             if (existing is not null)
             {
+                if (existing.Purpose != BroadcastPurpose.PeerCommitment)
+                    return;
+
                 // A reorg put the commitment back into the mempool after its row was abandoned
-                if (existing.Purpose == BroadcastPurpose.PeerCommitment && await repository.MarkPendingAsync(txId))
+                if (await repository.MarkPendingAsync(txId))
+                {
                     await unitOfWork.SaveChangesAsync();
+                    existing.MarkPending();
+                }
+
+                if (existing.State == BroadcastState.Pending)
+                    _blockchainMonitor.TrackPendingBroadcast(existing);
                 return;
             }
 
-            repository.Add(new BroadcastTransactionModel(new SignedTransaction(txId, (byte[])rawTransaction.Clone()),
-                                                         BroadcastPurpose.PeerCommitment, channelId,
-                                                         _blockchainMonitor.LastProcessedBlockHeight));
+            // NL-779: the funding output is already spent by a processed block (this commitment confirmed, or another
+            // transaction did): a row now would never be confirmed by a block
+            if (unitOfWork.OnchainResolutionDbRepository is { } resolutions
+             && await resolutions.GetCloseAsync(channelId) is not null)
+                return;
+
+            var row = new BroadcastTransactionModel(new SignedTransaction(txId, (byte[])rawTransaction.Clone()),
+                                                    BroadcastPurpose.PeerCommitment, channelId,
+                                                    _blockchainMonitor.LastProcessedBlockHeight);
+            repository.Add(row);
             await unitOfWork.SaveChangesAsync();
+
+            // NL-779: followed by the monitor from now on, so the block that holds it marks it confirmed (a block
+            // processed before this point is found by the monitor's lookup when bitcoind refuses the row)
+            _blockchainMonitor.TrackPendingBroadcast(row);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
