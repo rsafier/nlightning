@@ -144,7 +144,7 @@ New folder `src/NLightning.Domain/LiquidityAds/` (BCL-only):
   - (d) buys again at `bumpopen` (RBF);
   - (e) a payment each way on each;
   - (f) refuses a rate it did not ask for (hand-crafted through the capture hook).
-  - Run with `scripts/run-interop.sh eclair`.
+  - Run with `scripts/run-interop.sh eclair` (since NL-866: `scripts/run-cluster.sh -n 1 --suite eclair`).
 
 ### LA7: integration
 - Docs: plan record, root `CLAUDE.md`, `src/NLightning.Application/CLAUDE.md`, `BOLT_COVERAGE.md`.
@@ -155,7 +155,7 @@ New folder `src/NLightning.Domain/LiquidityAds/` (BCL-only):
 
 - Every task: `dotnet build -c Release`, `dotnet format --verify-no-changes`, non-Docker tests on net10.0, and `HasPendingModelChanges` false on all 3 providers after LA3.
 - LA1/LA2: byte-exact against the captured Eclair vectors.
-- LA6: the in-process suites green, and `scripts/run-interop.sh eclair` green with the new class (Eclair 0.14.3 as seller).
+- LA6: the in-process suites green, and `scripts/run-interop.sh eclair` (now `scripts/run-cluster.sh --suite eclair`, NL-866) green with the new class (Eclair 0.14.3 as seller).
 - End to end:
   1. Configure Eclair as seller.
   2. `nltg openchannel <eclair> 500000 --dual-fund --request-inbound 400000`.

@@ -112,8 +112,8 @@ using SpliceWireMessage = ClnSpliceTests.SpliceWireMessage;
 /// written, the splice broadcast and 2 s of grace for ours to reach CLN; our <c>next_funding</c> absent is what is
 /// asserted, CLN's is not, since nothing on the wire confirms that CLN read ours before the reset). The restart
 /// variants stop our node while cut and start it again on the same database. CLN is restarted once in a separate test
-/// on its own container (<c>nltg-cln-sp2</c>, a fixed host port, so its address survives the restart and the shared
-/// fixture's CLN is never restarted).</para>
+/// on its own node (<c>nltg-cln-sp2</c>, a PVC and a stable ClusterIP name, so its address survives the restart and
+/// the shared fixture's CLN is never restarted).</para>
 /// <para>Not covered here: LND 0.20 learning the spliced channel (plan (c) mentions it; the CLN fixture has no LND),
 /// and the on-chain part (d) (<c>Docker/Onchain/OnchainSpliceTests</c>). Written against the SP2 contracts
 /// (3560f3a9); the node side (reestablish, lock, SCID map, announcements) lands in lanes SP2-A/B and the integrator

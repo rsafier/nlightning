@@ -102,8 +102,8 @@ public sealed class EclairInteropTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// 1b: Eclair dials us at <see cref="EclairFixture.HostAddressForEclair"/> (<c>host.docker.internal</c>, or
-    /// <c>host.orb.internal</c> on the cluster; our listener on every interface): we are the BOLT 8 responder, the
+    /// 1b: Eclair dials us at <see cref="EclairFixture.HostAddressForEclair"/> (<c>host.orb.internal</c> on
+    /// OrbStack's cluster; our listener on every interface): we are the BOLT 8 responder, the
     /// connection stays up and the same features are negotiated.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]

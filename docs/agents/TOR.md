@@ -206,8 +206,8 @@ set `OnionServiceEnabled` false, host the onion service in Arti's own configurat
   Tor's real SOCKS5 refusal (`0x06`, no circuits in that sandbox). The Docker proof against CLN came later (NL-572,
   next item).
 - Docker interop with CLN over Tor (NL-572, `test/NLightning.Integration.Tests/Docker/Interop/Tor/ClnTorInteropTests`,
-  fixture `Fixtures/TorInteropFixture`, trait `Category=Interop.Tor`; `scripts/run-interop.sh tor`, 3.5-5 min from
-  the host; **needs Internet**: the onion services are on the public Tor network). A C Tor client (`nltg-tor`, image
+  fixture `Fixtures/Tor/TorInteropFixture`, trait `Category=Interop.Tor`; `scripts/run-interop.sh tor`, 3.5-5 min from
+  the host; the one suite left on Docker since NL-866, the others run on the cluster harness; **needs Internet**: the onion services are on the public Tor network). A C Tor client (`nltg-tor`, image
   `nltg-tor:alpine3.22` built from `test/Docker/tor` when missing: Alpine's tor, control port with a hashed password,
   `SocksPort`/`ControlPort` published on the host's `127.0.0.1`) hosts CLN's onion service from `torrc`
   (`HiddenServiceDir`); CLN v26.06.8 (`nltg-tor-cln`) shares the Tor container's network namespace, listens on

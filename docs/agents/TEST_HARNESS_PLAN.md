@@ -2,6 +2,8 @@
 
 Status: proposal, 2026-10-02 (revised the same day: Kubernetes-native, owner direction, plus a scale target of about 1,000 nodes across machines). Copied into `docs/agents/` for the spike (§5 step 1, branch `wip/harness-spike`, project `test/NLightning.Testing.Cluster`); the rest stays a proposal until it is scheduled.
 
+Current state (2026-10-03, NL-820 and NL-866): the cluster harness is the only backend of every integration suite but Tor. The LND regtest network lost its Docker backend in NL-820, the CLN, Eclair (incl. the liquidity-ads seller), LDK and Postgres fixtures in NL-866 (record at the end of §5); only the Tor interop suite stays on Docker (`scripts/run-interop.sh tor`), and SQL Server tests are not ported. Where an earlier record below says a suite "keeps its Docker backend" or names `run-interop.sh cln|eclair|ldk`, that is history.
+
 ## 1. Why
 
 The Docker tests are the project's end-to-end proof. Interop runs against LND, CLN, Eclair and LDK, plus on-chain resolution, gossip, the ABCD multi-hop suite and the database round trips.
@@ -1658,6 +1660,52 @@ cb5c258f merge).
   the non-Docker persistence tests (incl. `CompiledModelTests`, `PersistenceConfigurationTests`) and Docker
   `PostgresTests` 25/25 with the new migration's round trip, and Docker `EclairLiquidityAdsTests` 4/4 + 1 `Explicit`
   not run (158 s, the splice purchase and its RBF against Eclair 0.14.3). Fixes in `fc3f52ab`.
+
+### NL-866 record: the CLN, Eclair, LDK and Postgres Docker backends retired (2026-10-03, branch `wip/retire-docker` from 61889866)
+
+Owner decision 2026-10-03: every suite runs through the cluster harness (`scripts/run-cluster.sh --matrix`); the only
+Docker suite left is Tor (it needs the public Tor network). SQL Server tests are not ported: `SqlServerTests` and
+`SqlServerFixture` were Docker-only and excluded everywhere, so they stay as they are, not run.
+
+- **Removed.** `DockerClnBackend`, `DockerEclairBackend` (with PR #19's Docker liquidity seller), `DockerLdkBackend`,
+  `DockerPostgresBackend` and the `IClnBackend`/`IEclairBackend`/`ILdkBackend`/`IPostgresBackend` switches; the Docker
+  constructors of `ClnClient`, `LdkClient` and `EclairClient`; the container log dumps of `DockerDiagnostics` (now
+  `TestDiagnostics`, `CurrentTestFailed` only); the Docker-only fixture constants (networks, bitcoind container names,
+  `HostAddressFromContainers`); `Docker.DotNet` in Tests.Utils (Integration.Tests, its only user, references it).
+- **Backend switch.** `NLTG_TEST_BACKEND` stays, as the explicit cluster opt-in the NL-860 rule needs: `cluster`
+  (`k8s`, `kubernetes`) or unset; `docker` and any other value throw. The rule is one class,
+  `Fixtures/ClusterAvailability` (`UnavailableReason`, `ConfigurationError`, `SkipIfUnavailable`), used by the LND
+  network and the CLN, Eclair, LDK and Postgres fixtures: unset, the fixture starts nothing and each test is skipped
+  with "The X fixture runs on the cluster backend only (NL-866): set NLTG_TEST_BACKEND=cluster or run
+  scripts/run-cluster.sh --matrix ..."; set without a Kubernetes configuration, the fixture fails. The test classes
+  call `fixture.SkipIfUnavailable()` in their constructor (xunit v3 reports a constructor skip as a skip and never
+  disposes the instance, so cleanup cannot skip a second time); every fixture member that needs the cluster skips too.
+  `PostgresFixture` starts in its constructor: it throws there on a configuration error, `StartNamed` skips the calling
+  test, and `StartNamedOnCluster` serves the Explicit `Category=Cluster` server-database test whatever the variable says.
+- **Tor.** `Fixtures/Tor/TorInteropFixture` and `TorChainHost` (the former `InteropChainHost`, trimmed to what Tor uses)
+  with its own `docker exec` CLN client; `DockerContainerUtils` (also `SqlServerFixture`'s) gained the image build
+  helpers that lived on `EclairFixture`. `scripts/run-interop.sh` runs only `tor` (without `NLTG_TEST_BACKEND`); `cln`,
+  `eclair` and `ldk` print the `run-cluster.sh` commands and exit 2.
+- **Images.** `test/Docker/custom_lnd`, `eclair` and `ldk_server` stay: the cluster runs them as local images with pull
+  policy `Never` and nothing builds them any more, so build them once (`docker build -t custom_lnd:0.21.4-beta
+  test/Docker/custom_lnd`, `docker build -t nltg-eclair:0.14.3 test/Docker/eclair`, `docker build -t
+  nltg-ldk-server:dc02b76c test/Docker/ldk_server`); a missing one fails its pod with `ErrImageNeverPull`.
+- **Guards.** `Fixtures/DockerAbsenceTests`: the Docker API (`Docker.DotNet`, `DockerClient*`) and a `docker` CLI process
+  appear only in `Fixtures/Tor/`, `DockerContainerUtils`, `SqlServerFixture` and `Testing.Lnd.Tests/Docker/DockerCli`
+  (the Explicit live LND test); only Integration.Tests references `Docker.DotNet`; the assembly has no `Docker*Backend`
+  type. `ClusterFixtureAvailabilityTests`, `TestBackendTests` and `PostgresBackendTests` pin the skip/fail rules; the
+  backend tests pin the cluster configs directly (CLN flags, `eclair.conf` incl. the seller's section, `config.toml`).
+- **Proof (code at cea4bc4f).** Release build 0 warnings on net10.0 (`--no-incremental`), the SDK 11 build (net10.0 + net11.0, `--no-incremental`) 0 warnings, format, sln
+  check; non-Docker net10.0 suite with `--blame-hang-timeout 5m`: all green but one known NL-620 flake
+  (`PendingAnnouncementTests`, 16/16 alone), Integration.Tests 1166 incl. `CompiledModelTests` and
+  `PersistenceConfigurationTests`; `scripts/tests/run-cluster-tests.sh` 48/48. Without `NLTG_TEST_BACKEND`: the
+  `Docker.Interop.Cln/Eclair/Ldk` namespaces 152 tests, 136 skipped with the reason, 13 container-free helpers passed,
+  3 `Explicit` not run, 0 failed; `PostgresTests` 25/25 skipped; no container started. With `NLTG_TEST_BACKEND=cluster`
+  and an unknown kube context: every LDK and Postgres test failed with "no Kubernetes cluster is configured". Cluster
+  batch `nl866-mx1` (`--matrix cln,eclair,eclair2,ldk,postgres -j 6 --max-namespaces 6`): 5 green, no rerun, wall
+  902 s, peak 6 namespaces, none left: cln 90/90 + 4 `Explicit` not run (847 s), eclair 25/25 + 2 (897 s, incl.
+  `EclairLiquidityAdsTests` with the cluster seller), eclair2 7/7 (445 s), ldk 27/27 (621 s), postgres 26/26 (62 s).
+  Docker under the machine lock: `scripts/run-interop.sh tor Release`: 2/3 in the full run, `Given_ATorOnlyNodeWithAChannelToCln_When_TorRestarts_*` timed out waiting 4 min for CLN's onion to be reachable again on the public Tor network after the Tor restart; rerun alone green (1/1, 137 s); no container left.
 
 ## 6. Risks and open questions
 
