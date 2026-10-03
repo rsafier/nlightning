@@ -20,6 +20,9 @@ using Enums;
 /// <see cref="SweepKeyKind.Revocation"/> it is optional and, when given, must equal <c>secret * G</c>.</param>
 /// <param name="PerCommitmentSecret">The peer's revealed per-commitment secret, for
 /// <see cref="SweepKeyKind.Revocation"/> only.</param>
+/// <param name="TaprootSpentOutputs">Simple taproot channels (NL-877 T4): every output the transaction spends, in input
+/// order. When set, the input is a BIP 341 script-path spend of the tapscript leaf <paramref name="WitnessScript"/>,
+/// signed with BIP 340 and <c>SIGHASH_DEFAULT</c> (a 64-byte signature, no sighash byte).</param>
 public sealed record SweepSigningContext(
     byte[] UnsignedTransaction,
     int InputIndex,
@@ -27,4 +30,5 @@ public sealed record SweepSigningContext(
     ulong AmountSat,
     SweepKeyKind KeyKind,
     CompactPubKey? PerCommitmentPoint = null,
-    Secret? PerCommitmentSecret = null);
+    Secret? PerCommitmentSecret = null,
+    IReadOnlyList<Bitcoin.Wallet.Models.SpentOutput>? TaprootSpentOutputs = null);

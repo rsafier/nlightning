@@ -116,6 +116,20 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         _ = serviceProvider.GetService<SpliceDepthWatcher>();
     }
 
+    /// <summary>The <c>tx_abort</c> data and IPC refusal for a splice of a simple taproot channel (NL-965).</summary>
+    internal const string TaprootSpliceRefusal = "splicing a simple taproot channel is not supported yet";
+
+    /// <summary>
+    /// Splicing a simple taproot channel needs a MuSig2 signature of the shared funding input and the taproot nonces
+    /// of BOLTs PR #1324 (NL-965), which are not built: refused before anything is reserved or sent.
+    /// </summary>
+    private static void ThrowIfSimpleTaproot(ChannelModel channel)
+    {
+        if (channel.ChannelParams.OptionSimpleTaproot)
+            throw new InvalidOperationException($"Channel {channel.ChannelId} is a simple taproot channel: "
+                                              + TaprootSpliceRefusal);
+    }
+
     #region ISpliceService
 
     /// <inheritdoc />
@@ -135,6 +149,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
 
         if (!_channelMemoryRepository.TryGetChannel(channelId, out var unlocked))
             throw new KeyNotFoundException($"Channel {channelId} is not loaded");
+        ThrowIfSimpleTaproot(unlocked);
 
         // Everything that needs I/O is done before the lock: the feerate, the splice-out destination
         var feeratePerKw = request.FeeratePerKw ?? await EstimateFeerateAsync(cancellationToken);
@@ -310,6 +325,15 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         // NL-591: a node draining for its shutdown starts no splice (BOLT 2: MAY send tx_abort for any reason)
         if (IsDraining())
             return EndQuiescenceWithTxAbort(channelId, peerPubKey, NodeDrain.Refusal("splice_init"));
+
+        // NL-877 T5: the shared MuSig2 funding input of a taproot splice is not signed yet (NL-965); tx_abort ends the
+        // quiescence and the channel goes on as it was
+        if (channel.ChannelParams.OptionSimpleTaproot)
+        {
+            _logger.LogWarning("Refusing the splice of simple taproot channel {ChannelId} by {Peer}: not supported yet",
+                               channelId, peerPubKey);
+            return EndQuiescenceWithTxAbort(channelId, peerPubKey, TaprootSpliceRefusal);
+        }
 
         var fundings = _statePort.GetFundings(channel);
         var conditions = GetConditions(channel, negotiatedFeatures, quiescenceState, fundings) with

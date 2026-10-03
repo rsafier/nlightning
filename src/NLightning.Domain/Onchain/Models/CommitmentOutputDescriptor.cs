@@ -21,6 +21,10 @@ using Enums;
 /// <param name="SecondLevel">For an HTLC output of our own commitment: the HTLC-timeout (we offered it) or
 /// HTLC-success (we received it) transaction that spends it, whose peer signature is in our stored commitment
 /// signatures in output order.</param>
+/// <param name="TaprootControlBlock">Simple taproot channels (NL-877 T4): the BIP 341 control block of the leaf in
+/// <see cref="WitnessScript"/> (which is then the tapscript leaf, not a P2WSH script), for a script-path spend; null for
+/// a P2WSH/P2WPKH output and for a taproot output we do not spend by script path yet.</param>
+/// <param name="IsSimpleTaproot">The output belongs to a simple taproot commitment (P2TR outputs).</param>
 public sealed record CommitmentOutputDescriptor(
     uint Vout,
     ulong AmountSat,
@@ -30,7 +34,9 @@ public sealed record CommitmentOutputDescriptor(
     SpecHtlc? Htlc,
     ushort CsvDelay,
     bool HasAnchors,
-    HtlcTransactionModel? SecondLevel = null)
+    HtlcTransactionModel? SecondLevel = null,
+    byte[]? TaprootControlBlock = null,
+    bool IsSimpleTaproot = false)
 {
     /// <summary>
     /// True when we have something to do with the output (sweep, claim, penalize or watch it); false for the peer's

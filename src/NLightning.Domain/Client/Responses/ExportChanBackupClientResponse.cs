@@ -9,7 +9,10 @@ using Channels.ValueObjects;
 /// <param name="ChannelIds">The channels it holds.</param>
 /// <param name="FilePath">The node's backup file, kept up to date on every channel open and close; null when none is
 /// configured.</param>
+/// <param name="SimpleTaprootChannelIds">The channels of <paramref name="ChannelIds"/> that are simple taproot
+/// channels (NL-877 T5; empty when none).</param>
 public sealed record ExportChanBackupClientResponse(
     byte[] Backup,
     IReadOnlyList<ChannelId> ChannelIds,
-    string? FilePath);
+    string? FilePath,
+    IReadOnlyList<ChannelId>? SimpleTaprootChannelIds = null);

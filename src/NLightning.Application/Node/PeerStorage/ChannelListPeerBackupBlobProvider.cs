@@ -29,7 +29,8 @@ using Domain.Persistence.Interfaces;
 /// something rather than nothing.</para>
 /// <para>Plaintext version 2 (splicing plan SP2-0, lane SP2-E; written since): magic <c>"NLPB"</c>, version (1 byte),
 /// creation time (u64 UNIX seconds), channel count (u16), then per channel its id (32 bytes), the peer's node id (33
-/// bytes), a flags byte (bit 0: the funding outpoint follows; bit 1: our funding key index is known), the current
+/// bytes), a flags byte (bit 0: the funding outpoint follows; bit 1: our funding key index is known; bit 2: a simple
+/// taproot channel, NL-877 T5, ignored by readers that predate it), the current
 /// funding txid (32 bytes, zeroes when unknown), its output index (u16) and our funding key index (u32; 0 before any
 /// splice), then zeroes up to <see cref="IPeerStorageCipher.MaxPlaintextLength"/>. The funding moves with a locked
 /// splice (and a dual-funded RBF), so the fingerprint changes and the blob is sent again.</para>
@@ -45,6 +46,7 @@ public sealed class ChannelListPeerBackupBlobProvider : IPeerBackupBlobProvider
     private const int EntryLength = Version1EntryLength + 1 + CryptoConstants.Sha256HashLen + 2 + 4;
     private const byte FlagFunding = 1;
     private const byte FlagKeyIndex = 2;
+    private const byte FlagSimpleTaproot = 4;
 
     private static readonly byte[] s_magic = "NLPB"u8.ToArray();
 
@@ -163,8 +165,9 @@ public sealed class ChannelListPeerBackupBlobProvider : IPeerBackupBlobProvider
     /// </summary>
     private async Task<PeerBackupChannel> DescribeAsync(ChannelModel channel, CancellationToken cancellationToken)
     {
+        var simpleTaproot = channel.ChannelParams.OptionSimpleTaproot;
         if (channel.FundingOutput is not { TransactionId: { } txId, Index: { } index } funding)
-            return new PeerBackupChannel(channel.ChannelId, channel.RemoteNodeId);
+            return new PeerBackupChannel(channel.ChannelId, channel.RemoteNodeId, IsSimpleTaproot: simpleTaproot);
 
         // The engine's current funding counts only as a splice's: rebuilt from the channel after a restart it always
         // says index 0
@@ -177,7 +180,7 @@ public sealed class ChannelListPeerBackupBlobProvider : IPeerBackupBlobProvider
         else if (funding.LocalFundingPubKey == channel.LocalKeySet.FundingCompactPubKey)
             keyIndex = 0;
 
-        return new PeerBackupChannel(channel.ChannelId, channel.RemoteNodeId, txId, index, keyIndex);
+        return new PeerBackupChannel(channel.ChannelId, channel.RemoteNodeId, txId, index, keyIndex, simpleTaproot);
     }
 
     /// <summary>Our funding key index of the stored current funding row, or null (no store, no row, an error).</summary>
@@ -223,6 +226,9 @@ public sealed class ChannelListPeerBackupBlobProvider : IPeerBackupBlobProvider
             flags[0] |= FlagKeyIndex;
             BinaryPrimitives.WriteUInt32BigEndian(flags[(1 + CryptoConstants.Sha256HashLen + 2)..], keyIndex);
         }
+
+        if (channel.IsSimpleTaproot)
+            flags[0] |= FlagSimpleTaproot;
     }
 
     private static PeerBackupChannel ReadEntry(ReadOnlySpan<byte> entry)
@@ -247,6 +253,6 @@ public sealed class ChannelListPeerBackupBlobProvider : IPeerBackupBlobProvider
         if ((flags & FlagKeyIndex) != 0)
             keyIndex = BinaryPrimitives.ReadUInt32BigEndian(fields[(1 + CryptoConstants.Sha256HashLen + 2)..]);
 
-        return new PeerBackupChannel(channelId, peer, txId, outputIndex, keyIndex);
+        return new PeerBackupChannel(channelId, peer, txId, outputIndex, keyIndex, (flags & FlagSimpleTaproot) != 0);
     }
 }

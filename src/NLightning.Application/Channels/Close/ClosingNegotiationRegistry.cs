@@ -6,6 +6,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Closing;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 
 /// <summary>
 /// The in-memory part of each channel's mutual close (BOLT2 plan N10-T3): what happened on the peer's current
@@ -79,6 +80,21 @@ public sealed class ClosingNegotiationRegistry
         /// is an RBF asked through the IPC <c>closechannel</c>).
         /// </summary>
         public bool SimpleProposalSentOnConnection { get; set; }
+
+        /// <summary>
+        /// Simple taproot channels: our current closee nonce (the <c>shutdown_nonce</c> of our <c>shutdown</c> on this
+        /// connection, then the <c>next_closee_nonce</c> of our last <c>closing_sig</c>), whose secret half the signer
+        /// keeps; null before our <c>shutdown</c> on this connection or once a <c>closing_sig</c> consumed it. Memory
+        /// only: a new connection drops it and our re-sent <c>shutdown</c> carries a fresh one.
+        /// </summary>
+        public MusigPublicNonce? LocalCloseeNonce { get; set; }
+
+        /// <summary>
+        /// Simple taproot channels: the peer's current closee nonce (from its <c>shutdown</c> on this connection, then
+        /// the <c>next_closee_nonce</c> of its last <c>closing_sig</c>), which our next <c>closing_complete</c> signs
+        /// against; null before its <c>shutdown</c> or once our <c>closing_complete</c> used it.
+        /// </summary>
+        public MusigPublicNonce? RemoteCloseeNonce { get; set; }
 
         /// <summary>The IPC caller's close request (feerate, fee_range use), or null for the defaults.</summary>
         public ChannelCloseRequest? Request { get; set; }
@@ -170,6 +186,8 @@ public sealed class ClosingNegotiationRegistry
             SimpleClose = false;
             SimpleProposal = null;
             SimpleProposalSentOnConnection = false;
+            LocalCloseeNonce = null;
+            RemoteCloseeNonce = null;
             ReplyDueAt = null;
             EstimateFeeratePerKw = null;
             EstimateAttempted = false;

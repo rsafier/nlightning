@@ -47,7 +47,8 @@ public sealed class RestoreChanBackupClientHandler
                 result.Channels.Select(c => new ChanRestoreChannelInfo(c.Entry.ChannelId, c.Entry.RemoteNodeId,
                                                                        c.Entry.CapacitySat,
                                                                        c.Entry.OptionAnchorOutputs,
-                                                                       c.Action.ToString(), c.Detail))
+                                                                       c.Action.ToString(), c.Detail,
+                                                                       c.Entry.OptionSimpleTaproot))
                       .ToList(),
                 result.Peers.Select(p => new ChanRestorePeerInfo(p.NodeId, p.Address, p.Connected, p.Error)).ToList());
         }

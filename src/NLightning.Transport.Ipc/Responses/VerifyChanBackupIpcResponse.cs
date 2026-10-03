@@ -43,7 +43,8 @@ public sealed class VerifyChanBackupIpcResponse
                 IsInitiator = c.IsInitiator,
                 OptionAnchors = c.OptionAnchors,
                 KeysMatch = c.KeysMatch,
-                LocalState = c.LocalState
+                LocalState = c.LocalState,
+                OptionSimpleTaproot = c.OptionSimpleTaproot
             }).ToList()
         };
     }
@@ -64,4 +65,11 @@ public sealed class ChanBackupChannelIpcInfo
     [Key(8)] public bool OptionAnchors { get; init; }
     [Key(9)] public bool KeysMatch { get; init; }
     [Key(10)] public ChannelState? LocalState { get; init; }
+
+    /// <summary>Whether it is a simple taproot channel (NL-877 T5).</summary>
+    [Key(11)] public bool OptionSimpleTaproot { get; init; }
+
+    /// <summary>The channel type's name as the client prints it.</summary>
+    public static string TypeName(bool optionSimpleTaproot, bool optionAnchors) =>
+        optionSimpleTaproot ? "simple_taproot" : optionAnchors ? "anchors" : "static_remotekey";
 }

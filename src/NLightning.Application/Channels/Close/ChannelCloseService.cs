@@ -9,10 +9,12 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.LiquidityAds.Enums;
+using Domain.Node.Interfaces;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 using LiquidityAds;
+using Simple;
 
 /// <summary>
 /// <see cref="IChannelCloseService"/> (IPC <c>closechannel</c>, BOLT2 plan N10-T3): takes the channel's lock, checks
@@ -108,6 +110,7 @@ public sealed class ChannelCloseService : IChannelCloseService
                         throw new InvalidOperationException(
                             $"The peer of channel {channelId} is not connected on the channel's link");
 
+                    ThrowIfTaprootWithoutSimpleClose(scope, channel);
                     var coordinator = scope.ServiceProvider.GetRequiredService<ChannelCloseCoordinator>();
                     var messages = await coordinator.InitiateAsync(channel, request);
                     messages.AddRange(await coordinator.AdvanceAsync(channel));
@@ -160,6 +163,25 @@ public sealed class ChannelCloseService : IChannelCloseService
 
         // The refusal goes back to the operator, whose IPC handler logs it as one line (NL-883)
         throw new InvalidOperationException(LiquidityLeases.DescribeCloseRefusal(channelId, leases, height));
+    }
+
+    /// <summary>
+    /// A simple taproot channel closes cooperatively with <c>option_simple_close</c> only (its funding output is a
+    /// MuSig2 key, which the legacy <c>closing_signed</c> can't sign): refused, with a reason, when the peer's current
+    /// connection did not negotiate it. Without a peer manager (in-process harnesses) nothing is checked.
+    /// </summary>
+    private static void ThrowIfTaprootWithoutSimpleClose(IServiceScope scope, ChannelModel channel)
+    {
+        if (!TaprootCloseNonces.IsTaproot(channel)
+         || scope.ServiceProvider.GetService<IPeerManager>()?.GetPeer(channel.RemoteNodeId) is not { } peer
+         || !peer.TryGetPeerService(out var peerService)
+         || SimpleCloseCoordinator.IsNegotiated(peerService.Features))
+            return;
+
+        throw new InvalidOperationException(
+            $"Channel {channel.ChannelId} is a simple taproot channel, which closes cooperatively with "
+          + "option_simple_close only, and the peer's current connection did not negotiate it; reconnect to a peer "
+          + "that signals option_simple_close or use forceclosechannel");
     }
 
     private static ChannelCloseResult ToResult(ChannelModel channel) =>

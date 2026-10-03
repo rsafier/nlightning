@@ -20,6 +20,9 @@ public sealed class ExportChanBackupIpcResponse
     /// <summary>The node's backup file, when one is configured.</summary>
     [Key(2)] public string? FilePath { get; init; }
 
+    /// <summary>The channels it holds that are simple taproot channels (NL-877 T5).</summary>
+    [Key(3)] public List<ChannelId>? SimpleTaprootChannelIds { get; init; }
+
     public static ExportChanBackupIpcResponse FromClientResponse(ExportChanBackupClientResponse clientResponse)
     {
         ArgumentNullException.ThrowIfNull(clientResponse);
@@ -27,7 +30,8 @@ public sealed class ExportChanBackupIpcResponse
         {
             Backup = clientResponse.Backup,
             ChannelIds = clientResponse.ChannelIds.ToList(),
-            FilePath = clientResponse.FilePath
+            FilePath = clientResponse.FilePath,
+            SimpleTaprootChannelIds = clientResponse.SimpleTaprootChannelIds?.ToList()
         };
     }
 }

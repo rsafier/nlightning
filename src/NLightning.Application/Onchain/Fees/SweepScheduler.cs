@@ -228,6 +228,17 @@ public sealed class SweepScheduler : ISweepScheduler
             input.WitScript = WitScript.Empty;
         var unsignedBytes = replacement.ToBytes();
 
+        // Simple taproot script-path inputs (NL-877 T4): BIP 341 commits to every spent output, all recorded on the rows
+        IReadOnlyList<Domain.Bitcoin.Wallet.Models.SpentOutput>? taprootSpentOutputs =
+            inputs.Any(i => i.Data.TaprootControlBlock is not null)
+                ? replacement.Inputs
+                             .Select((input, i) => new Domain.Bitcoin.Wallet.Models.SpentOutput(
+                                         new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N,
+                                         LightningMoney.Satoshis(inputs[i].Data.AmountSat),
+                                         new BitcoinScript(inputs[i].Data.ScriptPubKey)))
+                             .ToList()
+                : null;
+
         try
         {
             for (var i = 0; i < replacement.Inputs.Count; i++)
@@ -236,6 +247,22 @@ public sealed class SweepScheduler : ISweepScheduler
                 var oldWitness = tx.Inputs[i].WitScript.Pushes.ToArray();
                 if (oldWitness.Length == 0)
                     return null;
+
+                // <64-byte BIP 340 sig> <leaf> <control_block>: only the signature changes
+                if (data.TaprootControlBlock is not null)
+                {
+                    var taprootContext = new SweepSigningContext(unsignedBytes, i, data.WitnessScript, data.AmountSat,
+                                                                 kind,
+                                                                 kind == SweepKeyKind.Revocation
+                                                                     ? null
+                                                                     : data.PerCommitmentPoint,
+                                                                 kind == SweepKeyKind.Revocation
+                                                                     ? revocationSecret
+                                                                     : null, taprootSpentOutputs);
+                    oldWitness[0] = _lightningSigner.SignSweepInput(close.ChannelId, taprootContext);
+                    replacement.Inputs[i].WitScript = new WitScript(oldWitness);
+                    continue;
+                }
 
                 var witnessScript = data.WitnessScript
                                  ?? (kind != SweepKeyKind.Payment && oldWitness.Length >= 3 ? oldWitness[^1] : null);

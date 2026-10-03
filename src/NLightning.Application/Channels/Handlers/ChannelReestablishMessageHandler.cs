@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace NLightning.Application.Channels.Handlers;
 
 using Close;
+using Close.Simple;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
@@ -224,10 +225,13 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
             replies.AddRange(await BuildStepAsync(channel, step, local, peer, peerPubKey));
 
         // B2-RE-28: our shutdown again, after the retransmitted updates; the fee negotiation restarts (B2-RE-29)
+        // (a simple taproot channel's carries a fresh closee nonce: the old secrets are forgotten)
         if (channel.LocalShutdownScript is { } shutdownScript)
         {
-            replies.Add(_messageFactory.CreateShutdownMessage(channelId, shutdownScript));
-            _closingRegistry?.Get(channelId).ShutdownSentOnConnection = true;
+            var closingEntry = _closingRegistry?.Get(channelId);
+            replies.Add(TaprootCloseNonces.CreateShutdown(channel, shutdownScript, _messageFactory, _lightningSigner,
+                                                          closingEntry));
+            closingEntry?.ShutdownSentOnConnection = true;
         }
 
         return replies;

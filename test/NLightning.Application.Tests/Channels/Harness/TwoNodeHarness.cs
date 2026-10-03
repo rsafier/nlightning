@@ -88,9 +88,9 @@ internal sealed class TwoNodeHarness : IDisposable
     private readonly TxId _fundingTxId = new(Enumerable.Repeat((byte)0x77, 32).ToArray());
     private readonly CommitmentNumber _obscuring;
     private readonly bool _hasAnchors;
+    private readonly bool _simpleTaproot;
     private readonly bool _localOnlySwitch;
     private readonly bool _announceChannel;
-    private readonly bool _simpleTaproot;
     private readonly Action<HarnessNode, IServiceCollection>? _configureServices;
 
     public HarnessNode Alice { get; private set; }

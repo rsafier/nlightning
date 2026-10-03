@@ -32,9 +32,10 @@ public class RevokedResolutionTests
     /// both HTLCs stay pending (so their upstream sides are still open). Optionally Bob offers b2 after k.
     /// </summary>
     private static RevokedBreachKit CreateBreach(bool addB2AfterRevokedState = false,
-                                                 RevokedCommitResolverOptions? options = null)
+                                                 RevokedCommitResolverOptions? options = null,
+                                                 bool simpleTaproot = false)
     {
-        var kit = new RevokedBreachKit(options);
+        var kit = new RevokedBreachKit(options, simpleTaproot: simpleTaproot);
         var pair = kit.Pair;
         pair.Add(pair.Bob, B1Msat, s_b1Preimage, B1Expiry);
         pair.Add(pair.Alice, A1Msat, s_a1Preimage, A1Expiry);
@@ -85,6 +86,33 @@ public class RevokedResolutionTests
         Assert.Contains(kit.Rows, r => r.Descriptor == OutputDescriptorKind.PaymentToRemote);
         Assert.Empty(kit.Events);
         Assert.Empty(kit.Alerts);
+    }
+
+    [Fact]
+    public async Task Given_RevokedTaprootCommitment_When_Resolved_Then_ToLocalPenalizedByTheRevocationLeafAndHtlcsAlerted()
+    {
+        // Arrange (NL-877 T4 safety floor): the cheater broadcasts a revoked simple taproot commitment
+        using var kit = CreateBreach(simpleTaproot: true);
+
+        // Act: a block after the commitment (our to_remote's CSV of 1 is then satisfied)
+        var actions = await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+
+        // Assert: the to_local penalty (revocation leaf) and our to_remote, every input valid by script execution
+        var broadcasts = actions.OfType<BroadcastAction>().Select(b => b.Transaction).ToList();
+        Assert.NotEmpty(broadcasts);
+        foreach (var broadcast in broadcasts)
+            kit.AssertVerifies(broadcast.TransactionId);
+        var toLocal = kit.Rows.Single(r => r.Descriptor == OutputDescriptorKind.RevokedToLocal);
+        Assert.Equal(OutputResolutionState.Broadcast, toLocal.State);
+        Assert.Contains(broadcasts, b => b.TransactionId == toLocal.ResolvingTransactionId);
+
+        // The revoked HTLC outputs' key-path penalties are not built (NL-966): alerted, not thrown, not spent
+        Assert.Equal(2, kit.Alerts.Count(a => a.RequirementId == "NL-966"));
+        Assert.DoesNotContain(kit.Rows, r => r is
+        {
+            Descriptor: OutputDescriptorKind.RevokedHtlc,
+            ResolvingTransactionId: not null
+        });
     }
 
     [Fact]

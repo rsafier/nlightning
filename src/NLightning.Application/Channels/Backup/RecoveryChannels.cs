@@ -120,7 +120,8 @@ public static class RecoveryChannels
                                               entry.UseScidAlias)
         {
             AnnounceChannel = entry.AnnounceChannel,
-            HasInferredParams = entry.HasInferredParams
+            HasInferredParams = entry.HasInferredParams,
+            OptionSimpleTaproot = entry.OptionSimpleTaproot
         };
 
         var capacity = LightningMoney.Satoshis(entry.CapacitySat);
