@@ -20,7 +20,7 @@ public class LndWorkloadTests
         // Assert
         Assert.Equal("alice", workload.Name);
         Assert.Equal(NodeKind.Lnd, workload.Kind);
-        Assert.Equal("custom_lnd:latest", workload.Image.Reference);
+        Assert.Equal("custom_lnd:0.21.4-beta", workload.Image.Reference);
         Assert.Equal(ImagePullPolicy.Never, workload.Image.PullPolicy);
         Assert.NotNull(workload.Data);
         Assert.Equal("/home/lnd/.lnd", workload.Data.MountPath);

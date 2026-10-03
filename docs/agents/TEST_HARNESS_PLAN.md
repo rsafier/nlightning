@@ -236,6 +236,10 @@ The same topology model, sized up, on a multi-node cluster.
    - `Lnd` nodes, the generated gRPC clients, the regtest topology (miner + alice/bob/carol/david, pre-opened channels).
    - Port `LightningRegtestNetworkFixture` and move the 47 LNUnit files behind an adapter that keeps the member names they use (`GetLndNode`, `LightningClient`...).
    - Remove the `lnunit` package.
+   - **Prepared: in-tree LND client (wip/lnd-grpc).** The generated clients, `LndNodeConnection` and `LndNodePool`
+     exist and are proven against LND 0.21.4; the swap is a `using`/type rename (record below).
+4. **Eclair, LDK, Tor, Postgres, faults (≈2–3 days).** Port the remaining fixtures; Tor closes NL-572; NetworkPolicy partition tests are new coverage.
+5. **Runner (≈1–2 days).**
 4. **Eclair, LDK, Tor, Postgres, faults (≈2–3 days).** Port the remaining fixtures; Tor closes NL-572; NetworkPolicy partition tests are new coverage.
 5. **Runner (≈1–2 days).**
    - `run-cluster` replaces `run-{onchain,gossip,abcd,interop}.sh` and the hand-made LND runs.
@@ -745,6 +749,45 @@ pattern carries over):
    wall time is about Docker's, so the target (≈15 min instead of ≈75) comes from running 4-6 suites at once.
 
 Total left: about 7-9 working days.
+
+### Prepared: in-tree LND client (2026-10-02, branch `wip/lnd-grpc` from wip/fafo)
+
+`test/NLightning.Testing.Lnd` (library, no product references) replaces the `lnunit.lnd` NuGet package, which can no
+longer be published; its `README.md` has the full swap table and the design notes.
+
+- **Clients.** Grpc.Tools client stubs from LND's 16 service protos under `lnrpc/` at v0.21.4-beta (commit
+  `390b2d2b`), committed under `Protos/` by `scripts/lnd-protos/update.sh <tag>`. The script downloads by commit, adds
+  one `option csharp_namespace` line per file and writes `manifest.txt` (sha256 per file, upstream and committed) and
+  LND's MIT notice `Protos/LICENSE-LND.txt`. The types live in `NLightning.Testing.Lnd.Lnrpc`, `.Routerrpc`,
+  `.Walletrpc`, `.Invoicesrpc`... so the assembly sits next to lnunit.lnd's global `Lnrpc`/`Routerrpc` in one test
+  assembly; the wire names (`lnrpc.Lightning`...) are unchanged.
+- **Connection layer**, ported from LNUnit.LND (MIT, `LICENSE-LNUnit.txt`): `LndSettings` (`FromFiles`, `FromBytes`,
+  `FromBase64`; `tls.cert` pinned instead of LNUnit's accept-any), `LndNodeConnection` (LNUnit's member names, plus
+  `ConnectAsync`), `LndNodePool` (thread-safe, readiness by `SERVER_ACTIVE`, LNUnit's 50/50 rebalance).
+- **Proven.** 108 unit tests (`NLightning.Testing.Lnd.Tests`: proto manifest and license, pinning and macaroon
+  against an in-process Kestrel HTTP/2 TLS fake, pool, coexistence with lnunit.lnd 3.0.4). Live:
+  `Docker/LndGrpcLiveTests` (`Explicit`, `Category=LndGrpc`) starts its own `polarlightning/bitcoind:29.0` and two
+  `custom_lnd:0.21.4-beta` nodes on its own network (`nltg-lndgrpc-<id>-*`) and drives them only through the new
+  client: `GetInfo` (0.21.4-beta), `NewAddress` + funding by mining, `ConnectPeer`, `OpenChannelSync` to active,
+  `AddInvoice` + `Invoices.SubscribeSingleInvoice` to `Settled`, `Router.SendPaymentV2` streamed to `SUCCEEDED` (one
+  run first got LND's `insufficient_balance` on the fresh channel, NL-319, and the retry paid), `LookupInvoiceV2`,
+  `ListChannels` balances (b 100,000 sat), `WalletKit.ListUnspent`, and an `LndNodePool` round over both (2 ready,
+  rebalance 1 payment of 396,530 sat to 500,000/496,530). Green 2 runs in a row, about 10-13 s each, its containers
+  and network removed every time (also after the two failed runs while writing it).
+- **Swap table (phase 3).** `using LNUnit.LND;` → `using Testing.Lnd;`, `using Lnrpc;` → `using Testing.Lnd.Lnrpc;`
+  (the same for `Routerrpc`, `Walletrpc`, `Invoicesrpc`, `Signrpc`, `Chainrpc`, `Peersrpc`, `Devrpc`, `Verrpc`);
+  `LNDNodeConnection` → `LndNodeConnection`, `LNDSettings` → `LndSettings`, `LNDNodePool` → `LndNodePool`,
+  `LNDNodePoolConfig` → `LndNodePoolConfig`, `GetLNDNodeConnection` → `GetLndNodeConnection`,
+  `RebalanceNodePool` → `RebalanceNodePoolAsync`; the client properties (`LightningClient`, `RouterClient`,
+  `WalletKitClient`, `InvoiceClient`...) and `LocalNodePubKey`/`LocalAlias` keep their names. Not 1:1: about 11
+  Docker files qualify names (`Routerrpc.SendToRouteRequest`): write `Testing.Lnd.Routerrpc.X`, or a non-clashing
+  alias; `<Using Alias="Routerrpc"/>` gives CS0576 while LNUnit is still referenced (Tests.Utils brings it in), so it
+  works only in the step that drops the package. LND 0.21 removed `SendPaymentSync`/`SendToRouteSync`,
+  `Router.SendPayment`/`SendToRoute`/`TrackPayment` and `outgoing_chan_id` on `SendPaymentRequest`/`QueryRoutesRequest`
+  (none used by the tests; `BuildRouteRequest.OutgoingChanId` stays). The Docker fixtures run
+  `custom_lnd:0.21.4-beta` since NL-768 (LND suite 89/89, on-chain 47/47, gossip 30/30, ABCD 11/11), and the
+  harness's version table uses the same tag (`LndPairTopologyTests` 1/1 on 0.21.4, 35 s); phase 3 lane B moves the
+  tests onto these clients.
 
 ## 6. Risks and open questions
 

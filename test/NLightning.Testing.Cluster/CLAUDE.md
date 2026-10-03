@@ -96,7 +96,7 @@ every implementation, our own node included, is driven through the same seams.
   - Image: `Runner/image/build.sh [Release]` builds `nltg-spike-runner:latest` (SDK 10.0 + the built
     `bin/<config>/net10.0` of the tests, no restore in the image); `RunnerImage.FromEnvironment()` takes
     `NLTG_RUNNER_IMAGE` for a pushed image. Rebuild it after changing the tests.
-- `Images/ImageVersions`: the one version table (bitcoind 29.0 Polar and 31.1 official by digest, `custom_lnd:latest`
+- `Images/ImageVersions`: the one version table (bitcoind 29.0 Polar and 31.1 official by digest, `custom_lnd:0.21.4-beta`
   Never, CLN v26.06.8 by digest, `nltg-eclair:0.14.3` Never, `nltg-ldk-server:dc02b76c` Never, postgres, busybox).
 - `Poll` (library root): the one deadline-bound wait (`UntilAsync` for a bool, `UntilDoneAsync` for a check that
   says what is missing, `ForAsync<T>` for a value); every wait of the chain helpers, topologies and node adapters
@@ -118,7 +118,7 @@ every implementation, our own node included, is driven through the same seams.
   wait), `StableNodeAddress`, the CLN node and `ClusterTopologyFixture<TDefinition>` (a topology kept warm per xunit
   collection).
 - `Nodes/Lnd/` (LND lane): `LndNodeOptions` (alias, the bitcoind Service, extra flags) → `LndWorkload.Build`
-  (`custom_lnd:latest` Never, LNUnit's `AddPolarLNDNode` flags, `lnddir` `/home/lnd/.lnd` on the PVC, readiness =
+  (`custom_lnd:0.21.4-beta` Never, LNUnit's `AddPolarLNDNode` flags, `lnddir` `/home/lnd/.lnd` on the PVC, readiness =
   `lncli getinfo` answers with `synced_to_chain`); `LndCredentials` (`tls.cert` + `admin.macaroon` read by exec);
   `LndGrpcConnection` (LNUnit.LND's generated `Lnrpc`/`Routerrpc`/`Walletrpc`/`Invoicesrpc` clients, the server
   certificate **pinned** to the node's `tls.cert`, macaroon header; pod IP from the host, pod DNS name in-cluster);

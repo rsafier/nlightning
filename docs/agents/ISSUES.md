@@ -133,12 +133,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 45 | 46 |
+| open | 0 | 0 | 1 | 47 | 48 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 186 | 372 | 634 |
+| fixed | 14 | 62 | 187 | 373 | 636 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **193** | **427** | **696** |
+| **Total** | **14** | **62** | **194** | **430** | **700** |
 
 ### Epics
 
@@ -6457,16 +6457,17 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Plan ref:** —
 
 ### NL-477 ClnQuiescenceTests in-flight case fails: CLN errors on our stfu when its fulfill crosses it
-- **Status:** fixed (f30f3be3; not reproduced since D13)
+- **Status:** fixed (d24014cd)
 - **Severity:** low
-- **Kind:** test
-- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnQuiescenceTests.cs` (`Given_OurHtlcInFlight_*`)
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure/Transport/Services/TcpService.cs`, `Transport/Tor/TorSocksDialer.cs` (Nagle on peer connections); `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnQuiescenceTests.cs` (`Given_OurHtlcInFlight_*`)
 - **Evidence:** Fails every run in the wave sp1 integration and also on the pre-wave `03b9a664`, so not a sp1 regression: we send `stfu` only after our add is committed and revoked both ways, CLN's `update_fulfill_htlc` crosses it, and CLN answers with the error "STFU but you still have updates pending?" although its own fulfill is the only pending update (reported by the integrator). Looks like CLN behaviour (compare NL-467).
 - **Update (wave sp2, `31950b81`):** still fails in the full CLN run and alone; the only CLN failure besides the order-dependent NL-486.
 - **Update (wave spr, integrated at `a0800ac2`):** failed again in the wave spr full CLN run and alone; still the only CLN failure (reported by the integrator).
 - **Update (wave d13, `f30f3be3`):** passed in both full CLN runs of wave d13 (the test node sets `OptionQuiesce` itself, but since D13 it also advertises `option_splice` by default, so CLN v26.06.8 sees a splicing peer; CLN's quiescence paths differ for one, compare NL-468). Closed as not reproduced; reopen if it fails again.
-- **Fix sketch:** Capture the message order; if our `stfu` is valid per BOLT 2, ask CLN's splicing lead (plan §10) and adapt the proof; otherwise delay our `stfu` until no update of the peer is pending.
-- **Blocks/Blocked-by:** Related NL-042, NL-467, NL-470
+- **Update (test harness phase 2, 2026-10-02, reopened and fixed in `d24014cd`):** the cause is ours: Nagle. CLN read our `revoke_and_ack` at .152 and our `stfu` at .193 although we wrote them 1 ms apart; Nagle held the `stfu` until CLN's delayed ACK (about 40 ms), and CLN sends its fulfill about 20 ms after our `revoke_and_ack`, so the fulfill always crossed. On the cluster harness it failed in every 3-at-once run; Docker's loopback path mostly hid it. Fix: `NoDelay` on every peer TCP connection (dialed, accepted, through Tor). After it: no crossing in 6 cluster runs, the proof test unchanged, and the Docker CLN suite 807 s instead of 876-886 s.
+- **Fix sketch:** Done (see the update above).
+- **Blocks/Blocked-by:** Related NL-042, NL-467, NL-470, NL-777
 - **Plan ref:** `SPLICING_PLAN.md` Proof Q
 
 ### NL-482 PeerManagerConnectTests two-node connect case fails under a loaded full run
@@ -6838,6 +6839,46 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Evidence:** batch11 review fix-up (2026-10-02, wip/batch11 dd2464bf): one failure in a full Application.Tests run (3619/3620), the test took 39 s there; the error text was not captured. The class passed alone 2/2 (about 5 s each) and the next full run passed 3620/3620. Nothing in that change touches blinded payments or the three-node harness. Possibly the same loaded-run stall as NL-764.
 - **Fix sketch:** on recurrence, rerun the full suite with `--blame-hang-timeout 5m` and keep the full output; then move the wait that runs out to a stepped clock or an event-driven wait, as the de-timing pass did.
 - **Blocks/Blocked-by:** Related NL-764, NL-747
+- **Plan ref:** —
+
+### NL-775 The chain monitor never re-read bitcoind's tip, so a block ZMQ missed waited for the next block
+- **Status:** fixed (d9e0625c)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`StartAsync`, `PollTipAsync`), `BitcoinOptions.TipPollInterval`
+- **Evidence:** test harness phase 2 (2026-10-02): `StartAsync` catches up over RPC, then subscribes to ZMQ (NetMQ connects in the background) and never read the tip again. A block mined in that window, or while ZMQ reconnects after a bitcoind restart or a network blip, was processed only when the next block arrived (about 10 minutes on mainnet, delaying HTLC deadline and sweep reactions). Seen as `FundWalletAsync` timeouts in the first 3-at-once CLN batch on the cluster (2 hits in 231 executions); an earlier test-only ZMQ startup guard had hidden it and was removed.
+- **Fix sketch:** Done: `Bitcoin:TipPollInterval` (default 30 s, 0 = off, negative refused at start). The monitoring loop reads the tip over RPC; a poll that finds the monitor behind only notes it, the next one at the same processed height catches up over RPC under the ZMQ path's lock (tip re-read inside), logs a warning and counts `TipPollCatchUps`; nothing is polled while processing is halted. `NLightningTestNode` uses 1 s. Tests: `BlockchainMonitorServiceTests` (catch-up order, no double fetch, halted, loop), `BitcoinOptionsTests`.
+- **Blocks/Blocked-by:** Related NL-310, NL-311
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 2 record"
+
+### NL-776 CLN v26.06.8 sends a P2TR shutdown script on a dual-funded channel without `option_shutdown_anysegwit`, so our cooperative close stalls
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Close/` (`ChannelCloseCoordinator`, B2-SHUT-R02), `FeatureOptions.BeyondSegwitShutdown` (default No); the v2 open accepts CLN's P2TR upfront script without complaint
+- **Evidence:** test harness phase 2 lane A (cluster `InProcessNodeClusterTests`): our node opens a dual-funded channel to CLN (`--experimental-dual-fund`) and closes it cooperatively; CLN's `close_to` is P2TR (`5120…`), our init does not set bits 26/27, so we refuse CLN's `shutdown` with "shutdown scriptpubkey is not a valid form"; our channel stays ShuttingDown and CLN stays in CLOSINGD_SIGEXCHANGE. v1 channels with CLN close fine (Docker `ClnCloseTests`), and the Docker dual-fund proofs never close cooperatively. The cluster proof advertises the option for now (comment in the test).
+- **Fix sketch:** Advertise `option_shutdown_anysegwit` Optional by default (the validator already accepts segwit v1-16), check whether BOLT 9 lists it as assumed now, refuse a P2TR upfront script at open when the feature is not negotiated, and add a Docker dual-fund close proof against CLN.
+- **Blocks/Blocked-by:** Related NL-286, NL-037
+- **Plan ref:** —
+
+### NL-777 An accepted connection the peer had already reset ended the listener
+- **Status:** fixed (1d776c4c)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure/Transport/Services/TcpService.cs` (accept loop)
+- **Evidence:** with NL-477's `NoDelay`: setting it on an accepted socket the peer has already reset throws `SocketException` (EINVAL on macOS), which would have ended the listener loop.
+- **Fix sketch:** Done: the connection is dropped (logged at Debug) and the loop goes on.
+- **Blocks/Blocked-by:** Related NL-477
+- **Plan ref:** —
+
+### NL-778 A full non-Docker run printed an xUnit catastrophic `SocketException: Invalid argument` once
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** the full `dotnet test -f net10.0 --filter 'FullyQualifiedName!~Docker'` run (assembly not identified)
+- **Evidence:** test harness phase 2 proof (2026-10-02): "[FATAL ERROR] System.Net.Sockets.SocketException: Invalid argument" at 00:00:08.13; `dotnet test` exited 1 although every assembly reported its full count with 0 failures. Not reproduced in a second full run nor in single-assembly runs of 8 of the 10 assemblies. A link to NL-777 is not shown (that path is caught and logged).
+- **Fix sketch:** On recurrence capture the full output with `--blame` and identify the assembly; check test listeners that set socket options on accepted sockets.
+- **Blocks/Blocked-by:** Related NL-777, NL-764
 - **Plan ref:** —
 
 ### NL-749 Cost-basis lots landed in the wrong bucket when the clearing account was spent before the event that pays it

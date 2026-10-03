@@ -9,7 +9,7 @@ public class ImageVersionsTests
     public void Given_ALocallyBuiltImage_When_Referenced_Then_ItIsNeverPulled()
     {
         // Assert
-        Assert.Equal("custom_lnd:latest", ImageVersions.Lnd.Reference);
+        Assert.Equal("custom_lnd:0.21.4-beta", ImageVersions.Lnd.Reference);
         Assert.Equal(ImagePullPolicy.Never, ImageVersions.Lnd.PullPolicy);
         Assert.Equal(ImagePullPolicy.Never, ImageVersions.Eclair.PullPolicy);
         Assert.Equal(ImagePullPolicy.Never, ImageVersions.Ldk.PullPolicy);

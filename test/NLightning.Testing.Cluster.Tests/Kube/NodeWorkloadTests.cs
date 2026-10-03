@@ -78,7 +78,7 @@ public class NodeWorkloadTests
         // Assert
         var container = Assert.Single(spec.Containers);
         Assert.Equal("alice", container.Name);
-        Assert.Equal("custom_lnd:latest", container.Image);
+        Assert.Equal("custom_lnd:0.21.4-beta", container.Image);
         Assert.Equal("Never", container.ImagePullPolicy);
         Assert.Null(container.Command);
         Assert.Equal(["--bitcoin.regtest"], container.Args);

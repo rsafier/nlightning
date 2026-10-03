@@ -21,7 +21,7 @@ public sealed record LndNodeOptions
     /// <summary>The node's alias: StatefulSet, Service, container name and LND's <c>--alias</c>.</summary>
     public string Alias { get; }
 
-    /// <summary>The image (the version table's <c>custom_lnd:latest</c>, never pulled).</summary>
+    /// <summary>The image (the version table's <c>custom_lnd:0.21.4-beta</c>, never pulled).</summary>
     public ImageRef Image { get; init; } = ImageVersions.Lnd;
 
     /// <summary>The bitcoind Service the node follows (RPC and ZMQ).</summary>

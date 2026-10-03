@@ -34,9 +34,10 @@ public static class ImageVersions
             "sha256:da25cedc66b1daefff9f412ee196c901a899c3fa68a33b20849c3e08b5c40d63");
 
     /// <summary>
-    /// LND 0.20.0-beta, built locally from <c>test/Docker/custom_lnd</c> by the LND fixture. Reused as it is.
+    /// LND 0.21.4-beta, built locally from <c>test/Docker/custom_lnd</c> by the LND fixture (the Docker suites run the
+    /// same tag since NL-768). Reused as it is.
     /// </summary>
-    public static readonly ImageRef Lnd = new("custom_lnd", "latest", PullPolicy: ImagePullPolicy.Never);
+    public static readonly ImageRef Lnd = new("custom_lnd", "0.21.4-beta", PullPolicy: ImagePullPolicy.Never);
 
     /// <summary>
     /// Core Lightning as in <c>ClnFixture</c> (interop needs at least v26.06.7).
