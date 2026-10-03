@@ -1600,7 +1600,35 @@ are not ported; CI on a cluster and NativeAOT are deferred.
   reason, 12 container-free helpers passed, no container started; `scripts/run-cluster.sh --matrix
   lnd,onchain,anchors,gossip,abcd -j 3 --max-namespaces 3` (batch `ia-lnunit-mx1`) green in 798 s: lnd 58/58, gossip
   30/30, onchain 33/33 (+2 Explicit not run), anchors 18/18, abcd 11/11, no rerun, peak 3 namespaces, none left;
-  `scripts/tests/run-cluster-tests.sh` 48/48.
+  `scripts/tests/run-cluster-tests.sh` 48/48. The day0 suite was missing from that matrix (NL-862): at the
+  integration (`wip/integrate` 5a62e771, batch `integ-mx1`, `--matrix day0,eclair -j 2 --max-namespaces 3`) day0 5/5
+  green in 446 s (`Day0FlowTests` 1, `Day0UpgradeInPlaceTests` 2, `ChannelPolicyPublicFlowTests` 1,
+  `SpliceLndObserverTests` 1), no rerun.
+
+### Integration record (wip/integrate, 2026-10-03)
+
+Owner decisions 2026-10-03: NL-820 option (b), and PR #19 (liquidity ads, NL-850) merged with the harness into
+`wip/fafo` together. Branch `wip/integrate` from `wip/harness-spike` 07cce046: `ia-retire-lnunit` merged first, then
+`ia-pr19` (`c0d6a0cf`; PR #19's 16 commits plus its renumbering NL-771..NL-780 → NL-850..NL-859 and the wip/fafo
+cb5c258f merge).
+
+- **Conflicts.** `CLAUDE.md`, `test/CLAUDE.md` (both sides kept), `docs/agents/ISSUES.md` (both sides' notes and
+  entries, the Summary rows recounted), `Fixtures/EclairFixture.cs`: PR #19's liquidity seller (a second Eclair with
+  `eclair.liquidity-ads`) went behind the Eclair backend switch (NL-864): `IEclairBackend.StartSellerAsync` starts a
+  container on Docker and a node in the collection's run namespace on the cluster (`emptyDir`, pod IP, wallet made by
+  the init container), with the same `EclairFixture.SellerConfigLines` on both (pinned by `EclairBackendTests`).
+- **Review fixes.** NL-860 (medium): with `NLTG_TEST_BACKEND=cluster` but no buildable Kubernetes configuration the LND
+  fixture now fails (`ConfigurationError`, thrown by `InitializeAsync`) instead of skipping, and
+  `XunitRunResult.IsGreen` needs a passed test, so an all-skipped suite is a failure of the matrix. NL-861: the canary
+  and day-0 runbooks, REMAINING_WORK and the Application guide point at `run-cluster.sh`. NL-862: day0 proven (above).
+  NL-863: the liquidity ads follow-up ranges include NL-859.
+- **Proof.** Cluster batch `integ-mx1` (above): day0 5/5, eclair 25/25 + 2 `Explicit` not run, including
+  `EclairLiquidityAdsTests` 4/4 with the seller in the run namespace (ready in 6.6 s), matrix wall 894 s, no namespace
+  left. Docker: `EclairLiquidityAdsTests` 4/4 + 1 `Explicit` not run in 158 s (`scripts/run-interop.sh eclair Release -class ...`, under the Docker lock), no container left. Gates: Release build 0 warnings on net10.0 (`--no-incremental`) and the
+  SDK 11 net11.0 compile check, format, sln check; non-Docker suite on net10.0 with `--blame-hang-timeout 5m`: 14,640
+  passed, 8 platform skips (Domain 4339, Application 3740, Infrastructure.Bitcoin 1639, Daemon 1358, Integration 1154
+  incl. `CompiledModelTests` and `PersistenceConfigurationTests`, Testing.Cluster 671, Infrastructure 665,
+  Serialization 633, Bolt11 343, Testing.Lnd 106).
 
 ## 6. Risks and open questions
 

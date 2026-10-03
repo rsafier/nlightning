@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the wip/integrate integrator (branch `wip/integrate` from `wip/harness-spike` 07cce046; owner decisions 2026-10-03: NL-820 option (b) and PR #19 merged with the harness): merges `ia-retire-lnunit` (NL-820 fixed, the Docker LND backend and LNUnit gone) and `c0d6a0cf` (`ia-pr19`: liquidity ads, PR #19's NL-771..NL-780 as NL-850..NL-859, wip/fafo's NL-779 and NL-810 unchanged); review fixes NL-860 (medium) and NL-861..NL-864 (low), all fixed. NL-864 runs PR #19's Eclair seller on both Eclair backends.
+
 Updated 2026-10-03 by the test harness phase 3/5/6 write-up (branch `wip/harness-spike`; the phase 6 lanes and proof committed on the branch after `3e31759f`): NL-825 (fixed, 251feaa8: a stopped `NLightningTestNode` clears its SQLite pool so a restored snapshot is read on the macOS host), NL-830 (fixed, b246306e: `SpliceLndObserverTests` waits for bob's edge before the splice), NL-840 (fixed, 69fd5caa: every run waits until its namespace is gone), NL-841 (fixed, 6e87db78: `day0` and `eclair2` split off, `lnd` first), NL-842 (fixed, 47e9a2ea: `ChainSync.EnsureLndSpendableAsync` before G1 (b)), NL-843 (open, diagnostics 2ee6e42f: ZMQ heal timing under two matrices at once) and NL-844 (open, owner decision: the 15 min matrix needs about 7 namespaces) added; NL-262 and NL-276 fixed on the cluster backend (moot there: the full matrix green at 6 namespaces in 18 min and twice at once, `TEST_HARNESS_PLAN.md` "Phase 6 proof record"; the Docker fallback keeps their workarounds); NL-818 and NL-820 updated, still open. NL-826..NL-829, NL-831..NL-839 were not assigned. No product bug in these phases. Summary rows recounted from the entries: 730 entries, no duplicate IDs.
 
 Updated 2026-10-03 by the test harness phase 3/5/6 integrator (branch `wip/harness-spike` from `7593fdda`; three lanes merged with `--no-ff` in this order — lane branches `hf-*` hold the originals; statuses carry the lane SHAs and the merge SHA): `e9305ee0` (hf-lnd-wire: `LightningRegtestNetworkFixture` behind `NLTG_TEST_BACKEND`, NL-780 fixed), `304c2976` (hf-runner: `run-cluster.sh --matrix`, NL-816 and NL-817 fixed, NL-818 open), `b74efadf` (hf-lnunit: NL-819 fixed, NL-820 open). Every confirmed review finding of the three lanes fixed in `dbf77b1e` as NL-821 (medium: Docker-by-name test code on the cluster backend), NL-822, NL-823 and NL-824; none rejected (the "lnd exceeds its weight without `-parallel none`" finding is answered by the catalog's one-collection `lnd` and a cluster re-proof of the moved classes). NL-811..NL-815 were not assigned. Gates: Release `--no-incremental` build 0 warnings, `dotnet format` clean, `check-sln-configs` OK, non-Docker net10.0 suite 14,283 passed with 6 platform/explicit skips and one NL-729 regex-timeout failure (`ClassificationEngineTests`, 53/53 alone), `run-cluster-tests.sh` 48/48, the LND suite on the cluster (`--suite lnd` 58/58 plus the moved classes 6/6 and 2/2) and on Docker under the machine lock (90/90). No SQL Server tests.
@@ -143,10 +145,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 59 | 60 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 195 | 391 | 662 |
+| fixed | 14 | 62 | 196 | 395 | 667 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **62** | **203** | **461** | **740** |
+| **Total** | **14** | **62** | **204** | **465** | **745** |
 
 ### Epics
 
@@ -7614,7 +7616,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Kind:** tech-debt
 - **Location:** `test/NLightning.Integration.Tests/Fixtures/Lnd/DockerLndBackend.cs`, `test/Directory.Build.props` (the NL-170 `NuGetAuditSuppress`)
 - **Evidence:** test harness phase 3/5/6 lane hf-lnunit: `LNUnitBuilder` is about 900 decompiled lines; the cluster's `LndRegtestNetwork` (894 lines) does the same on a `TestRun` topology with pod handles. An owner decision.
-- **Fix sketch:** (a) About 1-1.5 days: re-implement on Docker.DotNet (miner bitcoind on the default bridge, four `custom_lnd:0.21.4-beta` containers named by alias with `LndWorkload`'s flags, `tls.cert`/macaroon from the container archive, `SERVER_ACTIVE` waits, funding, permanent peers, pushed opens, policies and the graph wait of `LndRegtestNetworkSpec.Default`, the image build with `System.Formats.Tar`); container names, the bridge network and `host.docker.internal` must stay. (b) Retire the Docker LND backend once the cluster backend is the default for the LND, on-chain, gossip and ABCD suites (phase 6). Either way the `LNUnit` reference, `lnunit.lnd` and SharpCompress 0.41.0 go, and with them the NL-170 suppression. Update (test harness phase 6, 2026-10-03): the precondition of (b) is met: the LND, on-chain, anchors, gossip, day0 and ABCD suites are proven on the cluster backend and run in the default matrix; the Tor suite uses CLN only. Owner decision 2026-10-03: (b). Done on branch `ia-retire-lnunit` (from 07cce046): `DockerLndBackend`, `ILndNetworkBackend`, `LnUnitConfinementTests` and the `LNUnit` reference removed (with `lnunit.lnd`, ServiceStack and SharpCompress 0.41.0), the NL-170 suppression dropped; `LightningRegtestNetworkFixture` runs on `ClusterLndBackend` only and, without `NLTG_TEST_BACKEND=cluster` or a kubeconfig, reports every test that touches it skipped with the reason (`UnavailableReason`, `SkipIfUnavailable`; `Fixtures/LightningRegtestNetworkFixtureTests`); `Fixtures/LnUnitAbsenceTests` keeps every LNUnit package out of the solution; the Docker-only LND paths (NL-262 address holds, `LndChannelDbRollback`'s and `RelayBitcoind`'s container paths) removed; `run-onchain.sh`, `run-gossip.sh`, `run-abcd.sh` reduced to pointers at `run-cluster.sh`. Record: `TEST_HARNESS_PLAN.md` "NL-820 record".
+- **Fix sketch:** (a) About 1-1.5 days: re-implement on Docker.DotNet (miner bitcoind on the default bridge, four `custom_lnd:0.21.4-beta` containers named by alias with `LndWorkload`'s flags, `tls.cert`/macaroon from the container archive, `SERVER_ACTIVE` waits, funding, permanent peers, pushed opens, policies and the graph wait of `LndRegtestNetworkSpec.Default`, the image build with `System.Formats.Tar`); container names, the bridge network and `host.docker.internal` must stay. (b) Retire the Docker LND backend once the cluster backend is the default for the LND, on-chain, gossip and ABCD suites (phase 6). Either way the `LNUnit` reference, `lnunit.lnd` and SharpCompress 0.41.0 go, and with them the NL-170 suppression. Update (test harness phase 6, 2026-10-03): the precondition of (b) is met: the LND, on-chain, anchors, gossip, day0 and ABCD suites are proven on the cluster backend and run in the default matrix; the Tor suite uses CLN only. Owner decision 2026-10-03: (b). Done on branch `ia-retire-lnunit` (from 07cce046): `DockerLndBackend`, `ILndNetworkBackend`, `LnUnitConfinementTests` and the `LNUnit` reference removed (with `lnunit.lnd`, ServiceStack and SharpCompress 0.41.0), the NL-170 suppression dropped; `LightningRegtestNetworkFixture` runs on `ClusterLndBackend` only and, without `NLTG_TEST_BACKEND=cluster` or a kubeconfig, reports every test that touches it skipped with the reason (`UnavailableReason`, `SkipIfUnavailable`; `Fixtures/LightningRegtestNetworkFixtureTests`); `Fixtures/LnUnitAbsenceTests` keeps every LNUnit package out of the solution; the Docker-only LND paths (NL-262 address holds, `LndChannelDbRollback`'s and `RelayBitcoind`'s container paths) removed; `run-onchain.sh`, `run-gossip.sh`, `run-abcd.sh` reduced to pointers at `run-cluster.sh`. Record: `TEST_HARNESS_PLAN.md` "NL-820 record". Update (wip/integrate, 2026-10-03): merged with PR #19; review fixes NL-860 (a cluster run without a Kubernetes configuration fails the fixture instead of skipping, and an all-skipped suite is never green), NL-861 (runbooks), NL-862 (day0 5/5 on the cluster, batch `integ-mx1`).
 - **Blocks/Blocked-by:** Related NL-170, NL-819
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Lane record: LNUnit confined to the Docker LND backend"
 
@@ -7727,6 +7729,56 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** Owner decision: allow about 7 namespaces (the VM has 28 cores and 64 GiB), or shorten the long poles (CLN, gossip, eclair).
 - **Blocks/Blocked-by:** Related NL-841
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+
+### NL-860 With `NLTG_TEST_BACKEND=cluster` but no buildable Kubernetes configuration the LND fixture skipped every test, and the matrix judged the all-skipped suites green
+- **Status:** fixed (5a62e771)
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/LightningRegtestNetworkFixture.cs` (`GetUnavailableReason`, `InitializeAsync`), `test/NLightning.Testing.Cluster/Run/Matrix/XunitResults.cs` (`XunitRunResult.IsGreen`)
+- **Evidence:** wip/integrate review of the NL-820 lane (ia-retire-lnunit, 8f218e79): `GetUnavailableReason` returned a skip reason also when the backend was explicitly the cluster and `KubeClientFactory.BuildConfiguration()` threw (a pod with `KUBERNETES_SERVICE_HOST` but no service-account token, or a test process that does not see the runner's kubeconfig/context). Every test of the regtest, onchain-regtest and gossip-regtest collections was then reported Skipped, and `IsGreen` (`Found && Total > 0 && Failed == 0 && Errors == 0`, xunit's total includes skipped tests) marked lnd, onchain, anchors, gossip, day0 and abcd green with 0 passed; `run-cluster.sh` exited 0. Before NL-820 `ClusterLndBackend.StartAsync` threw there, a red suite.
+- **Fix sketch:** Done: on the cluster backend a missing Kubernetes configuration is `ConfigurationError`, thrown by `InitializeAsync` (a fixture failure; the skip stays for the unset or docker backend); `IsGreen` needs at least one passed test, so an all-skipped suite is Failed. Tests: `LightningRegtestNetworkFixtureTests.Given_TheClusterBackendWithoutAKubeConfiguration_*_Then_ItFailsInsteadOfSkipping`, `MatrixReportTests.Given_EveryTestSkipped_When_ReadAndJudged_Then_TheSuiteIsNotGreen`; `scripts/tests/run-cluster-tests.sh` 48/48.
+- **Blocks/Blocked-by:** Related NL-820, NL-823
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Integration record (wip/integrate)"
+
+### NL-861 Runbooks and the Application guide still prescribed the retired Docker LND runners
+- **Status:** fixed (5a62e771)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `docs/agents/MAINNET_CANARY_RUNBOOK.md`, `docs/agents/DAY0_RUNBOOK.md`, `docs/agents/REMAINING_WORK.md`, `src/NLightning.Application/CLAUDE.md`
+- **Evidence:** wip/integrate review of the NL-820 lane: the canary checklist's release gate ran the Docker suites "from the in-container runner" and ABCD with `scripts/run-abcd.sh 3`; the day-0 runbook ran its proofs with `scripts/run-gossip.sh`; the Application guide pointed the O2 and backup/restore proofs at `scripts/run-onchain.sh`; REMAINING_WORK still asked for an in-container runner (NL-276). Those scripts only print a pointer and exit 2 since NL-820.
+- **Fix sketch:** Done: `scripts/run-cluster.sh --matrix lnd,onchain,anchors,gossip,day0,abcd,cln`, `-n 3 --suite abcd`, `-n 1 --suite day0` and `-n 1 --suite onchain [--class ...]`; the CI bullet says the LND suites run on the cluster and CI on a cluster is deferred. Historical records keep their commands.
+- **Blocks/Blocked-by:** Related NL-820
+- **Plan ref:** —
+
+### NL-862 The day0 LND suite was not run on the cluster after the Docker LND backend was retired
+- **Status:** fixed (5a62e771, cluster batch `integ-mx1`)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `docs/agents/TEST_HARNESS_PLAN.md` "NL-820 record"; the `day0` suite (`Docker.Day0.*`, `ChannelPolicyPublicFlowTests`, `SpliceLndObserverTests`)
+- **Evidence:** wip/integrate review of the NL-820 lane: its proof matrix was `--matrix lnd,onchain,anchors,gossip,abcd` (batch `ia-lnunit-mx1`), with no day0 row, although day0 runs on the changed fixture and the skip-before-port paths of `NLightningTestNode`.
+- **Fix sketch:** Done: `scripts/run-cluster.sh --matrix day0,eclair -j 2 --max-namespaces 3` (batch `integ-mx1`, at 5a62e771 on wip/integrate): day0 5/5 green in 446 s (`Day0FlowTests` 1, `Day0UpgradeInPlaceTests` 2, `ChannelPolicyPublicFlowTests` 1, `SpliceLndObserverTests` 1), no rerun; counts added to the NL-820 record.
+- **Blocks/Blocked-by:** Related NL-820, NL-841
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "NL-820 record"
+
+### NL-863 The liquidity ads epic and docs listed the follow-ups as NL-851..NL-858, leaving out NL-859
+- **Status:** fixed (5a62e771)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `docs/agents/ISSUES.md` (the NL-850 epic row and entry), `CLAUDE.md`, `docs/agents/BOLT_COVERAGE.md`, `docs/agents/LIQUIDITY_ADS_PLAN.md`
+- **Evidence:** wip/integrate review of the PR #19 lane (ia-pr19): PR #19's commit 13f00226 added NL-780 (now NL-859, the `EclairCloseTests` simple-close flake, related NL-850) without widening the ranges; the renumbering kept them at NL-851..NL-858.
+- **Fix sketch:** Done: the living docs say NL-851..NL-859; the dated LA7 note keeps what it said then. No count changed.
+- **Blocks/Blocked-by:** Related NL-850, NL-859
+- **Plan ref:** `LIQUIDITY_ADS_PLAN.md` Record
+
+### NL-864 PR #19's liquidity seller ran on the Docker Eclair backend only; the harness's cluster Eclair backend had no seller
+- **Status:** fixed (c0d6a0cf)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/EclairFixture.cs` (`GetSellerAsync`, `SellerConfigLines`), `Fixtures/Eclair/{IEclairBackend,DockerEclairBackend,ClusterEclairBackend}.cs`, `Docker/Interop/Eclair/EclairLiquidityAdsTests.cs`
+- **Evidence:** merge of PR #19 (liquidity ads, NL-850) into the test harness branch: PR #19 added a second Eclair, configured as seller, to the Docker-only `EclairFixture` (container, `InteropChainHost`, fixed host ports), while the harness had put `EclairFixture` behind `IEclairBackend` with a cluster backend; `run-cluster.sh --suite eclair` selects `EclairLiquidityAdsTests` by trait.
+- **Fix sketch:** Done: `IEclairBackend.StartSellerAsync`/`DumpSellerLogAsync`; Docker starts the container as PR #19 did, the cluster deploys `nltg-eclair-seller` into the collection's run namespace (`EclairNode.Workload` with `ClusterEclairBackend.BuildSellerOptions`: wallet `eclair-seller` made by the init container, `emptyDir`, pod IP); both write `EclairFixture.SellerConfigLines` after the common configuration (`EclairBackendTests` pin it on both). Proof: cluster batch `integ-mx1` eclair 25/25 + 2 `Explicit` not run, `EclairLiquidityAdsTests` 4/4; Docker `scripts/run-interop.sh eclair Release -class ...EclairLiquidityAdsTests` 4/4 + 1 `Explicit` not run (158 s).
+- **Blocks/Blocked-by:** Related NL-850, NL-820
+- **Plan ref:** `LIQUIDITY_ADS_PLAN.md` LA6; `TEST_HARNESS_PLAN.md` "Integration record (wip/integrate)"
 
 ## Docs
 

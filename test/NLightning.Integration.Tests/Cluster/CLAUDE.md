@@ -120,6 +120,14 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
 - Test bodies changed only where they named Docker: `HostAddressForEclair` instead of `host.docker.internal`,
   `DumpEclairLogAsync` instead of container log dumps, `EclairFixture.MineAsync` instead of `Chain.MineAsync`
   (`EclairFixture.Chain`, the Docker-only `InteropChainHost`, is gone from the fixture).
+- The liquidity seller of PR #19 (NL-850, `EclairLiquidityAdsTests`) runs on both backends (NL-864):
+  `EclairFixture.GetSellerAsync` asks the backend (`IEclairBackend.StartSellerAsync`, once per fixture) for a second
+  Eclair `nltg-eclair-seller` on the same bitcoind, wallet `eclair-seller`, with `EclairFixture.SellerConfigLines`
+  (`eclair.liquidity-ads` at `EclairFixture.SellerRates`) after the common configuration: on Docker a container with
+  fixed host ports, on the cluster a node deployed into the collection's run namespace (`EclairNode.Workload` with
+  `ClusterEclairBackend.BuildSellerOptions`: `emptyDir`, never restarted, dialed and called at its pod IP; the wallet
+  init container creates the wallet), removed with the namespace. Its config is pinned on both backends by
+  `EclairBackendTests`; a failed test dumps its log through `EclairFixture.DumpSellerLogAsync`.
 - Run: `scripts/run-cluster.sh -n 1 --suite eclair` and `--suite eclair2` (no Docker lock; the catalog runs
   `EclairSpliceTests`, the longest class, as `eclair2`, its own process and Eclair topology, NL-841; `--class` for one
   class, `--explicit on` adds the Explicit E-X1 open). `scripts/run-interop.sh eclair` is unchanged and runs the Docker backend (under the machine's
