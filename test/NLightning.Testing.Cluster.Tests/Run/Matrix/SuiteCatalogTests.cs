@@ -62,9 +62,10 @@ public class SuiteCatalogTests
         Assert.Equal(["lnd", "onchain", "anchors", "gossip", "abcd"],
                      SuiteCatalog.All.Where(s => s.Requirement == SuiteRequirement.LndClusterBackend)
                                  .Select(s => s.Name));
-        // lnd, onchain, anchors and abcd are proven on the cluster (in the default matrix); an LND suite still waiting
-        // for its proof carries ClusterProofPending
-        Assert.All(["lnd", "onchain", "anchors", "abcd"], name => Assert.Null(SuiteCatalog.Get(name).ClusterProofPending));
+        // lnd, onchain, anchors, gossip and abcd are proven on the cluster (in the default matrix); an LND suite still
+        // waiting for its proof carries ClusterProofPending
+        Assert.All(["lnd", "onchain", "anchors", "gossip", "abcd"],
+                   name => Assert.Null(SuiteCatalog.Get(name).ClusterProofPending));
     }
 
     [Fact]

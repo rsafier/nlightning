@@ -45,9 +45,7 @@ public static class SuiteCatalog
                 "-class", $"{Docker}.ChannelPolicyPublicFlowTests", "-class", $"{Docker}.SpliceLndObserverTests"
             ],
             ["-class-", $"{Docker}.Gossip.Capture.*"],
-            "off", 1, 1, TimeSpan.FromMinutes(60), SuiteRequirement.LndClusterBackend,
-            ClusterProofPending: "only ChannelPolicyPublicFlowTests and SpliceLndObserverTests have run on the "
-                               + "cluster"),
+            "off", 1, 1, TimeSpan.FromMinutes(60), SuiteRequirement.LndClusterBackend),
         new("eclair", "the Eclair interop suite (Category=Interop.Eclair)", "integration",
             [], ["-trait", "Category=Interop.Eclair"], "off", 1, 1, TimeSpan.FromMinutes(45)),
         new("cln", "the CLN interop suite (Category=Interop.Cln)", "integration",
