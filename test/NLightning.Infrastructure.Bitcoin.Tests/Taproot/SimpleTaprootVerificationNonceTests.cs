@@ -48,22 +48,38 @@ public class SimpleTaprootVerificationNonceTests
     }
 
     [Fact]
-    public void Given_CommitmentZero_When_Deriving_Then_TheFundingTxIdIsIgnored()
+    public void Given_AV1OpensCommitmentZero_When_Deriving_Then_ItUsesTheContextWithoutTxId()
     {
-        // Arrange: commitment 0's nonce goes out in open_channel/accept_channel, before the funding txid exists
+        // Arrange: a v1 open's commitment 0 nonce goes out in open_channel/accept_channel, before the txid exists
         var kit = new TaprootSignerKit();
 
         // Act
         var withoutTxId = kit.Alice.GetLocalVerificationNonce(0u, null, 0);
-        var withTxId = kit.Alice.GetLocalVerificationNonce(0u, kit.FundingTxId, 0);
-        var otherTxId = kit.Alice.GetLocalVerificationNonce(0u, s_otherFundingTxId, 0);
         var byChannel = kit.Alice.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, null, 0);
+        var namingTheFunding = kit.Alice.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, kit.FundingTxId, 0);
 
-        // Assert
-        Assert.Equal(withoutTxId, withTxId);
-        Assert.Equal(withoutTxId, otherTxId);
+        // Assert: the channel id overload of a v1 channel finds the nonce sent in open_channel
         Assert.Equal(withoutTxId, byChannel);
+        Assert.Equal(withoutTxId, namingTheFunding);
         Assert.NotEqual(withoutTxId, kit.Alice.GetLocalVerificationNonce(0u, kit.FundingTxId, 1));
+    }
+
+    [Fact]
+    public void Given_ADualFundedOpensAttempts_When_DerivingCommitmentZero_Then_EachAttemptHasItsOwnNonce()
+    {
+        // Arrange: every RBF attempt of a dual-funded open is another funding on the original keys (NL-972)
+        var kit = new TaprootSignerKit(isDualFunded: true);
+        var (otherTxId, _) = kit.RegisterPendingFunding(keyIndex: 0);
+
+        // Act
+        var first = kit.Alice.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, null, 0);
+        var other = kit.Alice.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, otherTxId, 0);
+
+        // Assert: bound to each attempt's txid, and the same as the key index overload given that txid
+        Assert.NotEqual(first, other);
+        Assert.Equal(first, kit.Alice.GetLocalVerificationNonce(0u, kit.FundingTxId, 0));
+        Assert.Equal(other, kit.Alice.GetLocalVerificationNonce(0u, otherTxId, 0));
+        Assert.NotEqual(first, kit.Alice.GetLocalVerificationNonce(0u, null, 0));
     }
 
     [Fact]

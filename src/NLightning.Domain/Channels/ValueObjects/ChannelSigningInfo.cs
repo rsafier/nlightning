@@ -24,6 +24,15 @@ public record struct ChannelSigningInfo
     public bool IsSimpleTaproot { get; init; }
 
     /// <summary>
+    /// True for a channel opened with <c>open_channel2</c>/<c>accept_channel2</c> (<c>ChannelModel.Version</c> V2). A
+    /// simple taproot channel's verification nonce for commitment 0 then binds the funding txid like every other
+    /// commitment's: each RBF attempt of the open is another funding with its own commitment 0, and a nonce shared by
+    /// them could sign two of them for broadcast (NL-972). Only a v1 open's commitment 0, whose nonce goes out in
+    /// <c>open_channel</c>/<c>accept_channel</c> before the txid exists, uses the context without a txid.
+    /// </summary>
+    public bool IsDualFunded { get; init; }
+
+    /// <summary>
     /// The peer's <c>htlc_basepoint</c>, used to verify the HTLC signatures it sends for our commitments. Null until
     /// the peer's basepoints are known; HTLC signature validation then fails.
     /// </summary>

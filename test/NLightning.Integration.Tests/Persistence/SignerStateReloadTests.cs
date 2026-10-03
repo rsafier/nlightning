@@ -230,10 +230,31 @@ public sealed class SignerStateReloadTests : IDisposable
         Assert.Equal(channel.GetSigningInfo().IsSimpleTaproot, signingInfo.Value.IsSimpleTaproot);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_PersistedChannelVersion_When_SignerLoadsTheChannel_Then_ItKnowsADualFundedOpen(bool v2)
+    {
+        // Arrange (NL-972: a dual-funded taproot channel's commitment 0 nonce binds the attempt's funding txid)
+        var (channel, _) = await PersistChannelAsync(simpleTaproot: true,
+                                                     version: v2 ? ChannelVersion.V2 : ChannelVersion.V1);
+
+        // Act
+        await using var context = _database.CreateContext();
+        var signingInfo = await new ChannelSigningInfoDbRepository(context).GetAsync(channel.ChannelId);
+        var all = await new ChannelSigningInfoDbRepository(context).GetAllAsync();
+
+        // Assert
+        Assert.NotNull(signingInfo);
+        Assert.Equal(v2, signingInfo.Value.IsDualFunded);
+        Assert.Equal(v2, all[channel.ChannelId].IsDualFunded);
+        Assert.Equal(channel.GetSigningInfo().IsDualFunded, signingInfo.Value.IsDualFunded);
+    }
+
     /// <summary>A channel we opened with the node's first channel key, saved as the node would.</summary>
     private async Task<(ChannelModel Channel, LocalLightningSigner Signer)> PersistChannelAsync(
         bool markDataLoss = false, ChannelState state = ChannelState.Open, bool announceChannel = false,
-        bool simpleTaproot = false)
+        bool simpleTaproot = false, ChannelVersion version = ChannelVersion.V1)
     {
         var signer = CreateSigner(null);
         var keyIndex = signer.CreateNewChannel(out var basepoints, out var firstPoint);
@@ -261,7 +282,7 @@ public sealed class SignerStateReloadTests : IDisposable
                                        fundingOutput, true, null, null, LightningMoney.Satoshis(FundingSats), local,
                                        0, LocalCommitmentNumber, LightningMoney.Zero, remote, 0,
                                        new Key().PubKey.ToBytes(), LocalCommitmentNumber, state,
-                                       ChannelVersion.V1, localCommitmentNumber: LocalCommitmentNumber,
+                                       version, localCommitmentNumber: LocalCommitmentNumber,
                                        remoteCommitmentNumber: LocalCommitmentNumber)
         {
             ShortChannelId = new ShortChannelId(500, 3, 1)

@@ -253,6 +253,34 @@ public class SimpleTaprootCommitmentSigningTests
     }
 
     [Fact]
+    public void Given_ADualFundedOpensAttempts_When_CommitmentZeroIsBroadcastOnBoth_Then_EachSignsWithItsOwnNonce()
+    {
+        // Arrange: we broadcast commitment 0 of one attempt, then another attempt confirms instead (NL-528); its
+        // commitment 0 must be signable, with another verification nonce than the first (NL-972)
+        var kit = new TaprootSignerKit(isDualFunded: true);
+        var (otherTxId, otherTx) = kit.RegisterPendingFunding(keyIndex: 0);
+        var firstNonce = kit.Bob.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, null, 0);
+        var otherNonce = kit.Bob.GetLocalVerificationNonce(TaprootSignerKit.ChannelId, otherTxId, 0);
+        var first = kit.UnsignedSpend();
+        var other = kit.UnsignedSpend(fundingTxId: otherTxId);
+        var firstSignature = kit.Alice.SignRemoteCommitmentPartial(TaprootSignerKit.ChannelId, null, first,
+                                                                   firstNonce);
+        var otherSignature = kit.Alice.SignRemoteCommitmentPartial(TaprootSignerKit.ChannelId, otherTxId, other,
+                                                                   otherNonce);
+
+        // Act
+        var firstSigned = kit.Bob.SignLocalCommitmentForBroadcast(TaprootSignerKit.ChannelId, null, 0, first,
+                                                                  firstSignature);
+        var otherSigned = kit.Bob.SignLocalCommitmentForBroadcast(TaprootSignerKit.ChannelId, otherTxId, 0, other,
+                                                                  otherSignature);
+
+        // Assert
+        Assert.NotEqual(firstNonce, otherNonce);
+        Assert.Null(TaprootSignerKit.Execute(firstSigned, kit.FundingTxOut));
+        Assert.Null(TaprootSignerKit.Execute(otherSigned, otherTx.Outputs[0]));
+    }
+
+    [Fact]
     public void Given_ATaprootChannel_When_CallingTheEcdsaPaths_Then_EachThrowsASignerException()
     {
         // Arrange
