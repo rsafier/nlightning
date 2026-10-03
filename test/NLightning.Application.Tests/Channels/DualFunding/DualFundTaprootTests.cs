@@ -9,6 +9,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
@@ -144,6 +145,95 @@ public class DualFundTaprootTests
             var witness = Assert.Single(tx.Inputs).WitScript;
             Assert.Equal(1, witness.PushCount);
             Assert.Equal(64, witness[0].Length);
+        }
+    }
+
+    [Fact]
+    public async Task Given_ADualFundedTaprootChannel_When_PaidBothWaysAndClosed_Then_EveryStepIsMusig2()
+    {
+        // Arrange: a dual-funded simple taproot channel, both nodes running the mutual close (taproot wave t02 V2INT)
+        await using var harness = await CreateTaprootHarnessAsync(BobShareSat, withClose: true);
+        var result = await OpenTaprootAsync(harness);
+        Assert.True(result.FailureReason is null, $"{result.FailureReason}\n{harness.Describe()}");
+        var channelId = result.ChannelId;
+        var fundingTxId = result.FundingTxId!.Value;
+        await harness.ConfirmFundingAsync(channelId, fundingTxId);
+        foreach (var node in harness.Nodes)
+            Assert.True(node.Channel(channelId).State == ChannelState.Open, harness.Describe());
+        var session = Assert.Single(await harness.Alice.InScopeAsync(
+                                        u => u.InteractiveTxSessionDbRepository.GetByChannelIdAsync(channelId)));
+        var fundingOutput = session.ConstructedTx!.Outputs[(int)session.ConstructedTx.SharedOutputIndex!.Value];
+        var fundingTxOut = new NBitcoin.TxOut(NBitcoin.Money.Satoshis((long)fundingOutput.Amount.Satoshi),
+                                              new NBitcoin.Script((byte[])fundingOutput.ScriptPubKey));
+
+        // Act: a payment each way, then Alice closes (option_simple_close, the only close of a taproot channel)
+        var toBob = LightningMoney.Satoshis(50_000);
+        var (bobHash, _) = await harness.Alice.PayAsync(harness.Bob, channelId, toBob);
+        await harness.PumpAsync();
+        var toAlice = LightningMoney.Satoshis(20_000);
+        var (aliceHash, _) = await harness.Bob.PayAsync(harness.Alice, channelId, toAlice);
+        await harness.PumpAsync();
+        var balances = harness.Nodes.ToDictionary(n => n.Name, n => n.Channel(channelId).LocalBalance);
+        await harness.Alice.Services.GetRequiredService<IChannelCloseService>()
+                     .CloseChannelAsync(channelId, new ChannelCloseRequest(), TestContext.Current.CancellationToken);
+        await harness.PumpAsync();
+
+        // Assert: both payments fulfilled over MuSig2 commitments (every commitment_signed a partial signature with
+        // the zero ECDSA field, every revoke_and_ack with the next nonces)
+        Assert.Equal(bobHash, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentHash);
+        Assert.Equal(aliceHash, Assert.Single(harness.Bob.PaymentHandler.Fulfilled).PaymentHash);
+        Assert.Equal(s_aliceShare - toBob + toAlice, balances["Alice"]);
+        Assert.Equal(LightningMoney.Satoshis(BobShareSat) + toBob - toAlice, balances["Bob"]);
+        var commitmentSigned = harness.Transcript.Where(t => t.Message is CommitmentSignedMessage)
+                                      .Select(t => (CommitmentSignedMessage)t.Message)
+                                      .ToList();
+        Assert.True(commitmentSigned.Count > 2, harness.Describe());
+        Assert.All(commitmentSigned, c =>
+        {
+            Assert.Equal(CommitmentSignatures.ZeroSignature, c.Payload.Signature);
+            Assert.NotNull(c.PartialSignatureWithNonceTlv);
+        });
+        var revocations = harness.Transcript.Where(t => t.Message is RevokeAndAckMessage)
+                                 .Select(t => (RevokeAndAckMessage)t.Message)
+                                 .ToList();
+        Assert.NotEmpty(revocations);
+        Assert.All(revocations, r => Assert.NotNull(r.NextLocalNoncesTlv));
+
+        // The close: closee nonces in shutdown, MuSig2 partial signatures in closing_complete/closing_sig, no ECDSA
+        Assert.All(harness.Transcript.Where(t => t.Message is ShutdownMessage),
+                   t => Assert.NotNull(((ShutdownMessage)t.Message).ShutdownNonceTlv));
+        Assert.DoesNotContain(harness.Transcript, t => t.Message is ClosingSignedMessage);
+        var completes = harness.Transcript.Where(t => t.Message is ClosingCompleteMessage)
+                               .Select(t => (ClosingCompleteMessage)t.Message)
+                               .ToList();
+        Assert.NotEmpty(completes);
+        Assert.All(completes, c =>
+        {
+            Assert.Empty(c.Signatures.Kinds);
+            Assert.NotEmpty(c.PartialSignatures.Kinds);
+        });
+        var sigs = harness.Transcript.Where(t => t.Message is ClosingSigMessage)
+                          .Select(t => (ClosingSigMessage)t.Message)
+                          .ToList();
+        Assert.Equal(completes.Count, sigs.Count);
+        Assert.All(sigs, c =>
+        {
+            Assert.Empty(c.Signatures.Kinds);
+            Assert.Single(c.PartialSignatures.Kinds);
+            Assert.NotNull(c.NextCloseeNonceTlv);
+        });
+        foreach (var node in harness.Nodes)
+        {
+            Assert.Equal(ChannelState.Closing, node.Channel(channelId).State);
+            var closing = Assert.IsType<SignedTransaction>(node.Channel(channelId).ClosingTransaction);
+            var tx = NBitcoin.Transaction.Load(closing.RawTxBytes, NBitcoin.Network.RegTest);
+            var input = Assert.Single(tx.Inputs);
+            Assert.Equal(fundingTxId, new TxId(input.PrevOut.Hash.ToBytes()));
+            Assert.Equal(1, input.WitScript.PushCount);
+            Assert.Equal(64, input.WitScript[0].Length);
+            var error = tx.CreateValidator([fundingTxOut]).ValidateInput(0).Error;
+            Assert.True(error is null, error?.ToString());
+            Assert.NotEmpty(node.PublishedClosings);
         }
     }
 
@@ -368,9 +458,10 @@ public class DualFundTaprootTests
     }
 
     private static async Task<DualFundHarness> CreateTaprootHarnessAsync(long bobContributionSat,
-                                                                         TimeSpan? openTimeout = null)
+                                                                         TimeSpan? openTimeout = null,
+                                                                         bool withClose = false)
     {
-        var harness = await DualFundHarness.CreateAsync(bobContributionSat, openTimeout);
+        var harness = await DualFundHarness.CreateAsync(bobContributionSat, openTimeout, withClose: withClose);
         harness.NegotiatedFeatures = new FeatureOptions
         {
             DualFund = FeatureSupport.Optional,
