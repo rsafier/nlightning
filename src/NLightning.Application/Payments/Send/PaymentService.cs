@@ -1107,8 +1107,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                 var onion = await _onionFactory.CreateAsync(plannedPart.Route, session.Keysend, finalHop);
                 round.Add((new PaymentPart(plannedPart.Channel, plannedPart.Route,
                                            BuildHops(plannedPart.Route, onion.SharedSecrets,
-                                                     plannedPart.Channel.ShortChannelId,
-                                                     session.Target.PayeeNodeId), plannedPart.Description)
+                                                     plannedPart.Channel.ShortChannelId, session.PayeeNodeId,
+                                                     session.Trampoline is not null), plannedPart.Description)
                 {
                     TrampolineAttempt = session.Trampoline?.Attempt,
                     TrampolineSecrets = session.Trampoline?.Onion?.SharedSecrets
@@ -2450,16 +2450,21 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     /// <remarks>
     /// The last hop of a route that ends in a blinded path is stored under <paramref name="payee"/> (the recipient's
     /// real id when the caller knew it, e.g. a BOLT 12 <c>invoice_node_id</c>), not under its blinded id, so the row
-    /// names its payee; the shared secret is the one of the blinded hop.
+    /// names its payee; the shared secret is the one of the blinded hop. So is the last hop of a route to a trampoline
+    /// node (<paramref name="toTrampoline"/>, NL-875): the row names the payee behind it, the shared secret is the
+    /// trampoline node's outer one, and the trampoline node is hop 0 of the payment's <c>PaymentTrampolineHops</c>.
     /// </remarks>
     private static List<PaymentHop> BuildHops(PaymentRoute route, IReadOnlyList<Secret> sharedSecrets,
-                                              ShortChannelId firstChannel, CompactPubKey payee)
+                                              ShortChannelId firstChannel, CompactPubKey payee,
+                                              bool toTrampoline = false)
     {
         var hops = new List<PaymentHop>(route.Hops.Count);
         for (var i = 0; i < route.Hops.Count; i++)
         {
             var previous = i == 0 ? null : route.Hops[i - 1];
-            var nodeId = i == route.Hops.Count - 1 && route.BlindedStartIndex is not null ? payee : route.Hops[i].NodeId;
+            var nodeId = i == route.Hops.Count - 1 && (route.BlindedStartIndex is not null || toTrampoline)
+                             ? payee
+                             : route.Hops[i].NodeId;
             hops.Add(new PaymentHop(nodeId, previous?.OutgoingShortChannelId ?? firstChannel,
                                     previous?.AmountToForward ?? route.FirstHopAmount,
                                     previous?.OutgoingCltvValue ?? route.FirstHopCltvExpiry, sharedSecrets[i]));

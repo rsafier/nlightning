@@ -721,10 +721,10 @@ public sealed partial class PaymentService
         {
             var interpretation = FailureInterpreter.Interpret(decrypted.Failure, part.Hops.Count);
             var index = decrypted.ErringHopIndex;
-            var role = index == last ? "the trampoline node" : "hop";
-            return new TrampolineDecision(code, index,
-                                          $"{codeText} from {role} {index} ({DescribeHop(part.Hops, index)})",
-                                          interpretation, null, null);
+            var described = index == last
+                                ? $"the trampoline node {state.TrampolineNode}"
+                                : $"hop {index} ({DescribeHop(part.Hops, index)})";
+            return new TrampolineDecision(code, index, $"{codeText} from {described}", interpretation, null, null);
         }
 
         // Any other error of the trampoline route: from the trampoline node, a node behind it or the payee
@@ -827,9 +827,14 @@ public sealed partial class PaymentService
             var code = decrypted.Code;
             var codeText = code is { } known ? $"{known} (0x{(ushort)known:X4})" : "an unreadable failure";
             if (decrypted.Layer == TrampolineFailureLayer.Outer)
-                return (code, decrypted.ErringHopIndex,
-                        $"{codeText} from hop {decrypted.ErringHopIndex} "
-                      + $"({DescribeHop(route, decrypted.ErringHopIndex)})", null, AttributionVerification.Absent);
+            {
+                // The stored route names the payee for its last hop: that hop is the trampoline node (inner hop 0)
+                var described = decrypted.ErringHopIndex == last
+                                    ? $"the trampoline node {inner[0].NodeId}"
+                                    : $"hop {decrypted.ErringHopIndex} ({DescribeHop(route, decrypted.ErringHopIndex)})";
+                return (code, decrypted.ErringHopIndex, $"{codeText} from {described}", null,
+                        AttributionVerification.Absent);
+            }
 
             var index = decrypted.ErringHopIndex;
             var node = index < inner.Count ? inner[index].NodeId.ToString() : "an unknown node";
