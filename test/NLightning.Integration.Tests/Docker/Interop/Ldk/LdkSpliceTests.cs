@@ -102,7 +102,7 @@ public sealed class LdkSpliceTests : IAsyncLifetime
             if (DockerDiagnostics.CurrentTestFailed)
             {
                 Console.WriteLine($"[ldk] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
-                await DockerDiagnostics.DumpContainerLogsAsync([LdkFixture.LdkContainerName], 400);
+                await _fixture.DumpLdkLogAsync(400);
             }
 
             await _session.DisposeAsync();

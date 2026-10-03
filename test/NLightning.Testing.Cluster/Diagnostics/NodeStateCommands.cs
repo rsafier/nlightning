@@ -7,6 +7,7 @@ using Nodes;
 using Nodes.BitcoinCore;
 using Nodes.Cln;
 using Nodes.Eclair;
+using Nodes.Ldk;
 using Nodes.Lnd;
 using Run;
 
@@ -18,7 +19,8 @@ public sealed record NodeStateCommand(string FileName, IReadOnlyList<string> Com
 /// <c>getblockchaininfo</c>/<c>getpeerinfo</c>/<c>getmempoolinfo</c>, CLN <c>getinfo</c>/<c>listpeerchannels</c>/
 /// <c>listfunds</c>, LND <c>getinfo</c>/<c>listchannels</c>/<c>pendingchannels</c>/<c>listpeers</c>, Eclair
 /// <c>getinfo</c>/<c>channels</c>/<c>peers</c>/<c>onchainbalance</c> (its API, the password from the container's
-/// environment). Only commands that
+/// environment), ldk-server <c>get-node-info</c>/<c>list-channels</c>/<c>list-peers</c>/<c>get-balances</c>. Only
+/// commands that
 /// print state: nothing reads a macaroon, <c>hsm_secret</c>, a seed or a TLS key, and the output is still masked
 /// (<see cref="SecretRedactor"/>).
 /// </summary>
@@ -59,6 +61,7 @@ public static class NodeStateCommands
             NodeKind.Cln => Cln(),
             NodeKind.Lnd => Lnd(),
             NodeKind.Eclair => Eclair(),
+            NodeKind.Ldk => Ldk(),
             _ => []
         };
     }
@@ -109,6 +112,14 @@ public static class NodeStateCommands
 
         return [Call("getinfo"), Call("channels"), Call("peers"), Call("onchainbalance")];
     }
+
+    private static IReadOnlyList<NodeStateCommand> Ldk() =>
+    [
+        new NodeStateCommand("get-node-info.json", LdkNode.CliCommand("get-node-info")),
+        new NodeStateCommand("list-channels.json", LdkNode.CliCommand("list-channels")),
+        new NodeStateCommand("list-peers.json", LdkNode.CliCommand("list-peers")),
+        new NodeStateCommand("get-balances.json", LdkNode.CliCommand("get-balances"))
+    ];
 
     private static IReadOnlyList<NodeStateCommand> Lnd()
     {

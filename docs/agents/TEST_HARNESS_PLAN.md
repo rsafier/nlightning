@@ -867,6 +867,38 @@ Evidence (OrbStack, Release, net10.0, `--no-incremental` build 0 warnings; logs 
 | Fixture ready | cluster 18.5 s (topology 13.1 s, then the ClusterIP routing wait); Docker 5.8 s | |
 | Docker (`run-interop.sh eclair` under the machine lock, final code) | 28/28 (29 discovered, 1 Explicit not run), the batch10 baseline | 1,084 s (xunit) |
 
+### Phase 4 LDK lane record: the LDK interop suite on the cluster (2026-10-02, branch `hp3-ldk` from b88b2717)
+
+The CLN pattern carried over unchanged; no product bug surfaced (the suite was green on the cluster at the first full
+run).
+
+- **Library (`Nodes/Ldk/`).** `LdkNode.Workload` runs the local `nltg-ldk-server:dc02b76c` (pulled `Never`; not
+  rebuilt, the pin is unchanged) as a StatefulSet with `/data` on a PVC. The container writes the configuration from
+  `NLTG_LDK_CONFIG` to `/data/config.toml` at every start (the Docker fixture's layout, `LdkNode.BuildConfig`) and
+  `exec`s ldk-server as PID 1; readiness is `ldk-server-cli get-node-info` without the drain file, and the `preStop`
+  drains 5 s as CLN's does, then ldk-server stops on SIGTERM (a graceful restart takes about 8 s). `LdkRpc` runs the CLI
+  over a Kubernetes exec; `LdkTestPeer` implements `ITopologyLightningNode` (connect, open to the address `list-peers`
+  has, list channels with the 64-bit SCID as `BxTxO`, invoices, `pay --wait`, height, balance); `LdkNodeDeployer` is
+  registered by default (`AddLdk`, `DeploysWithChain`) and creates the node's `StableNodeAddress` Service first, so the
+  node announces that ClusterIP (`ReadClusterIpAsync`), which peers and the host dial and which survives a restart.
+  The diagnostics dump `get-node-info`, `list-channels`, `list-peers`, `get-balances` of an LDK pod.
+- **Fixture.** `LdkFixture` keeps its members and delegates to `Fixtures/Ldk/ILdkBackend`: `DockerLdkBackend` (the
+  former fixture, its `config.toml` pinned by `LdkBackendTests`) and `ClusterLdkBackend` (warm topology `ldk-interop`:
+  bitcoind 31.1 `miner` on `emptyDir`, ldk-server `nltg-ldk` on a PVC). `LdkClient` runs over an `LdkExec` delegate
+  (`docker exec` or Kubernetes exec). Test bodies changed only where they named Docker: `HostAddressForLdk` instead of
+  `host.docker.internal`, `DumpLdkLogAsync` instead of container log dumps, `GetTipAsync` instead of the chain host's.
+- **Runner.** `scripts/run-cluster.sh --suite ldk` (`-p integration --trait Category=Interop.Ldk`, no Docker lock);
+  `scripts/run-interop.sh ldk` is unchanged. The `--help` range now prints the whole header.
+
+Evidence (OrbStack, Release, net10.0; logs under `TestResults/cluster/hp4l-*`, `TestResults/hp4l/`):
+
+| Run | Result | Time |
+|---|---|---|
+| Library live proof `Live/LdkTopologyTests` (bitcoind 31.1 + LDK + CLN, LDK's channel to CLN, pay both ways, LDK restart, pay) | 1/1 | 28.7 s; topology 13.1 s, restart 8.1 s |
+| Cluster, `LdkInteropTests` alone (`hp4l-c1`) | 8/8; fixture ready in 12.7 s | 142 s |
+| Cluster, the whole suite alone (`hp4l-full1`, one namespace) | 27/27, 0 diagnostics dumps, no tip-poll catch-up; fixture ready in 16.4 s | 655 s |
+| Docker (`run-interop.sh ldk` under the machine lock) | 27/27 (baseline 27/27); fixture ready in 8.6 s | 579 s tests, 9:49 with the build |
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.

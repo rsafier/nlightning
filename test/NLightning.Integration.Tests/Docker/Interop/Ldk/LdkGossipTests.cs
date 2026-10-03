@@ -69,7 +69,7 @@ public sealed class LdkGossipTests : IAsyncLifetime
                     Console.WriteLine(line);
             }
 
-            await DockerDiagnostics.DumpContainerLogsAsync([LdkFixture.LdkContainerName], 400);
+            await _fixture.DumpLdkLogAsync(400);
         }
 
         foreach (var session in _sessions)

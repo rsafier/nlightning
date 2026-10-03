@@ -1,33 +1,37 @@
-using Docker.DotNet;
-using NLightning.Tests.Utils;
-
 namespace NLightning.Integration.Tests.Fixtures;
 
 using Docker.Utils;
 using Domain.Money;
+using Ldk;
 
 /// <summary>
-/// An ldk-server (LDK Node) regtest node for the interop tests (NL-180), on its own bitcoind in its own Docker network
-/// (<see cref="InteropChainHost"/>), so it never shares containers, names or chain state with the LND, CLN or Eclair
-/// fixtures.
+/// An ldk-server (LDK Node) regtest node for the interop tests (NL-180), on its own bitcoind, never sharing containers,
+/// names or chain state with the LND, CLN or Eclair fixtures. Where they run is <see cref="TestBackend"/>'s
+/// (<c>NLTG_TEST_BACKEND</c>): Docker by default (<see cref="DockerLdkBackend"/>: its own Docker network,
+/// <see cref="InteropChainHost"/>, LDK's p2p port published on <c>127.0.0.1</c>), or a run namespace of the Kubernetes
+/// harness (<see cref="ClusterLdkBackend"/>, test harness phase 4). The tests see the same members either way.
 /// </summary>
 /// <remarks>
-/// <para>ldk-server has no tags, releases or official image (NL-555), so the fixture builds <see cref="LdkImage"/> from
-/// <c>test/Docker/ldk_server</c> (a pinned commit on pinned Rust and Debian images) when the tag is missing. A cold
-/// build takes 10-20 min; <c>scripts/run-interop.sh ldk --build</c> prebuilds it.</para>
+/// <para>ldk-server has no tags, releases or official image (NL-555): the Docker backend builds <see cref="LdkImage"/>
+/// from <c>test/Docker/ldk_server</c> (a pinned commit on pinned Rust and Debian images) when the tag is missing (a
+/// cold build takes 10-20 min; <c>scripts/run-interop.sh ldk --build</c> prebuilds it), and the cluster backend runs
+/// that local tag (never pulled).</para>
 /// <para>LDK follows bitcoind over RPC (it polls the tip every few seconds) and funds channels from its own BDK wallet.
-/// It is driven through <c>ldk-server-cli</c> in the container (<see cref="LdkClient"/>), so only its p2p port is
-/// published, on a fixed <see cref="PortPoolUtil"/> port that survives <see cref="RestartLdkAsync"/>. LDK has an alias
-/// (<see cref="LdkAlias"/>) and announces <c>127.0.0.1:&lt;host port&gt;</c> (NL-556): LDK Node may then announce
-/// channels, so it accepts both our private and our public opens (without an alias it refuses announced ones,
-/// <c>force_announced_channel_preference</c>) and opens a public channel on <c>open-channel --announce-channel</c>;
-/// its own <c>open-channel</c> without that flag and every private open of ours stay unannounced.</para>
+/// It is driven through <c>ldk-server-cli</c> in its container or pod (<see cref="LdkClient"/>), so only its p2p port
+/// is reached from outside, at an address that survives <see cref="RestartLdkAsync"/> (a fixed host port on Docker,
+/// its stable ClusterIP on the cluster). LDK has an alias (<see cref="LdkAlias"/>) and announces that address (NL-556):
+/// LDK Node may then announce channels, so it accepts both our private and our public opens (without an alias it
+/// refuses announced ones, <c>force_announced_channel_preference</c>) and opens a public channel on
+/// <c>open-channel --announce-channel</c>; its own <c>open-channel</c> without that flag and every private open of ours
+/// stay unannounced.</para>
 /// </remarks>
 // ReSharper disable once ClassNeverInstantiated.Global
 public sealed class LdkFixture : IAsyncLifetime
 {
     public const string NetworkName = "nltg-ldk-net";
     public const string BitcoinContainerName = "nltg-ldk-bitcoind";
+
+    /// <summary>The fixture LDK's container (Docker) or node (cluster) name.</summary>
     public const string LdkContainerName = "nltg-ldk";
 
     public const string LdkImage = "nltg-ldk-server";
@@ -37,46 +41,52 @@ public sealed class LdkFixture : IAsyncLifetime
     /// <summary>The alias LDK announces (an alias is what lets LDK Node announce channels).</summary>
     public const string LdkAlias = "nltg-ldk";
 
-    private const int P2PPort = 9735;
+    private readonly ILdkBackend _backend =
+        TestBackend.Current == TestBackendKind.Cluster ? new ClusterLdkBackend() : new DockerLdkBackend();
 
-    private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
-    private static readonly TimeSpan s_buildTimeout = TimeSpan.FromMinutes(40);
-
-    private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
     private readonly SharedObjectCache _shared = new();
-    private readonly InteropChainHost _chain;
 
-    private LdkClient? _ldk;
-    private int _p2pHostPort;
+    /// <summary>Where the fixture runs (<see cref="TestBackend.Current"/> when xunit created it).</summary>
+    public TestBackendKind Backend => _backend.Kind;
 
-    public LdkFixture()
-    {
-        _chain = new InteropChainHost(_client, NetworkName, BitcoinContainerName);
-    }
+    public RegtestBitcoinEndpoint Bitcoin => _backend.Bitcoin;
 
-    public RegtestBitcoinEndpoint Bitcoin => _chain.Bitcoin;
-
-    public InteropChainHost Chain => _chain;
-
-    public LdkClient Ldk => _ldk ?? throw new InvalidOperationException("The LDK fixture is not running");
+    public LdkClient Ldk => _backend.Ldk;
 
     /// <summary>LDK's node id (hex, lower case).</summary>
     public string LdkNodeId { get; private set; } = string.Empty;
 
-    /// <summary>LDK's p2p port on <c>127.0.0.1</c> (fixed for the fixture's lifetime).</summary>
-    public int LdkHostPort => _p2pHostPort;
+    /// <summary>
+    /// The host this process dials LDK at (<c>127.0.0.1</c> for Docker, LDK's stable ClusterIP for the cluster).
+    /// </summary>
+    public string LdkHost => _backend.LdkHost;
 
-    /// <summary>The <c>pubkey@127.0.0.1:port</c> an in-process node connects to.</summary>
-    public string LdkAddress => $"{LdkNodeId}@127.0.0.1:{_p2pHostPort}";
+    /// <summary>LDK's p2p port at <see cref="LdkHost"/> (fixed for the fixture's lifetime).</summary>
+    public int LdkHostPort => _backend.LdkPort;
+
+    /// <summary>The <c>pubkey@host:port</c> an in-process node connects to.</summary>
+    public string LdkAddress => $"{LdkNodeId}@{LdkHost}:{LdkHostPort}";
+
+    /// <summary>
+    /// The host LDK dials to reach a listener of this process (<see cref="ClnFixture.HostAddressFromContainers"/> for
+    /// Docker, <c>host.orb.internal</c> on OrbStack's cluster); listen on every interface.
+    /// </summary>
+    public string HostAddressForLdk => _backend.HostAddressForPeers;
 
     public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class =>
         _shared.GetOrCreateAsync(key, factory);
 
     public async ValueTask InitializeAsync()
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            await StartAsync();
+            await _backend.StartAsync(TestContext.Current.CancellationToken);
+            var info = await Ldk.GetNodeInfoAsync(CancellationToken.None);
+            LdkNodeId = info["node_id"]!.GetValue<string>();
+            Console.WriteLine($"[ldk] {LdkAddress}: {info.ToJsonString()}");
+            // One comparable line per backend (test harness: fixture start, Docker against the cluster)
+            Console.WriteLine($"[fixture] LDK fixture ({Backend}) ready in {watch.Elapsed.TotalSeconds:F1} s");
         }
         catch
         {
@@ -88,11 +98,24 @@ public sealed class LdkFixture : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         _shared.DisposeAll();
-        await DockerContainerUtils.RemoveContainerAsync(_client, LdkContainerName);
-        await _chain.RemoveAsync();
-        if (_p2pHostPort != 0)
-            PortPoolUtil.ReleasePort(_p2pHostPort);
-        _client.Dispose();
+        await _backend.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Writes the last <paramref name="tail"/> lines of LDK's log to <see cref="Console"/> (the test output). On the
+    /// cluster backend a failed test also gets a full dump of the namespace under <c>TestResults/cluster/</c>.
+    /// </summary>
+    public Task DumpLdkLogAsync(int tail = 300) => _backend.DumpLdkLogAsync(tail);
+
+    /// <summary>bitcoind's tip height.</summary>
+    public async Task<uint> GetTipAsync(CancellationToken cancellationToken) =>
+        (uint)await Bitcoin.Rpc.GetBlockCountAsync(cancellationToken);
+
+    /// <summary>Mines <paramref name="blocks"/> blocks to the miner wallet.</summary>
+    public async Task MineAsync(int blocks, CancellationToken cancellationToken)
+    {
+        var rpc = Bitcoin.Rpc;
+        await rpc.GenerateToAddressAsync(blocks, await rpc.GetNewAddressAsync(cancellationToken), cancellationToken);
     }
 
     /// <summary>
@@ -106,7 +129,7 @@ public sealed class LdkFixture : IAsyncLifetime
         var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(60));
         while (true)
         {
-            var tip = await _chain.GetTipAsync(cancellationToken);
+            var tip = await GetTipAsync(cancellationToken);
             var ldkHeight = await Ldk.GetBlockHeightAsync(cancellationToken);
             var ours = nodeList.Select(n => (n.Name,
                                              Height: n.IsRunning ? n.BlockchainMonitor.LastProcessedBlockHeight : 0))
@@ -126,7 +149,7 @@ public sealed class LdkFixture : IAsyncLifetime
     public async Task<uint> MineAndWaitAsync(int blocks, IEnumerable<NLightningTestNode> nodes,
                                              CancellationToken cancellationToken)
     {
-        await _chain.MineAsync(blocks, cancellationToken);
+        await MineAsync(blocks, cancellationToken);
         return await WaitAllAtTipAsync(nodes, cancellationToken);
     }
 
@@ -140,7 +163,9 @@ public sealed class LdkFixture : IAsyncLifetime
     {
         var before = await SpendableSatAsync(cancellationToken);
         var address = await Ldk.OnchainReceiveAsync(cancellationToken);
-        await _chain.SendToAddressAsync(address, (long)amount.Satoshi, cancellationToken);
+        await Bitcoin.Rpc.SendToAddressAsync(NBitcoin.BitcoinAddress.Create(address, NBitcoin.Network.RegTest),
+                                             NBitcoin.Money.Satoshis((long)amount.Satoshi),
+                                             cancellationToken: cancellationToken);
         await MineAndWaitAsync(6, nodes, cancellationToken);
         await Poll.UntilAsync(async () => await SpendableSatAsync(cancellationToken) > before,
                               TimeSpan.FromSeconds(90), "LDK sees its deposit confirmed", cancellationToken,
@@ -151,70 +176,7 @@ public sealed class LdkFixture : IAsyncLifetime
         (await Ldk.GetBalancesAsync(cancellationToken))["spendable_onchain_balance_sats"]?.GetValue<long>() ?? 0;
 
     /// <summary>
-    /// Restarts the LDK container (its <c>/data</c> is kept) on the same host port and waits until it is at the tip.
+    /// Restarts LDK (its data is kept) at the same address and waits until it is at the tip.
     /// </summary>
-    public async Task RestartLdkAsync(CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        await _chain.RestartContainerAsync(LdkContainerName);
-        await WaitReadyAsync();
-    }
-
-    private async Task StartAsync()
-    {
-        await EnsureLdkImageAsync();
-        await DockerContainerUtils.RemoveContainerAsync(_client, LdkContainerName);
-        await _chain.StartAsync();
-
-        _p2pHostPort = await PortPoolUtil.GetAvailablePortAsync();
-        await _chain.StartContainerAsync($"{LdkImage}:{LdkTag}", LdkContainerName, [], [ConfigPath], [P2PPort],
-                                         new Dictionary<int, int> { [P2PPort] = _p2pHostPort },
-                                         new Dictionary<string, string> { [ConfigPath] = BuildConfig() });
-        _ldk = new LdkClient(_client, LdkContainerName, ConfigPath);
-        await WaitReadyAsync();
-        var info = await _ldk.GetNodeInfoAsync(CancellationToken.None);
-        LdkNodeId = info["node_id"]!.GetValue<string>();
-        Console.WriteLine($"[ldk] {LdkAddress}: {info.ToJsonString()}");
-    }
-
-    private async Task WaitReadyAsync()
-    {
-        await DockerContainerUtils.WaitUntilReadyAsync(LdkContainerName, async ct =>
-        {
-            var height = await Ldk.GetBlockHeightAsync(ct);
-            var tip = await _chain.GetTipAsync(ct);
-            if (height != tip)
-                throw new InvalidOperationException($"LDK at {height}, tip {tip}");
-        }, s_readyTimeout);
-    }
-
-    private string BuildConfig() =>
-        $"""
-         [node]
-         network = "regtest"
-         listening_addresses = ["0.0.0.0:{P2PPort}"]
-         announcement_addresses = ["127.0.0.1:{_p2pHostPort}"]
-         alias = "{LdkAlias}"
-
-         [storage.disk]
-         dir_path = "/data/ldk"
-
-         [log]
-         level = "Info"
-         log_to_file = false
-
-         [bitcoind]
-         rpc_address = "{BitcoinContainerName}:{InteropChainHost.RpcPort}"
-         rpc_user = "{InteropChainHost.RpcUser}"
-         rpc_password = "{InteropChainHost.RpcPassword}"
-         """;
-
-    private async Task EnsureLdkImageAsync()
-    {
-        if (await InteropChainHost.ImageExistsAsync(_client, $"{LdkImage}:{LdkTag}"))
-            return;
-
-        var dockerfileDir = EclairFixture.FindDockerDirectory("ldk_server");
-        await EclairFixture.BuildImageAsync(_client, dockerfileDir, $"{LdkImage}:{LdkTag}", s_buildTimeout);
-    }
+    public Task RestartLdkAsync(CancellationToken cancellationToken) => _backend.RestartLdkAsync(cancellationToken);
 }

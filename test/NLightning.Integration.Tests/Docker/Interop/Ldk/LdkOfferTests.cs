@@ -76,7 +76,7 @@ public sealed class LdkOfferTests : IAsyncLifetime
             Console.WriteLine($"[ldk] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
             foreach (var line in _session.Node.NodeLog.TakeLast(200))
                 Console.WriteLine(line);
-            await DockerDiagnostics.DumpContainerLogsAsync([LdkFixture.LdkContainerName], 400);
+            await _fixture.DumpLdkLogAsync(400);
         }
     }
 

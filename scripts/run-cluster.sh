@@ -32,8 +32,9 @@
 #       --suite S         a ported suite on the cluster backend (NLTG_TEST_BACKEND=cluster): cln = the CLN interop
 #                         suite (-p integration, --trait Category=Interop.Cln, --explicit off; its 4 Explicit capture
 #                         tests stay out unless --explicit on is given); eclair = the Eclair interop suite
-#                         (--trait Category=Interop.Eclair, --explicit off; its 1 Explicit test likewise); each run gets
-#                         its own namespace(s)
+#                         (--trait Category=Interop.Eclair, --explicit off; its 1 Explicit test likewise); ldk =
+#                         the LDK interop suite (--trait Category=Interop.Ldk, --explicit off); each run gets its
+#                         own namespace(s)
 #
 # Example: the scaffold's namespace test 3 times at once
 #   scripts/run-cluster.sh -n 3 --method '*ARunDeploysABusyboxStatefulSet*'
@@ -43,6 +44,8 @@
 #   scripts/run-cluster.sh -n 3 --suite cln
 # Example: the Eclair interop suite on the cluster, one run
 #   scripts/run-cluster.sh -n 1 --suite eclair
+# Example: the LDK interop suite on the cluster, alone
+#   scripts/run-cluster.sh -n 1 --suite ldk
 #
 # Never runs Docker suites and never touches namespaces outside nltg-spike-*: the test processes create only their
 # own namespaces, and the reaper only deletes harness run namespaces (nltg-cluster reap, RunReaper).
@@ -94,9 +97,11 @@ while [[ $# -gt 0 ]]; do
              [[ -n "${explicit_set:-}" ]] || explicit=off ;;
         eclair) project=integration; trait="Category=Interop.Eclair"; backend=cluster
              [[ -n "${explicit_set:-}" ]] || explicit=off ;;
-        *) die "--suite $suite: unknown suite (cln, eclair)" ;;
+        ldk) project=integration; trait="Category=Interop.Ldk"; backend=cluster
+             [[ -n "${explicit_set:-}" ]] || explicit=off ;;
+        *) die "--suite $suite: unknown suite (cln, eclair, ldk)" ;;
       esac ;;
-    -h|--help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit 0 ;;
     --) shift; extra=("$@"); break ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac

@@ -74,7 +74,7 @@ public sealed class LdkOnchainTests : IAsyncLifetime
             }
 
             Console.WriteLine($"[ldk] balances at failure: {await SafeBalancesAsync()}");
-            await DockerDiagnostics.DumpContainerLogsAsync([LdkFixture.LdkContainerName], 400);
+            await _fixture.DumpLdkLogAsync(400);
         }
 
         foreach (var session in _sessions)
@@ -279,7 +279,7 @@ public sealed class LdkOnchainTests : IAsyncLifetime
         Assert.Equal(htlc.Id, row.HtlcId);
 
         // Assert: nothing before cltv_expiry, our HTLC-timeout from it on
-        var tip = await _fixture.Chain.GetTipAsync(ct);
+        var tip = await _fixture.GetTipAsync(ct);
         if (htlc.CltvExpiry - 1 > tip)
             await _fixture.MineAndWaitAsync((int)(htlc.CltvExpiry - 1 - tip), [session.Node], ct);
         Assert.Null(await FindChainSpenderAsync(new OutPoint(commitmentTxId, row.OutputIndex), ct));

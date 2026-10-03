@@ -5,6 +5,7 @@ using Kube;
 using Nodes;
 using Nodes.Cln;
 using Nodes.Eclair;
+using Nodes.Ldk;
 using Nodes.Lnd;
 using Run;
 
@@ -32,7 +33,8 @@ public sealed class TopologyBuilder
     {
         [NodeKind.Cln] = new ClnNodeDeployer(),
         [NodeKind.Lnd] = new LndNodeDeployer(),
-        [NodeKind.Eclair] = new EclairNodeDeployer()
+        [NodeKind.Eclair] = new EclairNodeDeployer(),
+        [NodeKind.Ldk] = new LdkNodeDeployer()
     };
 
     private ChainFactory _chainFactory = BitcoinCoreTopologyChain.DeployAsync;
@@ -113,6 +115,14 @@ public sealed class TopologyBuilder
     public TopologyBuilder AddEclair(string name, ImageRef? image = null, IReadOnlyList<string>? extraConfig = null,
                                      NodeStorage? storage = null) =>
         AddNode(name, NodeKind.Eclair, image, extraConfig, storage);
+
+    /// <summary>
+    /// An ldk-server node (<see cref="LdkNode"/>; on a PVC by default, see <see cref="LdkNodeDeployer.BuildOptions"/>
+    /// for its <paramref name="extraArgs"/>).
+    /// </summary>
+    public TopologyBuilder AddLdk(string name, ImageRef? image = null, IReadOnlyList<string>? extraArgs = null,
+                                  NodeStorage? storage = null) =>
+        AddNode(name, NodeKind.Ldk, image, extraArgs, storage);
 
     /// <summary>Sends <paramref name="amountSat"/> to <paramref name="node"/>'s wallet (confirmed before the opens).</summary>
     public TopologyBuilder FundWallet(string node, long amountSat)

@@ -91,6 +91,18 @@ public class NodeStateCommandsTests
         Assert.All(commands, c => Assert.Contains("http://127.0.0.1:8080/", c.Command[2], StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void Given_AnLdkPod_When_CommandsAreBuilt_Then_TheyAreLdkServerCliReads()
+    {
+        // Act
+        var commands = NodeStateCommands.For(Pod("nltg-ldk", NodeKind.Ldk));
+
+        // Assert
+        Assert.Equal(["get-node-info.json", "list-channels.json", "list-peers.json", "get-balances.json"],
+                     commands.Select(c => c.FileName));
+        Assert.All(commands, c => Assert.Equal(["ldk-server-cli", "-c", "/data/config.toml"], c.Command.Take(3)));
+    }
+
     [Theory]
     [InlineData(NodeKind.Other)]
     [InlineData(NodeKind.Postgres)]
