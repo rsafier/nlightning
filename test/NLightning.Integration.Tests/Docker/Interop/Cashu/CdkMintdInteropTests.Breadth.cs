@@ -61,12 +61,14 @@ public sealed partial class CdkMintdInteropTests
                                                        .WaitAsync(s_walletTimeout, ct);
             Console.WriteLine($"[cashu] cdk-cli mint --method bolt12 (exit {mintExit}):\n{mintOutput}");
 
-            // Assert 1: the offer was paid once and the wallet holds the ecash
+            // Assert 1: the offer was paid once and the wallet holds the ecash: 3,000 sat plus the fee of our own
+            // dummy blinded hops, which the payer paid to us too (NL-526), rounded down to whole sats
             Assert.Equal(FetchInvoiceStatus.Received, paid.Fetch.Status);
             Assert.Equal(PaymentStatus.Succeeded, paid.Payment?.Payment.Status);
             Assert.Equal(0, mintExit);
-            Assert.Contains("Minted 3000 sat", mintOutput);
-            Assert.Equal(3_000UL, await GetWalletBalanceAsync(wallet, ct));
+            var minted = ulong.Parse(MintedRegex().Match(mintOutput).Groups[1].Value);
+            Assert.InRange(minted, 3_000UL, 3_010UL);
+            Assert.Equal(minted, await GetWalletBalanceAsync(wallet, ct));
 
             // Act 2: the wallet melts into an offer of the payer's (1,000 sat)
             var payerOffer = await payer.Services.GetRequiredService<IOfferService>()
@@ -84,7 +86,7 @@ public sealed partial class CdkMintdInteropTests
                                     .GetInvoiceCountsAsync(payerOffer.Offer.OfferId, ct);
             Assert.Equal(1, counts.Paid);
             var balance = await GetWalletBalanceAsync(wallet, ct);
-            Assert.InRange(balance, 2_000UL - 5UL, 2_000UL);
+            Assert.InRange(balance, minted - 1_000UL - 5UL, minted - 1_000UL);
             Console.WriteLine($"[cashu] bolt12 melt done, wallet balance {balance} sat:\n{meltOutput}");
             await WaitUsableAsync(payer, mintNode, channelId, ct);
         }
@@ -155,9 +157,7 @@ public sealed partial class CdkMintdInteropTests
             await Poll.UntilAsync(async () => await GetProcessorQuoteStateAsync(mintNode, quoteId)
                                                   is CashuQuoteState.Pending or CashuQuoteState.Paid,
                                   s_onchainTimeout, "the melt's transaction was sent", ct);
-            var (meltExit, meltOutput) = await _fixture.WaitWalletExitAsync(meltRun, ct)
-                                                       .WaitAsync(s_walletTimeout, ct);
-            Console.WriteLine($"[cashu] cdk-cli melt --method onchain (exit {meltExit}):\n{meltOutput}");
+            // The wallet waits for the melt to be final; the mint restarts under it
             await _fixture.RestartMintAsync(ct);
             await _fixture.MineAsync(1, ct);
 
@@ -173,6 +173,21 @@ public sealed partial class CdkMintdInteropTests
             Console.WriteLine($"[cashu] mint's melt quote: {mintQuote}");
             var received = await _fixture.Bitcoin.Rpc.GetReceivedByAddressAsync(destination, 1);
             Assert.Equal(Money.Satoshis(20_000), received);
+            Assert.Contains("\"PAID\"", mintQuote);
+
+            // The wallet's own wait ended with the restart, with the payment, or not yet: it is only logged
+            try
+            {
+                var (meltExit, meltOutput) = await _fixture.WaitWalletExitAsync(meltRun, ct)
+                                                           .WaitAsync(TimeSpan.FromSeconds(30), ct);
+                Console.WriteLine($"[cashu] cdk-cli melt --method onchain (exit {meltExit}):\n{meltOutput}");
+            }
+            catch (TimeoutException)
+            {
+                Console.WriteLine("[cashu] cdk-cli melt --method onchain still waiting:\n"
+                                + await _fixture.GetWalletOutputAsync(meltRun, ct));
+                await _fixture.RemoveWalletAsync(meltRun);
+            }
         }
         catch (Exception)
         {
@@ -210,6 +225,9 @@ public sealed partial class CdkMintdInteropTests
 
     [GeneratedRegex(@"Send sats to: (bcrt1[0-9a-z]+)")]
     private static partial Regex OnchainAddressRegex();
+
+    [GeneratedRegex(@"Minted (\d+) sat")]
+    private static partial Regex MintedRegex();
 
     [GeneratedRegex(@"Quote ID: (\S+)")]
     private static partial Regex QuoteIdRegex();

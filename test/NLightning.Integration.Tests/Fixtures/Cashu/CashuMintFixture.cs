@@ -232,6 +232,9 @@ public sealed class CashuMintFixture : IAsyncLifetime
         return (int.Parse(status.Trim()), output);
     }
 
+    /// <summary>Removes a background wallet command's container, running or not.</summary>
+    public Task RemoveWalletAsync(string container) => DockerContainerUtils.RemoveContainerAsync(_client, container);
+
     private static List<string> WalletRun(string walletDirectory, IReadOnlyList<string> arguments, bool detach,
                                           string? name = null)
     {
