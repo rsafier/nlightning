@@ -1,3 +1,5 @@
+using Grpc.Core;
+
 namespace NLightning.Daemon.Tests.Cashu;
 
 using Domain.Cashu.Enums;
@@ -73,7 +75,7 @@ public sealed class CdkPaymentProcessorBolt12Tests : CdkProcessorTestBase
         }, cancellationToken: Ct);
 
         // Assert: by offer id, payment id the invoice's hash, amounts floored to sats
-        Assert.True(await stream.ResponseStream.MoveNext(Ct));
+        Assert.True(await stream.ResponseStream.MoveNext(Bounded));
         var received = stream.ResponseStream.Current.PaymentReceived;
         Assert.Equal(PaymentIdentifierType.OfferId, received.PaymentIdentifier.Type);
         Assert.Equal(offerId.ToString(), received.PaymentIdentifier.Id);
@@ -146,7 +148,8 @@ public sealed class CdkPaymentProcessorBolt12Tests : CdkProcessorTestBase
         var offer = RegtestOffer(10_000_000);
         var hash = Hash(0x31);
         var payment = new PaymentModel(hash, null, Payee, LightningMoney.Satoshis(10_000), LightningMoney.Satoshis(3),
-                                       DateTimeOffset.UtcNow);
+                                       DateTimeOffset.UtcNow)
+        { Label = MintLabel };
         payment.Succeed(Preimage, DateTimeOffset.UtcNow);
         PayOfferRequest? asked = null;
         PayOfferOptions? options = null;
@@ -263,7 +266,8 @@ public sealed class CdkPaymentProcessorBolt12Tests : CdkProcessorTestBase
         var offer = RegtestOffer(10_000_000);
         var hash = Hash(0x32);
         var payment = new PaymentModel(hash, null, Payee, LightningMoney.Satoshis(10_000), LightningMoney.Zero,
-                                       DateTimeOffset.UtcNow);
+                                       DateTimeOffset.UtcNow)
+        { Label = MintLabel };
         OfferPaymentService.Setup(s => s.PayOfferAsync(It.IsAny<PayOfferRequest>(), It.IsAny<PayOfferOptions>(),
                                                        It.IsAny<CancellationToken>()))
                            .ReturnsAsync(new PayOfferResult(Fetched(hash), new PayInvoiceResult(payment, 1, 1)));
@@ -284,10 +288,83 @@ public sealed class CdkPaymentProcessorBolt12Tests : CdkProcessorTestBase
 
         // Assert
         Assert.Equal(QuoteState.Pending, pending.Status);
-        Assert.True(await stream.ResponseStream.MoveNext(Ct));
+        Assert.True(await stream.ResponseStream.MoveNext(Bounded));
         Assert.Equal("melt-b12-later", stream.ResponseStream.Current.PaymentFailed.QuoteId);
         Assert.Equal(CashuQuoteState.Failed, (await Quotes.GetAsync("melt-b12-later"))!.State);
     }
+
+    [Fact]
+    public async Task Given_ABolt12MeltBetweenTwoAttempts_When_MakePaymentAnswers_Then_PendingNotFailed()
+    {
+        // Arrange (NL-999): the payment row reads Failed while the payment service still retries it
+        var hash = Hash(0x41);
+        var payment = new PaymentModel(hash, null, Payee, LightningMoney.Satoshis(10_000), LightningMoney.Zero,
+                                       DateTimeOffset.UtcNow)
+        { Label = MintLabel };
+        payment.Fail(null, null, "Retrying.", DateTimeOffset.UtcNow);
+        OfferPaymentService.Setup(s => s.PayOfferAsync(It.IsAny<PayOfferRequest>(), It.IsAny<PayOfferOptions>(),
+                                                       It.IsAny<CancellationToken>()))
+                           .ReturnsAsync(new PayOfferResult(Fetched(hash), new PayInvoiceResult(payment, 1, 1)));
+        PaymentService.Setup(s => s.GetPaymentAsync(hash, It.IsAny<CancellationToken>())).ReturnsAsync(payment);
+        PaymentService.Setup(s => s.IsPaying(hash)).Returns(true);
+
+        // Act
+        var response = await Client.MakePaymentAsync(Bolt12Melt("melt-b12-retry"), cancellationToken: Ct);
+
+        // Assert
+        Assert.Equal(QuoteState.Pending, response.Status);
+        Assert.Equal(CashuQuoteState.Pending, (await Quotes.GetAsync("melt-b12-retry"))!.State);
+    }
+
+    [Fact]
+    public async Task Given_TheOfferPayerRefusing_When_MakePayment_Then_FailedPreconditionAndTheQuoteReadsPending()
+    {
+        // Arrange: the payer refuses (for instance already paying the fetched invoice); nothing says it was not sent
+        OfferPaymentService.Setup(s => s.PayOfferAsync(It.IsAny<PayOfferRequest>(), It.IsAny<PayOfferOptions>(),
+                                                       It.IsAny<CancellationToken>()))
+                           .ThrowsAsync(new InvalidOperationException("Already paying."));
+
+        // Act
+        var error = await Assert.ThrowsAsync<RpcException>(
+                        async () => await Client.MakePaymentAsync(Bolt12Melt("melt-b12-refused"), cancellationToken: Ct));
+        var check = await Client.CheckOutgoingPaymentAsync(new CheckOutgoingPaymentRequest
+        {
+            RequestIdentifier = new PaymentIdentifier { Type = PaymentIdentifierType.QuoteId, Id = "melt-b12-refused" }
+        }, cancellationToken: Ct);
+
+        // Assert
+        Assert.Equal(StatusCode.FailedPrecondition, error.StatusCode);
+        Assert.Equal(QuoteState.Pending, check.Status);
+    }
+
+    [Fact]
+    public async Task Given_AnOfferWithInvoicesNotOfTheMint_When_CheckIncomingPayment_Then_OnlyTheMintsAreListed()
+    {
+        // Arrange (NL-999)
+        var offerId = Hash(0x0C);
+        var mints = Bolt12Invoice(Hash(0x23), offerId, LightningMoney.Satoshis(1_000));
+        var other = Bolt12Invoice(Hash(0x24), offerId, LightningMoney.Satoshis(2_000));
+        other.Label = "coffee";
+        InvoiceRepository.Setup(r => r.ListSettledByOfferIdAsync(offerId)).ReturnsAsync([mints, other]);
+
+        // Act
+        var check = await Client.CheckIncomingPaymentAsync(new CheckIncomingPaymentRequest
+        {
+            RequestIdentifier = new PaymentIdentifier { Type = PaymentIdentifierType.OfferId, Id = offerId.ToString() }
+        }, cancellationToken: Ct);
+
+        // Assert
+        Assert.Equal([mints.PaymentHash.ToString()], check.Payments.Select(p => p.PaymentId));
+    }
+
+    private static MakePaymentRequest Bolt12Melt(string quoteId) => new()
+    {
+        PaymentOptions = new OutgoingPaymentVariant
+        {
+            Bolt12 = new Bolt12OutgoingPaymentOptions { Offer = RegtestOffer(10_000_000), QuoteId = quoteId }
+        },
+        Unit = "sat"
+    };
 
     private static OfferModel Offer(Hash offerId, LightningMoney amount) =>
         new(offerId, "lno1test", new byte[] { 1 }, "coffee", amount, null, null, null, null, new byte[] { 2 },

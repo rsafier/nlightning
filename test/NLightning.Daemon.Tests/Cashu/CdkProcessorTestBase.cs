@@ -66,6 +66,18 @@ public abstract class CdkProcessorTestBase : IAsyncLifetime
 
     protected static CancellationToken Ct => TestContext.Current.CancellationToken;
 
+    /// <summary>The test's token, canceled after 20 s too: a stream read that never gets its message fails the test
+    /// instead of hanging the test host.</summary>
+    protected static CancellationToken Bounded
+    {
+        get
+        {
+            var source = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+            source.CancelAfter(TimeSpan.FromSeconds(20));
+            return source.Token;
+        }
+    }
+
     public async ValueTask InitializeAsync()
     {
         OfferService.SetupGet(s => s.IsAvailable).Returns(true);
@@ -79,6 +91,7 @@ public abstract class CdkProcessorTestBase : IAsyncLifetime
         {
             Enabled = true,
             Port = 0,
+            AllowInsecureLoopback = true,
             OnchainEnabled = true,
             OnchainConfirmations = 2
         });

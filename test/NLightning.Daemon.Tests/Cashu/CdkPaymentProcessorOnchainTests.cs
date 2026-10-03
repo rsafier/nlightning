@@ -69,7 +69,7 @@ public sealed class CdkPaymentProcessorOnchainTests : CdkProcessorTestBase
 
         // Assert: reported at the second confirmation only, the dust deposit never
         Assert.Empty(early.Payments);
-        Assert.True(await stream.ResponseStream.MoveNext(Ct));
+        Assert.True(await stream.ResponseStream.MoveNext(Bounded));
         var received = stream.ResponseStream.Current.PaymentReceived;
         Assert.Equal(PaymentIdentifierType.QuoteId, received.PaymentIdentifier.Type);
         Assert.Equal("mint-2", received.PaymentIdentifier.Id);
@@ -166,7 +166,7 @@ public sealed class CdkPaymentProcessorOnchainTests : CdkProcessorTestBase
         Assert.Equal(LightningMoney.Satoshis(300), asked.MaxFee);
         Assert.Contains("cdk_quote=melt-oc-pay", asked.Labels.TagStrings);
         Assert.Equal(QuoteState.Pending, oneConfirmation.Status);
-        Assert.True(await stream.ResponseStream.MoveNext(Ct));
+        Assert.True(await stream.ResponseStream.MoveNext(Bounded));
         var paid = stream.ResponseStream.Current.PaymentSuccessful;
         Assert.Equal("melt-oc-pay", paid.QuoteId);
         Assert.Equal(QuoteState.Paid, paid.Details.Status);
@@ -175,6 +175,43 @@ public sealed class CdkPaymentProcessorOnchainTests : CdkProcessorTestBase
         var check = await CheckMeltAsync("melt-oc-pay");
         Assert.Equal(QuoteState.Paid, check.Status);
         Assert.Equal($"{s_meltTx}:0", check.PaymentProof);
+    }
+
+    [Fact]
+    public async Task Given_AnOnchainMeltWhoseBroadcastIsAbandoned_When_BlocksCome_Then_ItStaysPending()
+    {
+        // Arrange (NL-1001): the transaction was published; abandoned by the rebroadcaster it can still confirm
+        WalletSpend.Setup(w => w.WithdrawAsync(It.IsAny<WalletWithdrawRequest>(), It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(new WalletWithdrawResult(s_meltTx, LightningMoney.Satoshis(20_000),
+                                                          LightningMoney.Satoshis(210), LightningMoney.Satoshis(5_000),
+                                                          LightningMoney.Satoshis(1_666), 600, 1, LightningMoney.Zero,
+                                                          true));
+        var broadcast = new BroadcastTransactionModel(new SignedTransaction(s_meltTx, [1, 2, 3]),
+                                                      BroadcastPurpose.WalletSend, null, 100);
+        var lookups = 0;
+        Broadcasts.Setup(b => b.GetByTransactionIdAsync(s_meltTx))
+                  .Callback(() => Interlocked.Increment(ref lookups))
+                  .ReturnsAsync(() => broadcast);
+        var response = await Client.MakePaymentAsync(MeltRequest("melt-oc-abandoned", 20_000, feeIndex: 0,
+                                                                 maxFee: 300), cancellationToken: Ct);
+
+        // Act: two blocks after the abandon; the chain loop is one reader, so the second lookup comes after the first
+        // block's work was saved
+        broadcast.MarkAbandoned();
+        var before = Volatile.Read(ref lookups);
+        Tip = 110;
+        RaiseBlock(110);
+        await WaitForLookupsAsync(() => Volatile.Read(ref lookups) > before);
+        var afterFirst = Volatile.Read(ref lookups);
+        Tip = 111;
+        RaiseBlock(111);
+        await WaitForLookupsAsync(() => Volatile.Read(ref lookups) > afterFirst);
+        var check = await CheckMeltAsync("melt-oc-abandoned");
+
+        // Assert: never FAILED (the mint would give the ecash back for coins that may still leave the wallet)
+        Assert.Equal(QuoteState.Pending, response.Status);
+        Assert.Equal(QuoteState.Pending, check.Status);
+        Assert.Equal(CashuQuoteState.Pending, (await Quotes.GetAsync("melt-oc-abandoned"))!.State);
     }
 
     [Fact]
@@ -294,6 +331,14 @@ public sealed class CdkPaymentProcessorOnchainTests : CdkProcessorTestBase
         BlockchainMonitor.Raise(m => m.OnWalletMovementDetected += null,
                                 new WalletMovementEventArgs(address, LightningMoney.Satoshis(amountSat), s_depositTx,
                                                             height, outputIndex));
+
+    private static async Task WaitForLookupsAsync(Func<bool> done)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (!done() && DateTime.UtcNow < deadline)
+            await Task.Delay(10, Ct);
+        Assert.True(done(), "the chain loop did not look the melt's transaction up");
+    }
 
     private void RaiseBlock(uint height) =>
         BlockchainMonitor.Raise(m => m.OnNewBlockDetected += null, new NewBlockEventArgs(height, Hash(0x55)));

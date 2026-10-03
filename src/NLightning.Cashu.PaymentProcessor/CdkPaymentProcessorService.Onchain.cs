@@ -288,14 +288,15 @@ public sealed partial class CdkPaymentProcessorService
     }
 
     /// <summary>
-    /// The state of an on-chain melt's transaction at <paramref name="tip"/>: paid once confirmed deep enough, failed
-    /// when given up (its inputs are back in the wallet), pending otherwise.
+    /// The state of an on-chain melt's transaction at <paramref name="tip"/>: paid once confirmed deep enough, pending
+    /// otherwise. An abandoned broadcast stays pending: the transaction was published and can still confirm, so a
+    /// FAILED would let the mint return ecash for coins that may yet leave the wallet (NL-1001; the operator resolves
+    /// it).
     /// </summary>
     private CashuQuoteState? OnchainOutcome(BroadcastState? state, uint? confirmedHeight, uint tip) => state switch
     {
         BroadcastState.Confirmed when confirmedHeight is { } height && tip >= height
                                    && tip - height + 1 >= _options.OnchainConfirmations => CashuQuoteState.Paid,
-        BroadcastState.Abandoned => CashuQuoteState.Failed,
         _ => null
     };
 }

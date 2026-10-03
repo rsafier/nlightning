@@ -101,7 +101,7 @@ off by default and then opens no port; mutual TLS is the default (SR-32).
 | SR-33 | Medium | **Ambient endpoints.** `WebApplication.CreateSlimBuilder()` read `appsettings.json` from the working directory and the environment, so a `Kestrel` section there added endpoints beside the checked one (`0.0.0.0` included). Fixed (NL-998): no configuration sources; a start that does not listen on exactly the configured address stops and fails | fixed |
 | SR-34 | Medium | **Reads beyond the mint.** `CheckOutgoingPayment` answered any payment of the node (its preimage as `payment_proof`) and `CheckIncomingPayment` any invoice. Fixed (NL-999): only rows with the processor's label, never a trampoline relay's leg | fixed |
 | SR-35 | High | **Spend cap.** Any authenticated client could melt up to the channels' and the wallet's balance in one call, with a fee limit of its choosing. Fixed (NL-1004): `MaxPaymentSat` (default 1,000,000 sat) refuses larger quotes and melts of every method before anything is stored or sent; the Lightning fee limit is capped at max(`MinFeeReserveMsat`, `MaxFeePpm` of the amount, default 1 %), the on-chain one at `MaxOnchainFeeSat` (25,000 sat); a readable `server.key` is warned about | fixed |
-| SR-36 | Low | **Request limits.** Connections, streams, concurrent melts and a rolling budget are not limited; the mutual TLS of SR-32 is the boundary (NL-1000) | open |
+| SR-36 | Low | **Request limits.** Connections, streams and concurrent melts were unbounded. Fixed (NL-1000): `MaxConnections` (16), 32 HTTP/2 streams per connection, `MaxEventStreams` (4), `MaxConcurrentMelts` (8, then `RESOURCE_EXHAUSTED`). A rolling spend budget is NL-1011 | fixed |
 
 ## Key derivation (NL-159)
 

@@ -10,6 +10,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Cashu.Enums;
 using Domain.Cashu.Models;
 using Domain.Money;
+using Domain.Onchain.Enums;
 using Domain.Payments.Enums;
 using Domain.Payments.Events;
 using Domain.Payments.Interfaces;
@@ -25,6 +26,9 @@ public sealed partial class CdkPaymentProcessorService
 {
     private readonly Channel<ChainWork> _chainWork = Channel.CreateUnbounded<ChainWork>(
         new UnboundedChannelOptions { SingleReader = true });
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _abandonedWarned =
+        new(StringComparer.Ordinal);
 
     private CancellationTokenSource? _background;
     private Task? _chainLoop;
@@ -146,12 +150,20 @@ public sealed partial class CdkPaymentProcessorService
                 return new PaymentEventResponse { PaymentReceived = Received(invoice) };
             case PaymentSucceededEvent or PaymentFailedEvent when _scopeFactory is not null:
                 var quote = await WithQuotesAsync(r => r.GetOutgoingByPaymentHashAsync(paymentEvent.PaymentHash));
-                if (quote is null)
+                // A quote MakePayment already answered final needs no event (NL-999)
+                if (quote is null || quote.State is CashuQuoteState.Paid or CashuQuoteState.Failed)
                     return null;
 
                 var payment = await _paymentService.GetPaymentAsync(paymentEvent.PaymentHash, cancellationToken);
-                if (payment is null)
+                if (payment is null || !IsMintPayment(payment))
                     return null;
+
+                // A failure is reported only when it is final: not while a retry is to come, not an unknown outcome
+                if (paymentEvent is PaymentFailedEvent && LightningState(payment) != QuoteState.Failed)
+                {
+                    await RecordPaymentAsync(quote.QuoteId, payment);
+                    return null;
+                }
 
                 await RecordPaymentAsync(quote.QuoteId, payment);
                 var identifier = quote.Method == CashuQuoteMethod.Bolt11
@@ -293,6 +305,10 @@ public sealed partial class CdkPaymentProcessorService
                 continue;
 
             var broadcast = await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(txId);
+            if (broadcast?.State == BroadcastState.Abandoned && _abandonedWarned.TryAdd(melt.QuoteId, 0))
+                _logger.LogWarning("Cashu melt {QuoteId}: its transaction {TxId} was abandoned by the rebroadcaster; it "
+                                 + "stays pending for the mint because it can still confirm (resolve it by hand)",
+                                   melt.QuoteId, txId);
             if (OnchainOutcome(broadcast?.State, broadcast?.ConfirmedHeight, tip) is not { } outcome)
                 continue;
 
