@@ -39,6 +39,10 @@ public sealed class FakeBitcoinChain : IBitcoinChainService
     /// <summary>When set, <see cref="SendTransactionAsync"/> throws it.</summary>
     public Exception? SendFailure { get; set; }
 
+    /// <summary>False: like bitcoind without <c>txindex</c>, <see cref="GetTransactionConfirmationsAsync"/> does not find
+    /// confirmed transactions (answers 0).</summary>
+    public bool HasTxIndex { get; set; } = true;
+
     public Block this[uint height] => _blocks[(int)height];
 
     /// <summary>Appends a block holding <paramref name="transactions"/> (and, by default, the mempool).</summary>
@@ -123,6 +127,9 @@ public sealed class FakeBitcoinChain : IBitcoinChainService
 
     public Task<uint> GetTransactionConfirmationsAsync(uint256 txId)
     {
+        if (!HasTxIndex)
+            return Task.FromResult(0u);
+
         for (var height = 0; height < _blocks.Count; height++)
             if (_blocks[height].Transactions.Any(t => t.GetHash() == txId))
                 return Task.FromResult((uint)(_blocks.Count - height));

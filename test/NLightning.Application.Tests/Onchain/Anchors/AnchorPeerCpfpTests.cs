@@ -200,6 +200,41 @@ public sealed class AnchorPeerCpfpTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_TheHandOver_When_Stored_Then_TheChainMonitorFollowsTheRow()
+    {
+        // Arrange (NL-779): a row the monitor does not follow is never confirmed by the block that holds it
+        var peer = PeerCommitmentInMempool();
+
+        // Act
+        Service.OnPeerCommitmentInMempool(_channel.ChannelId, ToSigned(peer), false);
+        await Service.WhenIdleAsync();
+
+        // Assert: the stored row itself is handed to the monitor
+        var row = Assert.Single(_store.Rows, r => r.Purpose == BroadcastPurpose.PeerCommitment);
+        _monitor.Verify(m => m.TrackPendingBroadcast(It.Is<BroadcastTransactionModel>(b => ReferenceEquals(b, row))),
+                        Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_AFundingSpendAlreadyRecorded_When_ThePeerCommitmentIsHandedOver_Then_NoRowIsStored()
+    {
+        // Arrange (NL-779): the chain monitor processed the block holding Bob's commitment before the hand-over was
+        // stored; a row now would be sent after every block forever
+        var peer = PeerCommitmentInMempool();
+        var peerTxId = new TxId(peer.GetHash().ToBytes());
+        _close = new ChannelCloseModel(_channel.ChannelId, ChannelCloseKind.RemoteCommitment, peerTxId, 0, 501,
+                                       new Hash(new byte[32]), DateTimeOffset.UtcNow);
+
+        // Act
+        Service.OnPeerCommitmentInMempool(_channel.ChannelId, ToSigned(peer), false);
+        await Service.WhenIdleAsync();
+
+        // Assert
+        Assert.DoesNotContain(_store.Rows, r => r.Purpose == BroadcastPurpose.PeerCommitment);
+        _monitor.Verify(m => m.TrackPendingBroadcast(It.IsAny<BroadcastTransactionModel>()), Times.Never);
+    }
+
+    [Fact]
     public async Task Given_ARestartAfterTheHandOver_When_BitcoindDoesNotHaveTheCommitment_Then_TheStoredBytesKeepTheBump()
     {
         // Arrange: the hand-over row exists (and the first child); after the restart bitcoind does not have Bob's

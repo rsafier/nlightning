@@ -135,10 +135,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 1 | 45 | 46 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 186 | 372 | 634 |
+| fixed | 14 | 62 | 187 | 372 | 635 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **193** | **427** | **696** |
+| **Total** | **14** | **62** | **194** | **427** | **697** |
 
 ### Epics
 
@@ -6839,6 +6839,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** on recurrence, rerun the full suite with `--blame-hang-timeout 5m` and keep the full output; then move the wait that runs out to a stepped clock or an event-driven wait, as the de-timing pass did.
 - **Blocks/Blocked-by:** Related NL-764, NL-747
 - **Plan ref:** —
+
+### NL-779 Confirmed `PeerCommitment` rows were sent after every block forever
+- **Status:** fixed (wip/nl779)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/Anchors/AnchorCpfpService.Peer.cs` (`PersistPeerCommitmentAsync`), `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (block confirmation of `_pendingBroadcasts`, `TrySendAsync`), `BlockchainMonitorService.ConfirmedBroadcasts.cs` (new), `Wallet/BroadcastRefusalRules.cs`
+- **Evidence:** Mutinynet FAFO (2 rows) and FAFO2 (1 row), 2026-10-02: after every block a WRN "Broadcast of PeerCommitment transaction ... was refused" (`bad-txns-inputs-missingorspent`) and, after 12, the ERR "... spends a channel output, so it is not abandoned and is sent again after every block". Backup DBs `backup-pre-3b7701d6-20261002T223700Z`: FAFO rows `364aa528...` (channel f20939f0, Purpose 10, State 0 Pending, FirstBroadcastHeight 3473458, created 13:10:58 UTC) and `d1565a00...` (channel b78b95b7, 3473462, 13:13:01 UTC); FAFO2 row `c99b4521...` (channel fede6471, 3472214, 01:52 UTC; FAFO holds it as its own `LocalCommitment`, Confirmed at 3472215). Each is the peer's commitment the `MempoolReactor` handed over (log 09:10:58 EDT "Unconfirmed RemoteCommit 364aa528..."), confirmed one block later (3473459; FAFO2 holds the same txid as its own `LocalCommitment` row, Confirmed at 3473459; bitcoind: 1243 and 1239 confirmations). Root cause: the NL-390 hand-over row is saved straight into `BroadcastTransactions` in the background and never given to the chain monitor, whose blocks confirm only the rows it holds in `_pendingBroadcasts`; the row stayed Pending in the database while the monitor never sent it, until the next start (the batch10 upgrade, 15:15 EDT) loaded it. From then on its transaction was long confirmed (its outputs spent: missing inputs), no processed block could hold it again, and the NL-294 rule keeps a channel-output spend forever. The same gap left any row whose transaction confirmed before the monitor followed it pending for good (a confirmed transaction with unspent outputs is answered "already in utxo set"/`txn-already-known` and was counted as accepted, silently, every block).
+- **Fix sketch:** Done. (1) `IBlockchainMonitor.TrackPendingBroadcast` (memory only); the hand-over row is followed after its save, and no row is stored once a funding spend is recorded for the channel. (2) The rebroadcast round checks a refusal that may mean the transaction is confirmed (`BroadcastRefusalRules.MayBeConfirmed`: missing or spent inputs, already in the UTXO set or chain, `txn-already-known`) before counting it: `getrawtransaction` confirmations checked against that block's txids, otherwise a scan from 6 blocks below the row's first broadcast height up to the last processed block (at most 2016 blocks, for nodes without `txindex`), once per row per process and under the block queue; found at or below the last processed block, the row is marked Confirmed at that block with the block's accounting event in one save and is no longer sent. (3) The stuck rows heal on the first round after the upgrade's start without a database edit. NL-294 is unchanged for a transaction that is not in the chain. Tests: Infrastructure.Bitcoin `BlockchainMonitorServiceTests` (tracked row confirmed by its block; confirmed before tracking, refused as spent or known, with and without txindex; stuck row healed at the start; a row not in the chain still refused and kept), `BroadcastRefusalRulesTests` (`MayBeConfirmed`), Integration `ChainMonitorPersistenceTests` (the live case on SQLite: confirmed at the restart, never sent again), Application `AnchorPeerCpfpTests` (row tracked; no row after a recorded close).
+- **Blocks/Blocked-by:** Related NL-390, NL-294, NL-381
+- **Plan ref:** `docs/agents/BOLT5_ONCHAIN_PLAN.md` O0-T1, O7
 
 ### NL-749 Cost-basis lots landed in the wrong bucket when the clearing account was spent before the event that pays it
 - **Status:** fixed (fa6aeeba)

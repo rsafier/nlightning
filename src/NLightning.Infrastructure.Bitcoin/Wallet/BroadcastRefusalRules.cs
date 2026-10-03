@@ -30,6 +30,9 @@ internal static class BroadcastRefusalRules
     private static readonly string[] s_missingInputs = ["bad-txns-inputs-missingorspent", "missing-inputs",
                                                         "missing inputs"];
 
+    // bitcoind's answers for a transaction whose outputs are already in its UTXO set: a confirmed transaction
+    private static readonly string[] s_inChain = ["already in block chain", "already in utxo set", "txn-already-known"];
+
     private static readonly string[] s_invalid = ["mandatory-script-verify-flag-failed",
                                                   "non-mandatory-script-verify-flag"];
 
@@ -74,6 +77,22 @@ internal static class BroadcastRefusalRules
     {
         ArgumentNullException.ThrowIfNull(sendError);
         return s_missingInputs.Any(r => Contains(sendError.Message, r));
+    }
+
+    /// <summary>
+    /// True when the refusal may mean that the transaction is already confirmed (NL-779): its outputs are in bitcoind's
+    /// UTXO set (<c>RPC_VERIFY_ALREADY_IN_CHAIN</c>, "Transaction outputs already in utxo set", the older "already in
+    /// block chain", <c>txn-already-known</c>), or its inputs are missing or spent, which is also what a confirmed
+    /// transaction whose outputs are all spent gets. The chain monitor then asks where it confirmed before it counts
+    /// the refusal.
+    /// </summary>
+    public static bool MayBeConfirmed(Exception sendError)
+    {
+        ArgumentNullException.ThrowIfNull(sendError);
+        if (sendError is RPCException { RPCCode: RPCErrorCode.RPC_VERIFY_ALREADY_IN_CHAIN })
+            return true;
+
+        return IsMissingInputs(sendError) || s_inChain.Any(r => Contains(sendError.Message, r));
     }
 
     /// <summary>
