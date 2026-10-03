@@ -6,6 +6,8 @@ using Domain.Crypto.Constants;
 using Domain.Crypto.Interfaces;
 using Domain.Crypto.Models;
 using Domain.Crypto.ValueObjects;
+using Domain.Exceptions;
+using Infrastructure.Crypto.Factories;
 
 /// <summary>
 /// <see cref="IMusig2Service"/> over the BIP 327 module <see cref="Bip327"/>: maps the Domain value objects to the
@@ -66,6 +68,42 @@ internal sealed class Musig2Service : IMusig2Service
     }
 
     /// <inheritdoc/>
+    public MusigNoncePair GenerateNonce(CompactPubKey signerPubKey, PrivKey signerPrivKey,
+                                        byte[]? aggregateXOnlyPubKey = null, byte[]? message = null,
+                                        byte[]? extraInput = null)
+    {
+        if (signerPrivKey.Value is null)
+            throw new ArgumentNullException(nameof(signerPrivKey), "A just-in-time nonce needs the secret key");
+
+        var randomness = new byte[MusigConstants.NonceRandomnessLen];
+        try
+        {
+            using (var cryptoProvider = CryptoFactory.GetCryptoProvider())
+                cryptoProvider.RandomBytes(randomness);
+
+            return GenerateNonce(randomness, signerPubKey, signerPrivKey, aggregateXOnlyPubKey, message, extraInput);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(randomness);
+        }
+    }
+
+    /// <inheritdoc/>
+    public MusigSigningSession CreateSession(MusigKeyAggregate keyAggregate,
+                                             IReadOnlyList<MusigPublicNonce> publicNonces,
+                                             ReadOnlyMemory<byte> message)
+    {
+        ArgumentNullException.ThrowIfNull(keyAggregate);
+        ArgumentNullException.ThrowIfNull(publicNonces);
+        if (publicNonces.Count != keyAggregate.PubKeys.Count)
+            throw new MusigException("The `pubnonces` and `pubkeys` arrays must have the same length.");
+
+        var nonces = publicNonces.ToArray();
+        return keyAggregate.CreateSession(AggregateNonces(nonces), message) with { PublicNonces = nonces };
+    }
+
+    /// <inheritdoc/>
     public MusigAggregateNonce AggregateNonces(IReadOnlyList<MusigPublicNonce> publicNonces)
     {
         ArgumentNullException.ThrowIfNull(publicNonces);
@@ -100,6 +138,15 @@ internal sealed class Musig2Service : IMusig2Service
                                        CompactPubKey signerPubKey, MusigSigningSession session)
     {
         ArgumentNullException.ThrowIfNull(session);
+
+        // A session made from its public nonces (NL-904 item 3): the signer's nonce must be one of them, and the
+        // aggregate must still be theirs (a `with` copy could have swapped it)
+        if (session.PublicNonces is { } publicNonces)
+        {
+            if (!publicNonces.Contains(publicNonce) || AggregateNonces(publicNonces) != session.AggregateNonce)
+                return false;
+        }
+
         return Bip327.PartialSigVerifyInternal(partialSignature, publicNonce, signerPubKey, ToContext(session));
     }
 

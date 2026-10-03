@@ -59,6 +59,27 @@ public interface IMusig2Service
                                  byte[]? extraInput = null);
 
     /// <summary>
+    /// NonceGen with 32 bytes of fresh randomness drawn by the service (a just-in-time signing nonce, NL-904 item 3):
+    /// the secret key is required and mixed in, so a weak random source alone never repeats a nonce for this key.
+    /// </summary>
+    /// <param name="signerPubKey">The signer's public key.</param>
+    /// <param name="signerPrivKey">The signer's secret key (required).</param>
+    /// <param name="aggregateXOnlyPubKey">The 32-byte x-only aggregate (output) key, when known (optional).</param>
+    /// <param name="message">The message to sign, when known (optional; mixing it in strengthens the nonce).</param>
+    /// <param name="extraInput">Any extra input (optional).</param>
+    MusigNoncePair GenerateNonce(CompactPubKey signerPubKey, PrivKey signerPrivKey,
+                                 byte[]? aggregateXOnlyPubKey = null, byte[]? message = null,
+                                 byte[]? extraInput = null);
+
+    /// <summary>
+    /// A signing session over <paramref name="keyAggregate"/>'s keys and tweaks whose aggregate nonce is the NonceAgg
+    /// of <paramref name="publicNonces"/>, which the session keeps (<see cref="MusigSigningSession.PublicNonces"/>), so
+    /// <see cref="VerifyPartialSignature"/> refuses a signer nonce that is not one of them (NL-904 item 3).
+    /// </summary>
+    MusigSigningSession CreateSession(MusigKeyAggregate keyAggregate, IReadOnlyList<MusigPublicNonce> publicNonces,
+                                      ReadOnlyMemory<byte> message);
+
+    /// <summary>
     /// NonceAgg: the aggregate of every signer's public nonce. An undecodable nonce is an invalid contribution of that
     /// signer (its index in <paramref name="publicNonces"/>).
     /// </summary>
@@ -74,7 +95,9 @@ public interface IMusig2Service
     /// <summary>
     /// PartialSigVerify of one signer's partial signature, given its public nonce and key (which must be in
     /// <paramref name="session"/>'s keys). False for a wrong signature or a value at or above the curve order; an
-    /// undecodable nonce or key is an invalid contribution (signer null).
+    /// undecodable nonce or key is an invalid contribution (signer null). For a session made by
+    /// <see cref="CreateSession"/> it is also false when <paramref name="publicNonce"/> is not one of the session's
+    /// public nonces or the session's aggregate nonce is not their NonceAgg.
     /// </summary>
     bool VerifyPartialSignature(MusigPartialSignature partialSignature, MusigPublicNonce publicNonce,
                                 CompactPubKey signerPubKey, MusigSigningSession session);
