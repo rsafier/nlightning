@@ -82,6 +82,12 @@ using Onion;
 ///   <c>HtlcOrigin.Forwarded</c> (persisted with the add, NL-250), then marked <c>Offered</c>. When the offer throws
 ///   (refused, or any other failure) and no channel HTLC carries the origin, the circuit is failed and the upstream
 ///   HTLC gets <c>temporary_channel_failure</c>; when the add did persist, the circuit is marked <c>Offered</c>.</item>
+///   <item>Trampoline (NL-875, BOLTs PR 836): the final trampoline node receives through the same final-hop path with
+///   the merged payload (<see cref="IncomingOnionTrampolineFinal.MergedPayload"/>: the set counts against the inner
+///   total, decision D-TR4), and every failure of such an HTLC (refusal, <c>mpp_timeout</c>, a replay's) is created
+///   with the trampoline secret then the outer one (<see cref="TrampolineErrorPackets"/>); the trampoline secret is
+///   never stored, a replayed lock-in peels the stored onion again. A relay part goes to the registered
+///   <see cref="ITrampolineRelayIngress"/>, else it fails with <c>temporary_trampoline_failure</c>.</item>
 /// </list>
 /// <para>Outgoing events, routed by the outgoing HTLC's stored <see cref="HtlcOrigin"/>:</para>
 /// <list type="bullet">
@@ -163,6 +169,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private readonly ConcurrentDictionary<Task, byte> _backgroundTasks = new();
     private readonly CancellationTokenSource _disposeCts = new();
     private readonly ISecureKeyManager? _secureKeyManager;
+    private readonly ITrampolineFailureOnionService? _trampolineFailureOnionService;
     private volatile bool _disposed;
 
     public HtlcSwitch(IChannelLockProvider channelLockProvider, IChannelMemoryRepository channelMemoryRepository,
@@ -177,9 +184,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                       IAttributionDataService? attributionDataService = null,
                       IOptions<OnchainOptions>? onchainOptions = null, IRetiredScidMap? retiredScidMap = null,
                       INodeDrainState? nodeDrainState = null,
-                      IRefusedHtlcCounter? refusedHtlcCounter = null, ISecureKeyManager? secureKeyManager = null)
+                      IRefusedHtlcCounter? refusedHtlcCounter = null, ISecureKeyManager? secureKeyManager = null,
+                      ITrampolineFailureOnionService? trampolineFailureOnionService = null)
     {
         _secureKeyManager = secureKeyManager;
+        _trampolineFailureOnionService = trampolineFailureOnionService;
         _refusedHtlcCounter = refusedHtlcCounter;
         _nodeDrainState = nodeDrainState;
         _attributionDataService = attributionDataService;
@@ -342,7 +351,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         // A channel that can no longer carry an update (failed, or its commitment is on chain): its HTLC can only be
         // claimed on chain, and only as our final hop (NL-316, B5-LCL-RO-02). Nothing is forwarded from it, and a
         // failure cannot be sent: such an HTLC is left to time out on chain
-        if (IsOnchain(channelId) && result is not IncomingOnionFinal)
+        if (IsOnchain(channelId) && result is not (IncomingOnionFinal or IncomingOnionTrampolineFinal))
         {
             _logger.LogInformation("Incoming HTLC {HtlcId} of channel {ChannelId}, which is closing on chain, does not "
                                  + "pay us ({Result}): leaving it to time out on chain", htlcId, channelId,
@@ -359,6 +368,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         {
             IncomingOnionForward routed => (routed.SharedSecret, routed.Blinded?.IsIntroduction ?? false),
             IncomingOnionFinal received => (received.SharedSecret, false),
+            IncomingOnionTrampolineResult trampoline => (trampoline.OuterSharedSecret, false),
             _ => null
         };
         if (routable is var (sharedSecret, introduction) && !IsOnchain(channelId)
@@ -367,8 +377,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             if (firstHandling)
                 _refusedHtlcCounter?.Count(RefusedHtlcReason.AddedAfterShutdown);
             await RecordSecretAsync(channelId, htlcId, sharedSecret, storedSecret, cancellationToken);
+            var trampolineKeys = result is IncomingOnionTrampolineResult trampolineOnion
+                                     ? TrampolineFailureKeys.From(trampolineOnion)
+                                     : null;
             await FailBackAsync(channelId, htlc, sharedSecret, FailureMessage.TemporaryNodeFailure(), cancellationToken,
-                                introduction);
+                                introduction, trampolineKeys);
             _logger.LogInformation("Failed back incoming HTLC {HtlcId} of channel {ChannelId}: added after our shutdown "
                                  + "(B2-SHUT-S08)", htlcId, channelId);
             return;
@@ -400,7 +413,57 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                 await RecordSecretAsync(channelId, htlcId, forward.SharedSecret, storedSecret, cancellationToken);
                 await ForwardAsync(channelId, htlc, forward, firstHandling, cancellationToken);
                 return;
+
+            // Trampoline (NL-875): the outer secret is stored like any other; the trampoline secret is not, a replay
+            // peels the stored onion again (its outer HMAC no longer checked) and gets it back
+            case IncomingOnionTrampolineFailed trampolineFailed:
+                await RecordSecretAsync(channelId, htlcId, trampolineFailed.OuterSharedSecret, storedSecret,
+                                        cancellationToken);
+                await FailBackAsync(channelId, htlc, trampolineFailed.OuterSharedSecret, trampolineFailed.Failure,
+                                    cancellationToken, blindedIntroduction: false,
+                                    new TrampolineFailureKeys(trampolineFailed.OuterSharedSecret,
+                                                              trampolineFailed.TrampolineSharedSecret, null));
+                return;
+
+            case IncomingOnionTrampolineFinal trampolineFinal:
+                await RecordSecretAsync(channelId, htlcId, trampolineFinal.OuterSharedSecret, storedSecret,
+                                        cancellationToken);
+                await ReceiveAsync(channelId, htlc, trampolineFinal.ToFinal(), firstHandling, cancellationToken,
+                                   TrampolineFailureKeys.From(trampolineFinal));
+                return;
+
+            case IncomingOnionTrampolineRelay trampolineRelay:
+                await RecordSecretAsync(channelId, htlcId, trampolineRelay.OuterSharedSecret, storedSecret,
+                                        cancellationToken);
+                await RelayTrampolineAsync(lockedIn, htlc, trampolineRelay, cancellationToken);
+                return;
         }
+    }
+
+    /// <summary>
+    /// A part of a trampoline relay (NL-875): handed to the registered <see cref="ITrampolineRelayIngress"/> (the relay
+    /// engine, resolved here so its registration creates no construction cycle), or, when none is registered, failed
+    /// back with <c>temporary_trampoline_failure</c> created with both secrets (inside a blinded trampoline route, our
+    /// own <c>invalid_onion_blinding</c> at the introduction node and <c>update_fail_malformed_htlc</c> past it).
+    /// </summary>
+    private async Task RelayTrampolineAsync(IncomingHtlcLockedIn lockedIn, HtlcRecord htlc,
+                                            IncomingOnionTrampolineRelay relay, CancellationToken cancellationToken)
+    {
+        ITrampolineRelayIngress? ingress;
+        using (var scope = _serviceScopeFactory.CreateScope())
+            ingress = scope.ServiceProvider.GetService<ITrampolineRelayIngress>();
+
+        if (ingress is not null)
+        {
+            await ingress.HandleNewPartAsync(lockedIn, relay, cancellationToken);
+            return;
+        }
+
+        var failure = relay.Blinded is { IsIntroduction: true }
+                          ? FailureMessage.InvalidOnionBlinding(relay.TrampolineOnionSha256)
+                          : FailureMessage.TemporaryTrampolineFailure();
+        await FailBackAsync(lockedIn.ChannelId, htlc, relay.OuterSharedSecret, failure, cancellationToken,
+                            blindedIntroduction: false, TrampolineFailureKeys.From(relay));
     }
 
     private async Task RecordSecretAsync(ChannelId channelId, ulong htlcId, Secret sharedSecret, Secret? storedSecret,
@@ -420,7 +483,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     /// never failed off chain.
     /// </summary>
     private async Task ReceiveAsync(ChannelId channelId, HtlcRecord htlc, IncomingOnionFinal final,
-                                    bool firstHandling, CancellationToken cancellationToken)
+                                    bool firstHandling, CancellationToken cancellationToken,
+                                    TrampolineFailureKeys? trampoline = null)
     {
         var amount = LightningMoney.MilliSatoshis(htlc.AmountMsat);
         using var paymentHashLock = await _paymentHashLocks.AcquireAsync(htlc.PaymentHash, cancellationToken);
@@ -442,7 +506,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         {
             if (!onchain)
                 await FailBackAsync(channelId, htlc, final.SharedSecret, FailureMessage.MppTimeout(), cancellationToken,
-                                    blindedIntroduction: false);
+                                    blindedIntroduction: false, trampoline);
             _timedOutParts.TryRemove((channelId, htlc.Id), out _);
             return;
         }
@@ -514,7 +578,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                    channelId, ChainProcessingHalt.Refusal("final-hop acceptance"));
             if (!onchain)
                 await FailBackAsync(channelId, htlc, final.SharedSecret, FailureMessage.TemporaryNodeFailure(),
-                                    cancellationToken, blindedIntroduction: false);
+                                    cancellationToken, blindedIntroduction: false, trampoline);
             return;
         }
 
@@ -527,7 +591,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                    channelId, NodeDrain.Refusal("final-hop acceptance"));
             if (!onchain)
                 await FailBackAsync(channelId, htlc, final.SharedSecret, FailureMessage.TemporaryNodeFailure(),
-                                    cancellationToken, blindedIntroduction: false);
+                                    cancellationToken, blindedIntroduction: false, trampoline);
             return;
         }
 
@@ -543,14 +607,14 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                        channelId);
             else
                 await FailBackAsync(channelId, htlc, final.SharedSecret, decision.Failure!, cancellationToken,
-                                blindedIntroduction: false);
+                                    blindedIntroduction: false, trampoline);
             return;
         }
 
         if (newKeysendRecord is not null)
             await SaveKeysendRecordAsync(newKeysendRecord, htlc, channelId);
 
-        var part = new HtlcSetPart(channelId, htlc.Id, amount, decision.PartAmount!, final.SharedSecret);
+        var part = new HtlcSetPart(channelId, htlc.Id, amount, decision.PartAmount!, final.SharedSecret, trampoline);
         var set = GetHtlcSet(htlc.PaymentHash, decision.TotalMsat!);
         if (set.TotalMsat != decision.TotalMsat!)
         {
@@ -981,7 +1045,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         try
         {
             await SendFailureAsync(part.ChannelId, part.HtlcId, GetAwaitingIncomingHtlc(part.ChannelId, part.HtlcId),
-                                   part.SharedSecret, failure, cancellationToken, blindedIntroduction: false);
+                                   part.SharedSecret, failure, cancellationToken, blindedIntroduction: false,
+                                   part.Trampoline);
             _logger.LogInformation("Failed back incoming HTLC {HtlcId} of {AmountMsat} msat on channel {ChannelId}: "
                                  + "{Reason}", part.HtlcId, part.HtlcAmount.MilliSatoshi, part.ChannelId,
                                    failure.Code);
@@ -1344,10 +1409,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
     private async Task FailBackAsync(ChannelId channelId, HtlcRecord htlc, Secret sharedSecret,
                                      FailureMessage failure, CancellationToken cancellationToken,
-                                     bool? blindedIntroduction = null)
+                                     bool? blindedIntroduction = null, TrampolineFailureKeys? trampoline = null)
     {
         await SendFailureAsync(channelId, htlc.Id, htlc, sharedSecret, failure, cancellationToken,
-                               blindedIntroduction);
+                               blindedIntroduction, trampoline);
         LogFailedBack(channelId, htlc, failure.Code.ToString());
     }
 
@@ -1800,8 +1865,15 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     /// </summary>
     private async Task SendFailureAsync(ChannelId channelId, ulong htlcId, HtlcRecord? incoming, Secret sharedSecret,
                                         FailureMessage failure, CancellationToken cancellationToken,
-                                        bool? blindedIntroduction = null)
+                                        bool? blindedIntroduction = null, TrampolineFailureKeys? trampoline = null)
     {
+        // An HTLC that reached us as a trampoline node (NL-875): the trampoline layer under the outer one
+        if (trampoline is not null)
+        {
+            await SendTrampolineFailureAsync(channelId, htlcId, incoming, trampoline, failure, cancellationToken);
+            return;
+        }
+
         // Inside a blinded route (M5): a node that got the path_key in update_add_htlc fails every HTLC with
         // update_fail_malformed_htlc + invalid_onion_blinding; the introduction node, when it is not the final node,
         // with update_fail_htlc + invalid_onion_blinding (BOLT 2 "Removing an HTLC", BOLT 4 "Returning Errors")
@@ -1832,6 +1904,49 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         await _channelOperations.FailHtlcAsync(channelId, htlcId,
                                                _failureOnionService.CreateErrorPacket(sharedSecret, failure),
                                                cancellationToken);
+    }
+
+    /// <summary>
+    /// Fails an incoming HTLC that reached us as a trampoline node as the erring node (NL-875, BOLTs PR 836 "Returning
+    /// Errors"): the reason is created with the trampoline secret, then obfuscated with the outer one
+    /// (<see cref="TrampolineErrorPackets"/>; <c>attribution_data</c> on the outer layer only, when
+    /// <see cref="AddsAttribution"/>). Past the introduction node of a blinded trampoline route,
+    /// <c>update_fail_malformed_htlc</c> + <c>invalid_onion_blinding</c> instead.
+    /// </summary>
+    private async Task SendTrampolineFailureAsync(ChannelId channelId, ulong htlcId, HtlcRecord? incoming,
+                                                  TrampolineFailureKeys trampoline, FailureMessage failure,
+                                                  CancellationToken cancellationToken)
+    {
+        if (trampoline.BlindedMalformedSha256 is { } sha256)
+        {
+            await _channelOperations.FailMalformedHtlcAsync(channelId, htlcId, FailureCode.InvalidOnionBlinding,
+                                                            new Hash(sha256), cancellationToken);
+            return;
+        }
+
+        if (failure.Code == FailureCode.InvalidOnionBlinding)
+            await DelayBlindedErrorAsync(cancellationToken);
+
+        if (AddsAttribution(incoming))
+        {
+            var holdTime = await _channelOperations.GetHoldTimeAsync(channelId, htlcId, cancellationToken);
+            await _channelOperations.FailHtlcAsync(channelId, htlcId,
+                                                   TrampolineErrorPackets.CreateAttributed(
+                                                       _failureOnionService, _attributionDataService!,
+                                                       trampoline.TrampolineSharedSecret, trampoline.OuterSharedSecret,
+                                                       failure, holdTime),
+                                                   cancellationToken);
+            return;
+        }
+
+        var reason = _trampolineFailureOnionService is not null
+                         ? TrampolineErrorPackets.Create(_trampolineFailureOnionService,
+                                                         trampoline.TrampolineSharedSecret,
+                                                         trampoline.OuterSharedSecret, failure)
+                         : _failureOnionService.WrapErrorPacket(trampoline.OuterSharedSecret,
+                                                                _failureOnionService.CreateErrorPacket(
+                                                                    trampoline.TrampolineSharedSecret, failure));
+        await _channelOperations.FailHtlcAsync(channelId, htlcId, reason, cancellationToken);
     }
 
     /// <summary>
