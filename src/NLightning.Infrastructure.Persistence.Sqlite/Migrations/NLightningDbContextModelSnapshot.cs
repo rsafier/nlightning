@@ -843,6 +843,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<bool>("OptionAnchorOutputs")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("OptionSimpleTaproot")
+                        .HasColumnType("INTEGER");
+
                     b.Property<long>("RemoteChannelReserveAmountSats")
                         .HasColumnType("INTEGER");
 
@@ -927,6 +930,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
+                    b.Property<byte[]>("LastReceivedPartialSignature")
+                        .HasColumnType("BLOB");
+
                     b.Property<byte[]>("LastReceivedSignature")
                         .HasColumnType("BLOB");
 
@@ -986,6 +992,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.Property<ulong>("RemoteNextHtlcId")
                         .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("RemoteNextNonces")
+                        .HasColumnType("BLOB");
 
                     b.Property<byte[]>("RemoteNextPerCommitmentPoint")
                         .HasColumnType("BLOB");
@@ -1208,6 +1217,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.Property<ulong>("Number")
                         .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("PartialSignature")
+                        .HasColumnType("BLOB");
 
                     b.Property<byte[]>("PerCommitmentPoint")
                         .HasColumnType("BLOB");

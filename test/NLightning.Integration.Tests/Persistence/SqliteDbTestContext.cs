@@ -104,13 +104,17 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
                                              ulong localCommitmentNumber = 0, ulong remoteCommitmentNumber = 0,
                                              ulong? localRevocationNumber = null,
                                              ulong? remoteRevocationNumber = null, uint localKeyIndex = 0,
-                                             uint remoteKeyIndex = 0, byte channelTag = 0)
+                                             uint remoteKeyIndex = 0, byte channelTag = 0,
+                                             bool simpleTaproot = false)
     {
         var sha256 = new Sha256();
         var config = TestChannelParams.Create(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(253),
                                        LightningMoney.MilliSatoshis(1_000), LightningMoney.Satoshis(546), 483,
-                                       LightningMoney.Satoshis(100_000), 3, false, LightningMoney.Satoshis(546), 144,
-                                       useScidAlias);
+                                       LightningMoney.Satoshis(100_000), 3, simpleTaproot,
+                                       LightningMoney.Satoshis(546), 144, useScidAlias) with
+        {
+            OptionSimpleTaproot = simpleTaproot
+        };
 
         var localKeySet = new ChannelKeySetModel(localKeyIndex, LocalFundingPubKey, LocalFundingPubKey, LocalPaymentBasepoint,
                                                  LocalFundingPubKey, LocalFundingPubKey, LocalFundingPubKey);

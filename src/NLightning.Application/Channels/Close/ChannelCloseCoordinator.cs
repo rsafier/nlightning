@@ -475,7 +475,7 @@ public sealed class ChannelCloseCoordinator
         {
             var commitmentFeeSat = CommitmentFeeCalculator.CommitmentBaseFeeSatoshis(
                 channel.Commitments?.FeeratePerKw(CommitmentSide.Local)
-             ?? (ulong)channel.ChannelParams.FeeRateAmountPerKw.Satoshi, channel.ChannelParams.OptionAnchorOutputs, 0);
+             ?? (ulong)channel.ChannelParams.FeeRateAmountPerKw.Satoshi, channel.ChannelParams.CommitmentFormat, 0);
             var raisedMaxSat = Math.Min(feeSat, commitmentFeeSat);
             if (raisedMaxSat > state.Acceptable.MaxFeeSat)
             {

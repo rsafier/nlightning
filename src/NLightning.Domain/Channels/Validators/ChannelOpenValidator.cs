@@ -6,6 +6,7 @@ using Domain.Enums;
 using Exceptions;
 using Interfaces;
 using Money;
+using Node;
 using Node.Options;
 using Parameters;
 
@@ -169,7 +170,8 @@ public class ChannelOpenValidator : IChannelOpenValidator
             // The initial commitment is built with the peer's feerate_per_kw, so use it when present.
             var feeRatePerKw = parameters.FeeRatePerKw ?? parameters.CurrentFeeRatePerKw;
             var hasAnchors = parameters.NegotiatedFeatures.OptionAnchors > FeatureSupport.No;
-            var expectedFee = CommitmentFeeCalculator.FunderCost((ulong)feeRatePerKw.Satoshi, hasAnchors, 0);
+            var format = TaprootChannelType.GetCommitmentFormat(parameters.ChannelTypeTlv?.Features, hasAnchors);
+            var expectedFee = CommitmentFeeCalculator.FunderCost((ulong)feeRatePerKw.Satoshi, format, 0);
             if (parameters.FundingAmount < expectedFee + parameters.ChannelReserveAmount)
                 throw new ChannelErrorException(
                     $"Funding amount is too small to cover fees: {parameters.FundingAmount}");

@@ -755,13 +755,15 @@ internal sealed class HarnessNode : IDisposable
         private readonly EngineCommitmentSignerPort _inner = new(service, channels);
 
         public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
-                                                         CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint)
+                                                         CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint,
+                                                         MusigPublicNonce? remoteVerificationNonce = null)
         {
             channels.TryGetChannel(channelId, out var channel);
             var txId = service.SignRemoteCommitment(channel!, funding, CommitmentTxSpec.FromCommitmentSpec(spec),
                                                     number, remotePerCommitmentPoint).CommitmentTxId;
             signed.Add((number, txId));
-            return _inner.SignRemoteCommitment(channelId, funding, number, spec, remotePerCommitmentPoint);
+            return _inner.SignRemoteCommitment(channelId, funding, number, spec, remotePerCommitmentPoint,
+                                               remoteVerificationNonce);
         }
     }
 

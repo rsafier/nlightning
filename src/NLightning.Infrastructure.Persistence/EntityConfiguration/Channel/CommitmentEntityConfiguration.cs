@@ -34,6 +34,7 @@ public static class CommitmentEntityConfiguration
             entity.Property(e => e.PerCommitmentPoint).IsRequired(false);
             entity.Property(e => e.Signature).IsRequired(false);
             entity.Property(e => e.HtlcSignatures).IsRequired(false);
+            entity.Property(e => e.PartialSignature).IsRequired(false);
             entity.Property(e => e.SignedOnFundings).IsRequired(false);
 
             // No navigation on ChannelEntity: written only by ChannelStateDbRepository
@@ -55,6 +56,8 @@ public static class CommitmentEntityConfiguration
         entity.Property(e => e.PerCommitmentPoint).HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
         entity.Property(e => e.Signature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
         entity.Property(e => e.HtlcSignatures).HasColumnType("varbinary(max)");
+        entity.Property(e => e.PartialSignature)
+              .HasColumnType($"varbinary({MusigConstants.PartialSignatureWithNonceLen})");
         entity.Property(e => e.SignedOnFundings).HasColumnType("varbinary(max)");
     }
 }

@@ -33,7 +33,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 "NLightning.Infrastructure.Persistence.Entities.Channel.CommitmentEntity",
                 typeof(CommitmentEntity),
                 baseEntityType,
-                propertyCount: 12,
+                propertyCount: 13,
                 foreignKeyCount: 1,
                 keyCount: 1);
 
@@ -486,6 +486,57 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             number.SetSentinelFromProviderValue(0m);
             number.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
 
+            var partialSignature = runtimeEntityType.AddProperty(
+                "PartialSignature",
+                typeof(byte[]),
+                propertyInfo: typeof(CommitmentEntity).GetProperty("PartialSignature", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(CommitmentEntity).GetField("<PartialSignature>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                nullable: true);
+            partialSignature.SetGetter(
+                byte[] (CommitmentEntity instance) => CommitmentEntityUnsafeAccessors.PartialSignature(instance),
+                bool (CommitmentEntity instance) => CommitmentEntityUnsafeAccessors.PartialSignature(instance) == null);
+            partialSignature.SetSetter(
+                CommitmentEntity (CommitmentEntity instance, byte[] value) =>
+                {
+                    CommitmentEntityUnsafeAccessors.PartialSignature(instance) = value;
+                    return instance;
+                });
+            partialSignature.SetMaterializationSetter(
+                CommitmentEntity (CommitmentEntity instance, byte[] value) =>
+                {
+                    CommitmentEntityUnsafeAccessors.PartialSignature(instance) = value;
+                    return instance;
+                });
+            partialSignature.SetAccessors(
+                byte[] (IInternalEntry entry) => CommitmentEntityUnsafeAccessors.PartialSignature(((CommitmentEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => CommitmentEntityUnsafeAccessors.PartialSignature(((CommitmentEntity)(entry.Entity))),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(partialSignature, 8),
+                byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(partialSignature));
+            partialSignature.SetPropertyIndexes(
+                index: 8,
+                originalValueIndex: 8,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            partialSignature.TypeMapping = SqlServerByteArrayTypeMapping.Default.Clone(
+                comparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => ((object)v).GetHashCode(),
+                    byte[] (byte[] v) => v),
+                keyComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                providerValueComparer: new ValueComparer<byte[]>(
+                    bool (byte[] v1, byte[] v2) => StructuralComparisons.StructuralEqualityComparer.Equals(((object)v1), ((object)v2)),
+                    int (byte[] v) => StructuralComparisons.StructuralEqualityComparer.GetHashCode(((object)v)),
+                    byte[] (byte[] source) => source.ToArray()),
+                mappingInfo: new RelationalTypeMappingInfo(
+                    storeTypeName: "varbinary(98)",
+                    size: 98));
+            partialSignature.AddAnnotation("Relational:ColumnType", "varbinary(98)");
+            partialSignature.AddAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.None);
+
             var perCommitmentPoint = runtimeEntityType.AddProperty(
                 "PerCommitmentPoint",
                 typeof(byte[]),
@@ -510,11 +561,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             perCommitmentPoint.SetAccessors(
                 byte[] (IInternalEntry entry) => CommitmentEntityUnsafeAccessors.PerCommitmentPoint(((CommitmentEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => CommitmentEntityUnsafeAccessors.PerCommitmentPoint(((CommitmentEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(perCommitmentPoint, 8),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(perCommitmentPoint, 9),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(perCommitmentPoint));
             perCommitmentPoint.SetPropertyIndexes(
-                index: 8,
-                originalValueIndex: 8,
+                index: 9,
+                originalValueIndex: 9,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -560,11 +611,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             remoteMsat.SetAccessors(
                 ulong (IInternalEntry entry) => CommitmentEntityUnsafeAccessors.RemoteMsat(((CommitmentEntity)(entry.Entity))),
                 ulong (IInternalEntry entry) => CommitmentEntityUnsafeAccessors.RemoteMsat(((CommitmentEntity)(entry.Entity))),
-                ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(remoteMsat, 9),
+                ulong (IInternalEntry entry) => entry.ReadOriginalValue<ulong>(remoteMsat, 10),
                 ulong (IInternalEntry entry) => entry.GetCurrentValue<ulong>(remoteMsat));
             remoteMsat.SetPropertyIndexes(
-                index: 9,
-                originalValueIndex: 9,
+                index: 10,
+                originalValueIndex: 10,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -620,11 +671,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             signature.SetAccessors(
                 byte[] (IInternalEntry entry) => CommitmentEntityUnsafeAccessors.Signature(((CommitmentEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => CommitmentEntityUnsafeAccessors.Signature(((CommitmentEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(signature, 10),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(signature, 11),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(signature));
             signature.SetPropertyIndexes(
-                index: 10,
-                originalValueIndex: 10,
+                index: 11,
+                originalValueIndex: 11,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -671,11 +722,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             signedOnFundings.SetAccessors(
                 byte[] (IInternalEntry entry) => CommitmentEntityUnsafeAccessors.SignedOnFundings(((CommitmentEntity)(entry.Entity))),
                 byte[] (IInternalEntry entry) => CommitmentEntityUnsafeAccessors.SignedOnFundings(((CommitmentEntity)(entry.Entity))),
-                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(signedOnFundings, 11),
+                byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(signedOnFundings, 12),
                 byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(signedOnFundings));
             signedOnFundings.SetPropertyIndexes(
-                index: 11,
-                originalValueIndex: 11,
+                index: 12,
+                originalValueIndex: 12,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -727,6 +778,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
             var htlcs = runtimeEntityType.FindProperty("Htlcs");
             var localMsat = runtimeEntityType.FindProperty("LocalMsat");
             var number = runtimeEntityType.FindProperty("Number");
+            var partialSignature = runtimeEntityType.FindProperty("PartialSignature");
             var perCommitmentPoint = runtimeEntityType.FindProperty("PerCommitmentPoint");
             var remoteMsat = runtimeEntityType.FindProperty("RemoteMsat");
             var signature = runtimeEntityType.FindProperty("Signature");
@@ -738,7 +790,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                 ISnapshot (IInternalEntry source) =>
                 {
                     var structuralType1 = ((CommitmentEntity)(source.Entity));
-                    return ((ISnapshot)(new Snapshot<ChannelId, byte, TxId, uint, byte[], byte[], ulong, ulong, byte[], ulong, byte[], byte[]>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<byte>)(((IProperty)slot).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(slot)), ((ValueComparer<TxId>)(((IProperty)fundingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId>(fundingTxId)), ((ValueComparer<uint>)(((IProperty)feeratePerKw).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(feeratePerKw)), (source.GetCurrentValue<byte[]>(htlcSignatures) == null ? null : ((ValueComparer<byte[]>)(((IProperty)htlcSignatures).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(htlcSignatures))), (source.GetCurrentValue<byte[]>(htlcs) == null ? null : ((ValueComparer<byte[]>)(((IProperty)htlcs).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(htlcs))), ((ValueComparer<ulong>)(((IProperty)localMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(localMsat)), ((ValueComparer<ulong>)(((IProperty)number).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(number)), (source.GetCurrentValue<byte[]>(perCommitmentPoint) == null ? null : ((ValueComparer<byte[]>)(((IProperty)perCommitmentPoint).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(perCommitmentPoint))), ((ValueComparer<ulong>)(((IProperty)remoteMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(remoteMsat)), (source.GetCurrentValue<byte[]>(signature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)signature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(signature))), (source.GetCurrentValue<byte[]>(signedOnFundings) == null ? null : ((ValueComparer<byte[]>)(((IProperty)signedOnFundings).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(signedOnFundings))))));
+                    return ((ISnapshot)(new Snapshot<ChannelId, byte, TxId, uint, byte[], byte[], ulong, ulong, byte[], byte[], ulong, byte[], byte[]>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<byte>)(((IProperty)slot).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(slot)), ((ValueComparer<TxId>)(((IProperty)fundingTxId).GetValueComparer())).Snapshot(source.GetCurrentValue<TxId>(fundingTxId)), ((ValueComparer<uint>)(((IProperty)feeratePerKw).GetValueComparer())).Snapshot(source.GetCurrentValue<uint>(feeratePerKw)), (source.GetCurrentValue<byte[]>(htlcSignatures) == null ? null : ((ValueComparer<byte[]>)(((IProperty)htlcSignatures).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(htlcSignatures))), (source.GetCurrentValue<byte[]>(htlcs) == null ? null : ((ValueComparer<byte[]>)(((IProperty)htlcs).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(htlcs))), ((ValueComparer<ulong>)(((IProperty)localMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(localMsat)), ((ValueComparer<ulong>)(((IProperty)number).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(number)), (source.GetCurrentValue<byte[]>(partialSignature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)partialSignature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(partialSignature))), (source.GetCurrentValue<byte[]>(perCommitmentPoint) == null ? null : ((ValueComparer<byte[]>)(((IProperty)perCommitmentPoint).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(perCommitmentPoint))), ((ValueComparer<ulong>)(((IProperty)remoteMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong>(remoteMsat)), (source.GetCurrentValue<byte[]>(signature) == null ? null : ((ValueComparer<byte[]>)(((IProperty)signature).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(signature))), (source.GetCurrentValue<byte[]>(signedOnFundings) == null ? null : ((ValueComparer<byte[]>)(((IProperty)signedOnFundings).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(signedOnFundings))))));
                 });
             runtimeEntityType.SetStoreGeneratedValuesFactory(
                 ISnapshot () => ((ISnapshot)(new Snapshot<ChannelId>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetValueComparer())).Snapshot(default(ChannelId))))));
@@ -755,11 +807,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.SqlServer
                     return ((ISnapshot)(new Snapshot<ChannelId, byte, TxId>(((ValueComparer<ChannelId>)(((IProperty)channelId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<ChannelId>(channelId)), ((ValueComparer<byte>)(((IProperty)slot).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<byte>(slot)), ((ValueComparer<TxId>)(((IProperty)fundingTxId).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<TxId>(fundingTxId)))));
                 });
             runtimeEntityType.SetCounts(new PropertyCounts(
-                propertyCount: 12,
+                propertyCount: 13,
                 navigationCount: 0,
                 complexPropertyCount: 0,
                 complexCollectionCount: 0,
-                originalValueCount: 12,
+                originalValueCount: 13,
                 shadowCount: 0,
                 relationshipCount: 3,
                 storeGeneratedCount: 1));

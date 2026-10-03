@@ -34,7 +34,7 @@ public static class DustExposurePolicy
         var p = commitments.Params;
         var view = commitments.BuildProspectiveView(side, feerateOverride: feeratePerKw);
         return CommitmentFeeCalculator.TrimmedHtlcTotalMsat(view.ToSpec(), p.Holder(side).DustLimitSatoshis,
-                                                            p.OptionAnchors);
+                                                            p.Format);
     }
 
     /// <summary>
@@ -89,11 +89,11 @@ public static class DustExposurePolicy
             var spec = commitments.BuildSpec(side);
             var holderDust = p.Holder(side).DustLimitSatoshis;
             if (!CommitmentFeeCalculator.IsHtlcTrimmed(htlc.AmountMsat, htlc.IsOfferedBy(side), holderDust,
-                                                       spec.FeeratePerKw, p.OptionAnchors))
+                                                       spec.FeeratePerKw, p.Format))
                 continue;
 
             var earlier = spec.Htlcs.Where(h => h.Direction == HtlcDirection.Outgoing || h.Id < htlc.Id)
-                              .Where(h => CommitmentFeeCalculator.IsHtlcTrimmed(spec, h, holderDust, p.OptionAnchors))
+                              .Where(h => CommitmentFeeCalculator.IsHtlcTrimmed(spec, h, holderDust, p.Format))
                               .Aggregate(0UL, (sum, h) => checked(sum + h.AmountMsat));
             var exposure = checked(earlier + htlc.AmountMsat);
             if (exposure > maxDustMsat)

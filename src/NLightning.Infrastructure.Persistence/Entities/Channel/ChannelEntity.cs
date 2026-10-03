@@ -94,6 +94,13 @@ public class ChannelEntity
     public byte[]? LastReceivedSignature { get; set; }
 
     /// <summary>
+    /// Simple taproot channels (migration <c>AddSimpleTaprootChannels</c>, NL-877 T3): the peer's MuSig2 partial
+    /// signature of our first commitment with its nonce (<c>ChannelModel.LastReceivedPartialSignature</c>, 98 bytes).
+    /// Null for every other channel type.
+    /// </summary>
+    public byte[]? LastReceivedPartialSignature { get; set; }
+
+    /// <summary>
     /// The current state of the channel.
     /// </summary>
     public required byte State { get; set; }
@@ -131,6 +138,14 @@ public class ChannelEntity
     /// remote current <see cref="CommitmentEntity"/>.
     /// </summary>
     public CompactPubKey? RemoteNextPerCommitmentPoint { get; set; }
+
+    /// <summary>
+    /// Simple taproot channels (migration <c>AddSimpleTaprootChannels</c>, NL-877 T3): the peer's verification nonce
+    /// for its next commitment per funding (<c>ChannelCommitments.RemoteNextNonces</c>), as the <c>next_local_nonces</c>
+    /// TLV lays them out: per entry the funding txid (32 bytes) then the nonce (66 bytes), sorted by txid. Null when
+    /// there is none (every other channel type).
+    /// </summary>
+    public byte[]? RemoteNextNonces { get; set; }
 
     /// <summary>
     /// The wire bytes of the updates and <c>commitment_signed</c> we sent last, kept until the peer revokes and

@@ -102,6 +102,9 @@ internal sealed class RealSigningNode : IDisposable
 
     public CompactPubKey Point(ulong commitmentNumber) => Signer.GetPerCommitmentPoint(KeyIndex, commitmentNumber);
 
+    /// <summary>A service of this node's container (the production commitment factory and builders).</summary>
+    public T GetRequiredService<T>() where T : notnull => _provider.GetRequiredService<T>();
+
     public void Dispose() => _provider.Dispose();
 }
 
@@ -128,8 +131,15 @@ internal sealed class RealSigningCommitmentPair : IDisposable
     /// <summary>Every signed commitment: (signer, holder commitment number, txid signed, txid verified).</summary>
     public List<(string Signer, ulong Number, TxId Signed, TxId Verified)> Commitments { get; } = [];
 
-    public RealSigningCommitmentPair(bool hasAnchors)
+    /// <summary>The funding txid of the pair's channel.</summary>
+    public static readonly TxId FundingTxId = new(Enumerable.Repeat((byte)0x77, 32).ToArray());
+
+    /// <summary>True for a simple taproot channel (MuSig2 commitment signatures with verification nonces).</summary>
+    public bool IsSimpleTaproot { get; }
+
+    public RealSigningCommitmentPair(bool hasAnchors, bool simpleTaproot = false)
     {
+        IsSimpleTaproot = simpleTaproot;
         Alice = new RealSigningNode("Alice", 0xA1);
         Bob = new RealSigningNode("Bob", 0xB0);
 
@@ -140,22 +150,31 @@ internal sealed class RealSigningCommitmentPair : IDisposable
         var bobParty = new ChannelParty(LightningMoney.Satoshis(600), LightningMoney.Satoshis(10_000),
                                         LightningMoney.MilliSatoshis(1_000), 30,
                                         LightningMoney.Satoshis(FundingSatoshis), 100);
-        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x77, 32).ToArray());
+        var fundingTxId = FundingTxId;
         var obscuring = new CommitmentNumber(Alice.Basepoints.PaymentBasepoint, Bob.Basepoints.PaymentBasepoint,
                                              new Sha256());
 
-        Alice.Channel = CreateChannel(Alice, Bob, aliceParty, bobParty, true, fundingTxId, obscuring, hasAnchors);
-        Bob.Channel = CreateChannel(Bob, Alice, bobParty, aliceParty, false, fundingTxId, obscuring, hasAnchors);
+        Alice.Channel = CreateChannel(Alice, Bob, aliceParty, bobParty, true, fundingTxId, obscuring, hasAnchors,
+                                      simpleTaproot);
+        Bob.Channel = CreateChannel(Bob, Alice, bobParty, aliceParty, false, fundingTxId, obscuring, hasAnchors,
+                                    simpleTaproot);
         Alice.Signer.RegisterChannel(ChannelId, Alice.Channel.GetSigningInfo());
         Bob.Signer.RegisterChannel(ChannelId, Bob.Channel.GetSigningInfo());
 
         var aliceMsat = (FundingSatoshis - AlicePushedSatoshis) * 1_000;
         var bobMsat = AlicePushedSatoshis * 1_000;
+        // Simple taproot: each engine starts with the peer's channel_ready nonce for the peer's commitment 1
         Alice.State = ChannelCommitments.Create(ChannelId, CommitmentParams.FromChannel(Alice.Channel), aliceMsat,
-                                                bobMsat, InitialFeeratePerKw, Bob.Point(0), Bob.Point(1));
+                                                bobMsat, InitialFeeratePerKw, Bob.Point(0), Bob.Point(1),
+                                                remoteNextNonce: simpleTaproot ? VerificationNonce(Bob, 1) : null);
         Bob.State = ChannelCommitments.Create(ChannelId, CommitmentParams.FromChannel(Bob.Channel), bobMsat,
-                                              aliceMsat, InitialFeeratePerKw, Alice.Point(0), Alice.Point(1));
+                                              aliceMsat, InitialFeeratePerKw, Alice.Point(0), Alice.Point(1),
+                                              remoteNextNonce: simpleTaproot ? VerificationNonce(Alice, 1) : null);
     }
+
+    /// <summary><paramref name="node"/>'s verification nonce for its local commitment <paramref name="number"/>.</summary>
+    public static MusigPublicNonce VerificationNonce(RealSigningNode node, ulong number) =>
+        node.Signer.GetLocalVerificationNonce(ChannelId, FundingTxId, number);
 
     public RealSigningNode PeerOf(RealSigningNode node) => ReferenceEquals(node, Alice) ? Bob : Alice;
 
@@ -209,16 +228,20 @@ internal sealed class RealSigningCommitmentPair : IDisposable
         var commitmentSigned = Assert.IsType<OutboundCommitmentSigned>(Assert.Single(sent.Outbound));
         var signedCommit = from.State.RemoteNextCommit!.Commit;
         var signedTxId = from.SigningService
-                             .SignRemoteCommitment(from.Channel, CommitmentTxSpec.FromCommitmentSpec(signedCommit.Spec),
-                                                   signedCommit.Number, signedCommit.PerCommitmentPoint)
+                             .SignRemoteCommitment(from.Channel, null,
+                                                   CommitmentTxSpec.FromCommitmentSpec(signedCommit.Spec),
+                                                   signedCommit.Number, signedCommit.PerCommitmentPoint,
+                                                   IsSimpleTaproot ? VerificationNonce(to, signedCommit.Number) : null)
                              .CommitmentTxId;
 
         var received = to.State.ReceiveCommit(commitmentSigned.Signatures, to.CommitmentVerifier);
         to.Apply("receive commit", received);
         var verifiedTxId = to.SigningService
-                             .VerifyLocalCommitment(to.Channel, CommitmentTxSpec.FromCommitmentSpec(to.State.LocalCommit.Spec),
+                             .VerifyLocalCommitment(to.Channel, null,
+                                                    CommitmentTxSpec.FromCommitmentSpec(to.State.LocalCommit.Spec),
                                                     to.State.LocalCommit.Number, commitmentSigned.Signatures.Signature,
-                                                    commitmentSigned.Signatures.HtlcSignatures)
+                                                    commitmentSigned.Signatures.HtlcSignatures,
+                                                    commitmentSigned.Signatures.PartialSignature)
                              .CommitmentTxId;
         Commitments.Add((from.Name, commitmentSigned.RemoteCommitmentNumber, signedTxId, verifiedTxId));
 
@@ -227,7 +250,14 @@ internal sealed class RealSigningCommitmentPair : IDisposable
         to.Signer.AdvanceLocalCommitment(ChannelId, to.State.LocalCommit.Number);
         var secret = to.Signer.RevealPerCommitmentSecret(ChannelId, revoke.RevokedCommitmentNumber);
         var nextPoint = to.Signer.GetPerCommitmentPoint(ChannelId, revoke.NextCommitmentNumber);
-        from.Apply("receive revoke", from.State.ReceiveRevoke(secret, nextPoint, from.RevocationVerifier));
+        var nextNonces = IsSimpleTaproot
+                             ? new Dictionary<TxId, MusigPublicNonce>
+                             {
+                                 [FundingTxId] = VerificationNonce(to, revoke.NextCommitmentNumber)
+                             }
+                             : null;
+        from.Apply("receive revoke",
+                   from.State.ReceiveRevoke(secret, nextPoint, from.RevocationVerifier, nextNonces));
     }
 
     /// <summary>
@@ -266,10 +296,13 @@ internal sealed class RealSigningCommitmentPair : IDisposable
 
     private static ChannelModel CreateChannel(RealSigningNode self, RealSigningNode peer, ChannelParty local,
                                               ChannelParty remote, bool isInitiator, TxId fundingTxId,
-                                              CommitmentNumber obscuring, bool hasAnchors)
+                                              CommitmentNumber obscuring, bool hasAnchors, bool simpleTaproot)
     {
         var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(InitialFeeratePerKw), 3,
-                                              hasAnchors, FeatureSupport.No);
+                                              hasAnchors, FeatureSupport.No)
+        {
+            OptionSimpleTaproot = simpleTaproot
+        };
         var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(FundingSatoshis),
                                                   self.Basepoints.FundingPubKey, peer.Basepoints.FundingPubKey,
                                                   fundingTxId, 0);

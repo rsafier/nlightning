@@ -11,7 +11,8 @@ using Splicing;
 /// <param name="FeeUpdatesChanged">The fee update list changed (write <see cref="ChannelCommitments.FeeUpdates"/>).</param>
 /// <param name="LocalCommitChanged">A new local commitment (write <see cref="ChannelCommitments.LocalCommit"/>).</param>
 /// <param name="RemoteCommitChanged">The remote commitment rotated, or the unacked one was set or cleared.</param>
-/// <param name="ScalarsChanged">Balances, next HTLC ids or the remote next point changed.</param>
+/// <param name="ScalarsChanged">Balances, next HTLC ids, the remote next point or (simple taproot) the peer's next
+/// verification nonces (<see cref="ChannelCommitments.RemoteNextNonces"/>) changed.</param>
 /// <param name="RevokedRemoteCommit">The peer commitment this transition revoked (set only by
 /// <see cref="ChannelCommitments.ReceiveRevoke"/>): the persistence layer keeps its spec in the revocation log, in the
 /// same save as the <c>revoke_and_ack</c>, so a breach of it can be penalized output by output (BOLT 5 plan O1-T1,

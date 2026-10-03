@@ -50,6 +50,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<OptionAnchorOutputs>k__BackingField")]
         public static extern ref bool OptionAnchorOutputs(ChannelConfigEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<OptionSimpleTaproot>k__BackingField")]
+        public static extern ref bool OptionSimpleTaproot(ChannelConfigEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<RemoteChannelReserveAmountSats>k__BackingField")]
         public static extern ref long RemoteChannelReserveAmountSats(ChannelConfigEntity @this);
 

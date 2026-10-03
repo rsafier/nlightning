@@ -48,6 +48,7 @@ public static class ChannelEntityConfiguration
             // Nullable properties
             entity.Property(e => e.LastSentSignature).IsRequired(false);
             entity.Property(e => e.LastReceivedSignature).IsRequired(false);
+            entity.Property(e => e.LastReceivedPartialSignature).IsRequired(false);
             entity.Property(e => e.RemoteAlias)
                   .HasConversion<ShortChannelIdConverter>()
                   .IsRequired(false);
@@ -60,6 +61,7 @@ public static class ChannelEntityConfiguration
                   .HasConversion<CompactPubKeyConverter>()
                   .IsRequired(false);
             entity.Property(e => e.SentCommitDiff).IsRequired(false);
+            entity.Property(e => e.RemoteNextNonces).IsRequired(false);
             entity.Property(e => e.LastSentOrder).IsRequired();
             entity.Property(e => e.ErrorSent).IsRequired(false);
             entity.Property(e => e.DataLossDetected).IsRequired();
@@ -152,6 +154,9 @@ public static class ChannelEntityConfiguration
         entity.Property(e => e.RemoteNodeId).HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
         entity.Property(e => e.LastSentSignature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
         entity.Property(e => e.LastReceivedSignature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
+        entity.Property(e => e.LastReceivedPartialSignature)
+              .HasColumnType($"varbinary({MusigConstants.PartialSignatureWithNonceLen})");
+        entity.Property(e => e.RemoteNextNonces).HasColumnType("varbinary(max)");
         entity.Property(e => e.RemoteAlias).HasColumnType($"varbinary({ShortChannelId.Length})");
         entity.Property(e => e.ShortChannelId).HasColumnType($"varbinary({ShortChannelId.Length})");
         entity.Property(e => e.RemoteNextPerCommitmentPoint)

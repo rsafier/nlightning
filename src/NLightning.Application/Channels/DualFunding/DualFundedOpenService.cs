@@ -8,6 +8,7 @@ namespace NLightning.Application.Channels.DualFunding;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Extensions;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
@@ -207,7 +208,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                       LightningMoney.Satoshis(requestFunding.RequestedSat),
                                                       checked((long)fees.TotalMsat), true,
                                                       CommitmentFeeCalculator.FunderCost(commitmentFeerate,
-                                                          features.OptionAnchors > FeatureSupport.No, 0))
+                                                          CommitmentFormatExtensions.FromOptionAnchors(
+                                                              features.OptionAnchors > FeatureSupport.No), 0))
                 is { } violation)
                 throw new InvalidOperationException($"Cannot buy {requestFunding.RequestedSat} sat: {violation}");
 
@@ -575,7 +577,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                   checked((long)fees.TotalMsat), negotiation.IsOpener,
                                                   CommitmentFeeCalculator.FunderCost(
                                                       (ulong)channelParams.FeeRateAmountPerKw.Satoshi,
-                                                      channelParams.OptionAnchorOutputs, 0))
+                                                      channelParams.CommitmentFormat, 0))
             is { } violation)
             throw new InvalidOperationException($"Cannot buy {request.RequestedSat} sat: {violation}");
 
@@ -799,7 +801,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             if (DualFundLiquidity.GetBalanceViolation(localContribution, payload.FundingAmount,
                                                       -checked((long)saleFees.Value.TotalMsat), false,
                                                       CommitmentFeeCalculator.FunderCost(
-                                                          payload.CommitmentFeeRatePerKw, optionAnchors, 0))
+                                                          payload.CommitmentFeeRatePerKw,
+                                                          CommitmentFormatExtensions.FromOptionAnchors(optionAnchors),
+                                                          0))
                 is { } liquidityViolation)
                 throw new ChannelErrorException($"Refusing the liquidity request: {liquidityViolation}", temporaryId,
                                                 liquidityViolation);
@@ -1516,7 +1520,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                       negotiation.IsOpener,
                                                       CommitmentFeeCalculator.FunderCost(
                                                           (ulong)channelParams.FeeRateAmountPerKw.Satoshi,
-                                                          channelParams.OptionAnchorOutputs, 0))
+                                                          channelParams.CommitmentFormat, 0))
                 is { } balanceViolation)
                 return InteractiveTxRbfDecision.Reject($"liquidity ads: {balanceViolation}");
 
@@ -1646,7 +1650,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
         var openerShare = negotiation.IsOpener ? localShare : remoteShare;
         var fee = CommitmentFeeCalculator.FunderCost((ulong)channelParams.FeeRateAmountPerKw.Satoshi,
-                                                     channelParams.OptionAnchorOutputs, 0);
+                                                     channelParams.CommitmentFormat, 0);
         if (openerShare < fee)
             return $"the opener's contribution {openerShare} cannot pay the first commitment's fee {fee}";
 
@@ -2212,7 +2216,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         if (DualFundLiquidity.GetBalanceViolation(localShare, sellerContribution, liquidity.LocalFeeMsat,
                                                   negotiation.IsOpener,
                                                   CommitmentFeeCalculator.FunderCost(commitmentFeeratePerKw,
-                                                                                     optionAnchors, 0))
+                                                                                     CommitmentFormatExtensions
+                                                                                        .FromOptionAnchors(optionAnchors),
+                                                                                     0))
             is { } violation)
             return new LiquidityCheck($"liquidity ads: {violation}", null);
 

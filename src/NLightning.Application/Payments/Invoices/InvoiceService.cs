@@ -435,7 +435,7 @@ public sealed class InvoiceService : IInvoiceService
 
         if (!channel.IsInitiator)
             cost += (UInt128)CommitmentFeeCalculator.FunderCostSatoshis(feeratePerKw,
-                                                                        channel.ChannelParams.OptionAnchorOutputs,
+                                                                        channel.ChannelParams.CommitmentFormat,
                                                                         pendingHtlcs + 1) * 1_000;
 
         return balance > cost ? (ulong)(balance - cost) : 0;

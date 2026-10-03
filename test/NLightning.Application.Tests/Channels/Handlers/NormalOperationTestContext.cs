@@ -7,6 +7,7 @@ namespace NLightning.Application.Tests.Channels.Handlers;
 using Application.Channels.Services;
 using Application.Protocol.Factories;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
@@ -232,10 +233,11 @@ internal sealed class FakeCommitmentPorts : ICommitmentSigner, ICommitmentVerifi
     public bool SecretsValid { get; set; } = true;
 
     public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
-                                                     CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint) =>
+                                                     CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint,
+                                                     MusigPublicNonce? remoteVerificationNonce = null) =>
         new(NormalOperationTestContext.Signature(0x51),
             Enumerable.Repeat(NormalOperationTestContext.Signature(0x52),
-                              CommitmentFeeCalculator.UntrimmedHtlcCount(spec, 546, false)).ToList());
+                              CommitmentFeeCalculator.UntrimmedHtlcCount(spec, 546, CommitmentFormat.StaticRemoteKey)).ToList());
 
     public bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number, CommitmentSpec spec,
                                       CommitmentSignatures signatures) => CommitmentSignaturesValid;

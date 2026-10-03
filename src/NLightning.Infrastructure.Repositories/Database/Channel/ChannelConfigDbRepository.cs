@@ -46,6 +46,7 @@ public class ChannelConfigDbRepository(NLightningDbContext context)
             UseScidAlias = (byte)config.UseScidAlias,
             HasInferredParams = config.HasInferredParams,
             AnnounceChannel = config.AnnounceChannel,
+            OptionSimpleTaproot = config.OptionSimpleTaproot,
 
             LocalChannelReserveAmountSats = SatoshisOrZero(config.Local.ChannelReserveAmount),
             LocalDustLimitAmountSats = SatoshisOrZero(config.Local.DustLimitAmount),
@@ -85,7 +86,8 @@ public class ChannelConfigDbRepository(NLightningDbContext context)
                                  (FeatureSupport)entity.UseScidAlias)
         {
             HasInferredParams = entity.HasInferredParams,
-            AnnounceChannel = entity.AnnounceChannel
+            AnnounceChannel = entity.AnnounceChannel,
+            OptionSimpleTaproot = entity.OptionSimpleTaproot
         };
     }
 

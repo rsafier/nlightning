@@ -210,9 +210,30 @@ public sealed class SignerStateReloadTests : IDisposable
         Assert.Equal(channel.GetSigningInfo().AnnounceChannel, signingInfo.Value.AnnounceChannel);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_PersistedTaprootFlag_When_SignerLoadsTheChannel_Then_ItIsASimpleTaprootChannel(bool taproot)
+    {
+        // Arrange (NL-877 T3: the signer signs a taproot channel's commitments with MuSig2 only)
+        var (channel, _) = await PersistChannelAsync(simpleTaproot: taproot);
+
+        // Act
+        await using var context = _database.CreateContext();
+        var signingInfo = await new ChannelSigningInfoDbRepository(context).GetAsync(channel.ChannelId);
+        var all = await new ChannelSigningInfoDbRepository(context).GetAllAsync();
+
+        // Assert
+        Assert.NotNull(signingInfo);
+        Assert.Equal(taproot, signingInfo.Value.IsSimpleTaproot);
+        Assert.Equal(taproot, all[channel.ChannelId].IsSimpleTaproot);
+        Assert.Equal(channel.GetSigningInfo().IsSimpleTaproot, signingInfo.Value.IsSimpleTaproot);
+    }
+
     /// <summary>A channel we opened with the node's first channel key, saved as the node would.</summary>
     private async Task<(ChannelModel Channel, LocalLightningSigner Signer)> PersistChannelAsync(
-        bool markDataLoss = false, ChannelState state = ChannelState.Open, bool announceChannel = false)
+        bool markDataLoss = false, ChannelState state = ChannelState.Open, bool announceChannel = false,
+        bool simpleTaproot = false)
     {
         var signer = CreateSigner(null);
         var keyIndex = signer.CreateNewChannel(out var basepoints, out var firstPoint);
@@ -231,7 +252,8 @@ public sealed class SignerStateReloadTests : IDisposable
                                                      LightningMoney.Satoshis(500_000), 3, false,
                                                      LightningMoney.Satoshis(546), 144, FeatureSupport.No) with
         {
-            AnnounceChannel = announceChannel
+            AnnounceChannel = announceChannel,
+            OptionSimpleTaproot = simpleTaproot
         };
         var channel = new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat((byte)0x5D, 32).ToArray()),
                                        new CommitmentNumber(local.PaymentCompactBasepoint,

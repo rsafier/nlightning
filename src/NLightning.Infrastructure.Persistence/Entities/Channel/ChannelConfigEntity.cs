@@ -121,6 +121,12 @@ public class ChannelConfigEntity
     public bool AnnounceChannel { get; set; }
 
     /// <summary>
+    /// Whether the channel type is <c>option_simple_taproot</c> (<see cref="ChannelParams.OptionSimpleTaproot"/>,
+    /// migration <c>AddSimpleTaprootChannels</c>, NL-877 T3). False for every row that existed before.
+    /// </summary>
+    public bool OptionSimpleTaproot { get; set; }
+
+    /// <summary>
     /// Default constructor for EF Core.
     /// </summary>
     internal ChannelConfigEntity()

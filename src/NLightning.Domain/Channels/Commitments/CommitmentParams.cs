@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Channels.Commitments;
 
 using Bitcoin.Transactions.Enums;
+using Bitcoin.Transactions.Extensions;
 using Models;
 using Splicing;
 using Splicing.Enums;
@@ -11,8 +12,9 @@ using ValueObjects;
 /// </summary>
 /// <param name="LocalIsFunder">True when we opened the channel and pay the commitment fee (and both anchors).</param>
 /// <param name="FundingSatoshis">The funding output amount.</param>
-/// <param name="OptionAnchors">True when <c>option_anchors</c> applies (HTLC tx fees 0, 1124 base weight, two 330-sat
-/// anchors paid by the funder).</param>
+/// <param name="OptionAnchors">True when the anchors semantics apply (HTLC tx fees 0, two 330-sat anchors paid by the
+/// funder): <c>option_anchors</c>, and also a simple taproot channel (<see cref="OptionSimpleTaproot"/>). The commitment
+/// weight comes from <see cref="Format"/>.</param>
 /// <param name="Local">What we announced (binds the peer's offers, our commitment's dust limit, the peer's reserve).</param>
 /// <param name="Remote">What the peer announced (binds our offers, the peer's commitment's dust limit, our reserve).</param>
 /// <param name="MaxDustHtlcExposureMsat">Our <c>max_dust_htlc_exposure_msat</c> policy; null disables the check.</param>
@@ -38,6 +40,22 @@ public sealed record CommitmentParams(
     ChannelFunding? Funding = null)
 {
     public ulong FundingMsat => checked(FundingSatoshis * 1_000);
+
+    /// <summary>
+    /// True for an <c>option_simple_taproot</c> channel (NL-877 T3, <see cref="ChannelParams.OptionSimpleTaproot"/>):
+    /// MuSig2 commitment signatures with the peer's verification nonces (<see cref="ChannelCommitments.RemoteNextNonces"/>)
+    /// and the taproot commitment weight. <see cref="OptionAnchors"/> is true too.
+    /// </summary>
+    public bool OptionSimpleTaproot { get; init; }
+
+    /// <summary>
+    /// The BOLT 3 commitment format every fee and trimming computation of the engine uses (NL-904 item 1):
+    /// <see cref="CommitmentFormat.SimpleTaproot"/> for a taproot channel, else <see cref="CommitmentFormat.Anchors"/> or
+    /// <see cref="CommitmentFormat.StaticRemoteKey"/> from <see cref="OptionAnchors"/>.
+    /// </summary>
+    public CommitmentFormat Format => OptionSimpleTaproot
+                                          ? CommitmentFormat.SimpleTaproot
+                                          : CommitmentFormatExtensions.FromOptionAnchors(OptionAnchors);
 
     /// <summary>The parameters of the holder of a <paramref name="side"/> commitment (its dust limit applies).</summary>
     public CommitmentParty Holder(CommitmentSide side) => side == CommitmentSide.Local ? Local : Remote;
@@ -77,9 +95,10 @@ public sealed record CommitmentParams(
                      : Math.Max(announcedSatoshis, funding.CapacitySatoshis / 100)) * 1_000);
 
     /// <summary>
-    /// The engine parameters of an opened channel: funder, funding amount, anchors and both parties' announced limits,
-    /// kept with the same direction rules as <see cref="ChannelParams"/> (<c>Local</c> is what we announced), and
-    /// <see cref="ChannelParams.HasInferredParams"/> carried as <see cref="HasInferredLimits"/>.
+    /// The engine parameters of an opened channel: funder, funding amount, anchors, the simple taproot flag and both
+    /// parties' announced limits, kept with the same direction rules as <see cref="ChannelParams"/> (<c>Local</c> is
+    /// what we announced), and <see cref="ChannelParams.HasInferredParams"/> carried as
+    /// <see cref="HasInferredLimits"/>.
     /// </summary>
     /// <param name="channel">A channel whose funding output is known.</param>
     /// <param name="maxDustHtlcExposureMsat">Our dust exposure policy; null disables the check.</param>
@@ -94,7 +113,10 @@ public sealed record CommitmentParams(
                                     channel.ChannelParams.OptionAnchorOutputs, ToParty(channel.ChannelParams.Local),
                                     ToParty(channel.ChannelParams.Remote), maxDustHtlcExposureMsat,
                                     channel.ChannelParams.HasInferredParams,
-                                    ChannelFunding.FromFundingOutput(fundingOutput));
+                                    ChannelFunding.FromFundingOutput(fundingOutput))
+        {
+            OptionSimpleTaproot = channel.ChannelParams.OptionSimpleTaproot
+        };
     }
 
     private static CommitmentParty ToParty(ChannelParty party) =>
