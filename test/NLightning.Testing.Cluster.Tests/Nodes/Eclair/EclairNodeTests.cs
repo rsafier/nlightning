@@ -1,5 +1,8 @@
+using k8s.Models;
+
 namespace NLightning.Testing.Cluster.Tests.Nodes.Eclair;
 
+using Cluster.Diagnostics;
 using Cluster.Images;
 using Cluster.Kube;
 using Cluster.Nodes;
@@ -86,6 +89,35 @@ public class EclairNodeTests
         Assert.Contains("createwallet", wallet.Command[2], StringComparison.Ordinal);
         Assert.Contains("initialblockdownload == false", wallet.Command[2], StringComparison.Ordinal);
         Assert.NotNull(wallet.Resources.Requests);
+    }
+
+    [Fact]
+    public void Given_AnEclairPod_When_Described_Then_NeitherTheRpcNorTheApiPasswordAppears()
+    {
+        // Arrange: a pod of the workload, as a failure dump describes it
+        var endpoint = BitcoinCoreTopologyChain.EndpointFor(new TopologyNodeSpec("miner", NodeKind.BitcoinCore,
+                                                                                 ImageVersions.BitcoinCore31));
+        var options = EclairNodeDeployer.BuildOptions(endpoint, new TopologyNodeSpec("carol", NodeKind.Eclair)) with
+        {
+            BitcoindRpcPassword = "rpc-hunter2",
+            ApiPassword = "api-hunter3"
+        };
+        var template = EclairNode.Workload("carol", options).Build(s_run).StatefulSet.Spec.Template;
+        var pod = new V1Pod
+        {
+            Metadata = new V1ObjectMeta { Name = "carol-0", NamespaceProperty = s_run.Namespace },
+            Spec = template.Spec
+        };
+
+        // Act
+        var text = ResourceDescriber.DescribePod(pod);
+
+        // Assert: the wallet init's variables are there, the passwords are not
+        Assert.Contains("NLTG_RPC_USER=", text, StringComparison.Ordinal);
+        Assert.Contains("NLTG_RPC_PASSWORD=", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("rpc-hunter2", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("api-hunter3", text, StringComparison.Ordinal);
+        Assert.Contains("$NLTG_RPC_USER:$NLTG_RPC_PASSWORD", EclairNode.WalletInitScript, StringComparison.Ordinal);
     }
 
     [Fact]

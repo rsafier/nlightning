@@ -125,7 +125,7 @@ public static class EclairNode
     /// </summary>
     public static string WalletInitScript { get; } =
         """
-        rpc() { curl -s --max-time 5 --user "$NLTG_RPC_AUTH" -H 'content-type: text/plain' --data-binary "{\"jsonrpc\":\"1.0\",\"id\":\"nltg\",\"method\":\"$2\",\"params\":$3}" "http://$NLTG_RPC_HOST:$NLTG_RPC_PORT/$1"; }
+        rpc() { curl -s --max-time 5 --user "$NLTG_RPC_USER:$NLTG_RPC_PASSWORD" -H 'content-type: text/plain' --data-binary "{\"jsonrpc\":\"1.0\",\"id\":\"nltg\",\"method\":\"$2\",\"params\":$3}" "http://$NLTG_RPC_HOST:$NLTG_RPC_PORT/$1"; }
         start=$(date +%s); end=$((start + NLTG_TIMEOUT)); n=0
         until rpc "wallet/$NLTG_WALLET" getwalletinfo '[]' | jq -e '.error == null' >/dev/null 2>&1; do
           n=$((n + 1))
@@ -156,10 +156,10 @@ public static class EclairNode
             [
                 new V1EnvVar { Name = "NLTG_RPC_HOST", Value = options.BitcoindHost },
                 new V1EnvVar { Name = "NLTG_RPC_PORT", Value = Format(options.BitcoindRpcPort) },
-                new V1EnvVar
-                {
-                    Name = "NLTG_RPC_AUTH", Value = $"{options.BitcoindRpcUser}:{options.BitcoindRpcPassword}"
-                },
+                // User and password apart: the password's variable name is one the failure dumps mask
+                // (SecretRedactor.IsSecretName); a "user:password" value under another name would be written as is
+                new V1EnvVar { Name = "NLTG_RPC_USER", Value = options.BitcoindRpcUser },
+                new V1EnvVar { Name = "NLTG_RPC_PASSWORD", Value = options.BitcoindRpcPassword },
                 new V1EnvVar { Name = "NLTG_WALLET", Value = options.Wallet },
                 new V1EnvVar { Name = "NLTG_TIMEOUT", Value = Format(WalletInitTimeoutSeconds) }
             ],
