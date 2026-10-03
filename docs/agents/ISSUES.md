@@ -5633,7 +5633,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-868 The price source goes through Tor in `Hybrid`, where mempool.space's clearnet API refuses Tor exits, and every failed hour warned
-- **Status:** fixed (PENDING)
+- **Status:** fixed (91b69f18)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/PriceSourceServiceCollectionExtensions.cs`, `Accounting/Prices/HttpPriceSource.cs`; `src/NLightning.Domain/Accounting/Prices/AccountingPriceOptions.cs`; `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs`
