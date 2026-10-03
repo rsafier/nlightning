@@ -219,10 +219,14 @@ public class FeatureOptions
     /// option_simple_close (BOLT 2 closing_complete/closing_sig, BOLT2 plan N11; LND's "rbf-coop-close").
     /// </summary>
     /// <remarks>
-    /// Implemented (no longer experimental); defaults to No so the legacy closing_signed negotiation stays the default.
-    /// Needs <see cref="BeyondSegwitShutdown"/> (BOLT 9 dependency). Negotiated only when both sides signal it.
+    /// Optional by default on every network, mainnet included, since taproot plan D-T1 (owner decision 2026-10-03,
+    /// NL-877): implemented in BOLT2 plan N11 and proven against LND 0.21 (<c>--protocol.rbf-coop-close</c>) and Eclair
+    /// 0.14.3, either side closing; <c>option_simple_taproot</c> depends on it. Negotiated only when both sides signal
+    /// it: with such a peer every mutual close uses <c>closing_complete</c>/<c>closing_sig</c>, with a peer without the
+    /// bit (LND without rbf-coop-close, LDK) the legacy <c>closing_signed</c> negotiation. Needs
+    /// <see cref="BeyondSegwitShutdown"/> (BOLT 9 dependency, Optional by default too). Set No for legacy closes only.
     /// </remarks>
-    public FeatureSupport OptionSimpleClose { get; set; } = FeatureSupport.No;
+    public FeatureSupport OptionSimpleClose { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable trampoline routing (BOLT 4 "Trampoline Payments", BOLTs PR 836; BOLT 9 <c>trampoline_routing</c> 56/57,

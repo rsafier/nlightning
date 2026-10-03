@@ -1,3 +1,5 @@
+using NLightning.Domain.Bitcoin.Transactions.Enums;
+using NLightning.Domain.Bitcoin.Transactions.Extensions;
 using NLightning.Domain.Bitcoin.Transactions.Interfaces;
 using NLightning.Domain.Bitcoin.Transactions.Outputs;
 using NLightning.Domain.Bitcoin.ValueObjects;
@@ -14,6 +16,9 @@ namespace NLightning.Domain.Bitcoin.Transactions.Models;
 /// </summary>
 public class CommitmentTransactionModel
 {
+    private readonly bool _hasAnchors;
+    private readonly CommitmentFormat? _format;
+
     /// <summary>
     /// Gets the funding outpoint that this commitment transaction spends.
     /// </summary>
@@ -77,9 +82,30 @@ public class CommitmentTransactionModel
 
     /// <summary>
     /// Gets whether option_anchors applies (HTLC scripts with <c>1 OP_CSV</c>, zero-fee HTLC transactions with
-    /// sequence 1 and <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> remote HTLC signatures).
+    /// sequence 1 and <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> remote HTLC signatures). When <see cref="Format"/> is
+    /// set it decides (always true for <see cref="CommitmentFormat.SimpleTaproot"/>, which keeps those rules), so the
+    /// two never contradict each other.
     /// </summary>
-    public bool HasAnchors { get; init; }
+    public bool HasAnchors
+    {
+        get => _format?.HasAnchorOutputs() ?? _hasAnchors;
+        init => _hasAnchors = value;
+    }
+
+    /// <summary>
+    /// Gets the commitment format: which scripts the outputs use and which weight the fee was computed with. When not
+    /// set it follows <see cref="HasAnchors"/> (<see cref="CommitmentFormat.Anchors"/> or
+    /// <see cref="CommitmentFormat.StaticRemoteKey"/>); <see cref="CommitmentFormat.SimpleTaproot"/> builds P2TR
+    /// outputs (bolt-simple-taproot.md).
+    /// </summary>
+    public CommitmentFormat Format
+    {
+        get => _format ?? CommitmentFormatExtensions.FromOptionAnchors(_hasAnchors);
+        init => _format = value;
+    }
+
+    /// <summary>Gets whether this is a simple taproot commitment (<see cref="CommitmentFormat.SimpleTaproot"/>).</summary>
+    public bool IsSimpleTaproot => Format == CommitmentFormat.SimpleTaproot;
 
     /// <summary>
     /// Gets the CSV delay on the holder's delayed outputs (to_local and the HTLC transaction outputs).

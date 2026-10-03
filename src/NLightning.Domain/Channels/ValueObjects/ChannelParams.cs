@@ -1,5 +1,7 @@
 namespace NLightning.Domain.Channels.ValueObjects;
 
+using Bitcoin.Transactions.Enums;
+using Bitcoin.Transactions.Extensions;
 using Domain.Enums;
 using Money;
 using Node;
@@ -31,6 +33,14 @@ public readonly record struct ChannelParams
 
     /// <summary>Whether the channel type has <c>option_anchors</c>.</summary>
     public bool OptionAnchorOutputs { get; }
+
+    /// <summary>
+    /// The BOLT 3 commitment format of the channel type: the one place the commitment factory reads it from.
+    /// <c>option_simple_taproot</c> channels are not stored yet (NL-877 T3), so this is
+    /// <see cref="Bitcoin.Transactions.Enums.CommitmentFormat.Anchors"/> or
+    /// <see cref="Bitcoin.Transactions.Enums.CommitmentFormat.StaticRemoteKey"/>.
+    /// </summary>
+    public CommitmentFormat CommitmentFormat => CommitmentFormatExtensions.FromOptionAnchors(OptionAnchorOutputs);
 
     /// <summary>Whether <c>option_scid_alias</c> is in the channel type (Compulsory) or only negotiated (Optional).</summary>
     public FeatureSupport UseScidAlias { get; }

@@ -14,6 +14,7 @@ using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
+using Domain.Node.Options;
 using Domain.Node.ValueObjects;
 using Domain.Protocol.Messages;
 using Fixtures;
@@ -25,7 +26,8 @@ using Utils;
 /// negotiated features logged, anchors channels we fund (a plain <c>openchannel</c> that goes dual-funded, NL-551, and
 /// v1 with a push from a node without <c>option_dual_fund</c>) and Eclair funds (<c>open_channel2</c> by default, we
 /// contribute nothing; v1 to a node without <c>option_dual_fund</c>) reaching <c>NORMAL</c> with payments both ways,
-/// cooperative closes started by either side (legacy <c>closing_signed</c>: our <c>option_simple_close</c> is off),
+/// cooperative closes started by either side (legacy <c>closing_signed</c>: these nodes pin <c>option_simple_close</c>
+/// off, Optional by default since taproot plan D-T1; the simple closes are <see cref="EclairCloseTests"/>),
 /// <c>channel_reestablish</c> after Eclair restarts, and Eclair's refusal of a v1 open once <c>option_dual_fund</c> is
 /// negotiated (NL-557).
 /// </summary>
@@ -212,7 +214,8 @@ public sealed class EclairInteropTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         var session = await OwnAsync(EclairChannelSession.BuildOurFundedAsync(
                                          _fixture, "nltg-close-we", LightningMoney.Satoshis(500_000),
-                                         LightningMoney.Satoshis(100_000), ct));
+                                         LightningMoney.Satoshis(100_000), ct,
+                                         configureNodeOptions: PinLegacyClose));
         await session.AssertEclairPaysUsAsync(LightningMoney.Satoshis(20_000), ct);
         await session.AssertWePayEclairAsync(LightningMoney.Satoshis(5_000), ct);
         Assert.Equal(ChannelVersion.V1, Channel(session).Version);
@@ -256,7 +259,8 @@ public sealed class EclairInteropTests : IAsyncLifetime
         // Arrange + Act
         var ct = TestContext.Current.CancellationToken;
         var session = await OwnAsync(EclairChannelSession.BuildEclairFundedAsync(
-                                         _fixture, "nltg-fundee-v2", EclairChannelSession.Capacity, ct));
+                                         _fixture, "nltg-fundee-v2", EclairChannelSession.Capacity, ct,
+                                         configureNodeOptions: PinLegacyClose));
 
         // Assert
         var model = Channel(session);
@@ -397,6 +401,13 @@ public sealed class EclairInteropTests : IAsyncLifetime
         _ownSessions.Add(session);
         return session;
     }
+
+    /// <summary>
+    /// The legacy close proofs' node: <c>option_simple_close</c> (Optional by default since taproot plan D-T1, offered
+    /// by Eclair) off, so the close is the <c>shutdown</c>/<c>closing_signed</c> negotiation with one closing
+    /// transaction.
+    /// </summary>
+    private static void PinLegacyClose(NodeOptions options) => options.Features.OptionSimpleClose = FeatureSupport.No;
 
     /// <summary>
     /// The closing transaction in the mempool, 6 blocks, our channel Closed and Eclair's <c>CLOSED</c> (or gone to

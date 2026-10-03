@@ -58,6 +58,12 @@
     <Content Include="Offers\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
   </ItemGroup>
 
+  <!-- BIP 327 (MuSig2) vectors and the simple taproot channels vectors (verbatim; README has the sources) -->
+  <ItemGroup>
+    <Content Include="Crypto\Musig2\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="Taproot\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
   <!-- BOLT 4 trampoline vectors (lightning/bolts PR 836, bolt04/trampoline-*.json, verbatim; README has the commit) -->
   <ItemGroup>
     <Content Include="Onion\Trampoline\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>

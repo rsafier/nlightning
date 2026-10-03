@@ -165,8 +165,11 @@ public sealed class CommitmentSigningService
         var (holderKey, counterpartyKey) = holder == CommitmentSide.Local
                                                ? (funding.LocalFundingPubKey, funding.RemoteFundingPubKey)
                                                : (funding.RemoteFundingPubKey, funding.LocalFundingPubKey);
-        var localAnchor = model.LocalAnchorOutput is null ? null : new AnchorOutputInfo(holderKey, true);
-        var remoteAnchor = model.RemoteAnchorOutput is null ? null : new AnchorOutputInfo(counterpartyKey, false);
+        // Simple taproot anchors are keyed to local_delayedpubkey/remotepubkey, not to the funding: they stay
+        var localAnchor = model.IsSimpleTaproot ? model.LocalAnchorOutput
+                          : model.LocalAnchorOutput is null ? null : new AnchorOutputInfo(holderKey, true);
+        var remoteAnchor = model.IsSimpleTaproot ? model.RemoteAnchorOutput
+                           : model.RemoteAnchorOutput is null ? null : new AnchorOutputInfo(counterpartyKey, false);
 
         return new CommitmentTransactionModel(model.CommitmentNumber, model.Number, model.Fee, fundingOutput,
                                               localAnchor, remoteAnchor, model.ToLocalOutput, model.ToRemoteOutput,
@@ -174,6 +177,7 @@ public sealed class CommitmentSigningService
         {
             FeeRatePerKw = model.FeeRatePerKw,
             HasAnchors = model.HasAnchors,
+            Format = model.Format,
             ToSelfDelay = model.ToSelfDelay,
             LocalDelayedPubKey = model.LocalDelayedPubKey,
             RevocationPubKey = model.RevocationPubKey,

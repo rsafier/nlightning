@@ -24,8 +24,8 @@ using Utils;
 /// Basic interop with ldk-server (<see cref="LdkFixture"/>, LDK Node over rust-lightning 0.3; NL-180): BOLT 8 +
 /// <c>init</c> both ways with the negotiated features logged, anchors channels we fund and LDK funds (v1 only: LDK has
 /// no dual funding, NL-556) reaching usable on both ends with payments both ways, cooperative closes started by either
-/// side (legacy <c>closing_signed</c>: our <c>option_simple_close</c> is off), and <c>channel_reestablish</c> after LDK
-/// restarts. LDK's log is printed when a test fails.
+/// side (legacy <c>closing_signed</c>: LDK offers no <c>option_simple_close</c>, ours is Optional by default since
+/// taproot plan D-T1), and <c>channel_reestablish</c> after LDK restarts. LDK's log is printed when a test fails.
 /// </summary>
 [Collection(LdkInteropCollection.Name)]
 [Trait("Category", LdkInteropCollection.Category)]
