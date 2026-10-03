@@ -6841,7 +6841,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-779 Confirmed `PeerCommitment` rows were sent after every block forever
-- **Status:** fixed (wip/nl779)
+- **Status:** fixed (84e67685)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Onchain/Anchors/AnchorCpfpService.Peer.cs` (`PersistPeerCommitmentAsync`), `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (block confirmation of `_pendingBroadcasts`, `TrySendAsync`), `BlockchainMonitorService.ConfirmedBroadcasts.cs` (new), `Wallet/BroadcastRefusalRules.cs`
