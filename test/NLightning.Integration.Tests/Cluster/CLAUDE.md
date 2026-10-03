@@ -62,6 +62,28 @@ the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `
   `NLTG_TEST_BACKEND=cluster NLTG_KUBE_CONTEXT=orbstack dotnet test/NLightning.Integration.Tests/bin/Release/net10.0/NLightning.Integration.Tests.dll -trait Category=Interop.Cln`.
   `scripts/run-interop.sh cln` is unchanged and runs the Docker backend (under the machine's Docker lock).
 
+## The LND regtest network on the cluster (phase 3)
+
+- `Fixtures/Lnd/ClusterLndBackend` (the cluster backend of `LightningRegtestNetworkFixture`; the next step wires the
+  fixture to it through `Fixtures/Lnd/ILndNetworkBackend`, whose members are the ones the LND Docker tests call:
+  `Bitcoin` (the miner's RPC with its `miner` wallet, by pod IP), `BitcoinZmqPorts` (28332/28333 on that host),
+  `LndNodes`, `GetLndNode(alias)` (in-tree `LndNodeConnection`s, the same objects across restarts),
+  `RestartLndAsync(alias)`). It is a warm `LndRegtestNetworkFixture` (the library's `Topology/Lnd/LndRegtestNetwork`:
+  the Docker fixture's nodes, flags, channels and policies on `custom_lnd:0.21.4-beta`, PVCs) plus `Network` (restart,
+  join, open, routed payments), `BitcoinEndpoint` (for an `NLightningTestNode`), `LndPeerHost(alias)` and
+  `JoinInProcessNodeAsync(name, fundSat)`: our node on the network's chain through its own `InProcessNodeDeployer`,
+  stopped before the namespace goes.
+- Restart: a StatefulSet restart keeps the DNS names and PVC, the pod IP changes. `RestartLndAsync` has the LND peers
+  dial the new pod IP and joined nodes the Service name, and waits until those channels are active again (no NL-262
+  address-hold containers). A node a test started by itself and connected to LND by **IP** (the Docker helper
+  `NLightningTestNode.ConnectToAsync(LndNodeConnection)` resolves the connection's host to an IP) keeps the stale IP
+  after that restart and keeps redialling it (LND cannot dial back: it only saw our ephemeral port): on the cluster,
+  dial `LndPeerHost(alias)` (NL-780).
+- `Live/LndRegtestNetworkClusterTests` (`Category=Cluster`, `Explicit`): the backend's members answer, our node joins
+  (2M sat), opens 1M sat to alice by her Service name, pays carol through alice and is paid by alice, alice restarts,
+  and both payments work again. `scripts/run-cluster.sh -n 2 -p integration --class
+  NLightning.Integration.Tests.Cluster.Live.LndRegtestNetworkClusterTests` (network 33-54 s, whole test 47-70 s).
+
 ## Reachability (OrbStack, host-side tests)
 
 - Our node listens on 127.0.0.1 (all interfaces when `NLTG_HOST_ADDRESS` names another host) and is announced to the

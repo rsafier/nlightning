@@ -789,6 +789,50 @@ longer be published; its `README.md` has the full swap table and the design note
   harness's version table uses the same tag (`LndPairTopologyTests` 1/1 on 0.21.4, 35 s); phase 3 lane B moves the
   tests onto these clients.
 
+### Phase 3 lane record: the LND regtest topology on the cluster (2026-10-02, branch `hp3-lnd-topo` from b88b2717)
+
+The Docker suites' `LightningRegtestNetworkFixture` network, declared and built on the harness, with an adapter
+surface for the fixture's cluster backend (the wiring is the next step; no Docker LND test file or `LndTestHelpers`
+was touched).
+
+- **LND clients in the library.** `NLightning.Testing.Cluster` no longer references LNUnit.LND: `LndNode.Connection`
+  is an in-tree `LndNodeConnection` (`NLightning.Testing.Lnd`, LND 0.21.4 protos) from `LndCredentials.ToSettings`
+  (`LndSettings.FromBytes` over the exec-read `tls.cert`/`admin.macaroon`, the certificate pinned), dialled at the pod's
+  DNS name, so the connection object survives a restart or kill (replaced only when the credentials change);
+  `LndGrpcConnection` is gone. LND counts as ready only at `SERVER_ACTIVE` (`WaitServerActiveAsync`) and synced.
+  `LndNodeConnection.CreateWithoutNodeInfo` became public for that (a connection opened while LND starts).
+- **`Topology/Lnd/LndRegtestNetwork`.** `LndRegtestNetworkSpec.Default` mirrors what LNUnit builds (read from the
+  decompiled `LNUnitBuilder.Build`): miner + alice (`--protocol.rbf-coop-close`, `--accept-keysend`), bob, carol,
+  david; every LND a permanent peer of every other; 2 x 42.69 BTC per wallet; public opens at 10 sat/vB (alice → bob
+  10M; bob → alice, carol → alice, carol → bob 10M with 1M pushed); each funder's side at 0 msat / 0 ppm / delta 40.
+  `Declare` + `SetUpAsync` (also as the warm `LndRegtestNetworkFixture`): the chain and LND nodes in one wave on
+  PVCs, then the miner's reserve (30 coinbases to its wallet, matured by 100 burn blocks: about 1,208 BTC left), the
+  mesh (dialled at once: 6 s → 0.3 s), one `sendmany`, the opens, 6 blocks, active on both ends, the policies, and
+  every channel in every LND's graph with both policies enabled and the funder's set (`LndGraph.EdgeProblem`; the
+  `HasOwnChannelEdgeAsync` check of `LndTestHelpers`, stricter). `RestartAsync(alias, kill)`: a StatefulSet restart
+  (same DNS name and PVC, new pod IP; no NL-262 address-hold containers), `SERVER_ACTIVE`, every node of the network it
+  was connected to dials it again (LND peers at the new pod IP, joined nodes at its alias) and its channels are active
+  on both ends again. `JoinAsync` (any deployer: our in-process node), `OpenChannelAsync`, `PayAlongAsync` (one exact
+  route through `BuildRoute` + `SendToRouteV2`).
+- **Integration side.** `Fixtures/Lnd/ILndNetworkBackend` (the fixture members the LND Docker tests call: `Bitcoin`,
+  `BitcoinZmqPorts`, `LndNodes`, `GetLndNode`, `RestartLndAsync`) and `ClusterLndBackend` (the warm network, the
+  miner's endpoint by pod IP, `JoinInProcessNodeAsync`, `LndPeerHost`).
+- **Found (NL-780, for the wiring step).** The Docker helper `NLightningTestNode.ConnectToAsync(LndNodeConnection)`
+  resolves the connection's host to an **IP** and our node stores it; after a cluster LND restart (new pod IP) our
+  node keeps redialling the old IP and LND cannot dial back (it saw an ephemeral port), the cluster form of NL-262.
+  On the cluster, dial the Service name (`ClusterLndBackend.LndPeerHost`); joined nodes are redialled by the network.
+
+Evidence (OrbStack, Release, net10.0; `TestResults/cluster/hp3l-*`):
+
+| Run | Result | Time |
+|---|---|---|
+| `LndRegtestNetworkTests` alone (`hp3l-net1`) | 3/3 | network ready 37.5 s (chain 13.3, nodes 20.9, graph 36.3); every channel and alice → bob → carol paid in 1 attempt each (0.8 s); alice restart: `SERVER_ACTIVE` 7.7 s, 3 channels active 8.7 s; bob kill 6.5 / 8.5 s; whole class 57 s |
+| `LndRegtestNetworkTests` 2 at once (`hp3l-net2`) | 3/3, 3/3 | network ready 44.7 / 47.3 s (mesh 0.3 s); restarts 6.3-6.8 s to `SERVER_ACTIVE`, 6.7-7.3 s to channels active; 63 / 64 s |
+| `LndRegtestNetworkClusterTests` alone (`hp3l-int1`) | 1/1 | network 33.2 s; our node joined and its channel to alice active at 38.1 s; paid carol through alice and was paid by alice in 1 attempt each; alice restarted (4 channels, ours included) in 7.6 s; paid again; 46.6 s |
+| `LndRegtestNetworkClusterTests` 2 at once (`hp3l-int2`) | 1/1, 1/1 | network 53.0 / 54.3 s; restart 8.1-8.4 s; 70 s each |
+| Regression: `LndPairTopologyTests` + `MixedTopologyTests` (`hp3l-reg1`), `InProcessNodeClusterTests` LND proof (`hp3l-reg2`) | 2/2, 1/1 | 39 s, 25 s |
+| Non-Docker suites touched | Testing.Cluster.Tests 522/522, Testing.Lnd.Tests 108/108, Integration.Tests (`!~Docker`) 1102/1102 | |
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.
