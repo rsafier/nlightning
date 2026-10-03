@@ -300,6 +300,11 @@ every implementation, our own node included, is driven through the same seams.
   Docker: CLN 6.3 / 3.0 s, Eclair 25.8 / 10.8 s, LDK 15.6 / 4.9 s, Postgres 6.1 / 2.0 s; suite wall time 1.1-1.3x
   Docker's, and three at once take about as long as one. Still Docker only: the LND fixture (the network is ready in
   `Topology/Lnd/`, the wiring is next), on-chain, gossip, ABCD and Tor.
+- Phase 6 (plan "Phase 6 lane records" and "Phase 6 proof record"): the LND, on-chain, anchors, gossip and ABCD suites
+  run on `LightningRegtestNetworkFixture`'s cluster backend too, so every Docker-class suite but Tor is on the cluster.
+  The default matrix (`scripts/run-cluster.sh --matrix -j 6 --max-namespaces 6`, 12 suites: gossip and Eclair split in
+  two each, NL-841) is green in about 18 min, against about 72 min for the same suites one at a time on Docker; two
+  matrices at once (3 namespaces each) are green in 35-38 min (two flakes rerun green: NL-842 fixed, NL-843).
 - A new suite follows the same pattern: the fixture keeps its members and delegates to a Docker backend (the old code,
   unchanged) and a cluster backend (`ClusterTopologyFixture`, plus `InProcessTopologyFixture` for our nodes); test
   bodies reach the backend only through the fixture.

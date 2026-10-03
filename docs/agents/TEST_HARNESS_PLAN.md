@@ -251,6 +251,9 @@ The same topology model, sized up, on a multi-node cluster.
    - The full matrix twice concurrently, then at the tuned N, green apart from documented flakes.
    - Wall time compared with today's serial pass (target ≈15 min instead of ≈75).
    - NL-262 and NL-276 closed.
+   - Done ("Phase 6 proof record"): green at 6 namespaces in 18 min (1,088 s) against about 72 min of the same suites
+     one at a time on Docker; twice at once green (two flakes rerun green, both explained); the 15 min target needs
+     about 7 namespaces (NL-844); NL-262 and NL-276 moot on the cluster backend.
 7. **The `nltg` daemon image and scale (later, its own plan).**
    - The container image of our node, the generators, the drivers, the metrics.
    - A first 100-node run on OrbStack, then a multi-machine cluster for 1,000.
@@ -1366,6 +1369,104 @@ Still open: the cluster proofs of `onchain`, `anchors`, `gossip` and `abcd` (pha
   catalog's `-class` filters 35/35 (network ready 9.9 s, 1,140 s), the NL-830 wait included. Gates: Release build 0
   warnings, format, sln check; matrix unit tests 74 passed + 2 skipped (the pending-suite cases: none is pending),
   `SuiteCatalogMembershipTests` green, `scripts/tests/run-cluster-tests.sh` 48/48.
+
+### Phase 6 proof record: the full matrix on the cluster (2026-10-03, `wip/harness-spike` from 16564892)
+
+Every Docker-class suite but Tor ran as one matrix on OrbStack's cluster (`scripts/run-cluster.sh --matrix`), alone at
+6 namespaces and twice at once at 3 namespaces each, before and after tuning the catalog. One harness user (this
+job), Release, net10.0, `--no-incremental` build 0 warnings; logs and summaries in `TestResults/cluster/p6-*/`.
+
+**Runs** (a matrix pass is 330 passed tests + 7 `Explicit` not run: lnd 58, onchain 33 (+2), anchors 18, gossip 35,
+eclair 28 (+1), cln 90 (+4), abcd 11, ldk 27, faults 5, postgres 25):
+
+| Batch | Catalog | Budget | Result | Matrix wall | Peak namespaces |
+|---|---|---|---|---|---|
+| `p6-full1` | 10 suites (before tuning) | `-j 6 --max-namespaces 6` | 10 green | 1,206 s (20.1 min) | 6 of 6 |
+| `p6-twin-a` + `p6-twin-b` at once | 10 suites | `-j 3 --max-namespaces 3` each | 10 + 10 green | 2,229 s, 2,251 s | 3 of 3; 4 of 3 (1 terminating, NL-840) |
+| `p6-tuned1` | 12 suites (NL-841) | `-j 6 --max-namespaces 6` | 12 green | **1,088 s (18.1 min)** | 6 of 6 |
+| `p6-twin2-a` + `p6-twin2-b` at once | 12 suites | `-j 3 --max-namespaces 3` each | 12 green; 10 green + 2 rerun-green (NL-842, NL-843) | 2,087 s, 2,255 s | 3 of 3, 3 of 3 |
+
+Two matrices at once take 35-38 min for two full passes, about the time of two passes in a row at 6 namespaces: the
+budget, not the runner, sets the pace. No namespace was left after any batch; no test host was left.
+
+**Suite wall times** (cluster: the suite's own wall in `p6-full1` / `p6-tuned1`, six suites in flight; Docker: xunit
+time of the latest serial run of the same tests under the machine lock, one at a time):
+
+| Suite | Tests | Cluster `p6-full1` | Cluster `p6-tuned1` | Docker | Docker source |
+|---|---|---|---|---|---|
+| lnd | 58 | 401 s | 428 s | 338 s | the regtest collection of the 90-test LND run (502 s), phase 3 completion |
+| onchain + anchors | 33 (+2) + 18 | 345 + 231 s | 364 + 239 s | 375 + 41 s | `ONCHAIN_SUITE=all` 45 (+2) and `BackupRestoreFlowTests` 6, on-chain lane |
+| gossip + day0 | 30 + 5 | 1,177 s (one suite) | 808 + 459 s | 1,140 s | `run-gossip.sh` with the catalog's classes, gossip lane |
+| eclair + eclair2 | 21 (+1) + 7 | 1,141 s (one suite) | 747 + 465 s | 1,077 s | phase 3/4 proof |
+| cln | 90 (+4) | 854 s | 902 s | 761 s | phase 3/4 proof (77 + 4; the 13 container-free tests tagged since take milliseconds) |
+| ldk | 27 | 585 s | 624 s | 502 s | phase 3/4 proof |
+| abcd | 11 | 53 s | 84 s | 34 s | ABCD lane |
+| postgres | 25 | 49 s | 73 s | 30 s | `PostgresTests` 24 in the LND run (no Docker `ServerDatabaseClusterTests`) |
+| faults | 5 | 126 s | 182 s | — | cluster only (new coverage) |
+| **Sum** | | 4,962 s | 6,131 namespace-s | **4,298 s (71.6 min)** | |
+
+Serial Docker pass: about 72 min of test time for these suites (batch10's serial pass of the same runners, 2026-10-02:
+67.9 min wall from the LND suite's start to ABCD's end, with gossip then at 30 tests and 747 s). Cluster: 18.1 min,
+**4.0x faster**, and the cluster pass also runs the partition tests and the server-database restart the Docker pass
+does not have. A suite alone on the cluster is 1.1-1.5x its Docker time (fixtures ready in 13-56 s against 3-14 s on
+Docker; six suites mining and paying at once on one VM); the gain is that six of them run at once and that two whole
+matrices can run side by side, where the Docker suites run one at a time machine-wide. No Docker suite was rerun for
+this record: every baseline above is from 2026-10-02/03 runs of the same tests.
+
+**The ≈15 min target** is not reached at 6 namespaces (NL-844): `p6-tuned1` used 6,131 namespace-seconds (lnd holds 2
+for 428 s, postgres 3, faults 2), so 6 namespaces cannot finish in less than 1,022 s; 1,088 s is within 7 % of that
+bound, and a simulation of the admission queue with these times over 300,000 random orders of the 12 suites found none
+below 1,052 s. 15 min needs about 7 namespaces (the machine has 28 cores and 64 GiB for the VM; the cap of 6 is an
+owner rule), or shorter long poles (CLN 902 s is now the longest suite).
+
+**Findings** (IDs NL-840..NL-844):
+- **NL-840 (harness, fixed in 69fd5caa):** in `p6-twin-b` the faults suite held 3 namespaces under a count of 2 (one of
+  them terminating; the batch's sampled peak 4 of 3): its classes run in parallel and `PartitionClusterTests` builds a
+  topology per test, whose namespace was still terminating when the next test created one (`-faults-3`). The
+  machine-wide admission held (the test logged "6/6 runs under nltg-spike; waiting for a slot"). `run-cluster.sh` now
+  sets `NLTG_WAIT_NAMESPACE_DELETION=1` for every run, not only for `-parallel none`; after it no faults run used a
+  third name and every batch peaked at its budget. (The summary's NS column counts a rerun's namespace too, so a suite
+  with a rerun shows one more, by design: `MatrixReportTests` pins it.)
+- **NL-841 (harness, fixed in 6e87db78):** `p6-full1`'s wall was gossip's (1,177 s) and eclair's (1,141 s), each one
+  collection in one process, and the catalog's "longest first" order put onchain and anchors before them. The catalog
+  splits them (`gossip` = `Docker.Gossip`, `day0` = `Docker.Day0.*` + `ChannelPolicyPublicFlowTests` +
+  `SpliceLndObserverTests`; `eclair2` = `EclairSpliceTests`, `eclair` the rest; each its own process and topology) and
+  orders `lnd` first (2 namespaces: the admission backfills, so it would wait for two free slots at once), then by
+  measured wall time. 1,206 s → 1,088 s.
+- **NL-842 (test, fixed in 47e9a2ea):** `PublicChannelFlowTests` G1 (b) in `p6-twin2-b`: alice's `OpenChannelSync`
+  failed "not enough witness outputs to create funding transaction, need 0.01000000 BTC only have 0 BTC available".
+  Alice's log shows her sweeper taking her two wallet outputs as fee inputs of HTLC-timeout sweeps of an earlier test's
+  force close one second before the open. The test now has alice keep enough confirmed, unleased coins above her
+  anchors reserve before she funds (`ChainSync.EnsureLndSpendableAsync`: two 0.1 BTC outputs from the miner and a block
+  when short). Class reruns: 2 x 4/4 at once on the cluster (`p6-g1b`), 4/4 on Docker (`run-gossip.sh 1 -class ...`
+  under the machine lock, 287 s); the funding branch by a throwaway probe (+0.2 BTC, then the early return); and in the
+  final `gossip` run (`p6-final`, 30/30) the same state came back ("alice can spend -100000 sat, needs 1100000: funding
+  it") and G1 (b) passed. The state depends on xunit's random test order, so the Docker backend could hit it too.
+- **NL-843 (test timing, open):** `ChainMonitorZmqClusterTests` in `p6-twin2-b` (two matrices at once): "the block after
+  the heal took 7.9 s (ZMQ not back?)" against 3 s; the class alone green (the runner's rerun), and green in the five
+  other matrices' faults runs. Most likely ZMQ's slow joiner: the test mines as soon as the subscriber's TCP
+  connection is back, and bitcoind's publisher drops what it publishes before it has read the subscription, so that
+  block came by the 5 s tip poll. No assertion was relaxed; the failure message now also prints when ZMQ came back and
+  the tip-poll catch-ups for that block, so the next occurrence tells a lost block from a slow one (2ee6e42f). Since:
+  the class 2 x 1/1 at once (`p6-zmq`), faults 5/5 in `p6-final` (next block after the heal in 102 ms).
+- **NL-844 (observation, open):** the 15 min target needs more than 6 namespaces (above).
+- **NL-262 and NL-276: moot on the cluster backend, to be closed by the integrator.** NL-262 (a restarted LND container
+  can come back at another address; the `nltg-address-hold-N` containers): on the cluster an LND restart is a
+  StatefulSet restart that keeps the DNS name and PVC, the LND peers redial the new pod IP and our nodes the Service
+  name; `ReestablishFlowTests` (alice restarts) passed without address holds in every matrix of this proof (6 x 3/3),
+  as did the other restart tests (`AbcdRestartTests`, the O5 rollback's stopped window, Eclair, CLN and LDK restarts).
+  NL-276 (the host process cannot reach Docker bridge IPs; concurrent Docker runs remove each other's containers): the
+  cluster backend runs the test process on the macOS host and reaches every pod at its pod IP or Service name with no
+  SDK container, and each test process has its own namespaces, so two whole matrices ran side by side. Both workarounds
+  stay only in the Docker fallback (`DockerLndBackend`, the `run-*.sh` runners), which Tor still needs.
+- NL-818 (log volume, open) update: a matrix pass is 1.1 GB after the runner's gzip, most of it `results.xml`, which
+  holds every test's output again (214 MB for CLN) and is not compressed.
+
+Gates: `--no-incremental` Release build 0 warnings, `dotnet format` clean, `check-sln-configs.py` OK,
+`Testing.Cluster.Tests` matrix tests 74 + 2 skipped, `SuiteCatalogMembershipTests` 2/2,
+`scripts/tests/run-cluster-tests.sh` 48/48, `Testing.Cluster.Tests` (`Category!=Cluster`) 673 + 2 skipped, Integration.Tests non-Docker
+(`FullyQualifiedName!~Docker&Category!=Cluster`) 1,136/1,136. After the fixes `--matrix gossip,day0,faults -j 3
+--max-namespaces 4` (`p6-final`): 30/30, 5/5, 5/5, wall 801 s, peak 4 of 4.
 
 ## 6. Risks and open questions
 

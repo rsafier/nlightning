@@ -116,8 +116,9 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
 - Test bodies changed only where they named Docker: `HostAddressForEclair` instead of `host.docker.internal`,
   `DumpEclairLogAsync` instead of container log dumps, `EclairFixture.MineAsync` instead of `Chain.MineAsync`
   (`EclairFixture.Chain`, the Docker-only `InteropChainHost`, is gone from the fixture).
-- Run: `scripts/run-cluster.sh -n 1 --suite eclair` (no Docker lock; `--class` for one class, `--explicit on` adds the
-  Explicit E-X1 open). `scripts/run-interop.sh eclair` is unchanged and runs the Docker backend (under the machine's
+- Run: `scripts/run-cluster.sh -n 1 --suite eclair` and `--suite eclair2` (no Docker lock; the catalog runs
+  `EclairSpliceTests`, the longest class, as `eclair2`, its own process and Eclair topology, NL-841; `--class` for one
+  class, `--explicit on` adds the Explicit E-X1 open). `scripts/run-interop.sh eclair` is unchanged and runs the Docker backend (under the machine's
   Docker lock).
 
 ## The LDK interop suite on the cluster (test harness phase 4)
@@ -206,17 +207,24 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
 
 ## The gossip suite on the cluster (test harness phase 6)
 
-- The catalog's `gossip` (collection `gossip-regtest`, one namespace): `Docker.Gossip.*` without the Explicit
-  `Gossip.Capture` sub-namespace, `Docker.Day0.*`, `ChannelPolicyPublicFlowTests` and `SpliceLndObserverTests`, 35 tests
-  (8 of them the container-free `GossipProofHelperTests`). They run unchanged on either backend: LND only through
+- The gossip-regtest collection's 35 tests run as two catalog suites, each its own process and network (one namespace
+  each; split in the phase 6 proof to shorten the matrix, NL-841): `gossip` = `Docker.Gossip.*` without the Explicit
+  `Gossip.Capture` sub-namespace (30 tests, 8 of them the container-free `GossipProofHelperTests`; what
+  `scripts/run-gossip.sh` runs by default) and `day0` = `Docker.Day0.*`, `ChannelPolicyPublicFlowTests` and
+  `SpliceLndObserverTests` (5). They run unchanged on either backend: LND only through
   `LightningRegtestNetworkFixture` (`GetLndNode`, `LndNodes`, `Bitcoin`, `GetLndPeerEndpointAsync` for
   `GraphStoreFlowTests`' LND-to-LND opens, `DumpLndLogsAsync`), our nodes dial LND at the Service names.
 - NL-830 (test): `SpliceLndObserverTests` waited only for alice's edge of the open before splicing; with two runs at
   once the splice confirmed 7 s after the open's sixth block while bob (who hears it only through alice's 5 s trickle)
   was still taking it in, and bob's LND kept the spent edge for good (his graph closed 0 channels at the splice's block,
   alice's 1). The test now waits for bob's edge too before the splice.
-- Run: `scripts/run-cluster.sh -n 1 --suite gossip` (no Docker lock; about 20 min, network ready 29-58 s), or in the
-  default matrix. `scripts/run-gossip.sh` is unchanged and runs the Docker backend (under the machine's Docker lock; by
+- NL-842 (test): LND's sweeper takes wallet outputs as fee inputs of its anchor and HTLC sweeps after a force close, so
+  an LND node that funds an open right after another test's force close can have nothing to spend ("not enough witness
+  outputs ... only have 0 BTC available", `PublicChannelFlowTests` G1 (b)). Before an LND node funds, call
+  `ChainSync.EnsureLndSpendableAsync(fixture, lnd, minSat, nodes, ct)` (confirmed, unleased, above the anchors reserve;
+  two 0.1 BTC outputs and a block when short).
+- Run: `scripts/run-cluster.sh -n 1 --suite gossip` and `--suite day0` (no Docker lock; about 13 and 8 min, network
+  ready 29-58 s), or in the default matrix. `scripts/run-gossip.sh` is unchanged and runs the Docker backend (under the machine's Docker lock; by
   default only the `Docker.Gossip` namespace, give the catalog's `-class` filters for the whole suite).
 
 ## Reachability (OrbStack, host-side tests)
