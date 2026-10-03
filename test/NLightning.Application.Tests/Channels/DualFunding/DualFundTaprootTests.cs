@@ -373,6 +373,52 @@ public class DualFundTaprootTests
     }
 
     [Fact]
+    public async Task Given_TheLinkDropsBeforeTheSecondCommitmentSigned_When_ItsSenderRestarts_Then_ItIsSignedAgainFresh()
+    {
+        // Arrange: the second commitment_signed is lost, and the node that sent it (and stored the peer's) restarts
+        await using var harness = await CreateTaprootHarnessAsync(BobShareSat);
+        _ = harness.Alice.DualFund.OpenAsync(Request(harness), TestContext.Current.CancellationToken);
+        var commitments = 0;
+        await harness.PumpAsync((_, message) => message is CommitmentSignedMessage && ++commitments == 2);
+        var (firstFrom, firstCommitment) = harness.Transcript.First(t => t.Message is CommitmentSignedMessage);
+        var channelId = firstCommitment.Payload.ChannelId;
+        var receiver = firstFrom == "Alice" ? harness.Alice : harness.Bob;
+        var sender = harness.Other(receiver);
+        var lost = Assert.IsType<CommitmentSignedMessage>(harness.TakeNext(sender));
+
+        // Act: the sender restarts from its database (its negotiation and the signer's memory are gone), reconnect
+        await harness.RestartAsync(sender);
+        await harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert: the receiver asks with current_commit_nonce, the sender re-signs against it with a fresh nonce
+        var asking = (ChannelReestablishMessage)harness.Transcript.Single(t => t.From == receiver.Name
+                                                                           && t.Message is ChannelReestablishMessage)
+                                                          .Message;
+        Assert.NotNull(asking.CurrentCommitNonceTlv);
+        var resent = (CommitmentSignedMessage)harness.Transcript.Last(t => t.From == sender.Name
+                                                                        && t.Message is CommitmentSignedMessage)
+                                                     .Message;
+        Assert.NotEqual(lost.PartialSignatureWithNonceTlv!.PartialSignatureWithNonce.PublicNonce,
+                        resent.PartialSignatureWithNonceTlv!.PartialSignatureWithNonce.PublicNonce);
+
+        // The open completes on both sides and the channel opens with a MuSig2 first commitment on each side
+        var fundingTxId = new TxId(asking.NextFundingTlv!.NextFundingTxId);
+        foreach (var node in harness.Nodes)
+        {
+            var sessions = await node.InScopeAsync(u => u.InteractiveTxSessionDbRepository
+                                                          .GetByChannelIdAsync(channelId));
+            Assert.True(Assert.Single(sessions).State == InteractiveTxSessionState.Signed, harness.Describe());
+        }
+
+        await harness.ConfirmFundingAsync(channelId, fundingTxId);
+        Assert.Equal(ChannelState.Open, harness.Alice.Channel(channelId).State);
+        Assert.Equal(ChannelState.Open, harness.Bob.Channel(channelId).State);
+        Assert.NotNull(harness.Alice.Channel(channelId).Commitments!.LocalCommit.RemoteSignatures!.PartialSignature);
+        Assert.NotNull(harness.Bob.Channel(channelId).Commitments!.LocalCommit.RemoteSignatures!.PartialSignature);
+    }
+
+    [Fact]
     public async Task Given_ATaprootDualFundedOpen_When_EitherSideTriesRbf_Then_ItIsRefused()
     {
         // Arrange

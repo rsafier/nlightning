@@ -423,7 +423,8 @@ public class ChannelModel
             throw new ArgumentException("The balances must add up to the funding output's amount",
                                         nameof(fundingOutput));
 
-        FundingOutput = fundingOutput;
+        // Callers build the attempt's output from its amount and keys alone: the format follows the channel (NL-979)
+        FundingOutput = MarkFormat(fundingOutput);
         _localBalance = localBalance;
         _remoteBalance = remoteBalance;
         ChannelParams = channelParams;

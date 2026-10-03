@@ -4,6 +4,7 @@ namespace NLightning.Domain.Tests.Channels.Factories;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Channels.Factories;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
@@ -118,6 +119,37 @@ public class ChannelFactoryTaprootTests
     public async Task Given_ATaprootOpenChannel_When_CreatingChannelAsNonInitiator_Then_TheFundingOutputIsP2Tr()
     {
         // Arrange
+        var message = TaprootOpenChannel();
+
+        // Act
+        var channel = await CreateFactory(Advertising).CreateChannelV1AsNonInitiatorAsync(message, Negotiated,
+                                                                                           s_remoteNodeId);
+
+        // Assert
+        Assert.True(channel.ChannelParams.OptionSimpleTaproot);
+        Assert.True(channel.FundingOutput!.IsSimpleTaproot);
+    }
+
+    [Fact]
+    public async Task Given_ATaprootChannelBeingOpened_When_ItsUnconfirmedFundingIsReplaced_Then_TheNewOutputIsP2Tr()
+    {
+        // Arrange: an RBF attempt of a dual-funded open moves the channel to another funding output (NL-528); the new
+        // FundingOutputInfo is built without the format, as every caller of ReplaceUnconfirmedFunding does
+        var channel = await CreateFactory(Advertising).CreateChannelV1AsNonInitiatorAsync(TaprootOpenChannel(),
+                                                                                           Negotiated, s_remoteNodeId);
+        var funding = channel.FundingOutput!;
+        var capacity = LightningMoney.Satoshis(200_000);
+        var replacement = new FundingOutputInfo(capacity, funding.LocalFundingPubKey, funding.RemoteFundingPubKey);
+
+        // Act
+        channel.ReplaceUnconfirmedFunding(replacement, LightningMoney.Zero, capacity, channel.ChannelParams);
+
+        // Assert: still the MuSig2 P2TR output, so its script and the commitments spending it stay taproot (NL-979)
+        Assert.True(channel.FundingOutput!.IsSimpleTaproot);
+    }
+
+    private static OpenChannel1Message TaprootOpenChannel()
+    {
         var channelType = FeatureSet.DeserializeFromBytes([]);
         channelType.SetFeature(TaprootChannelType.CompulsoryBit, true);
         var payload = new OpenChannel1Payload(BitcoinNetwork.Mainnet.ChainHash, new ChannelFlags(ChannelFlag.None),
@@ -127,15 +159,7 @@ public class ChannelFactoryTaprootTests
                                               s_remoteNodeId, LightningMoney.Satoshis(1), 30,
                                               LightningMoney.Satoshis(100_000), s_remoteNodeId, LightningMoney.Zero,
                                               s_remoteNodeId, 144);
-        var message = new OpenChannel1Message(payload, new ChannelTypeTlv(channelType));
-
-        // Act
-        var channel = await CreateFactory(Advertising).CreateChannelV1AsNonInitiatorAsync(message, Negotiated,
-                                                                                           s_remoteNodeId);
-
-        // Assert
-        Assert.True(channel.ChannelParams.OptionSimpleTaproot);
-        Assert.True(channel.FundingOutput!.IsSimpleTaproot);
+        return new OpenChannel1Message(payload, new ChannelTypeTlv(channelType));
     }
 
     private static ChannelFactory CreateFactory(NodeOptions nodeOptions)
