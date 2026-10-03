@@ -734,11 +734,13 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Lists a page of our outgoing payments, newest first (ClientCommand 12).
+    /// Lists a page of our outgoing payments, newest first (ClientCommand 12); the outgoing legs of trampoline relays
+    /// only with <paramref name="includeRelayLegs"/> (NL-899).
     /// </summary>
-    public Task<ListPaymentsIpcResponse> ListPaymentsAsync(int skip, int take, CancellationToken ct = default)
+    public Task<ListPaymentsIpcResponse> ListPaymentsAsync(int skip, int take, CancellationToken ct = default,
+                                                           bool includeRelayLegs = false)
     {
-        var req = new ListPaymentsIpcRequest { Skip = skip, Take = take };
+        var req = new ListPaymentsIpcRequest { Skip = skip, Take = take, IncludeRelayLegs = includeRelayLegs };
         return SendRequestAsync<ListPaymentsIpcRequest, ListPaymentsIpcResponse>(ClientCommand.ListPayments, req, ct);
     }
 

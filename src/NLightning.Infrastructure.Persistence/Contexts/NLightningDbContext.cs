@@ -78,6 +78,7 @@ public class NLightningDbContext : DbContext
     public DbSet<OfferEntity> Offers { get; set; }
     public DbSet<TrampolineRelayEntity> TrampolineRelays { get; set; }
     public DbSet<TrampolineRelayPartEntity> TrampolineRelayParts { get; set; }
+    public DbSet<TrampolineRelayAttemptEntity> TrampolineRelayAttempts { get; set; }
     public DbSet<PaymentTrampolineHopEntity> PaymentTrampolineHops { get; set; }
 
     // Accounting feed (NL-602)

@@ -2407,6 +2407,55 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.ToTable("PaymentTrampolineHops");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayAttemptEntity", b =>
+                {
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<int>("Attempt")
+                        .HasColumnType("int");
+
+                    b.Property<long>("AmountOutMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CltvExpiryOut")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("CompletedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("FailureCode")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FailureReason")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long>("IncomingAmountMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("IncomingChannelIds")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<long>("IncomingTotalMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("NextNodeId")
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<int>("Parts")
+                        .HasColumnType("int");
+
+                    b.HasKey("PaymentHash", "Attempt");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.ToTable("TrampolineRelayAttempts");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", b =>
                 {
                     b.Property<byte[]>("PaymentHash")

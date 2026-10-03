@@ -134,7 +134,9 @@ public static class ClientUtils
         Console.WriteLine("                               list-graph-channels); scid as BLOCKxTXxOUTPUT");
         Console.WriteLine("  getroute <node_id> <amount_msat> [--max-fee-msat <msat>] [--final-cltv <blocks>]");
         Console.WriteLine("                               Show the route a payment would take now, hop by hop, with");
-        Console.WriteLine("                               fees, CLTVs and its success estimate (alias: get-route)");
+        Console.WriteLine("                               fees, CLTVs and its success estimate (alias: get-route);");
+        Console.WriteLine("                               our own routes only: a payment through a trampoline node");
+        Console.WriteLine("                               (payinvoice --trampoline) is not planned here");
         Console.WriteLine("  describegraph [--channels] [--nodes] [--limit <n>] [--offset <n>]");
         Console.WriteLine("                               Show the gossip graph's counts, memory, queues and sync");
         Console.WriteLine("                               peers (alias: describe-graph), with a page of channels");
@@ -178,8 +180,13 @@ public static class ClientUtils
         Console.WriteLine("                               Wait until an invoice is paid or canceled (alias:");
         Console.WriteLine("                               wait-invoice) [timeout 1-300, default 60]; exit code 1 if");
         Console.WriteLine("                               it is still open when the wait ends");
-        Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [count 1-1000,");
-        Console.WriteLine("                               default 100]");
+        Console.WriteLine("  listpayments [count] [skip] [--include-relay-legs]");
+        Console.WriteLine("                               List outgoing payments, newest first [count 1-1000,");
+        Console.WriteLine("                               default 100], with the trampoline node and route of a");
+        Console.WriteLine("                               payment sent through one; the outgoing legs of trampoline");
+        Console.WriteLine("                               payments we relayed are not our spending and are listed");
+        Console.WriteLine("                               only with --include-relay-legs (listforwards lists the");
+        Console.WriteLine("                               relays)");
         Console.WriteLine("  listforwards [count] [skip] [--since <time>] [--until <time>]");
         Console.WriteLine("             [--status pending|offered|fulfilled|failed] [--channel <channel>]");
         Console.WriteLine("                               List payments we forwarded, newest first, with the fee");

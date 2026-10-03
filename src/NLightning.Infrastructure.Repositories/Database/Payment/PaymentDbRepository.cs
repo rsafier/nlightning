@@ -112,23 +112,31 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<PaymentModel>> ListAsync(int skip, int take)
+    public Task<IReadOnlyList<PaymentModel>> ListAsync(int skip, int take) => ListAsync(skip, take, true);
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<PaymentModel>> ListAsync(int skip, int take, bool includeTrampolineRelays)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(skip);
         ArgumentOutOfRangeException.ThrowIfNegative(take);
         if (take == 0)
             return [];
 
-        var entities = await DbSet.AsNoTracking()
-                                  .Include(e => e.Hops)
-                                  .OrderByDescending(e => e.CreatedAt)
-                                  .ThenByDescending(e => e.PaymentHash)
-                                  .Skip(skip)
-                                  .Take(take)
-                                  .ToListAsync();
+        var set = DbSet.AsNoTracking();
+        if (!includeTrampolineRelays)
+            set = set.Where(e => !e.IsTrampolineRelay);
+        var entities = await set.Include(e => e.Hops)
+                                .OrderByDescending(e => e.CreatedAt)
+                                .ThenByDescending(e => e.PaymentHash)
+                                .Skip(skip)
+                                .Take(take)
+                                .ToListAsync();
 
         return entities.Select(e => MapEntityToDomain(e, e.Hops ?? [])).ToList();
     }
+
+    /// <inheritdoc />
+    public Task<int> CountTrampolineRelaysAsync() => DbSet.AsNoTracking().CountAsync(e => e.IsTrampolineRelay);
 
     internal static PaymentModel MapEntityToDomain(PaymentEntity entity, IEnumerable<PaymentHopEntity> hops)
     {
@@ -187,12 +195,13 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
         entity.Tags = payment.Tags;
         entity.IsTrampolineRelay = payment.IsTrampolineRelay;
         entity.AmountMsat = checked((long)payment.Amount.MilliSatoshi);
-        entity.FeeMsat = checked((long)payment.Fee.MilliSatoshi);
         MapMutableFields(payment, entity);
     }
 
     private static void MapMutableFields(PaymentModel payment, PaymentEntity entity)
     {
+        // A failed payment's fee is zero (NL-982)
+        entity.FeeMsat = checked((long)payment.Fee.MilliSatoshi);
         entity.Status = (byte)payment.Status;
         entity.OutgoingChannelId = payment.OutgoingChannelId;
         entity.OutgoingHtlcId = payment.OutgoingHtlcId;

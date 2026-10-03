@@ -11,7 +11,8 @@ using ValueConverters;
 
 /// <summary>
 /// The trampoline relay tables (NL-875, migration <c>AddTrampolineRelays</c>): <c>TrampolineRelays</c>,
-/// <c>TrampolineRelayParts</c> and the payer side's <c>PaymentTrampolineHops</c>.
+/// <c>TrampolineRelayParts</c> and the payer side's <c>PaymentTrampolineHops</c>; and the replaced failed attempts
+/// <c>TrampolineRelayAttempts</c> (NL-899, migration <c>AddTrampolineRelayAttempts</c>).
 /// </summary>
 public static class TrampolineRelayEntityConfiguration
 {
@@ -84,6 +85,40 @@ public static class TrampolineRelayEntityConfiguration
                 OptimizeConfigurationForSqlServer(entity);
         });
 
+        modelBuilder.Entity<TrampolineRelayAttemptEntity>(entity =>
+        {
+            // NL-899 (migration AddTrampolineRelayAttempts): a failed relay a payer's retry replaced, numbered per hash
+            entity.HasKey(e => new { e.PaymentHash, e.Attempt });
+
+            entity.Property(e => e.PaymentHash)
+                  .HasConversion<HashConverter>()
+                  .IsRequired();
+            entity.Property(e => e.Attempt).IsRequired();
+            entity.Property(e => e.NextNodeId)
+                  .HasConversion<CompactPubKeyConverter>()
+                  .IsRequired(false);
+            entity.Property(e => e.AmountOutMsat).IsRequired();
+            entity.Property(e => e.CltvExpiryOut).IsRequired();
+            entity.Property(e => e.IncomingTotalMsat).IsRequired();
+            entity.Property(e => e.IncomingAmountMsat).IsRequired();
+            entity.Property(e => e.Parts).IsRequired();
+            entity.Property(e => e.IncomingChannelIds).IsRequired();
+            entity.Property(e => e.FailureCode).IsRequired(false);
+            entity.Property(e => e.FailureReason).IsRequired(false);
+            entity.Property(e => e.CreatedAt)
+                  .HasConversion<UtcTicksConverter>()
+                  .IsRequired();
+            entity.Property(e => e.CompletedAt)
+                  .HasConversion<UtcTicksConverter>()
+                  .IsRequired(false);
+
+            // Listings are newest first
+            entity.HasIndex(e => e.CreatedAt);
+
+            if (databaseType == DatabaseType.MicrosoftSql)
+                OptimizeConfigurationForSqlServer(entity);
+        });
+
         modelBuilder.Entity<PaymentTrampolineHopEntity>(entity =>
         {
             entity.HasKey(e => new { e.PaymentHash, e.Attempt, e.HopIndex });
@@ -121,6 +156,12 @@ public static class TrampolineRelayEntityConfiguration
         entity.Property(e => e.OuterSharedSecret).HasColumnType($"varbinary({CryptoConstants.SecretLen})");
         entity.Property(e => e.TrampolineSharedSecret).HasColumnType($"varbinary({CryptoConstants.SecretLen})");
         entity.Property(e => e.OuterPaymentSecret).HasColumnType($"varbinary({CryptoConstants.SecretLen})");
+    }
+
+    private static void OptimizeConfigurationForSqlServer(EntityTypeBuilder<TrampolineRelayAttemptEntity> entity)
+    {
+        entity.Property(e => e.PaymentHash).HasColumnType($"varbinary({CryptoConstants.Sha256HashLen})");
+        entity.Property(e => e.NextNodeId).HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
     }
 
     private static void OptimizeConfigurationForSqlServer(EntityTypeBuilder<PaymentTrampolineHopEntity> entity)

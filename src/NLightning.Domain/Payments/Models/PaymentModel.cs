@@ -17,8 +17,8 @@ using Protocol.Onion.Enums;
 /// holds <see cref="Amount"/> for the whole payment but only one part: <see cref="Route"/>, its shared secrets and
 /// <see cref="OutgoingChannelId"/>/<see cref="OutgoingHtlcId"/> are those of a part that was offered (rewritten to a
 /// live part when the recorded one fails while others are in flight), and <see cref="Fee"/> is the fee of the parts in
-/// flight (on success, those the payee settled). The other parts live only in the sending session's memory and are not
-/// persisted (NL-321): their outcomes still reach the payment after a restart through their
+/// flight (on success, those the payee settled; zero once failed). The other parts live only in the sending session's
+/// memory and are not persisted (NL-321): their outcomes still reach the payment after a restart through their
 /// <c>HtlcOrigin.Local(PaymentHash)</c>, but their failures can no longer be decrypted.</para>
 /// <para>The payment is persisted (<c>IPaymentDbRepository</c>) as <see cref="PaymentStatus.InFlight"/> before its
 /// first HTLC is offered, and every HTLC carries <c>HtlcOrigin.Local(PaymentHash)</c>, so after a restart the outcome
@@ -56,9 +56,10 @@ public sealed class PaymentModel
     public LightningMoney Amount { get; }
 
     /// <summary>
-    /// The routing fees paid to intermediate hops (zero for a direct payment).
+    /// The routing fees paid to intermediate hops (zero for a direct payment): while in flight those of the parts in
+    /// flight, on success those the payee settled, and zero once the payment failed, since nothing was paid (NL-982).
     /// </summary>
-    public LightningMoney Fee { get; }
+    public LightningMoney Fee { get; private set; }
 
     public DateTimeOffset CreatedAt { get; }
 
@@ -275,7 +276,8 @@ public sealed class PaymentModel
     }
 
     /// <summary>
-    /// The HTLC failed irrevocably, or could not be offered (then <paramref name="failureCode"/> is null).
+    /// The HTLC failed irrevocably, or could not be offered (then <paramref name="failureCode"/> is null). The fee
+    /// becomes zero: a failed payment paid none (NL-982; the fee the last attempt offered is only logged).
     /// </summary>
     /// <remarks>
     /// <c>IChannelOperations.OfferHtlcAsync</c> saves the add and only then returns the HTLC id, so recording it with
@@ -294,6 +296,7 @@ public sealed class PaymentModel
         FailureSourceIndex = failureSourceIndex;
         FailureReason = failureReason;
         CompletedAt = completedAt;
+        Fee = LightningMoney.Zero;
         Status = PaymentStatus.Failed;
     }
 }

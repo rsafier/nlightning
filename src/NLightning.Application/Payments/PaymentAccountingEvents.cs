@@ -371,6 +371,31 @@ internal static class PaymentAccountingEvents
     public const string TrampolineKind = "trampoline";
 
     /// <summary>
+    /// The detail of a <c>TrampolineRelaySettled</c> event with the incoming amount per channel (NL-899):
+    /// <c>channelId:msat</c> pairs joined by commas, one per channel in the order of <c>incomingChannelIds</c>. Events
+    /// sealed before it have none.
+    /// </summary>
+    public const string TrampolineIncomingAmountsDetail = "incomingAmountsMsat";
+
+    /// <summary>The <see cref="TrampolineIncomingAmountsDetail"/> value of a relay's parts.</summary>
+    internal static string FormatIncomingAmounts(IReadOnlyList<TrampolineRelayPartModel> parts)
+    {
+        var sums = new List<(string Channel, long Msat)>();
+        foreach (var part in parts)
+        {
+            var channel = part.ChannelId.ToString();
+            var index = sums.FindIndex(s => s.Channel == channel);
+            var msat = checked((long)part.Amount.MilliSatoshi);
+            if (index < 0)
+                sums.Add((channel, msat));
+            else
+                sums[index] = (channel, checked(sums[index].Msat + msat));
+        }
+
+        return string.Join(',', sums.Select(s => $"{s.Channel}:{s.Msat.ToString(CultureInfo.InvariantCulture)}"));
+    }
+
+    /// <summary>
     /// A trampoline payment we relayed settled (NL-875): every incoming part of <paramref name="relay"/> was fulfilled and
     /// its outgoing payment succeeded. <c>AmountMsat</c> is the channels' net change: the sum of the incoming parts minus
     /// what the outgoing payment took (its amount and the routing fees we paid), from <paramref name="outgoingPayment"/>
@@ -406,6 +431,8 @@ internal static class PaymentAccountingEvents
             ("parts", parts.Count.ToString(CultureInfo.InvariantCulture)),
             ("incomingChannelId", first.ChannelId.ToString()),
             ("incomingChannelIds", string.Join(',', parts.Select(p => p.ChannelId.ToString()).Distinct())),
+            // NL-899: what each incoming channel brought, so the channels report splits the income among them
+            (TrampolineIncomingAmountsDetail, FormatIncomingAmounts(parts)),
             (AccountingDetailKeys.IncomingScid, ScidOf(incoming)?.ToString()),
             ("incomingAmountMsat", incomingMsat.ToString(CultureInfo.InvariantCulture)),
             ("amountOutMsat", Msat(relay.AmountOut)),

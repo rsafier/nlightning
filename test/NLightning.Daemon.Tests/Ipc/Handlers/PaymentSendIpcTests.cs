@@ -62,6 +62,9 @@ public class PaymentSendIpcTests : IDisposable
                 .ReturnsAsync((Hash hash) => _stored.LastOrDefault(p => p.PaymentHash == hash));
         payments.Setup(p => p.ListAsync(It.IsAny<int>(), It.IsAny<int>()))
                 .ReturnsAsync((int skip, int take) => _stored.Skip(skip).Take(take).ToList());
+        // NL-899: listpayments reads the page without the relay legs (none here)
+        payments.Setup(p => p.ListAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<bool>()))
+                .ReturnsAsync((int skip, int take, bool _) => _stored.Skip(skip).Take(take).ToList());
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(Task.CompletedTask);
         // NL-321: PaymentService stores every offered part; a no-op store keeps this test on the database-free path

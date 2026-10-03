@@ -15,6 +15,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Persistence.Interfaces;
+using Payments;
 
 /// <summary>
 /// The reports of the operational books (plan <c>docs/agents/ACCOUNTING_PLAN.md</c> §6.1 "Reports", IPC 43): the
@@ -331,9 +332,17 @@ public sealed class AccountingReportService : IAccountingReports
     {
         switch (accountingEvent.Kind)
         {
+            // NL-899: a trampoline relay's income is split among its incoming channels by what each brought
+            case AccountingEventKind.TrampolineRelaySettled
+                when ParseIncomingAmounts(accountingEvent) is { Count: > 0 } incomingAmounts:
+                {
+                    ApplyTrampolineRelay(channels, active, accountingEvent, incomingAmounts);
+                    return;
+                }
             case AccountingEventKind.ForwardSettled:
-            // NL-875: a trampoline relay is routing income of its (first) incoming and its outgoing channel, as a
-            // forward; it carries the same details
+            // NL-875: a trampoline relay is routing income of its incoming and its outgoing channel, as a forward; it
+            // carries the same details. A relay sealed before NL-899 names no amount per channel: its first incoming
+            // channel takes it all
             case AccountingEventKind.TrampolineRelaySettled:
                 {
                     var fee = accountingEvent.AmountMsat;
@@ -532,6 +541,111 @@ public sealed class AccountingReportService : IAccountingReports
                  LiquidityFeesEarnedMsat = g.Sum(l => l.LiquidityFeesEarnedMsat)
              })
              .ToList();
+
+    /// <summary>
+    /// A trampoline relay with its incoming amount per channel (NL-899): each incoming channel counts one forward in
+    /// with its amount and a share of the income proportional to it (rounded toward zero; the rest goes to the channel
+    /// that brought the most, the first of them on a tie), so the shares add up to the event's amount; the outgoing
+    /// channel takes the whole income out, as a forward's.
+    /// </summary>
+    private static void ApplyTrampolineRelay(Dictionary<ChannelId, ChannelAccumulator> channels,
+                                             HashSet<ChannelId> active, AccountingEventModel accountingEvent,
+                                             IReadOnlyList<(ChannelId Channel, long Msat)> incomingAmounts)
+    {
+        var fee = accountingEvent.AmountMsat;
+        var shares = SplitProportionally(fee, incomingAmounts.Select(a => a.Msat).ToList());
+        var firstChannel = ChannelDetail(accountingEvent, "incomingChannelId") ?? accountingEvent.ChannelId;
+        for (var i = 0; i < incomingAmounts.Count; i++)
+        {
+            var incoming = GetOrAdd(channels, incomingAmounts[i].Channel)!;
+            incoming.Observe(accountingEvent);
+            // The scid detail names the first part's channel only
+            if (incoming.ChannelId == firstChannel)
+                incoming.ObserveScid(accountingEvent.Details.GetValueOrDefault("incomingScid"));
+            incoming.RoutingInMsat += shares[i];
+            incoming.ForwardsIn++;
+            incoming.ForwardedInMsat += incomingAmounts[i].Msat;
+            active.Add(incoming.ChannelId);
+        }
+
+        var outgoing = GetOrAdd(channels, ChannelDetail(accountingEvent, "outgoingChannelId"));
+        if (outgoing is null)
+            return;
+
+        outgoing.ObserveScid(accountingEvent.Details.GetValueOrDefault("outgoingScid"));
+        outgoing.RoutingOutMsat += fee;
+        outgoing.ForwardsOut++;
+        outgoing.ForwardedOutMsat += MsatDetail(accountingEvent, "outgoingAmountMsat") ?? 0;
+        active.Add(outgoing.ChannelId);
+    }
+
+    /// <summary>
+    /// <paramref name="total"/> split in proportion to <paramref name="weights"/> (non-negative), each share rounded
+    /// toward zero and the rest given to the largest weight (the first on a tie); every share is 0 when the weights
+    /// add up to 0, except the first, which takes it all.
+    /// </summary>
+    internal static IReadOnlyList<long> SplitProportionally(long total, IReadOnlyList<long> weights)
+    {
+        var shares = new long[weights.Count];
+        if (weights.Count == 0)
+            return shares;
+
+        Int128 sum = 0;
+        foreach (var weight in weights)
+            sum += weight;
+
+        var largest = 0;
+        for (var i = 1; i < weights.Count; i++)
+            if (weights[i] > weights[largest])
+                largest = i;
+
+        if (sum <= 0)
+        {
+            shares[largest] = total;
+            return shares;
+        }
+
+        long given = 0;
+        for (var i = 0; i < weights.Count; i++)
+        {
+            shares[i] = (long)(total * (Int128)weights[i] / sum);
+            given += shares[i];
+        }
+
+        shares[largest] += total - given;
+        return shares;
+    }
+
+    /// <summary>The <c>incomingAmountsMsat</c> detail of a relay (NL-899); empty when it has none or it is
+    /// unreadable (the relay is then counted on its first incoming channel, as before).</summary>
+    private static IReadOnlyList<(ChannelId Channel, long Msat)> ParseIncomingAmounts(
+        AccountingEventModel accountingEvent)
+    {
+        if (accountingEvent.Details.GetValueOrDefault(PaymentAccountingEvents.TrampolineIncomingAmountsDetail) is not
+            { Length: > 0 } text)
+            return [];
+
+        var result = new List<(ChannelId, long)>();
+        foreach (var pair in text.Split(','))
+        {
+            var separator = pair.IndexOf(':');
+            if (separator != 64
+             || !long.TryParse(pair.AsSpan(separator + 1), NumberStyles.None, CultureInfo.InvariantCulture,
+                               out var msat))
+                return [];
+
+            try
+            {
+                result.Add((new ChannelId(Convert.FromHexString(pair.AsSpan(0, separator))), msat));
+            }
+            catch (FormatException)
+            {
+                return [];
+            }
+        }
+
+        return result;
+    }
 
     private static ChannelAccumulator? GetOrAdd(Dictionary<ChannelId, ChannelAccumulator> channels,
                                                 ChannelId? channelId)
