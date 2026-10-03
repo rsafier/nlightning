@@ -47,4 +47,21 @@ public interface IPaymentDbRepository
     /// <param name="skip">How many of the newest to skip.</param>
     /// <param name="take">The most to return.</param>
     Task<IReadOnlyList<PaymentModel>> ListAsync(int skip, int take);
+
+    /// <summary>
+    /// Payments, newest first, without the outgoing legs of trampoline relays (<c>PaymentModel.IsTrampolineRelay</c>)
+    /// unless <paramref name="includeTrampolineRelays"/> (NL-899). The default (test doubles) filters the page
+    /// <see cref="ListAsync(int, int)"/> returns, so it may return fewer than <paramref name="take"/>.
+    /// </summary>
+    async Task<IReadOnlyList<PaymentModel>> ListAsync(int skip, int take, bool includeTrampolineRelays)
+    {
+        var page = await ListAsync(skip, take);
+        return includeTrampolineRelays ? page : page.Where(p => !p.IsTrampolineRelay).ToList();
+    }
+
+    /// <summary>
+    /// How many stored payments are outgoing legs of trampoline relays (NL-899). The default (test doubles) counts
+    /// none.
+    /// </summary>
+    Task<int> CountTrampolineRelaysAsync() => Task.FromResult(0);
 }

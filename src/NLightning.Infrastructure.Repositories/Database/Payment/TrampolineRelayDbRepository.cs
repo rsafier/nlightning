@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace NLightning.Infrastructure.Repositories.Database.Payment;
 
+using Domain.Channels.Constants;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -11,7 +12,8 @@ using Persistence.Contexts;
 using Persistence.Entities.Payment;
 
 /// <summary>
-/// Stores trampoline relays and their incoming parts (NL-875, migration <c>AddTrampolineRelays</c>).
+/// Stores trampoline relays and their incoming parts (NL-875, migration <c>AddTrampolineRelays</c>), and the failed
+/// attempts a payer's retry replaced (NL-899, migration <c>AddTrampolineRelayAttempts</c>).
 /// </summary>
 /// <remarks>
 /// Writes are staged on the unit of work. The lookups by key (<see cref="GetAsync"/>, <see cref="GetPartsAsync"/>,
@@ -20,10 +22,12 @@ using Persistence.Entities.Payment;
 /// </remarks>
 public class TrampolineRelayDbRepository : BaseDbRepository<TrampolineRelayEntity>, ITrampolineRelayDbRepository
 {
+    private readonly DbSet<TrampolineRelayAttemptEntity> _attempts;
     private readonly DbSet<TrampolineRelayPartEntity> _parts;
 
     public TrampolineRelayDbRepository(NLightningDbContext context) : base(context)
     {
+        _attempts = context.TrampolineRelayAttempts;
         _parts = context.TrampolineRelayParts;
     }
 
@@ -72,12 +76,106 @@ public class TrampolineRelayDbRepository : BaseDbRepository<TrampolineRelayEntit
         if (entity.Status != (byte)TrampolineRelayStatus.Failed)
             throw new InvalidOperationException($"The trampoline relay {paymentHash} is not failed");
 
-        foreach (var part in await _parts.Where(p => p.PaymentHash == paymentHash).ToListAsync())
+        var saved = await _parts.Where(p => p.PaymentHash == paymentHash).ToListAsync();
+        var staged = _parts.Local.Where(p => p.PaymentHash == paymentHash
+                                          && _parts.Entry(p).State == EntityState.Added).ToList();
+
+        // NL-899: the failed attempt stays in the history listforwards reads, numbered after the ones before it
+        var parts = saved.Concat(staged)
+                         .Where(p => _parts.Entry(p).State != EntityState.Deleted)
+                         .DistinctBy(p => (p.ChannelId, p.HtlcId))
+                         .OrderBy(p => p.ChannelId.ToString(), StringComparer.Ordinal)
+                         .ThenBy(p => p.HtlcId)
+                         .ToList();
+        _attempts.Add(new TrampolineRelayAttemptEntity
+        {
+            PaymentHash = paymentHash,
+            Attempt = await GetLastAttemptAsync(paymentHash) + 1,
+            NextNodeId = entity.NextNodeId,
+            AmountOutMsat = entity.AmountOutMsat,
+            CltvExpiryOut = entity.CltvExpiryOut,
+            IncomingTotalMsat = entity.IncomingTotalMsat,
+            IncomingAmountMsat = parts.Aggregate(0L, (sum, p) => checked(sum + p.AmountMsat)),
+            Parts = parts.Count,
+            IncomingChannelIds = EncodeChannelIds(parts.Select(p => p.ChannelId)),
+            FailureCode = entity.FailureCode,
+            FailureReason = entity.FailureReason,
+            CreatedAt = entity.CreatedAt,
+            CompletedAt = entity.CompletedAt
+        });
+
+        foreach (var part in saved)
             _parts.Remove(part);
-        foreach (var staged in _parts.Local.Where(p => p.PaymentHash == paymentHash
-                                                    && _parts.Entry(p).State == EntityState.Added).ToList())
-            _parts.Remove(staged);
+        foreach (var part in staged)
+            _parts.Remove(part);
         DbSet.Remove(entity);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<TrampolineRelayAttemptModel>> ListReplacedAttemptsAsync(
+        TrampolineRelayListQuery query, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentOutOfRangeException.ThrowIfNegative(query.Skip);
+        ArgumentOutOfRangeException.ThrowIfNegative(query.Take);
+        if (query.Take == 0 || query.Status is { } status && status != TrampolineRelayStatus.Failed)
+            return [];
+
+        var set = FilterAttempts(_attempts.AsNoTracking(), query).OrderByDescending(e => e.CreatedAt)
+                                                                 .ThenByDescending(e => e.Attempt);
+        if (query.IncomingChannelId is not { } channelId)
+        {
+            var page = await set.Skip(query.Skip).Take(query.Take).ToListAsync(cancellationToken);
+            return page.Select(MapAttemptToDomain).ToList();
+        }
+
+        // The channels are one blob per attempt: the channel filter runs in memory (replaced attempts are few)
+        var all = await set.ToListAsync(cancellationToken);
+        return all.Select(MapAttemptToDomain)
+                  .Where(a => a.IncomingChannelIds.Contains(channelId))
+                  .Skip(query.Skip)
+                  .Take(query.Take)
+                  .ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<TrampolineRelayTotals> SummarizeAsync(TrampolineRelayListQuery query,
+                                                            CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        const byte collecting = (byte)TrampolineRelayStatus.Collecting;
+        const byte sending = (byte)TrampolineRelayStatus.Sending;
+        const byte fulfilled = (byte)TrampolineRelayStatus.Fulfilled;
+        const byte failed = (byte)TrampolineRelayStatus.Failed;
+
+        var filtered = Filter(DbSet.AsNoTracking(), query);
+        var counts = await filtered.GroupBy(e => e.Status)
+                                   .Select(g => new { Status = g.Key, Count = g.Count() })
+                                   .ToListAsync(cancellationToken);
+        var fees = await filtered.Where(e => e.Status == fulfilled)
+                                 .SumAsync(e => e.FeeEarnedMsat, cancellationToken);
+
+        var replaced = 0;
+        if (query.Status is null or TrampolineRelayStatus.Failed)
+        {
+            var attempts = FilterAttempts(_attempts.AsNoTracking(), query);
+            if (query.IncomingChannelId is { } channelId)
+            {
+                var blobs = await attempts.Select(e => e.IncomingChannelIds).ToListAsync(cancellationToken);
+                replaced = blobs.Count(b => DecodeChannelIds(b).Contains(channelId));
+            }
+            else
+            {
+                replaced = await attempts.CountAsync(cancellationToken);
+            }
+        }
+
+        return new TrampolineRelayTotals(counts.FirstOrDefault(c => c.Status == collecting)?.Count ?? 0,
+                                         counts.FirstOrDefault(c => c.Status == sending)?.Count ?? 0,
+                                         counts.FirstOrDefault(c => c.Status == fulfilled)?.Count ?? 0,
+                                         (counts.FirstOrDefault(c => c.Status == failed)?.Count ?? 0) + replaced,
+                                         fees ?? 0);
     }
 
     /// <inheritdoc />
@@ -162,7 +260,18 @@ public class TrampolineRelayDbRepository : BaseDbRepository<TrampolineRelayEntit
         if (query.Take == 0)
             return [];
 
-        var set = DbSet.AsNoTracking();
+        var entities = await Filter(DbSet.AsNoTracking(), query)
+                                .OrderByDescending(e => e.CreatedAt)
+                                .Skip(query.Skip)
+                                .Take(query.Take)
+                                .ToListAsync(cancellationToken);
+        return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    /// <summary>The WHERE of a relay listing or sum: creation time, status, a part on the channel.</summary>
+    private IQueryable<TrampolineRelayEntity> Filter(IQueryable<TrampolineRelayEntity> set,
+                                                     TrampolineRelayListQuery query)
+    {
         if (query.Since is { } since)
             set = set.Where(e => e.CreatedAt >= since);
         if (query.Until is { } until)
@@ -179,11 +288,67 @@ public class TrampolineRelayDbRepository : BaseDbRepository<TrampolineRelayEntit
             set = set.Where(e => parts.Any(p => p.PaymentHash == e.PaymentHash && p.ChannelId == channelId));
         }
 
-        var entities = await set.OrderByDescending(e => e.CreatedAt)
-                                .Skip(query.Skip)
-                                .Take(query.Take)
-                                .ToListAsync(cancellationToken);
-        return entities.Select(MapEntityToDomain).ToList();
+        return set;
+    }
+
+    /// <summary>The time filters of a replaced-attempt listing or sum (status and channel are the caller's).</summary>
+    private static IQueryable<TrampolineRelayAttemptEntity> FilterAttempts(IQueryable<TrampolineRelayAttemptEntity> set,
+                                                                           TrampolineRelayListQuery query)
+    {
+        if (query.Since is { } since)
+            set = set.Where(e => e.CreatedAt >= since);
+        if (query.Until is { } until)
+            set = set.Where(e => e.CreatedAt <= until);
+
+        return set;
+    }
+
+    /// <summary>The highest attempt number kept for the hash, saved or staged (0 for none).</summary>
+    private async Task<int> GetLastAttemptAsync(Hash paymentHash)
+    {
+        var saved = await _attempts.Where(a => a.PaymentHash == paymentHash)
+                                   .Select(a => (int?)a.Attempt)
+                                   .MaxAsync() ?? 0;
+        var staged = _attempts.Local.Where(a => a.PaymentHash == paymentHash)
+                              .Select(a => a.Attempt)
+                              .DefaultIfEmpty(0)
+                              .Max();
+        return Math.Max(saved, staged);
+    }
+
+    private static TrampolineRelayAttemptModel MapAttemptToDomain(TrampolineRelayAttemptEntity entity)
+    {
+        return new TrampolineRelayAttemptModel(entity.PaymentHash, entity.Attempt, entity.NextNodeId,
+                                               ToMoney(entity.AmountOutMsat), entity.CltvExpiryOut,
+                                               ToMoney(entity.IncomingTotalMsat), ToMoney(entity.IncomingAmountMsat),
+                                               entity.Parts, DecodeChannelIds(entity.IncomingChannelIds),
+                                               entity.FailureCode, entity.FailureReason, entity.CreatedAt,
+                                               entity.CompletedAt);
+    }
+
+    /// <summary>The distinct channel ids, in order, as 32-byte records.</summary>
+    private static byte[] EncodeChannelIds(IEnumerable<ChannelId> channelIds)
+    {
+        var distinct = channelIds.Distinct().ToList();
+        var bytes = new byte[distinct.Count * ChannelConstants.ChannelIdLength];
+        for (var i = 0; i < distinct.Count; i++)
+            ((byte[])distinct[i]).CopyTo(bytes, i * ChannelConstants.ChannelIdLength);
+
+        return bytes;
+    }
+
+    /// <summary>The channel ids of <see cref="EncodeChannelIds"/>; a trailing partial record is ignored.</summary>
+    private static IReadOnlyList<ChannelId> DecodeChannelIds(byte[]? bytes)
+    {
+        if (bytes is null)
+            return [];
+
+        var result = new List<ChannelId>(bytes.Length / ChannelConstants.ChannelIdLength);
+        for (var offset = 0; offset + ChannelConstants.ChannelIdLength <= bytes.Length;
+             offset += ChannelConstants.ChannelIdLength)
+            result.Add(bytes.AsSpan(offset, ChannelConstants.ChannelIdLength).ToArray());
+
+        return result;
     }
 
     internal static TrampolineRelayModel MapEntityToDomain(TrampolineRelayEntity entity)

@@ -44,6 +44,7 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Handlers;
@@ -163,7 +164,8 @@ public static class NodeServiceExtensions
             new ListInvoicesClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
                                           sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<ListPaymentsClientRequest, ListPaymentsClientResponse>>(sp =>
-            new ListPaymentsClientHandler(GetPaymentLayerService<IPaymentService>(sp)));
+            new ListPaymentsClientHandler(GetPaymentLayerService<IPaymentService>(sp),
+                                          sp.GetService<IPaymentDbRepository>(), sp.GetService<IUnitOfWork>()));
         services.AddScoped<IClientCommandHandler<ListForwardsClientRequest, ListForwardsClientResponse>>(sp =>
             new ListForwardsClientHandler(GetPaymentLayerService<IForwardCircuitDbRepository>(sp),
                                           sp.GetRequiredService<ILogger<ListForwardsClientHandler>>(),

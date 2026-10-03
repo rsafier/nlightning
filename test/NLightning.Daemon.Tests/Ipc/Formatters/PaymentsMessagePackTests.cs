@@ -11,6 +11,7 @@ using Domain.Money;
 using Domain.Offers.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
+using Domain.Payments.Trampoline;
 using Domain.Protocol.Onion.Enums;
 using Transport.Ipc.MessagePack;
 using Transport.Ipc.Requests;
@@ -386,6 +387,80 @@ public class PaymentsMessagePackTests
         Assert.Equal(node, invoice.TrampolineNode);
         Assert.Equal(node, offer.TrampolineNode);
         Assert.Null(older.TrampolineNode);
+    }
+
+    [Fact]
+    public void Given_TrampolineListings_When_RoundTripped_Then_TheNl899KeysAreKept()
+    {
+        // Arrange (NL-899/NL-981): listpayments request key 2, response key 1, payment keys 18-21; listforwards
+        // summary keys 7-11 and relay key 14
+        var trampoline = new CompactPubKey(Convert.FromHexString("02" + new string('2', 64)));
+        var hop = new PaymentTrampolineHopClientResponse(trampoline, LightningMoney.MilliSatoshis(1_004_000), 950);
+        var ours = new PaymentInfoClientResponse
+        {
+            PaymentHash = s_paymentHash,
+            PayeeNodeId = s_payee,
+            Amount = LightningMoney.MilliSatoshis(1_000_000),
+            Fee = LightningMoney.MilliSatoshis(4_000),
+            Status = PaymentStatus.Succeeded,
+            CreatedAt = s_createdAt,
+            TrampolineNodeId = trampoline,
+            TrampolineRoute = [hop],
+            TrampolineAttempts = 2
+        };
+        var leg = new PaymentInfoClientResponse
+        {
+            PaymentHash = s_paymentHash,
+            PayeeNodeId = s_payee,
+            Amount = LightningMoney.MilliSatoshis(2_000_000),
+            Fee = LightningMoney.Zero,
+            Status = PaymentStatus.Succeeded,
+            CreatedAt = s_createdAt,
+            IsTrampolineRelay = true
+        };
+        var summary = new ForwardSummaryClientResponse
+        {
+            Pending = 1,
+            Offered = 2,
+            Fulfilled = 3,
+            Failed = 4,
+            FulfilledFeesMsat = 8_000,
+            RefusedTotal = 0,
+            RefusedByReason = [],
+            TrampolineRelays = new TrampolineRelayTotals(1, 2, 1, 2, 5_000)
+        };
+        var attempt = new TrampolineRelayAttemptModel(
+            s_paymentHash, 3, null, LightningMoney.MilliSatoshis(1_000), 600, LightningMoney.MilliSatoshis(1_100),
+            LightningMoney.MilliSatoshis(1_100), 1, [s_channelId], null, null, s_createdAt, null);
+
+        // Act
+        var request = RoundTrip(new ListPaymentsIpcRequest { IncludeRelayLegs = true }).ToClientRequest();
+        var older = RoundTrip(new ListPaymentsIpcRequest()).ToClientRequest();
+        var payments = RoundTrip(ListPaymentsIpcResponse.FromClientResponse(
+                                     new ListPaymentsClientResponse([ours, leg], 7)));
+        var forwards = RoundTrip(ListForwardsIpcResponse.FromClientResponse(
+                                     new ListForwardsClientResponse(
+                                         [], summary, [TrampolineRelayInfoClientResponse.FromAttempt(attempt)])));
+
+        // Assert
+        Assert.True(request.IncludeRelayLegs);
+        Assert.False(older.IncludeRelayLegs);
+        Assert.Equal(7, payments.HiddenRelayLegs);
+        Assert.Equal(trampoline, payments.Payments[0].TrampolineNodeId);
+        Assert.Equal(2, payments.Payments[0].TrampolineAttempts);
+        var route = Assert.Single(payments.Payments[0].TrampolineRoute!);
+        Assert.Equal((trampoline, 1_004_000UL, 950u), (route.NodeId, route.AmountMsat, route.CltvExpiry));
+        Assert.False(payments.Payments[0].IsTrampolineRelay);
+        Assert.True(payments.Payments[1].IsTrampolineRelay);
+        Assert.Null(payments.Payments[1].TrampolineNodeId);
+        Assert.Null(payments.Payments[1].TrampolineRoute);
+        Assert.Equal((1, 2, 1, 2, 5_000L),
+                     (forwards.Summary.TrampolineCollecting, forwards.Summary.TrampolineSending,
+                      forwards.Summary.TrampolineFulfilled, forwards.Summary.TrampolineFailed,
+                      forwards.Summary.TrampolineFulfilledFeesMsat));
+        var relay = Assert.Single(forwards.TrampolineRelays!);
+        Assert.Equal(3, relay.ReplacedAttempt);
+        Assert.Equal((byte)3, relay.Status);
     }
 
     private static T RoundTrip<T>(T value)

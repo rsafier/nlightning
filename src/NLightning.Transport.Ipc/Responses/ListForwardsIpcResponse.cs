@@ -81,6 +81,10 @@ public sealed class TrampolineRelayIpcResponse
     /// <summary>The failure code's name (or hex), or null.</summary>
     [Key(13)] public string? FailureCodeName { get; init; }
 
+    /// <summary>A failed attempt a payer's retry replaced (NL-899): its number for the hash, from 1; null for the
+    /// hash's relay now (and from a daemon before NL-899).</summary>
+    [Key(14)] public int? ReplacedAttempt { get; init; }
+
     public static TrampolineRelayIpcResponse FromClientResponse(TrampolineRelayInfoClientResponse relay)
     {
         ArgumentNullException.ThrowIfNull(relay);
@@ -99,7 +103,8 @@ public sealed class TrampolineRelayIpcResponse
             CreatedAtUnixSeconds = relay.CreatedAt.ToUnixTimeSeconds(),
             CompletedAtUnixSeconds = relay.CompletedAt?.ToUnixTimeSeconds(),
             FailureCode = relay.FailureCode,
-            FailureCodeName = relay.FailureCodeName
+            FailureCodeName = relay.FailureCodeName,
+            ReplacedAttempt = relay.ReplacedAttempt
         };
     }
 }
@@ -216,7 +221,8 @@ public sealed class ForwardSummaryIpcResponse
     /// <summary>Circuits failed, over the filtered set.</summary>
     [Key(3)] public required int Failed { get; init; }
 
-    /// <summary>The fees earned of the fulfilled circuits over the filtered set, msat.</summary>
+    /// <summary>The fees earned of the fulfilled circuits over the filtered set, msat; the fulfilled trampoline
+    /// relays' fees included since NL-981 (as the counts 0-3 include the relays).</summary>
     [Key(4)] public required long FulfilledFeesMsat { get; init; }
 
     /// <summary>HTLCs refused before a forward circuit since the process started, all reasons (NL-598).</summary>
@@ -225,6 +231,23 @@ public sealed class ForwardSummaryIpcResponse
     /// <summary>The refusals by reason (the <see cref="Domain.Payments.RefusedHtlcReason"/> name); reasons with a
     /// zero count are left out (NL-598).</summary>
     [Key(6)] public required List<RefusedReasonCountIpc> RefusedByReason { get; init; }
+
+    /// <summary>The trampoline relays still collecting their parts, a share of <see cref="Pending"/> (NL-981).</summary>
+    [Key(7)] public int TrampolineCollecting { get; init; }
+
+    /// <summary>The trampoline relays whose outgoing payment runs, a share of <see cref="Offered"/> (NL-981).</summary>
+    [Key(8)] public int TrampolineSending { get; init; }
+
+    /// <summary>The trampoline relays fulfilled, a share of <see cref="Fulfilled"/> (NL-981).</summary>
+    [Key(9)] public int TrampolineFulfilled { get; init; }
+
+    /// <summary>The trampoline relays failed, replaced attempts (NL-899) included; a share of <see cref="Failed"/>
+    /// (NL-981).</summary>
+    [Key(10)] public int TrampolineFailed { get; init; }
+
+    /// <summary>The fees the fulfilled trampoline relays earned, msat; a share of <see cref="FulfilledFeesMsat"/>
+    /// (NL-981).</summary>
+    [Key(11)] public long TrampolineFulfilledFeesMsat { get; init; }
 
     public static ForwardSummaryIpcResponse FromClientResponse(ForwardSummaryClientResponse summary) =>
         new()
@@ -235,7 +258,12 @@ public sealed class ForwardSummaryIpcResponse
             Failed = summary.Failed,
             FulfilledFeesMsat = summary.FulfilledFeesMsat,
             RefusedTotal = summary.RefusedTotal,
-            RefusedByReason = summary.RefusedByReason.Select(RefusedReasonCountIpc.From).ToList()
+            RefusedByReason = summary.RefusedByReason.Select(RefusedReasonCountIpc.From).ToList(),
+            TrampolineCollecting = summary.TrampolineRelays.Collecting,
+            TrampolineSending = summary.TrampolineRelays.Sending,
+            TrampolineFulfilled = summary.TrampolineRelays.Fulfilled,
+            TrampolineFailed = summary.TrampolineRelays.Failed,
+            TrampolineFulfilledFeesMsat = summary.TrampolineRelays.FulfilledFeesMsat
         };
 }
 

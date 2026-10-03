@@ -39,11 +39,31 @@ public interface ITrampolineRelayDbRepository
     /// Stages the removal of the <c>Failed</c> relay of <paramref name="paymentHash"/> and its parts, so a new attempt
     /// of the payer with the same payment hash can start a new relay (as a retried payment replaces a failed one; the
     /// relay engine calls it only once every part's incoming HTLC is resolved and no outgoing HTLC of the relay is
-    /// unresolved). Save it before adding the new relay.
+    /// unresolved). Save it before adding the new relay. In the same save the relay is kept as a
+    /// <see cref="TrampolineRelayAttemptModel"/> (the next attempt number of the hash), so <c>listforwards</c> keeps
+    /// its history (NL-899); nothing else ever reads those rows.
     /// </summary>
     /// <exception cref="InvalidOperationException">No relay for the hash, or it is not <c>Failed</c>.</exception>
     Task RemoveFailedAsync(Hash paymentHash) =>
         throw new NotSupportedException("This repository cannot remove a failed trampoline relay.");
+
+    /// <summary>
+    /// One page of the failed attempts that a payer's retry replaced (NL-899), newest first, under the filters of
+    /// <paramref name="query"/>: creation time, a status other than <c>Failed</c> matches none, an incoming channel
+    /// matches an attempt with a part on it. Reads what is saved. The default (test doubles) keeps none.
+    /// </summary>
+    Task<IReadOnlyList<TrampolineRelayAttemptModel>> ListReplacedAttemptsAsync(
+        TrampolineRelayListQuery query, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<TrampolineRelayAttemptModel>>([]);
+
+    /// <summary>
+    /// The counts by status and the fees earned of the relays matching <paramref name="query"/> (its page ignored),
+    /// the replaced attempts counted as failed (NL-981). Reads what is saved.
+    /// </summary>
+    /// <exception cref="NotSupportedException">The repository cannot sum relays (test doubles).</exception>
+    Task<TrampolineRelayTotals> SummarizeAsync(TrampolineRelayListQuery query,
+                                               CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This repository cannot sum trampoline relays.");
 
     /// <summary>The relay of <paramref name="paymentHash"/> with its parts (ordered by channel and HTLC id), or null.
     /// </summary>

@@ -276,6 +276,19 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresSchemaFromBeforeAddTrampolineRelayAttempts_When_Retried_Then_AttemptsKept()
+    {
+        // Arrange (NL-899/NL-981: replaced failed relays kept, listed and summed, relay legs counted, on a real
+        // server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_trampoline_attempts");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await TrampolineRelayAttemptsSchemaRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, databaseTypeProvider), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresSchemaFromBeforeAddPeerStorage_When_Migrated_Then_BlobsRoundTrip()
     {
         // Arrange (BOLT 1 option_provide_storage: a 65531-byte blob round-trips, replaced and deleted, on a real

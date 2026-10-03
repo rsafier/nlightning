@@ -112,23 +112,31 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<PaymentModel>> ListAsync(int skip, int take)
+    public Task<IReadOnlyList<PaymentModel>> ListAsync(int skip, int take) => ListAsync(skip, take, true);
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<PaymentModel>> ListAsync(int skip, int take, bool includeTrampolineRelays)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(skip);
         ArgumentOutOfRangeException.ThrowIfNegative(take);
         if (take == 0)
             return [];
 
-        var entities = await DbSet.AsNoTracking()
-                                  .Include(e => e.Hops)
-                                  .OrderByDescending(e => e.CreatedAt)
-                                  .ThenByDescending(e => e.PaymentHash)
-                                  .Skip(skip)
-                                  .Take(take)
-                                  .ToListAsync();
+        var set = DbSet.AsNoTracking();
+        if (!includeTrampolineRelays)
+            set = set.Where(e => !e.IsTrampolineRelay);
+        var entities = await set.Include(e => e.Hops)
+                                .OrderByDescending(e => e.CreatedAt)
+                                .ThenByDescending(e => e.PaymentHash)
+                                .Skip(skip)
+                                .Take(take)
+                                .ToListAsync();
 
         return entities.Select(e => MapEntityToDomain(e, e.Hops ?? [])).ToList();
     }
+
+    /// <inheritdoc />
+    public Task<int> CountTrampolineRelaysAsync() => DbSet.AsNoTracking().CountAsync(e => e.IsTrampolineRelay);
 
     internal static PaymentModel MapEntityToDomain(PaymentEntity entity, IEnumerable<PaymentHopEntity> hops)
     {

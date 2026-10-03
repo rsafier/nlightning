@@ -205,6 +205,17 @@ public class TrampolineRelayServiceTests
         Assert.Equal(TrampolineRelayStatus.Sending, relay.Status);
         Assert.Equal(s_sumIn, Assert.Single(parts).Amount);
         Assert.Single(harness.Alice.PaymentHandler.Failed);
+
+        // NL-899: the failed first attempt stays in the history listforwards reads
+        var replaced = await harness.Carol.InScopeAsync(u => u.TrampolineRelayDbRepository.ListReplacedAttemptsAsync(
+                                                            new TrampolineRelayListQuery(0, 10),
+                                                            TestContext.Current.CancellationToken));
+        var attempt = Assert.Single(replaced);
+        Assert.Equal(1, attempt.Attempt);
+        Assert.Equal(first.Hash, attempt.PaymentHash);
+        Assert.Equal((ushort)FailureCode.TrampolineFeeOrExpiryInsufficient, attempt.FailureCode);
+        Assert.Equal(tooLittle, attempt.IncomingAmount);
+        Assert.Equal(1, attempt.Parts);
     }
 
     [Fact]

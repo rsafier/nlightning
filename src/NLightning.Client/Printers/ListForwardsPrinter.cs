@@ -39,8 +39,12 @@ public sealed class ListForwardsPrinter : IPrinter<ListForwardsIpcResponse>
     private void WriteTrampolineRelay(TrampolineRelayIpcResponse relay)
     {
         _output.WriteLine(new string('-', 96));
-        _output.WriteLine("  Kind:        trampoline   Status: {0}{1}", TrampolineStatusName(relay.Status),
-                          relay.FailureCodeName is null ? string.Empty : $" ({relay.FailureCodeName})");
+        _output.WriteLine("  Kind:        trampoline   Status: {0}{1}{2}", TrampolineStatusName(relay.Status),
+                          relay.FailureCodeName is null ? string.Empty : $" ({relay.FailureCodeName})",
+                          // NL-899: a failed attempt the payer's retry of the same hash replaced
+                          relay.ReplacedAttempt is { } attempt
+                              ? $"   attempt {attempt}, replaced by the payer's retry"
+                              : string.Empty);
         _output.WriteLine("  Created:     {0:yyyy-MM-dd HH:mm:ss} UTC{1}", UnixTime(relay.CreatedAtUnixSeconds),
                           relay.CompletedAtUnixSeconds is { } completed
                               ? $"   Completed: {UnixTime(completed):yyyy-MM-dd HH:mm:ss} UTC"
@@ -109,11 +113,19 @@ public sealed class ListForwardsPrinter : IPrinter<ListForwardsIpcResponse>
     {
         var separator = new string('-', 96);
         _output.WriteLine(separator);
+        // NL-981: the totals count the trampoline relays too; their share follows on its own line
         _output.WriteLine("  Totals over the filtered set: {0} forward(s) - pending {1}, offered {2}, fulfilled {3}, "
                         + "failed {4}; fees earned {5} msat",
                           summary.Pending + summary.Offered + summary.Fulfilled + summary.Failed,
                           summary.Pending, summary.Offered, summary.Fulfilled, summary.Failed,
                           summary.FulfilledFeesMsat);
+        var relays = summary.TrampolineCollecting + summary.TrampolineSending + summary.TrampolineFulfilled
+                   + summary.TrampolineFailed;
+        if (relays > 0)
+            _output.WriteLine("  of which trampoline relays: {0} - collecting {1}, sending {2}, fulfilled {3}, "
+                            + "failed {4}; fees earned {5} msat", relays, summary.TrampolineCollecting,
+                              summary.TrampolineSending, summary.TrampolineFulfilled, summary.TrampolineFailed,
+                              summary.TrampolineFulfilledFeesMsat);
         _output.WriteLine("  Refused before forwarding since start: {0}{1}", summary.RefusedTotal,
                           summary.RefusedByReason.Count == 0
                               ? string.Empty
