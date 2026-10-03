@@ -3,7 +3,6 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Tests.Handlers;
 
-using NLightning.Client.Handlers;
 using Daemon.Handlers;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.DualFunding.Interfaces;
@@ -27,6 +26,7 @@ using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using NLightning.Client.Handlers;
 using Transport.Ipc.Requests;
 
 /// <summary>
@@ -120,7 +120,8 @@ public class OpenChannelTaprootClientHandlerTests
         var party = new ChannelParty(LightningMoney.Satoshis(354), LightningMoney.Satoshis(1_000),
                                      LightningMoney.Satoshis(1), 30, request.FundingAmount, 144);
         var channel = new ChannelModel(new ChannelParams(party, party, LightningMoney.Satoshis(253), 3, true,
-                                                         FeatureSupport.No) { OptionSimpleTaproot = true },
+                                                         FeatureSupport.No)
+        { OptionSimpleTaproot = true },
                                        new ChannelId(Enumerable.Repeat((byte)7, 32).ToArray()), null, null, true, null,
                                        null, request.FundingAmount,
                                        new ChannelKeySetModel(5, peerId, peerId, peerId, peerId, peerId, peerId), 0, 0,

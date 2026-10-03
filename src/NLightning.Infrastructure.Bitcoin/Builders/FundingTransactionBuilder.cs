@@ -4,15 +4,15 @@ using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Builders;
 
+using Crypto.Musig2;
 using Domain.Bitcoin.Transactions.Constants;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
-using Domain.Crypto.Interfaces;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Crypto.Interfaces;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
-using Crypto.Musig2;
 using Interfaces;
 using Networks;
 using Outputs;

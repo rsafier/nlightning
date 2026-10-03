@@ -138,6 +138,24 @@ public class TaprootOpenHarnessTests
         Assert.Equal(bytes.Length - nonceTlv.Length, bytes.AsSpan().IndexOf(nonceTlv));
     }
 
+    [Fact]
+    public async Task Given_AFundedTaprootChannelBeforeChannelReady_When_ForceClosed_Then_CommitmentZeroVerifies()
+    {
+        // Arrange - right after funding_signed: no commitment state yet, the peer's partial signature of commitment 0
+        // is the channel's LastReceivedPartialSignature (persisted)
+        await using var harness = await TaprootOpenHarness.CreateAsync();
+        var (channelId, funding) = await harness.OpenAsync(s_fundingAmount);
+        await harness.RestartAsync(harness.Alice);
+        var fundingTx = Transaction.Load(funding.RawTransaction, Network.RegTest);
+        var channel = harness.Alice.Channel(channelId);
+        Assert.Null(channel.Commitments);
+        Assert.NotNull(channel.LastReceivedPartialSignature);
+
+        // Act / Assert - both sides' commitment 0, from what they saved
+        AssertBroadcastVerifies(harness.Alice, channelId, fundingTx.Outputs[channel.FundingOutput!.Index!.Value]);
+        AssertBroadcastVerifies(harness.Bob, channelId, fundingTx.Outputs[channel.FundingOutput.Index.Value]);
+    }
+
     [Theory]
     [InlineData("open_channel")]
     [InlineData("open_channel bad nonce")]

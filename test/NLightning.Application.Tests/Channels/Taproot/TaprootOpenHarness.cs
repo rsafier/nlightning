@@ -21,7 +21,6 @@ using Application.Payments;
 using Application.Payments.Routing;
 using Application.Payments.Switch;
 using Application.Protocol.Factories;
-using DualFunding;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
@@ -32,7 +31,6 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
-using Domain.Channels.Enums;
 using Domain.Channels.Factories;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -54,6 +52,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Tlv;
 using Domain.Protocol.ValueObjects;
+using DualFunding;
 using Harness;
 using Infrastructure.Bitcoin;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -492,7 +491,6 @@ internal sealed class TaprootOpenNode
         var feeService = new Mock<IFeeService>();
         feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
                   .ReturnsAsync(() => LightningMoney.Satoshis(2_500));
-
 
         var services = new ServiceCollection();
         services.AddLogging();

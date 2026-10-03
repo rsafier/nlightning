@@ -5976,6 +5976,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** run the cluster interop matrix (cln, eclair, ldk, lnd) on the integration branch; add any even TLV a peer sends to the right known set.
 - **Blocks/Blocked-by:** Related NL-001, NL-877
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
+
+### NL-960 The D-T4 crash-injection proof of simple taproot channels has no Postgres (or SQL Server) run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Channels/Taproot/TaprootSqliteCrashTests.cs`, `TaprootOpenHarness.cs`
+- **Evidence:** Taproot wave t02 lane OPS proved plan D-T4 in process: the two-node harness (in-memory store, a crash at every save, `TaprootHarnessTests`) and a SQLite v1-open harness on the production repositories (an EF `SaveChangesInterceptor` kills the database at every save of a payment each way, `TaprootSqliteCrashTests`): no signing nonce is ever sent twice, every accepted partial signature verified, one commitment transaction per local commitment number. The plan asks for all three providers; the harness builds its nodes on SQLite files only, and a Postgres server exists only on the cluster (`scripts/run-cluster.sh --matrix postgres`, NL-866). The taproot columns themselves round-trip on Postgres through the existing persistence tests (lane STATE).
+- **Fix sketch:** give `TaprootOpenHarness` a provider switch and run `TaprootSqliteCrashTests` in the cluster's `postgres` suite (the persistence layer has no provider-specific code for the taproot columns, so the expectation is a green run).
+- **Blocks/Blocked-by:** Related NL-877, NL-956
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T3, D-T4
+
+### NL-961 The interactive-tx `commitment_signed` builders still sign ECDSA for a simple taproot channel
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `Application/Channels/DualFunding/DualFundedOpenService.cs` (its `commitment_signed`), `Application/Channels/Splicing/EngineSpliceStatePort.cs`, `ChannelReestablishMessageHandler.CreateInteractiveCommitmentSignedAsync`
+- **Evidence:** Taproot wave t02 lane OPS wired the MuSig2 `commitment_signed` into the normal-operation path (`ChannelStateTransitionService.ToWireMessage`, the reestablish re-signing); the dual-funded open's and the splice's `commitment_signed` (and their reestablish retransmissions) still use the ECDSA signature. A taproot channel never reaches them yet: the v2 open of a taproot type is refused on both sides (`ChannelOpenMandatoryValidationParameters.AllowSimpleTaproot` false in the dual-funded flow; `openchannel --channel-type taproot` refuses a v2 open, "use --v1").
+- **Fix sketch:** lanes V2 (dual-funded taproot opens: `tx_complete` nonces, `channel_reestablish` TLV 24) and CLOSE (splice refusal until splicing taproot channels is planned) take these paths over; lift `AllowSimpleTaproot` in the dual-funded flow and the daemon's refusal together.
+- **Blocks/Blocked-by:** Related NL-877, NL-953
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T5
 ### NL-158 Key file encryption: fixed Argon2 salt, all-zero XChaCha nonce, 64 KiB Argon2 memory
 - **Status:** fixed (953a33b, b999208)
 - **Severity:** critical

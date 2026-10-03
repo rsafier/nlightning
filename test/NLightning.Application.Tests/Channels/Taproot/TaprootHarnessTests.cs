@@ -87,10 +87,10 @@ public class TaprootHarnessTests
         Assert.NotEmpty(revocations);
         for (var i = 0; i < revocations.Count; i++)
         {
-            var entry = Assert.Single(revocations[i].NextLocalNoncesTlv!.Nonces.Entries);
-            Assert.Equal(harness.FundingTxId, entry.FundingTxId);
+            var (fundingTxId, nonce) = Assert.Single(revocations[i].NextLocalNoncesTlv!.Nonces.Entries);
+            Assert.Equal(harness.FundingTxId, fundingTxId);
             Assert.Equal(bob.Signer.GetLocalVerificationNonce(TwoNodeHarness.ChannelId, harness.FundingTxId,
-                                                              (ulong)i + 2), entry.Nonce);
+                                                              (ulong)i + 2), nonce);
         }
 
         AssertNoSigningNonceReused(harness, "dance");
@@ -284,6 +284,30 @@ public class TaprootHarnessTests
 
         // Assert
         Assert.Equal("TAPROOT-CS-R00", failure.RequirementId);
+    }
+
+    [Fact]
+    public async Task Given_AnAdvancedChannel_When_ThePeerResendsChannelReadyWithANonce_Then_ItIsIgnored()
+    {
+        // Arrange - commitments signed both ways; LND re-sends channel_ready (with a nonce) only while both next
+        // commitment numbers are 1, but a stray one must not replace the peer's current nonce or fail the channel
+        using var harness = new TwoNodeHarness(simpleTaproot: true);
+        await OfferAsync(harness.Alice, AliceAmountMsat, 1);
+        await harness.PumpAsync();
+        var nonces = harness.Alice.State.RemoteNextNonces;
+        var stray = harness.Bob.Services.GetService(typeof(IMessageFactory)) is IMessageFactory factory
+                        ? factory.CreateChannelReadyMessage(TwoNodeHarness.ChannelId, harness.Bob.Point(1), null,
+                                                            harness.Bob.Signer.GetLocalVerificationNonce(
+                                                                TwoNodeHarness.ChannelId, harness.FundingTxId, 1))
+                        : throw new InvalidOperationException("No message factory");
+
+        // Act
+        await harness.Alice.ChannelManager.HandleChannelMessageAsync(stray, harness.Bob.NegotiatedFeatures,
+                                                                     harness.Bob.NodeId);
+
+        // Assert
+        Assert.Equal(ChannelState.Open, harness.Alice.Channel.State);
+        Assert.Same(nonces, harness.Alice.State.RemoteNextNonces);
     }
 
     [Theory]

@@ -121,9 +121,9 @@ public class TaprootSqliteCrashTests
 
         // Each local commitment number was accepted for one transaction only
         foreach (var node in harness.Nodes)
-        foreach (var group in node.Verified.GroupBy(v => v.Number))
-            Assert.True(group.Select(v => v.TxId).Distinct().Count() == 1,
-                        $"{context}: {node.Name} accepted two different commitments {group.Key}");
+            foreach (var group in node.Verified.GroupBy(v => v.Number))
+                Assert.True(group.Select(v => v.TxId).Distinct().Count() == 1,
+                            $"{context}: {node.Name} accepted two different commitments {group.Key}");
 
         // Every channel_reestablish carried the funding's nonce
         Assert.All(harness.Transcript.Select(t => t.Message).OfType<ChannelReestablishMessage>(),

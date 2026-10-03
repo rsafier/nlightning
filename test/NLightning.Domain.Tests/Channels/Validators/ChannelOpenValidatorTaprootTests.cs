@@ -9,7 +9,6 @@ using Domain.Money;
 using Domain.Node;
 using Domain.Node.Options;
 using Domain.Protocol.Tlv;
-using Domain.Protocol.ValueObjects;
 
 /// <summary>
 /// The simple taproot channel type in the open validator (NL-877 T5, bolt-simple-taproot.md §open_channel): bit 80
