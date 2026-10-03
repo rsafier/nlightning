@@ -263,6 +263,18 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresSchemaFromBeforeAddCashuProcessorQuotes_When_Migrated_Then_QuotesRoundTrip()
+    {
+        // Arrange (NL-997: the CDK payment processor's quotes and deposits, on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_cashu_quotes");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await CashuQuoteSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                    TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresSchemaFromBeforeAddTrampolineRelays_When_Migrated_Then_RelaysRoundTrip()
     {
         // Arrange (NL-875: relays, parts, the relay payment flag and the trampoline hops, on a real server)

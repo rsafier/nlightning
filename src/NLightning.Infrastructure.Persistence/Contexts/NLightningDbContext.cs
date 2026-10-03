@@ -4,6 +4,7 @@ namespace NLightning.Infrastructure.Persistence.Contexts;
 
 using Entities.Accounting;
 using Entities.Bitcoin;
+using Entities.Cashu;
 using Entities.Channel;
 using Entities.Gossip;
 using Entities.LiquidityAds;
@@ -12,6 +13,7 @@ using Entities.Onchain;
 using Entities.Payment;
 using EntityConfiguration.Accounting;
 using EntityConfiguration.Bitcoin;
+using EntityConfiguration.Cashu;
 using EntityConfiguration.Channel;
 using EntityConfiguration.Gossip;
 using EntityConfiguration.LiquidityAds;
@@ -104,6 +106,10 @@ public class NLightningDbContext : DbContext
     // Liquidity ads purchases (NL-850 LA3, migration AddLiquidityPurchases)
     public DbSet<LiquidityPurchaseEntity> LiquidityPurchases { get; set; }
 
+    // The CDK payment processor's quotes and deposits (NL-997, migration AddCashuProcessorQuotes)
+    public DbSet<CashuQuoteEntity> CashuQuotes { get; set; }
+    public DbSet<CashuDepositEntity> CashuDeposits { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -165,5 +171,6 @@ public class NLightningDbContext : DbContext
 
         // Liquidity ads purchases
         modelBuilder.ConfigureLiquidityPurchaseEntity(_databaseType);
+        modelBuilder.ConfigureCashuQuoteEntities(_databaseType);
     }
 }

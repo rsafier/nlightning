@@ -25,4 +25,8 @@ public sealed record WalletWithdrawResult(
     int Weight,
     int InputCount,
     LightningMoney AnchorReserve,
-    bool Published);
+    bool Published)
+{
+    /// <summary>The output of <see cref="TxId"/> that pays the destination: always the first (the change follows).</summary>
+    public uint DestinationOutputIndex => 0;
+}

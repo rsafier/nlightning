@@ -20,4 +20,10 @@ public sealed record WalletWithdrawRequest(string Address, LightningMoney? Amoun
     /// event) carries; <see cref="SourceLabels.None"/> for none.
     /// </summary>
     public SourceLabels Labels { get; init; } = SourceLabels.None;
+
+    /// <summary>
+    /// The highest fee the transaction may pay, or null for no limit: a signed transaction paying more is dropped
+    /// before it is stored or broadcast (<see cref="Enums.WalletSpendError.FeeAboveLimit"/>; NL-997).
+    /// </summary>
+    public LightningMoney? MaxFee { get; init; }
 }

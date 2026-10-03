@@ -142,7 +142,8 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
 | Wave | Content | Issue | Status |
 |---|---|---|---|
 | C0 | `IPaymentEventSource` / `IPaymentEventPublisher` (Domain), `PaymentEventHub` (Application), published after commit by `HtlcSwitch` (invoice settled) and `PaymentService` (payment succeeded/failed); `waitinvoice` (IPC 47) | NL-991 | done |
-| C1 | `NLightning.Cashu.PaymentProcessor`: the `CdkPaymentProcessor` gRPC service on Kestrel in the daemon, behind `Cashu:PaymentProcessor` (BOLT 11; BOLT 12, on-chain, MPP melts: NL-997) | NL-992 | done |
+| C1 | `NLightning.Cashu.PaymentProcessor`: the `CdkPaymentProcessor` gRPC service on Kestrel in the daemon, behind `Cashu:PaymentProcessor` (BOLT 11) | NL-992 | done |
+| C1b | Processor breadth: BOLT 12 both ways, on-chain mint and melt quotes (NUT-30), quotes stored before they are sent (`CashuQuotes`/`CashuDeposits`); MPP partial melts stay refused | NL-997 | done (§8) |
 | C2 | Proof against `cdk-mintd` + `cdk-cli` (cluster harness since the wip/fafo integration) | NL-993 | done (§7) |
 | C3 | Native Cashu wallet | NL-994 | open |
 | C4 | Hold invoices + NUT-14 | NL-995 | open |
@@ -269,9 +270,8 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
 - `cdk-mintd`'s `tls_dir` holds `ca.pem`, `client.pem` and `client.key`.
 - The Kestrel instance reads no ambient configuration (no `appsettings.json` of the working directory, no environment variables), so a `Kestrel` section there cannot add a second, unchecked endpoint; a start that does not listen on exactly the configured address stops and fails.
 
-**Not yet**
-- BOLT 12 (`OfferService`/`IOfferPaymentService`), on-chain (NUT-30) and MPP melts (NUT-15).
-- Quote ids for `WaitPaymentEvent` are kept in memory. After a restart the mint learns outcomes through `CheckOutgoingPayment`.
+**Not yet** (as of C1; BOLT 12, on-chain and stored quotes came with §8)
+- MPP partial melts (NUT-15): the node cannot pay part of an invoice, and CDK's own LDK backend refuses them too.
 
 **Tests:** `test/NLightning.Daemon.Tests/Cashu/`. `CdkPaymentProcessorServiceTests` (19 after the integration review) run a real Kestrel server on a free loopback port and call it with the generated client; `CashuPaymentProcessorOptionsTests` cover the startup checks.
 
@@ -329,3 +329,23 @@ The mint reaches the in-process node's processor, which listens on the host's lo
 3. `cdk-cli melt --invoice <payer's 4,000 sat invoice>`. The fee reserve is 20 sat (the processor's 0.5 %). Our node pays it, labelled `cashu-mint`, the payer's invoice settles, and the wallet holds 6,000 sat: no routing fee on a direct channel, so the reserve came back as change.
 
 **Result:** on Docker green twice in a row (about 18 s each, the branch); on the cluster green (35 s with the images present, 2026-10-03, the wip/fafo integration).
+
+## 8. Processor breadth record (NL-997, was NL-997)
+
+**What CDK expects** (read from CDK v0.18.1's own backends, `cdk-ldk-node` and `cdk-bdk`, and its gRPC client):
+- `cdk-mintd` registers a method for every settings block the processor reports (`bolt11`, `bolt12`, `onchain`), so a method we cannot serve is simply left out of `GetSettings`.
+- BOLT 12 mint quotes are named by `OFFER_ID`; every paid invoice of the offer is one `payment_received` (`payment_id` = its payment hash), and `CheckIncomingPayment` lists them all. BOLT 12 melts are named by the mint's `QUOTE_ID`.
+- On-chain mint quotes carry the mint's `quote_id` and get an address (`QUOTE_ID`); each output paying it is a payment (`payment_id` = `txid:vout`, sat). Melt quotes list `fee_options` (`fee_index`, `fee_reserve`, `estimated_blocks`); `MakePayment` answers `PENDING` with `total_spent` 0 and the melt turns `PAID` with `payment_proof` = `txid:vout`. A refused melt is a `FAILED` answer, not an error.
+
+**As built**
+- Migration `AddCashuProcessorQuotes` (Postgres, SQLite, SQL Server, compiled models): `CashuQuotes` (the mint's quote id → method, direction, amount, fee limit and fee, payment hash, address, request, fee index, txid:vout, state Created/Dispatching/Pending/Paid/Failed) and `CashuDeposits` (outpoint → quote, amount, block, reported time; kept after the wallet spends the output). Domain `Cashu/`, `ICashuQuoteDbRepository` on `IUnitOfWork` (throwing default).
+- Every melt (all methods) is saved `Dispatching` before its payment starts: a replay never pays twice, and after a restart a BOLT 12 or on-chain melt without a recorded result answers `PENDING`, never `UNPAID`. A BOLT 11 melt whose payment row never appeared answers `UNKNOWN` (never sent, CDK's convention). The in-memory quote id map is gone: `ProcessorEventHub` fans out to the `WaitPaymentEvent` streams, filled by background loops the host starts (`StartBackgroundAsync`): payment events mapped through the table, and on-chain deposits and confirmations from `IBlockchainMonitor`.
+- BOLT 12 (`Bolt12Enabled`, default on; served while `IOfferService`/`IOfferPaymentService` are available): mint quotes are our offers labelled `cashu-mint` (an amount gets the description "Cashu mint quote"); settled BOLT 12 invoices with our label stream as `payment_received` by offer id (`IInvoiceDbRepository.ListSettledByOfferIdAsync` for the check). Melt quotes take the offer's amount (msat; currency and quantity offers refused) or the mint's amountless amount, with the BOLT 11 fee reserve; `MakePayment` calls `PayOfferAsync` with the fee limit, the timeout and the tag `cdk_quote=<id>`; no invoice is `FAILED`.
+- On-chain (`OnchainEnabled`, default **off**: the mint's users then fill and spend the wallet that funds the channels): a reserved fresh wallet address per mint quote (`OnchainAddressType`, P2WPKH default), the same one on a replay; deposits of at least `OnchainMinReceiveSat` (1,000) are recorded from wallet movements (now carrying the output index) and from the wallet's UTXOs at start, and reported once they have `OnchainConfirmations` (default 3) and their block on the active chain still holds them. Melt quotes offer one option per `OnchainFeeTargets` (default `2,6,144`) with `OnchainFeeReservePercent` (150) of the new `IWalletSpendService.EstimateWithdrawFeeAsync` (the selector's largest-first inputs plus change); `MakePayment` withdraws at that target's rate with the new `WalletWithdrawRequest.MaxFee` (a signed transaction paying more is dropped before it is stored, `WalletSpendError.FeeAboveLimit`) and reports `PAID` when the `BroadcastTransactions` row is confirmed deep enough (an abandoned one fails the melt). The destination is always output 0 (`WalletWithdrawResult.DestinationOutputIndex`).
+- Known limits: a reorg after a deposit or melt was reported is not taken back (the confirmations are the guard, as in `cdk-bdk`); MPP partial melts stay refused (NL-1010).
+
+**Tests**
+- `Daemon.Tests/Cashu/` (36, over the real gRPC server with `InMemoryCashuQuoteStore`): `CdkPaymentProcessorServiceTests` (settings per available service, BOLT 11, a melt pending at the timeout that succeeds after a restart, the dispatching sentinel), `CdkPaymentProcessorBolt12Tests`, `CdkPaymentProcessorOnchainTests` (address replay, deposits at the second confirmation and dust ignored, fee options, pending then paid with its outpoint, fee limit, unknown fee index and dust melts, an interrupted melt never resent).
+- `Infrastructure.Bitcoin.Tests` `WalletSpendServiceTests`: the estimate matches the spend and holds nothing; the fee limit refuses and releases the inputs.
+- `Integration.Tests/Persistence`: `CashuQuoteSchemaRoundTrip` (SQLite, and Postgres in `Docker/PostgresTests`), and `Bolt12SchemaRoundTrip` lists an offer's settled invoices.
+- The CDK mint proof (`CdkMintdInteropTests`, then a Docker suite, a cluster suite since the wip/fafo integration, §7) gained two cases, green twice in a row on Docker (about 30 s and 50 s): BOLT 12 (`cdk-cli mint --method bolt12`: the payer pays the mint's offer, 3,001 sat minted, the extra sat being our dummy blinded hops' fee the payer paid, NL-526; `melt --method bolt12` into the payer's 1,000 sat offer, reserve 5 sat, paid with a 2 sat fee) and on-chain (1 confirmation, one fee option because `cdk-cli` prompts when there are several: bitcoind pays 50,000 sat to the quote's address and 50,000 sat are minted; `melt --method onchain` of 20,000 sat (reserve 2,108 sat, fee 1,405 sat), `cdk-mintd` restarted while the melt is pending, a block mined, the restarted mint's quote `PAID` with its outpoint and bitcoind credited; the wallet finished its wait across the restart with `state=PAID`).

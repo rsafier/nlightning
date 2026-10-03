@@ -119,6 +119,40 @@ public sealed class WalletSpendService : IWalletSpendService
     }
 
     /// <inheritdoc />
+    public async Task<WalletWithdrawEstimate> EstimateWithdrawFeeAsync(WalletWithdrawRequest request,
+                                                                       CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.Amount is not { } requested)
+            throw new ArgumentException("An estimate needs an amount.", nameof(request));
+
+        var destination = ParseAddress(request.Address, _network).ScriptPubKey;
+        var dustLimit = GetDustThreshold(destination);
+        if (requested.MilliSatoshi % 1_000 != 0 || requested.Satoshi < dustLimit)
+            throw new WalletSpendException(WalletSpendError.DustAmount,
+                                           $"{requested.MilliSatoshi / 1_000.0:0.###} sat is not a whole amount at or "
+                                         + $"above the dust limit of the destination ({dustLimit} sat).");
+
+        var feeRatePerKw = await GetFeeRatePerKwAsync(request.FeeRatePerKw, cancellationToken);
+        var amountSat = requested.Satoshi;
+        var weight = BaseWeight + GetOutputWeight(destination) + WalletWeights.P2WpkhOutputWeight;
+        long totalSat = 0;
+        var inputs = 0;
+        foreach (var (outputSat, inputWeight) in (await GetSpendableOutputsAsync()).OrderByDescending(o => o.AmountSat))
+        {
+            totalSat += outputSat;
+            weight += inputWeight;
+            inputs++;
+            if (totalSat >= amountSat + FeeSat(feeRatePerKw, weight))
+                return new WalletWithdrawEstimate(LightningMoney.Satoshis(FeeSat(feeRatePerKw, weight)),
+                                                  LightningMoney.Satoshis(feeRatePerKw), weight, inputs);
+        }
+
+        throw new InsufficientFundsException(LightningMoney.Satoshis(amountSat + FeeSat(feeRatePerKw, weight)),
+                                             LightningMoney.Satoshis(totalSat));
+    }
+
+    /// <inheritdoc />
     public async Task<int> ReleaseOrphanedReservationsAsync(CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken);
@@ -169,6 +203,10 @@ public sealed class WalletSpendService : IWalletSpendService
 
             var signed = BuildAndSign(reservation, destination, amountSat);
             var feeSat = reservation.Total.Satoshi - amountSat - reservation.ChangeAmount.Satoshi;
+            if (request.MaxFee is { } maxFee && LightningMoney.Satoshis(feeSat) > maxFee)
+                throw new WalletSpendException(WalletSpendError.FeeAboveLimit,
+                                               $"The fee would be {feeSat} sat, above the limit of "
+                                             + $"{maxFee.MilliSatoshi / 1_000.0:0.###} sat.");
             var weight = GetWeight(signed.Transaction);
 
             // The absolute fee rides on the row (NL-604): the accounting feed records it when the spend confirms

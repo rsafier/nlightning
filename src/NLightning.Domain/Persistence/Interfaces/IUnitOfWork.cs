@@ -6,6 +6,7 @@ using Accounting.Interfaces;
 using Bitcoin.Interfaces;
 using Bitcoin.ValueObjects;
 using Bitcoin.Wallet.Models;
+using Cashu.Interfaces;
 using Channels.Interfaces;
 using Gossip.Interfaces;
 using LiquidityAds.Interfaces;
@@ -133,6 +134,11 @@ public interface IUnitOfWork : IDisposable
     // doubles that store none
     ILiquidityPurchaseDbRepository LiquidityPurchaseDbRepository =>
         throw new NotSupportedException("This unit of work does not store liquidity purchases.");
+
+    // The CDK payment processor's quotes and on-chain deposits (NL-997, migration AddCashuProcessorQuotes); the default
+    // is for test doubles that store none
+    ICashuQuoteDbRepository CashuQuoteDbRepository =>
+        throw new NotSupportedException("This unit of work does not store Cashu quotes.");
 
     /// <summary>
     /// Every saved peer with its channels, plus a peer marked <see cref="PeerModel.IsInboundOnly"/> for every channel

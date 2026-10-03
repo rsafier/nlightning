@@ -23,5 +23,11 @@ public enum WalletSpendError
     FeeRateTooHigh,
 
     /// <summary>The chain monitor's processing is halted (NL-216): the wallet's view of the chain is stale.</summary>
-    ChainProcessingHalted
+    ChainProcessingHalted,
+
+    /// <summary>
+    /// The signed transaction's fee is above <see cref="Wallet.Models.WalletWithdrawRequest.MaxFee"/> (NL-997: a Cashu
+    /// melt's fee reserve); nothing was stored or broadcast and the inputs were released.
+    /// </summary>
+    FeeAboveLimit
 }

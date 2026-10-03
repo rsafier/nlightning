@@ -1046,6 +1046,130 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.ToTable("watched_transactions", (string)null);
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Cashu.CashuDepositEntity", b =>
+                {
+                    b.Property<byte[]>("TxId")
+                        .HasColumnType("bytea")
+                        .HasColumnName("tx_id");
+
+                    b.Property<long>("OutputIndex")
+                        .HasColumnType("bigint")
+                        .HasColumnName("output_index");
+
+                    b.Property<long>("AmountSat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount_sat");
+
+                    b.Property<long>("BlockHeight")
+                        .HasColumnType("bigint")
+                        .HasColumnName("block_height");
+
+                    b.Property<string>("QuoteId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("quote_id");
+
+                    b.Property<long?>("ReportedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("reported_at");
+
+                    b.HasKey("TxId", "OutputIndex")
+                        .HasName("pk_cashu_deposits");
+
+                    b.HasIndex("QuoteId")
+                        .HasDatabaseName("ix_cashu_deposits_quote_id");
+
+                    b.HasIndex("ReportedAt")
+                        .HasDatabaseName("ix_cashu_deposits_reported_at");
+
+                    b.ToTable("cashu_deposits", (string)null);
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Cashu.CashuQuoteEntity", b =>
+                {
+                    b.Property<string>("QuoteId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("quote_id");
+
+                    b.Property<string>("Address")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("address");
+
+                    b.Property<long>("AmountMsat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount_msat");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("created_at");
+
+                    b.Property<byte>("Direction")
+                        .HasColumnType("smallint")
+                        .HasColumnName("direction");
+
+                    b.Property<string>("FailureReason")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)")
+                        .HasColumnName("failure_reason");
+
+                    b.Property<long?>("FeeIndex")
+                        .HasColumnType("bigint")
+                        .HasColumnName("fee_index");
+
+                    b.Property<long?>("FeeMsat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("fee_msat");
+
+                    b.Property<long?>("MaxFeeMsat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("max_fee_msat");
+
+                    b.Property<byte>("Method")
+                        .HasColumnType("smallint")
+                        .HasColumnName("method");
+
+                    b.Property<long?>("OutputIndex")
+                        .HasColumnType("bigint")
+                        .HasColumnName("output_index");
+
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("bytea")
+                        .HasColumnName("payment_hash");
+
+                    b.Property<string>("Request")
+                        .HasColumnType("text")
+                        .HasColumnName("request");
+
+                    b.Property<byte>("State")
+                        .HasColumnType("smallint")
+                        .HasColumnName("state");
+
+                    b.Property<byte[]>("TxId")
+                        .HasColumnType("bytea")
+                        .HasColumnName("tx_id");
+
+                    b.Property<long>("UpdatedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("QuoteId")
+                        .HasName("pk_cashu_quotes");
+
+                    b.HasIndex("Address")
+                        .HasDatabaseName("ix_cashu_quotes_address");
+
+                    b.HasIndex("PaymentHash")
+                        .HasDatabaseName("ix_cashu_quotes_payment_hash");
+
+                    b.HasIndex("Direction", "Method", "State")
+                        .HasDatabaseName("ix_cashu_quotes_direction_method_state");
+
+                    b.ToTable("cashu_quotes", (string)null);
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelConfigEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
