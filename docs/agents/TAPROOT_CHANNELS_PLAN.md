@@ -47,6 +47,7 @@ This is the plan for the simple taproot channel type (`option_simple_taproot`, f
 4. **Feature gate:** `OptionSimpleTaproot` goes into `FeatureOptions.ExperimentalFeatures` the day the enum value lands. It leaves that set only after T6's interop proofs pass against LND 0.21.4 and Eclair 0.14.3, and only by an owner decision (as O7-T4 and D13 did). The staging bits 180/181 are never advertised.
 5. **Schema:** one migration owner per wave, all three providers, through `add_migration.sh` with the compiled models regenerated (root `CLAUDE.md`).
 6. **Commits:** `taproot: <what> (NL-877 / T#)`.
+7. **Ledger IDs:** new taproot entries use only the reserved range **NL-950..NL-979** (orchestrator allocation 2026-10-03; other lanes use NL-900..NL-949). Wave t01's entries were renumbered at the `wip/fafo` integration: NL-911 (MuSig2 zeroing), NL-912 (NBitcoin MuSig2), NL-913 (simple-close cluster proof), NL-914 (spec errata), NL-915 (anchor key name).
 
 ---
 
