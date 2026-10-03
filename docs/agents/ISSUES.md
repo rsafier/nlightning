@@ -4444,7 +4444,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-810 Torn read of a channel's stored state: a save committing mid-load made `listchannels` fail
-- **Status:** fixed (wip/nl810)
+- **Status:** fixed (3649c0aa)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelDbRepository.cs` (`GetByIdAsync`, `GetAllAsync`, `GetReadyChannelsAsync`, `GetByPeerIdAsync`), `ChannelStateDbRepository.cs` (`LoadAsync`), `ChannelSigningInfoDbRepository.cs`, `RevokedCommitmentDbRepository.cs` (`GetAsync(channelId, number)`); new `src/NLightning.Infrastructure.Persistence/Contexts/ConsistentReadExtensions.cs`
