@@ -38,8 +38,7 @@ public sealed class RetiredScidMap : IRetiredScidMap, IDisposable
         _serviceProvider = serviceProvider;
         _logger = logger;
         _blockchainMonitor = blockchainMonitor;
-        if (_blockchainMonitor is not null)
-            _blockchainMonitor.OnNewBlockDetected += OnNewBlockDetected;
+        _blockchainMonitor?.OnNewBlockDetected += OnNewBlockDetected;
     }
 
     /// <inheritdoc />
@@ -196,8 +195,7 @@ public sealed class RetiredScidMap : IRetiredScidMap, IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_blockchainMonitor is not null)
-            _blockchainMonitor.OnNewBlockDetected -= OnNewBlockDetected;
+        _blockchainMonitor?.OnNewBlockDetected -= OnNewBlockDetected;
     }
 
     private uint? CurrentHeight => _blockchainMonitor?.LastProcessedBlockHeight;

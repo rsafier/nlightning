@@ -517,8 +517,7 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     public void Dispose()
     {
         _offlineCheckTimer?.Dispose();
-        if (_probe is not null)
-            _probe.LinkUp -= HandleLinkUp;
+        _probe?.LinkUp -= HandleLinkUp;
         _channelMemoryRepository.OnChannelUpdated -= HandleChannelUpdated;
     }
 

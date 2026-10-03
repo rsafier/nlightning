@@ -1,5 +1,3 @@
-using Docker.DotNet;
-using Docker.DotNet.Models;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Integration.Tests.Docker.Interop.Cln;
@@ -14,11 +12,13 @@ using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
+using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Node.ValueObjects;
 using Fixtures;
+using Fixtures.Cln;
 using Utils;
 
 /// <summary>
@@ -37,9 +37,9 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// <para>CLN v26.06.8 advertises <c>option_dual_fund</c> only with <c>--experimental-dual-fund</c> (checked with
-/// <c>lightningd --help</c> on the pinned image), so these tests run a second CLN, <c>nltg-cln-df</c>, on the fixture's
-/// bitcoind and network with that option and the funder plugin's <c>match</c> policy at 100 %. The fixture's own CLN is
-/// left alone. Our node runs with <c>Features:AllowExperimentalFeatures</c> and <c>DualFund = Optional</c> (the feature
+/// <c>lightningd --help</c> on the pinned image), so every test runs a second CLN, <c>nltg-cln-df</c>, on the fixture's
+/// bitcoind (<see cref="ClnFixture.StartClnAsync"/>, a pod in the collection's run namespace) with that option and the
+/// funder plugin's <c>match</c> policy at 100 %. The fixture's own CLN is left alone. Our node runs with <c>Features:AllowExperimentalFeatures</c> and <c>DualFund = Optional</c> (the feature
 /// stays experimental until this proof is accepted, plan DF3) and registers the dual-funding services itself through
 /// <see cref="NLightningTestNode.ConfigureServices"/> until the integrator adds <c>AddDualFundingServices()</c> to the
 /// node composition.</para>
@@ -48,36 +48,37 @@ using Utils;
 [Trait("Category", ClnInteropCollection.Category)]
 public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
 {
-    private const string ContainerName = "nltg-cln-df";
-    private const int P2PPort = 9735;
-
-    // The fixture's bitcoind (ClnFixture keeps them private)
-    private const int BitcoinRpcPort = 18443;
-    private const string BitcoinRpcUser = "nltg";
-    private const string BitcoinRpcPassword = "nltg";
+    private const string ClnName = "nltg-cln-df";
 
     private static readonly TimeSpan s_usableTimeout = TimeSpan.FromMinutes(3);
 
-    private readonly DockerClient _docker = new DockerClientConfiguration().CreateClient();
     private readonly List<NLightningTestNode> _nodes = [];
-    private ClnClient _cln = null!;
-    private string _clnNodeId = string.Empty;
-    private int _clnHostPort;
+    private ExtraClnNode? _clnNode;
 
-    private string ClnAddress => $"{_clnNodeId}@127.0.0.1:{_clnHostPort}";
-    private CompactPubKey ClnPubKey => Convert.FromHexString(_clnNodeId);
+    private ClnClient _cln = null!;
+    private string ClnAddress => _clnNode!.Address;
+    private CompactPubKey ClnPubKey => Convert.FromHexString(_clnNode!.NodeId);
 
     public async ValueTask InitializeAsync()
     {
-        await DockerContainerUtils.RemoveContainerAsync(_docker, ContainerName);
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
+        _clnNode = await fixture.StartClnAsync(new ClnNodeSpec(ClnName)
+        {
+            // The fixture CLN's flags without --ignore-fee-limits=false, plus dual funding and the funder plugin
+            EnforceFeeLimits = false,
+            ExtraArgs =
+            [
+                "--experimental-dual-fund",
+                // As opener CLN v26.06.8's lightningd tells dualopend the funding is locked at its own
+                // funding-confirms (1 on regtest) while dualopend asserts the accepter's minimum_depth (ours: 3) is
+                // reached, and dies (openingd/dualopend.c handle_funding_depth): keep the two equal
+                "--funding-confirms=3", "--funder-lease-requests-only=false", "--funder-policy=match",
+                "--funder-policy-mod=100", "--funder-min-their-funding=10000sat"
+            ]
+        }, CancellationToken.None);
+        _cln = _clnNode.Client;
         try
         {
-            _clnHostPort = await StartClnAsync();
-            _cln = new ClnClient(_docker, ContainerName);
-            await DockerContainerUtils.WaitUntilReadyAsync(ContainerName, async ct => await _cln.GetInfoAsync(ct),
-                                                           TimeSpan.FromMinutes(2));
-            _clnNodeId = (await _cln.GetInfoAsync(CancellationToken.None))["id"]!.GetValue<string>();
-
             // CLN's wallet: two confirmed outputs, so it can contribute and still fund its own open
             for (var i = 0; i < 2; i++)
                 await FundClnAsync(LightningMoney.Satoshis(1_500_000), CancellationToken.None);
@@ -85,7 +86,8 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
         catch
         {
             // A failed setup (e.g. the fixture's bitcoind gone) must not leave nltg-cln-df running
-            await DockerContainerUtils.RemoveContainerAsync(_docker, ContainerName);
+            await _clnNode.DisposeAsync();
+            _clnNode = null;
             throw;
         }
     }
@@ -95,11 +97,14 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
         foreach (var node in _nodes)
             await node.DisposeAsync();
 
+        if (_clnNode is null)
+            return;
+
         try
         {
             Console.WriteLine("[cln-df] UNUSUAL/BROKEN: "
                             + await _cln.GetLogLinesAsync(string.Empty, CancellationToken.None, 40, "unusual"));
-            if (DockerDiagnostics.CurrentTestFailed)
+            if (TestDiagnostics.CurrentTestFailed)
             {
                 // The channel's daemons (dualopend, channeld; not onchaind) and the funder plugin's decisions
                 var entries = (await _cln.CallAsync("getlog", CancellationToken.None, ("level", "debug")))["log"]!
@@ -118,8 +123,7 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
             // Best effort
         }
 
-        await DockerContainerUtils.RemoveContainerAsync(_docker, ContainerName);
-        _docker.Dispose();
+        await _clnNode.DisposeAsync();
     }
 
     [Fact]
@@ -177,6 +181,53 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
         Assert.Equal(800_000_000L, theirs["total_msat"]!.GetValue<long>());
 
         await PayBothWaysAsync(node, ct);
+    }
+
+    /// <summary>
+    /// NL-776: CLN v26.06.8 puts a P2TR script in <c>accept_channel2</c> and <c>shutdown</c> of a dual-funded channel,
+    /// a form BOLT 2 allows only with <c>option_shutdown_anysegwit</c>; with our default features (the option
+    /// advertised) we keep it at the open, accept CLN's <c>shutdown</c>, and the cooperative close confirms.
+    /// </summary>
+    [Fact]
+    public async Task Given_OurDualFundedChannel_When_WeCloseCooperatively_Then_ClnsP2TrScriptIsPaidAndBothEndsClose()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var node = await CreateNodeAsync("df-close", 0, ct);
+        var channelId = await OpenThroughClientAsync(node, LightningMoney.Satoshis(400_000), ct);
+        await MineUntilUsableAsync(node, channelId, ct);
+
+        // Act
+        CloseChannelClientResponse closed;
+        using (var scope = node.Services.CreateScope())
+        {
+            var handler = scope.ServiceProvider.GetRequiredService<
+                Daemon.Interfaces.IClientCommandHandler<CloseChannelClientRequest, CloseChannelClientResponse>>();
+            closed = await handler.HandleAsync(new CloseChannelClientRequest(channelId)
+            {
+                WaitSeconds = 90
+            }, ct);
+        }
+
+        // Assert: CLN's shutdown script is a segwit v1 program (P2TR) and the closing transaction pays it
+        Assert.Equal(ChannelState.Closing, closed.State);
+        Assert.NotNull(closed.ClosingTxId);
+        var remoteScript = (byte[])Channel(node, channelId).RemoteShutdownScript!.Value;
+        Console.WriteLine($"[cln-df] CLN's shutdown script {Convert.ToHexStringLower(remoteScript)}");
+        Assert.Equal(0x51, remoteScript[0]);
+        await WaitInMempoolAsync(closed.ClosingTxId.Value, ct);
+        await MineAndWaitAsync(node, 6, ct);
+        await Poll.UntilAsync(async () =>
+        {
+            var ours = (await node.ListChannelsAsync(ct)).Channels.FirstOrDefault(c => c.ChannelId == channelId);
+            return ours is null || ours.State == ChannelState.Closed;
+        }, TimeSpan.FromSeconds(90), "our channel is Closed", ct);
+        await Poll.UntilAsync(async () =>
+        {
+            var state = (await _cln.GetPeerChannelAsync(node.NodeIdHex, channelId.ToString(), ct))?["state"]
+                          ?.GetValue<string>();
+            return state is "ONCHAIN" or "CLOSED";
+        }, TimeSpan.FromSeconds(90), "CLN sees the mutual close on chain", ct);
     }
 
     [Fact]
@@ -546,55 +597,5 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
             return outputs.Any(o => o?["txid"]?.GetValue<string>() == txId.ToString()
                                  && o["status"]?.GetValue<string>() == "confirmed");
         }, TimeSpan.FromSeconds(60), "the dual-funding CLN sees its deposit confirmed", ct);
-    }
-
-    private async Task<int> StartClnAsync()
-    {
-        var portKey = $"{P2PPort}/tcp";
-        var container = await _docker.Containers.CreateContainerAsync(new CreateContainerParameters
-        {
-            Image = $"{ClnFixture.ClnImage}:{ClnFixture.ClnTag}",
-            Name = ContainerName,
-            Hostname = ContainerName,
-            Env = ["LIGHTNINGD_NETWORK=regtest"],
-            Cmd =
-            [
-                $"--bitcoin-rpcconnect={ClnFixture.BitcoinContainerName}", $"--bitcoin-rpcport={BitcoinRpcPort}",
-                $"--bitcoin-rpcuser={BitcoinRpcUser}", $"--bitcoin-rpcpassword={BitcoinRpcPassword}",
-                $"--bind-addr=0.0.0.0:{P2PPort}", "--alias=nltg-cln-df", "--log-level=debug", "--developer",
-                "--dev-bitcoind-poll=1", "--experimental-dual-fund",
-                // As opener CLN v26.06.8's lightningd tells dualopend the funding is locked at its own
-                // funding-confirms (1 on regtest) while dualopend asserts the accepter's minimum_depth (ours: 3) is
-                // reached, and dies (openingd/dualopend.c handle_funding_depth): keep the two equal
-                "--funding-confirms=3", "--funder-lease-requests-only=false", "--funder-policy=match",
-                "--funder-policy-mod=100", "--funder-min-their-funding=10000sat"
-            ],
-            ExposedPorts = new Dictionary<string, EmptyStruct> { [portKey] = default },
-            HostConfig = new HostConfig
-            {
-                NetworkMode = ClnFixture.NetworkName,
-                PortBindings = new Dictionary<string, IList<PortBinding>>
-                {
-                    [portKey] = [new PortBinding { HostIP = "127.0.0.1", HostPort = string.Empty }]
-                },
-                ExtraHosts = OperatingSystem.IsLinux() ? [$"{ClnFixture.HostAddressFromContainers}:host-gateway"] : null
-            }
-        }) ?? throw new InvalidOperationException($"Failed to create {ContainerName}");
-        await _docker.Containers.StartContainerAsync(container.ID, new ContainerStartParameters());
-
-        var deadline = DateTime.UtcNow.AddMinutes(1);
-        while (true)
-        {
-            var inspect = await _docker.Containers.InspectContainerAsync(container.ID);
-            if (inspect.NetworkSettings?.Ports is { } ports && ports.TryGetValue(portKey, out var bindings)
-                                                            && bindings is { Count: > 0 }
-                                                            && int.TryParse(bindings[0].HostPort, out var hostPort)
-                                                            && hostPort > 0)
-                return hostPort;
-
-            if (DateTime.UtcNow > deadline)
-                throw new TimeoutException($"Docker did not publish the p2p port of {ContainerName}");
-            await Task.Delay(100);
-        }
     }
 }

@@ -24,7 +24,11 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.LiquidityAds.Enums;
+using Domain.LiquidityAds.Interfaces;
+using Domain.LiquidityAds.Models;
 using Domain.Money;
 using Domain.Persistence.Interfaces;
 using Handlers;
@@ -96,6 +100,37 @@ public class ClosingLifecycleTests
 
         // NL-470: the closed channel's stored negotiations go in the same save (the table has no FK to Channels)
         _sessionsDb.Verify(r => r.DeleteByChannelIdAsync(channelId), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ASoldLease_When_ClosingTransactionConfirmed_Then_ThePurchaseIsClosedInTheClosedSave()
+    {
+        // Arrange (liquidity ads D-L4, NL-850): a sale active from block 100 (lease to 4,132), closed at block 600
+        var channel = CreateChannel(ChannelState.Closing);
+        channel.SetClosingTransaction(s_closingTx);
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        var purchase = LiquidityPurchaseModel.Restore(
+            3, channelId, new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray()), LiquidityPurchaseRole.Seller,
+            LiquidityPurchaseKind.ChannelOpen, 400_000, 400_000, new FundingRate(1, 1_000_000, 500, 100, 10, 1_000),
+            LiquidityPaymentType.FromChannelBalance, 1_250, 5_000, new CompactSignature(new byte[64]), [0x00],
+            NormalOperationTestContext.PeerNodeId, 4_032, DateTimeOffset.UnixEpoch, LiquidityPurchaseStatus.Active,
+            100, null, false);
+        var purchases = new Mock<ILiquidityPurchaseDbRepository>();
+        purchases.Setup(r => r.GetByChannelIdAsync(channelId)).ReturnsAsync([purchase]);
+        purchases.Setup(r => r.Update(purchase)).Callback(() => _saveOrder.Add("purchase"));
+        _unitOfWork.SetupGet(u => u.LiquidityPurchaseDbRepository).Returns(purchases.Object);
+        CreateManager();
+
+        // Act
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, s_closingTx.TxId));
+
+        // Assert: closed at the closing transaction's height, early, staged before the one save
+        await WaitUntilAsync(() => channel.State == ChannelState.Closed);
+        Assert.Equal(LiquidityPurchaseStatus.Closed, purchase.Status);
+        Assert.Equal(600U, purchase.ClosedAtHeight);
+        Assert.True(purchase.ClosedEarly);
+        Assert.Equal(["event", "purchase", "save"], _saveOrder);
     }
 
     [Fact]

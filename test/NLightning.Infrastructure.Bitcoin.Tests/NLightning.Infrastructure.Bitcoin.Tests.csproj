@@ -58,4 +58,9 @@
     <Content Include="Offers\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
   </ItemGroup>
 
+  <!-- BOLT 4 trampoline vectors (lightning/bolts PR 836, bolt04/trampoline-*.json, verbatim; README has the commit) -->
+  <ItemGroup>
+    <Content Include="Onion\Trampoline\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
 </Project>

@@ -328,6 +328,7 @@ internal static class PaymentSchemaRoundTrip
         Assert.Equal(expected.CompletedAt, actual.CompletedAt);
         Assert.Equal(expected.Route, actual.Route);
         Assert.Equal(expected.HopSharedSecrets, actual.HopSharedSecrets);
+        Assert.Equal(expected.IsTrampolineRelay, actual.IsTrampolineRelay);
         Assert.Equal(expected.Label, actual.Label);
         Assert.Equal(expected.Tags, actual.Tags);
     }

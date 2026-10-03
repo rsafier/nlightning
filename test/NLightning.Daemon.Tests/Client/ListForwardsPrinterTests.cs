@@ -208,4 +208,53 @@ public class ListForwardsPrinterTests
         Assert.Contains("  Fee:         none (failed)   Hash: " + new string('a', 16) + "…", lines);
         Assert.Contains(expectedFailedLine, lines);
     }
+
+    [Fact]
+    public void Given_ATrampolineRelay_When_Printed_Then_ItIsListedWithItsKindPartsAndFee()
+    {
+        // Arrange (NL-875 TR3-T3)
+        using var output = new StringWriter();
+        var response = new ListForwardsIpcResponse
+        {
+            Forwards = [],
+            Summary = new ForwardSummaryIpcResponse
+            {
+                Pending = 0,
+                Offered = 0,
+                Fulfilled = 0,
+                Failed = 0,
+                FulfilledFeesMsat = 0,
+                RefusedTotal = 0,
+                RefusedByReason = []
+            },
+            TrampolineRelays =
+            [
+                new TrampolineRelayIpcResponse
+                {
+                    PaymentHash = new string('a', 64),
+                    Status = 2,
+                    Parts = 2,
+                    IncomingChannelIds = [new string('1', 64)],
+                    IncomingChannelScids = ["800000x12x0"],
+                    IncomingAmountMsat = 1_010_000,
+                    IncomingTotalMsat = 1_010_000,
+                    AmountOutMsat = 1_000_000,
+                    FeeEarnedMsat = 5_000,
+                    NextNodeId = "03" + new string('4', 64),
+                    CreatedAtUnixSeconds = 1_790_812_800
+                }
+            ]
+        };
+
+        // Act
+        new ListForwardsPrinter(output).Print(response);
+
+        // Assert
+        var text = output.ToString().ReplaceLineEndings("\n");
+        Assert.Contains("Trampoline relays:\n", text);
+        Assert.Contains("  Kind:        trampoline   Status: fulfilled\n", text);
+        Assert.Contains("  In:          2 part(s), 1010000 of 1010000 msat  on 800000x12x0\n", text);
+        Assert.Contains("  Out:         1000000 msat to 03" + new string('4', 64) + "\n", text);
+        Assert.Contains("  Fee:         5000 msat   Hash: aaaaaaaaaaaaaaaa…\n", text);
+    }
 }

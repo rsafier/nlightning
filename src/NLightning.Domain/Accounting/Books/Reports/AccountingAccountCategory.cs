@@ -18,11 +18,12 @@ public enum AccountingAccountCategory
 /// </summary>
 public static class AccountingAccountCategories
 {
-    /// <summary>The fee expense accounts: the route fees of our payments and the on-chain fees by purpose.</summary>
+    /// <summary>The fee expense accounts: the route fees of our payments, the liquidity fees we paid (NL-850) and the
+    /// on-chain fees by purpose.</summary>
     public static IReadOnlyList<AccountRole> FeeAccounts { get; } =
     [
-        AccountRole.RoutingFees, AccountRole.FeeFunding, AccountRole.FeeSplice, AccountRole.FeeClose,
-        AccountRole.FeeCommitment, AccountRole.FeeSweep, AccountRole.FeeCpfp, AccountRole.FeeWithdraw
+        AccountRole.RoutingFees, AccountRole.LiquidityFees, AccountRole.FeeFunding, AccountRole.FeeSplice,
+        AccountRole.FeeClose, AccountRole.FeeCommitment, AccountRole.FeeSweep, AccountRole.FeeCpfp, AccountRole.FeeWithdraw
     ];
 
     /// <summary>

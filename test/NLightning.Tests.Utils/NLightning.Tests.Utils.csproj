@@ -29,10 +29,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Docker.DotNet" Version="3.125.15"/>
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="..\..\src\NLightning.Domain\NLightning.Domain.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Bitcoin\NLightning.Infrastructure.Bitcoin.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure\NLightning.Infrastructure.csproj"/>

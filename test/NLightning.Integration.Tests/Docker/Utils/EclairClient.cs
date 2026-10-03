@@ -12,17 +12,26 @@ namespace NLightning.Integration.Tests.Docker.Utils;
 public sealed class EclairClient : IDisposable
 {
     private readonly HttpClient _http;
+    private Uri _baseAddress;
 
-    public EclairClient(int apiPort, string password)
+    /// <summary>Eclair's API at <paramref name="baseAddress"/> (the pod's address).</summary>
+    public EclairClient(Uri baseAddress, string password)
     {
-        _http = new HttpClient
-        {
-            BaseAddress = new Uri($"http://127.0.0.1:{apiPort}/"),
-            Timeout = TimeSpan.FromMinutes(2)
-        };
+        _baseAddress = baseAddress ?? throw new ArgumentNullException(nameof(baseAddress));
+        _http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
         _http.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($":{password}")));
     }
+
+    /// <summary>Where the calls go.</summary>
+    public Uri BaseAddress => Volatile.Read(ref _baseAddress);
+
+    /// <summary>
+    /// Sends the following calls to <paramref name="baseAddress"/>: a restarted Eclair pod has another IP (cluster
+    /// backend); Docker keeps the published port.
+    /// </summary>
+    public void Retarget(Uri baseAddress) =>
+        Volatile.Write(ref _baseAddress, baseAddress ?? throw new ArgumentNullException(nameof(baseAddress)));
 
     /// <summary>
     /// Calls <paramref name="method"/> with <paramref name="args"/> (null values are left out).
@@ -38,7 +47,8 @@ public sealed class EclairClient : IDisposable
                            IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
                            _ => a.Value!.ToString()!
                        }));
-        using var response = await _http.PostAsync(method, new FormUrlEncodedContent(form), cancellationToken);
+        using var content = new FormUrlEncodedContent(form);
+        using var response = await _http.PostAsync(new Uri(BaseAddress, method), content, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
         {

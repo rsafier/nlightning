@@ -3,6 +3,7 @@ namespace NLightning.Domain.Client.Responses;
 using Bitcoin.ValueObjects;
 using Channels.Splicing.Enums;
 using Channels.ValueObjects;
+using LiquidityAds.Models;
 
 /// <summary>
 /// The outcome of <c>splicein</c>/<c>spliceout</c> (<c>ClientCommand.SpliceIn</c>/<c>SpliceOut</c>, splicing plan
@@ -34,4 +35,7 @@ public sealed class SpliceClientResponse
     /// <see cref="SpliceNegotiationState.CommitmentSigned"/> names itself here and says it completes on the reconnection.
     /// </summary>
     public string? Note { get; init; }
+
+    /// <summary>The liquidity bought with the splice (liquidity ads, NL-850), or null.</summary>
+    public LiquidityPurchaseModel? Purchase { get; init; }
 }

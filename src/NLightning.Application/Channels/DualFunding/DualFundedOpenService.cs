@@ -14,12 +14,14 @@ using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Channels.Closing;
 using Domain.Channels.DualFunding;
 using Domain.Channels.DualFunding.Interfaces;
 using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Policies;
 using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Validators;
@@ -29,6 +31,9 @@ using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
+using Domain.LiquidityAds;
+using Domain.LiquidityAds.Enums;
+using Domain.LiquidityAds.Models;
 using Domain.Money;
 using Domain.Node.Constants;
 using Domain.Node.Events;
@@ -52,6 +57,7 @@ using InteractiveTx;
 using InteractiveTx.Interfaces;
 using InteractiveTx.Models;
 using Interfaces;
+using LiquidityAds;
 
 /// <summary>
 /// Dual-funded (v2) channel opens (BOLT 2 "Channel Establishment v2"; splicing plan wave DF, DF1/DF2) over the
@@ -181,9 +187,41 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                : request.IsPublic
                                    ? FeatureSupport.Optional
                                    : FeatureSupport.Compulsory;
+
+        // Liquidity ads (NL-850): the request goes out with open_channel2; the seller contributes at least the amount,
+        // so the fee is known now (min(requested, contributed) is the requested amount) and checked before anything is
+        // sent: our limit, and our share must still pay it and the first commitment's fee
+        DualFundLiquidityRequest? liquidityRequest = null;
+        if (request.Liquidity is { } liquidity)
+        {
+            var liquidityAds = GetLiquidityAds()
+                            ?? throw new InvalidOperationException("Liquidity ads are not available on this node");
+            var requestFunding = liquidityAds.CreateRequest(request.PeerNodeId, liquidity, fundingFeerate, true);
+            var fees = LiquidityAdsRules.ComputeFees(requestFunding.Rate, fundingFeerate, requestFunding.RequestedSat,
+                                                     requestFunding.RequestedSat, true);
+            if ((liquidity.MaxFeeSat ?? liquidityAds.Options.MaxFeeSat) is { } maxFee && fees.TotalSat > maxFee)
+                throw new InvalidOperationException(
+                    $"The liquidity fee of {fees.TotalSat} sat ({fees.MiningFeeSat} mining + {fees.ServiceFeeSat} "
+                  + $"service) is above the limit of {maxFee} sat");
+            if (DualFundLiquidity.GetBalanceViolation(request.LocalFundingAmount,
+                                                      LightningMoney.Satoshis(requestFunding.RequestedSat),
+                                                      checked((long)fees.TotalMsat), true,
+                                                      CommitmentFeeCalculator.FunderCost(commitmentFeerate,
+                                                          features.OptionAnchors > FeatureSupport.No, 0))
+                is { } violation)
+                throw new InvalidOperationException($"Cannot buy {requestFunding.RequestedSat} sat: {violation}");
+
+            liquidityRequest = new DualFundLiquidityRequest(requestFunding, liquidity.MaxFeeSat, fundingFeerate);
+        }
+
+        // Our in-flight limit is announced now and fixed for the channel's lifetime (BOLT 2): the accepter's share is
+        // not known yet, so the capacity counts ours and the liquidity we buy (the seller contributes at least that);
+        // a channel that can be spliced announces no cap (NL-880, NL-881)
+        var inFlightCapacity = request.LocalFundingAmount
+                             + LightningMoney.Satoshis(liquidityRequest?.Request.RequestedSat ?? 0UL);
         var localParams = CreateLocalParams(
             DualFundingRules.GetChannelReserve(request.LocalFundingAmount, _nodeOptions.DustLimitAmount),
-            request.LocalFundingAmount);
+            GetAnnouncedMaxHtlcValueInFlight(inFlightCapacity, features));
         var channelParams = new ChannelParams(localParams, ChannelParty.Unknown,
                                               LightningMoney.Satoshis(commitmentFeerate), _nodeOptions.MinimumDepth,
                                               optionAnchors, useScidAlias)
@@ -210,6 +248,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             FundingFeeratePerKw = fundingFeerate,
             Locktime = GetLocktime(),
             LocalRequiresConfirmedInputs = request.RequireConfirmedInputs,
+            LiquidityRequest = liquidityRequest,
             Pending = new DualFundNegotiation.PendingOpen(keyIndex, basepoints, firstPoint, localParams, channelType,
                                                           commitmentFeerate, request.IsPublic, optionAnchors,
                                                           useScidAlias),
@@ -226,7 +265,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             basepoints.PaymentBasepoint, basepoints.DelayedPaymentBasepoint, basepoints.HtlcBasepoint, firstPoint,
             secondPoint,
             new ChannelFlags(request.IsPublic ? ChannelFlag.AnnounceChannel : ChannelFlag.None),
-            new ChannelTypeTlv(channelType), new UpfrontShutdownScriptTlv(Array.Empty<byte>()), request.RequireConfirmedInputs);
+            new ChannelTypeTlv(channelType), new UpfrontShutdownScriptTlv(Array.Empty<byte>()), request.RequireConfirmedInputs,
+            liquidityRequest?.Request);
 
         // The peer's error for the open (on the temporary or the v2 id) ends it. Warnings arrive through the same event
         // and cannot be told apart: both only end an open we have not signed yet (EndFailedOpenAsync)
@@ -238,8 +278,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                     new DualFundedOpenResult(negotiation.ChannelId, null, $"peer error: {args.Message}"));
         }
 
-        if (peerService is not null)
-            peerService.OnAttentionMessageReceived += OnAttention;
+        peerService?.OnAttentionMessageReceived += OnAttention;
         try
         {
             var channelManager = _serviceProvider.GetRequiredService<IChannelManager>();
@@ -257,8 +296,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         }
         finally
         {
-            if (peerService is not null)
-                peerService.OnAttentionMessageReceived -= OnAttention;
+            peerService?.OnAttentionMessageReceived -= OnAttention;
         }
     }
 
@@ -282,6 +320,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
              || !message.ChannelTypeTlv.Features.GetWireBytes().AsSpan().SequenceEqual(pending.ChannelType))
                 throw new ChannelErrorException("accept_channel2 did not echo our channel_type", temporaryId,
                                                 "channel_type must be the one of open_channel2");
+            CheckUpfrontShutdownScript(message.UpfrontShutdownScriptTlv, negotiatedFeatures, temporaryId);
 
             negotiation.RemoteShare = payload.FundingAmount;
             negotiation.RemoteRequiresConfirmedInputs = message.RequireConfirmedInputsTlv is not null;
@@ -304,7 +343,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             }, out _);
             _channelOpenValidator.CheckMaxHtlcValueInFlight(total, payload.MaxHtlcValueInFlightAmount);
 
-            var localParams = CreateLocalParams(reserve, total);
+            // Our in-flight limit stays the one open_channel2 announced (NL-881): nothing can change it on the wire
+            var localParams = CreateLocalParams(reserve, pending.LocalParams.MaxHtlcValueInFlight);
             var channelParams = new ChannelParams(localParams, remoteParams,
                                                   LightningMoney.Satoshis(pending.CommitmentFeeratePerKw),
                                                   payload.MinimumDepth, pending.OptionAnchors, pending.UseScidAlias)
@@ -319,10 +359,35 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                                   payload.FirstPerCommitmentCompactPoint);
             var channelId = ChannelIdV2.Derive(_sha256, pending.Basepoints.RevocationBasepoint,
                                                payload.RevocationCompactBasepoint);
+
+            // Liquidity ads (NL-850): the seller's answer to our request, checked before anything is funded (a missing
+            // or invalid answer fails the open with an error, as Eclair's validateRemoteFunding does)
+            if (negotiation.LiquidityRequest is { } liquidityRequest)
+            {
+                negotiation.AttemptLiquidity = CheckWillFund(
+                    negotiation, liquidityRequest, message.ProvideFundingTlv?.WillFund,
+                    GetFundingScript(negotiation.Total, pending.Basepoints.FundingPubKey,
+                                     payload.FundingCompactPubKey), negotiation.LocalShare, payload.FundingAmount,
+                    pending.CommitmentFeeratePerKw, pending.OptionAnchors) switch
+                {
+                    { Refusal: { } refusal } => throw new ChannelErrorException(
+                                                    $"Refusing the liquidity of {peerPubKey}: {refusal}", temporaryId,
+                                                    $"invalid liquidity ads answer: {refusal}"),
+                    { Liquidity: var bought } => bought
+                };
+                negotiation.LiquidityRequest = null;
+            }
+            else if (message.ProvideFundingTlv is not null)
+            {
+                _logger.LogWarning("accept_channel2 of {TemporaryChannelId} carries provide_funding we did not ask for; "
+                                 + "ignoring it", temporaryId);
+            }
+
             var channel = CreateChannel(channelParams, channelId,
                                         CreateLocalKeySet(pending.KeyIndex, pending.Basepoints,
                                                           pending.FirstPerCommitmentPoint), remoteKeySet, peerPubKey,
-                                        true, negotiation.LocalShare, negotiation.RemoteShare);
+                                        true, negotiation.LocalShare, negotiation.RemoteShare,
+                                        negotiation.AttemptLiquidity?.LocalFeeMsat ?? 0);
             channel.Label = negotiation.Channel?.Label;
             channel.Tags = negotiation.Channel?.Tags;
             if (!_negotiations.TryAdd(channelId, negotiation))
@@ -380,8 +445,24 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     /// </summary>
     /// <exception cref="InvalidOperationException">As the other overload, or the new contribution is refused
     /// (<see cref="GetRbfShareViolation"/>) or our inputs cannot pay it.</exception>
+    public Task<DualFundedOpenResult> BumpAsync(ChannelId channelId, uint feeratePerKw,
+                                                LightningMoney? localContribution,
+                                                CancellationToken cancellationToken = default) =>
+        BumpAsync(channelId, feeratePerKw, localContribution, null, cancellationToken);
+
+    /// <summary>
+    /// <see cref="BumpAsync(ChannelId, uint, LightningMoney?, CancellationToken)"/> buying <paramref name="liquidity"/>
+    /// from the peer with the new attempt (liquidity ads, NL-850): our <c>tx_init_rbf</c> carries
+    /// <c>request_funding</c>, the peer's <c>tx_ack_rbf</c> must answer it (<c>tx_abort</c> otherwise) and its fee, at
+    /// the new feerate, moves from our balance to the peer's. Null repeats the purchase of the attempt it replaces (its
+    /// amount and rate, re-quoted at the new feerate; BOLT PR #1153 fails an RBF that drops a purchase made before),
+    /// or buys nothing when that attempt bought nothing.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">As the other overloads, the peer's rates cannot sell it, the fee is
+    /// above the limit, or we sold liquidity in the attempt it replaces (only the buyer can keep its purchase in an
+    /// RBF).</exception>
     public async Task<DualFundedOpenResult> BumpAsync(ChannelId channelId, uint feeratePerKw,
-                                                      LightningMoney? localContribution,
+                                                      LightningMoney? localContribution, LiquidityRequest? liquidity,
                                                       CancellationToken cancellationToken = default)
     {
         TaskCompletionSource<DualFundedOpenResult> completion;
@@ -411,19 +492,25 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             if (GetRbfShareViolation(negotiation, share, negotiation.RemoteShare.Satoshi) is { } violation)
                 throw new InvalidOperationException($"Channel {channelId}: {violation}");
 
+            var liquidityRequest = CreateRbfLiquidityRequest(negotiation, channel, share, feeratePerKw, liquidity);
+
             var contribution = await CreateInitiatorRbfContributionAsync(negotiation, channel, previous, share,
                                                                          feeratePerKw, cancellationToken);
             var fresh = previous.Inputs.Count == 0 && contribution.ReservationId is not null ? contribution : null;
             var terms = CreateTerms(negotiation, true, feeratePerKw, GetLocktime(), contribution: contribution);
             ChangeSharesForRbf(negotiation, share, negotiation.RemoteShare);
+            negotiation.AttemptLiquidity = null;
+            negotiation.LiquidityRequest = liquidityRequest;
             IReadOnlyList<IChannelMessage> messages;
             try
             {
-                messages = await GetDriver().RequestRbfAsync(terms, share, cancellationToken);
+                messages = await GetDriver().RequestRbfAsync(terms, share, cancellationToken,
+                                                             liquidityRequest?.Request);
             }
             catch
             {
                 negotiation.RestoreShares();
+                negotiation.LiquidityRequest = null;
                 if (fresh is not null)
                     await ReleaseContributionAsync(fresh);
                 throw;
@@ -447,6 +534,52 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         {
             return new DualFundedOpenResult(channelId, null, "the RBF timed out");
         }
+    }
+
+    /// <summary>
+    /// The <c>request_funding</c> of our <c>tx_init_rbf</c> (NL-850): <paramref name="liquidity"/> at the peer's rate, or
+    /// the purchase of the attempt it replaces again (its amount, rate and fee limit, the fee re-quoted at the new
+    /// feerate), or
+    /// none when that attempt bought nothing. The fee, known now (the seller contributes at least the amount), must be
+    /// within the limit and leave our share able to pay it (and the opener the first commitment's fee).
+    /// </summary>
+    private DualFundLiquidityRequest? CreateRbfLiquidityRequest(DualFundNegotiation negotiation, ChannelModel channel,
+                                                                LightningMoney share, uint feeratePerKw,
+                                                                LiquidityRequest? liquidity)
+    {
+        var previous = negotiation.LatestSignedPurchase;
+        if (liquidity is null && previous is null)
+            return null;
+        if (previous is { Role: LiquidityPurchaseRole.Seller })
+            throw new InvalidOperationException(
+                $"Channel {channel.ChannelId}: we sold liquidity in the attempt to replace; only the buyer can bump it "
+              + "(an RBF must carry its request_funding again)");
+
+        var liquidityAds = GetLiquidityAds()
+                        ?? throw new InvalidOperationException("Liquidity ads are not available on this node");
+        var request = liquidity is not null
+                          ? liquidityAds.CreateRequest(negotiation.Peer, liquidity, feeratePerKw, true)
+                          : new RequestFunding(previous!.RequestedSat, previous.Rate,
+                                               LiquidityPaymentDetails.FromChannelBalance);
+        // A repeated purchase keeps the buyer's own fee limit of the attempt it replaces (NL-871): its fee grows with
+        // the new feerate, and a bump without a new request names no limit of its own
+        var maxFee = liquidity is not null ? liquidity.MaxFeeSat : previous!.MaxFeeSat;
+        var fees = LiquidityAdsRules.ComputeFees(request.Rate, feeratePerKw, request.RequestedSat,
+                                                 request.RequestedSat, true);
+        if ((maxFee ?? liquidityAds.Options.MaxFeeSat) is { } limit && fees.TotalSat > limit)
+            throw new InvalidOperationException(
+                $"The liquidity fee of {fees.TotalSat} sat at {feeratePerKw} sat/kw is above the limit of {limit} sat");
+
+        var channelParams = channel.ChannelParams;
+        if (DualFundLiquidity.GetBalanceViolation(share, LightningMoney.Satoshis(request.RequestedSat),
+                                                  checked((long)fees.TotalMsat), negotiation.IsOpener,
+                                                  CommitmentFeeCalculator.FunderCost(
+                                                      (ulong)channelParams.FeeRateAmountPerKw.Satoshi,
+                                                      channelParams.OptionAnchorOutputs, 0))
+            is { } violation)
+            throw new InvalidOperationException($"Cannot buy {request.RequestedSat} sat: {violation}");
+
+        return new DualFundLiquidityRequest(request, maxFee, feeratePerKw);
     }
 
     /// <summary>
@@ -509,7 +642,11 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     public LightningMoney GetAcceptContribution(OpenChannel2Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        return GetAcceptContribution(message.Payload.FundingAmount);
+
+        // Liquidity ads (NL-850): a seller contributes exactly the requested amount (checked in AcceptAsync)
+        return message.RequestFundingTlv is { Request: var request }
+                   ? LightningMoney.Satoshis(request.RequestedSat)
+                   : GetAcceptContribution(message.Payload.FundingAmount);
     }
 
     private LightningMoney GetAcceptContribution(LightningMoney openerContribution)
@@ -529,12 +666,52 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(negotiatedFeatures);
         ArgumentNullException.ThrowIfNull(localContribution);
-        var payload = message.Payload;
-        var temporaryId = payload.ChannelId;
-
+        var temporaryId = message.Payload.ChannelId;
         if (negotiatedFeatures.DualFund == FeatureSupport.No)
             throw new ChannelErrorException("open_channel2 without option_dual_fund", temporaryId,
                                             "option_dual_fund is not negotiated");
+
+        // Liquidity ads (NL-850): a request_funding makes us the seller of exactly the requested amount, at one of our
+        // rates and within the griefing caps (D-L5); a refused request is an error for the open (Eclair's behavior)
+        LiquidityAdsService.LiquiditySale? sale = null;
+        if (message.RequestFundingTlv is { Request: var requestFunding })
+        {
+            var liquidityAds = GetLiquidityAds()
+                            ?? throw new ChannelErrorException("open_channel2 asks for liquidity we do not sell",
+                                                               temporaryId, "we do not sell liquidity");
+            if (liquidityAds.TryStartSale(peerPubKey, requestFunding, out sale) is { } refusal)
+            {
+                _logger.LogInformation("Refusing the liquidity request of {Peer} in open_channel2 {TemporaryChannelId}: "
+                                     + "{Reason}", peerPubKey, temporaryId, refusal);
+                throw new ChannelErrorException($"Refusing the liquidity request: {refusal}", temporaryId, refusal);
+            }
+
+            localContribution = LightningMoney.Satoshis(requestFunding.RequestedSat);
+        }
+
+        try
+        {
+            return await AcceptCoreAsync(message, negotiatedFeatures, peerPubKey, localContribution, sale,
+                                         cancellationToken);
+        }
+        catch
+        {
+            // The negotiation gives the slot back when it ends; one that never started gives it back here
+            sale?.Dispose();
+            throw;
+        }
+    }
+
+    private async Task<IReadOnlyList<IChannelMessage>> AcceptCoreAsync(OpenChannel2Message message,
+                                                                      FeatureOptions negotiatedFeatures,
+                                                                      CompactPubKey peerPubKey,
+                                                                      LightningMoney localContribution,
+                                                                      LiquidityAdsService.LiquiditySale? sale,
+                                                                      CancellationToken cancellationToken)
+    {
+        var payload = message.Payload;
+        var temporaryId = payload.ChannelId;
+
         if (GetMonitor() is { IsChainProcessingHalted: true })
             throw new ChannelErrorException("Chain processing is halted (NL-216)", temporaryId,
                                             "Not accepting channels right now, try again later");
@@ -557,12 +734,13 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                            (uint)ChannelOpenValidator.MinAcceptableFeeRatePerKw.Satoshi);
         if (violation is not null)
             throw new ChannelErrorException(violation, temporaryId, violation);
+        CheckUpfrontShutdownScript(message.UpfrontShutdownScriptTlv, negotiatedFeatures, temporaryId);
 
         // Keys first: the reserve and the checks need both contributions and our dust limit
         var total = LightningMoney.MilliSatoshis(payload.FundingAmount.MilliSatoshi + localContribution.MilliSatoshi);
         var reserve = DualFundingRules.GetChannelReserve(total, Max(payload.DustLimitAmount,
                                                                     _nodeOptions.DustLimitAmount));
-        var localParams = CreateLocalParams(reserve, total);
+        var localParams = CreateLocalParams(reserve, GetAnnouncedMaxHtlcValueInFlight(total, negotiatedFeatures));
         var remoteParams = new ChannelParty(payload.DustLimitAmount, reserve, payload.HtlcMinimumAmount,
                                             payload.MaxAcceptedHtlcs, payload.MaxHtlcValueInFlightAmount,
                                             payload.ToSelfDelay, NonEmpty(message.UpfrontShutdownScriptTlv));
@@ -610,6 +788,24 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                               payload.DelayedPaymentBasepoint, payload.HtlcBasepoint,
                                                               payload.FirstPerCommitmentPoint);
 
+        // The fee of a sale moves from the buyer's (the opener's) balance to ours: its share must pay it and the first
+        // commitment's fee after it
+        LiquidityFees? saleFees = null;
+        if (sale is not null)
+        {
+            var request = sale.Request;
+            saleFees = LiquidityAdsRules.ComputeFees(request.Rate, payload.FundingFeeRatePerKw, request.RequestedSat,
+                                                     request.RequestedSat, true);
+            if (DualFundLiquidity.GetBalanceViolation(localContribution, payload.FundingAmount,
+                                                      -checked((long)saleFees.Value.TotalMsat), false,
+                                                      CommitmentFeeCalculator.FunderCost(
+                                                          payload.CommitmentFeeRatePerKw, optionAnchors, 0))
+                is { } liquidityViolation)
+                throw new ChannelErrorException($"Refusing the liquidity request: {liquidityViolation}", temporaryId,
+                                                liquidityViolation);
+        }
+
+        var saleFeeMsat = saleFees is { } feesOfSale ? -checked((long)feesOfSale.TotalMsat) : 0;
         var negotiation = new DualFundNegotiation(channelId, temporaryId, peerPubKey, false)
         {
             LocalShare = localContribution,
@@ -620,8 +816,20 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         };
         negotiation.Host = new DualFundHost(this, negotiation);
         var channel = CreateChannel(channelParams, channelId, CreateLocalKeySet(keyIndex, basepoints, firstPoint),
-                                    remoteKeySet, peerPubKey, false, localContribution, payload.FundingAmount);
+                                    remoteKeySet, peerPubKey, false, localContribution, payload.FundingAmount,
+                                    saleFeeMsat);
         negotiation.Channel = channel;
+        if (sale is not null)
+        {
+            // Our will_fund signs the rate and the new funding output's script with the node key
+            var willFund = GetLiquidityAds()!.CreateWillFund(sale.Request.Rate, GetFundingScript(channel));
+            negotiation.AttemptLiquidity = new DualFundLiquidity(LiquidityPurchaseRole.Seller, sale.Request, willFund,
+                                                                 saleFees!.Value, sale.Request.RequestedSat);
+            negotiation.Sale = sale;
+            _logger.LogInformation("Selling {Amount} sat of liquidity to {Peer} in open {TemporaryChannelId} for {Fee} "
+                                 + "sat", sale.Request.RequestedSat, peerPubKey, temporaryId,
+                                   saleFees.Value.TotalSat);
+        }
 
         // NL-379: as for a v1 open, an anchors channel we cannot back with the anchors reserve is refused
         var anchorReserve = _serviceProvider.GetService<IAnchorReserveService>();
@@ -666,7 +874,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                + negotiation.LocalShare.MilliSatoshi);
             reserve = DualFundingRules.GetChannelReserve(total, Max(payload.DustLimitAmount,
                                                                     _nodeOptions.DustLimitAmount));
-            localParams = CreateLocalParams(reserve, total);
+            localParams = CreateLocalParams(reserve, GetAnnouncedMaxHtlcValueInFlight(total, negotiatedFeatures));
             remoteParams = new ChannelParty(payload.DustLimitAmount, reserve, payload.HtlcMinimumAmount,
                                             payload.MaxAcceptedHtlcs, payload.MaxHtlcValueInFlightAmount,
                                             payload.ToSelfDelay, NonEmpty(message.UpfrontShutdownScriptTlv));
@@ -677,7 +885,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                 AnnounceChannel = payload.ChannelFlags.AnnounceChannel
             };
             channel = CreateChannel(channelParams, channelId, CreateLocalKeySet(keyIndex, basepoints, firstPoint),
-                                    remoteKeySet, peerPubKey, false, negotiation.LocalShare, payload.FundingAmount);
+                                    remoteKeySet, peerPubKey, false, negotiation.LocalShare, payload.FundingAmount,
+                                    saleFeeMsat);
             negotiation.Channel = channel;
         }
 
@@ -694,7 +903,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                         basepoints.RevocationBasepoint, basepoints.PaymentBasepoint,
                                                         basepoints.DelayedPaymentBasepoint,
                                                         basepoints.HtlcBasepoint, firstPoint, secondPoint,
-                                                        message.ChannelTypeTlv, new UpfrontShutdownScriptTlv(Array.Empty<byte>()))
+                                                        message.ChannelTypeTlv, new UpfrontShutdownScriptTlv(Array.Empty<byte>()),
+                                                        willFund: negotiation.AttemptLiquidity?.WillFund)
         ];
     }
 
@@ -759,6 +969,15 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                     negotiation.Locktime, request), negotiation.Host!,
                                         cancellationToken);
                 return;
+            }
+            catch (InsufficientFundsException e) when (negotiation.AttemptLiquidity is not null)
+            {
+                // A sale contributes exactly what the buyer asked for or nothing at all (NL-850)
+                _logger.LogWarning("Cannot fund the {Amount} of liquidity sold in the open of {ChannelId}: {Reason}",
+                                   negotiation.LocalShare, negotiation.ChannelId, e.Message);
+                throw new ChannelErrorException($"Cannot fund the requested liquidity: {e.Message}",
+                                                negotiation.TemporaryChannelId,
+                                                "cannot fund the requested liquidity right now");
             }
             catch (InsufficientFundsException e)
             {
@@ -853,6 +1072,11 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         // it, whether or not its own tx_signatures ever reach us (BOLT 2: "MUST remember the channel")
         await StageFundingWatchesAsync(negotiation, channel, transaction.TxId, index, unitOfWork);
 
+        // Liquidity ads (NL-850): the attempt's purchase is stored with it (its fee moved the balances just signed, and
+        // a restart or the confirmation of this attempt rebuilds them from it)
+        if (negotiation.AttemptLiquidity is { } liquidity)
+            RecordPurchase(negotiation, channel, transaction.TxId, liquidity, unitOfWork);
+
         negotiation.PendingTxId = transaction.TxId;
         negotiation.CommitmentSignedReceived = false;
         negotiation.LastContribution = session.LocalContribution;
@@ -876,6 +1100,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     {
         var channel = negotiation.Channel!;
         var txId = completion.Transaction.TxId;
+
+        // A sale's negotiation is over: its slot goes back (D-L5)
+        negotiation.EndSale();
+        negotiation.AttemptLiquidity = null;
         if (channel.State != ChannelState.V1FundingSigned)
         {
             // Another attempt confirmed while this one was being signed (we had sent our tx_signatures, so it could
@@ -931,7 +1159,11 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     /// </summary>
     internal async Task OnAbortedAsync(DualFundNegotiation negotiation, string reason)
     {
+        var abandonedTxId = negotiation.PendingTxId;
         negotiation.PendingTxId = null;
+        negotiation.EndSale();
+        negotiation.LiquidityRequest = null;
+        negotiation.AttemptLiquidity = null;
         if (negotiation.FreshRbfContribution is { } fresh)
         {
             // Our tx_init_rbf ended (before or after its attempt existed): the reservation it took goes back; a stored,
@@ -944,6 +1176,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         {
             negotiation.RestoreShares();
             await RestoreLastSignedFundingAsync(negotiation, reason);
+            if (abandonedTxId is { } txId)
+                await ReplaceAbandonedPurchaseAsync(negotiation, txId);
             negotiation.BumpCompletion?.TrySetResult(new DualFundedOpenResult(negotiation.ChannelId, null, reason));
             negotiation.BumpCompletion = null;
             return;
@@ -953,6 +1187,35 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                negotiation.ChannelId, reason);
         await ForgetUnfundedLockedAsync(negotiation);
         negotiation.OpenCompletion?.TrySetResult(new DualFundedOpenResult(negotiation.ChannelId, null, reason));
+    }
+
+    /// <summary>
+    /// The purchase stored with an RBF attempt that ended before both <c>tx_signatures</c> (liquidity ads, NL-867):
+    /// nothing can confirm the attempt any more, so its row, still Pending, is replaced at once (no seller lease guard
+    /// or griefing-cap slot held for it until the funding's depth), in a save of its own. Logged, never thrown.
+    /// </summary>
+    private async Task ReplaceAbandonedPurchaseAsync(DualFundNegotiation negotiation, TxId abandonedTxId)
+    {
+        if (!negotiation.Purchases.TryGetValue(abandonedTxId, out var purchase)
+         || purchase is not { Id: > 0, Status: LiquidityPurchaseStatus.Pending })
+            return;
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            purchase.MarkReplaced();
+            unitOfWork.LiquidityPurchaseDbRepository.Update(purchase);
+            await unitOfWork.SaveChangesAsync();
+            negotiation.Purchases.Remove(abandonedTxId);
+            _logger.LogInformation("Liquidity {Role} of channel {ChannelId} in the abandoned RBF attempt {TxId} replaced",
+                                   purchase.Role, negotiation.ChannelId, abandonedTxId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not replace the liquidity purchase of the abandoned RBF attempt {TxId} of "
+                              + "channel {ChannelId}", abandonedTxId, negotiation.ChannelId);
+        }
     }
 
     /// <summary>
@@ -1014,15 +1277,122 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
          || _deferredChannelReady.ContainsKey(negotiation.ChannelId))
             return "channel_ready was already sent or received";
 
-        using var scope = _serviceProvider.CreateScope();
-        var watches = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().WatchedTransactionDbRepository;
-        foreach (var txId in negotiation.CompletedTxIds)
+        return await GetConfirmedAttemptAsync(negotiation, null) is { } confirmed
+                   ? $"the funding transaction {confirmed} already has a confirmation"
+                   : null;
+    }
+
+    /// <summary>
+    /// A fully signed attempt of the open that has a confirmation (its funding watch has a first-seen height), or null.
+    /// From then on no other attempt can confirm: they all double-spend it (IT-RBF-01).
+    /// </summary>
+    private async Task<TxId?> GetConfirmedAttemptAsync(DualFundNegotiation negotiation, IUnitOfWork? unitOfWork)
+    {
+        if (negotiation.CompletedTxIds.Count == 0)
+            return null;
+
+        using var scope = unitOfWork is null ? _serviceProvider.CreateScope() : null;
+        var watches = (unitOfWork ?? scope!.ServiceProvider.GetRequiredService<IUnitOfWork>())
+           .WatchedTransactionDbRepository;
+        foreach (var txId in negotiation.CompletedTxIds.ToList())
         {
             if (await watches.GetByTransactionIdAsync(txId) is { FirstSeenAtHeight: not null })
-                return $"the funding transaction {txId} already has a confirmation";
+                return txId;
         }
 
         return null;
+    }
+
+    /// <summary>The reason an RBF attempt is abandoned once an earlier attempt confirmed (NL-867).</summary>
+    private static string EarlierAttemptConfirmed(TxId confirmed) => $"an earlier attempt {confirmed} confirmed";
+
+    /// <summary>
+    /// The host's check before our <c>tx_signatures</c> (NL-867): an RBF attempt whose earlier attempt confirmed can
+    /// never confirm, so it is abandoned (<c>tx_abort</c>) instead of signed. Null for a first attempt, or when no
+    /// earlier attempt has a confirmation.
+    /// </summary>
+    internal async Task<string?> GetTxSignaturesRefusalAsync(DualFundNegotiation negotiation) =>
+        await GetConfirmedAttemptAsync(negotiation, null) is { } confirmed ? EarlierAttemptConfirmed(confirmed) : null;
+
+    /// <summary>
+    /// A block was processed (called by <c>ChannelManager</c> for every block, NL-867): every open with an RBF attempt
+    /// running (negotiating, or our <c>tx_init_rbf</c> waiting for its answer) whose earlier attempt now has a
+    /// confirmation abandons it at once (BOLT 2: "If the previous transaction confirms in the middle of an RBF attempt,
+    /// the attempt MUST be abandoned"), each under its channel's lock and off the caller's thread, not only at the
+    /// funding depth (<see cref="OnFundingConfirmedAsync"/>): our <c>tx_abort</c> goes out unless our
+    /// <c>tx_signatures</c> did (IT-ABT-01), the reservation and the sale slot go back, the attempt's purchase is
+    /// replaced and a waiting <c>bumpopen</c> returns.
+    /// </summary>
+    public void ScheduleConfirmedAttemptRound()
+    {
+        if (Volatile.Read(ref _disposed) != 0 || _serviceProvider.GetService<IInteractiveTxDriver>() is not { } driver)
+            return;
+
+        foreach (var negotiation in _negotiations.Values.Distinct().ToList())
+        {
+            if (negotiation.CompletedTxIds.Count == 0
+             || driver.GetInfo(negotiation.ChannelId) is not { } info
+             || info is { SessionId: null, RbfRequested: false })
+                continue;
+
+            RunAfterLock(negotiation.ChannelId, async () =>
+            {
+                if (_negotiations.TryGetValue(negotiation.ChannelId, out var current) && current == negotiation)
+                    _serviceProvider.GetService<IChannelMessagePublisher>()
+                                   ?.Publish(negotiation.Peer, await AbandonRbfAttemptLockedAsync(negotiation, null));
+            });
+        }
+    }
+
+    /// <summary>
+    /// <c>channel_reestablish</c> of a dual-funded open (NL-867; called by the reestablish handler under the channel's
+    /// lock, before it plans): an RBF attempt that is not signed and whose earlier attempt confirmed is abandoned now,
+    /// so the peer's <c>next_funding</c> for it is answered with our <c>tx_abort</c> (returned, to go out after our
+    /// <c>channel_reestablish</c>) and never with its <c>commitment_signed</c> again. Empty when nothing was abandoned.
+    /// </summary>
+    public async Task<IReadOnlyList<IChannelMessage>> AbandonRbfAttemptIfConfirmedAsync(ChannelModel channel,
+                                                                                       IUnitOfWork unitOfWork)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(unitOfWork);
+        if (channel is not { Version: ChannelVersion.V2, State: ChannelState.V1FundingSigned }
+         || await GetOrLoadAsync(channel.ChannelId, unitOfWork, CancellationToken.None) is not { } negotiation)
+            return [];
+
+        return await AbandonRbfAttemptLockedAsync(negotiation, unitOfWork);
+    }
+
+    /// <summary>
+    /// Under the channel's lock: the running RBF attempt (or our unanswered <c>tx_init_rbf</c>) is abandoned when an
+    /// earlier attempt confirmed; returns our <c>tx_abort</c> (to publish), empty when nothing was abandoned. After our
+    /// <c>tx_signatures</c> nothing is (IT-ABT-01): the attempt double-spends the confirmed one and never confirms.
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> AbandonRbfAttemptLockedAsync(DualFundNegotiation negotiation,
+                                                                                 IUnitOfWork? unitOfWork)
+    {
+        var driver = _serviceProvider.GetService<IInteractiveTxDriver>();
+        if (driver?.GetInfo(negotiation.ChannelId) is not { } info || info is { SessionId: null, RbfRequested: false }
+         || info.State is InteractiveTxSessionState.TxSignaturesSent or InteractiveTxSessionState.Signed
+         || await GetConfirmedAttemptAsync(negotiation, unitOfWork) is not { } confirmed)
+            return [];
+
+        var reason = EarlierAttemptConfirmed(confirmed);
+        _logger.LogInformation("Abandoning the RBF attempt of channel {ChannelId}: {Reason}", negotiation.ChannelId,
+                               reason);
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var messages = await driver.AbortAsync(negotiation.ChannelId, reason,
+                                                   unitOfWork ?? scope.ServiceProvider.GetRequiredService<IUnitOfWork>());
+            negotiation.RestoreShares();
+            return messages;
+        }
+        catch (InvalidOperationException e)
+        {
+            // Our tx_signatures went out meanwhile (IT-ABT-01)
+            _logger.LogWarning(e, "Could not abandon the RBF attempt of channel {ChannelId}", negotiation.ChannelId);
+            return [];
+        }
     }
 
     /// <summary>
@@ -1047,10 +1417,22 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
         // No attempt runs (the driver checked it): shares a refused attempt took are dropped
         negotiation.RestoreShares();
+        negotiation.AttemptLiquidity = null;
+        negotiation.LiquidityRequest = null;
 
         // funding_output_contribution is an s64 in satoshis (SP1-A); a dual-funded open's share is never negative
         var theirs = message.FundingOutputContributionTlv?.Satoshis ?? 0L;
         var feerate = message.Payload.Feerate;
+
+        // Liquidity ads (NL-850): a request_funding makes us the seller of this attempt (re-validated and re-signed for
+        // every attempt); BOLT PR #1153: an RBF of an attempt with a purchase that drops request_funding MUST fail
+        if (message.RequestFundingTlv is { Request: var requestFunding })
+            return await DecideLiquidityRbfAsync(negotiation, message, requestFunding, theirs);
+        if (negotiation.LatestSignedPurchase is not null)
+            return InteractiveTxRbfDecision.Reject(
+                "InvalidRbfMissingLiquidityPurchase: the attempt to replace bought liquidity and tx_init_rbf does not "
+              + "request it again");
+
         var localShare = negotiation.LocalShare;
         if (localShare.IsZero && theirs >= 0)
             localShare = GetAcceptContribution(LightningMoney.Satoshis(theirs));
@@ -1099,6 +1481,99 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     }
 
     /// <summary>
+    /// A peer's <c>tx_init_rbf</c> that buys liquidity from us (NL-850): checked like the open's request (our rates, the
+    /// griefing caps, the buyer's share paying the fee and, as opener, the first commitment's fee), then our share is
+    /// exactly the requested amount, from the inputs of our earlier contribution (IT-RBF-01) or, when we contributed
+    /// nothing before, from fresh wallet inputs; a sale the wallet cannot fund is refused (<c>tx_abort</c>), never
+    /// accepted without our funds. Our <c>will_fund</c> is signed again over the funding script.
+    /// </summary>
+    private async Task<InteractiveTxRbfDecision> DecideLiquidityRbfAsync(DualFundNegotiation negotiation,
+                                                                         TxInitRbfMessage message,
+                                                                         RequestFunding request, long theirs)
+    {
+        if (GetLiquidityAds() is not { } liquidityAds)
+            return InteractiveTxRbfDecision.Reject("we do not sell liquidity");
+        if (liquidityAds.TryStartSale(negotiation.Peer, request, out var sale) is { } refusal)
+        {
+            _logger.LogInformation("Refusing the liquidity request of {Peer} in the RBF of {ChannelId}: {Reason}",
+                                   negotiation.Peer, negotiation.ChannelId, refusal);
+            return InteractiveTxRbfDecision.Reject($"liquidity ads: {refusal}");
+        }
+
+        try
+        {
+            var channel = negotiation.Channel!;
+            var feerate = message.Payload.Feerate;
+            var localShare = LightningMoney.Satoshis(request.RequestedSat);
+            var remoteShare = LightningMoney.Satoshis(Math.Max(theirs, 0));
+            if (GetRbfShareViolation(negotiation, localShare, theirs) is { } violation)
+                return InteractiveTxRbfDecision.Reject(violation);
+
+            var fees = LiquidityAdsRules.ComputeFees(request.Rate, feerate, request.RequestedSat, request.RequestedSat,
+                                                     true);
+            var channelParams = channel.ChannelParams;
+            if (DualFundLiquidity.GetBalanceViolation(localShare, remoteShare, -checked((long)fees.TotalMsat),
+                                                      negotiation.IsOpener,
+                                                      CommitmentFeeCalculator.FunderCost(
+                                                          (ulong)channelParams.FeeRateAmountPerKw.Satoshi,
+                                                          channelParams.OptionAnchorOutputs, 0))
+                is { } balanceViolation)
+                return InteractiveTxRbfDecision.Reject($"liquidity ads: {balanceViolation}");
+
+            InteractiveTxContribution contribution;
+            if (!negotiation.LocalShare.IsZero)
+            {
+                if (negotiation.LastContribution is not { } previous)
+                    return InteractiveTxRbfDecision.Reject("our previous contribution is unknown");
+
+                // Our earlier inputs again (the new attempt must double-spend the earlier ones), now paying the amount
+                // sold at the new feerate
+                var rebuilt = DualFundingRules.RebuildContributionForFeerate(
+                    previous, localShare, false, GetSharedFunding(negotiation), feerate,
+                    LightningMoney.Satoshis(ChangeDustLimitSat));
+                if (rebuilt is null)
+                    return InteractiveTxRbfDecision.Reject(
+                        $"liquidity ads: our inputs cannot fund {request.RequestedSat} sat at {feerate} sat/kw");
+                contribution = rebuilt;
+            }
+            else
+            {
+                try
+                {
+                    contribution = await GetContributor().ContributeAsync(
+                                       new InteractiveTxContributionRequest(negotiation.ChannelId,
+                                                                            InteractiveTxPurpose.DualFundRbf,
+                                                                            localShare, [], feerate, 0,
+                                                                            message.RequireConfirmedInputsTlv
+                                                                                is not null));
+                }
+                catch (InsufficientFundsException e)
+                {
+                    return InteractiveTxRbfDecision.Reject(
+                        $"liquidity ads: cannot fund the requested {request.RequestedSat} sat: {e.Message}");
+                }
+            }
+
+            ChangeSharesForRbf(negotiation, localShare, remoteShare);
+            var willFund = liquidityAds.CreateWillFund(request.Rate, GetFundingScript(channel));
+            negotiation.AttemptLiquidity = new DualFundLiquidity(LiquidityPurchaseRole.Seller, request, willFund, fees,
+                                                                 request.RequestedSat);
+            negotiation.EndSale();
+            negotiation.Sale = sale;
+            sale = null;
+            var terms = CreateTerms(negotiation, false, feerate, message.Payload.Locktime, contribution: contribution);
+            _logger.LogInformation("Selling {Amount} sat of liquidity to {Peer} in the RBF of {ChannelId} at {Feerate} "
+                                 + "sat/kw for {Fee} sat", request.RequestedSat, negotiation.Peer,
+                                   negotiation.ChannelId, feerate, fees.TotalSat);
+            return InteractiveTxRbfDecision.Accept(terms, negotiation.LocalShare, willFund);
+        }
+        finally
+        {
+            sale?.Dispose();
+        }
+    }
+
+    /// <summary>
     /// The peer's <c>tx_ack_rbf</c> to our <c>tx_init_rbf</c> (driver callback, under the channel's lock, before the
     /// attempt is created): BOLT 2 lets the accepter change its <c>funding_output_contribution</c> (NL-521), so the
     /// attempt's funding output is built from the new value, checked by <see cref="GetRbfShareViolation"/>. Returns the
@@ -1112,6 +1587,33 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             _logger.LogWarning("Refusing the tx_ack_rbf of channel {ChannelId}: {Reason}", negotiation.ChannelId,
                                violation);
             return violation;
+        }
+
+        // Liquidity ads (NL-850): the seller's answer to our request_funding, checked as at the open; a missing or
+        // invalid one is our tx_abort
+        negotiation.AttemptLiquidity = null;
+        if (negotiation.LiquidityRequest is { } liquidityRequest)
+        {
+            negotiation.LiquidityRequest = null;
+            var channel = negotiation.Channel!;
+            var check = CheckWillFund(negotiation, liquidityRequest, message.ProvideFundingTlv?.WillFund,
+                                      GetFundingScript(channel), negotiation.LocalShare,
+                                      LightningMoney.Satoshis(theirs),
+                                      (uint)channel.ChannelParams.FeeRateAmountPerKw.Satoshi,
+                                      channel.ChannelParams.OptionAnchorOutputs);
+            if (check.Refusal is { } refusal)
+            {
+                _logger.LogWarning("Refusing the tx_ack_rbf of channel {ChannelId}: {Reason}", negotiation.ChannelId,
+                                   refusal);
+                return refusal;
+            }
+
+            negotiation.AttemptLiquidity = check.Liquidity;
+        }
+        else if (message.ProvideFundingTlv is not null)
+        {
+            _logger.LogWarning("tx_ack_rbf of channel {ChannelId} carries provide_funding we did not ask for; ignoring "
+                             + "it", negotiation.ChannelId);
         }
 
         ChangeSharesForRbf(negotiation, negotiation.LocalShare, LightningMoney.Satoshis(theirs));
@@ -1241,7 +1743,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             // Stored with the attempt (NL-528): whichever signed attempt confirms can still be closed unilaterally
             var replies = await driver.OnCommitmentSignedReceivedAsync(channelId, unitOfWork, cancellationToken,
                                                                        message.Payload.Signature);
-            negotiation.CommitmentSignedReceived = true;
+
+            // The driver abandons an attempt it cannot sign for (NL-867): nothing is pending then
+            negotiation.CommitmentSignedReceived = negotiation.PendingTxId is not null;
             return replies;
         }
         catch
@@ -1268,15 +1772,18 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             return null;
 
         IReadOnlyList<InteractiveTxSessionModel> sessions;
+        IReadOnlyList<LiquidityPurchaseModel> purchases;
         if (unitOfWork is not null)
         {
             sessions = await unitOfWork.InteractiveTxSessionDbRepository.GetByChannelIdAsync(channelId);
+            purchases = await GetOpenPurchasesAsync(unitOfWork, channelId);
         }
         else
         {
             using var scope = _serviceProvider.CreateScope();
-            sessions = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>()
-                                  .InteractiveTxSessionDbRepository.GetByChannelIdAsync(channelId);
+            var scoped = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            sessions = await scoped.InteractiveTxSessionDbRepository.GetByChannelIdAsync(channelId);
+            purchases = await GetOpenPurchasesAsync(scoped, channelId);
         }
 
         var stored = sessions.Where(s => s.State != InteractiveTxSessionState.Aborted && s.ConstructedTx is not null)
@@ -1286,16 +1793,26 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             return null;
 
         var latest = stored[^1];
+
+        // The channel row's balances are its funding attempt's shares with that attempt's liquidity fee moved (NL-850)
+        var purchasesByTxId = purchases.ToDictionary(p => p.FundingTxId);
+        var (localShare, remoteShare) = DualFundLiquidity.RemoveFee(
+            channel.LocalBalance, channel.RemoteBalance,
+            DualFundLiquidity.GetLocalFeeMsat(channel.FundingOutput?.TransactionId is { } fundingTxId
+                                                  ? purchasesByTxId.GetValueOrDefault(fundingTxId)
+                                                  : null));
         var negotiation = new DualFundNegotiation(channelId, channelId, channel.RemoteNodeId, channel.IsInitiator)
         {
             Channel = channel,
-            LocalShare = LightningMoney.MilliSatoshis(channel.LocalBalance.MilliSatoshi),
-            RemoteShare = LightningMoney.MilliSatoshis(channel.RemoteBalance.MilliSatoshi),
+            LocalShare = localShare,
+            RemoteShare = remoteShare,
             FundingFeeratePerKw = latest.FeeratePerKw,
             Locktime = latest.Locktime,
             LastContribution = latest.LocalContribution,
             LastFeeratePerKw = latest.FeeratePerKw
         };
+        foreach (var purchase in purchasesByTxId)
+            negotiation.Purchases[purchase.Key] = purchase.Value;
         negotiation.Host = new DualFundHost(this, negotiation);
         foreach (var signed in stored.Where(s => s.State == InteractiveTxSessionState.Signed))
             negotiation.CompletedTxIds.Add(signed.ConstructedTx!.TxId);
@@ -1311,8 +1828,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
              && TryGetSignedAttempt(signedSession) is { } signed
              && channel.FundingOutput?.TransactionId != signed.TxId)
             {
+                var (signedLocal, signedRemote) = DualFundLiquidity.ApplyFee(
+                    signed.LocalShare, signed.RemoteShare, negotiation.GetLocalLiquidityFeeMsat(signed.TxId));
                 negotiation.LastSignedFunding = new DualFundNegotiation.SignedFunding(
-                    signed.TxId, signed.Index, signed.Capacity, signed.LocalShare, signed.RemoteShare,
+                    signed.TxId, signed.Index, signed.Capacity, signedLocal, signedRemote,
                     WithCapacity(channel.ChannelParams, signed.Capacity), null, signed.TheirSignature);
                 negotiation.SharesBeforeRbf = (signed.LocalShare, signed.RemoteShare);
             }
@@ -1378,9 +1897,16 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
         var previous = channel.FundingOutput!.TransactionId;
         var funding = channel.FundingOutput;
+
+        // The confirmed attempt's liquidity fee moves its balances as it did when it was signed (NL-850)
+        var purchase = negotiation?.Purchases.GetValueOrDefault(confirmedTxId)
+                    ?? (await GetOpenPurchasesAsync(unitOfWork, channel.ChannelId))
+                      .FirstOrDefault(p => p.FundingTxId == confirmedTxId);
+        var (localBalance, remoteBalance) = DualFundLiquidity.ApplyFee(attempt.LocalShare, attempt.RemoteShare,
+                                                                       DualFundLiquidity.GetLocalFeeMsat(purchase));
         channel.ReplaceUnconfirmedFunding(
             new FundingOutputInfo(attempt.Capacity, funding.LocalFundingPubKey, funding.RemoteFundingPubKey, attempt.TxId,
-                                  attempt.Index), attempt.LocalShare, attempt.RemoteShare,
+                                  attempt.Index), localBalance, remoteBalance,
             WithCapacity(channel.ChannelParams, attempt.Capacity));
         MoveSignerToFunding(channel, confirmedSession);
         channel.UpdateLastReceivedSignature(attempt.TheirSignature);
@@ -1483,6 +2009,28 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                  LightningMoney.MilliSatoshis(capacity.MilliSatoshi - local.MilliSatoshi), signature);
     }
 
+    /// <summary>
+    /// The liquidity purchases of the channel's open and its RBF attempts (NL-850); none when the unit of work has no
+    /// purchase table (a build or test double without it).
+    /// </summary>
+    private static async Task<IReadOnlyList<LiquidityPurchaseModel>> GetOpenPurchasesAsync(IUnitOfWork unitOfWork,
+                                                                                          ChannelId channelId)
+    {
+        try
+        {
+            if (unitOfWork.LiquidityPurchaseDbRepository is not { } repository)
+                return [];
+
+            var purchases = await repository.GetByChannelIdAsync(channelId) ?? [];
+            return purchases.Where(p => p.Kind is LiquidityPurchaseKind.ChannelOpen or LiquidityPurchaseKind.OpenRbf)
+                            .ToList();
+        }
+        catch (NotSupportedException)
+        {
+            return [];
+        }
+    }
+
     /// <summary>A fully signed attempt of the open (see <see cref="TryGetSignedAttempt"/>).</summary>
     private sealed record SignedAttempt(
         TxId TxId,
@@ -1580,20 +2128,32 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     /// The values we announce. v2 has no reserve field: the reserve is fixed from both contributions
     /// (<see cref="DualFundingRules.GetChannelReserve"/>), set once they are known.
     /// </summary>
-    private ChannelParty CreateLocalParams(LightningMoney reserve, LightningMoney inFlightBase) =>
+    private ChannelParty CreateLocalParams(LightningMoney reserve, LightningMoney maxHtlcValueInFlight) =>
         new(_nodeOptions.DustLimitAmount, reserve, _nodeOptions.HtlcMinimumAmount, _nodeOptions.MaxAcceptedHtlcs,
-            LightningMoney.Satoshis(_nodeOptions.AllowUpToPercentageOfChannelFundsInFlight * inFlightBase.Satoshi
-                                  / 100M),
-            _nodeOptions.ToSelfDelay);
+            maxHtlcValueInFlight, _nodeOptions.ToSelfDelay);
+
+    /// <summary>
+    /// The <c>max_htlc_value_in_flight_msat</c> we announce for a channel of <paramref name="capacity"/> (at the open):
+    /// fixed for the channel's lifetime, so no cap when <c>option_splice</c> was negotiated (NL-880,
+    /// <see cref="MaxHtlcValueInFlightRules"/>).
+    /// </summary>
+    private LightningMoney GetAnnouncedMaxHtlcValueInFlight(LightningMoney capacity, FeatureOptions features) =>
+        MaxHtlcValueInFlightRules.GetAnnounced(_nodeOptions, capacity, features.OptionSplice > FeatureSupport.No);
 
     private static ChannelKeySetModel CreateLocalKeySet(uint keyIndex, ChannelBasepoints basepoints,
                                                         CompactPubKey firstPoint) =>
         new(keyIndex, basepoints.FundingPubKey, basepoints.RevocationBasepoint, basepoints.PaymentBasepoint,
             basepoints.DelayedPaymentBasepoint, basepoints.HtlcBasepoint, firstPoint);
 
+    /// <summary>
+    /// The channel of a dual-funded open: the funding output of both shares, and the first commitment's balances once
+    /// a liquidity fee of <paramref name="localLiquidityFeeMsat"/> (msat, + we buy, − we sell; NL-850) moved from the
+    /// buyer to the seller.
+    /// </summary>
     private ChannelModel CreateChannel(ChannelParams channelParams, ChannelId channelId, ChannelKeySetModel localKeySet,
                                        ChannelKeySetModel remoteKeySet, CompactPubKey peer, bool isOpener,
-                                       LightningMoney localShare, LightningMoney remoteShare)
+                                       LightningMoney localShare, LightningMoney remoteShare,
+                                       long localLiquidityFeeMsat = 0)
     {
         // BOLT 3: the obscuring factor is SHA256(opener's payment_basepoint || accepter's payment_basepoint)
         var commitmentNumber = isOpener
@@ -1604,9 +2164,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         var total = LightningMoney.MilliSatoshis(localShare.MilliSatoshi + remoteShare.MilliSatoshi);
         var fundingOutput = new FundingOutputInfo(total, localKeySet.FundingCompactPubKey,
                                                   remoteKeySet.FundingCompactPubKey);
+        var (localBalance, remoteBalance) = DualFundLiquidity.ApplyFee(localShare, remoteShare, localLiquidityFeeMsat);
         return new ChannelModel(channelParams, channelId, commitmentNumber, fundingOutput, isOpener, null, null,
-                                LightningMoney.MilliSatoshis(localShare.MilliSatoshi), localKeySet, 0, 0,
-                                LightningMoney.MilliSatoshis(remoteShare.MilliSatoshi), remoteKeySet, 0, peer, 0,
+                                localBalance, localKeySet, 0, 0, remoteBalance, remoteKeySet, 0, peer, 0,
                                 ChannelState.V1Opening, ChannelVersion.V2);
     }
 
@@ -1614,10 +2174,57 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     internal static BitcoinScript GetFundingScript(ChannelModel channel)
     {
         var funding = channel.FundingOutput ?? throw new InvalidOperationException("The channel has no funding output");
-        var output = new FundingOutput(funding.Amount, new PubKey(funding.LocalFundingPubKey),
-                                       new PubKey(funding.RemoteFundingPubKey));
+        return GetFundingScript(funding.Amount, funding.LocalFundingPubKey, funding.RemoteFundingPubKey);
+    }
+
+    /// <summary>The P2WSH 2-of-2 funding script of two funding keys (BOLT 3; the amount does not change it).</summary>
+    private static BitcoinScript GetFundingScript(LightningMoney amount, CompactPubKey localFundingPubKey,
+                                                  CompactPubKey remoteFundingPubKey)
+    {
+        var output = new FundingOutput(amount, new PubKey(localFundingPubKey), new PubKey(remoteFundingPubKey));
         return new BitcoinScript(output.ToTxOut().ScriptPubKey.ToBytes());
     }
+
+    private LiquidityAdsService? GetLiquidityAds() => _serviceProvider.GetService<LiquidityAdsService>();
+
+    /// <summary>
+    /// The buyer's check of the seller's <c>provide_funding</c> (liquidity ads, NL-850; Eclair
+    /// <c>validateRemoteFunding</c> and our fee limit), then of the balances it leaves: our share must pay the fee and
+    /// the opener's balance the first commitment's fee. The purchase, or why it is refused.
+    /// </summary>
+    private LiquidityCheck CheckWillFund(DualFundNegotiation negotiation, DualFundLiquidityRequest request,
+                                         WillFund? willFund, BitcoinScript fundingScript, LightningMoney localShare,
+                                         LightningMoney sellerContribution, uint commitmentFeeratePerKw,
+                                         bool optionAnchors)
+    {
+        if (GetLiquidityAds() is not { } liquidityAds)
+            return new LiquidityCheck("liquidity ads are not available on this node", null);
+
+        var contributedSat = (ulong)sellerContribution.Satoshi;
+        var refusal = liquidityAds.ValidateWillFund(negotiation.Peer, request.Request, willFund, (byte[])fundingScript,
+                                                    contributedSat, request.FundingFeeratePerKw, true,
+                                                    request.MaxFeeSat, out var fees);
+        if (refusal != LiquidityAdsRefusal.None)
+            return new LiquidityCheck($"liquidity ads: {refusal}", null);
+
+        var liquidity = new DualFundLiquidity(LiquidityPurchaseRole.Buyer, request.Request, willFund!, fees,
+                                              contributedSat, request.MaxFeeSat);
+        if (DualFundLiquidity.GetBalanceViolation(localShare, sellerContribution, liquidity.LocalFeeMsat,
+                                                  negotiation.IsOpener,
+                                                  CommitmentFeeCalculator.FunderCost(commitmentFeeratePerKw,
+                                                                                     optionAnchors, 0))
+            is { } violation)
+            return new LiquidityCheck($"liquidity ads: {violation}", null);
+
+        _logger.LogInformation("Buying {Amount} sat of inbound liquidity from {Seller} on channel {ChannelId} for "
+                             + "{Fee} sat ({Mining} mining + {Service} service)", request.Request.RequestedSat,
+                               negotiation.Peer, negotiation.ChannelId, fees.TotalSat, fees.MiningFeeSat,
+                               fees.ServiceFeeSat);
+        return new LiquidityCheck(null, liquidity);
+    }
+
+    /// <summary>The outcome of <see cref="CheckWillFund"/>: the purchase, or why it is refused.</summary>
+    private sealed record LiquidityCheck(string? Refusal, DualFundLiquidity? Liquidity);
 
     /// <summary>Registers the channel with the signer for the first attempt.</summary>
     private void RegisterWithSigner(ChannelModel channel) =>
@@ -1707,19 +2314,43 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                    channelParams.Local.ChannelReserveAmount);
         }
 
+        // A liquidity purchase made with this attempt moves its fee from the buyer's balance to the seller's (NL-850)
+        var (localBalance, remoteBalance) = DualFundLiquidity.ApplyFee(negotiation.LocalShare, negotiation.RemoteShare,
+                                                                       negotiation.AttemptLiquidity?.LocalFeeMsat ?? 0);
         channel.ReplaceUnconfirmedFunding(new FundingOutputInfo(total, funding.LocalFundingPubKey,
                                                                 funding.RemoteFundingPubKey, txId, index),
-                                          LightningMoney.MilliSatoshis(negotiation.LocalShare.MilliSatoshi),
-                                          LightningMoney.MilliSatoshis(negotiation.RemoteShare.MilliSatoshi),
-                                          channelParams);
+                                          localBalance, remoteBalance, channelParams);
+    }
+
+    /// <summary>
+    /// Stages the attempt's liquidity purchase (NL-850) in the commitment step's save, as
+    /// <see cref="LiquidityPurchaseKind.ChannelOpen"/> for the first attempt and
+    /// <see cref="LiquidityPurchaseKind.OpenRbf"/> for an RBF attempt.
+    /// </summary>
+    private void RecordPurchase(DualFundNegotiation negotiation, ChannelModel channel, TxId txId,
+                                DualFundLiquidity liquidity, IUnitOfWork unitOfWork)
+    {
+        var liquidityAds = GetLiquidityAds()
+                        ?? throw new InvalidOperationException("Liquidity ads are not available on this node");
+        var purchase = liquidityAds.CreatePurchase(channel.ChannelId, txId, liquidity.Role,
+                                                   negotiation.CompletedTxIds.Count == 0
+                                                       ? LiquidityPurchaseKind.ChannelOpen
+                                                       : LiquidityPurchaseKind.OpenRbf,
+                                                   liquidity.Request, liquidity.ContributedSat, liquidity.Fees,
+                                                   liquidity.WillFund, negotiation.Peer, liquidity.MaxFeeSat);
+        unitOfWork.LiquidityPurchaseDbRepository.Add(purchase);
+        negotiation.Purchases[txId] = purchase;
+        _logger.LogInformation("Liquidity {Role} of {Amount} sat recorded with funding {TxId} of channel {ChannelId}: "
+                             + "fee {Fee} sat", liquidity.Role, liquidity.Request.RequestedSat, txId,
+                               channel.ChannelId, liquidity.Fees.TotalSat);
     }
 
     /// <summary>
     /// <paramref name="channelParams"/> for a funding of <paramref name="total"/>: the reserve (BOLT 2: 1% of the
-    /// funding both sides contribute, at least the dust limit, on both sides) and our in-flight limit (a share of the
-    /// capacity, as at the open) follow it; the peer's in-flight limit is what it announced.
+    /// funding both sides contribute, at least the dust limit, on both sides) follows it; both in-flight limits are
+    /// what each side announced at the open, which no RBF attempt changes on the wire (NL-881).
     /// </summary>
-    private ChannelParams WithCapacity(ChannelParams channelParams, LightningMoney total)
+    private static ChannelParams WithCapacity(ChannelParams channelParams, LightningMoney total)
     {
         var reserve = DualFundingRules.GetChannelReserve(total, Max(channelParams.Local.DustLimitAmount,
                                                                     channelParams.Remote.DustLimitAmount));
@@ -1727,9 +2358,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         var remote = channelParams.Remote;
         return channelParams
               .WithLocal(new ChannelParty(local.DustLimitAmount, reserve, local.HtlcMinimumAmount,
-                                          local.MaxAcceptedHtlcs,
-                                          LightningMoney.Satoshis(_nodeOptions.AllowUpToPercentageOfChannelFundsInFlight
-                                                                * total.Satoshi / 100M), local.ToSelfDelay,
+                                          local.MaxAcceptedHtlcs, local.MaxHtlcValueInFlight, local.ToSelfDelay,
                                           local.UpfrontShutdownScript))
               .WithRemote(new ChannelParty(remote.DustLimitAmount, reserve, remote.HtlcMinimumAmount,
                                            remote.MaxAcceptedHtlcs, remote.MaxHtlcValueInFlight, remote.ToSelfDelay,
@@ -1749,6 +2378,18 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     /// <summary>The features negotiated with <paramref name="peer"/> (our own without a peer manager).</summary>
     private FeatureOptions GetNegotiatedFeatures(CompactPubKey peer) =>
         _serviceProvider.GetService<IPeerManager>()?.GetPeer(peer)?.NegotiatedFeatures ?? _nodeOptions.Features;
+
+    /// <summary>
+    /// BOLT 2: a non-empty <c>upfront_shutdown_script</c> must be a <c>shutdown</c> form the negotiated features allow;
+    /// a P2TR script without <c>option_shutdown_anysegwit</c> could never close cooperatively (NL-776).
+    /// </summary>
+    private static void CheckUpfrontShutdownScript(UpfrontShutdownScriptTlv? tlv, FeatureOptions negotiatedFeatures,
+                                                   ChannelId temporaryId)
+    {
+        if (tlv is { Value.Length: > 0 } && !ShutdownScriptValidator.IsValidUpfront(tlv.Value, negotiatedFeatures))
+            throw new ChannelErrorException("upfront_shutdown_script is not a valid shutdown script", temporaryId,
+                                            "upfront_shutdown_script is not a valid form");
+    }
 
     private static BitcoinScript? NonEmpty(UpfrontShutdownScriptTlv? tlv)
     {
@@ -1823,13 +2464,15 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     }
 
     /// <summary>
-    /// Aborts the channel's negotiation in progress with our <c>tx_abort</c> (published), under the channel's lock.
-    /// False when the driver refused because our <c>tx_signatures</c> went out (IT-ABT-01).
+    /// Aborts the channel's negotiation in progress, or withdraws our <c>tx_init_rbf</c> that waits for its answer
+    /// (NL-867), with our <c>tx_abort</c> (published), under the channel's lock. False when the driver refused because
+    /// our <c>tx_signatures</c> went out (IT-ABT-01).
     /// </summary>
     private async Task<bool> AbortNegotiationLockedAsync(DualFundNegotiation negotiation, string reason)
     {
         var driver = _serviceProvider.GetService<IInteractiveTxDriver>();
-        if (driver?.IsNegotiating(negotiation.ChannelId) != true)
+        if (driver is null || (!driver.IsNegotiating(negotiation.ChannelId)
+                            && driver.GetInfo(negotiation.ChannelId) is not { RbfRequested: true }))
             return true;
 
         try
@@ -1866,6 +2509,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         _negotiations.TryRemove(negotiation.ChannelId, out _);
         _negotiations.TryRemove(negotiation.TemporaryChannelId, out _);
         ReleaseAnchorReserve(negotiation);
+        negotiation.EndSale();
         _channelMemoryRepository.TryRemoveTemporaryChannel(negotiation.Peer, negotiation.TemporaryChannelId);
 
         if (negotiation.Channel is not { } channel || channel.ChannelId != negotiation.ChannelId)
@@ -1880,6 +2524,18 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                 using var scope = _serviceProvider.CreateScope();
                 var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
                 await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+
+                // A purchase stored with the abandoned attempt never takes effect (NL-850)
+                var stored = negotiation.Purchases.Values.Where(p => p is
+                {
+                    Id: > 0, Status: LiquidityPurchaseStatus.Pending
+                });
+                foreach (var purchase in stored)
+                {
+                    purchase.MarkClosed(GetMonitor()?.LastProcessedBlockHeight ?? 0);
+                    unitOfWork.LiquidityPurchaseDbRepository.Update(purchase);
+                }
+
                 await unitOfWork.SaveChangesAsync();
             }
             catch (Exception e)
@@ -2018,7 +2674,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         _channelMemoryRepository.UpdateChannel(channel);
         _logger.LogInformation("Dual-funded channel {ChannelId} signed its funding transaction {TxId}",
                                channel.ChannelId, txId);
-        negotiation.Complete(new DualFundedOpenResult(channel.ChannelId, txId));
+        negotiation.Complete(new DualFundedOpenResult(channel.ChannelId, txId)
+        {
+            Purchase = negotiation.Purchases.GetValueOrDefault(txId)
+        });
     }
 
     #endregion

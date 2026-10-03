@@ -229,7 +229,7 @@ public sealed class LdkChannelSession : IAsyncDisposable
             await fixture.FundLdkWalletAsync(LightningMoney.Satoshis(capacity.Satoshi * 2), [node],
                                              cancellationToken);
 
-            var ourAddress = $"{ClnFixture.HostAddressFromContainers}:{node.Port}";
+            var ourAddress = $"{fixture.HostAddressForLdk}:{node.Port}";
             session.UserChannelId = announce
                                         ? await fixture.Ldk.OpenAnnouncedChannelAsync(
                                               node.NodeIdHex, ourAddress, (long)capacity.Satoshi, cancellationToken)

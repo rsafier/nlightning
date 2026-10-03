@@ -23,7 +23,7 @@ using Utils;
 /// after its fee is refused before anything is locked or sent, and a smaller one opens and leaves the reserve in the
 /// wallet.
 /// </summary>
-/// <remarks>Run with <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.</remarks>
+/// <remarks>Run with <c>scripts/run-cluster.sh -n 1 --suite anchors</c>.</remarks>
 [Collection(OnchainRegtestCollection.Name)]
 [Trait("Category", AnchorsChannelTests.AnchorsCategory)]
 public class AnchorsReserveTests : IAsyncLifetime

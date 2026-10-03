@@ -24,12 +24,8 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
-    <!--
-      LNUnit (LNUnit.Setup's LNUnitBuilder) only orchestrates the containers of Fixtures/LightningRegtestNetworkFixture
-      until phase 3's cluster backend replaces it. Its LND client (lnunit.lnd) comes along transitively, but no test
-      uses it: every LND call goes through NLightning.Testing.Lnd (test harness phase 3 lane B).
-    -->
-    <PackageReference Include="LNUnit" Version="3.0.4"/>
+    <!-- Only the Tor fixture and the SQL Server fixture drive Docker (NL-866, Fixtures/DockerAbsenceTests) -->
+    <PackageReference Include="Docker.DotNet" Version="3.125.15"/>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0"/>
     <PackageReference Include="Moq" Version="4.20.72"/>
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
@@ -44,6 +40,9 @@
     <ProjectReference Include="..\..\src\NLightning.Daemon\NLightning.Daemon.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Repositories\NLightning.Infrastructure.Repositories.csproj"/>
     <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
+    <!-- The Kubernetes harness, for Cluster/ (our in-process node in a cluster topology); it references no product
+         project, so the glue lives here, next to NLightningTestNode -->
+    <ProjectReference Include="..\NLightning.Testing.Cluster\NLightning.Testing.Cluster.csproj"/>
     <ProjectReference Include="..\NLightning.Testing.Lnd\NLightning.Testing.Lnd.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Serialization\NLightning.Infrastructure.Serialization.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Bolt11\NLightning.Bolt11.csproj"/>

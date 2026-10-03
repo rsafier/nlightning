@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -9,7 +10,6 @@ using NBitcoin;
 using NBitcoin.RPC;
 using NLightning.Testing.Lnd;
 using NLightning.Tests.Utils;
-using ServiceStack;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
@@ -26,6 +26,7 @@ using Application.InteractiveTx;
 using Application.Onchain.Fees;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
+using Application.Payments.Trampoline;
 using Daemon.Extensions;
 using Daemon.Interfaces;
 using Daemon.Services;
@@ -103,6 +104,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
     private static readonly TimeSpan s_bothEndsConnectedTimeout = TimeSpan.FromSeconds(10);
 
     private readonly Lazy<RegtestBitcoinEndpoint> _bitcoinEndpoint;
+    private readonly Func<LndNodeConnection, CancellationToken, Task<string>>? _lndPeerEndpoint;
     private readonly Action<NodeOptions>? _configureNodeOptions;
     private readonly bool _ownsResources;
 
@@ -224,19 +226,23 @@ public sealed class NLightningTestNode : IAsyncDisposable
                               ISecureKeyManager secureKeyManager, int port,
                               Action<NodeOptions>? configureNodeOptions = null)
         : this(() => RegtestBitcoinEndpoint.FromFixture(fixture), name, database, secureKeyManager, port,
-               configureNodeOptions, ownsResources: false)
+               configureNodeOptions, ownsResources: false, fixture.GetLndPeerEndpointAsync)
     {
+        // A node of the shared network needs it running (the cluster backend, NL-820): skip the test otherwise
+        fixture.SkipIfUnavailable();
     }
 
     private NLightningTestNode(Func<RegtestBitcoinEndpoint> bitcoinEndpoint, string name, TestNodeDatabase database,
                                ISecureKeyManager secureKeyManager, int port,
-                               Action<NodeOptions>? configureNodeOptions, bool ownsResources)
+                               Action<NodeOptions>? configureNodeOptions, bool ownsResources,
+                               Func<LndNodeConnection, CancellationToken, Task<string>>? lndPeerEndpoint = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         // Resolved once (a failed resolution is not cached, so a node built before its fixture was ready retries)
         _bitcoinEndpoint = new Lazy<RegtestBitcoinEndpoint>(bitcoinEndpoint, LazyThreadSafetyMode.PublicationOnly);
         _configureNodeOptions = configureNodeOptions;
         _ownsResources = ownsResources;
+        _lndPeerEndpoint = lndPeerEndpoint;
         Name = name;
         Database = database;
         SecureKeyManager = secureKeyManager;
@@ -251,10 +257,19 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// <paramref name="database"/> says otherwise, its own SQLite file; <see cref="DisposeAsync"/> releases them. Its
     /// reconnect backoff starts at <see cref="FastReconnectInitialDelay"/>. The node is not started.
     /// </summary>
+    /// <remarks>
+    /// Skips the test, before taking a port, when the shared network cannot run in this process
+    /// (<see cref="LightningRegtestNetworkFixture.UnavailableReason"/>, NL-820).
+    /// </remarks>
     public static Task<NLightningTestNode> CreateAsync(LightningRegtestNetworkFixture fixture, string name,
                                                        TestNodeDatabase? database = null,
-                                                       Action<NodeOptions>? configureNodeOptions = null) =>
-        CreateAsync(() => RegtestBitcoinEndpoint.FromFixture(fixture), name, database, configureNodeOptions);
+                                                       Action<NodeOptions>? configureNodeOptions = null)
+    {
+        ArgumentNullException.ThrowIfNull(fixture);
+        fixture.SkipIfUnavailable();
+        return CreateAsync(() => RegtestBitcoinEndpoint.FromFixture(fixture), name, database, configureNodeOptions,
+                           fixture.GetLndPeerEndpointAsync);
+    }
 
     /// <summary>
     /// As <see cref="CreateAsync(LightningRegtestNetworkFixture, string, TestNodeDatabase?, Action{NodeOptions}?)"/>,
@@ -267,12 +282,14 @@ public sealed class NLightningTestNode : IAsyncDisposable
 
     private static async Task<NLightningTestNode> CreateAsync(Func<RegtestBitcoinEndpoint> bitcoinEndpoint,
                                                               string name, TestNodeDatabase? database,
-                                                              Action<NodeOptions>? configureNodeOptions)
+                                                              Action<NodeOptions>? configureNodeOptions,
+                                                              Func<LndNodeConnection, CancellationToken, Task<string>>?
+                                                                  lndPeerEndpoint = null)
     {
         var port = await PortPoolUtil.GetAvailablePortAsync();
         database ??= TestNodeDatabase.Sqlite($"nlightning_{name}_{Guid.NewGuid():N}.db");
         return new NLightningTestNode(bitcoinEndpoint, name, database, new FakeSecureKeyManager(), port,
-                                      configureNodeOptions, ownsResources: true)
+                                      configureNodeOptions, ownsResources: true, lndPeerEndpoint)
         {
             ReconnectInitialDelay = FastReconnectInitialDelay
         };
@@ -337,6 +354,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             await Services.GetRequiredService<ITorOnionService>().StartAsync(CancellationToken.None);
             // As the daemon does: settle the payments a crash left without an HTLC id once every channel is loaded
             await Services.GetRequiredService<IPaymentOutcomeHandler>().ReconcileInFlightPaymentsAsync(cancellationToken);
+            // As the daemon does: resume the unfinished trampoline relays (NL-875 TR3)
+            var trampolineRelays = Services.GetService<TrampolineRelayService>();
+            if (trampolineRelays is not null)
+                await trampolineRelays.StartAsync(cancellationToken);
             // As the daemon does: the N9 safety services and the update_fee rounds (off unless a test enables them)
             Services.GetRequiredService<IChannelFailureService>().Start();
             Services.GetRequiredService<IHtlcExpiryMonitor>().Start();
@@ -496,14 +517,20 @@ public sealed class NLightningTestNode : IAsyncDisposable
     }
 
     /// <summary>
-    /// Connects to an LND node of the fixture over its container address.
+    /// Connects to an LND node of the fixture at the address its backend names
+    /// (<see cref="LightningRegtestNetworkFixture.GetLndPeerEndpointAsync"/>: the Service name on the cluster, which our
+    /// node stores and redials after the pod restarted, NL-780). A node made without the
+    /// fixture dials the IP behind the gRPC host.
     /// </summary>
     /// <returns>The <c>pubkey@host:port</c> address used.</returns>
     public async Task<string> ConnectToAsync(LndNodeConnection lndNode, CancellationToken cancellationToken)
     {
-        var host = new IPEndPoint(
-            (await Dns.GetHostAddressesAsync(lndNode.Host.SplitOnFirst("//")[1].SplitOnFirst(":")[0],
-                                             cancellationToken)).First(), 9735);
+        ArgumentNullException.ThrowIfNull(lndNode);
+        var host = _lndPeerEndpoint is not null
+                       ? await _lndPeerEndpoint(lndNode, cancellationToken)
+                       : new IPEndPoint(
+                             (await Dns.GetHostAddressesAsync(new Uri(lndNode.Host).Host,
+                                                              cancellationToken)).First(), 9735).ToString();
         var address = $"{Convert.ToHexString(lndNode.LocalNodePubKeyBytes)}@{host}";
 
         await PeerManager.ConnectToPeerAsync(new PeerAddressInfo(address)).WaitAsync(cancellationToken);
@@ -742,6 +769,15 @@ public sealed class NLightningTestNode : IAsyncDisposable
         _tcpService = null;
         if (serviceProvider is not null)
             await serviceProvider.DisposeAsync();
+
+        // A stopped node holds no database file open, as a stopped daemon process does: Microsoft.Data.Sqlite keeps
+        // closed connections pooled (open) for the next start, so a test that replaces the files of a stopped node saw
+        // the old ones on macOS hosts, where File.Copy replaces a file by a new inode (NL-825)
+        if (Database.Provider != TestDatabaseProvider.Sqlite)
+            return;
+
+        using var connection = new SqliteConnection(Database.ConnectionString);
+        SqliteConnection.ClearPool(connection);
     }
 
     private ServiceProvider BuildServiceProvider()
@@ -761,6 +797,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             new("Bitcoin:ZmqHost", endpoint.ZmqHost),
             new("Bitcoin:ZmqBlockPort", endpoint.ZmqBlockPort.ToString()),
             new("Bitcoin:ZmqTxPort", endpoint.ZmqTxPort.ToString()),
+            // A block ZMQ never announced (mined before the subscription reached bitcoind, which takes longer to a
+            // cluster pod than to Docker's 127.0.0.1 port) is caught up within about 2 s instead of 60 s; the monitor
+            // logs a warning each time
+            new("Bitcoin:TipPollInterval", "00:00:01"),
             new("FeeEstimation:CacheFile", FeeCacheFilePath),
             // Deterministic Docker runs: no periodic update_fee (FeeUpdateFlowTests run rounds by hand; a test can turn
             // it on through configureNodeOptions)
@@ -768,6 +808,11 @@ public sealed class NLightningTestNode : IAsyncDisposable
             // Hermetic Docker runs: the financial books never ask mempool.space for prices (NL-641); a test that
             // runs Profile=Financial imports its prices (or sets a source through ExtraConfiguration)
             new("Accounting:Prices:Source", "None"),
+            // The gossip memory budget (Gossip:MaxMemoryMb, 1 GiB) reads this process's RSS, which the test process
+            // shares among every node of a suite: a long run (the CLN suite on the cluster passed 1.1 GiB) refused new
+            // channels from gossip and the gossip proofs waited in vain (NL-865, as NL-466 for the reload tests). A
+            // test that proves the budget sets it through ExtraConfiguration
+            new("Gossip:MaxMemoryMb", "0"),
             new("Bitcoin:WatchMempool", WatchMempool ? "true" : "false")
         ];
         // A later source overrides an earlier one, so ExtraConfiguration wins over the defaults above

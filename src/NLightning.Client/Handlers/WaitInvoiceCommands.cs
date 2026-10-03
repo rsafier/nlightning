@@ -8,7 +8,7 @@ using Printers;
 
 /// <summary>
 /// The <c>waitinvoice|wait-invoice &lt;payment_hash&gt; [--timeout &lt;seconds&gt;]</c> command of the CLI (ClientCommand
-/// 46, Cashu plan C0, NL-812).
+/// 47, Cashu plan C0, NL-901).
 /// </summary>
 internal static class WaitInvoiceCommands
 {

@@ -51,12 +51,12 @@ public abstract class AbcdTestBase : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             if (Network is not null)
                 await Network.DumpDiagnosticsAsync();
             else
-                await DockerDiagnostics.DumpContainerLogsAsync(["alice", "david"]);
+                await Fixture.DumpLndLogsAsync(["alice", "david"]);
         }
 
         GC.SuppressFinalize(this);

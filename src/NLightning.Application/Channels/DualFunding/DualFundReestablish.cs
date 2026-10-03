@@ -6,6 +6,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 
 /// <summary>
@@ -43,6 +44,17 @@ public sealed class DualFundReestablish
         ArgumentNullException.ThrowIfNull(channel);
         if (IsPendingOpen(channel))
             await _service.GetOrLoadAsync(channel.ChannelId, _unitOfWork, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Abandons the open's RBF attempt that is not signed when an earlier attempt confirmed (NL-867), before the
+    /// reestablish is planned: the peer's <c>next_funding</c> for it then gets our <c>tx_abort</c> (returned) instead of
+    /// its <c>commitment_signed</c> again. Empty when nothing was abandoned (or the channel is no pending open).
+    /// </summary>
+    public async Task<IReadOnlyList<IChannelMessage>> AbandonConfirmedRbfAttemptAsync(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        return IsPendingOpen(channel) ? await _service.AbandonRbfAttemptIfConfirmedAsync(channel, _unitOfWork) : [];
     }
 
     /// <summary>

@@ -288,4 +288,98 @@ public class FailureInterpreterTests
         // Act / Assert
         Assert.Throws<ArgumentOutOfRangeException>(() => FailureInterpreter.Interpret(null, 0));
     }
+
+    #region Trampoline (BOLTs PR 836, NL-875)
+
+    [Theory]
+    [InlineData(FailureCode.TemporaryTrampolineFailure)]
+    [InlineData(FailureCode.TrampolineFeeOrExpiryInsufficient)]
+    public void Given_TheTrampolineNodeTemporaryFailure_When_Interpreting_Then_TheNodeIsBlamedAndARetryAllowed(
+        FailureCode code)
+    {
+        // Arrange: the trampoline node is the final node of the route to it
+        var message = code == FailureCode.TemporaryTrampolineFailure
+                          ? FailureMessage.TemporaryTrampolineFailure()
+                          : FailureMessage.TrampolineFeeOrExpiryInsufficient(1_000, 500, 288);
+
+        // Act
+        var result = FailureInterpreter.Interpret(Decrypted(RouteLength - 1, message), RouteLength);
+
+        // Assert
+        Assert.True(result.IsFinalNode);
+        Assert.Equal(RouteLength - 1, result.ErringHopIndex);
+        Assert.Equal(code, result.Code);
+        Assert.True(result.IsNodeFailure);
+        Assert.False(result.IsPermanent);
+        Assert.True(result.ShouldRetry);
+        Assert.Null(result.ExcludedNodeHopIndex);
+        Assert.Null(result.FailedChannelHopIndex);
+    }
+
+    [Fact]
+    public void Given_TrampolineFeeOrExpiryInsufficient_When_Interpreting_Then_ThePolicyIsReadableFromTheMessage()
+    {
+        // Arrange
+        var message = FailureMessage.TrampolineFeeOrExpiryInsufficient(2_000, 1_000, 576);
+
+        // Act
+        var result = FailureInterpreter.Interpret(Decrypted(RouteLength - 1, message), RouteLength);
+
+        // Assert
+        Assert.True(result.Message!.TryGetTrampolinePolicy(out var feeBase, out var feeProportional,
+                                                            out var cltvDelta));
+        Assert.Equal(2_000U, feeBase);
+        Assert.Equal(1_000U, feeProportional);
+        Assert.Equal((ushort)576, cltvDelta);
+    }
+
+    [Fact]
+    public void Given_TheTrampolineNodeUnknownNextTrampoline_When_Interpreting_Then_ThePaymentFails()
+    {
+        // Act
+        var result = FailureInterpreter.Interpret(
+            Decrypted(RouteLength - 1, FailureMessage.UnknownNextTrampoline()), RouteLength);
+
+        // Assert
+        Assert.True(result.IsFinalNode);
+        Assert.True(result.IsPermanent);
+        Assert.False(result.IsNodeFailure);
+        Assert.False(result.ShouldRetry);
+    }
+
+    [Theory]
+    [InlineData(FailureCode.TemporaryTrampolineFailure)]
+    [InlineData(FailureCode.TrampolineFeeOrExpiryInsufficient)]
+    public void Given_ATrampolineTemporaryFailureFromAnIntermediateHop_When_Interpreting_Then_ThatNodeIsExcluded(
+        FailureCode code)
+    {
+        // Arrange
+        var message = code == FailureCode.TemporaryTrampolineFailure
+                          ? FailureMessage.TemporaryTrampolineFailure()
+                          : FailureMessage.TrampolineFeeOrExpiryInsufficient(1_000, 500, 288);
+
+        // Act
+        var result = FailureInterpreter.Interpret(Decrypted(1, message), RouteLength);
+
+        // Assert
+        Assert.False(result.IsFinalNode);
+        Assert.True(result.IsNodeFailure);
+        Assert.False(result.IsPermanent);
+        Assert.Equal(1, result.ExcludedNodeHopIndex);
+        Assert.True(result.ShouldRetry);
+    }
+
+    [Fact]
+    public void Given_UnknownNextTrampolineFromAnIntermediateHop_When_Interpreting_Then_ItsOutgoingChannelIsRemoved()
+    {
+        // Act
+        var result = FailureInterpreter.Interpret(Decrypted(1, FailureMessage.UnknownNextTrampoline()), RouteLength);
+
+        // Assert
+        Assert.True(result.IsPermanent);
+        Assert.False(result.IsNodeFailure);
+        Assert.Equal(2, result.FailedChannelHopIndex);
+    }
+
+    #endregion
 }

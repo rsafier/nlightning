@@ -12,6 +12,8 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.LiquidityAds.Interfaces;
+using Domain.LiquidityAds.Models;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
@@ -46,11 +48,17 @@ internal sealed class OnchainTestStore
     /// <summary>The origins stored per outgoing HTLC (<c>ChannelStateDbRepository.GetHtlcOriginAsync</c>).</summary>
     public Dictionary<(ChannelId ChannelId, HtlcDirection Direction, ulong HtlcId), HtlcOrigin> Origins { get; } = [];
 
+    /// <summary>The trampoline relays (NL-875): nothing unless a test sets it up.</summary>
+    public Mock<ITrampolineRelayDbRepository> TrampolineRelays { get; } = new();
+
     /// <summary>The forward circuits (<c>ForwardCircuitDbRepository.GetByIncomingAsync</c>).</summary>
     public Dictionary<(ChannelId IncomingChannelId, ulong IncomingHtlcId), ForwardCircuitModel> Circuits { get; } = [];
 
     /// <summary>Our invoices by payment hash (<c>InvoiceDbRepository.GetByPaymentHashAsync</c>, NL-688).</summary>
     public Dictionary<Hash, InvoiceModel> Invoices { get; } = [];
+
+    /// <summary>The liquidity purchases (<c>LiquidityPurchaseDbRepository</c>, NL-850).</summary>
+    public List<LiquidityPurchaseModel> Purchases { get; } = [];
 
     /// <summary>The first commitment number the revocation log covers (<c>GetLogStartAsync</c>).</summary>
     public ulong RevocationLogStart { get; set; }
@@ -89,8 +97,10 @@ internal sealed class OnchainTestStore
         unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(CreateInteractiveTxSessions().Object);
         unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(CreateChannelState().Object);
         unitOfWork.SetupGet(u => u.ForwardCircuitDbRepository).Returns(CreateCircuits().Object);
+        unitOfWork.SetupGet(u => u.TrampolineRelayDbRepository).Returns(TrampolineRelays.Object);
         unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(CreateInvoices().Object);
         unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(new AccountingRepository(this));
+        unitOfWork.SetupGet(u => u.LiquidityPurchaseDbRepository).Returns(CreatePurchases().Object);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             if (FailNextSave is { } failure)
@@ -226,6 +236,16 @@ internal sealed class OnchainTestStore
                        _pending.Add("revocation log deleted");
                    })
                   .Returns(Task.CompletedTask);
+        return repository;
+    }
+
+    private Mock<ILiquidityPurchaseDbRepository> CreatePurchases()
+    {
+        var repository = new Mock<ILiquidityPurchaseDbRepository>();
+        repository.Setup(r => r.GetByChannelIdAsync(It.IsAny<ChannelId>()))
+                  .ReturnsAsync((ChannelId id) => Purchases.Where(p => p.ChannelId == id).ToList());
+        repository.Setup(r => r.Update(It.IsAny<LiquidityPurchaseModel>()))
+                  .Callback((LiquidityPurchaseModel p) => _pending.Add($"liquidity purchase {p.Id} {p.Status}"));
         return repository;
     }
 

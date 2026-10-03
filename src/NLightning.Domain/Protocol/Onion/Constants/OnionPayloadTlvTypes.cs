@@ -45,6 +45,11 @@ public static class OnionPayloadTlvTypes
     public static readonly BigSize CurrentPathKey = 12;
 
     /// <summary>
+    /// outgoing_node_id (point): the next trampoline node, in a trampoline onion payload (BOLTs PR 836).
+    /// </summary>
+    public static readonly BigSize OutgoingNodeId = 14;
+
+    /// <summary>
     /// payment_metadata (variable bytes).
     /// </summary>
     public static readonly BigSize PaymentMetadata = 16;
@@ -53,6 +58,24 @@ public static class OnionPayloadTlvTypes
     /// total_amount_msat (tu64).
     /// </summary>
     public static readonly BigSize TotalAmountMsat = 18;
+
+    /// <summary>
+    /// trampoline_onion_packet (<c>byte version || point public_key || ...*byte hop_payloads || 32*byte hmac</c>,
+    /// variable size): the trampoline onion, carried by the last hop's payload of the outer onion (BOLTs PR 836).
+    /// </summary>
+    public static readonly BigSize TrampolineOnionPacket = 20;
+
+    /// <summary>
+    /// recipient_features (<c>...*byte</c>, big-endian feature bits): the invoice features of a recipient reached
+    /// through <see cref="RecipientBlindedPaths"/> (BOLTs PR 836).
+    /// </summary>
+    public static readonly BigSize RecipientFeatures = 21;
+
+    /// <summary>
+    /// recipient_blinded_paths (<c>...*payment_blinded_path</c>): the blinded paths of a recipient that does not
+    /// support trampoline, for the last trampoline node to pay (BOLTs PR 836).
+    /// </summary>
+    public static readonly BigSize RecipientBlindedPaths = 22;
 
     /// <summary>
     /// The first type of the custom-record range (65536, LND's <c>record.CustomTypeStart</c>): types from here on are
@@ -72,13 +95,28 @@ public static class OnionPayloadTlvTypes
     public static readonly BigSize KeysendPreimage = 5482373484;
 
     /// <summary>
-    /// Every type of the <c>payload</c> namespace this node understands. Any other even type fails the payload
-    /// (BOLT 1 "it's ok to be odd").
+    /// The trampoline types (BOLTs PR 836): <see cref="OutgoingNodeId"/>, <see cref="TrampolineOnionPacket"/>,
+    /// <see cref="RecipientFeatures"/> and <see cref="RecipientBlindedPaths"/>.
+    /// </summary>
+    /// <remarks>
+    /// They are parsed into their typed TLVs, but <c>HopPayloadValidator</c> treats them as unknown types (an even one
+    /// fails the payload, the odd 21 is ignored) unless the caller allows trampoline, so a node that does not advertise
+    /// <c>trampoline_routing</c> refuses a trampoline payload exactly as before they were known.
+    /// </remarks>
+    public static readonly IReadOnlySet<BigSize> TrampolineTypes = new[]
+    {
+        OutgoingNodeId, TrampolineOnionPacket, RecipientFeatures, RecipientBlindedPaths
+    }.ToFrozenSet();
+
+    /// <summary>
+    /// Every type of the <c>payload</c> namespace this node can parse. Any other even type fails the payload
+    /// (BOLT 1 "it's ok to be odd"). The <see cref="TrampolineTypes"/> are among them.
     /// </summary>
     /// <remarks>Declared last so the fields above are initialized first.</remarks>
     public static readonly IReadOnlySet<BigSize> KnownTypes = new[]
     {
         AmtToForward, OutgoingCltvValue, ShortChannelId, PaymentData, EncryptedRecipientData, CurrentPathKey,
-        PaymentMetadata, TotalAmountMsat
+        OutgoingNodeId, PaymentMetadata, TotalAmountMsat, TrampolineOnionPacket, RecipientFeatures,
+        RecipientBlindedPaths
     }.ToFrozenSet();
 }

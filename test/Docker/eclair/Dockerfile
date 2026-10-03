@@ -1,7 +1,9 @@
 # Eclair for the NLightning interop tests (NL-180, NL-553). ACINQ publishes no pinned multi-arch image past 0.8.0
 # (acinq/eclair:latest is an amd64 master snapshot), so this builds the v0.14.3 release zip, checked by sha256, on a
-# pinned Temurin 21 JRE. The fixture (test/NLightning.Integration.Tests/Fixtures/EclairFixture.cs) builds it as
-# nltg-eclair:0.14.3 when the tag is missing; a bump is a deliberate change of all three ARGs and the tag.
+# pinned Temurin 21 JRE. The cluster harness runs it as nltg-eclair:0.14.3 with pull policy Never (ImageVersions.Eclair;
+# the only backend of EclairFixture since NL-866) and never builds it: build it once with
+#   docker build -t nltg-eclair:0.14.3 test/Docker/eclair
+# (OrbStack's cluster shares the Docker image store). A bump is a deliberate change of all three ARGs and the tag.
 FROM eclipse-temurin:21-jre-noble@sha256:7edbe8532195c8222735caca437e56780e1fc7db08a4b4b4af77fe188cccc15f
 ARG ECLAIR_VERSION=0.14.3
 ARG ECLAIR_COMMIT=1de8b2d

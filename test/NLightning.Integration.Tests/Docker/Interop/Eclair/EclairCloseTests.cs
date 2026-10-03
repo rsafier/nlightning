@@ -25,7 +25,7 @@ using Utils;
 /// <c>closing_sig</c>, BOLT 2 since N11), which Eclair offers and our node turns on (it is off by default): we close,
 /// and Eclair closes.
 /// </summary>
-/// <remarks>Run with <c>scripts/run-interop.sh eclair Release -class
+/// <remarks>Run with <c>scripts/run-cluster.sh -n 1 --suite eclair --class
 /// NLightning.Integration.Tests.Docker.Interop.Eclair.EclairCloseTests</c>.</remarks>
 [Collection(EclairInteropCollection.Name)]
 [Trait("Category", EclairInteropCollection.Category)]
@@ -42,6 +42,7 @@ public sealed class EclairCloseTests : IAsyncLifetime
 
     public EclairCloseTests(EclairFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -53,10 +54,10 @@ public sealed class EclairCloseTests : IAsyncLifetime
         if (_session is null)
             return;
 
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             Console.WriteLine($"[eclair] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
-            await DockerDiagnostics.DumpContainerLogsAsync([EclairFixture.EclairContainerName], 400);
+            await _fixture.DumpEclairLogAsync(400);
         }
 
         await _session.DisposeAsync();
@@ -294,7 +295,7 @@ public sealed class EclairCloseTests : IAsyncLifetime
     {
         for (var left = blocks; left > 0; left -= 100)
         {
-            await _fixture.Chain.MineAsync(Math.Min(100, left), ct);
+            await _fixture.MineAsync(Math.Min(100, left), ct);
             await _fixture.WaitAllAtTipAsync([session.Node], ct, TimeSpan.FromMinutes(3));
         }
     }

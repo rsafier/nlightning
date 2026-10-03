@@ -43,6 +43,21 @@ public class BitcoinOptionsTests
     }
 
     [Fact]
+    public void Given_ANegativeTipPollInterval_When_Validated_Then_ItIsReported()
+    {
+        // Arrange
+        var options = Valid();
+        options.TipPollInterval = TimeSpan.FromSeconds(-1);
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert: zero turns the poll off and is valid; a negative value is an error
+        Assert.StartsWith("Bitcoin:TipPollInterval", Assert.Single(errors), StringComparison.Ordinal);
+        Assert.Equal(TimeSpan.FromSeconds(30), new BitcoinOptions().TipPollInterval);
+    }
+
+    [Fact]
     public void Given_AnEmptySection_When_Validated_Then_EveryRequiredSettingIsReported()
     {
         // Act: what the binder leaves when the section is missing (NL-338: the members are no longer required)

@@ -42,7 +42,7 @@ using SpliceWireRecorder = Cln.ClnSpliceTests.SpliceWireRecorder;
 /// since the latest attempt, NL-520) is met by them too. Eclair takes a peer's splice feerate down to half of its own
 /// funding estimate (<c>feerate-tolerance.ratio-low</c>; 5 sat/vB on the idle regtest), so our splices pay at least
 /// 2,000 sat/kw.</para>
-/// <para>Run with <c>scripts/run-interop.sh eclair Release -class
+/// <para>Run with <c>scripts/run-cluster.sh -n 1 --suite eclair2 --class
 /// NLightning.Integration.Tests.Docker.Interop.Eclair.EclairSpliceTests</c>.</para>
 /// </remarks>
 [Collection(EclairInteropCollection.Name)]
@@ -72,6 +72,7 @@ public sealed class EclairSpliceTests : IAsyncLifetime
 
     public EclairSpliceTests(EclairFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -85,10 +86,10 @@ public sealed class EclairSpliceTests : IAsyncLifetime
 
         if (_session is not null)
         {
-            if (DockerDiagnostics.CurrentTestFailed)
+            if (TestDiagnostics.CurrentTestFailed)
             {
                 Console.WriteLine($"[eclair] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
-                await DockerDiagnostics.DumpContainerLogsAsync([EclairFixture.EclairContainerName], 400);
+                await _fixture.DumpEclairLogAsync(400);
             }
 
             await _session.DisposeAsync();

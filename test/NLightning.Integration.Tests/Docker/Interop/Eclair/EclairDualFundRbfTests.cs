@@ -26,8 +26,8 @@ using Utils;
 /// <remarks>
 /// Eclair accepts a peer's RBF only <c>remote-rbf-limits.attempt-delta-blocks</c> (3) blocks after the previous
 /// attempt, so (a) and (c) mine empty blocks (<c>generateblock</c> without transactions) first; our own rule for a
-/// peer's RBF (one new block, NL-520) gets one empty block in (b). Run with <c>scripts/run-interop.sh eclair Release
-/// -class NLightning.Integration.Tests.Docker.Interop.Eclair.EclairDualFundRbfTests</c>.
+/// peer's RBF (one new block, NL-520) gets one empty block in (b). Run with <c>scripts/run-cluster.sh -n 1 --suite eclair
+/// --class NLightning.Integration.Tests.Docker.Interop.Eclair.EclairDualFundRbfTests</c>.
 /// </remarks>
 [Collection(EclairInteropCollection.Name)]
 [Trait("Category", EclairInteropCollection.Category)]
@@ -53,6 +53,7 @@ public sealed class EclairDualFundRbfTests : IAsyncLifetime
 
     public EclairDualFundRbfTests(EclairFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -64,10 +65,10 @@ public sealed class EclairDualFundRbfTests : IAsyncLifetime
         if (_session is null)
             return;
 
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             Console.WriteLine($"[eclair] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
-            await DockerDiagnostics.DumpContainerLogsAsync([EclairFixture.EclairContainerName], 400);
+            await _fixture.DumpEclairLogAsync(400);
         }
 
         await _session.DisposeAsync();

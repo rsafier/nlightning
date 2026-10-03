@@ -76,6 +76,11 @@ public sealed class SpliceNegotiationHost : IInteractiveTxHost
         Task.FromResult<CompactSignature?>(_service.SignSharedInput(_negotiation, transaction));
 
     /// <inheritdoc />
+    public Task<string?> GetTxSignaturesRefusalAsync(ConstructedInteractiveTx transaction,
+                                                     CancellationToken cancellationToken) =>
+        _service.GetTxSignaturesRefusalAsync(_negotiation);
+
+    /// <inheritdoc />
     public Witness BuildSharedInputWitness(ConstructedInteractiveTx transaction, CompactSignature localSignature,
                                            CompactSignature remoteSignature) =>
         _service.BuildSharedInputWitness(_negotiation, transaction, localSignature, remoteSignature);

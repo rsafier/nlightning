@@ -29,7 +29,7 @@ using Utils;
 /// O6-T3, NL-292): once the funding transaction reaches the channel's depth on the competing branch, the short channel
 /// id follows it (<see cref="Given_FundingBlockReorged_When_CompetingBranchIsActive_Then_ScidFollowsTheFundingTransaction"/>,
 /// an explicit reproducer until ABCD wave 6).</para>
-/// <para>Run with <c>scripts/run-onchain.sh</c> (own process, own fixture).</para>
+/// <para>Run with <c>scripts/run-cluster.sh -n 1 --suite onchain</c> (own process, own fixture).</para>
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 public class OnchainSmokeTests : IAsyncLifetime

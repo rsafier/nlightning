@@ -1,8 +1,7 @@
-using Docker.DotNet;
-using Docker.DotNet.Models;
 
 namespace NLightning.Integration.Tests.Docker.Gossip.Capture;
 
+using Domain.Bitcoin.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.ValueObjects;
@@ -10,6 +9,7 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Fixtures;
+using Fixtures.Cln;
 using Interop.Cln;
 using Utils;
 
@@ -34,11 +34,12 @@ public sealed class ClnGossipCaptureTests : IAsyncLifetime
 
     private readonly ClnFixture _fixture;
     private readonly RawGossipRecorder _recorder = new();
-    private readonly DockerClient _docker = new DockerClientConfiguration().CreateClient();
+    private ExtraClnNode? _cln2;
     private NLightningTestNode? _node;
 
     public ClnGossipCaptureTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -55,8 +56,8 @@ public sealed class ClnGossipCaptureTests : IAsyncLifetime
         if (_node is not null)
             await _node.DisposeAsync();
 
-        await DockerContainerUtils.RemoveContainerAsync(_docker, SecondClnContainerName);
-        _docker.Dispose();
+        if (_cln2 is not null)
+            await _cln2.DisposeAsync();
     }
 
     [Fact(Explicit = true)]
@@ -105,6 +106,8 @@ public sealed class ClnGossipCaptureTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         var node = _node!;
         var cln = _fixture.Cln;
+        // The on-chain reserve we keep as fundee of an anchors channel (NL-379), CLN's default type with us
+        await node.FundWalletAsync(LightningMoney.Satoshis(200_000), AddressType.P2Wpkh, ct);
         await _fixture.FundClnWalletAsync(LightningMoney.Satoshis(2_000_000), [node], ct);
         await node.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(_fixture.ClnAddress)).WaitAsync(ct);
         await Poll.UntilAsync(async () => await cln.IsConnectedAsync(node.NodeIdHex, ct), s_captureTimeout,
@@ -135,29 +138,18 @@ public sealed class ClnGossipCaptureTests : IAsyncLifetime
                                                                               uint.MaxValue)));
     }
 
+    /// <summary>
+    /// The second CLN (<see cref="SecondClnContainerName"/>, the fixture CLN's flags without
+    /// <c>--ignore-fee-limits=false</c>), reached only by the fixture's CLN.
+    /// </summary>
     private async Task<ClnClient> StartSecondClnAsync(CancellationToken ct)
     {
-        await DockerContainerUtils.RemoveContainerAsync(_docker, SecondClnContainerName);
-        var container = await _docker.Containers.CreateContainerAsync(new CreateContainerParameters
+        _cln2 = await _fixture.StartClnAsync(new ClnNodeSpec(SecondClnContainerName)
         {
-            Image = $"{ClnFixture.ClnImage}:{ClnFixture.ClnTag}",
-            Name = SecondClnContainerName,
-            Hostname = SecondClnContainerName,
-            Env = ["LIGHTNINGD_NETWORK=regtest"],
-            Cmd =
-            [
-                $"--bitcoin-rpcconnect={ClnFixture.BitcoinContainerName}", "--bitcoin-rpcport=18443",
-                "--bitcoin-rpcuser=nltg", "--bitcoin-rpcpassword=nltg", "--bind-addr=0.0.0.0:9735",
-                "--alias=nltg-cln2", "--log-level=debug", "--developer", "--dev-bitcoind-poll=1"
-            ],
-            HostConfig = new HostConfig { NetworkMode = ClnFixture.NetworkName }
+            EnforceFeeLimits = false,
+            ReachableFromTests = false
         }, ct);
-        await _docker.Containers.StartContainerAsync(container.ID, new ContainerStartParameters(), ct);
-        var cln2 = new ClnClient(_docker, SecondClnContainerName);
-        await DockerContainerUtils.WaitUntilReadyAsync(SecondClnContainerName,
-                                                       async token => await cln2.GetInfoAsync(token),
-                                                       TimeSpan.FromMinutes(2));
-        return cln2;
+        return _cln2.Client;
     }
 
     private void PrintVectors()

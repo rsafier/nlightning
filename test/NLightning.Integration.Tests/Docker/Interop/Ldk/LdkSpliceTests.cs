@@ -52,8 +52,8 @@ using SpliceWireRecorder = Cln.ClnSpliceTests.SpliceWireRecorder;
 /// while a splice is pending comes in a <c>start_batch</c>; it warns about our 65,531-byte <c>peer_storage</c>
 /// (NL-559).</para>
 /// <para>Each test builds its own node and channel and records our channel traffic both ways with
-/// <see cref="SpliceWireRecorder"/> (the recorder of the CLN proofs). Run with <c>scripts/run-interop.sh ldk Release
-/// -class NLightning.Integration.Tests.Docker.Interop.Ldk.LdkSpliceTests</c>.</para>
+/// <see cref="SpliceWireRecorder"/> (the recorder of the CLN proofs). Run with <c>scripts/run-cluster.sh -n 1 --suite ldk
+/// --class NLightning.Integration.Tests.Docker.Interop.Ldk.LdkSpliceTests</c>.</para>
 /// </remarks>
 [Collection(LdkInteropCollection.Name)]
 [Trait("Category", LdkInteropCollection.Category)]
@@ -86,6 +86,7 @@ public sealed class LdkSpliceTests : IAsyncLifetime
 
     public LdkSpliceTests(LdkFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -99,10 +100,10 @@ public sealed class LdkSpliceTests : IAsyncLifetime
 
         if (_session is not null)
         {
-            if (DockerDiagnostics.CurrentTestFailed)
+            if (TestDiagnostics.CurrentTestFailed)
             {
                 Console.WriteLine($"[ldk] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
-                await DockerDiagnostics.DumpContainerLogsAsync([LdkFixture.LdkContainerName], 400);
+                await _fixture.DumpLdkLogAsync(400);
             }
 
             await _session.DisposeAsync();

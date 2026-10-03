@@ -10,9 +10,10 @@ using Books;
 /// <remarks>
 /// <para>Defaults: the assets, the opening balances and the transfers keep the operational names in effect (so a
 /// renamed operational bucket is renamed here too); <c>income:sales</c> (received payments), <c>income:routing</c>,
-/// <c>income:other</c> (on-chain gains), <c>income:unclassified</c>, <c>income:gains:realized</c>,
-/// <c>expenses:payments</c> (sent payments), <c>expenses:losses</c>, <c>expenses:unclassified</c>,
-/// <c>expenses:losses:realized</c>, <c>expenses:fees:{routing,funding,splice,close,commitment,sweep,cpfp,withdraw}</c>
+/// <c>income:liquidity</c> (liquidity sold, NL-850), <c>income:other</c> (on-chain gains), <c>income:unclassified</c>,
+/// <c>income:gains:realized</c>, <c>expenses:payments</c> (sent payments), <c>expenses:losses</c>,
+/// <c>expenses:unclassified</c>, <c>expenses:losses:realized</c>,
+/// <c>expenses:fees:{routing,liquidity,funding,splice,close,commitment,sweep,cpfp,withdraw}</c>
 /// and <c>equity:transfers:rebalance</c> (both halves of a self-payment, D-A12), and <c>assets:cost-basis</c> (the
 /// financial projector's fiat-only adjustment from the market value of the asset lines to the lots' cost, A3-T4).</para>
 /// <para>Only the lines of the <see cref="IsClassifiable">classifiable roles</see> (the income and expense lines that
@@ -30,6 +31,7 @@ public sealed class FinancialChart
             [FinancialAccount.OtherIncome] = "income:other",
             [FinancialAccount.IncomeUnclassified] = "income:unclassified",
             [FinancialAccount.RealizedGains] = "income:gains:realized",
+            [FinancialAccount.Liquidity] = "income:liquidity",
             [FinancialAccount.Payments] = "expenses:payments",
             [FinancialAccount.Losses] = "expenses:losses",
             [FinancialAccount.ExpensesUnclassified] = "expenses:unclassified",
@@ -42,6 +44,7 @@ public sealed class FinancialChart
             [FinancialAccount.FeeSweep] = "expenses:fees:sweep",
             [FinancialAccount.FeeCpfp] = "expenses:fees:cpfp",
             [FinancialAccount.FeeWithdraw] = "expenses:fees:withdraw",
+            [FinancialAccount.FeeLiquidity] = "expenses:fees:liquidity",
             [FinancialAccount.Rebalance] = "equity:transfers:rebalance",
             [FinancialAccount.CostBasis] = "assets:cost-basis"
         };
@@ -70,10 +73,12 @@ public sealed class FinancialChart
             [AccountRole.Routing] = FinancialAccount.Routing,
             [AccountRole.PushReceived] = FinancialAccount.IncomeUnclassified,
             [AccountRole.OnchainGain] = FinancialAccount.OtherIncome,
+            [AccountRole.LiquidityIncome] = FinancialAccount.Liquidity,
             [AccountRole.Sent] = FinancialAccount.Payments,
             [AccountRole.RoutingFees] = FinancialAccount.FeeRouting,
             [AccountRole.Rebalance] = FinancialAccount.Rebalance,
             [AccountRole.PushSent] = FinancialAccount.ExpensesUnclassified,
+            [AccountRole.LiquidityFees] = FinancialAccount.FeeLiquidity,
             [AccountRole.FeeFunding] = FinancialAccount.FeeFunding,
             [AccountRole.FeeSplice] = FinancialAccount.FeeSplice,
             [AccountRole.FeeClose] = FinancialAccount.FeeClose,
@@ -90,7 +95,7 @@ public sealed class FinancialChart
     private static readonly HashSet<AccountRole> s_classifiable =
     [
         AccountRole.Received, AccountRole.Routing, AccountRole.PushReceived, AccountRole.OnchainGain,
-        AccountRole.Sent, AccountRole.Rebalance, AccountRole.PushSent, AccountRole.LossOnchain,
+        AccountRole.LiquidityIncome, AccountRole.Sent, AccountRole.Rebalance, AccountRole.PushSent, AccountRole.LossOnchain,
         AccountRole.TransfersIn, AccountRole.TransfersOut
     ];
 

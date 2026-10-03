@@ -16,6 +16,11 @@ public sealed class AccountingPriceOptions
     /// uses (D-A11); <c>?currency=&lt;code&gt;&amp;timestamp=&lt;unix seconds&gt;</c> is appended.</summary>
     public const string DefaultUrl = "https://mempool.space/api/v1/historical-price";
 
+    /// <summary>The same API on mempool.space's onion service, the recommended <see cref="Url"/> with Tor on: its
+    /// clearnet API refuses Tor exits (NL-868). Plain <c>http://</c> is allowed to a <c>.onion</c> host (NL-678).</summary>
+    public const string MempoolOnionUrl =
+        "http://mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion/api/v1/historical-price";
+
     /// <summary>The default <see cref="CsvFile"/>, under the configuration directory (the daemon anchors a relative
     /// path there).</summary>
     public const string DefaultCsvFile = "prices.csv";
@@ -36,10 +41,21 @@ public sealed class AccountingPriceOptions
     /// <summary>The largest <see cref="MaxPriceJumpFactor"/> (10^6).</summary>
     public const decimal MaxPriceJumpFactorLimit = 1_000_000m;
 
-    /// <summary>The HTTP source's endpoint (<see cref="DefaultUrl"/>); requests go through Tor whenever
-    /// <c>Node:Tor:Mode</c> is not <c>Off</c> (NL-677). <c>https://</c>, or <c>http://</c> only to a loopback or
+    /// <summary>The HTTP source's endpoint (<see cref="DefaultUrl"/>; with Tor on <see cref="MempoolOnionUrl"/> is
+    /// recommended, NL-868); requests go through Tor whenever <c>Node:Tor:Mode</c> is not <c>Off</c> (NL-677) unless
+    /// <see cref="ThroughTor"/> is false. <c>https://</c>, or <c>http://</c> only to a loopback or
     /// <c>.onion</c> host unless <see cref="AllowPlainHttp"/> (NL-678).</summary>
     public string Url { get; set; } = DefaultUrl;
+
+    /// <summary>
+    /// Whether the HTTP source's requests go through Tor (NL-868): unset (default) = whenever <c>Node:Tor:Mode</c> is
+    /// not <c>Off</c> (NL-677); true = through Tor, refused at start with Tor <c>Off</c>; false = directly from the
+    /// node's IP in <c>Hybrid</c> too (a <c>.onion</c> <see cref="Url"/> still goes through Tor), refused at start in
+    /// <c>TorOnly</c>, which sends every connection through Tor. Privacy trade-off of false: the hours asked mark when
+    /// the node moved money (SECURITY_REVIEW SR-21), and mempool.space then sees them from the node's IP; prefer
+    /// <see cref="MempoolOnionUrl"/> through Tor, since the clearnet API refuses Tor exits.
+    /// </summary>
+    public bool? ThroughTor { get; set; }
 
     /// <summary>Allow a plain <c>http://</c> <see cref="Url"/> to any host (a price server you trust on your own
     /// network); default false: plain HTTP only to loopback or <c>.onion</c> hosts (NL-678).</summary>
@@ -102,6 +118,36 @@ public sealed class AccountingPriceOptions
             errors.Add($"{SectionName}:FetchInterval must be positive");
         if (MaxFetchesPerRound < 0)
             errors.Add($"{SectionName}:MaxFetchesPerRound must not be negative");
+
+        return errors;
+    }
+
+    /// <summary>
+    /// Whether the HTTP source's requests go through Tor under <paramref name="tor"/> (NL-868): never with Tor
+    /// <c>Off</c>, always in <c>TorOnly</c>, else <see cref="ThroughTor"/> (unset = true, NL-677). A <c>.onion</c>
+    /// <see cref="Url"/> goes through Tor whenever Tor is on.
+    /// </summary>
+    public bool RoutesThroughTor(TorOptions? tor) =>
+        tor is { IsEnabled: true } && (tor.IsTorOnly || ThroughTor != false);
+
+    /// <summary>
+    /// The start-up errors of <see cref="ThroughTor"/> against <c>Node:Tor</c> (NL-868; empty when valid or when the
+    /// HTTP source is not used): true with Tor <c>Off</c> (there is no Tor to go through), false in <c>TorOnly</c>
+    /// (every connection goes through Tor). Never a silent change of route: the host refuses to start.
+    /// </summary>
+    public IReadOnlyList<string> GetTorRoutingErrors(TorOptions? tor)
+    {
+        var errors = new List<string>();
+        if (!UsesHttp || ThroughTor is null)
+            return errors;
+
+        if (ThroughTor == true && tor is not { IsEnabled: true })
+            errors.Add($"{SectionName}:{nameof(ThroughTor)} is true but Node:Tor:Mode is Off: there is no Tor to send "
+                     + $"the price requests through; turn Tor on, or unset {SectionName}:{nameof(ThroughTor)}");
+        if (ThroughTor == false && tor is { IsEnabled: true, IsTorOnly: true })
+            errors.Add($"{SectionName}:{nameof(ThroughTor)} is false but Node:Tor:Mode is TorOnly, which sends every "
+                     + $"connection through Tor: unset {SectionName}:{nameof(ThroughTor)} (with Tor, "
+                     + $"{SectionName}:Url {MempoolOnionUrl} is recommended)");
 
         return errors;
     }

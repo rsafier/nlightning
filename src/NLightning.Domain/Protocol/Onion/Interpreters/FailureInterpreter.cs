@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Protocol.Onion.Interpreters;
 
+using Enums;
 using Extensions;
 using Factories;
 using Models;
@@ -27,6 +28,15 @@ public static class FailureInterpreter
     /// <item>Intermediate hop, UPDATE set: the <c>channel_update</c>, if any, MAY be used to retry this payment only.</item>
     /// <item>Intermediate hop: then retry.</item>
     /// </list>
+    /// <para>
+    /// Trampoline (BOLTs PR 836): the final node of the route an origin builds to a trampoline node is that trampoline
+    /// node, so its <c>temporary_trampoline_failure</c> (NODE|25) and <c>trampoline_fee_or_expiry_insufficient</c>
+    /// (NODE|26) arrive as final-node failures. Both are temporary and retryable (the latter with the fee and CLTV delta
+    /// it carries, <see cref="FailureMessage.TryGetTrampolinePolicy"/>), so they are the exception to the final-node
+    /// NODE rule above; <c>unknown_next_trampoline</c> (PERM|27) is permanent and ends the payment like any PERM
+    /// failure of the final node. From an intermediate hop all three follow the generic rules (25/26 exclude the node,
+    /// 27 the outgoing channel).
+    /// </para>
     /// <para>
     /// Not in BOLT 4, and so an implementation choice: an intermediate failure with no readable code is blamed on
     /// the erring node (it authenticated garbage) as a temporary node failure; an unattributable failure (no HMAC
@@ -56,11 +66,16 @@ public static class FailureInterpreter
         if (isFinalNode)
         {
             var isUnderstood = message is { IsKnownCode: true };
+            var isNode = code?.IsNode() ?? false;
+            var isRetryableTrampoline = code is FailureCode.TemporaryTrampolineFailure
+                                                or FailureCode.TrampolineFeeOrExpiryInsufficient;
             // BOLT 4 leaves a non-permanent, understood final-node failure to the origin's MAY. A NODE-bit failure
             // at the payee cannot be routed around (every route ends at that node): retrying it re-sends the same
             // HTLC to the same node in a tight loop (NL-593, a drain's temporary_node_failure did), so it ends the
             // payment. The channel-level final codes (final_expiry_too_soon, final_incorrect_cltv_expiry,
-            // final_incorrect_htlc_amount) and mpp_timeout carry no NODE bit and stay retryable.
+            // final_incorrect_htlc_amount) and mpp_timeout carry no NODE bit and stay retryable. A trampoline node is
+            // the final node of the route to it, and its temporary_trampoline_failure and
+            // trampoline_fee_or_expiry_insufficient ask for a retry (the latter at its fee and CLTV delta, NL-875)
             return new FailureInterpretation
             {
                 ErringHopIndex = erringHop,
@@ -68,8 +83,8 @@ public static class FailureInterpreter
                 Code = code,
                 Message = message,
                 IsPermanent = isPermanent,
-                IsNodeFailure = code?.IsNode() ?? false,
-                ShouldRetry = !isPermanent && isUnderstood && !(code?.IsNode() ?? false)
+                IsNodeFailure = isNode,
+                ShouldRetry = !isPermanent && isUnderstood && (!isNode || isRetryableTrampoline)
             };
         }
 

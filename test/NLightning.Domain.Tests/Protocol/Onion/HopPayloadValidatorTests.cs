@@ -343,15 +343,15 @@ public class HopPayloadValidatorTests
     {
         // Arrange
         var tlvStream = new TlvStream();
-        tlvStream.Add(Amt, Cltv, Scid, new BaseTlv(new BigSize(20), [0x01]));
-        var offsets = new Dictionary<BigSize, int> { [new BigSize(20)] = 19 };
+        tlvStream.Add(Amt, Cltv, Scid, new BaseTlv(new BigSize(24), [0x01]));
+        var offsets = new Dictionary<BigSize, int> { [new BigSize(24)] = 19 };
         var payload = new HopPayload(tlvStream, offsets);
 
         // Act
         var exception = Assert.Throws<OnionException>(() => HopPayloadValidator.Validate(payload, false, false));
 
         // Assert
-        AssertInvalidOnionPayload(exception, new BigSize(20), 19);
+        AssertInvalidOnionPayload(exception, new BigSize(24), 19);
     }
 
     [Fact]

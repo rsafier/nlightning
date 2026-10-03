@@ -138,5 +138,24 @@ public enum FailureCode : ushort
     /// <summary>
     /// BADONION|PERM|24: an error occurred within the blinded route. Data: sha256_of_onion.
     /// </summary>
-    InvalidOnionBlinding = (ushort)FailureCodeFlags.BadOnion | (ushort)FailureCodeFlags.Perm | 24
+    InvalidOnionBlinding = (ushort)FailureCodeFlags.BadOnion | (ushort)FailureCodeFlags.Perm | 24,
+
+    /// <summary>
+    /// NODE|25 <c>temporary_trampoline_failure</c> (BOLTs PR 836): the trampoline node could not relay the payment to
+    /// the next trampoline node but may later (routes were found but failed temporarily). No data.
+    /// </summary>
+    TemporaryTrampolineFailure = (ushort)FailureCodeFlags.Node | 25,
+
+    /// <summary>
+    /// NODE|26 <c>trampoline_fee_or_expiry_insufficient</c> (BOLTs PR 836): the fee or CLTV was below what the
+    /// trampoline node needs to reach the next trampoline node; the sender may retry with the values in the data.
+    /// Data: u32 fee_base_msat || u32 fee_proportional_millionths || u16 cltv_expiry_delta.
+    /// </summary>
+    TrampolineFeeOrExpiryInsufficient = (ushort)FailureCodeFlags.Node | 26,
+
+    /// <summary>
+    /// PERM|27 <c>unknown_next_trampoline</c> (BOLTs PR 836): the trampoline onion named an <c>outgoing_node_id</c>
+    /// the processing node cannot reach. No data.
+    /// </summary>
+    UnknownNextTrampoline = (ushort)FailureCodeFlags.Perm | 27
 }

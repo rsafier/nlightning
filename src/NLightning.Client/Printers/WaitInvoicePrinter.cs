@@ -3,7 +3,7 @@ namespace NLightning.Client.Printers;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// Prints a <c>waitinvoice</c> answer (ClientCommand 46, NL-812): the invoice, and whether the wait timed out.
+/// Prints a <c>waitinvoice</c> answer (ClientCommand 47, NL-901): the invoice, and whether the wait timed out.
 /// </summary>
 public sealed class WaitInvoicePrinter : IPrinter<WaitInvoiceIpcResponse>
 {

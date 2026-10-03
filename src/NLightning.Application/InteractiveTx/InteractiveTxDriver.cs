@@ -10,6 +10,7 @@ using Domain.Channels.Quiescence;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.LiquidityAds.Models;
 using Domain.Money;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
@@ -180,6 +181,13 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
             await SaveModelAsync(attempt, unitOfWork);
         }
+        catch (SignaturesAbandonedException e)
+        {
+            // NL-867: nothing was signed or sent, and our tx_signatures did not go out, so the attempt is abandoned
+            // with tx_abort (a failed connection would only bring the same commitment_signed back after reconnecting)
+            attempt.Restore(checkpoint);
+            return await AbortOurselvesAsync(entry, attempt, e.Message, unitOfWork, cancellationToken);
+        }
         catch
         {
             // Nothing was saved or sent: memory goes back to what the database holds
@@ -194,7 +202,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
     /// <inheritdoc />
     public Task<IReadOnlyList<IChannelMessage>> RequestRbfAsync(InteractiveTxTerms terms,
                                                                 LightningMoney fundingOutputContribution,
-                                                                CancellationToken cancellationToken = default)
+                                                                CancellationToken cancellationToken = default,
+                                                                RequestFunding? requestFunding = null)
     {
         ArgumentNullException.ThrowIfNull(terms);
 
@@ -218,7 +227,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
         var message = new TxInitRbfMessage(new TxInitRbfPayload(terms.ChannelId, terms.FeeratePerKw, terms.Locktime),
                                            CreateContributionTlv(fundingOutputContribution),
-                                           terms.LocalRequiresConfirmedInputs ? new RequireConfirmedInputsTlv() : null);
+                                           terms.LocalRequiresConfirmedInputs ? new RequireConfirmedInputsTlv() : null,
+                                           requestFunding is null ? null : new RequestFundingTlv(requestFunding));
         return Task.FromResult<IReadOnlyList<IChannelMessage>>([message]);
     }
 
@@ -237,9 +247,10 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             if (entry.PendingRbf is null)
                 return [];
 
-            // Our tx_init_rbf is withdrawn
+            // Our tx_init_rbf is withdrawn, and whoever waits for it learns why (NL-527, NL-867)
             entry.PendingRbf = null;
             MarkAbortSent(entry);
+            await entry.Host!.OnRbfRequestEndedAsync(channelId, reason, cancellationToken);
             return [CreateTxAbort(channelId, reason)];
         }
 
@@ -456,6 +467,14 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
             return outbound;
         }
+        catch (SignaturesAbandonedException e) when (ReferenceEquals(entry.Current, attempt))
+        {
+            // NL-867: we cannot sign our tx_signatures (an RBF sibling confirmed): tx_abort, which a peer that already
+            // sent its tx_signatures never echoes
+            attempt.Restore(checkpoint);
+            return await AbortOurselvesAsync(entry, attempt, e.Message, unitOfWork, cancellationToken,
+                                             message is TxSignaturesMessage);
+        }
         catch when (ReferenceEquals(entry.Current, attempt))
         {
             // A save failed: nothing was sent, so memory goes back to what the database holds (persist, then
@@ -611,7 +630,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         [
             new TxAckRbfMessage(new TxAckRbfPayload(channelId),
                                 CreateContributionTlv(decision.FundingOutputContribution),
-                                terms.LocalRequiresConfirmedInputs ? new RequireConfirmedInputsTlv() : null)
+                                terms.LocalRequiresConfirmedInputs ? new RequireConfirmedInputsTlv() : null,
+                                decision.WillFund is null ? null : new ProvideFundingTlv(decision.WillFund))
         ];
     }
 
@@ -764,11 +784,23 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         var transaction = attempt.Negotiation.ConstructedTx
                        ?? throw new InvalidOperationException("The negotiated transaction is not constructed");
 
-        var witnesses = attempt.Contribution.Inputs.Count == 0
-                                               ? []
-                                               : await _contributor.SignAsync(transaction, attempt.Contribution,
-                                                                              GetOtherSpentOutputs(transaction),
-                                                                              cancellationToken);
+        // NL-867: the host may know the attempt can never confirm (an RBF sibling confirmed): abandoned, not signed
+        if (await entry.Host!.GetTxSignaturesRefusalAsync(transaction, cancellationToken) is { } refusal)
+            throw new SignaturesAbandonedException(refusal);
+
+        IReadOnlyList<Witness> witnesses;
+        try
+        {
+            witnesses = attempt.Contribution.Inputs.Count == 0
+                            ? []
+                            : await _contributor.SignAsync(transaction, attempt.Contribution,
+                                                           GetOtherSpentOutputs(transaction), cancellationToken);
+        }
+        catch (InteractiveTxInputsSpentException e)
+        {
+            throw new SignaturesAbandonedException($"our inputs were spent on chain: {e.Message}");
+        }
+
         var sharedInputSignature = transaction.Inputs.Any(i => i.IsShared)
                                        ? await entry.Host!.SignSharedInputAsync(transaction, cancellationToken)
                                        : null;
@@ -854,7 +886,8 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
     private async Task<IReadOnlyList<IChannelMessage>> AbortOurselvesAsync(ChannelEntry entry, Attempt attempt,
                                                                            string reason, IUnitOfWork unitOfWork,
-                                                                           CancellationToken cancellationToken)
+                                                                           CancellationToken cancellationToken,
+                                                                           bool peerSentSignatures = false)
     {
         IReadOnlyList<IChannelMessage> outbound;
         try
@@ -870,7 +903,7 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         }
 
         LogAborted(attempt, reason, null, true);
-        MarkAbortSent(entry, PeerSentSignatures(attempt));
+        MarkAbortSent(entry, peerSentSignatures || PeerSentSignatures(attempt));
         await FinishAbortAsync(entry, attempt, reason, unitOfWork, cancellationToken);
         return EnsureTxAbort(attempt.Terms.ChannelId, outbound, reason);
     }
@@ -1129,6 +1162,12 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
                              + "{Reason} {RequirementId}", attempt.SessionId, attempt.Terms.ChannelId,
                                byUs ? "us" : "the peer", reason, requirementId);
     }
+
+    /// <summary>
+    /// Our <c>tx_signatures</c> cannot be made for the attempt, which can never confirm (NL-867): the caller restores
+    /// the attempt and aborts it with <c>tx_abort</c> (nothing was signed or sent).
+    /// </summary>
+    private sealed class SignaturesAbandonedException(string message) : Exception(message);
 
     /// <summary>The driver's state for one channel.</summary>
     private sealed class ChannelEntry(CompactPubKey remoteNodeId)

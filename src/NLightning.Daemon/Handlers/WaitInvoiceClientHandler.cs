@@ -11,7 +11,7 @@ using Domain.Payments.Models;
 using Interfaces;
 
 /// <summary>
-/// Waits until one of our invoices leaves <c>Open</c> (ClientCommand 46, <c>waitinvoice</c>; Cashu plan C0, NL-812).
+/// Waits until one of our invoices leaves <c>Open</c> (ClientCommand 47, <c>waitinvoice</c>; Cashu plan C0, NL-901).
 /// </summary>
 /// <remarks>
 /// <para>The handler subscribes to <see cref="IPaymentEventSource"/> before it reads the invoice, so a settle committed

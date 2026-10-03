@@ -18,6 +18,7 @@ using Domain.Offers.Constants;
 using Domain.Offers.Encoding;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
+using Domain.Payments.Trampoline;
 using Domain.Persistence.Interfaces;
 
 /// <summary>
@@ -260,11 +261,13 @@ internal static class PaymentAccountingEvents
     /// <param name="closeTxId">The commitment the HTLC output belongs to.</param>
     /// <param name="spenderTxId">The peer's transaction that took it; null when we gave it up.</param>
     /// <param name="occurredAt">When the resolution was recorded.</param>
-    /// <param name="blockHeight">The block of the spend (or of the round that gave it up).</param>
+    /// <param name="blockHeight">The block of the spend (or of the round that gave it up, or of the close).</param>
+    /// <param name="trimmed">The HTLC had no output on the commitment that confirmed (below dust, NL-760): lost with
+    /// the close.</param>
     public static AccountingEventModel ForwardUpstreamLostOnchain(string key, ForwardCircuitModel circuit,
                                                                   ChannelModel? incoming, TxId closeTxId,
                                                                   TxId? spenderTxId, DateTimeOffset occurredAt,
-                                                                  uint blockHeight)
+                                                                  uint blockHeight, bool trimmed = false)
     {
         var details = AccountingDetailsCodec.Create(
         [
@@ -272,10 +275,13 @@ internal static class PaymentAccountingEvents
             ("cause", UpstreamOnchainCause),
             (AccountingDetailKeys.CloseTxId, closeTxId.ToString()),
             ("spenderTxId", spenderTxId?.ToString()),
+            (TrimmedDetail, trimmed ? "true" : null),
             (AccountingDetailKeys.Reason,
-             spenderTxId is null
-                 ? "The incoming HTLC of a settled forward was given up on chain"
-                 : "The incoming HTLC of a settled forward was taken by the peer on chain")
+             trimmed
+                 ? "The incoming HTLC of a settled forward was trimmed (below dust) on the commitment that confirmed"
+                 : spenderTxId is null
+                     ? "The incoming HTLC of a settled forward was given up on chain"
+                     : "The incoming HTLC of a settled forward was taken by the peer on chain")
         ]);
 
         return new AccountingEventModel
@@ -295,6 +301,11 @@ internal static class PaymentAccountingEvents
         };
     }
 
+    /// <summary>The detail of a <see cref="AccountingEventKind.ForwardLostOnchain"/> or
+    /// <see cref="AccountingEventKind.InvoiceLostOnchain"/> whose incoming HTLC had no output on the commitment that
+    /// confirmed (NL-760): <c>true</c>.</summary>
+    public const string TrimmedDetail = "trimmed";
+
     /// <summary>The detail <c>cause</c> of an <see cref="AccountingEventKind.InvoiceLostOnchain"/> (NL-688).</summary>
     public const string InvoiceOnchainCause = "invoiceOnchain";
 
@@ -311,11 +322,13 @@ internal static class PaymentAccountingEvents
     /// <param name="closeTxId">The commitment the HTLC output belongs to.</param>
     /// <param name="spenderTxId">The peer's transaction that took it; null when we gave it up.</param>
     /// <param name="occurredAt">When the resolution was recorded.</param>
-    /// <param name="blockHeight">The block of the spend (or of the round that gave it up).</param>
+    /// <param name="blockHeight">The block of the spend (or of the round that gave it up, or of the close).</param>
+    /// <param name="trimmed">The HTLC had no output on the commitment that confirmed (below dust, NL-760): lost with
+    /// the close.</param>
     public static AccountingEventModel InvoiceLostOnchain(string key, InvoiceModel invoice, ulong htlcId,
                                                           ulong htlcAmountMsat, ChannelModel channel, TxId closeTxId,
                                                           TxId? spenderTxId, DateTimeOffset occurredAt,
-                                                          uint blockHeight)
+                                                          uint blockHeight, bool trimmed = false)
     {
         var details = AccountingDetailsCodec.Create(
         [
@@ -327,10 +340,13 @@ internal static class PaymentAccountingEvents
             (AccountingDetailKeys.CloseTxId, closeTxId.ToString()),
             ("spenderTxId", spenderTxId?.ToString()),
             ("settledKey", AccountingEventKeys.InvoiceSettled(invoice.PaymentHash)),
+            (TrimmedDetail, trimmed ? "true" : null),
             (AccountingDetailKeys.Reason,
-             spenderTxId is null
-                 ? "An incoming HTLC of a settled invoice was given up on chain"
-                 : "An incoming HTLC of a settled invoice was taken back by the peer on chain (its timeout)"),
+             trimmed
+                 ? "An incoming HTLC of a settled invoice was trimmed (below dust) on the commitment that confirmed"
+                 : spenderTxId is null
+                     ? "An incoming HTLC of a settled invoice was given up on chain"
+                     : "An incoming HTLC of a settled invoice was taken back by the peer on chain (its timeout)"),
             .. SourceLabels.FromStored(invoice.Label, invoice.Tags).ToDetailPairs()
         ]);
 
@@ -345,6 +361,159 @@ internal static class PaymentAccountingEvents
             PaymentHash = invoice.PaymentHash,
             Counterparty = channel.RemoteNodeId,
             AmountMsat = -checked((long)htlcAmountMsat),
+            FeeMsat = 0,
+            Finality = AccountingFinality.Confirmed,
+            Details = details
+        };
+    }
+
+    /// <summary>The detail <c>kind</c> of a trampoline relay's events (NL-875).</summary>
+    public const string TrampolineKind = "trampoline";
+
+    /// <summary>
+    /// A trampoline payment we relayed settled (NL-875): every incoming part of <paramref name="relay"/> was fulfilled and
+    /// its outgoing payment succeeded. <c>AmountMsat</c> is the channels' net change: the sum of the incoming parts minus
+    /// what the outgoing payment took (its amount and the routing fees we paid), from <paramref name="outgoingPayment"/>
+    /// when given, else from the relay's <c>FeeEarned</c>. The outgoing payment books no event of its own.
+    /// </summary>
+    /// <param name="relay">The relay, already <see cref="TrampolineRelayStatus.Fulfilled"/>.</param>
+    /// <param name="parts">Its incoming parts.</param>
+    /// <param name="outgoingPayment">Its outgoing payment (<c>IsTrampolineRelay</c>), when known.</param>
+    /// <param name="incoming">The channel of the first incoming part, when loaded.</param>
+    /// <param name="blockHeight">The current height, when known (0 = unknown).</param>
+    /// <exception cref="InvalidOperationException">The relay is not fulfilled, or has no part.</exception>
+    public static AccountingEventModel TrampolineRelaySettled(TrampolineRelayModel relay,
+                                                              IReadOnlyList<TrampolineRelayPartModel> parts,
+                                                              PaymentModel? outgoingPayment, ChannelModel? incoming,
+                                                              uint blockHeight = 0)
+    {
+        if (relay is not { Status: TrampolineRelayStatus.Fulfilled, CompletedAt: { } completedAt })
+            throw new InvalidOperationException("The trampoline relay is not fulfilled.");
+        if (parts.Count == 0)
+            throw new InvalidOperationException("The trampoline relay has no incoming part.");
+
+        var incomingMsat = 0L;
+        foreach (var part in parts)
+            incomingMsat = checked(incomingMsat + (long)part.Amount.MilliSatoshi);
+
+        var outgoingMsat = outgoingPayment is not null
+                               ? checked((long)outgoingPayment.TotalAmount.MilliSatoshi)
+                               : checked(incomingMsat - (long)(relay.FeeEarned?.MilliSatoshi ?? 0));
+        var first = parts[0];
+        var details = AccountingDetailsCodec.Create(
+        [
+            (AccountingDetailKeys.Kind, TrampolineKind),
+            ("parts", parts.Count.ToString(CultureInfo.InvariantCulture)),
+            ("incomingChannelId", first.ChannelId.ToString()),
+            ("incomingChannelIds", string.Join(',', parts.Select(p => p.ChannelId.ToString()).Distinct())),
+            (AccountingDetailKeys.IncomingScid, ScidOf(incoming)?.ToString()),
+            ("incomingAmountMsat", incomingMsat.ToString(CultureInfo.InvariantCulture)),
+            ("amountOutMsat", Msat(relay.AmountOut)),
+            ("outgoingAmountMsat", outgoingMsat.ToString(CultureInfo.InvariantCulture)),
+            ("routingFeePaidMsat", outgoingPayment is null ? null : Msat(outgoingPayment.Fee)),
+            ("outgoingChannelId", outgoingPayment?.OutgoingChannelId?.ToString()),
+            ("nextNodeId", relay.NextNodeId?.ToString()),
+            ("blindedRecipient", relay.RecipientBlindedPaths is null ? null : AccountingDetailKeys.True)
+        ]);
+
+        return new AccountingEventModel
+        {
+            EventKey = AccountingEventKeys.TrampolineRelaySettled(relay.PaymentHash),
+            Kind = AccountingEventKind.TrampolineRelaySettled,
+            OccurredAt = completedAt,
+            BlockHeight = blockHeight > 0 ? blockHeight : null,
+            ChannelId = first.ChannelId,
+            ShortChannelId = ScidOf(incoming),
+            PaymentHash = relay.PaymentHash,
+            Counterparty = incoming?.RemoteNodeId,
+            AmountMsat = checked(incomingMsat - outgoingMsat),
+            FeeMsat = 0,
+            Finality = AccountingFinality.Final,
+            Details = details
+        };
+    }
+
+    /// <summary>
+    /// Stages the <c>TrampolineRelaySettled</c> event of <paramref name="relay"/> on <paramref name="unitOfWork"/>, its
+    /// parts and outgoing payment read from it, for the relay engine to call in the save that marks the relay
+    /// <c>Fulfilled</c>. Nothing when the relay is not fulfilled or the event is already in the feed. Never throws (a
+    /// failure is logged and the relay is saved without its event).
+    /// </summary>
+    public static async Task StageTrampolineRelaySettledAsync(IUnitOfWork unitOfWork, TrampolineRelayModel relay,
+                                                              ChannelModel? incoming, uint blockHeight, ILogger logger,
+                                                              CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (relay.Status != TrampolineRelayStatus.Fulfilled)
+                return;
+
+            var events = unitOfWork.AccountingEventDbRepository;
+            if (await events.ExistsAsync(AccountingEventKeys.TrampolineRelaySettled(relay.PaymentHash),
+                                         cancellationToken))
+                return;
+
+            var parts = await unitOfWork.TrampolineRelayDbRepository.GetPartsAsync(relay.PaymentHash);
+            var payment = await unitOfWork.PaymentDbRepository.GetByPaymentHashAsync(relay.PaymentHash);
+            events.Add(TrampolineRelaySettled(relay, parts,
+                                              payment is { IsTrampolineRelay: true, Status: PaymentStatus.Succeeded }
+                                                  ? payment
+                                                  : null, incoming, blockHeight));
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            logger.LogError(e, "Could not record the accounting event of trampoline relay {PaymentHash}; the relay is "
+                             + "saved without it", relay.PaymentHash);
+        }
+    }
+
+    /// <summary>
+    /// An incoming part of a trampoline relay booked as settled (<see cref="AccountingEventKind.TrampolineRelaySettled"/>)
+    /// that we then lost on chain (NL-875, as NL-608 for a forward): the upstream fulfill never got through and the peer
+    /// took the HTLC output by its timeout, or we gave it up. The part's amount is lost. A
+    /// <see cref="AccountingEventKind.ForwardLostOnchain"/> with the <see cref="UpstreamOnchainCause"/>, keyed by the
+    /// incoming HTLC (<see cref="AccountingEventKeys.ForwardLostOnchain"/>), so a reorg reverses it as a forward's.
+    /// </summary>
+    /// <param name="key">The event key (the generation of <see cref="AccountingEventKeys.ForwardLostOnchain"/>).</param>
+    /// <param name="part">The lost part.</param>
+    /// <param name="incoming">The part's channel.</param>
+    /// <param name="closeTxId">The commitment the HTLC output belongs to.</param>
+    /// <param name="spenderTxId">The peer's transaction that took it; null when we gave it up.</param>
+    /// <param name="occurredAt">When the resolution was recorded.</param>
+    /// <param name="blockHeight">The block of the spend (or of the round that gave it up).</param>
+    public static AccountingEventModel TrampolinePartLostOnchain(string key, TrampolineRelayPartModel part,
+                                                                 ChannelModel? incoming, TxId closeTxId,
+                                                                 TxId? spenderTxId, DateTimeOffset occurredAt,
+                                                                 uint blockHeight)
+    {
+        var details = AccountingDetailsCodec.Create(
+        [
+            (AccountingDetailKeys.Kind, TrampolineKind),
+            ("incomingChannelId", part.ChannelId.ToString()),
+            ("incomingHtlcId", part.HtlcId.ToString(CultureInfo.InvariantCulture)),
+            (AccountingDetailKeys.IncomingScid, ScidOf(incoming)?.ToString()),
+            ("incomingAmountMsat", Msat(part.Amount)),
+            ("settledKey", AccountingEventKeys.TrampolineRelaySettled(part.PaymentHash)),
+            ("cause", UpstreamOnchainCause),
+            (AccountingDetailKeys.CloseTxId, closeTxId.ToString()),
+            ("spenderTxId", spenderTxId?.ToString()),
+            (AccountingDetailKeys.Reason,
+             spenderTxId is null
+                 ? "An incoming HTLC of a settled trampoline relay was given up on chain"
+                 : "An incoming HTLC of a settled trampoline relay was taken by the peer on chain")
+        ]);
+
+        return new AccountingEventModel
+        {
+            EventKey = key,
+            Kind = AccountingEventKind.ForwardLostOnchain,
+            OccurredAt = occurredAt,
+            BlockHeight = blockHeight,
+            ChannelId = part.ChannelId,
+            ShortChannelId = ScidOf(incoming),
+            PaymentHash = part.PaymentHash,
+            Counterparty = incoming?.RemoteNodeId,
+            AmountMsat = -checked((long)part.Amount.MilliSatoshi),
             FeeMsat = 0,
             Finality = AccountingFinality.Confirmed,
             Details = details

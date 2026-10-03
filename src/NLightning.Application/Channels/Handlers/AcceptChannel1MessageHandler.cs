@@ -10,6 +10,7 @@ using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Closing;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -146,7 +147,14 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
 
         BitcoinScript? remoteUpfrontShutdownScript = null;
         if (message.UpfrontShutdownScriptTlv is not null && message.UpfrontShutdownScriptTlv.Value.Length > 0)
+        {
+            // BOLT 2: only a shutdown form the negotiated features allow (NL-776)
+            if (!ShutdownScriptValidator.IsValidUpfront(message.UpfrontShutdownScriptTlv.Value, negotiatedFeatures))
+                throw new ChannelErrorException("upfront_shutdown_script is not a valid shutdown script",
+                                                payload.ChannelId, "upfront_shutdown_script is not a valid form");
+
             remoteUpfrontShutdownScript = message.UpfrontShutdownScriptTlv.Value;
+        }
 
         // Create the remote key set from the message
         var remoteKeySet = ChannelKeySetModel.CreateForRemote(message.Payload.FundingPubKey,

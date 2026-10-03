@@ -51,6 +51,11 @@ public class TlvConverterFactory : ITlvConverterFactory
         _converters.Add(typeof(StartBatchMessageTypeTlv), new StartBatchMessageTypeTlvConverter());
         _converters.Add(typeof(UpfrontShutdownScriptTlv), new UpfrontShutdownScriptTlvConverter());
 
+        // Liquidity ads (BOLT PR #1153, TLV 1339; NL-850)
+        _converters.Add(typeof(RequestFundingTlv), new RequestFundingTlvConverter());
+        _converters.Add(typeof(ProvideFundingTlv), new ProvideFundingTlvConverter());
+        _converters.Add(typeof(WillFundRatesTlv), new WillFundRatesTlvConverter());
+
         // Onion hop payload (BOLT 4) TLVs
         _converters.Add(typeof(AmtToForwardTlv), new AmtToForwardTlvConverter());
         _converters.Add(typeof(OutgoingCltvValueTlv), new OutgoingCltvValueTlvConverter());
@@ -60,5 +65,11 @@ public class TlvConverterFactory : ITlvConverterFactory
         _converters.Add(typeof(CurrentPathKeyTlv), new CurrentPathKeyTlvConverter());
         _converters.Add(typeof(PaymentMetadataTlv), new PaymentMetadataTlvConverter());
         _converters.Add(typeof(TotalAmountMsatTlv), new TotalAmountMsatTlvConverter());
+
+        // Trampoline hop payload TLVs (BOLTs PR 836, NL-875)
+        _converters.Add(typeof(OutgoingNodeIdTlv), new OutgoingNodeIdTlvConverter());
+        _converters.Add(typeof(TrampolineOnionPacketTlv), new TrampolineOnionPacketTlvConverter());
+        _converters.Add(typeof(RecipientFeaturesTlv), new RecipientFeaturesTlvConverter());
+        _converters.Add(typeof(RecipientBlindedPathsTlv), new RecipientBlindedPathsTlvConverter());
     }
 }

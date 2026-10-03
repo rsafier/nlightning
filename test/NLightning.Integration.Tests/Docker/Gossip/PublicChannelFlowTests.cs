@@ -22,7 +22,7 @@ using Utils;
 /// <remarks>
 /// <para>Each test uses its own node (fresh key) and its own channel, and asserts only on that channel and node.</para>
 /// <para>(d) (NL-255 re-check): once we are public, david's private-channel invoice hints through us.</para>
-/// <para>Run with <c>scripts/run-gossip.sh</c> (own process, own fixture).</para>
+/// <para>Run with <c>scripts/run-cluster.sh -n 1 --suite gossip</c> (own process, own fixture).</para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public class PublicChannelFlowTests
@@ -75,6 +75,8 @@ public class PublicChannelFlowTests
         await using var node = await GossipTestNodes.StartGossipNodeAsync(_fixture, "gossip-g1b", alias, ct);
         // The on-chain reserve we keep as fundee of an anchors channel (NL-379), LND's default type with us
         await node.FundWalletAsync(LightningMoney.Satoshis(200_000), AddressType.P2Wpkh, ct);
+        // alice's sweeper may hold her wallet outputs as fee inputs after an earlier test's force close (NL-842)
+        await ChainSync.EnsureLndSpendableAsync(_fixture, alice, (long)s_capacity.Satoshi + 100_000, [node], ct);
         await ChainSync.WaitAllAtTipAsync(_fixture, [node], ct);
         await node.ConnectToAsync(alice, ct);
 

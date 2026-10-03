@@ -30,7 +30,10 @@ public class FailureCodeTests
         (FailureCode.ExpiryTooFar, 0x0015),
         (FailureCode.InvalidOnionPayload, 0x4016),
         (FailureCode.MppTimeout, 0x0017),
-        (FailureCode.InvalidOnionBlinding, 0xC018)
+        (FailureCode.InvalidOnionBlinding, 0xC018),
+        (FailureCode.TemporaryTrampolineFailure, 0x2019),
+        (FailureCode.TrampolineFeeOrExpiryInsufficient, 0x201A),
+        (FailureCode.UnknownNextTrampoline, 0x401B)
     ];
 
     public static TheoryData<FailureCode, ushort> ExpectedValues
@@ -66,7 +69,7 @@ public class FailureCodeTests
         var all = Enum.GetValues<FailureCode>();
 
         // Assert
-        Assert.Equal(24, all.Length);
+        Assert.Equal(27, all.Length);
         Assert.All(all, code => Assert.Contains(code, expected));
     }
 
@@ -109,6 +112,9 @@ public class FailureCodeTests
     [InlineData(FailureCode.MppTimeout, false, false, false, false)]
     [InlineData(FailureCode.IncorrectPaymentAmount, false, true, false, false)]
     [InlineData(FailureCode.FinalExpiryTooSoon, false, false, false, false)]
+    [InlineData(FailureCode.TemporaryTrampolineFailure, false, false, true, false)]
+    [InlineData(FailureCode.TrampolineFeeOrExpiryInsufficient, false, false, true, false)]
+    [InlineData(FailureCode.UnknownNextTrampoline, false, true, false, false)]
     public void Given_FailureCode_When_CheckingFlags_Then_FlagsMatchSpec(FailureCode code, bool badOnion, bool perm,
                                                                           bool node, bool update)
     {
@@ -117,5 +123,18 @@ public class FailureCodeTests
         Assert.Equal(perm, code.IsPerm());
         Assert.Equal(node, code.IsNode());
         Assert.Equal(update, code.IsUpdate());
+    }
+
+    [Theory]
+    [InlineData(FailureCode.TemporaryTrampolineFailure, true)]
+    [InlineData(FailureCode.TrampolineFeeOrExpiryInsufficient, true)]
+    [InlineData(FailureCode.UnknownNextTrampoline, true)]
+    [InlineData(FailureCode.TemporaryNodeFailure, false)]
+    [InlineData(FailureCode.UnknownNextPeer, false)]
+    [InlineData(FailureCode.InvalidOnionBlinding, false)]
+    public void Given_FailureCode_When_CheckingIsTrampoline_Then_OnlyThePr836CodesAre(FailureCode code, bool expected)
+    {
+        // Act & Assert
+        Assert.Equal(expected, code.IsTrampoline());
     }
 }

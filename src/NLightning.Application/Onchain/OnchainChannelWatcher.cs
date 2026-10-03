@@ -401,12 +401,14 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 
     /// <summary>
     /// Stages the <see cref="AccountingEventKind.ChannelForceClosed"/> event of a close being recorded (see
-    /// <see cref="OnchainAccounting"/>). Never throws: a failure is logged and the close is recorded without it.
+    /// <see cref="OnchainAccounting"/>) and the losses of the settled incoming HTLCs it trimmed (NL-760). Never throws:
+    /// a failure is logged and the close is recorded without them.
     /// </summary>
     private async Task StageForceClosedEventAsync(IUnitOfWork unitOfWork, ChannelModel channel,
                                                   ChannelCloseKind closeKind, ChainTx spend, ulong? commitmentNumber,
                                                   uint height, IReadOnlyList<CommitmentOutputDescriptor> descriptors,
-                                                  CommitmentTxSpec? spec, ChannelFunding spentFunding)
+                                                  CommitmentTxSpec? spec, ChannelFunding spentFunding,
+                                                  bool outputsUnmapped)
     {
         try
         {
@@ -419,9 +421,22 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
             if (key is null)
                 return;
 
+            var now = _timeProvider.GetUtcNow();
             accounting.Add(OnchainAccounting.ForceClosed(channel, key, closeKind, spend, commitmentNumber, height,
                                                          descriptors, spec, LocalSource(channel)?.Spec, spentFunding,
-                                                         _timeProvider.GetUtcNow()));
+                                                         now, outputsUnmapped));
+
+            // NL-760: an incoming HTLC trimmed on the commitment that confirmed is lost with the close; when a settled
+            // invoice or forward booked it (the NL-688/NL-608 conditions), its loss goes in the close's save
+            foreach (var htlc in OnchainAccounting.TrimmedIncomingHtlcs(closeKind, spec, descriptors, outputsUnmapped))
+            {
+                await OnchainResolutionExecutor.StageForwardLossAsync(unitOfWork, accounting, channel, spend.TxId,
+                                                                      htlc.Id, null, height, now, true,
+                                                                      CancellationToken.None);
+                await OnchainResolutionExecutor.StageInvoiceLossAsync(unitOfWork, accounting, channel, spend.TxId,
+                                                                      htlc.Id, htlc.PaymentHash, null, height, now,
+                                                                      true, _logger, CancellationToken.None);
+            }
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -479,6 +494,10 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
             var close = await OnchainAccounting.FindAsync(
                             accounting, AccountingEventKeys.ChannelForceClosed(channelId, old.CommitmentTransactionId),
                             old.SpentAtHeight, CancellationToken.None);
+
+            // NL-760: the losses of the trimmed incoming HTLCs recorded with the close
+            await OnchainResolutionExecutor.StageTrimmedIncomingLossReversalsAsync(accounting, channelId, old, close,
+                                                                                  now, CancellationToken.None);
             if (close is not null)
                 await OnchainAccounting.StageReversalAsync(accounting, close, old.SpentAtHeight, now,
                                                            CancellationToken.None);
@@ -990,7 +1009,7 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 
         // NL-602: our channel balance moves to pending on-chain funds in the save that records the close
         await StageForceClosedEventAsync(unitOfWork, channel, closeKind, spend, classification.CommitmentNumber,
-                                         args.BlockHeight, descriptors, spec, spentFunding);
+                                         args.BlockHeight, descriptors, spec, spentFunding, unmapped is not null);
         await unitOfWork.SaveChangesAsync();
 
         if (errorBytes is not null)

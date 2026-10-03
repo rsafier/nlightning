@@ -37,7 +37,8 @@ using BlindedPaymentPath = Domain.Protocol.Onion.Models.BlindedPaymentPath;
 /// our node advertises it Optional here (the default since the M5 lane; set explicitly here), so the test waits until david's graph
 /// has our <c>node_announcement</c> with the bit and our channel with both policies.</para>
 /// <para>Public channels change the LND graph for good, so this proof runs in the gossip collection: use
-/// <c>scripts/run-gossip.sh 1 Release -class NLightning.Integration.Tests.Docker.Gossip.RouteBlindingFlowTests</c>.
+/// <c>scripts/run-cluster.sh -n 1 --suite gossip --class
+/// NLightning.Integration.Tests.Docker.Gossip.RouteBlindingFlowTests</c>.
 /// </para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]

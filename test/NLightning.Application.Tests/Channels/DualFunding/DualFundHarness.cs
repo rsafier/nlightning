@@ -18,6 +18,7 @@ using Application.Channels.Reestablish;
 using Application.Channels.Services;
 using Application.Gossip;
 using Application.InteractiveTx;
+using Application.LiquidityAds;
 using Application.Payments;
 using Application.Payments.Routing;
 using Application.Payments.Switch;
@@ -186,7 +187,6 @@ internal sealed class DualFundHarness : IAsyncDisposable
     {
         for (var rounds = 0; rounds < 1_000 && !operation.IsCompleted; rounds++)
         {
-            System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"ROUND {rounds}\n");
             // The nodes' clock is stepped: fire whatever debounced commits became due, and let opens whose deadline
             // the test relies on (BOLT 2 gives the initiator up) reach it deterministically
             Clock.Advance(TimeSpan.FromMilliseconds(10));
@@ -398,15 +398,11 @@ internal sealed class DualFundNode
                      })
                     .ReturnsAsync(true);
 
-        System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"BeforeBuildProvider {DateTime.UtcNow:HH:mm:ss.fff}\n");
         _provider = BuildProvider();
-        System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"AfterBuildProvider\n");
         if (migrate)
         {
             using var scope = _provider.CreateScope();
-            System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"BeforeMigrate\n");
             await scope.ServiceProvider.GetRequiredService<NLightningDbContext>().Database.MigrateAsync();
-            System.IO.File.AppendAllText("/tmp/l5-trace.txt", $"AfterMigrate\n");
         }
 
         ChannelManager = _provider.GetRequiredService<ChannelManager>();
@@ -452,6 +448,41 @@ internal sealed class DualFundNode
         }
     }
 
+    /// <summary>
+    /// The chain monitor finds <paramref name="txId"/>, a funding attempt of <paramref name="channelId"/>, in a block
+    /// (its first confirmation, below the funding depth; NL-867): its watch row gets the first-seen height and, with
+    /// <paramref name="spendWallet"/>, the wallet sees the attempt's inputs spent; with <paramref name="raiseBlock"/> the
+    /// block is raised and whatever it scheduled runs to the end.
+    /// </summary>
+    public async Task SeeInBlockAsync(ChannelId channelId, TxId txId, bool raiseBlock = true, bool spendWallet = true)
+    {
+        await InScopeAsync(async unitOfWork =>
+        {
+            var watch = await unitOfWork.WatchedTransactionDbRepository.GetByTransactionIdAsync(txId)
+                     ?? throw new InvalidOperationException($"{Name} does not watch {txId}");
+            watch.SetHeightAndIndex(DualFundHarness.BlockHeight, 1);
+            unitOfWork.WatchedTransactionDbRepository.Update(watch);
+            await unitOfWork.SaveChangesAsync();
+
+            if (spendWallet)
+            {
+                var session = (await unitOfWork.InteractiveTxSessionDbRepository.GetByChannelIdAsync(channelId))
+                   .First(s => s.ConstructedTx?.TxId == txId);
+                foreach (var input in session.ConstructedTx!.Inputs)
+                    Wallet.SpentOnChain.Add((input.PrevTxId, input.PrevTxVout));
+            }
+
+            return 0;
+        });
+
+        if (!raiseBlock)
+            return;
+
+        ChainMonitor.Raise(m => m.OnNewBlockDetected += null,
+                           new NewBlockEventArgs(DualFundHarness.BlockHeight, new Hash(new byte[32])));
+        await DualFund.WhenIdleAsync();
+    }
+
     /// <summary>A payment of <paramref name="amount"/> from this node to <paramref name="payee"/> over the channel.</summary>
     public async Task<(Hash PaymentHash, Secret Preimage)> PayAsync(DualFundNode payee, ChannelId channelId,
                                                                     LightningMoney amount)
@@ -495,6 +526,14 @@ internal sealed class DualFundNode
         if (_harness.WithPeerServices)
         {
             PeerService.SetupGet(p => p.Features).Returns(() => _harness.NegotiatedFeatures);
+
+            // Liquidity ads (NL-850): the rates the other node sells at, as its init carries them
+            PeerService.SetupGet(p => p.LiquidityRates)
+                       .Returns(() => _harness.Other(this).Options.LiquidityAds.GetWillFundRates());
+
+            // The link is up: the commit scheduler's ping before a commitment_signed is answered
+            PeerService.Setup(p => p.PingAsync(It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+                       .ReturnsAsync(true);
             var peerManager = new Mock<IPeerManager>();
             peerManager.Setup(m => m.GetPeer(It.IsAny<CompactPubKey>())).Returns((CompactPubKey nodeId) =>
             {
@@ -535,6 +574,7 @@ internal sealed class DualFundNode
         services.AddSingleton<IPrevTxInspector>(Inspector);
         services.AddInteractiveTxServices();
         services.AddDualFundingServices();
+        services.AddSingleton<LiquidityAdsService>();
 
         services.AddSingleton(sp => new ChannelManager(ChainMonitor.Object,
                                                        sp.GetRequiredService<IChannelLockProvider>(),

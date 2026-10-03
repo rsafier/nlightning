@@ -384,6 +384,27 @@ public class WalletInteractiveTxContributorTests
     }
 
     [Fact]
+    public async Task Given_OurReservedInputSpentOnChain_When_Signing_Then_InputsSpentIsThrownAndNothingIsSigned()
+    {
+        // Arrange (NL-867): an RBF sibling of the funding confirmed during the attempt; the chain monitor took the
+        // spent output out of the wallet, its reservation is still held
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
+        var contribution = await _contributor.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
+        var (constructed, peerSpent) = Construct(contribution);
+        _utxos.Spend(utxo.Model);
+
+        // Act
+        var refused = await Assert.ThrowsAsync<InteractiveTxInputsSpentException>(
+            () => _contributor.SignAsync(constructed, contribution, [peerSpent], TestContext.Current.CancellationToken));
+
+        // Assert: the abort reason names the input; nothing left, so the reservation may still be released
+        Assert.Contains($"{utxo.Model.TxId}:{utxo.Model.Index} (in wallet: False, reservation: "
+                      + $"{contribution.ReservationId})", refused.Message);
+        await _contributor.ReleaseAsync(contribution, TestContext.Current.CancellationToken);
+        Assert.False(_utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
+    }
+
+    [Fact]
     public async Task Given_OurSignaturesWereProduced_When_Releasing_Then_TheReservationIsKeptUntilAnInputIsSpent()
     {
         // Arrange

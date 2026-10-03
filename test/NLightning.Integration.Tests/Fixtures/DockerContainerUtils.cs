@@ -4,10 +4,53 @@ using Docker.DotNet.Models;
 namespace NLightning.Integration.Tests.Fixtures;
 
 /// <summary>
-/// Container helpers shared by the Docker fixtures.
+/// Container and image helpers of the two fixtures left on Docker: the Tor interop fixture (<c>Tor/TorInteropFixture</c>,
+/// the one Docker suite) and <see cref="SqlServerFixture"/> (SQL Server tests are not run, plan "SQL Server"). The CLN,
+/// Eclair, LDK and Postgres fixtures run on the cluster only since NL-866, and <c>Fixtures/DockerAbsenceTests</c> keeps
+/// the Docker API out of every other file. They replaced <c>LNUnit.Setup</c>'s Docker extensions (NL-819).
 /// </summary>
 internal static class DockerContainerUtils
 {
+    /// <summary>
+    /// Pulls <paramref name="repository"/> at <paramref name="tagOrDigest"/> (a tag, or a <c>sha256:</c> digest)
+    /// unless it is already present, and checks that it then is.
+    /// </summary>
+    /// <remarks>
+    /// Unlike LNUnit's <c>PullImageAndWaitForCompleted</c>, which asked the registry on every start, a present image is
+    /// used as is: the fixtures pin their tags, so a start works offline and never moves a local tag.
+    /// </remarks>
+    public static async Task EnsureImageAsync(DockerClient docker, string repository, string tagOrDigest)
+    {
+        var reference = tagOrDigest.StartsWith("sha256:", StringComparison.Ordinal)
+                            ? $"{repository}@{tagOrDigest}"
+                            : $"{repository}:{tagOrDigest}";
+        if (await ImageExistsAsync(docker, reference))
+            return;
+
+        // Docker.DotNet returns once the pull's progress stream has ended
+        await docker.Images.CreateImageAsync(new ImagesCreateParameters { FromImage = repository, Tag = tagOrDigest },
+                                             null, new Progress<JSONMessage>());
+        if (!await ImageExistsAsync(docker, reference))
+            throw new InvalidOperationException($"Could not pull {reference}");
+    }
+
+    /// <summary>
+    /// Whether the image <paramref name="reference"/> (<c>repository:tag</c> or <c>repository@sha256:...</c>) is
+    /// present locally.
+    /// </summary>
+    public static async Task<bool> ImageExistsAsync(DockerClient docker, string reference)
+    {
+        try
+        {
+            await docker.Images.InspectImageAsync(reference);
+            return true;
+        }
+        catch (DockerImageNotFoundException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>
     /// Force-removes a container (and its volumes) by name, ignoring a missing one.
     /// </summary>
@@ -99,5 +142,65 @@ internal static class DockerContainerUtils
         }
 
         throw new TimeoutException($"{name} was not ready after {timeout}", lastError);
+    }
+
+    /// <summary>
+    /// <c>test/Docker/&lt;name&gt;</c>, found by walking up from the test assembly.
+    /// </summary>
+    public static string FindDockerDirectory(string name)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            var candidate = Path.Combine(dir.FullName, "test", "Docker", name);
+            if (File.Exists(Path.Combine(candidate, "Dockerfile")))
+                return candidate;
+
+            candidate = Path.Combine(dir.FullName, "Docker", name);
+            if (File.Exists(Path.Combine(candidate, "Dockerfile")))
+                return candidate;
+
+            dir = dir.Parent;
+        }
+
+        throw new DirectoryNotFoundException($"test/Docker/{name}/Dockerfile not found above {AppContext.BaseDirectory}");
+    }
+
+    /// <summary>
+    /// <c>docker build -t <paramref name="tag"/> <paramref name="directory"/></c> through the Docker CLI (BuildKit), with
+    /// <paramref name="timeout"/>.
+    /// </summary>
+    public static async Task BuildImageAsync(DockerClient client, string directory, string tag, TimeSpan timeout)
+    {
+        var info = new System.Diagnostics.ProcessStartInfo("docker")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = directory
+        };
+        info.ArgumentList.Add("build");
+        info.ArgumentList.Add("-t");
+        info.ArgumentList.Add(tag);
+        info.ArgumentList.Add(".");
+        using var process = System.Diagnostics.Process.Start(info)
+                         ?? throw new InvalidOperationException("Could not start docker build");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        using var cts = new CancellationTokenSource(timeout);
+        try
+        {
+            await process.WaitForExitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            process.Kill(true);
+            throw new TimeoutException($"docker build {tag} took more than {timeout}");
+        }
+
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"docker build {tag} failed:\n{await stdout}\n{await stderr}");
+
+        if (!await ImageExistsAsync(client, tag))
+            throw new InvalidOperationException($"docker build {tag} did not produce the image");
     }
 }

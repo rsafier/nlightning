@@ -39,7 +39,7 @@ using Utils;
 /// the block that takes the package the commitment's own fee is removed from bitcoind's block template
 /// (<c>prioritisetransaction</c>, as <see cref="AnchorsCpfpTests"/> does), as is that of any other spender of david's
 /// anchor, so the commitment can confirm only through our child. Run with
-/// <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.</para>
+/// <c>scripts/run-cluster.sh -n 1 --suite anchors</c>.</para>
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 [Trait("Category", AnchorsChannelTests.AnchorsCategory)]

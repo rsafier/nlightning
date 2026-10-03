@@ -14,7 +14,8 @@ key password) into this file, a shell history, a log or a chat.
 first (§2), mainnet after (§3).
 
 **Proofs this runbook stands on** (regtest, Docker, both in `test/NLightning.Integration.Tests/Docker/Day0/`, run with
-`scripts/run-gossip.sh 1 Release -namespace NLightning.Integration.Tests.Docker.Day0`):
+`scripts/run-cluster.sh -n 1 --suite day0`, on the Kubernetes harness: every integration suite but Tor runs there only since
+NL-820 and NL-866):
 
 | Proof | What it shows |
 |---|---|

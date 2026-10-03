@@ -107,6 +107,27 @@ public class AccountingPostingRulesTests
     }
 
     [Fact]
+    public void Given_ATrampolineRelaySettled_When_Posted_Then_ItsNetIsRoutingIncome()
+    {
+        // Act (NL-875): 100,000 sat in, 99,000 sat out (amount and routing fees paid)
+        var postings = Post(Event(AccountingEventKind.TrampolineRelaySettled, 1_000_000, 0,
+                                  ("incomingAmountMsat", "100000000"), ("outgoingAmountMsat", "99000000")));
+
+        // Assert
+        AssertPostings(postings, (AccountRole.Channels, 1_000_000), (AccountRole.Routing, -1_000_000));
+    }
+
+    [Fact]
+    public void Given_ATrampolineRelayThatCostMoreThanItBrought_When_Posted_Then_TheDifferenceIsARoutingExpense()
+    {
+        // Act (NL-875)
+        var postings = Post(Event(AccountingEventKind.TrampolineRelaySettled, -2_500, 0));
+
+        // Assert
+        AssertPostings(postings, (AccountRole.Channels, -2_500), (AccountRole.RoutingFees, 2_500));
+    }
+
+    [Fact]
     public void Given_AForwardLostOnchain_When_Posted_Then_TheOutgoingAmountIsALoss()
     {
         // Act
@@ -572,7 +593,9 @@ public class AccountingPostingRulesTests
         Resolution(AccountingEventKind.OutputResolved, amount: 29_600_000, fee: 400_000, pendingOut: 0, pendingIn: 0,
                    wallet: 29_600_000, counted: false, by: "us", ("valueBookedBy", "invoice")),
         Event(AccountingEventKind.ChannelClosedMutual, -1_000_000_000, 1_000_000, "chan:a:closed:b"),
-        Event(AccountingEventKind.AnchorCpfpFee, 0, 2_000_000, "cpfp:a")
+        Event(AccountingEventKind.AnchorCpfpFee, 0, 2_000_000, "cpfp:a"),
+        Event(AccountingEventKind.LiquidityFeePaid, -4_500_000, 4_500_000, "chan:a:liquidity:b", ("role", "buyer")),
+        Event(AccountingEventKind.LiquidityFeeEarned, 4_500_000, 0, "chan:c:liquidity:d", ("role", "seller"))
     ];
 
     [Fact]
@@ -715,6 +738,9 @@ public class AccountingPostingRulesTests
         Assert.Equal("Forward settled: 400x1x0 -> 400x2x1",
                      AccountingPostingRules.Describe(Event(AccountingEventKind.ForwardSettled, 1, 0,
                                                            ("incomingScid", "400x1x0"), ("outgoingScid", "400x2x1"))));
+        Assert.Equal("Trampoline relay settled: 400x1x0 -> ?",
+                     AccountingPostingRules.Describe(Event(AccountingEventKind.TrampolineRelaySettled, 1, 0,
+                                                           ("incomingScid", "400x1x0"))));
         Assert.Equal("Channel force-closed: RemoteCommitment",
                      AccountingPostingRules.Describe(Event(AccountingEventKind.ChannelForceClosed, -1, 0,
                                                            ("closeKind", "RemoteCommitment"))));

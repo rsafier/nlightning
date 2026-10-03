@@ -24,8 +24,49 @@ public sealed class ListForwardsPrinter : IPrinter<ListForwardsIpcResponse>
         foreach (var forward in item.Forwards)
             WriteForward(forward);
 
+        if (item.TrampolineRelays is { Count: > 0 } relays)
+        {
+            _output.WriteLine(new string('-', 96));
+            _output.WriteLine("Trampoline relays:");
+            foreach (var relay in relays)
+                WriteTrampolineRelay(relay);
+        }
+
         WriteSummary(item.Summary);
     }
+
+    // NL-875: kind trampoline, N incoming parts paid into one payment to the next trampoline node
+    private void WriteTrampolineRelay(TrampolineRelayIpcResponse relay)
+    {
+        _output.WriteLine(new string('-', 96));
+        _output.WriteLine("  Kind:        trampoline   Status: {0}{1}", TrampolineStatusName(relay.Status),
+                          relay.FailureCodeName is null ? string.Empty : $" ({relay.FailureCodeName})");
+        _output.WriteLine("  Created:     {0:yyyy-MM-dd HH:mm:ss} UTC{1}", UnixTime(relay.CreatedAtUnixSeconds),
+                          relay.CompletedAtUnixSeconds is { } completed
+                              ? $"   Completed: {UnixTime(completed):yyyy-MM-dd HH:mm:ss} UTC"
+                              : string.Empty);
+        var channels = relay.IncomingChannelIds.Select((id, i) => ChannelName(
+                                                           i < relay.IncomingChannelScids.Count
+                                                               ? relay.IncomingChannelScids[i]
+                                                               : null, id));
+        _output.WriteLine("  In:          {0} part(s), {1} of {2} msat  on {3}", relay.Parts,
+                          relay.IncomingAmountMsat, relay.IncomingTotalMsat, string.Join(", ", channels));
+        _output.WriteLine("  Out:         {0} msat to {1}", relay.AmountOutMsat,
+                          relay.NextNodeId ?? "the recipient's blinded paths");
+        _output.WriteLine("  Fee:         {0}   Hash: {1}",
+                          relay.FeeEarnedMsat is { } fee ? $"{fee} msat"
+                          : relay.Status == 3 ? "none (failed)" : "pending",
+                          ShortHash(relay.PaymentHash));
+    }
+
+    private static string TrampolineStatusName(byte status) => status switch
+    {
+        0 => "collecting",
+        1 => "sending",
+        2 => "fulfilled",
+        3 => "failed",
+        _ => $"unknown({status})"
+    };
 
     private void WriteForward(ForwardInfoIpcResponse forward)
     {

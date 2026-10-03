@@ -27,6 +27,10 @@ public static class AccountingEventKeys
     public static string ForwardLostOnchain(ChannelId incomingChannelId, ulong incomingHtlcId) =>
         $"fwd:{incomingChannelId}:{incomingHtlcId}:onchain";
 
+    /// <summary>The trampoline payment <paramref name="paymentHash"/> we relayed settled (NL-875): one key per relay
+    /// (at most one relay per payment hash).</summary>
+    public static string TrampolineRelaySettled(Hash paymentHash) => $"tramp:{paymentHash}:settled";
+
     /// <summary>The loss of one incoming HTLC of our settled invoice <paramref name="paymentHash"/> on chain
     /// (NL-688): one key per HTLC, so the parts of a multi-part payment are told apart.</summary>
     public static string InvoiceLostOnchain(Hash paymentHash, ChannelId incomingChannelId, ulong incomingHtlcId) =>
@@ -38,6 +42,15 @@ public static class AccountingEventKeys
     public static string Push(ChannelId channelId) => $"chan:{channelId}:push";
 
     public static string SpliceLocked(ChannelId channelId, TxId spliceTxId) => $"chan:{channelId}:splice:{spliceTxId}";
+
+    /// <summary>The liquidity fee of a purchase made in the funding or splice <paramref name="fundingTxId"/> of
+    /// <paramref name="channelId"/> (liquidity ads, NL-850), paid or earned.</summary>
+    public static string LiquidityFee(ChannelId channelId, TxId fundingTxId) =>
+        $"chan:{channelId}:liquidity:{fundingTxId}";
+
+    /// <summary>The reversal of <paramref name="originalKey"/>, a liquidity fee whose attempt an RBF replaced before it
+    /// confirmed (no block to key it by, unlike <see cref="Reversal"/>).</summary>
+    public static string Replaced(string originalKey) => $"{originalKey}:replaced";
 
     public static string ChannelClosedMutual(ChannelId channelId, TxId closingTxId) =>
         $"chan:{channelId}:closed:{closingTxId}";

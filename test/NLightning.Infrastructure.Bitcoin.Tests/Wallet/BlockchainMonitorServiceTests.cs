@@ -265,6 +265,115 @@ public class BlockchainMonitorServiceTests
     }
 
     [Fact]
+    public async Task Given_BlocksZmqNeverAnnounced_When_TwoTipPollsFindTheMonitorBehind_Then_TheSecondCatchesUpInOrder()
+    {
+        // Arrange: the silent ZMQ endpoint announces nothing, as a subscription that was not up yet when they were mined
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        _chain.Mine();
+        _chain.Mine();
+        var heights = new List<uint>();
+        _service.OnNewBlockDetected += (_, args) => heights.Add(args.Height);
+
+        // Act
+        var first = await _service.PollTipAsync();
+        var second = await _service.PollTipAsync();
+        await _service.StopAsync();
+
+        // Assert: the first poll only notes the lag (ZMQ may still deliver), the second fetches the blocks over RPC
+        Assert.False(first);
+        Assert.True(second);
+        Assert.Equal([111u, 112u], heights);
+        Assert.Equal(112u, _service.LastProcessedBlockHeight);
+        Assert.Equal(1, _service.TipPollCatchUps);
+    }
+
+    [Fact]
+    public async Task Given_ZmqDeliversTheBlockBetweenTwoPolls_When_Polled_Then_NothingIsFetchedAgain()
+    {
+        // Arrange
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var block = _chain.Mine();
+        var heights = new List<uint>();
+        _service.OnNewBlockDetected += (_, args) => heights.Add(args.Height);
+
+        // Act: the poll sees the lag, then ZMQ delivers the block, then the next poll runs
+        var first = await _service.PollTipAsync();
+        await _service.ProcessNewBlockAsync(block, 111);
+        var second = await _service.PollTipAsync();
+        await _service.StopAsync();
+
+        // Assert: the block was processed once, by the ZMQ path
+        Assert.False(first);
+        Assert.False(second);
+        Assert.Equal([111u], heights);
+        Assert.Equal(0, _service.TipPollCatchUps);
+    }
+
+    [Fact]
+    public async Task Given_TheMonitorMovedSinceThePreviousPoll_When_StillBehind_Then_ItWaitsOneMorePoll()
+    {
+        // Arrange: two blocks; ZMQ delivers only the first after the first poll
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var block111 = _chain.Mine();
+        _chain.Mine();
+        await _service.PollTipAsync();
+        await _service.ProcessNewBlockAsync(block111, 111);
+
+        // Act
+        var second = await _service.PollTipAsync();
+        var third = await _service.PollTipAsync();
+        await _service.StopAsync();
+
+        // Assert: the monitor moved, so the second poll starts over; the third catches up block 112
+        Assert.False(second);
+        Assert.True(third);
+        Assert.Equal(112u, _service.LastProcessedBlockHeight);
+    }
+
+    [Fact]
+    public async Task Given_HaltedProcessing_When_Polled_Then_NothingIsRetried()
+    {
+        // Arrange: block 100 (re-queued on start) fails every attempt, so the start halts
+        _mockBlockchainStateRepository.Setup(x => x.Update(It.IsAny<BlockchainState>()))
+                                      .Throws(new InvalidOperationException("db down"));
+        var chain = new FakeBitcoinChain(102);
+        var service = CreateService(chain);
+        service.MaxBlockProcessingAttempts = 1;
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        Assert.True(service.IsChainProcessingHalted);
+
+        // Act
+        var first = await service.PollTipAsync();
+        var second = await service.PollTipAsync();
+        await service.StopAsync();
+
+        // Assert: one attempt (the start's), none from the polls; the next block or a restart retries, as before
+        Assert.False(first);
+        Assert.False(second);
+        _mockBlockchainStateRepository.Verify(x => x.Update(It.IsAny<BlockchainState>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_AShortTipPollInterval_When_ABlockIsMinedAndZmqIsSilent_Then_TheLoopCatchesUpOnItsOwn()
+    {
+        // Arrange
+        var chain = new FakeBitcoinChain(110);
+        var service = CreateService(chain, tipPollInterval: TimeSpan.FromMilliseconds(50));
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        chain.Mine();
+
+        // Act
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (service.LastProcessedBlockHeight < 111 && DateTime.UtcNow < deadline)
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        await service.StopAsync();
+
+        // Assert
+        Assert.Equal(111u, service.LastProcessedBlockHeight);
+        Assert.Equal(1, service.TipPollCatchUps);
+    }
+
+    [Fact]
     public async Task Given_WatchWithDepthOne_When_ItsBlockIsProcessed_Then_ConfirmedAfterTheSaveWithItsBlockIndex()
     {
         // Arrange
@@ -1424,7 +1533,8 @@ public class BlockchainMonitorServiceTests
     }
 
     private BlockchainMonitorService CreateService(FakeBitcoinChain chain, string network = "regtest",
-                                                   ILogger<BlockchainMonitorService>? logger = null)
+                                                   ILogger<BlockchainMonitorService>? logger = null,
+                                                   TimeSpan? tipPollInterval = null)
     {
         var bitcoinOptions = new Mock<IOptions<BitcoinOptions>>();
         bitcoinOptions.Setup(x => x.Value).Returns(new BitcoinOptions
@@ -1434,7 +1544,9 @@ public class BlockchainMonitorServiceTests
             RpcPassword = "",
             ZmqHost = s_zmq.Host,
             ZmqBlockPort = s_zmq.BlockPort,
-            ZmqTxPort = s_zmq.TxPort
+            ZmqTxPort = s_zmq.TxPort,
+            // Off unless a test asks: the tests drive PollTipAsync themselves
+            TipPollInterval = tipPollInterval ?? TimeSpan.Zero
         });
         var nodeOptions = new Mock<IOptions<NodeOptions>>();
         nodeOptions.Setup(x => x.Value).Returns(new NodeOptions { BitcoinNetwork = network });

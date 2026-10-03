@@ -34,7 +34,7 @@ using Utils;
 /// rows (<c>OutputResolutions</c>), our wallet and payments, bitcoind, and LDK's <c>list-channels</c>,
 /// <c>get-balances</c> and <c>list-payments</c>. LDK claims what it is owed through its own <c>OutputSweeper</c>
 /// (spendable outputs once 6 blocks deep), which is why the LDK side is checked by its on-chain balance.</para>
-/// <para>Each test builds its own node and channel. Run with <c>scripts/run-interop.sh ldk Release -class
+/// <para>Each test builds its own node and channel. Run with <c>scripts/run-cluster.sh -n 1 --suite ldk --class
 /// NLightning.Integration.Tests.Docker.Interop.Ldk.LdkOnchainTests</c>.</para>
 /// </remarks>
 [Collection(LdkInteropCollection.Name)]
@@ -54,6 +54,7 @@ public sealed class LdkOnchainTests : IAsyncLifetime
 
     public LdkOnchainTests(LdkFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -62,7 +63,7 @@ public sealed class LdkOnchainTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var session in _sessions)
             {
@@ -74,7 +75,7 @@ public sealed class LdkOnchainTests : IAsyncLifetime
             }
 
             Console.WriteLine($"[ldk] balances at failure: {await SafeBalancesAsync()}");
-            await DockerDiagnostics.DumpContainerLogsAsync([LdkFixture.LdkContainerName], 400);
+            await _fixture.DumpLdkLogAsync(400);
         }
 
         foreach (var session in _sessions)
@@ -279,7 +280,7 @@ public sealed class LdkOnchainTests : IAsyncLifetime
         Assert.Equal(htlc.Id, row.HtlcId);
 
         // Assert: nothing before cltv_expiry, our HTLC-timeout from it on
-        var tip = await _fixture.Chain.GetTipAsync(ct);
+        var tip = await _fixture.GetTipAsync(ct);
         if (htlc.CltvExpiry - 1 > tip)
             await _fixture.MineAndWaitAsync((int)(htlc.CltvExpiry - 1 - tip), [session.Node], ct);
         Assert.Null(await FindChainSpenderAsync(new OutPoint(commitmentTxId, row.OutputIndex), ct));

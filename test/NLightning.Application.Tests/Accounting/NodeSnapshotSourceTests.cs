@@ -229,6 +229,17 @@ public class NodeSnapshotSourceTests
         Assert.Equal(10_000_000, bucket.LocalInFlightFulfilledMsat);
         Assert.Equal(11_000_000, bucket.RemoteInFlightMsat);
         Assert.Equal(7_000_000, bucket.RemoteInFlightPreimageMsat);
+
+        // NL-886: every HTLC not final is listed with its removal, for the reconcile's outstanding settles
+        Assert.NotNull(bucket.Htlcs);
+        Assert.Equal(5, bucket.Htlcs.Count);
+        var fulfilled = Assert.Single(bucket.Htlcs, h => h is { Direction: HtlcDirection.Incoming, HtlcId: 1 });
+        Assert.Equal((2_000_000L, HtlcRemovalKind.Fulfill, true, false),
+                     (fulfilled.AmountMsat, fulfilled.RemovalKind!.Value, fulfilled.PreimageKnown,
+                      fulfilled.IsFailing));
+        var open = Assert.Single(bucket.Htlcs, h => h is { Direction: HtlcDirection.Outgoing, HtlcId: 1 });
+        Assert.Equal((3_000_000L, false, false, FeeTestKit.PaymentHash(101)),
+                     (open.AmountMsat, open.RemovalKind.HasValue, open.PreimageKnown, open.PaymentHash));
     }
 
     private NodeSnapshotSource CreateSource()

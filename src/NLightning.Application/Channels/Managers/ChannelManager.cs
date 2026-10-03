@@ -40,6 +40,7 @@ using Handlers.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using InteractiveTx.Interfaces;
 using Interfaces;
+using LiquidityAds;
 using Onchain.Interfaces;
 using Quiescence;
 using Reestablish;
@@ -694,6 +695,25 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         _serviceProvider.GetService<IChannelAnnouncementService>()?.OnPeerConnectionChanged(peerPubKey);
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Reads the tracker and the memory repository without the channel locks: the answer is a snapshot, and a
+    /// <c>channel_reestablish</c> still queued in the peer's inbound loop is not counted yet.
+    /// </remarks>
+    public IReadOnlyList<ChannelId> GetChannelsAwaitingPeerReestablish(CompactPubKey peerPubKey)
+    {
+        if (GetTracker() is not { } tracker)
+            return [];
+
+        return GetPeerChannels(peerPubKey)
+              .Where(c => c.State is ChannelState.ReadyForThem or ChannelState.Open or ChannelState.ShuttingDown
+                                  or ChannelState.Negotiating
+                       && tracker.GetStatus(c.ChannelId) == ReestablishStatus.Sent
+                       && !tracker.IsReestablished(c.ChannelId))
+              .Select(c => c.ChannelId)
+              .ToList();
+    }
+
     private List<ChannelModel> GetPeerChannels(CompactPubKey peerPubKey) =>
         _channelMemoryRepository.FindChannels(c => c.RemoteNodeId == peerPubKey);
 
@@ -826,6 +846,11 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         // BOLT 2 interactive-tx (NL-470): the closed channel's negotiations can never finish, and the table has no FK
         // to Channels, so its rows go in the same save as the Closed state
         await unitOfWork.InteractiveTxSessionDbRepository.DeleteByChannelIdAsync(channel.ChannelId);
+
+        // Liquidity ads (NL-850): the channel's purchases end with it, a close inside a lease noted
+        await LiquidityLeases.StageChannelClosedAsync(unitOfWork, channel.ChannelId,
+                                                      closingTxHeight ?? _blockchainMonitor.LastProcessedBlockHeight,
+                                                      _logger);
         await unitOfWork.SaveChangesAsync();
 
         _channelMemoryRepository.TryRemoveChannel(channel.ChannelId);
@@ -1799,11 +1824,31 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         // Closing channels whose closing transaction reached its depth but were not recorded as Closed
         CompleteConfirmedCloses();
 
+        // NL-867: an RBF attempt (dual-funded open or splice) whose earlier attempt just confirmed is abandoned at once
+        ScheduleConfirmedAttemptRounds();
+
         // BOLT 5: the resolution round of every channel whose funding output was spent (O2-T5)
         _serviceProvider.GetService<IOnchainResolutionExecutor>()?.ScheduleRound(args.Height);
 
         // BOLT 7: public channels that reached the announcement depth send their announcement_signatures (G1-T4)
         ScheduleAnnouncementRound();
+    }
+
+    /// <summary>
+    /// NL-867: every RBF attempt of a dual-funded open or a splice whose earlier attempt has a confirmation is abandoned
+    /// (the rounds run off this thread, each under its channel's lock). Never throws into the block's other work.
+    /// </summary>
+    private void ScheduleConfirmedAttemptRounds()
+    {
+        try
+        {
+            _serviceProvider.GetService<DualFunding.DualFundedOpenService>()?.ScheduleConfirmedAttemptRound();
+            _serviceProvider.GetService<Splicing.SpliceService>()?.ScheduleConfirmedAttemptRound();
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not schedule the abandonment of RBF attempts whose earlier attempt confirmed");
+        }
     }
 
     /// <summary>
@@ -2230,10 +2275,14 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
              && channel.FundingOutput is { TransactionId: { } fundingTxId, Index: { } fundingIndex }
              && fundingTxId == fundedTxId)
             {
+                // NL-850: a dual-funded open's liquidity purchase is booked with it, with the same fee
+                var lateUnitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                var lateScid = new ShortChannelId(firstSeenAtHeight, transactionIndex, fundingIndex);
+                var occurredAt = (_serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow();
+                var liquidityFeeMsat = await DualFunding.DualFundLiquidityAccounting.StageFundingConfirmedAsync(
+                                           lateUnitOfWork, channel, firstSeenAtHeight, lateScid, occurredAt, _logger);
                 await ChannelAccountingEvents.RecordLateChannelFundedAsync(
-                    scope.ServiceProvider.GetRequiredService<IUnitOfWork>(), channel, firstSeenAtHeight,
-                    new ShortChannelId(firstSeenAtHeight, transactionIndex, fundingIndex),
-                    (_serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow(), _logger);
+                    lateUnitOfWork, channel, firstSeenAtHeight, lateScid, occurredAt, _logger, liquidityFeeMsat);
                 return;
             }
 

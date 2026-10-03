@@ -1,6 +1,4 @@
 using System.Globalization;
-using Docker.DotNet;
-using Docker.DotNet.Models;
 using NBitcoin;
 using NBitcoin.RPC;
 using Newtonsoft.Json.Linq;
@@ -9,11 +7,16 @@ using Network = NBitcoin.Network;
 
 namespace NLightning.Integration.Tests.Docker.Onchain.Anchors;
 
+using Cluster;
 using Fixtures;
+using Fixtures.Lnd;
+using Testing.Cluster.Kube;
+using Testing.Cluster.Nodes.BitcoinCore;
+using Testing.Cluster.Run;
 using Utils;
 
 /// <summary>
-/// A second bitcoind for the package relay proof (NL-380): it runs the miner's image on the miner's Docker network,
+/// A second bitcoind for the package relay proof (NL-380): a pod next to the miner in the network's run namespace; it
 /// syncs from the miner (<c>-connect</c>, its only peer) and relays to it, but keeps a mempool of only
 /// <see cref="MaxMempoolMb"/> MB. <see cref="FillMempoolAsync"/> fills that mempool with large transactions until
 /// bitcoind trims it, which raises its dynamic minimum feerate (<c>mempoolminfee</c>) above a low commitment's feerate
@@ -30,22 +33,22 @@ using Utils;
 /// <para>The shared miner keeps its 300 MB mempool: its minimum stays at 1 sat/vB, so the fill transactions it gets
 /// from the relay are mined over the next blocks (<see cref="DisposeAsync"/> mines them out) and never change what the
 /// other proofs see.</para>
-/// <para>RPC and the ZMQ raw block/tx feeds are published on <c>127.0.0.1</c> (as <c>ClnFixture</c> does), so the
-/// in-process node reaches them from the host and from the <c>--network host</c> runner container.</para>
+/// <para>On the cluster (test harness phase 6; the only backend of the LND network since NL-820): a bitcoind pod
+/// <see cref="ClusterNodeName"/> of the harness (<c>BitcoinCoreNode</c>, the version table's image, an
+/// <c>emptyDir</c>) in the network's run namespace, connected to the miner's Service, reached by its pod IP from the
+/// host (<see cref="ClusterChainEndpoint.HostFor"/>) and taken out of the run again on disposal.</para>
 /// </remarks>
 internal sealed class RelayBitcoind : IAsyncDisposable
 {
-    public const string ContainerName = "nltg-anchors-relay-bitcoind";
+    /// <summary>The relay's node (StatefulSet and Service) name in the cluster backend's run namespace.</summary>
+    public const string ClusterNodeName = "relay";
 
     /// <summary>The smallest <c>-maxmempool</c> bitcoind accepts (the default of <c>-blocksonly</c>).</summary>
     public const int MaxMempoolMb = 5;
 
     private const string RpcUser = "nltg";
     private const string RpcPassword = "nltg";
-    private const int RpcPort = 18443;
-    private const int ZmqBlockPort = 28334;
-    private const int ZmqTxPort = 28335;
-    private const int MinerP2PPort = 18444;
+    private const string WalletName = "relay";
 
     /// <summary>Outputs per fill transaction: about 93 kvB, below the 100 kvB standardness limit.</summary>
     private const int FillOutputs = 3_000;
@@ -53,7 +56,7 @@ internal sealed class RelayBitcoind : IAsyncDisposable
     private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
     private static readonly Money s_fillFunding = Money.Coins(0.02m);
 
-    private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
+    private readonly ClusterLndBackend _cluster;
     private readonly LightningRegtestNetworkFixture _fixture;
     private readonly List<uint256> _fillTxIds = [];
 
@@ -62,6 +65,7 @@ internal sealed class RelayBitcoind : IAsyncDisposable
     private RelayBitcoind(LightningRegtestNetworkFixture fixture)
     {
         _fixture = fixture;
+        _cluster = fixture.Cluster;
     }
 
     public RegtestBitcoinEndpoint Endpoint =>
@@ -70,9 +74,9 @@ internal sealed class RelayBitcoind : IAsyncDisposable
     public RPCClient Rpc => Endpoint.Rpc;
 
     /// <summary>
-    /// Starts the relay on the miner's network, waits until it has the miner's tip, and gives its wallet
-    /// <paramref name="walletFunding"/> from the miner (so <see cref="NLightningTestNode.FundWalletAsync"/> and the
-    /// node's funding mining work through it).
+    /// Starts the relay next to the miner (a pod in its run namespace), waits until it has the miner's tip, and gives
+    /// its wallet <paramref name="walletFunding"/> from the miner (so <see cref="NLightningTestNode.FundWalletAsync"/>
+    /// and the node's funding mining work through it).
     /// </summary>
     public static async Task<RelayBitcoind> StartAsync(LightningRegtestNetworkFixture fixture, Money walletFunding,
                                                        CancellationToken ct)
@@ -80,8 +84,8 @@ internal sealed class RelayBitcoind : IAsyncDisposable
         var relay = new RelayBitcoind(fixture);
         try
         {
-            await relay.StartContainerAsync(ct);
-            await relay.Rpc.SendCommandAsync("createwallet", ct, "relay");
+            await relay.StartPodAsync(ct);
+
             var address = await relay.Rpc.GetNewAddressAsync(ct);
             await fixture.Bitcoin.SendToAddressAsync(address, walletFunding, cancellationToken: ct);
             await fixture.Bitcoin.GenerateToAddressAsync(1, await fixture.Bitcoin.GetNewAddressAsync(ct), ct);
@@ -207,19 +211,48 @@ internal sealed class RelayBitcoind : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // A failed test's namespace dump (ClusterDiagnostics) has the relay pod's log and state: it runs after the test,
+        // before this disposal
         try
         {
-            if (DockerDiagnostics.CurrentTestFailed)
-                await DockerDiagnostics.DumpContainerLogsAsync([ContainerName]);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            await _cluster.Run.RemoveNodeAsync(ClusterNodeName, timeout.Token);
         }
         catch (Exception e)
         {
-            Console.WriteLine($"Could not dump the relay's log: {e.Message}");
+            Console.WriteLine($"Could not remove the relay pod: {e.Message}");
         }
 
-        await DockerContainerUtils.RemoveContainerAsync(_client, ContainerName);
         await MineOutFillsAsync();
-        _client.Dispose();
+    }
+
+    /// <summary>
+    /// The relay: a bitcoind pod in the network's run namespace (<c>-connect</c> to the miner's Service,
+    /// <see cref="MaxMempoolMb"/>), its wallet created by the deployment, RPC and ZMQ at its pod IP from the host
+    /// (Service name in the cluster).
+    /// </summary>
+    private async Task StartPodAsync(CancellationToken ct)
+    {
+        var cluster = _cluster;
+        var miner = cluster.Network.Chain.Node.Name;
+        var options = new BitcoinCoreOptions
+        {
+            Name = ClusterNodeName,
+            RpcUser = RpcUser,
+            RpcPassword = RpcPassword,
+            Wallet = WalletName,
+            Storage = NodeStorage.Ephemeral,
+            ExtraArgs = [$"-connect={miner}:{BitcoinCorePorts.P2p}", $"-maxmempool={MaxMempoolMb}"]
+        };
+        Console.WriteLine($"Relay bitcoind: pod {ClusterNodeName} in {cluster.Run.Namespace}, image {options.Image}, "
+                        + $"miner at {miner}:{BitcoinCorePorts.P2p}");
+        var node = await BitcoinCoreNode.DeployAsync(cluster.Run, options, s_readyTimeout, ct);
+        var host = ClusterChainEndpoint.HostFor(node.Handle,
+                                                KubeClientFactory.DetectSource() == KubeConfigSource.InCluster);
+        var rpc = new RPCClient($"{RpcUser}:{RpcPassword}", $"http://{host}:{BitcoinCorePorts.Rpc}", Network.RegTest)
+                     .SetWalletContext(WalletName);
+        _endpoint = new RegtestBitcoinEndpoint(rpc, host, BitcoinCorePorts.ZmqRawBlock, BitcoinCorePorts.ZmqRawTx);
+        await WaitSyncedAsync(ct);
     }
 
     private static decimal BtcPerKvbToSatPerVByte(JToken value) =>
@@ -271,68 +304,5 @@ internal sealed class RelayBitcoind : IAsyncDisposable
         {
             Console.WriteLine($"Could not mine the fill transactions out: {e.Message}");
         }
-    }
-
-    private async Task StartContainerAsync(CancellationToken ct)
-    {
-        // The miner's image and network, and its address there (LNUnit names the container "miner")
-        var miner = await _client.Containers.InspectContainerAsync("miner", ct);
-        var (networkName, minerEndpoint) = miner.NetworkSettings.Networks.First(n => !string.IsNullOrEmpty(
-                                                                                         n.Value.IPAddress));
-        Console.WriteLine($"Relay bitcoind: image {miner.Config.Image}, network {networkName}, miner at "
-                        + $"{minerEndpoint.IPAddress}:{MinerP2PPort}");
-
-        await DockerContainerUtils.RemoveContainerAsync(_client, ContainerName);
-        int[] containerPorts = [RpcPort, ZmqBlockPort, ZmqTxPort];
-        var container = await _client.Containers.CreateContainerAsync(new CreateContainerParameters
-        {
-            Image = miner.Config.Image,
-            Name = ContainerName,
-            Hostname = ContainerName,
-            Cmd =
-            [
-                "bitcoind", "-regtest", "-server=1",
-                $"-rpcuser={RpcUser}", $"-rpcpassword={RpcPassword}",
-                "-rpcbind=0.0.0.0", "-rpcallowip=0.0.0.0/0", $"-rpcport={RpcPort}", "-rpcworkqueue=1024",
-                $"-zmqpubrawblock=tcp://0.0.0.0:{ZmqBlockPort}", $"-zmqpubrawtx=tcp://0.0.0.0:{ZmqTxPort}",
-                "-txindex=1", "-fallbackfee=0.0002", "-dnsseed=0", "-listen=0",
-                $"-connect={minerEndpoint.IPAddress}:{MinerP2PPort}",
-                $"-maxmempool={MaxMempoolMb}", "-printtoconsole"
-            ],
-            ExposedPorts = containerPorts.ToDictionary(p => $"{p}/tcp", _ => default(EmptyStruct)),
-            HostConfig = new HostConfig
-            {
-                NetworkMode = networkName,
-                PortBindings = containerPorts.ToDictionary(
-                    p => $"{p}/tcp",
-                    IList<PortBinding> (_) => [new PortBinding { HostIP = "127.0.0.1", HostPort = string.Empty }])
-            }
-        }, ct) ?? throw new InvalidOperationException($"Failed to create the {ContainerName} container");
-        await _client.Containers.StartContainerAsync(container.ID, new ContainerStartParameters(), ct);
-
-        var hostPorts = await Poll.ForAsync(async () =>
-        {
-            var inspect = await _client.Containers.InspectContainerAsync(container.ID, ct);
-            var published = new Dictionary<int, int>();
-            foreach (var port in containerPorts)
-            {
-                if (inspect.NetworkSettings?.Ports is { } ports
-                 && ports.TryGetValue($"{port}/tcp", out var bindings)
-                 && bindings is { Count: > 0 }
-                 && int.TryParse(bindings[0].HostPort, out var hostPort)
-                 && hostPort > 0)
-                    published[port] = hostPort;
-            }
-
-            return published.Count == containerPorts.Length ? published : null;
-        }, s_readyTimeout, $"the ports of {ContainerName} published", ct);
-
-        var rpc = new RPCClient($"{RpcUser}:{RpcPassword}", $"http://127.0.0.1:{hostPorts[RpcPort]}",
-                                Network.RegTest);
-        await DockerContainerUtils.WaitUntilReadyAsync(ContainerName,
-                                                       async token => await rpc.GetBlockCountAsync(token),
-                                                       s_readyTimeout);
-        _endpoint = new RegtestBitcoinEndpoint(rpc, "127.0.0.1", hostPorts[ZmqBlockPort], hostPorts[ZmqTxPort]);
-        await WaitSyncedAsync(ct);
     }
 }

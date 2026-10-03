@@ -1,5 +1,4 @@
 using Docker.DotNet;
-using LNUnit.Setup;
 using Microsoft.Data.SqlClient;
 
 namespace NLightning.Integration.Tests.Fixtures;
@@ -78,7 +77,7 @@ public class SqlServerFixture : IDisposable
 
     public async Task StartSqlServer()
     {
-        await _client.PullImageAndWaitForCompleted(Image, Tag);
+        await DockerContainerUtils.EnsureImageAsync(_client, Image, Tag);
         await DockerContainerUtils.RemoveContainerAsync(_client, ContainerName);
 
         HostPort = await DockerContainerUtils.StartWithLoopbackPortAsync(_client, $"{Image}:{Tag}", ContainerName,

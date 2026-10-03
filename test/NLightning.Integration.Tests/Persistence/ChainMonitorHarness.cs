@@ -117,7 +117,9 @@ internal sealed class ChainMonitorHarness : IAsyncDisposable
             RpcPassword = "",
             ZmqHost = _zmq.Host,
             ZmqBlockPort = _zmq.BlockPort,
-            ZmqTxPort = _zmq.TxPort
+            ZmqTxPort = _zmq.TxPort,
+            // The tests hand in every block themselves
+            TipPollInterval = TimeSpan.Zero
         });
         var nodeOptions = Options.Create(new NodeOptions { BitcoinNetwork = "regtest" });
         return new BlockchainMonitorService(bitcoinOptions, Chain, _monitorLogger,

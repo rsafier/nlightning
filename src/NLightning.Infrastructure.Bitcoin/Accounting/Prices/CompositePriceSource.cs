@@ -8,7 +8,8 @@ using Domain.Accounting.Prices;
 /// <summary>
 /// The configured price sources in order (<c>Accounting:Prices:Source=Both</c>: the price file, then the HTTP source;
 /// NL-602 A3-T2): the first answer within <c>MaxAge</c> of the asked time wins; otherwise the most recent answer at or
-/// before it (possibly too old to value with) or null.
+/// before it (possibly too old to value with) or null. <see cref="LastFailure"/> is the failure of a source asked by
+/// the latest call (NL-868).
 /// </summary>
 public sealed class CompositePriceSource : IPriceSource
 {
@@ -27,13 +28,19 @@ public sealed class CompositePriceSource : IPriceSource
     public IReadOnlyList<IPriceSource> Sources => _sources;
 
     /// <inheritdoc />
+    public string? LastFailure { get; private set; }
+
+    /// <inheritdoc />
     public async Task<AccountingPrice?> GetPriceAsync(string currency, DateTimeOffset time,
                                                       CancellationToken cancellationToken = default)
     {
         AccountingPrice? best = null;
+        LastFailure = null;
         foreach (var source in _sources)
         {
             var price = await source.GetPriceAsync(currency, time, cancellationToken);
+            if (source.LastFailure is { } failure)
+                LastFailure = failure;
             if (price is null)
                 continue;
 

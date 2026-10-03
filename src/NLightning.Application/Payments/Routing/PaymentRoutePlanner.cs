@@ -57,6 +57,10 @@ using Domain.Routing.Pathfinding;
 /// limits. Paths, in order: through the incoming channel's own peer over another channel of ours to it (no graph
 /// needed), then, with a graph, a graph route from us to that peer (our incoming channel excluded) followed by the
 /// last hop. The single-part and split rules are the same; the invoice's route hints are not used.</para>
+/// <para>Trampoline legs (NL-875): <see cref="PaymentPlanRequest.AbsoluteFinalCltv"/> replaces the final
+/// <c>outgoing_cltv_value</c> computed from the height and <c>c</c> (plus <see cref="RouteConstraints.ExtraCltvDelta"/>)
+/// and <see cref="PaymentPlanRequest.MaxFirstHopCltvExpiry"/> caps our HTLC's <c>cltv_expiry</c>: every path whose
+/// first-hop expiry would exceed it is skipped, and the graph's CLTV limit and shadow offset are cut to it.</para>
 /// </remarks>
 public sealed class PaymentRoutePlanner
 {
@@ -101,6 +105,20 @@ public sealed class PaymentRoutePlanner
                                         nameof(request));
         if (request.MaxParts < 1)
             throw new ArgumentException("At least one part must be allowed.", nameof(request));
+
+        if (request.AbsoluteFinalCltv is { } absolute && absolute <= request.Height)
+        {
+            parts = null;
+            failureReason = $"No route: the final expiry {absolute} is not above the current height {request.Height}.";
+            return false;
+        }
+
+        if (request.MaxFirstHopCltvExpiry is { } cap && cap < FinalCltv(request))
+        {
+            parts = null;
+            failureReason = $"No route: the final expiry {FinalCltv(request)} is above the first-hop expiry cap {cap}.";
+            return false;
+        }
 
         var inFlight = request.HintForwardsInFlightMsat ?? s_noHintAssigned;
         var reasons = new List<string>();
@@ -419,14 +437,32 @@ public sealed class PaymentRoutePlanner
         return sums;
     }
 
-    private uint FinalCltv(PaymentPlanRequest request) =>
-        checked(request.Height + request.Target.MinFinalCltvExpiryDelta + HintRouteBuilder.FinalCltvSafetyOffset
-              + request.Constraints.ExtraCltvDelta);
+    private static uint FinalCltv(PaymentPlanRequest request) =>
+        request.AbsoluteFinalCltv is { } absolute
+            ? checked(absolute + request.Constraints.ExtraCltvDelta)
+            : checked(request.Height + request.Target.MinFinalCltvExpiryDelta + HintRouteBuilder.FinalCltvSafetyOffset
+                    + request.Constraints.ExtraCltvDelta);
+
+    /// <summary>The final <c>outgoing_cltv_value</c> as a delta from the height (the graph pathfinder's input).</summary>
+    private static uint FinalCltvDelta(PaymentPlanRequest request) => FinalCltv(request) - request.Height;
+
+    /// <summary>
+    /// The most blocks our HTLC's <c>cltv_expiry</c> may lie above the height: <c>Routing.MaxCltvExpiryDistance</c>,
+    /// cut to <see cref="PaymentPlanRequest.MaxFirstHopCltvExpiry"/> when the request caps the first hop.
+    /// </summary>
+    private uint MaxCltvDistance(PaymentPlanRequest request)
+    {
+        var max = _nodeOptions.Value.Routing.MaxCltvExpiryDistance;
+        if (request.MaxFirstHopCltvExpiry is { } cap)
+            max = Math.Min(max, cap > request.Height ? cap - request.Height : 0);
+
+        return max;
+    }
 
     private List<CandidatePath> BuildPaths(PaymentPlanRequest request, List<string> reasons)
     {
         var constraints = request.Constraints;
-        var maxCltvDistance = _nodeOptions.Value.Routing.MaxCltvExpiryDistance;
+        var maxCltvDistance = MaxCltvDistance(request);
         var finalCltv = FinalCltv(request);
         var direct = new List<CandidatePath>();
         var hinted = new List<CandidatePath>();
@@ -507,9 +543,8 @@ public sealed class PaymentRoutePlanner
             return result;
 
         var constraints = request.Constraints;
-        var maxCltvDistance = _nodeOptions.Value.Routing.MaxCltvExpiryDistance;
-        var finalCltvDelta = checked(request.Target.MinFinalCltvExpiryDelta + HintRouteBuilder.FinalCltvSafetyOffset
-                                   + constraints.ExtraCltvDelta);
+        var maxCltvDistance = MaxCltvDistance(request);
+        var finalCltvDelta = FinalCltvDelta(request);
 
         // Our usable channels are the first hops, by their live sendable amount (their gossip state never applies)
         var locals = BuildGraphLocals(request, null);
@@ -586,7 +621,7 @@ public sealed class PaymentRoutePlanner
     private List<CandidatePath> BuildCircularPaths(PaymentPlanRequest request, List<string> reasons)
     {
         var constraints = request.Constraints;
-        var maxCltvDistance = _nodeOptions.Value.Routing.MaxCltvExpiryDistance;
+        var maxCltvDistance = MaxCltvDistance(request);
         var finalCltv = FinalCltv(request);
         var result = new List<CandidatePath>();
         var incomingChannels = request.IncomingChannels!;
@@ -645,9 +680,8 @@ public sealed class PaymentRoutePlanner
             return result;
 
         var constraints = request.Constraints;
-        var maxCltvDistance = _nodeOptions.Value.Routing.MaxCltvExpiryDistance;
-        var finalCltvDelta = checked(request.Target.MinFinalCltvExpiryDelta + HintRouteBuilder.FinalCltvSafetyOffset
-                                   + constraints.ExtraCltvDelta);
+        var maxCltvDistance = MaxCltvDistance(request);
+        var finalCltvDelta = FinalCltvDelta(request);
         var ignored = new List<string>();
         foreach (var incoming in request.IncomingChannels!)
         {
@@ -900,6 +934,11 @@ public sealed record IncomingChannelCandidate(
 /// direct channels and the route hints.</param>
 /// <param name="IncomingChannels">For a circular payment (the payee is us, NL-609): the channels it may come back in
 /// through; null for any other payment.</param>
+/// <param name="AbsoluteFinalCltv">The payee's absolute <c>outgoing_cltv_value</c> (a trampoline leg's next node, or the
+/// trampoline node of a payment sent through one, NL-875) instead of the height plus <c>c</c> and the safety offset;
+/// <see cref="RouteConstraints.ExtraCltvDelta"/> is still added. Null for a normal payment.</param>
+/// <param name="MaxFirstHopCltvExpiry">The highest <c>cltv_expiry</c> our HTLC may carry (a trampoline leg: its lowest
+/// incoming part's expiry minus our delta); null: only <c>Routing.MaxCltvExpiryDistance</c> bounds it.</param>
 public sealed record PaymentPlanRequest(
     PaymentTarget Target,
     ulong AmountMsat,
@@ -914,4 +953,6 @@ public sealed record PaymentPlanRequest(
     ulong MinPartMsat,
     IReadOnlyDictionary<ShortChannelId, ulong>? HintForwardsInFlightMsat = null,
     GraphRoutingContext? Graph = null,
-    IReadOnlyList<IncomingChannelCandidate>? IncomingChannels = null);
+    IReadOnlyList<IncomingChannelCandidate>? IncomingChannels = null,
+    uint? AbsoluteFinalCltv = null,
+    uint? MaxFirstHopCltvExpiry = null);

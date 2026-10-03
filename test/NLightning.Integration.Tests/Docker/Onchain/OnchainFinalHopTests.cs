@@ -32,8 +32,8 @@ using Utils;
 /// <c>FinalHopProcessor</c> checks), persists the preimage on its record and settles the invoice, and our
 /// <c>RemoteCommitResolver</c> claims it with <c>&lt;sig&gt; &lt;preimage&gt;</c> before its <c>cltv_expiry</c>.
 /// </summary>
-/// <remarks>Run with <c>scripts/run-onchain.sh</c> (own process, own fixture), or the in-container runner with
-/// <c>-class NLightning.Integration.Tests.Docker.Onchain.OnchainFinalHopTests</c>.</remarks>
+/// <remarks>Run with <c>scripts/run-cluster.sh -n 1 --suite onchain</c> (own process, own fixture), alone with
+/// <c>--class NLightning.Integration.Tests.Docker.Onchain.OnchainFinalHopTests</c>.</remarks>
 [Collection(OnchainRegtestCollection.Name)]
 public class OnchainFinalHopTests : IAsyncLifetime
 {

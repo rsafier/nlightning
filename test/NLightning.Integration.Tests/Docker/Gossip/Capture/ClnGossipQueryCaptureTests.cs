@@ -1,5 +1,3 @@
-using Docker.DotNet;
-using Docker.DotNet.Models;
 
 namespace NLightning.Integration.Tests.Docker.Gossip.Capture;
 
@@ -12,6 +10,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Fixtures;
+using Fixtures.Cln;
 using Interop.Cln;
 using Utils;
 
@@ -36,11 +35,12 @@ public sealed class ClnGossipQueryCaptureTests : IAsyncLifetime
 
     private readonly ClnFixture _fixture;
     private readonly RawGossipRecorder _recorder = new();
-    private readonly DockerClient _docker = new DockerClientConfiguration().CreateClient();
+    private ExtraClnNode? _cln2;
     private NLightningTestNode? _node;
 
     public ClnGossipQueryCaptureTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -58,8 +58,8 @@ public sealed class ClnGossipQueryCaptureTests : IAsyncLifetime
         if (_node is not null)
             await _node.DisposeAsync();
 
-        await DockerContainerUtils.RemoveContainerAsync(_docker, SecondClnContainerName);
-        _docker.Dispose();
+        if (_cln2 is not null)
+            await _cln2.DisposeAsync();
     }
 
     [Fact(Explicit = true)]
@@ -113,28 +113,17 @@ public sealed class ClnGossipQueryCaptureTests : IAsyncLifetime
         Assert.True(node.IsConnectedTo(clnId));
     }
 
+    /// <summary>
+    /// The second CLN (<see cref="SecondClnContainerName"/>, the fixture CLN's flags without
+    /// <c>--ignore-fee-limits=false</c>), reached only by the fixture's CLN.
+    /// </summary>
     private async Task<ClnClient> StartSecondClnAsync(CancellationToken ct)
     {
-        await DockerContainerUtils.RemoveContainerAsync(_docker, SecondClnContainerName);
-        var container = await _docker.Containers.CreateContainerAsync(new CreateContainerParameters
+        _cln2 = await _fixture.StartClnAsync(new ClnNodeSpec(SecondClnContainerName)
         {
-            Image = $"{ClnFixture.ClnImage}:{ClnFixture.ClnTag}",
-            Name = SecondClnContainerName,
-            Hostname = SecondClnContainerName,
-            Env = ["LIGHTNINGD_NETWORK=regtest"],
-            Cmd =
-            [
-                $"--bitcoin-rpcconnect={ClnFixture.BitcoinContainerName}", "--bitcoin-rpcport=18443",
-                "--bitcoin-rpcuser=nltg", "--bitcoin-rpcpassword=nltg", "--bind-addr=0.0.0.0:9735",
-                "--alias=nltg-cln2", "--log-level=debug", "--developer", "--dev-bitcoind-poll=1"
-            ],
-            HostConfig = new HostConfig { NetworkMode = ClnFixture.NetworkName }
+            EnforceFeeLimits = false,
+            ReachableFromTests = false
         }, ct);
-        await _docker.Containers.StartContainerAsync(container.ID, new ContainerStartParameters(), ct);
-        var cln2 = new ClnClient(_docker, SecondClnContainerName);
-        await DockerContainerUtils.WaitUntilReadyAsync(SecondClnContainerName,
-                                                       async token => await cln2.GetInfoAsync(token),
-                                                       TimeSpan.FromMinutes(2));
-        return cln2;
+        return _cln2.Client;
     }
 }

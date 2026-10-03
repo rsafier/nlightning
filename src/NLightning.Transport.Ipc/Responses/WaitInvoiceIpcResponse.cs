@@ -5,7 +5,7 @@ namespace NLightning.Transport.Ipc.Responses;
 using Domain.Client.Responses;
 
 /// <summary>
-/// Response for WaitInvoice (ClientCommand 46, Cashu plan C0, NL-812): the invoice when the wait ended.
+/// Response for WaitInvoice (ClientCommand 47, Cashu plan C0, NL-901): the invoice when the wait ended.
 /// </summary>
 [MessagePackObject]
 public sealed class WaitInvoiceIpcResponse

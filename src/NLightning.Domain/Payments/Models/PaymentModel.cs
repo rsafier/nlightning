@@ -121,6 +121,14 @@ public sealed class PaymentModel
     /// </summary>
     public string? Tags { get; set; }
 
+    /// <summary>
+    /// The payment is the outgoing leg of a trampoline relay (NL-875), not our own spend: its HTLCs carry
+    /// <c>HtlcOrigin.Trampoline(PaymentHash)</c>, and the accounting books it through the relay's
+    /// <c>TrampolineRelaySettled</c> event instead of <c>PaymentSucceeded</c>/<c>PaymentFailed</c>. Written with the
+    /// row (a retry's replacement keeps it).
+    /// </summary>
+    public bool IsTrampolineRelay { get; init; }
+
     /// <param name="paymentHash">The payment hash.</param>
     /// <param name="bolt11">The BOLT 11 invoice paid, if any.</param>
     /// <param name="payeeNodeId">The payee.</param>
@@ -165,7 +173,8 @@ public sealed class PaymentModel
                                        Secret? preimage, FailureCode? failureCode, int? failureSourceIndex,
                                        string? failureReason, DateTimeOffset? completedAt,
                                        IReadOnlyList<PaymentHop>? route = null,
-                                       Bolt12PaymentDetails? bolt12 = null, KeysendDetails? keysend = null)
+                                       Bolt12PaymentDetails? bolt12 = null, KeysendDetails? keysend = null,
+                                       bool isTrampolineRelay = false)
     {
         if (!Enum.IsDefined(status))
             throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown payment status.");
@@ -187,7 +196,8 @@ public sealed class PaymentModel
             FailureCode = failureCode,
             FailureSourceIndex = failureSourceIndex,
             FailureReason = failureReason,
-            CompletedAt = completedAt
+            CompletedAt = completedAt,
+            IsTrampolineRelay = isTrampolineRelay
         };
     }
 

@@ -439,8 +439,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasPrecision(28, 8)
                         .HasColumnType("TEXT");
 
-                    b.Property<byte>("Source")
-                        .HasColumnType("INTEGER");
+                    b.Property<byte>("PriceSource")
+                        .HasColumnType("INTEGER")
+                        .HasColumnName("Source");
 
                     b.Property<long>("Time")
                         .HasColumnType("INTEGER");
@@ -1609,6 +1610,104 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("GraphNodes");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.LiquidityAds.LiquidityPurchaseEntity", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<uint?>("ClosedAtHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("ClosedEarly")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("ContributedSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("FundingScript")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("FundingTxId")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("LeaseBlocks")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint?>("LeaseStartHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("MaxFeeSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("MiningFeeSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("PaymentType")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("PeerNodeId")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<uint>("RateChannelCreationFeeSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("RateFeeBaseSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ushort>("RateFeeBasis")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ushort>("RateFundingWeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("RateMaxAmountSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("RateMinAmountSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("RequestedSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("Role")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("ServiceFeeSat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("Signature")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("ChannelId", "FundingTxId")
+                        .IsUnique();
+
+                    b.ToTable("LiquidityPurchases");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>
                 {
                     b.Property<byte[]>("NodeId")
@@ -2026,6 +2125,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<byte[]>("InvoiceRequestMetadata")
                         .HasColumnType("BLOB");
 
+                    b.Property<bool>("IsTrampolineRelay")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Label")
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
@@ -2157,6 +2259,137 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasKey("PaymentHash", "PartIndex", "HopIndex");
 
                     b.ToTable("PaymentPartHops");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentTrampolineHopEntity", b =>
+                {
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("BLOB");
+
+                    b.Property<int>("Attempt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("HopIndex")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("AmountMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("CltvExpiry")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("NodeId")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("SharedSecret")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("PaymentHash", "Attempt", "HopIndex");
+
+                    b.ToTable("PaymentTrampolineHops");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", b =>
+                {
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("AmountOutMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("CltvExpiryOut")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("CompletedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ushort?>("FailureCode")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("FailureReason")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long?>("FeeEarnedMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("IncomingTotalMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("NextEncryptedRecipientData")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("NextNodeId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("NextPathKey")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("NextTrampolinePacket")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("OutgoingPaymentSecret")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("Preimage")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("RecipientBlindedPaths")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("RecipientFeatures")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("PaymentHash");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("Status");
+
+                    b.ToTable("TrampolineRelays");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<ulong>("HtlcId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("AmountMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("CltvExpiry")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("OuterPaymentSecret")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("OuterSharedSecret")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("PaymentHash")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("TrampolineSharedSecret")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("ChannelId", "HtlcId");
+
+                    b.HasIndex("PaymentHash");
+
+                    b.ToTable("TrampolineRelayParts");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingLotEntity", b =>
@@ -2367,6 +2600,15 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasOne("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartEntity", null)
                         .WithMany("Hops")
                         .HasForeignKey("PaymentHash", "PartIndex")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", null)
+                        .WithMany()
+                        .HasForeignKey("PaymentHash")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

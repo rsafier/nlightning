@@ -8,6 +8,7 @@ using Bitcoin.ValueObjects;
 using Bitcoin.Wallet.Models;
 using Channels.Interfaces;
 using Gossip.Interfaces;
+using LiquidityAds.Interfaces;
 using Node.Interfaces;
 using Node.Models;
 using Node.PeerStorage;
@@ -72,6 +73,15 @@ public interface IUnitOfWork : IDisposable
 
     IForwardCircuitDbRepository ForwardCircuitDbRepository { get; }
 
+    // Trampoline relays and their incoming parts (NL-875, migration AddTrampolineRelays); the default is for test
+    // doubles that store none
+    ITrampolineRelayDbRepository TrampolineRelayDbRepository =>
+        throw new NotSupportedException("This unit of work does not store trampoline relays.");
+
+    // The trampoline routes of our own payments (payer side, NL-875); the default is for test doubles that store none
+    IPaymentTrampolineHopDbRepository PaymentTrampolineHopDbRepository =>
+        throw new NotSupportedException("This unit of work does not store payment trampoline hops.");
+
     // Onion replay set (NL-078)
     IOnionReplayDbRepository OnionReplayDbRepository { get; }
 
@@ -118,6 +128,11 @@ public interface IUnitOfWork : IDisposable
 
     IAccountingPeriodDbRepository AccountingPeriodDbRepository =>
         throw new NotSupportedException("This unit of work does not store accounting periods.");
+
+    // Liquidity ads purchases, bought and sold (NL-850 LA3, migration AddLiquidityPurchases); the default is for test
+    // doubles that store none
+    ILiquidityPurchaseDbRepository LiquidityPurchaseDbRepository =>
+        throw new NotSupportedException("This unit of work does not store liquidity purchases.");
 
     /// <summary>
     /// Every saved peer with its channels, plus a peer marked <see cref="PeerModel.IsInboundOnly"/> for every channel

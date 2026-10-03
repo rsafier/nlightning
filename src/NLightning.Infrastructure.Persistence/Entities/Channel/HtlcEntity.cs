@@ -116,14 +116,15 @@ public class HtlcEntity
     public byte[]? OnionSharedSecret { get; set; }
 
     /// <summary>
-    /// <c>HtlcOriginKind</c> of an HTLC we offered (1 our payment, 2 a forward); null when unknown (incoming HTLCs,
+    /// <c>HtlcOriginKind</c> of an HTLC we offered (1 our payment, 2 a forward, 3 a trampoline relay's payment); null when unknown (incoming HTLCs,
     /// rows from before migration <c>AddInvoicesPaymentsAndCircuits</c>). Written on its own
     /// (<c>ChannelStateDbRepository.SetHtlcOriginAsync</c>), never by a state transition.
     /// </summary>
     public byte? OriginKind { get; set; }
 
     /// <summary>
-    /// The payment hash of our payment, for <see cref="OriginKind"/> 1.
+    /// The payment hash of our payment, for <see cref="OriginKind"/> 1, or of the trampoline relay, for
+    /// <see cref="OriginKind"/> 3.
     /// </summary>
     public byte[]? OriginPaymentHash { get; set; }
 

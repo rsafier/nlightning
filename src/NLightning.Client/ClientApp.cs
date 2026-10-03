@@ -170,7 +170,7 @@ internal static class ClientApp
                                                                payOptions.TimeoutSeconds, payOptions.MaxFeeMsat,
                                                                payOptions.MaxParts, cancellationToken,
                                                                payOptions.OutgoingChannel, payOptions.IncomingChannel,
-                                                               labels);
+                                                               labels, payOptions.TrampolineNode);
                     new PayInvoicePrinter().Print(payment);
                     if (payment.Payment.Status == PaymentStatus.Failed)
                         return Failure;
@@ -200,9 +200,10 @@ internal static class ClientApp
                     break;
                 case "closechannel":
                 case "close-channel":
-                    var (closeFeerate, closeWait, noFeeRange) = ParseCloseOptions(commandArgs);
-                    var close = await client.CloseChannelAsync(ParseChannelId(commandArgs[0]), closeFeerate,
-                                                               noFeeRange, closeWait, cancellationToken);
+                    var closeArgs = ExtractCloseForce(commandArgs, out var closeForced);
+                    var (closeFeerate, closeWait, noFeeRange) = ParseCloseOptions(closeArgs);
+                    var close = await client.CloseChannelAsync(ParseChannelId(closeArgs[0]), closeFeerate,
+                                                               noFeeRange, closeWait, cancellationToken, closeForced);
                     new CloseChannelPrinter().Print(close);
                     break;
                 case "forceclosechannel":
@@ -316,6 +317,10 @@ internal static class ClientApp
                 case "bump-open":
                     await BumpOpenCommands.RunAsync(commandArgs, client, Console.Out, cancellationToken);
                     break;
+                case "liquidityads":
+                case "liquidity-ads":
+                    await LiquidityAdsCommands.RunAsync(commandArgs, client, Console.Out, cancellationToken);
+                    break;
                 case "waitinvoice":
                 case "wait-invoice":
                     if (!await WaitInvoiceCommands.RunAsync(commandArgs, client, cancellationToken))
@@ -428,7 +433,7 @@ internal static class ClientApp
             case "openchannel":
             case "open-channel":
                 var openArgs = OpenChannelMessageHandler.ParseArguments(commandArgs, out _, out _, out _, out _,
-                                                                        out var openError);
+                                                                        out var openLiquidity, out var openError);
                 if (openError is not null)
                     return openError;
                 if (openArgs.Length < 2)
@@ -440,6 +445,9 @@ internal static class ClientApp
                  && !(ulong.TryParse(openArgs[2], NumberStyles.None, CultureInfo.InvariantCulture, out var pushSats)
                    && pushSats < fundingSats))
                     return $"Invalid push '{openArgs[2]}': expected a number of sats below the channel amount.";
+                if (openLiquidity.IsRequested && openArgs.Length > 2)
+                    return $"{LiquidityOptions.RequestInboundOption} opens a dual-funded channel, which has no push "
+                         + $"amount. Usage: {cmd} {OpenChannelMessageHandler.Usage}";
                 return null;
             case "createinvoice":
             case "create-invoice":
@@ -457,7 +465,7 @@ internal static class ClientApp
                 if (commandArgs.Length < 1)
                     return $"Missing argument. Usage: {cmd} <bolt11> [amount_msat] [timeout_seconds] "
                          + "[--max-fee-msat <msat>] [--max-parts <n>] [--timeout <seconds>] [--out <channel>] "
-                         + "[--in <channel>]";
+                         + "[--in <channel>] [--trampoline <node_id>]";
                 return ParsePayInvoiceOptions(commandArgs, out var payError) is null ? payError : null;
             case "payoffer":
             case "pay-offer":
@@ -475,8 +483,9 @@ internal static class ClientApp
                            : null;
             case "closechannel":
             case "close-channel":
+                commandArgs = ExtractCloseForce(commandArgs, out _);
                 if (commandArgs.Length < 1)
-                    return $"Missing argument. Usage: {cmd} <channel_id> [feerate_per_kw|0] [wait_seconds] [nofeerange]";
+                    return $"Missing argument. Usage: {cmd} {CloseChannelUsage}";
                 if (!TryParseChannelId(commandArgs[0], out _))
                     return $"Invalid channel id '{commandArgs[0]}': expected 64 hex characters.";
                 if (commandArgs.Length > 1 && !uint.TryParse(commandArgs[1], NumberStyles.None,
@@ -572,6 +581,9 @@ internal static class ClientApp
             case "bumpopen":
             case "bump-open":
                 return BumpOpenCommands.Validate(cmd, commandArgs);
+            case "liquidityads":
+            case "liquidity-ads":
+                return LiquidityAdsCommands.Validate(cmd, commandArgs);
             case "listinvoices":
             case "list-invoices":
             case "listpayments":
@@ -907,6 +919,21 @@ internal static class ClientApp
     /// <c>[feerate_per_kw|0] [wait_seconds] [nofeerange]</c> of closechannel: a feerate of 0 (or none) uses the node's
     /// estimate, no wait uses the daemon's default.
     /// </summary>
+    /// <summary>The usage of closechannel.</summary>
+    internal const string CloseChannelUsage = "<channel_id> [feerate_per_kw|0] [wait_seconds] [nofeerange] [--force]";
+
+    /// <summary>
+    /// Takes closechannel's <c>--force</c> (anywhere after the command; liquidity ads D-L4, NL-850: close a channel we
+    /// sold inbound liquidity on inside its lease) out of the arguments.
+    /// </summary>
+    internal static string[] ExtractCloseForce(string[] commandArgs, out bool force)
+    {
+        force = commandArgs.Any(a => string.Equals(a, "--force", StringComparison.OrdinalIgnoreCase));
+        return force
+                   ? commandArgs.Where(a => !string.Equals(a, "--force", StringComparison.OrdinalIgnoreCase)).ToArray()
+                   : commandArgs;
+    }
+
     internal static (uint? FeeRatePerKw, uint? WaitSeconds, bool NoFeeRange) ParseCloseOptions(string[] commandArgs)
     {
         uint? feerate = commandArgs.Length > 1 && TryParsePositiveUInt(commandArgs[1], out var f) ? f : null;
@@ -926,7 +953,8 @@ internal static class ClientApp
     /// (1 to <see cref="MaxPayTimeoutSeconds"/>, instead of the positional timeout), <c>--out &lt;channel&gt;</c> (the
     /// only channel the payment may leave through) and <c>--in &lt;channel&gt;</c> (for an invoice of our own, a
     /// circular rebalance: the only channel it may come back in through; NL-609), a channel being a channel id or a
-    /// short channel id, each also as <c>--option=value</c>, anywhere after the command.
+    /// short channel id, and <c>--trampoline &lt;node_id&gt;</c> (pay through that trampoline node, NL-875), each also as
+    /// <c>--option=value</c>, anywhere after the command.
     /// </summary>
     /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
     internal static PayInvoiceArguments? ParsePayInvoiceOptions(string[] commandArgs, out string? error)
@@ -937,6 +965,7 @@ internal static class ClientApp
         uint? timeout = null;
         string? outgoingChannel = null;
         string? incomingChannel = null;
+        CompactPubKey? trampolineNode = null;
         for (var i = 0; i < commandArgs.Length; i++)
         {
             var argument = commandArgs[i];
@@ -1007,8 +1036,18 @@ internal static class ClientApp
                     else
                         incomingChannel = value;
                     break;
+                case "--trampoline":
+                    if (!TryParseNodeId(value, out var trampoline))
+                    {
+                        error = $"Invalid trampoline node '{value}': expected a node id (66 hex characters).";
+                        return null;
+                    }
+
+                    trampolineNode = trampoline;
+                    break;
                 default:
-                    error = $"Unknown option '{name}': expected --max-fee-msat, --max-parts, --timeout, --out or --in.";
+                    error = $"Unknown option '{name}': expected --max-fee-msat, --max-parts, --timeout, --out, --in or "
+                          + "--trampoline.";
                     return null;
             }
         }
@@ -1058,7 +1097,8 @@ internal static class ClientApp
         return new PayInvoiceArguments(positional[0], amount, timeout, maxFeeMsat, maxParts)
         {
             OutgoingChannel = outgoingChannel,
-            IncomingChannel = incomingChannel
+            IncomingChannel = incomingChannel,
+            TrampolineNode = trampolineNode
         };
     }
 
@@ -1212,7 +1252,7 @@ internal static class ClientApp
     /// <summary>The arguments of payoffer.</summary>
     internal const string PayOfferUsage =
         "<offer> [amount_msat] [--quantity <n>] [--note <text>] [--max-fee-msat <msat>] [--max-parts <n>] "
-      + "[--timeout <seconds>]";
+      + "[--timeout <seconds>] [--trampoline <node_id>]";
 
     /// <summary>The arguments of fetchinvoice.</summary>
     internal const string FetchInvoiceUsage = "<offer> [amount_msat] [--quantity <n>] [--note <text>]";
@@ -1232,6 +1272,7 @@ internal static class ClientApp
         ulong? maxFeeMsat = null;
         uint? maxParts = null;
         uint? timeout = null;
+        CompactPubKey? trampolineNode = null;
         for (var i = 0; i < commandArgs.Length; i++)
         {
             var argument = commandArgs[i];
@@ -1306,10 +1347,19 @@ internal static class ClientApp
 
                     timeout = seconds;
                     break;
+                case "--trampoline" when payment:
+                    if (!TryParseNodeId(value, out var trampoline))
+                    {
+                        error = $"Invalid trampoline node '{value}': expected a node id (66 hex characters).";
+                        return null;
+                    }
+
+                    trampolineNode = trampoline;
+                    break;
                 default:
                     error = payment
                                 ? $"Unknown option '{name}': expected --quantity, --note, --max-fee-msat, "
-                                + "--max-parts or --timeout."
+                                + "--max-parts, --timeout or --trampoline."
                                 : $"Unknown option '{name}': expected --quantity or --note.";
                     return null;
             }
@@ -1335,7 +1385,10 @@ internal static class ClientApp
         }
 
         error = null;
-        return new PayOfferArguments(positional[0], amountMsat, quantity, note, timeout, maxFeeMsat, maxParts);
+        return new PayOfferArguments(positional[0], amountMsat, quantity, note, timeout, maxFeeMsat, maxParts)
+        {
+            TrampolineNode = trampolineNode
+        };
     }
 
     /// <summary>
@@ -1791,6 +1844,9 @@ internal sealed record PayInvoiceArguments(
 
     /// <summary><c>--in</c>: for an invoice of our own, the only channel it may come back in through (NL-609).</summary>
     public string? IncomingChannel { get; init; }
+
+    /// <summary><c>--trampoline</c>: the trampoline node to pay through (NL-875).</summary>
+    public CompactPubKey? TrampolineNode { get; init; }
 }
 
 /// <summary>
@@ -1813,7 +1869,11 @@ public sealed record PayOfferArguments(
     string? PayerNote,
     uint? TimeoutSeconds,
     ulong? MaxFeeMsat,
-    uint? MaxParts);
+    uint? MaxParts)
+{
+    /// <summary><c>--trampoline</c>: the trampoline node to pay through (NL-875); payoffer only.</summary>
+    public CompactPubKey? TrampolineNode { get; init; }
+}
 
 /// <summary>
 /// The parsed arguments of withdraw (a null amount is "all").

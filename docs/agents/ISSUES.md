@@ -4,6 +4,18 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (lane b12-anysegwit, cfafd698) fixed.
+
+Updated 2026-10-03 by the Docker retirement lane (branch `wip/retire-docker` from 61889866, owner decision 2026-10-03: every suite but Tor on the cluster harness only): NL-866 (low, fixed in cea4bc4f: the CLN, Eclair, LDK and Postgres fixtures lost their Docker backends; Tor stays on Docker). Summary rows recounted from the entries: 749 entries, no duplicate IDs.
+
+Updated 2026-10-03 by the wip/integrate integrator (branch `wip/integrate` from `wip/harness-spike` 07cce046; owner decisions 2026-10-03: NL-820 option (b) and PR #19 merged with the harness): merges `ia-retire-lnunit` (NL-820 fixed, the Docker LND backend and LNUnit gone) and `c0d6a0cf` (`ia-pr19`: liquidity ads, PR #19's NL-771..NL-780 as NL-850..NL-859, wip/fafo's NL-779 and NL-810 unchanged); review fixes NL-860 (medium) and NL-861..NL-864 (low), all fixed. NL-864 runs PR #19's Eclair seller on both Eclair backends. The final proof added NL-865 (low, fixed), and the review of the integrated liquidity ads code NL-870 (medium, fixed: an aborted splice's sale no longer holds the lease guard) and NL-871 (low, fixed: a repeated purchase keeps the buyer's fee limit, migration `AddLiquidityPurchaseMaxFee`); NL-869 and NL-872..NL-874 are unused there; NL-866 (Docker backends of CLN, Eclair, LDK and Postgres retired), NL-867 (dual-fund and splice RBF: an attempt whose sibling confirmed is abandoned with `tx_abort`) and NL-868 (the price source's `ThroughTor` option) were added after.
+
+Updated 2026-10-03 by the test harness phase 3/5/6 write-up (branch `wip/harness-spike`; the phase 6 lanes and proof committed on the branch after `3e31759f`): NL-825 (fixed, 251feaa8: a stopped `NLightningTestNode` clears its SQLite pool so a restored snapshot is read on the macOS host), NL-830 (fixed, b246306e: `SpliceLndObserverTests` waits for bob's edge before the splice), NL-840 (fixed, 69fd5caa: every run waits until its namespace is gone), NL-841 (fixed, 6e87db78: `day0` and `eclair2` split off, `lnd` first), NL-842 (fixed, 47e9a2ea: `ChainSync.EnsureLndSpendableAsync` before G1 (b)), NL-843 (open, diagnostics 2ee6e42f: ZMQ heal timing under two matrices at once) and NL-844 (open, owner decision: the 15 min matrix needs about 7 namespaces) added; NL-262 and NL-276 fixed on the cluster backend (moot there: the full matrix green at 6 namespaces in 18 min and twice at once, `TEST_HARNESS_PLAN.md` "Phase 6 proof record"; the Docker fallback keeps their workarounds); NL-818 and NL-820 updated, still open. NL-826..NL-829, NL-831..NL-839 were not assigned. No product bug in these phases. Summary rows recounted from the entries: 730 entries, no duplicate IDs.
+
+Updated 2026-10-03 by the test harness phase 3/5/6 integrator (branch `wip/harness-spike` from `7593fdda`; three lanes merged with `--no-ff` in this order — lane branches `hf-*` hold the originals; statuses carry the lane SHAs and the merge SHA): `e9305ee0` (hf-lnd-wire: `LightningRegtestNetworkFixture` behind `NLTG_TEST_BACKEND`, NL-780 fixed), `304c2976` (hf-runner: `run-cluster.sh --matrix`, NL-816 and NL-817 fixed, NL-818 open), `b74efadf` (hf-lnunit: NL-819 fixed, NL-820 open). Every confirmed review finding of the three lanes fixed in `dbf77b1e` as NL-821 (medium: Docker-by-name test code on the cluster backend), NL-822, NL-823 and NL-824; none rejected (the "lnd exceeds its weight without `-parallel none`" finding is answered by the catalog's one-collection `lnd` and a cluster re-proof of the moved classes). NL-811..NL-815 were not assigned. Gates: Release `--no-incremental` build 0 warnings, `dotnet format` clean, `check-sln-configs` OK, non-Docker net10.0 suite 14,283 passed with 6 platform/explicit skips and one NL-729 regex-timeout failure (`ClassificationEngineTests`, 53/53 alone), `run-cluster-tests.sh` 48/48, the LND suite on the cluster (`--suite lnd` 58/58 plus the moved classes 6/6 and 2/2) and on Docker under the machine lock (90/90). No SQL Server tests.
+
+Updated 2026-10-03 by the liquidity ads LA7 lane (branch `claude/youthful-hamilton-x4ngo7`, docs only, after the NL-850 commits `8b79a46c`..`10b8ba84`): the epic NL-850 is fixed at `10b8ba84` (LA0-LA7 done; plan `docs/agents/LIQUIDITY_ADS_PLAN.md` Record; Docker `EclairLiquidityAdsTests` 5/5 against Eclair 0.14.3 as seller, which sells only in splices and splice RBF, not in a new channel without an interceptor plugin). New open follow-ups NL-851..NL-858 (all low: two missing tests, two RBF gaps, `bumpsplice` without `--request-inbound`, the splice-RBF sale contribution, no live seller proof, the Eclair image behind a TLS-intercepting proxy). `SECURITY_REVIEW.md` SR-28..SR-31 cover the liquidity ads surface. Gates at the merge: full non-Docker net10.0 suite 13,866 passed, 4 skipped (Domain 4339, Application 3738, Integration 1067, Infrastructure.Bitcoin 1617, Daemon 1358, Infrastructure 663, Serialization 633, Bolt11 343, Testing.Lnd 108).
+
 Updated 2026-10-02 by the batch10 integrator (branch `wip/batch10` from `wip/fafo` at `44aeaf5f`; 13 lanes run in parallel worktrees on the owner decisions of 2026-10-02 and merged with `--no-ff` in lane order — lane branches `b10-*` hold the originals; the statuses carry the lane SHAs and the merge SHA): merges `a8bfc61a` (b10-plugin: NL-151 fixed, new NL-706, NL-707), `94d3e68e` (b10-chain: NL-012 fixed, testnet4), `666ec562` (b10-sec: NL-677, NL-678, NL-679 fixed, new NL-693), `d8ffd72e` (b10-acct-edges: NL-606, NL-607, NL-608, NL-610, NL-611, NL-612, NL-613, NL-645 fixed, new NL-688; migration `AddMutualCloseTerms`), `7b778718` (b10-lots: NL-674 (owner decision A, D-A12 amended), NL-657, NL-675, NL-680, NL-681, NL-658 fixed; migration `AddLotBuckets`), `f24b7ba3` (b10-splice-resume: NL-600 fixed, NL-698 new and fixed, NL-496 partial), `cb806664` (b10-attr: NL-332 fixed, `option_attribution_data` Optional by default), `a38caf6c` (b10-aot: NL-338 fixed, NL-300 partial, new NL-708, NL-709, NL-710 (fixed)), `1600d945` (b10-db-proofs: NL-662, NL-429, NL-347 fixed), `0419d687` (b10-eclair: NL-557, NL-407 fixed, NL-554 partial, NL-717, NL-718, NL-719 new and fixed), `4178186b` (b10-ldk: NL-556 fixed, NL-722, NL-723 new and fixed, new NL-721, NL-724), `9cabb01e` (b10-close-interop: NL-286 fixed, NL-725 new and fixed), `ee20aa9f` (b10-tor-interop: NL-572 fixed, new NL-729). Integration fixes: `5602e27b` (the later migration's Designers regenerated over both lanes' columns; `HasPendingModelChanges` false on all three providers), `08caba71` (the AOT MessagePack test after the plugin deletion). Review findings fixed with regression tests (each fails before its fix): NL-732 (`8be600e6`, a stalled HTTP body hung the fee/price/Esplora readers), NL-735 (`8be600e6`, LAN IP `http://` accepted), NL-733 and NL-734 (`1f956f72`), NL-736, NL-737, NL-738 (`290f3dcc`; plus `SetClosingTransaction`'s doc), NL-739 (`017d3ff0`, lots stranded by an unsettled claim), NL-740, NL-741 (`8a094fa9`, `2a26ac15`), NL-742, NL-743 (`fe957403`, route hints by the peer's alias; the template's old 144 margin raised on existing nodes), NL-744 (`3655e6f3`), and two test-strength findings without new IDs: the NL-600 wallet-load test now counts the loads (`41ab5a74`) and the NL-725 CLN proof asserts CLOSINGD_COMPLETE (`4e1f7763`, class 4/4 under the Docker lock). Rejected review findings: the BlindedPathBuilder scid choice "has no unit test" (the three arms are the `BlindedPaymentPathFactoryTests` alias theory), the blinded BOLT 11 margin "still 144" and the stale Application CLAUDE.md margin (both already 1,008 once b10-eclair and b10-ldk were merged). Owner decisions recorded: NL-161, NL-162, NL-169 wontfix (WASM/Blazor parked until there is a browser-wallet goal), NL-157 wontfix (layering left as is, do not make it worse), NL-437 wontfix (a .NET limitation; `SECURITY_REVIEW.md` SR-09 note), NL-180 stays open (interop stays local, no CI Docker). FAFO/FAFO2 (`~/.nltg`, not touched): NL-743 raises their pinned 144 margin at the next start with a warning. Gates on the merged tree: Release build `--no-incremental` 0 warnings, `dotnet format` clean, `check-sln-configs` OK, full non-Docker net10.0 suite green (see the final run in the integrator's report).
 
 Updated 2026-10-02 by the batch10 finalizer (branch `wip/batch10`, after the full Docker pass at `e84f43f6`: LND 87/87, on-chain all 47/47, CLN 78/81, Eclair 29/29, LDK 27/27, gossip 30/30, ABCD 10/10, Tor 3/3): NL-745 new and fixed (`b22d157f`, the three order-dependent `ClnCloseTests` failures of the pass: CLN took our own closing fee, B2-CLS-R02; full CLN rerun 81/81 + 4 `Explicit`), NL-676 fixed (`c9f2b083`, the A3 Docker smoke: bob and carol run `Profile=Financial` for the whole ABCD suite, `AbcdAccountingTests`; ABCD 11/11), and two loaded-run failures of the final non-Docker run root-caused: NL-746 new and fixed (`2c6475d9`, a banned gossip peer's in-flight invalid messages banned it twice; the NL-382 residual, regression test fails before the fix) and NL-747 new and fixed (`08fa0b0a`, `ClearAllPools` in parallel test teardowns disposed other tests' SQLite connections). All Docker runs under the machine-wide lock; no SQL Server container tests. Gates: Release `--no-incremental` build 0 CS warnings, `dotnet format` clean, `check-sln-configs` OK, full non-Docker net10.0 suite green (13,302 passed, 6 platform/explicit skips: Domain 4201, Application 3594, Infrastructure.Bitcoin 1577, Daemon 1268, Integration 1041, Infrastructure 656, Serialization 622, Bolt11 343).
@@ -108,6 +120,8 @@ Updated 2026-10-01 by the batch9 integrator (branch `wip/batch9` from `wip/fafo`
 - Plan milestones (e.g. `ONION M3`) refer to `docs/agents/ONION_ROUTING_PLAN.md`; `BOLT2 N#-T#` refers to `docs/agents/BOLT2_NORMAL_OPERATION_PLAN.md`. `BOLT_COVERAGE.md` remains the per-BOLT status matrix; this file is the status source for individual bugs.
 Updated 2026-10-02 by the de-timing pass integrator (branch `wip/detime` from `wip/fafo` at `41a1ad7d`; a single integrator pass, no lanes — the 16 documented loaded-run flakes share harness files): 14 of the 16 flake entries resolved (NL-382, NL-394, NL-434, NL-445, NL-465, NL-471, NL-472, NL-482, NL-499, NL-500, NL-501, NL-513, NL-561 fixed; NL-512 and NL-565 de-timed but still racy under a loaded full SOLUTION run — both classes now run in the serial `timing-serial` collection in Application.Tests and their entries stay open with the residual noted). The shared enablers: `test/NLightning.Tests.Utils/SteppedClockProvider.cs` (freeze/Advance/assert — timers fire only on Advance, in due order, on the caller's thread) and `WaitFor.cs` (bounded, named-timeout polling). The production seams are additive optional `TimeProvider` parameters (PaymentService.WaitAsync, ChannelRestoreService's connect budget, DualFundedOpenService's initiator open deadline; GossipSyncManager and GossipIngress already had one). Root causes fixed per entry: NL-465 — the harness's payment timeout raced a real 50 ms `Task.WaitAsync`; NL-501/NL-394 — the SCID reply timeout is stepped-clock driven on half-second sync boundaries; NL-472 — the connect budget is clock-driven; NL-512 (partial) — the initiator deadline and the accepter watchdog are clock-driven and the IT-SIG-01 check rides the pump; NL-445 — the ingress retry/write-behind timers ran on real threadpool timers (SettableTimeProvider gained an opt-in steppedTimers mode); NL-434 — the MissionControl asserts use the deterministic decay formula and the pathfinder budget is a node-scan count bound (<= 4 x NodeCount; measured 6112 vs 40,000) with a 2500 ms canary; NL-382/561/499/500/471/513/482 — fixed-delay and shared-drain polls replaced with per-condition bounded waits (TwoNodeHarness gained PumpUntilAsync; the dual-fund harness fires its nodes' stepped clock in RunAsync/PumpAsync, which the NL-512 watchdog commit had left dead and the refusal class hanging). Gates on the integrated tree, net10.0 Release: build 0 errors/0 warnings; `dotnet format` clean; full non-Docker suite green. Soak: three consecutive full non-Docker runs after the fixes had 1, 1 and 0 failures — the NL-512 residual twice and, before its fix, a GossipFlood residual (the warn-band verify dropped: under load the bounded queue backs up and the door scores the flood in a burst that crosses the ban threshold directly); after the last fix two further full runs green.
 
+Updated 2026-10-03 by the PR #19 integration prep (branch `ia-pr19` on `claude/youthful-hamilton-x4ngo7`): the liquidity ads branch numbered its entries NL-771..NL-780, which collide with entries on `wip/fafo` and the harness branch, so they were renumbered in order to NL-850..NL-859 in this file, the code, tests and docs (NL-771→NL-850 epic, NL-772→NL-851, NL-773→NL-852, NL-774→NL-853, NL-775→NL-854, NL-776→NL-855, NL-777→NL-856, NL-778→NL-857, NL-779→NL-858, NL-780→NL-859). PR #19's own commit messages (`8b79a46c`..`13f00226`) still cite the old numbers; read them through this map. NL-779 and NL-810 below are `wip/fafo`'s entries.
+
 ### Status legend
 
 | Status | Meaning |
@@ -133,16 +147,18 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 50 | 51 |
-| in-progress | 0 | 0 | 1 | 1 | 2 |
-| fixed | 14 | 62 | 188 | 373 | 637 |
-| wontfix | 0 | 0 | 5 | 8 | 13 |
-| duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **196** | **434** | **706** |
+| open | 0 | 0 | 1 | 65 | 66 |
+| in-progress | 0 | 0 | 2 | 2 | 4 |
+| fixed | 14 | 63 | 201 | 411 | 689 |
+| wontfix | 0 | 0 | 5 | 9 | 14 |
+| duplicate | 0 | 0 | 2 | 2 | 4 |
+| **Total** | **14** | **63** | **211** | **489** | **777** |
 
 ### Epics
 
-- NL-811: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-812, C1 CDK gRPC payment processor NL-813, C2 Docker proof NL-814, C3 native wallet NL-815, C4 hold invoices NL-816)
+- NL-900: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-901, C1 CDK gRPC payment processor NL-902, C2 Docker proof NL-903, C3 native wallet NL-904, C4 hold invoices NL-905)
+- NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, TR0-TR5 built on `wip/fafo` 2026-10-03, merges `7f5c5d85` TR0, `e958b8eb` TR1, `9f0d1050` TR3-P, `165acd77` TR2, `fb2b07ca` TR5 phase 1, `1c09e718` TR4, `dd48b26d` TR3, `c1811bbf` TR5 phase 2; experimental until an owner decision; follow-ups NL-895..NL-899)
+- NL-850: Liquidity ads (BOLT PR #1153) (fixed, medium; plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, LA0-LA7 done on `claude/youthful-hamilton-x4ngo7` at `10b8ba84`: both roles in the dual-funded open, its RBF, the splice and the splice RBF with restarts, `LiquidityPurchases`, the lease guard, `LiquidityFeePaid`/`LiquidityFeeEarned`, `liquidityads` (IPC 46); proven in-process in both roles and against Eclair 0.14.3 as seller (`EclairLiquidityAdsTests` 5/5; Eclair sells only in splices); open follow-ups NL-851..NL-859; integration review fixes NL-870, NL-871)
 - NL-602: Accounting: core event feed and built-in books (fixed, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3 all built on `wip/acct-a3`: A1 feed, A2 operational books, A3 financial profile (labels, classification, prices, projector and lots, period close, financial reports, config/security/docs; merge `c62d861b`, review fixes `94af679d`, `ecd983b1`); data gaps NL-603..NL-605 and the plugin stub NL-151 done; open follow-ups NL-606..NL-608, NL-610..NL-613, NL-645, NL-657, NL-658, NL-662, NL-674..NL-681 (NL-660, NL-665, NL-667 fixed on `wip/nl660`), flakes NL-620, NL-653)
 - NL-569: Tor: onion peers, our onion service, Tor-only mode (fixed, medium; lane tor, branch `wip/tor`: `Node:Tor` Off/Hybrid/TorOnly, SOCKS5 with isolation, control port with SAFECOOKIE, persisted v3 onion service announced in `node_announcement`, NL-542 and NL-178 fixed; `docs/agents/TOR.md`; follow-ups NL-571..NL-573; review fixes NL-575..NL-590)
 - NL-426: Static channel backup and restore (fixed, high; wave rf1: encrypted SCB, export/verify/restore IPC 21-23, recovery channels and the data-loss reestablish, proven against LND; wave lh1: NL-430, NL-431 old spends and every peer address, NL-432 persisted peer-storage retrievals with `listpeerstorage` (32); follow-up NL-435)
@@ -2576,6 +2592,67 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Follow-up of NL-444
 - **Plan ref:** `BOLT12_PLAN.md` OM0-T1
 
+### NL-875 [EPIC] Trampoline routing (BOLTs PR #836): pay through a trampoline, relay as one, receive as the final trampoline
+- **Status:** in-progress (`wip/fafo`)
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** new Domain onion TLVs 14/20/21/22, failure codes 0x2019/0x201A/0x401B, `Feature.OptionTrampolineRouting` (56/57); `Infrastructure.Bitcoin/Onion/Trampoline/`; `Application/Payments/Trampoline/`, `IncomingOnionProcessor`, `HtlcSwitch`, `PaymentService`; tables `TrampolineRelays`, `TrampolineRelayParts`, `PaymentTrampolineHops` (migration `AddTrampolineRelays`); `HtlcOriginKind.Trampoline = 3`
+- **Evidence:** Owner request 2026-10-03: trampoline support as client and as target (relay included, since advertising the bit promises it). Nothing exists: TLV 20 is refused as an unknown even type, and a forward circuit is 1:1 while a relay is N incoming HTLCs to one outgoing payment. Spec state: PR #836 open, head `8f5f37a8` (2026-08-28). LDK main speaks the spec values; Eclair/Phoenix/Electrum still use the prototype (148/149, TLVs 66097-66102), and Eclair's move is draft PR #2819.
+- **Built (2026-10-03, `wip/fafo`):** TR0 contracts (`7f5c5d85`), TR1 crypto with the three PR 836 vector files byte-exact (`e958b8eb`), TR3-P relay persistence/origin 3/accounting (`9f0d1050`, migration `AddTrampolineRelays`), TR2 target (`165acd77`), TR4 payer + leg sender + `--trampoline` IPC key 9 (`1c09e718`), TR3 relay engine + `Node:Trampoline` + relays in `listforwards` (`dd48b26d`), `UnknownNextNode` leg kind (`8b671e69`), TR5 in-process proofs: target (`fb2b07ca`) and 13 relay end-to-end scenarios with the real engine, leg sender and payer (`c1811bbf`, which also fixed two cross-lane bugs: the leg's budget now gets the whole fee difference and the first hop the plain forwarding delta (D-TR6 amended); a last trampoline layer naming `recipient_blinded_paths` is a relay). Status stays in-progress until the owner decides to take `OptionTrampolineRouting` out of `ExperimentalFeatures`. Follow-ups: NL-895 (blinded hops as trampoline hops, scenario 10b), NL-896 (interop proofs), NL-897 (outer-only failures from the deadline monitor and dust switch), NL-898 (attribution on trampoline failures), NL-899 (listing/observability gaps).
+- **Fix sketch:** Plan `docs/agents/TRAMPOLINE_PLAN.md`: TR0 contracts, TR1 trampoline onion crypto with the three spec vector files byte-exact, TR2 target, TR3 relay engine (payment-backed, origin 3), TR4 client (`Node:Payments:Trampoline`, `--trampoline`), TR5 in-process multi-node proofs (no Docker, owner decision 2026-10-03). Spec format only (D-TR1); experimental until TR5 and an owner decision. Follow-ups: interop proofs against Eclair (after #2819) and LDK.
+- **Blocks/Blocked-by:** Related NL-080 (onion messages), NL-447 (BOLT 12), NL-459 (keysend pattern)
+- **Plan ref:** TRAMPOLINE_PLAN TR0-TR5
+
+### NL-895 Blinded hops as trampoline hops (BOLT 12 recipient with bit 57) do not relay
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Trampoline/TrampolineRelayService.cs`, `Payments/Onion/IncomingOnionProcessor.cs` (blinded trampoline relay data), `Payments/Send/PaymentService.Trampoline*.cs`
+- **Evidence:** TR5 phase 2 scenario 10(b) (2026-10-03): C's `BlindedPathBuilder` path names the X–C hop by `short_channel_id`, which the relay engine does not resolve to a node ("lacks its relay instructions"); with it resolved by hand, X applies its own `Node:Trampoline` fee/delta although the recipient fixed that hop's price in the path's `payment_relay`, so X refuses with NODE|26. TR-R-07/TR-R-10.
+- **Fix sketch:** resolve `short_channel_id` in blinded trampoline recipient data to the channel peer; use the path's `payment_relay`/constraints (not `Node:Trampoline`) as a blinded hop's policy; prove 10(b) in `TrampolineRelayE2ETests` (X running the relay engine).
+- **Blocks/Blocked-by:** Follow-up of NL-875
+- **Plan ref:** TRAMPOLINE_PLAN TR5 scenario 10(b)
+
+### NL-896 Trampoline interop proofs against Eclair and LDK
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Nodes/{Eclair,Ldk}`, `test/Docker/eclair/Dockerfile` (pinned 0.14.3)
+- **Evidence:** NL-875 is proven by the PR 836 vectors and in-process NLightning-only tests (owner decision 2026-10-03). Eclair 0.14.3 speaks only the prototype (148/149, TLVs 66097-66102); its move to the spec values is draft ACINQ/eclair#2819. LDK main speaks 56/57 (receive; send to blinded recipients only).
+- **Fix sketch:** once #2819 ships, bump the pinned Eclair image and prove pay-through and relay both ways on the cluster; prove LDK receiving through our relay when its ldk-server exposes trampoline.
+- **Blocks/Blocked-by:** Follow-up of NL-875; blocks taking trampoline out of experimental (owner call)
+- **Plan ref:** TRAMPOLINE_PLAN §7
+
+### NL-897 Trampoline parts failed by the deadline monitor or the dust switch use the outer secret only
+- **Status:** open
+- **Severity:** low
+- **Kind:** spec
+- **Location:** `src/NLightning.Application/Channels/Safety/HtlcExpiryMonitor.cs` (`FailBackAsync`), `Channels/Fees/DustExposureHtlcSwitch.cs`
+- **Evidence:** TR2/TR3 reports (2026-10-03): the switch and the relay engine double-wrap (trampoline then outer secret) every failure of a trampoline part, but the two failure paths outside them create the error with the outer secret only. The payer still decrypts it (outer layer, TR-R-15) but cannot attribute it to the trampoline layer.
+- **Fix sketch:** have both paths rebuild the trampoline keys (re-peel the stored onion as `HtlcSwitch` does) and use `TrampolineErrorPackets.CreateAttributed`.
+- **Blocks/Blocked-by:** Follow-up of NL-875
+- **Plan ref:** TRAMPOLINE_PLAN TR-R-14
+
+### NL-898 The payer does not verify attribution_data on trampoline failures
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.Trampoline*.cs`
+- **Evidence:** TR4 report (2026-10-03): failures through a trampoline are decrypted with `DecryptTrampolineErrorPacket`, but the outer-layer `attribution_data` (which the relay and target create, TR2's `TrampolineErrorPackets.CreateAttributed`/`WrapAttributed`) is not verified as it is for ordinary payments (NL-326). PR 836 says nothing about attribution on the trampoline layer (TR1 finding).
+- **Fix sketch:** verify the outer layer's attribution over the outer route's hold times when `OptionAttributionData` is advertised.
+- **Blocks/Blocked-by:** Follow-up of NL-875; related NL-326
+- **Plan ref:** TRAMPOLINE_PLAN R2
+
+### NL-899 Trampoline observability gaps: `listpayments`/`getroute`, failed relay history
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `Daemon/Handlers/ListPaymentsClientHandler.cs`, `GetRouteClientHandler`, `ITrampolineRelayDbRepository.RemoveFailedAsync`
+- **Evidence:** TR3/TR4 reports (2026-10-03): `getroute` and `listpayments` know nothing of trampolines (a payer's inner route is in `PaymentTrampolineHops` only; a relay's outgoing leg shows in `listpayments` as a row with `IsTrampolineRelay` but no marker); a payer's retry of the same hash deletes the failed relay row and its parts, so `listforwards` loses that history; the channels report credits a relay's income to its first incoming channel only.
+- **Fix sketch:** show the trampoline node/inner route in `listpayments`, hide or mark relay legs, keep failed relay attempts (attempt column or history table), split relay income per incoming part.
+- **Blocks/Blocked-by:** Follow-up of NL-875
+- **Plan ref:** TRAMPOLINE_PLAN TR3/TR4
+
 ## BOLT 5: On-chain handling
 
 ### NL-094 [EPIC] On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice
@@ -4444,6 +4521,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-497, NL-201
 - **Plan ref:** —
 
+### NL-805 A channel load torn by a save committing between its queries refused a healthy channel ("Balances add up to 1100000000 msat, not 1000000000")
+- **Status:** duplicate of NL-810 (the cbdee79f re-read workaround was reverted in 4a56e984; NL-810 removes the torn read with one database snapshot per channel load)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelDbRepository.cs` (`MapWithStateAsync`), `ChannelStateDbRepository.cs` (`MapToDomain`), new `ChannelStateInconsistentException.cs`
+- **Evidence:** test harness phase 3/4 (integration record, then the proof's cluster Eclair run 3 at once, `pf-ecl3-2`): `EclairSpliceTests.Given_EclairSplicesIn_When_TheSpliceLocks_Then_WeAcceptAndPaymentsFlow` failed in `listchannels` (`ListChannelsClientHandler` -> `ChannelDbRepository.GetAllAsync` -> `ChannelStateDbRepository.LoadAsync` -> `ChannelCommitments.Restore`). The channel row (capacity, current funding) and the state rows are read in separate queries with no read transaction, so a splice-lock save committing in between mixed the old capacity with the new balances. The class passed 7/7 alone.
+- **Fix:** The restore error is a `ChannelStateInconsistentException` (an `InvalidOperationException`, same message); `MapWithStateAsync` reads the channel again, whole (row, funding, state), up to 3 times before refusing it; a channel deleted in between keeps the first error. Tests (Integration `Persistence/ChannelStateDbRepositoryTests`): `Given_ASpliceLockCommittingDuringALoad_*` (the `WriteBeforeStateQueryInterceptor` commits the lock between the queries; without the re-read it fails with the cluster's exact error) and `Given_AStoredStateInconsistentOnEveryRead_*`. Reruns: `EclairSpliceTests` 7/7 alone and 7/7 x3 at once.
+- **Blocks/Blocked-by:** Same torn read as NL-810 on `wip/nl810` (another job: one database snapshot per load, all three providers, the stronger fix). When both reach `wip/fafo`, keep NL-810's snapshot read and mark one entry duplicate.
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 record"
+
 ### NL-810 Torn read of a channel's stored state: a save committing mid-load made `listchannels` fail
 - **Status:** fixed (3649c0aa)
 - **Severity:** medium
@@ -5612,6 +5699,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-678; part of NL-602
 - **Plan ref:** —
 
+### NL-868 The price source goes through Tor in `Hybrid`, where mempool.space's clearnet API refuses Tor exits, and every failed hour warned
+- **Status:** fixed (91b69f18)
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/PriceSourceServiceCollectionExtensions.cs`, `Accounting/Prices/HttpPriceSource.cs`; `src/NLightning.Domain/Accounting/Prices/AccountingPriceOptions.cs`; `src/NLightning.Application/Accounting/Prices/PriceValuationService.cs`
+- **Evidence:** Live on Mutinynet (FAFO, `Hybrid`, 2026-10-03): since NL-677 the price client goes through Tor in any Tor mode, and mempool.space's clearnet API now refuses Tor exits: a request through our SOCKS port timed out at 30 s (direct: 0.7 s), so every fetch failed with "The price source could not be reached for USD at ...: A task was canceled." (a warning every 30 s per hour asked) and the financial book stayed unvalued (38 unvalued postings; the clearing account showed +137.89 USD on -514 sat). mempool.space's onion service answers through Tor (`http://mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion/api/v1/historical-price`, plain http to `.onion` allowed by NL-678); with it as `Accounting:Prices:Url` FAFO valued every posting. The owner wants the route chosen per node (one node on the onion, the other on clearnet mempool.space).
+- **Fix:** `Accounting:Prices:ThroughTor` (`bool?`): unset follows NL-677 (through Tor whenever Tor is on), `true` forces Tor, `false` asks a clearnet URL directly in `Hybrid` (a `.onion` URL still through Tor); `AccountingPriceOptions.GetTorRoutingErrors` refuses `true` with Tor `Off` and `false` in `TorOnly` (the daemon at start, `ValidateOnStart`; the registration when the source is built), `RoutesThroughTor(tor)` is the decision (`HttpPriceSource.TorRoute`). `AccountingPriceOptions.MempoolOnionUrl` is documented as the recommended URL with Tor (`DefaultUrl` stays clearnet); the config template writes `"ThroughTor": null`. Logging: each request's failure at Debug and kept as `IPriceSource.LastFailure` (a default member; the composite forwards it), `PriceValuationService` warns once per round or `prices fetch` with the count of failed hours and the last failure, and the first failure of the clearnet default through Tor logs one Information hint (the onion URL, plus `ThroughTor` false outside `TorOnly`). Privacy trade-off of `false` (NL-677, SR-21) in the option's docs, `TOR.md` and `SECURITY_REVIEW.md`. Tests: Domain `AccountingPriceOptionsTests` (route and errors x Off/Hybrid/TorOnly), `PriceSourceTorRoutingTests` (route per combination, refusals, an onion URL through Tor with `false`), `HttpPriceSourceTests` (Debug failures, the one-time hint), `CompositePriceSourceTests`, `PriceValuationServiceTests` (one warning per round and per fetch), Daemon `NodeServiceExtensionsTests` (binding and start validation, 9 cases).
+- **Blocks/Blocked-by:** Related NL-677, NL-678; part of NL-602
+- **Plan ref:** ACCOUNTING_PLAN D-A11; SECURITY_REVIEW SR-21
+
 ### NL-679 `accounting export --output` writes its temporary file with the umask and follows a planted symlink (SR-26)
 - **Status:** fixed (31fd465e; merged 666ec562)
 - **Severity:** low
@@ -6078,12 +6175,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N6-T3
 
 ### NL-262 A restarted LND container can come back on another address; LNUnit RestartByAlias(isLND: true) then hangs
-- **Status:** open
+- **Status:** fixed (c5e8ad38, proven in f40d9416; on the cluster backend, the primary runner since phase 5; the Docker LND backend and its address holds are gone since NL-820)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/ReestablishFlowTests.cs` (`HoldAddressesBelowAsync`), LNUnit 3.0.4
 - **Evidence:** OrbStack/Docker gives a restarted container the lowest free address in the network, so alice moved (.5 → .2) once earlier containers were removed; every later test lost her. LNUnit's `isLND: true` path re-adds the node without removing the stale connection and waits forever in `WaitUntilAliasIsServerReady`. Worked around (30c1bb8): idle `nltg-address-hold-N` containers fill the lower addresses during the restart, and the test asserts her address is unchanged (reported by W2-A).
-- **Fix sketch:** Fix upstream in LNUnit (drop the stale connection, re-resolve the address), or give fixture containers static IPs.
+- **Fix sketch:** Fix upstream in LNUnit (drop the stale connection, re-resolve the address), or give fixture containers static IPs. Closed by test harness phase 6 (2026-10-03): on the cluster backend an LND restart is a StatefulSet restart that keeps the DNS name and PVC; the LND peers redial the new pod IP and our nodes the Service name (NL-780). `ReestablishFlowTests` (alice restarts) passed without address holds in all 6 matrices of the phase 6 proof (6 x 3/3), as did `AbcdRestartTests`, the O5 stopped-window rollback and the Eclair, CLN and LDK restarts. The `nltg-address-hold-N` workaround stays only in the Docker fallback (`DockerLndBackend`, NL-820).
 - **Blocks/Blocked-by:** Related NL-180
 - **Plan ref:** BOLT2 N7 proof
 
@@ -6098,11 +6195,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-276 Host dotnet cannot reach Docker bridge container IPs; LNUnit Docker tests fail in the fixture
-- **Status:** open (partial: 1d561f2)
+- **Status:** fixed (c5e8ad38, proven in f40d9416, on the cluster backend, the primary runner since phase 5; earlier workaround 1d561f2; the Docker LND fixture and its in-container runner are gone since NL-820, the remaining Docker suites (CLN, Eclair, LDK, Tor) run from the host under the one-process lock)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/` (LNUnit `LightningRegtestNetworkFixture`), this macOS host
-- **Evidence:** In wave 3 the host process got EHOSTUNREACH ('No route to host 192.168.215.x:18443') to container IPs while ping and /usr/bin/curl worked (likely macOS Local Network privacy for the parent app, or OrbStack routing). All 44 LND-based Docker tests failed at setup at integration (`c92d837`), so the ABCD 3-run gate and the N9/N10 Docker proofs were not re-verified there; the CLN and database fixtures publish ports on 127.0.0.1 and passed. Lanes worked around it by running the host-built test dll inside an SDK container on the bridge (`test/CLAUDE.md`). Concurrent Docker runs also force-remove each other's fixture containers (miner/alice/...). Update (ABCD wave 4, `6b5d50e`): still reproduces on the host. Workaround documented in `test/CLAUDE.md` (6b5d50e): run the host-built test dll inside an SDK container with `--network host`, which reaches the bridge addresses, the ports published on 127.0.0.1 and `host.docker.internal`; with it all 77 Docker tests passed at integration (`--network bridge` fails the database and connect-back cases). Update (ABCD wave 5, `1a5ab49`): still reproduces: `scripts/run-onchain.sh` from the host fails at fixture setup with "No route to host (192.168.215.2:18443)"; every wave 5 Docker result comes from the in-container runner (`--network host`). Update (gossip wave G-D, `48a8951`): every Docker runner script (`run-gossip.sh`, `run-onchain.sh`, `run-abcd.sh`) now uses the in-container `--network host` runner (1d561f2, NL-358) and test processes no longer share ports (NL-359); the host route itself still fails, and concurrent suites still force-remove each other's fixture containers, so run one Docker process at a time. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): re-scoped to test infrastructure: every Docker runner script and `test/CLAUDE.md` use the in-container `--network host` runner, and every Docker result since wave 4 comes from it; no product behaviour is affected, so severity is lowered from high to low. Remaining: the host route itself and serializing concurrent Docker runs; it still blocks running Docker in CI (NL-180).
+- **Evidence:** In wave 3 the host process got EHOSTUNREACH ('No route to host 192.168.215.x:18443') to container IPs while ping and /usr/bin/curl worked (likely macOS Local Network privacy for the parent app, or OrbStack routing). All 44 LND-based Docker tests failed at setup at integration (`c92d837`), so the ABCD 3-run gate and the N9/N10 Docker proofs were not re-verified there; the CLN and database fixtures publish ports on 127.0.0.1 and passed. Lanes worked around it by running the host-built test dll inside an SDK container on the bridge (`test/CLAUDE.md`). Concurrent Docker runs also force-remove each other's fixture containers (miner/alice/...). Update (ABCD wave 4, `6b5d50e`): still reproduces on the host. Workaround documented in `test/CLAUDE.md` (6b5d50e): run the host-built test dll inside an SDK container with `--network host`, which reaches the bridge addresses, the ports published on 127.0.0.1 and `host.docker.internal`; with it all 77 Docker tests passed at integration (`--network bridge` fails the database and connect-back cases). Update (ABCD wave 5, `1a5ab49`): still reproduces: `scripts/run-onchain.sh` from the host fails at fixture setup with "No route to host (192.168.215.2:18443)"; every wave 5 Docker result comes from the in-container runner (`--network host`). Update (gossip wave G-D, `48a8951`): every Docker runner script (`run-gossip.sh`, `run-onchain.sh`, `run-abcd.sh`) now uses the in-container `--network host` runner (1d561f2, NL-358) and test processes no longer share ports (NL-359); the host route itself still fails, and concurrent suites still force-remove each other's fixture containers, so run one Docker process at a time. Update (ledger hygiene lh1, `wip/fafo` at `d929b879`): re-scoped to test infrastructure: every Docker runner script and `test/CLAUDE.md` use the in-container `--network host` runner, and every Docker result since wave 4 comes from it; no product behaviour is affected, so severity is lowered from high to low. Remaining: the host route itself and serializing concurrent Docker runs; it still blocks running Docker in CI (NL-180). Closed by test harness phase 6 (2026-10-03): the cluster backend runs the test process on the macOS host and reaches every pod at its pod IP or Service name with no SDK container, and each test process has its own `nltg-spike-*` namespaces, so two whole matrices ran side by side green (`p6-twin-a/b`, `p6-twin2-a/b`). Both workarounds remain only in the Docker fallback (the `run-*.sh` runners), which Tor still needs; Docker in CI stays NL-180 (CI on a cluster deferred by the owner).
 - **Fix sketch:** Grant Local Network access to the terminal/Claude app or restart OrbStack; longer term publish LNUnit ports on 127.0.0.1 or run Docker tests from a container by default, and serialize Docker runs across agents.
 - **Blocks/Blocked-by:** Related NL-180, NL-263
 - **Plan ref:** ABCD wave 3 gate
@@ -6468,16 +6565,17 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Plan ref:** —
 
 ### NL-477 ClnQuiescenceTests in-flight case fails: CLN errors on our stfu when its fulfill crosses it
-- **Status:** fixed (f30f3be3; not reproduced since D13)
+- **Status:** fixed (d24014cd)
 - **Severity:** low
-- **Kind:** test
-- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnQuiescenceTests.cs` (`Given_OurHtlcInFlight_*`)
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure/Transport/Services/TcpService.cs`, `Transport/Tor/TorSocksDialer.cs` (Nagle on peer connections); `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnQuiescenceTests.cs` (`Given_OurHtlcInFlight_*`)
 - **Evidence:** Fails every run in the wave sp1 integration and also on the pre-wave `03b9a664`, so not a sp1 regression: we send `stfu` only after our add is committed and revoked both ways, CLN's `update_fulfill_htlc` crosses it, and CLN answers with the error "STFU but you still have updates pending?" although its own fulfill is the only pending update (reported by the integrator). Looks like CLN behaviour (compare NL-467).
 - **Update (wave sp2, `31950b81`):** still fails in the full CLN run and alone; the only CLN failure besides the order-dependent NL-486.
 - **Update (wave spr, integrated at `a0800ac2`):** failed again in the wave spr full CLN run and alone; still the only CLN failure (reported by the integrator).
 - **Update (wave d13, `f30f3be3`):** passed in both full CLN runs of wave d13 (the test node sets `OptionQuiesce` itself, but since D13 it also advertises `option_splice` by default, so CLN v26.06.8 sees a splicing peer; CLN's quiescence paths differ for one, compare NL-468). Closed as not reproduced; reopen if it fails again.
-- **Fix sketch:** Capture the message order; if our `stfu` is valid per BOLT 2, ask CLN's splicing lead (plan §10) and adapt the proof; otherwise delay our `stfu` until no update of the peer is pending.
-- **Blocks/Blocked-by:** Related NL-042, NL-467, NL-470
+- **Update (test harness phase 2, 2026-10-02, reopened and fixed in `d24014cd`):** the cause is ours: Nagle. CLN read our `revoke_and_ack` at .152 and our `stfu` at .193 although we wrote them 1 ms apart; Nagle held the `stfu` until CLN's delayed ACK (about 40 ms), and CLN sends its fulfill about 20 ms after our `revoke_and_ack`, so the fulfill always crossed. On the cluster harness it failed in every 3-at-once run; Docker's loopback path mostly hid it. Fix: `NoDelay` on every peer TCP connection (dialed, accepted, through Tor). After it: no crossing in 6 cluster runs, the proof test unchanged, and the Docker CLN suite 807 s instead of 876-886 s.
+- **Fix sketch:** Done (see the update above).
+- **Blocks/Blocked-by:** Related NL-042, NL-467, NL-470, NL-777
 - **Plan ref:** `SPLICING_PLAN.md` Proof Q
 
 ### NL-482 PeerManagerConnectTests two-node connect case fails under a loaded full run
@@ -6801,12 +6899,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-746 A banned gossip peer's in-flight invalid messages banned it a second time
-- **Status:** fixed (2c6475d9)
+- **Status:** fixed (2c6475d9, 9a3cc834)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.cs` (`ScoreMisbehaviour`)
 - **Evidence:** `GossipFloodTests.Given_APeerFloodingInvalidSignatures_*` failed in the batch10 finalize's loaded full run with two `Disconnect` calls carrying "Too much invalid gossip" (expected once). `GossipMisbehaviourTracker.Record` clears the peer's events when it crosses the threshold, and the worker's ban check runs before the validation, so five more invalid messages already past that check scored a fresh threshold: a second ban (renewed end), `peers.banned` counted twice and a second disconnect. Reproduced deterministically by `GossipIngressLimitsTests.Given_APeerJustBanned_When_ItsInFlightInvalidGossipIsProcessed_*` (five invalid signatures processed after the ban; fails before the fix).
-- **Fix sketch:** Done: `ScoreMisbehaviour` skips a peer that is banned already. The NL-382 flood test's residual is this bug.
+- **Fix sketch:** Done: `ScoreMisbehaviour` skips a peer that is banned already. The NL-382 flood test's residual is this bug. Batch12: the same two disconnects came back once in the batch12 integrator's loaded full run (3785/3786): the banned check, the count and the in-memory ban were separate steps and the store wrote the ban before the memory had it, so other workers could reach the threshold again meanwhile; now the check, `Record` and `AddBan` run under `_banGate` and the store write follows.
 - **Blocks/Blocked-by:** Related NL-382, NL-370
 - **Plan ref:** BOLT7 G5-T2
 
@@ -6850,6 +6948,176 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** on recurrence, rerun the full suite with `--blame-hang-timeout 5m` and keep the full output; then move the wait that runs out to a stepped clock or an event-driven wait, as the de-timing pass did.
 - **Blocks/Blocked-by:** Related NL-764, NL-747
 - **Plan ref:** —
+
+### NL-775 The chain monitor never re-read bitcoind's tip, so a block ZMQ missed waited for the next block
+- **Status:** fixed (d9e0625c)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`StartAsync`, `PollTipAsync`), `BitcoinOptions.TipPollInterval`
+- **Evidence:** test harness phase 2 (2026-10-02): `StartAsync` catches up over RPC, then subscribes to ZMQ (NetMQ connects in the background) and never read the tip again. A block mined in that window, or while ZMQ reconnects after a bitcoind restart or a network blip, was processed only when the next block arrived (about 10 minutes on mainnet, delaying HTLC deadline and sweep reactions). Seen as `FundWalletAsync` timeouts in the first 3-at-once CLN batch on the cluster (2 hits in 231 executions); an earlier test-only ZMQ startup guard had hidden it and was removed.
+- **Fix sketch:** Done: `Bitcoin:TipPollInterval` (default 30 s, 0 = off, negative refused at start). The monitoring loop reads the tip over RPC; a poll that finds the monitor behind only notes it, the next one at the same processed height catches up over RPC under the ZMQ path's lock (tip re-read inside), logs a warning and counts `TipPollCatchUps`; nothing is polled while processing is halted. `NLightningTestNode` uses 1 s. Tests: `BlockchainMonitorServiceTests` (catch-up order, no double fetch, halted, loop), `BitcoinOptionsTests`.
+- **Blocks/Blocked-by:** Related NL-310, NL-311
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 2 record"
+
+### NL-776 CLN v26.06.8 sends a P2TR shutdown script on a dual-funded channel without `option_shutdown_anysegwit`, so our cooperative close stalls
+- **Status:** fixed (cfafd698)
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Close/` (`ChannelCloseCoordinator`, B2-SHUT-R02), `FeatureOptions.BeyondSegwitShutdown` (default No); the v2 open accepts CLN's P2TR upfront script without complaint
+- **Evidence:** test harness phase 2 lane A (cluster `InProcessNodeClusterTests`): our node opens a dual-funded channel to CLN (`--experimental-dual-fund`) and closes it cooperatively; CLN's `close_to` is P2TR (`5120…`), our init does not set bits 26/27, so we refuse CLN's `shutdown` with "shutdown scriptpubkey is not a valid form"; our channel stays ShuttingDown and CLN stays in CLOSINGD_SIGEXCHANGE. v1 channels with CLN close fine (Docker `ClnCloseTests`), and the Docker dual-fund proofs never close cooperatively. The cluster proof advertises the option for now (comment in the test).
+- **Fix sketch:** Done (batch12): `FeatureOptions.BeyondSegwitShutdown` defaults to Optional (BOLT 9 does not list 26/27 as assumed); `ShutdownScriptValidator.IsValidUpfront` checks a non-empty `upfront_shutdown_script` in `open_channel`, `accept_channel`, `open_channel2` and `accept_channel2` against the negotiated features, failing the open with a channel `error` before any funds move; the cluster workaround in `InProcessNodeClusterTests` is gone. Tests: validator, `ChannelFactoryTests`, `AcceptChannel1MessageHandlerTests`, `DualFundUpfrontShutdownScriptTests`, `FeatureOptionsTests` (7 fail without the fix); `ClnDualFundTests` gains a dual-funded cooperative close against CLN with its P2TR script.
+- **Blocks/Blocked-by:** Related NL-286, NL-037
+- **Plan ref:** —
+
+### NL-777 An accepted connection the peer had already reset ended the listener
+- **Status:** fixed (1d776c4c)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure/Transport/Services/TcpService.cs` (accept loop)
+- **Evidence:** with NL-477's `NoDelay`: setting it on an accepted socket the peer has already reset throws `SocketException` (EINVAL on macOS), which would have ended the listener loop.
+- **Fix sketch:** Done: the connection is dropped (logged at Debug) and the loop goes on.
+- **Blocks/Blocked-by:** Related NL-477
+- **Plan ref:** —
+
+### NL-778 A full non-Docker run printed an xUnit catastrophic `SocketException: Invalid argument` once
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** the full `dotnet test -f net10.0 --filter 'FullyQualifiedName!~Docker'` run (assembly not identified)
+- **Evidence:** test harness phase 2 proof (2026-10-02): "[FATAL ERROR] System.Net.Sockets.SocketException: Invalid argument" at 00:00:08.13; `dotnet test` exited 1 although every assembly reported its full count with 0 failures. Not reproduced in a second full run nor in single-assembly runs of 8 of the 10 assemblies. A link to NL-777 is not shown (that path is caught and logged).
+- **Fix sketch:** On recurrence capture the full output with `--blame` and identify the assembly; check test listeners that set socket options on accepted sockets.
+- **Blocks/Blocked-by:** Related NL-777, NL-764
+- **Plan ref:** —
+
+### NL-850 [EPIC] Liquidity ads (BOLT PR #1153): buy and sell inbound liquidity in dual-funded opens, RBF and splices
+- **Status:** fixed (10b8ba84)
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** new Domain `LiquidityAds/`; TLV 1339 on `open_channel2`/`accept_channel2`/`tx_init_rbf`/`tx_ack_rbf`/`splice_init`/`splice_ack`/`init`/`node_announcement`; `Channels/DualFunding/DualFundedOpenService.cs`, `Channels/Splicing/SpliceService*.cs`; IPC/CLI; accounting
+- **Evidence:** Owner decision 2026-10-03: liquidity ads instead of LSPS. NLightning has dual funding, splicing and RBF in both roles but no way to request or sell the peer's contribution for a fee; Eclair 0.14.3 sells liquidity this way (TLV 1339, `eclair.liquidity-ads`). Built (2026-10-03, `959b7967`..`10b8ba84`, plan Record): LA1 Domain `LiquidityAds/` (codec, rules, fees, `SignedData`; byte-exact against Eclair's vectors, its `will_fund` signatures reproduced); LA2 TLV 1339 (`request_funding`/`provide_funding`/`option_will_fund`) on `init`, `open_channel2`/`accept_channel2`, `tx_init_rbf`/`tx_ack_rbf`, `splice_init`/`splice_ack` and `node_announcement`, no feature bit, `Node:LiquidityAds` (in the daemon template, no rates); LA3/LA4 both roles in the dual-funded open, its RBF, the splice and the splice RBF, with restarts (`LiquidityAdsService`, `DualFundLiquidity*`, `SpliceService.Liquidity`): selling off until rates are set (D-L3), `from_channel_balance` only (D-L2), sale slots `MaxConcurrentSales` 4 / `MaxSalesPerPeer` 1 (D-L5), an RBF after a purchase requests again (ours repeats it, a peer's without it gets `tx_abort`), only the buyer bumps a sale (`LA-RBF-01`; `SpliceAutoBumper` skips sales), buyer refusals `error` before the interactive tx / `tx_abort` after, seller refusals `error` for an open / `tx_abort` for a splice or RBF, new splice rule LA-RES-01 (the buyer keeps its reserve after the fee); `LiquidityPurchases` (migration `AddLiquidityPurchases`, Pending/Active/Replaced/Closed, lease 4,032 blocks from the confirmation) and the lease guard (D-L4: our `closechannel` refused inside a sold lease unless `--force`, peer closes and `forceclosechannel` never blocked, purchases Closed with the channel); LA5 `LiquidityFeePaid` 21 / `LiquidityFeeEarned` 22 (`expenses:fees:liquidity`/`income:liquidity`) staged with `ChannelFunded` at the funding confirmation or `SpliceLocked` at the lock; LA4 IPC/CLI `openchannel --request-inbound [--max-liquidity-fee]` (keys 9/10, response key 3; v2 only), `splicein --request-inbound` (keys 3/4, response key 6), `bumpopen [--request-inbound]` (keys 3/4, response key 2), `closechannel --force` (key 4), `ClientCommand.LiquidityAds = 46` (`liquidityads rates|sellers|purchases`, next free 47). Proofs: the in-process suites (`DualFundLiquidity*Tests`, `SpliceLiquidityAdsTests`, `LiquidityAdsServiceTests`, `LiquidityLeasesTests`, Domain, serialization, BOLT 7 vector and signer tests) and Docker `EclairLiquidityAdsTests` 5/5 against Eclair 0.14.3 as seller. Eclair 0.14.3 without an open-channel interceptor plugin does not sell in a new channel (`OpenChannelInterceptor.checkLiquidityAdsRequest`), so the Docker proof refuses that open and buys in a splice and its RBF; buying at the open and its RBF and the whole seller role are proven in-process only. Full non-Docker run on net10.0: 13,866 passed, 4 skipped. Open follow-ups: NL-851..NL-859 (NL-859 the Eclair close flake, added after LA7).
+- **Fix sketch:** Plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, tasks LA0..LA7: Eclair capture and vectors, Domain codecs and rules, wire plumbing, seller and buyer with the `LiquidityPurchases` table, accounting kinds, proofs in-process (both roles) and against Eclair 0.14.3 as seller in Docker.
+- **Blocks/Blocked-by:** Related NL-037, NL-021, NL-602
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA0-LA7
+
+### NL-851 The late funding confirmation path with a liquidity purchase has no test
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (the NL-617 branch for a `Failed`/`OnchainResolving` channel whose funding confirms), `src/NLightning.Application/Channels/DualFunding/DualFundLiquidityAccounting.cs` (`StageFundingConfirmedAsync`), `src/NLightning.Application/Channels/Accounting/ChannelAccountingEvents.cs` (`RecordLateChannelFundedAsync`)
+- **Evidence:** NL-850 LA7 (2026-10-03): a dual-funded channel that failed (or went on chain) before its funding reached the depth still books `ChannelFunded` through `RecordLateChannelFundedAsync`, and since NL-850 the confirmed attempt's purchase is marked Active and its `LiquidityFeePaid`/`LiquidityFeeEarned` staged in the same save with the same `liquidityFeeMsat`. No test drives that branch with a purchase; the in-process liquidity suites confirm only through the normal path.
+- **Fix sketch:** In `DualFundLiquidityAdsTests` (or the accounting tests), fail the bought channel before its funding confirms, then confirm it: the purchase row Active, one fee event with `ChannelFunded`'s fee, the books reconciling.
+- **Blocks/Blocked-by:** Related NL-850, NL-617
+- **Plan ref:** LIQUIDITY_ADS_PLAN Record (LA5, LA6)
+
+### NL-852 Purchases of dual-funded RBF attempts that never confirm stay Pending until the funding confirms; an abandoned attempt's read as an early close
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundLiquidityAccounting.cs` (`StageFundingConfirmedAsync`), `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (the abandon path of a never-signed first attempt), `src/NLightning.Domain/LiquidityAds/Models/LiquidityPurchaseModel.cs` (`MarkClosed`)
+- **Evidence:** NL-850 LA7 (2026-10-03): each signed attempt of a dual-funded open stores its own purchase row (Pending). The rows of the attempts that lose are marked Replaced only in the save of the funding confirmation (the splice marks its siblings Replaced at the lock, which is the same moment), so until then `liquidityads purchases` lists several Pending purchases for one open. An abandoned first attempt (stored with our `commitment_signed`, never signed) marks its row Closed, and a channel that closes before any attempt confirms marks every Pending row Closed (`LiquidityLeases.StageChannelClosedAsync`); `MarkClosed` sets `ClosedEarly` whenever the lease had not started, so these rows read like a seller that broke its lease.
+- **Fix sketch:** Mark the earlier attempts' rows Replaced when a newer attempt is fully signed (or show them as superseded in `liquidityads purchases`), and give a purchase whose funding never confirmed its own outcome (Replaced, or an `Abandoned` status) instead of `ClosedEarly`.
+- **Blocks/Blocked-by:** Related NL-850, NL-529
+- **Plan ref:** LIQUIDITY_ADS_PLAN Record (LA3)
+
+### NL-853 `bumpsplice` cannot change the liquidity it buys
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Client/Handlers/SpliceCommands.cs`, `src/NLightning.Transport.Ipc/Requests/SpliceIpcRequests.cs` (`BumpSpliceIpcRequest`), `src/NLightning.Daemon/Handlers/SpliceClientHandlers.cs`
+- **Evidence:** NL-850 LA7 (2026-10-03): `bumpsplice` has no `--request-inbound`/`--max-liquidity-fee`: an RBF of a splice that bought liquidity repeats the latest purchase (same amount and rate, the fee at the new feerate), as #1153 requires. `SpliceService` already takes a new `LiquidityRequest` in a bump (`CreateRbfPurchaseRequest`, proven in-process by `SpliceLiquidityAdsTests.Given_ASpliceThatBoughtLiquidity_When_TheBumpBuysMore_*`), and `bumpopen` has the options; only the operator surface is missing. The repeated purchase is checked against `Node:LiquidityAds:MaxFeeSat` only (since NL-871: against the limit stored with the purchase it repeats, else that option).
+- **Fix sketch:** `BumpSpliceIpcRequest` keys 3/4 (`RequestInboundSat`, `MaxLiquidityFeeSat`) and the client flags, as on `bumpopen`; the response's purchase as `SpliceIpcResponse` key 6.
+- **Blocks/Blocked-by:** Related NL-850
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA4
+
+### NL-854 A seller dual-funded RBF whose share must grow beyond the earlier inputs is refused instead of adding inputs
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`DecideLiquidityRbfAsync`)
+- **Evidence:** NL-850 LA7 (2026-10-03): when a buyer's `tx_init_rbf` asks for more liquidity than the attempt it replaces, or the higher feerate needs more of our inputs, and our earlier inputs cannot fund the new share, the seller answers `tx_abort` ("our inputs cannot fund ...") instead of adding fresh wallet inputs to the RBF attempt (the RBF must keep spending at least one input of each earlier attempt, so fresh inputs are an addition, not a replacement). The splice seller's RBF falls back to fresh inputs (`PlanFreshInputRbfContributionAsync`, NL-510). Seen in code review, no test.
+- **Fix sketch:** Add fresh wallet inputs on top of the earlier ones (one reservation per attempt, released with the losing attempts), as `CreateInitiatorRbfContributionAsync` does for an accepter without inputs in the earlier attempts; a test with a re-purchase of a larger amount.
+- **Blocks/Blocked-by:** Related NL-850, NL-521
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA3
+
+### NL-855 The accepter buying liquidity in its own dual-funded RBF is untested
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`BumpAsync` with a `LiquidityRequest`, `CreateRbfLiquidityRequest`), `test/NLightning.Application.Tests/Channels/DualFunding/DualFundLiquidityAdsTests.cs`
+- **Evidence:** NL-850 LA7 (2026-10-03): since lane accrbf (NL-530) either role may send `tx_init_rbf`, and `BumpAsync` accepts a `LiquidityRequest` in either role, so the accepter can buy from the opener in its own RBF (the opener then sells, contributing the requested amount as the interactive-tx non-initiator). The in-process tests buy only as the opener (Alice opens and bumps); the accepter-as-buyer path, its balances (the fee moves from the accepter's share) and its restart are not exercised.
+- **Fix sketch:** A `DualFundLiquidityAdsTests` case where Bob (accepter) bumps Alice's open with `--request-inbound` against Alice's rates: Alice's share is the requested amount, the fee moves from Bob to Alice, the purchase rows (Buyer on Bob, Seller on Alice) and a restart.
+- **Blocks/Blocked-by:** Related NL-850, NL-530
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA6
+
+### NL-856 A peer buying in an RBF of a splice we also spliced in replaces our contribution with exactly the requested amount
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Splicing/SpliceService.Rbf.cs` (`HandleTxInitRbfAsync` with `request_funding`), `src/NLightning.Application/Channels/Splicing/SpliceService.Liquidity.cs` (`ReserveSaleContributionAsync`)
+- **Evidence:** NL-850 LA7 (2026-10-03): the seller contributes exactly the requested amount (Eclair `validateRequest` semantics, D-L2). When the peer's `tx_init_rbf` buys liquidity in an RBF of a splice in which we had contributed our own splice-in, our contribution to the new attempt becomes the requested amount alone: our own splice-in is replaced, not added to. Whether Eclair (or #1153) expects the sum is unchecked; Eclair's API never buys, so there is no live proof either way, and no test covers this combination.
+- **Fix sketch:** Decide against Eclair's `InteractiveTxBuilder`/splice RBF code whether the seller's contribution is its earlier contribution plus the requested amount; then add or keep with a test (`SpliceLiquidityAdsTests`) and say so in the plan.
+- **Blocks/Blocked-by:** Related NL-850, NL-489
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA3
+
+### NL-857 No proof of NLightning as a liquidity seller against another implementation
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Eclair/EclairLiquidityAdsTests.cs`; the seller paths of `DualFundedOpenService` and `SpliceService.Liquidity`
+- **Evidence:** NL-850 LA7 (2026-10-03): Eclair 0.14.3's API never buys (`open`, `rbfopen` and `splicein` hardcode `requestFunding_opt = None`; only its on-the-fly-funding wallets request funding), and CLN and LND do not speak #1153 liquidity ads. The seller role (our `accept_channel2`/`splice_ack`/`tx_ack_rbf` with `provide_funding` and our `will_fund` signature) is proven in-process only (NLightning ↔ NLightning, `DualFundLiquidity*Tests`, `SpliceLiquidityAdsTests`); our signature format is checked against Eclair's vectors (`LocalLightningSignerLiquidityAdsTests`), not by a live Eclair buyer.
+- **Fix sketch:** When an implementation can buy over #1153 (an Eclair plugin or build that sets `requestFunding_opt`, a Phoenix-style client, or a merged #1153 in CLN/LDK), add a Docker class where it buys from us in an open, a splice and an RBF.
+- **Blocks/Blocked-by:** Related NL-850, NL-180
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA6
+
+### NL-859 `EclairCloseTests`' simple close by Eclair timed out once in a full Eclair category run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Eclair/EclairCloseTests.cs` (`Given_SimpleCloseNegotiated_When_EclairCloses_Then_WeSignAndBothClose`)
+- **Evidence:** NL-850 LA7 (2026-10-03): the full `Category=Interop.Eclair` run (34 tests: 31 passed, 2 `Explicit` not run, 1 failed) failed this test waiting for "our channel is Closed": `closing_complete`/`closing_sig` went both ways, our channel stayed Closing, Eclair no longer listed the channel and the channel was not reestablished (`reestablished=False`). The class passes 4/4 alone. The liquidity ads lease check added to `ChannelManager.CompleteCloseAsync` reads an empty purchase list for this channel and does nothing, so the failure is most likely order-dependent (state left by the earlier classes on the shared Eclair node or bitcoind, or the closing transaction's confirmation not reaching our chain monitor in time).
+- **Fix sketch:** Rerun the category to see whether it reproduces; if it does, log our chain monitor's view of the closing txid (watch registered, confirmations) when the wait times out and check whether Eclair's simple close broadcast a transaction other than the one we stored (the RBF'd variant), which our funding-spend path should still accept as the mutual close.
+- **Blocks/Blocked-by:** Related NL-850, NL-486
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA7
+
+### NL-858 The Eclair test image cannot be built behind a TLS-intercepting proxy
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `test/Docker/eclair/Dockerfile` (the `curl` download of the release zip), `test/NLightning.Integration.Tests/Fixtures/EclairFixture.cs` (builds the image when the tag is missing)
+- **Evidence:** NL-850 LA6 (2026-10-03): on an agent host whose HTTPS goes through an intercepting proxy, `docker build` of `test/Docker/eclair` fails at `curl -fsSL ... eclair-node-0.14.3-...-bin.zip`: curl inside the build does not trust the proxy's CA. The image `nltg-eclair:0.14.3` was built instead from a zip downloaded on the host, with the same sha256, and the fixture then used the existing tag. Environment-specific, no effect on a normal host.
+- **Fix sketch:** Let the Dockerfile take the zip from the build context when present (a `COPY` of an optional file before the `curl`, the sha256 check unchanged), or pass the proxy CA as a build secret; document the host-download route in `test/CLAUDE.md` (done in LA7).
+- **Blocks/Blocked-by:** Related NL-553
+- **Plan ref:** —
+
+### NL-867 An RBF attempt of a dual-funded open whose earlier attempt confirmed meanwhile failed the connection on every reconnect until the funding depth
+- **Status:** fixed (ef13d98d)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs` (`SendOurSignaturesAsync`, `OnCommitmentSignedReceivedAsync`, `ReceiveNegotiationMessageAsync`, `AbortAsync`), `InteractiveTx/WalletInteractiveTxContributor.cs` (`SignAsync`), `Channels/DualFunding/DualFundedOpenService.cs` (`GetRbfRefusalAsync`, `OnAbortedAsync`, `AbortNegotiationLockedAsync`), `Channels/Handlers/ChannelReestablishMessageHandler.cs`, `Channels/Splicing/SpliceService.Rbf.cs`, `Domain/Channels/Splicing/SpliceRules.cs`
+- **Evidence:** live on Mutinynet 2026-10-03 (FAFO opener and buyer, FAFO2 accepter and liquidity seller; both logs 09:54:20-09:55:30 EDT): FAFO sent `bumpopen` (`tx_init_rbf`) in the second block 3476178 confirmed the first attempt 0375e04f. FAFO2 passed `GetRbfRefusalAsync` (which refuses a new RBF only once an attempt has a first-seen height) just before it processed the block, ran the negotiation, recorded the sale, signed the first commitment of e90e4cca and then, at its `tx_signatures`, `WalletInteractiveTxContributor.SignAsync` threw `InvalidOperationException` ("The signer found no wallet input of reservation 7110430e... dad94b77...:1 (in wallet: False, reservation: 7110430e...)"): the wallet had seen the input spent by the confirmed sibling. `PeerManager` sent "Sorry, we had an internal error" and disconnected. Every reconnect's `next_funding` asked FAFO for its `commitment_signed` again, FAFO2 threw again: 4 disconnects in about 60 s (09:54:26, :41, :59, 09:55:12) until `OnFundingConfirmedAsync` aborted the attempt at the 3rd confirmation (block 3476180); then both logged "No tx_abort for the unknown next_funding e90e4cca...", and FAFO's `bumpopen` answered after 63 s. The opener was exposed the same way (its input 269f27d6...:0 left its wallet at 3476178 too). No funds at risk; the rows ended right (attempt Replaced, the confirmed one Active). The splice RBF had the same gap: a pending attempt confirming below the lock depth neither refused a new RBF nor ended a running one. BOLT 2: "If the previous transaction confirms in the middle of an RBF attempt, the attempt MUST be abandoned"; `tx_abort` only before our `tx_signatures` (IT-ABT-01).
+- **Fix sketch:** Done: (1) an RBF attempt is abandoned at its sibling's first confirmation: `ChannelManager`'s block handler runs `DualFundedOpenService.ScheduleConfirmedAttemptRound` and `SpliceService.ScheduleConfirmedAttemptRound`, which under each channel's lock abort a running attempt, or withdraw our unanswered `tx_init_rbf` (the driver's `AbortAsync` now tells the host, so the bump ends), when a signed sibling's watch has a first-seen height (a splice: also a pending funding's `ConfirmedHeight`): our `tx_abort` unless our `tx_signatures` went out, the reservation and the sale slot back, the attempt's stored purchase replaced (`ReplaceAbandonedPurchaseAsync`), `bumpopen`/`bumpsplice` answered at once with "an earlier attempt <txid> confirmed"; a splice RBF is refused (ours) or answered with `tx_abort` (the peer's) once an attempt has a confirmation (`SpliceRbfConditions.AttemptConfirmed`). (2) Before our `tx_signatures` the driver asks the host (`IInteractiveTxHost.GetTxSignaturesRefusalAsync`, both hosts check the siblings' confirmation) and turns the contributor's new `InteractiveTxInputsSpentException` (an input still reserved but gone from the wallet; an unloaded wallet, NL-600, still throws the plain error) into `tx_abort`, never an exception that fails the connection. (3) `channel_reestablish` abandons such an attempt before it plans (`DualFundReestablish.AbandonConfirmedRbfAttemptAsync`, `SpliceService.AbandonConfirmedRbfAttemptAsync`), so the peer's `next_funding` gets our `tx_abort` and no `commitment_signed` again; a `next_funding` whose `tx_abort` already went out is logged at Information, not as the warning. (4) Unchanged: no `tx_abort` after our `tx_signatures`, the `DualFundAttempts` rows and the follow of the confirmed attempt (NL-528), NL-529. Tests (each fails before the fix): `Channels/DualFunding/DualFundRbfConfirmedAttemptTests` (8: during the negotiation, after both `commitment_signed` and before `tx_signatures`, the signer's guard by wallet and by watch, a reconnection with `next_funding`, the accepter's bump, our unanswered `tx_init_rbf`, a liquidity purchase replaced with the sale slot back), `Channels/Splicing/SpliceRbfConfirmedAttemptTests` (3), `WalletInteractiveTxContributorTests.Given_OurReservedInputSpentOnChain_*`, Domain `SpliceRbfRulesTests` rows.
+- **Blocks/Blocked-by:** Related NL-528, NL-529, NL-530, NL-600, NL-850, NL-870
+- **Plan ref:** SPLICING_PLAN lanes dfrbf and accrbf, wave SPR; LIQUIDITY_ADS_PLAN
+
+### NL-870 A splice aborted after our `commitment_signed` left its liquidity purchase Pending, so the lease guard refused `closechannel` for good
+- **Status:** fixed (fc3f52ab)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Splicing/SpliceService.cs` (`OnSpliceAbortedAsync`, `DiscardStoredFundingAsync`), `SpliceService.Liquidity.cs` (`StagePurchaseAsync`, new `StageAbandonedPurchaseAsync`)
+- **Evidence:** wip/integrate review of the liquidity ads code (PR #19, NL-850): a buyer sends `splice_init` with `request_funding`, we answer `splice_ack` as the seller, and `StagePurchaseAsync` saves a Pending seller row with our splice `commitment_signed`. When the buyer then sends `tx_abort` before `tx_signatures` (or reconnects without `next_funding`, which ends in the same abort), `OnSpliceAbortedAsync` marked the `ChannelFundings` row Discarded but never touched the purchase. Nothing else did: `StageLiquidityAtLockAsync` replaces only the siblings the lock itself retires. `LiquidityPurchaseModel.IsLeaseInForce` is true for any Pending row, so `GetActiveSaleLeaseAsync` kept finding the sale and `ChannelCloseService` refused every `closechannel` of the channel without `--force`; the row also kept a griefing-cap slot (`CountPendingSales*Async`, D-L5) and listed a sale that never happened.
+- **Fix sketch:** Done: the abort's save (both branches: the funding pending in the engine, and only our `commitment_signed` out with the row stored) marks the attempt's Pending purchase Replaced (`MarkReplaced`, whose contract now includes an attempt abandoned before it could confirm), in either role. Test: `SpliceLiquidityAdsTests.Given_ASpliceThatSoldLiquidity_When_AbortedAfterTheCommitments_Then_ThePurchasesNoLongerBind` (fails before the fix: the rows stayed Pending).
+- **Blocks/Blocked-by:** Related NL-850, NL-852
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA3/LA4
+
+### NL-871 An RBF that repeated a liquidity purchase dropped the buyer's `--max-liquidity-fee`, so by default nothing checked its fee
+- **Status:** fixed (fc3f52ab)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`CreateRbfLiquidityRequest`, `CheckWillFund`, `RecordPurchase`), `Channels/Splicing/SpliceService.Liquidity.cs` (`CreateRbfPurchaseRequest`, `StagePurchaseAsync`), `Domain/LiquidityAds/Models/LiquidityPurchaseModel.cs`, `LiquidityPurchases` (migration `AddLiquidityPurchaseMaxFee`)
+- **Evidence:** wip/integrate review of the liquidity ads code: `openchannel --request-inbound 400000 --max-liquidity-fee 5000` (or the `splicein` equivalent) followed by `bumpopen <ch> <higher feerate>` without `--request-inbound`, or any `bumpsplice`/`SpliceAutoBumper` bump (they never take a request, NL-853), repeated the purchase at the new feerate with no limit: `CreateRbfLiquidityRequest` took `liquidity?.MaxFeeSat` and `CreateRbfPurchaseRequest` built the request without one, so the check fell back to `Node:LiquidityAds:MaxFeeSat`, null by default, and neither the pre-send check nor `ValidateWillFund`/`ValidateSellerAnswer` limited the fee. Its mining part (the seller's `funding_weight`, up to 65,535, times the feerate) grows with the bump; the purchase row did not store the original limit.
+- **Fix sketch:** Done: `LiquidityPurchaseModel.MaxFeeSat` (the buyer's own limit; null for a sale or when none was given) is stored in the new nullable column `LiquidityPurchases.MaxFeeSat` (migration `AddLiquidityPurchaseMaxFee` on all three providers, compiled models regenerated) and set from the request by both flows; a bump without a new request repeats the purchase with that limit (a new request brings its own). Tests: `DualFundLiquidityAdsTests.Given_AnOpenBoughtWithAFeeLimit_When_AliceBumpsWithoutANewRequest_Then_TheLimitStillApplies` (both nodes restarted first), `SpliceLiquidityAdsTests.Given_ASpliceBoughtWithAFeeLimit_When_TheBuyerBumpsWithoutANewRequest_Then_TheLimitStillApplies` (after a restart) and `..._WithoutAFeeLimit_..._TheNodesDefaultLimitApplies`, Domain `LiquidityPurchaseModelTests`, the schema round trip (`LiquidityPurchaseSchemaRoundTrip`, SQLite and Docker Postgres).
+- **Blocks/Blocked-by:** Related NL-850, NL-853
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA4
 
 ### NL-770 LND 0.21.4 gives up its `to_remote` sweep after a burst of blocks, so the O3 push proofs never saw `RemoteForceClose`
 - **Status:** fixed (46d0538e)
@@ -7267,13 +7535,13 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-760 A settled invoice's or forward's trimmed incoming HTLC lost at a force close records no loss
-- **Status:** open
+- **Status:** fixed (dda7e123, 86520723)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Accounting/OnchainAccounting.cs` (the close event: B and trimmedHtlcMsat count only our offered HTLCs); `OnchainResolutionExecutor` (losses are staged only for output rows)
 - **Evidence:** By code reading (batch11 lane acct-gaps): an incoming HTLC below dust has no output row, so neither `ForwardLostOnchain` (NL-608) nor `InvoiceLostOnchain` (NL-688) is ever staged for it; B excludes incoming HTLCs, so the amount `InvoiceSettled`/`ForwardSettled` booked stays in the channels account after the close (reconcile drift equal to the HTLC).
-- **Fix sketch:** In the force-close save, stage the invoice or forward loss for every incoming HTLC of the confirmed commitment that has no output and was settled (same conditions as NL-688/NL-608), reversed with the close.
-- **Blocks/Blocked-by:** Related NL-608, NL-688; part of NL-602
+- **Fix sketch:** Done (batch12): the force-close save stages `ForwardLostOnchain`/`InvoiceLostOnchain` (`trimmed=true`) for every incoming HTLC of the confirmed commitment (ours, the peer's current or next one) without an output, under the NL-608/NL-688 conditions, keyed by generation and only with a new close fact; the close event lists its trimmed incoming HTLCs (`trimmedIncomingHtlcs`) and a close replaced after a reorg reverses those losses with it. Review follow-ups: a settle after the close's save (NL-892) and unmapped outputs (NL-893). Tests in `OnchainAccountingTests` (local and remote closes, FIFO/LIFO/HIFO lots invariant, reconcile drift 0, replays, the reorg case).
+- **Blocks/Blocked-by:** Related NL-608, NL-688, NL-892, NL-893; part of NL-602
 - **Plan ref:** ACCOUNTING_PLAN A2
 
 ### NL-765 A closed fact reclassified after a price replacement left the price correction on its old account
@@ -7309,49 +7577,519 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** Related NL-708
 - **Plan ref:** —
 
+### NL-780 After a cluster LND restart, a node connected by the IP behind `LndNodeConnection.Host` keeps dialling the old IP
+- **Status:** fixed (c5e8ad38; merged in e9305ee0)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs` (`ConnectToAsync(LndNodeConnection)`, owned by the p3-lnd-swap lane), `test/NLightning.Integration.Tests/Fixtures/Lnd/ClusterLndBackend.cs`
+- **Evidence:** test harness phase 3 lane lnd-topo (7a16ab70), by reading the code, not reproduced live: `ConnectToAsync` resolves `lndNode.Host` with `Dns.GetHostAddressesAsync` and dials `pubkey@IP:9735`, and our node stores that IP. A cluster restart gives the pod a new IP, and LND cannot dial back (it only saw our ephemeral port). Nodes that joined through `ClusterLndBackend` are redialled by the network at the Service name: alice restarts in 7.6-8.4 s with our channel active again (`LndRegtestNetworkClusterTests`).
+- **Fix:** Lane hf-lnd-wire: `NLightningTestNode`s made from `LightningRegtestNetworkFixture` dial LND at the backend's `GetLndPeerEndpointAsync`: the resolved container IP on Docker (unchanged), the Service name `alias.<ns>.svc.cluster.local:9735` on the cluster, which our node stores and redials after a pod restart. `ReestablishFlowTests.Given_LndRestarts_*` on the cluster (hfl-lnd1, hfl-lnd2): "Unable to reconnect ... retrying in 00:00:02", then "Reconnected to peer" and the channel reestablished. The NL-262 address hold runs on Docker only.
+- **Blocks/Blocked-by:** Related NL-262
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3 lane record"
+
+### NL-795 `FaultInjector.ResumeAsync` killed CLN: its bash entrypoint got SIGCONT before `lightningd` and exited 147
+- **Status:** fixed (7807708d)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `test/NLightning.Testing.Cluster/Faults/ContainerProcessScripts.cs` (`Signal`)
+- **Evidence:** test harness phase 4 lane pg-faults, runs hp4pt-a1/a2: the CLN container exited with code 147 (128 + SIGSTOP) at the resume and the next exec returned HTTP 500. The `/proc` walk went in name order (SIGCONT to pids 14, 19, ...), so the wrapper bash ran while `lightningd` was still stopped. hp4pt-c1: a named pause of `lightningd` alone killed CLN the same way.
+- **Fix sketch:** Done: the script ranks processes by depth in the process tree (walking the ppid chain); STOP goes parents first and CONT children first, and a named pause also stops the process's ancestors in the container. Unit tests pin the order and the ancestor set; the partition tests prove it live.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 4 lane record: Postgres and network partitions"
+
+### NL-796 No deadline for the peer's `channel_reestablish`: a peer whose transport answers but never reestablishes keeps the channel gated with the connection up
+- **Status:** fixed (d09a3027, b2894baa, 384fdfaf)
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Reestablish/` (nothing times out)
+- **Evidence:** test harness phase 4 lane pg-faults, `PartitionClusterTests` frozen-`lightningd` case: CLN's `connectd` completes init and answers pings, and our channel stayed un-reestablished with the transport up for the whole hold (10 s in hp4-ft1 and hp4-ft2; asserted since 3deb5976). Nothing would ever disconnect and redial. Gating was correct (a payment was refused without adding an HTLC). BOLT 2 sets no deadline.
+- **Fix sketch:** Done (batch12): `Node:ReestablishTimeout` (default 60 s, zero = off, negative or above 4,294,967,294 ms rejected). Each connection arms a timer owned by its `PeerSession` (disposed on close); when it fires on the current session and a ReadyForThem/Open/ShuttingDown/Negotiating channel is still waiting for the peer's reestablish, one connection-level `warning` goes out and the connection closes without suppressing the reconnect, so the backoff redials. Review follow-up NL-891 (ReadyForUs not awaited, the bound, the arming failure caught, a real lower bound in the cluster test). Tests: `PeerManagerTests.ReestablishDeadline` (6, stepped clock), `ChannelManagerReconnectTests` selection tests, `NodeOptionsTests`; cluster `PartitionClusterTests` 4/4. NL-806 (a reestablished connection that dies silently) is not covered.
+- **Blocks/Blocked-by:** Related NL-201, NL-806, NL-891
+- **Plan ref:** BOLT2 N7
+
+### NL-797 The ZMQ subscriber took 0-12.5 s to come back after bitcoind's ZMQ port cut healed
+- **Status:** wontfix (the NL-775 tip poll covers the gap; no fix needed)
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (NetMQ `SubscriberSocket` defaults)
+- **Evidence:** test harness phase 4 lane pg-faults, `ChainMonitorZmqClusterTests`: "ZMQ back 12.5 s after the heal" in hp4zmq-a1, 0.0 s in hp4-ft1 and hp4-ft2. Likely NetMQ's reconnect riding on TCP SYN retransmits to the port the policy dropped. The NL-775 tip poll covered the gap every time.
+- **Fix sketch:** None needed. Optionally set NetMQ's reconnect options if a faster resubscribe ever matters.
+- **Blocks/Blocked-by:** Related NL-775
+- **Plan ref:** —
+
+### NL-800 xunit built the cluster fixtures of Explicit tests that were not run, so every non-Docker run started namespaces, and failed where no cluster is reachable
+- **Status:** fixed (4d1e2997)
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Topology/ClusterTopologyFixture.cs` (`InitializeAsync`), its users `Live/TopologyFixtureTests`, `Live/Lnd/LndRegtestNetworkTests` (Testing.Cluster.Tests) and `Cluster/Live/InProcessTopologyFixtureClusterTests` (Integration)
+- **Evidence:** test harness phase 3/4 integration (2026-10-02), found while checking the pg-faults review: xunit v3 creates a collection's or class's fixtures whenever the selection holds any of its tests, Explicit ones included (they turn into "not run" later). `ClusterTopologyFixture` built its namespace and topology in `InitializeAsync`, and CI's filter `FullyQualifiedName!~Docker` keeps the `Cluster` namespace tests. On this machine `-class ...InProcessTopologyFixtureClusterTests` without `-explicit` built the warm CLN topology (namespace `nltg-spike-6d23549f`, 12 s) for 2 "not run" tests; with `KUBECONFIG` pointing nowhere (CI) both tests failed in the fixture.
+- **Fix sketch:** Done: xunit's `InitializeAsync` builds nothing; `EnsureStartedAsync()` builds on the first call (the same start for every later call) and each live test class awaits it in its own `IAsyncLifetime.InitializeAsync`; the Docker-era fixtures' cluster backends call `EnsureStartedAsync(ct)`. After the fix the same two runs report Not Run 2 / Not Run 5 with 0 failures and no namespace; `ClusterTopologyFixtureTests` pins it.
+- **Blocks/Blocked-by:** Related NL-801
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 integration record"
+
+### NL-801 `ServerDatabaseClusterTests` in the `postgres` collection made every non-Docker run start the Docker Postgres fixture
+- **Status:** fixed (3deb5976)
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Cluster/Live/ServerDatabaseClusterTests.cs`, `Fixtures/PostgresFixture.cs`
+- **Evidence:** pg-faults review (high): the Explicit, non-Docker-namespace test sat in `[Collection("postgres")]`, so (NL-800's xunit rule) `dotnet test --filter 'FullyQualifiedName!~Docker'` built `PostgresFixture` on the Docker backend: it force-removed and started the container named `postgres` outside the Docker lock, colliding with locked Docker Postgres runs. `run-cluster.sh -p integration` (Category=Cluster, no `--suite`) did the same in N processes at once, and the test's backend check (`Backend == TestBackend.Current`) held on Docker too.
+- **Fix sketch:** Done: out of the collection; the test starts its own server with `PostgresFixture.StartNamed("pg-restart", TestBackendKind.Cluster)` whatever `NLTG_TEST_BACKEND` says and asserts the cluster backend. A non-Docker run watched with `docker ps` showed no Postgres container.
+- **Blocks/Blocked-by:** Related NL-800, NL-429
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 integration record"
+
+### NL-802 `LndRegtestNetwork.PayAlongAsync` could wait until an HTLC's CLTV expiry: its timeout bounded only the retries
+- **Status:** fixed (8968d060)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Topology/Lnd/LndRegtestNetwork.cs` (`PayAlongAsync`, `ConnectPermanentAsync`, the graph and channel polls)
+- **Evidence:** lnd-topo review (medium): `SendToRouteV2` (and `BuildRoute`, `AddInvoice`, `DecodePayReq`) ran without a deadline, and `SendToRouteV2` blocks until the HTLC settles or fails; a hop killed or paused mid-payment holds it until its CLTV expiry, about 40 blocks nobody mines on regtest, so the test hung until xunit's token. The same review's lows were fixed with it: a restarted node's LND peer that still listed the old pod was taken as reconnected (david's permanent address stayed the old pod IP); a transient gRPC error ended the graph/peer polls at once; the workload's flag de-duplication dropped repeated value tokens; `Validate` claimed to check the miner's reserve.
+- **Fix sketch:** Done: every call carries the remaining time; past it the payment fails naming the in-flight route. Restart redials are checked from both ends with a stale connection dropped, `WaitMeshAsync` is asserted by the restart test, polls count a failed call as "not yet", only whole flags are de-duplicated, and the miner's balance is checked before the wallet fundings.
+- **Blocks/Blocked-by:** Related NL-319
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 integration record"
+
+### NL-803 The Eclair wallet init passed `user:password` in `NLTG_RPC_AUTH`, which the failure dumps printed unmasked
+- **Status:** fixed (06e8072b)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Nodes/Eclair/EclairNode.cs` (`WalletInitContainer`, `WalletInitScript`)
+- **Evidence:** Eclair review: `ResourceDescriber` masks an env value only by its name (`SecretRedactor.IsSecretName`), and the redactor's `key=value` pass cannot see a password inside `nltg:nltg`, so every failed Eclair cluster test wrote the bitcoind RPC password into `<pod>/describe.txt` (regtest credentials, but the docs promise masked dumps).
+- **Fix sketch:** Done: `NLTG_RPC_USER` and `NLTG_RPC_PASSWORD` (masked by name); `EclairNodeTests` describes a pod of the workload and asserts neither the RPC nor the API password appears.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-804 `TcpConnectionTable` failed on a kernel without IPv6: `cat` of a missing `/proc/net/tcp6` exits 1
+- **Status:** fixed (3deb5976)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Reach/TcpConnectionTable.cs` (`Command`, `Script`)
+- **Evidence:** pg-faults review: `cat /proc/net/tcp /proc/net/tcp6 2>/dev/null` exits non-zero when tcp6 is absent (`ipv6.disable=1`, some kind/k3s hosts); `2>/dev/null` hides only the message, so `ReadAsync` threw and `ChainMonitorZmqClusterTests` would fail at its baseline as if the product had. OrbStack has tcp6, so the lane never saw it.
+- **Fix sketch:** Done: `cat /proc/net/tcp && { [ ! -e /proc/net/tcp6 ] || cat /proc/net/tcp6; }` keeps a failure on `/proc/net/tcp` itself visible; `TcpConnectionTableTests` pins the command and runs the script against a fake `/proc/net` (both tables, no tcp6, no tcp).
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-806 After a cluster Eclair restart one in-process node kept a dead connection and our 30-300 s keep-alive did not notice within 2 min
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/Eclair/ClusterEclairBackend.cs` (`RestartEclairAsync`; the host to ClusterIP path on OrbStack), `src/NLightning.Infrastructure/Protocol/Services/PingPongService.cs` (`StartPingAsync`, random 30-300 s interval)
+- **Evidence:** test harness phase 3/4 proof, `pf-ecl3-3`: `EclairSpliceTests.Given_OurPendingSplice_When_EclairRestarts_*` timed out waiting for Eclair's `channel_reestablish`. Eclair stopped at 02:45:22; another node of ours logged the close at 02:45:27.47 and reestablished at 02:45:45; `nltg-eclair-splice-g` logged nothing and still showed connected and reestablished while Eclair had it DISCONNECTED and the channel OFFLINE. Once in 8 cluster Eclair suite/class runs; reruns green (class 7/7 alone, 7/7 x3 at once). Docker never hits it (docker-proxy closes the host socket).
+- **Fix sketch:** Not decided: find why OrbStack's host-to-ClusterIP path lost the close of that one connection, or use a shorter or deterministic keep-alive (LND pings every minute). A product or owner call; no assertion was weakened.
+- **Blocks/Blocked-by:** Related NL-796
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 record"
+
+### NL-816 Two container-free CLN helper test classes ran in no suite
+- **Status:** fixed (90debbfb; merged in 304c2976)
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnChannelSessionTests.cs`, `ClnSpliceRbfHelperTests.cs`
+- **Evidence:** test harness phase 5 lane hf-runner: `SuiteCatalogMembershipTests` reported both classes as "runs in no suite". They had no `Interop.Cln` trait and "Docker" in their full names, so CI's `FullyQualifiedName!~Docker`, `run-interop.sh cln` and `--suite cln` all skipped their 13 tests.
+- **Fix:** Tagged `[Trait("Category", ClnInteropCollection.Category)]`; all 13 pass and the CLN suite grows from 81 to 94 tests. The membership test keeps a new class from running nowhere.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 5 runner record"
+
+### NL-817 A finished run's namespaces kept holding cluster capacity after the runner treated its slot as free
+- **Status:** fixed (90debbfb; merged in 304c2976)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `scripts/run-cluster.sh`, `test/NLightning.Testing.Cluster/Run/TestRunOptions.cs`
+- **Evidence:** test harness phase 5 lane hf-runner: `nltg-cluster reap --wait` waits only for the namespaces it deletes itself, and `TestRun` disposal deletes in the background; in proof 1 the serial postgres suite created 3 namespaces against a planned 2 (the next collection's namespace was created while the previous one was terminating).
+- **Fix:** The runner waits until a run's namespaces are gone, terminating ones included, before freeing its slot; `NLTG_WAIT_NAMESPACE_DELETION=1` (`TestRunOptions.WaitForDeletion`) for `-parallel none` suites. Proof 2's sampled peak was 2 of 2. The integration (NL-822) also counts the namespaces of ended suites that are still there.
+- **Blocks/Blocked-by:** Related NL-822
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 5 runner record"
+
+### NL-818 Suite test logs are very large (0.3-0.8 GB per suite run)
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `TestResults/cluster/<batch>/<suite>/output.log` (every in-process node logs Debug into the test output)
+- **Evidence:** test harness phase 5 lane hf-runner, `hfr-proof2`: the CLN `output.log` was 808 MB (3.3 M lines, 0.82 M of them Debug) and LDK 302 MB, so a full matrix writes several GB per pass.
+- **Fix sketch:** Partly mitigated (90debbfb, NL-823): the runner gzips the logs of green runs after the summary (about 4x smaller; `--keep-logs` opts out) and the summary reads `.gz` logs. The volume itself is left to phase 6: per-node log files, or Information level by default. Update (test harness phase 6 proof): a whole matrix pass is 1.1 GB after the runner's gzip, most of it `results.xml`, which holds every test's output again (214 MB for CLN) and is not compressed; still open.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 5 runner record"
+
+### NL-819 LNUnit was used across the test fixtures; confine it to the Docker LND backend
+- **Status:** fixed (0c80777e; merged in b74efadf)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/Lnd/DockerLndBackend.cs`, `Fixtures/LightningRegtestNetworkFixture.cs`, `Fixtures/DockerContainerUtils.cs`, `test/NLightning.Testing.Lnd.Tests`
+- **Evidence:** test harness phase 3/5/6 lane hf-lnunit: LNUnit's builder lived in the fixture and `LNUnit.Setup`'s `PullImageAndWaitForCompleted` in the CLN, Postgres and SQL Server fixtures; `Testing.Lnd.Tests` referenced `LNUnit.LND` for `LnUnitCoexistenceTests`.
+- **Fix:** The `LNUnitBuilder` network moved to `DockerLndBackend` (the only LNUnit user; its dispose calls the builder's `Dispose()` instead of the unawaited `Destroy()`); `LightningRegtestNetworkFixture` is backend-neutral; images are pulled with `DockerContainerUtils.EnsureImageAsync`/`ImageExistsAsync` only when missing; `LnUnitCoexistenceTests` and the `LNUnit.LND` reference are gone; `Fixtures/LnUnitConfinementTests` guards it (hardened by NL-824). Integration.Tests non-Docker 1122/1122; Docker `PostgresTests` 24/24 and `ChannelOpeningFlowTests` 5/5 twice under the lock.
+- **Blocks/Blocked-by:** Related NL-820, NL-824
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Lane record: LNUnit confined to the Docker LND backend"
+
+### NL-820 Full LNUnit removal: re-implement the Docker LND backend on Docker.DotNet, or retire it once the cluster backend is the default
+- **Status:** fixed (42e96743)
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/Lnd/DockerLndBackend.cs`, `test/Directory.Build.props` (the NL-170 `NuGetAuditSuppress`)
+- **Evidence:** test harness phase 3/5/6 lane hf-lnunit: `LNUnitBuilder` is about 900 decompiled lines; the cluster's `LndRegtestNetwork` (894 lines) does the same on a `TestRun` topology with pod handles. An owner decision.
+- **Fix sketch:** (a) About 1-1.5 days: re-implement on Docker.DotNet (miner bitcoind on the default bridge, four `custom_lnd:0.21.4-beta` containers named by alias with `LndWorkload`'s flags, `tls.cert`/macaroon from the container archive, `SERVER_ACTIVE` waits, funding, permanent peers, pushed opens, policies and the graph wait of `LndRegtestNetworkSpec.Default`, the image build with `System.Formats.Tar`); container names, the bridge network and `host.docker.internal` must stay. (b) Retire the Docker LND backend once the cluster backend is the default for the LND, on-chain, gossip and ABCD suites (phase 6). Either way the `LNUnit` reference, `lnunit.lnd` and SharpCompress 0.41.0 go, and with them the NL-170 suppression. Update (test harness phase 6, 2026-10-03): the precondition of (b) is met: the LND, on-chain, anchors, gossip, day0 and ABCD suites are proven on the cluster backend and run in the default matrix; the Tor suite uses CLN only. Owner decision 2026-10-03: (b). Done on branch `ia-retire-lnunit` (from 07cce046): `DockerLndBackend`, `ILndNetworkBackend`, `LnUnitConfinementTests` and the `LNUnit` reference removed (with `lnunit.lnd`, ServiceStack and SharpCompress 0.41.0), the NL-170 suppression dropped; `LightningRegtestNetworkFixture` runs on `ClusterLndBackend` only and, without `NLTG_TEST_BACKEND=cluster` or a kubeconfig, reports every test that touches it skipped with the reason (`UnavailableReason`, `SkipIfUnavailable`; `Fixtures/LightningRegtestNetworkFixtureTests`); `Fixtures/LnUnitAbsenceTests` keeps every LNUnit package out of the solution; the Docker-only LND paths (NL-262 address holds, `LndChannelDbRollback`'s and `RelayBitcoind`'s container paths) removed; `run-onchain.sh`, `run-gossip.sh`, `run-abcd.sh` reduced to pointers at `run-cluster.sh`. Record: `TEST_HARNESS_PLAN.md` "NL-820 record". Update (wip/integrate, 2026-10-03): merged with PR #19; review fixes NL-860 (a cluster run without a Kubernetes configuration fails the fixture instead of skipping, and an all-skipped suite is never green), NL-861 (runbooks), NL-862 (day0 5/5 on the cluster, batch `integ-mx1`).
+- **Blocks/Blocked-by:** Related NL-170, NL-819
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Lane record: LNUnit confined to the Docker LND backend"
+
+### NL-821 Test code that drives Docker containers by fixed name could run on the cluster backend and act on another run's containers
+- **Status:** fixed (dbf77b1e)
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Onchain/Cheater/LndChannelDbRollback.cs`, `Docker/Onchain/Anchors/RelayBitcoind.cs`, `AnchorsPackageRelayTests.cs`, `AnchorsO5Tests.cs`, `Docker/Onchain/OnchainO5Tests.cs`, `Fixtures/LightningRegtestNetworkFixture.cs`, `test/NLightning.Testing.Cluster/Run/Matrix/{SuiteCatalog,LndBackendProbe,MatrixPlanner}.cs`
+- **Evidence:** test harness phase 3/5/6 integration, reviews of hf-lnd-wire and hf-runner (both medium): once `LightningRegtestNetworkFixture` takes `NLTG_TEST_BACKEND=cluster` (hf-lnd-wire), the onchain-regtest and gossip-regtest collections and the `onchain`/`anchors` matrix suites run on the cluster, but `LndChannelDbRollback` stops the Docker container `david` and writes an old `channel.db` into it, and `RelayBitcoind` inspects `miner` and recreates `nltg-anchors-relay-bitcoind`, by fixed name and outside the Docker lock: e.g. `run-cluster.sh -n 1 --suite lnd --class ...OnchainO5Tests` next to a Docker on-chain run. `LndBackendProbe` cleared all five LND suites on a text marker (`ILndNetworkBackend`) that hf-lnunit's fixture also carried while always building Docker.
+- **Fix:** `LightningRegtestNetworkFixture.SkipUnlessDocker(reason)`/`RequireDocker(what)`: the two helpers require Docker, and the LND breach of `OnchainO5Tests`, `AnchorsO5Tests` and `AnchorsPackageRelayTests` skip on the cluster with the reason (live: `hfi-skip-relay`, `hfi-skip-o5`); the remaining `DockerDiagnostics` dumps of the LND-fixture suites go through `DumpLndLogsAsync`; `GraphStoreFlowTests` dials `GetLndPeerEndpointAsync`. The catalog marks `onchain`, `anchors`, `gossip` and `abcd` `ClusterProofPending` (out of the default matrix, run when named), and the probe needs `new ClusterLndBackend(` in the fixture. Planner and catalog tests pin both.
+- **Blocks/Blocked-by:** Related NL-780, NL-262
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/5/6 integration record"
+
+### NL-822 `run-cluster.sh` admission and stop: kept namespaces not counted, kubectl without a timeout, no KILL on Ctrl-C, `--suite lnd -n 6` over the cap
+- **Status:** fixed (dbf77b1e)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `scripts/run-cluster.sh` (`count_namespaces`, `wait_namespaces_gone`, `sample_peak`, the admission loop, `on_signal`, the `--suite` selection)
+- **Evidence:** test harness phase 3/5/6 integration, reviews of hf-runner and hf-lnd-wire (low): with `--keep-on-failure` a failed suite's namespaces held machine slots for their 6 h TTL after the runner freed their budget, so later suites waited in `RunAdmission` and failed after 15 min (`--keep` did the same for every suite); `kubectl get ns` had no request timeout (a stalled API server hung the matrix) and a failed call read as "0 0" (slot freed early, NL-817 again); `on_signal` lost the watchdog's TERM-then-KILL and reaped after 2 s while test processes still ran; `--suite lnd` holds 2 namespaces per run, so `-n 4..6` exceeded the machine cap and the `MultiNodeHarnessTests` Postgres facts timed out.
+- **Fix:** kubectl with `--request-timeout=15s`; a failed listing returns non-zero and is retried until the deadline, never taken as "gone", and the peak sampler skips it; the namespaces of ended suites that are still there count against the budget (`held_by_finished`), and a queue they block gives up with NOT RUN instead of spinning; `--matrix` refuses `--keep`; Ctrl-C TERMs the suites, watchdogs and test processes, KILLs survivors after 30 s, then reaps with `--wait`; `--suite S` caps `-j` at 6 / its namespaces per run (`lnd`: 3). `scripts/tests/run-cluster-tests.sh` covers each (48/48).
+- **Blocks/Blocked-by:** Related NL-817
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/5/6 integration record"
+
+### NL-823 Matrix judgement: an all-skipped matrix exited 0, fixture failures were rerun as flakes, failed exit-0 logs were gzipped away
+- **Status:** fixed (dbf77b1e)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Run/Matrix/{MatrixReport,XunitResults,SuiteAttempt,MatrixCli}.cs`, `scripts/run-cluster.sh` (`compress_green_logs`)
+- **Evidence:** test harness phase 3/5/6 integration, review of hf-runner (low): `--matrix tor` (or the five LND suites before the wiring) ran nothing and exited 0; xunit v3 reports a collection or class fixture that throws as a failure of every test with `errors` 0, so a flaky fixture bring-up (one class) was rerun and read rerun-green; `compress_green_logs` gzipped any exit-0 attempt, including one the summary had just reported FAILED ("no tests ran"), leaving the summary's log path dangling.
+- **Fix:** `MatrixReport.ExitCode` returns 3 when nothing ran or a suite named in `--matrix S,...` was skipped (`summary --named`); `XunitRunResult.FixtureFailures` counts failures with xunit's fixture messages and `ClassesToRerun` returns none for them (the summary says so); the runner gzips only the attempts `nltg-cluster matrix green-attempts` lists (exit 0, no timeout, results green). Unit tests and the bash cases pin each.
+- **Blocks/Blocked-by:** Related NL-818
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/5/6 integration record"
+
+### NL-824 Guards that pinned nothing: the LNUnit confinement guard went quiet or blind, the host-address tests copied the code they tested
+- **Status:** fixed (dbf77b1e)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/LnUnitConfinementTests.cs`, `Fixtures/Lnd/{DockerLndBackendTests,ClusterLndBackendTests,DockerLndBackend,ClusterLndBackend}.cs`
+- **Evidence:** test harness phase 3/5/6 integration, reviews of hf-lnunit and hf-lnd-wire (low): the confinement guard skipped (passing in CI) when `DockerLndBackend.cs` moved; it did not see `using Lnrpc;` and the other global namespaces of `lnunit.lnd` (LND 0.20 protos) that still compile into Integration.Tests, nor an LNUnit reference in a `.props`/`.targets`; the `HostAddressForPeers` tests asserted the production expression itself and never controlled `HOST_ADDRESS`/`NLTG_HOST_ADDRESS`.
+- **Fix:** The guard finds the checkout by `NLightning.sln` and fails when the allowed file is gone, scans the sources of LNUnit-referencing projects for `lnunit.lnd`'s namespaces (using, global, static, alias, `global::`; `NLightning.Testing.Lnd.*` allowed) and every `.props`/`.targets` for an LNUnit reference; `DockerLndBackend.HostAddressFor(environment)` and `ClusterLndBackend(environment:)` take the environment lookup and the tests assert `host.docker.internal`/`host.orb.internal` and the configured values.
+- **Blocks/Blocked-by:** Related NL-819
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/5/6 integration record"
+
+### NL-825 A restored SQLite snapshot was not read after an in-process node restart on the macOS host: Microsoft.Data.Sqlite's pool kept the replaced file open
+- **Status:** fixed (251feaa8)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs` (stop), `Docker/Onchain/OnchainO4Tests.cs` (O4 (d))
+- **Evidence:** test harness phase 6 on-chain lane, first cluster run (`oc-legacy-1`): O4 (d) restored our database snapshot and restarted the node, which read the newer state (`ours 2/1` at the reestablish, `RemoteCommitment` instead of `RemoteNextCommitment`). Microsoft.Data.Sqlite keeps closed connections pooled and open; on the macOS host, where the cluster backend runs the test process, `File.Copy` replaces the file with a new inode, so the pool kept reading the old one. The Docker runner is a Linux container where the copy rewrites the inode in place, so Docker never hit it. Not a product bug: a stopped daemon process holds no file.
+- **Fix:** `NLightningTestNode` clears its SQLite pool when it stops. `--suite onchain` 33/33 (+2 `Explicit`) on the cluster (`oc-l2`, `oc-l3`, `oc-mx1`), Docker `ONCHAIN_SUITE=all` 45/45 (+2) unchanged.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 on-chain lane record"
+
+### NL-830 `SpliceLndObserverTests` spliced before bob had the open's edge, so bob kept the spent edge for good
+- **Status:** fixed (b246306e)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/SpliceLndObserverTests.cs`
+- **Evidence:** test harness phase 6 gossip lane, `gsp-c2` (two gossip suites at once): 35/35 and 34/35, "bob still has 494x2x1 73 blocks later". The test waited only for alice's edge of the A-B open; the splice confirmed 7 s after the open's sixth block while bob, who hears the open only through alice's 5 s trickle, was still taking it in; at the splice's block bob's LND closed 0 channels (alice's 1). Not a product bug: the edge is LND's own graph state.
+- **Fix:** The test also waits for bob's edge on the open's outpoint before the splice (what its step (4) proves him to forget). Class 2 x 1/1 at once (`gsp-obs1`), `-n 2 --suite gossip` 2 x 35/35 (`gsp-c3`), Docker `run-gossip.sh` 35/35.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 gossip lane record"
+
+### NL-840 A matrix suite that builds one topology per test (faults) held more namespaces than its count
+- **Status:** fixed (69fd5caa)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `scripts/run-cluster.sh` (`run_attempt`), `test/NLightning.Testing.Cluster/Run/TestRunOptions.cs`, `scripts/tests/run-cluster-tests.sh`
+- **Evidence:** test harness phase 6 proof, `p6-twin-b`: faults created `nltg-spike-p6-twin-b-faults-3` while `-faults` and `-faults-2` existed (one terminating); the batch's sampled peak was 4 of a 3 budget. `PartitionClusterTests` builds a topology per test and the next test's namespace was created while the last one terminated. The machine-wide admission held ("6/6 runs under nltg-spike; waiting for a slot").
+- **Fix:** `run-cluster.sh` sets `NLTG_WAIT_NAMESPACE_DELETION=1` for every run, not only for `-parallel none`. Runner bash tests 48/48. After the fix no faults run used a third name (`p6-tuned1`, `p6-twin2-a/b`, `p6-final`) and every batch peaked at its budget.
+- **Blocks/Blocked-by:** Related NL-817, NL-822
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+
+### NL-841 Matrix wall time was bounded by gossip and eclair, and the catalog's "longest first" order was wrong
+- **Status:** fixed (6e87db78)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Run/Matrix/SuiteCatalog.cs` (+ `SuiteCatalogTests`, `MatrixPlannerTests`, `SuiteCatalogMembershipTests`)
+- **Evidence:** test harness phase 6 proof, `p6-full1`: gossip 1,177 s and eclair 1,141 s (one collection in one process each) set the 1,206 s matrix wall, while onchain and anchors (231-345 s) were planned before them.
+- **Fix:** New suites `day0` (`Docker.Day0.*`, `ChannelPolicyPublicFlowTests`, `SpliceLndObserverTests`, split from `gossip`) and `eclair2` (`EclairSpliceTests`, split from `eclair`); order: `lnd` first (2 namespaces; the admission queue backfills), then by measured wall time. `p6-tuned1`: 1,088 s.
+- **Blocks/Blocked-by:** Related NL-844
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+
+### NL-842 `PublicChannelFlowTests` G1 (b): alice's open failed because her sweeper had leased her wallet outputs
+- **Status:** fixed (47e9a2ea)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Gossip/PublicChannelFlowTests.cs`, `Docker/Utils/ChainSync.cs`
+- **Evidence:** test harness phase 6 proof, `p6-twin2-b`: "not enough witness outputs to create funding transaction, need 0.01000000 BTC only have 0 BTC available". Alice's log shows her sweeper taking her two wallet outputs as fee inputs of HTLC-timeout sweeps of an earlier test's force close one second before `OpenChannelSync`. Depends on xunit's random test order, so the Docker backend could hit it too.
+- **Fix:** `ChainSync.EnsureLndSpendableAsync`: when confirmed minus leased minus the anchors reserve is below what is needed, two 0.1 BTC outputs from the miner and a block. G1 (b) calls it for alice before her open. Class reruns: cluster 2 x 4/4 at once (`p6-g1b`), Docker 4/4; in `p6-final` the state recurred ("alice can spend -100000 sat, needs 1100000: funding it") and gossip passed 30/30.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+
+### NL-843 `ChainMonitorZmqClusterTests`: the first block after the ZMQ heal took 7.9 s (limit 3 s) with two matrices at once
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Cluster/Live/ChainMonitorZmqClusterTests.cs`
+- **Evidence:** test harness phase 6 proof, `p6-twin2-b` faults failed once ("the block after the heal took 7.9 s (ZMQ not back?)"); the runner's alone rerun was green, the five other matrices' faults runs were green, then 2 x 1/1 at once (`p6-zmq`) and 5/5 in `p6-final` (next block after the heal in 102 ms). Likely ZMQ's slow joiner: the test mines as soon as the subscriber's TCP connection is back, and bitcoind drops what it publishes before it has read the subscription, so the block came by the 5 s tip poll (NL-775).
+- **Fix sketch:** Diagnostics only so far (2ee6e42f; assertion unchanged): the message prints the resubscription time and the tip-poll catch-ups for that block. If the next failure shows a catch-up, have the test wait for one ZMQ-delivered block before it starts timing.
+- **Blocks/Blocked-by:** Related NL-775, NL-797
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+
+### NL-844 The ~15 min full-matrix target is not reachable within the 6-namespace cap
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `docs/agents/TEST_HARNESS_PLAN.md` "Phase 6 proof record", `scripts/run-cluster.sh` (`--max-namespaces`, cap 6)
+- **Evidence:** test harness phase 6 proof: `p6-tuned1` used 6,131 namespace-seconds, so 6 namespaces need at least 1,022 s; the run took 1,088 s (18.1 min). A simulation of 300,000 random suite orders found none below 1,052 s. CLN at 902 s is now the longest suite.
+- **Fix sketch:** Owner decision: allow about 7 namespaces (the VM has 28 cores and 64 GiB), or shorten the long poles (CLN, gossip, eclair).
+- **Blocks/Blocked-by:** Related NL-841
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+
+### NL-860 With `NLTG_TEST_BACKEND=cluster` but no buildable Kubernetes configuration the LND fixture skipped every test, and the matrix judged the all-skipped suites green
+- **Status:** fixed (5a62e771)
+- **Severity:** medium
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/LightningRegtestNetworkFixture.cs` (`GetUnavailableReason`, `InitializeAsync`), `test/NLightning.Testing.Cluster/Run/Matrix/XunitResults.cs` (`XunitRunResult.IsGreen`)
+- **Evidence:** wip/integrate review of the NL-820 lane (ia-retire-lnunit, 8f218e79): `GetUnavailableReason` returned a skip reason also when the backend was explicitly the cluster and `KubeClientFactory.BuildConfiguration()` threw (a pod with `KUBERNETES_SERVICE_HOST` but no service-account token, or a test process that does not see the runner's kubeconfig/context). Every test of the regtest, onchain-regtest and gossip-regtest collections was then reported Skipped, and `IsGreen` (`Found && Total > 0 && Failed == 0 && Errors == 0`, xunit's total includes skipped tests) marked lnd, onchain, anchors, gossip, day0 and abcd green with 0 passed; `run-cluster.sh` exited 0. Before NL-820 `ClusterLndBackend.StartAsync` threw there, a red suite.
+- **Fix sketch:** Done: on the cluster backend a missing Kubernetes configuration is `ConfigurationError`, thrown by `InitializeAsync` (a fixture failure; the skip stays for the unset or docker backend); `IsGreen` needs at least one passed test, so an all-skipped suite is Failed. Tests: `LightningRegtestNetworkFixtureTests.Given_TheClusterBackendWithoutAKubeConfiguration_*_Then_ItFailsInsteadOfSkipping`, `MatrixReportTests.Given_EveryTestSkipped_When_ReadAndJudged_Then_TheSuiteIsNotGreen`; `scripts/tests/run-cluster-tests.sh` 48/48.
+- **Blocks/Blocked-by:** Related NL-820, NL-823
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Integration record (wip/integrate)"
+
+### NL-861 Runbooks and the Application guide still prescribed the retired Docker LND runners
+- **Status:** fixed (5a62e771)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `docs/agents/MAINNET_CANARY_RUNBOOK.md`, `docs/agents/DAY0_RUNBOOK.md`, `docs/agents/REMAINING_WORK.md`, `src/NLightning.Application/CLAUDE.md`
+- **Evidence:** wip/integrate review of the NL-820 lane: the canary checklist's release gate ran the Docker suites "from the in-container runner" and ABCD with `scripts/run-abcd.sh 3`; the day-0 runbook ran its proofs with `scripts/run-gossip.sh`; the Application guide pointed the O2 and backup/restore proofs at `scripts/run-onchain.sh`; REMAINING_WORK still asked for an in-container runner (NL-276). Those scripts only print a pointer and exit 2 since NL-820.
+- **Fix sketch:** Done: `scripts/run-cluster.sh --matrix lnd,onchain,anchors,gossip,day0,abcd,cln`, `-n 3 --suite abcd`, `-n 1 --suite day0` and `-n 1 --suite onchain [--class ...]`; the CI bullet says the LND suites run on the cluster and CI on a cluster is deferred. Historical records keep their commands.
+- **Blocks/Blocked-by:** Related NL-820
+- **Plan ref:** —
+
+### NL-862 The day0 LND suite was not run on the cluster after the Docker LND backend was retired
+- **Status:** fixed (5a62e771, cluster batch `integ-mx1`)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `docs/agents/TEST_HARNESS_PLAN.md` "NL-820 record"; the `day0` suite (`Docker.Day0.*`, `ChannelPolicyPublicFlowTests`, `SpliceLndObserverTests`)
+- **Evidence:** wip/integrate review of the NL-820 lane: its proof matrix was `--matrix lnd,onchain,anchors,gossip,abcd` (batch `ia-lnunit-mx1`), with no day0 row, although day0 runs on the changed fixture and the skip-before-port paths of `NLightningTestNode`.
+- **Fix sketch:** Done: `scripts/run-cluster.sh --matrix day0,eclair -j 2 --max-namespaces 3` (batch `integ-mx1`, at 5a62e771 on wip/integrate): day0 5/5 green in 446 s (`Day0FlowTests` 1, `Day0UpgradeInPlaceTests` 2, `ChannelPolicyPublicFlowTests` 1, `SpliceLndObserverTests` 1), no rerun; counts added to the NL-820 record.
+- **Blocks/Blocked-by:** Related NL-820, NL-841
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "NL-820 record"
+
+### NL-863 The liquidity ads epic and docs listed the follow-ups as NL-851..NL-858, leaving out NL-859
+- **Status:** fixed (5a62e771)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `docs/agents/ISSUES.md` (the NL-850 epic row and entry), `CLAUDE.md`, `docs/agents/BOLT_COVERAGE.md`, `docs/agents/LIQUIDITY_ADS_PLAN.md`
+- **Evidence:** wip/integrate review of the PR #19 lane (ia-pr19): PR #19's commit 13f00226 added NL-780 (now NL-859, the `EclairCloseTests` simple-close flake, related NL-850) without widening the ranges; the renumbering kept them at NL-851..NL-858.
+- **Fix sketch:** Done: the living docs say NL-851..NL-859; the dated LA7 note keeps what it said then. No count changed.
+- **Blocks/Blocked-by:** Related NL-850, NL-859
+- **Plan ref:** `LIQUIDITY_ADS_PLAN.md` Record
+
+### NL-864 PR #19's liquidity seller ran on the Docker Eclair backend only; the harness's cluster Eclair backend had no seller
+- **Status:** fixed (c0d6a0cf)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/EclairFixture.cs` (`GetSellerAsync`, `SellerConfigLines`), `Fixtures/Eclair/{IEclairBackend,DockerEclairBackend,ClusterEclairBackend}.cs`, `Docker/Interop/Eclair/EclairLiquidityAdsTests.cs`
+- **Evidence:** merge of PR #19 (liquidity ads, NL-850) into the test harness branch: PR #19 added a second Eclair, configured as seller, to the Docker-only `EclairFixture` (container, `InteropChainHost`, fixed host ports), while the harness had put `EclairFixture` behind `IEclairBackend` with a cluster backend; `run-cluster.sh --suite eclair` selects `EclairLiquidityAdsTests` by trait.
+- **Fix sketch:** Done: `IEclairBackend.StartSellerAsync`/`DumpSellerLogAsync`; Docker starts the container as PR #19 did, the cluster deploys `nltg-eclair-seller` into the collection's run namespace (`EclairNode.Workload` with `ClusterEclairBackend.BuildSellerOptions`: wallet `eclair-seller` made by the init container, `emptyDir`, pod IP); both write `EclairFixture.SellerConfigLines` after the common configuration (`EclairBackendTests` pin it on both). Proof: cluster batch `integ-mx1` eclair 25/25 + 2 `Explicit` not run, `EclairLiquidityAdsTests` 4/4; Docker `scripts/run-interop.sh eclair Release -class ...EclairLiquidityAdsTests` 4/4 + 1 `Explicit` not run (158 s).
+- **Blocks/Blocked-by:** Related NL-850, NL-820
+- **Plan ref:** `LIQUIDITY_ADS_PLAN.md` LA6; `TEST_HARNESS_PLAN.md` "Integration record (wip/integrate)"
+
+### NL-865 Test nodes kept the 1 GiB gossip memory budget, which a long suite's shared test process exceeds
+- **Status:** fixed (447e871d)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs` (`BuildServiceProvider`)
+- **Evidence:** the full cluster matrix at the integration (`wip/integrate` 73e159fa, batch `integ-final-mx`, `-j 6 --max-namespaces 6`) failed all three graph proofs of `ClnGossipTests` in the CLN suite ("Timed out after 00:04:00 waiting for: N1's graph has 1069x1x0", the two others likewise): about 20 minutes into the run the test process passed 1.1 GiB RSS and every in-process node logged `GossipMemoryBudget` "The process uses 1167 MiB (managed heap 799 MiB), above Gossip:MaxMemoryMb 1024 MiB: new channels and nodes from gossip are refused", so N1 never stored CLN's channels. The class rerun alone (a fresh process) was green. `Gossip:MaxMemoryMb` (NL-373) reads the process RSS, which in a test process is shared by every node a suite starts; NL-466 had turned it off only for the reload tests.
+- **Fix sketch:** Done: `NLightningTestNode` sets `Gossip:MaxMemoryMb=0` (budget off, usage still reported) before `ExtraConfiguration`, so a test that proves the budget can set it again. Proof: the CLN suite on the cluster `scripts/run-cluster.sh -n 1 --suite cln` (batch `integ-final-cln`) 90/90 + 4 `Explicit` not run in 954 s, and on Docker `scripts/run-interop.sh cln Release` 90/90 + 4 `Explicit` not run in 804 s, `ClnGossipTests` green in both full runs.
+- **Blocks/Blocked-by:** Related NL-373, NL-466
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Integration record (wip/integrate)"
+
+### NL-866 The CLN, Eclair, LDK and Postgres fixtures kept Docker backends next to the cluster, so every suite but Tor had two backends to keep in step
+- **Status:** fixed (cea4bc4f)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Fixtures/{ClnFixture,EclairFixture,LdkFixture,PostgresFixture,TestBackend,DockerContainerUtils}.cs`, `Fixtures/{Cln,Eclair,Ldk,Postgres}/`, `Fixtures/Tor/`, `Docker/Utils/{ClnClient,LdkClient,EclairClient,TestDiagnostics}.cs`, `scripts/run-interop.sh`, `scripts/run-cluster.sh`
+- **Evidence:** owner decision 2026-10-03: every test suite runs through the cluster harness (`scripts/run-cluster.sh --matrix`); after NL-820 the LND network ran on the cluster only, but `DockerClnBackend`, `DockerEclairBackend` (incl. PR #19's liquidity seller), `DockerLdkBackend` and `DockerPostgresBackend` stayed as the default (`NLTG_TEST_BACKEND` unset = Docker) with `scripts/run-interop.sh cln|eclair|ldk` as a Docker fallback, so every fixture change had to be made and proven twice.
+- **Fix sketch:** Done: the four Docker backends and the `I*Backend` switches removed; the fixtures hold their cluster backend behind `Fixtures/ClusterAvailability` (shared with the LND network): without `NLTG_TEST_BACKEND=cluster` (the explicit opt-in; `docker` and typos throw) they start nothing and their tests skip with the reason (test classes skip in their constructor), with it and no Kubernetes configuration they fail (NL-860). Tor keeps its Docker pieces (`Fixtures/Tor/TorInteropFixture`, `TorChainHost` = the former `InteropChainHost`, `DockerContainerUtils`; `SqlServerFixture`, not run, untouched); `ClnClient`/`LdkClient`/`EclairClient` lost their Docker constructors, `DockerDiagnostics` became `TestDiagnostics`, `Docker.DotNet` moved from Tests.Utils to Integration.Tests. Guard `Fixtures/DockerAbsenceTests` (Docker API and `docker` CLI only in the Tor/SQL Server fixtures, the shared helpers and `Testing.Lnd.Tests`' Explicit live test; `Docker.DotNet` only in Integration.Tests; no `Docker*Backend` type). `run-interop.sh` runs only `tor` (cln/eclair/ldk print the `run-cluster.sh` command, exit 2). Proof: cluster batch `nl866-mx1` (`--matrix cln,eclair,eclair2,ldk,postgres -j 6 --max-namespaces 6`) green in 902 s: cln 90/90 + 4 `Explicit` not run, eclair 25/25 + 2, eclair2 7/7, ldk 27/27, postgres 26/26, no rerun, no namespace left; without `NLTG_TEST_BACKEND` the Interop.Cln/Eclair/Ldk namespaces 136 skipped with the reason (13 container-free helpers passed, 3 `Explicit` not run) and `PostgresTests` 25 skipped, 0 failed, no container started; with `NLTG_TEST_BACKEND=cluster` and an unknown kube context the fixtures fail loudly; Tor on Docker `scripts/run-interop.sh tor Release`: 2/3 in the full run, `Given_ATorOnlyNodeWithAChannelToCln_When_TorRestarts_*` timed out waiting 4 min for CLN's onion to be reachable again on the public Tor network after the Tor restart; rerun alone green (1/1, 137 s); no container left.
+- **Blocks/Blocked-by:** Related NL-820, NL-860, NL-864
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "NL-866 record"
+
+### NL-876 `dotnet format --verify-no-changes` failed on a clean tree with SDK 10.0.401 (IDE0031)
+- **Status:** fixed (c578ac1b)
+- **Severity:** low
+- **Kind:** ci
+- **Location:** `Application/Channels/Backup/ChannelRestoreService.cs`, `Channels/DualFunding/DualFundedOpenService.cs`, `Channels/Splicing/RetiredScidMap.cs`, `Channels/Splicing/SpliceService.cs`, `Gossip/Services/ChannelUpdateService.cs`, `Infrastructure.Bitcoin/Gossip/FundingOutputLookup.cs`
+- **Evidence:** trampoline wave tr1 (2026-10-03, cloud host with SDK 10.0.401): the format gate reported 13 IDE0031 ("null check can be simplified") errors at `858f0b7e`, none in changed files; the analyzer of the newer SDK suggests C# 14 null-conditional assignment for `if (x is not null) x.Event += h;`.
+- **Fix sketch:** Done: `dotnet format --diagnostics IDE0031` (13 sites, `x?.Event += h`); Release build 0 warnings.
+- **Blocks/Blocked-by:** Related NL-875
+- **Plan ref:** none
+
+### NL-880 `max_htlc_value_in_flight_msat` announced as a share of the opening capacity froze a spliced channel at its first size
+- **Status:** fixed (d2d2a7e5)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Factories/ChannelFactory.cs`, `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs`, `src/NLightning.Domain/Channels/Policies/MaxHtlcValueInFlightRules.cs` (new), `NodeOptions.LimitInFlightOnSpliceableChannels`
+- **Evidence:** Mutinynet 2026-10-03, channel 30f245ac (dual-funded 140k, spliced to 210k): FAFO2 logged "our channel 3476189x12x0 can send at most 48000000 msat, not 60000000 msat". BOLT 2 fixes the value for the channel's lifetime and no splice message changes it. Cluster without the fix: local in-flight limit 80,000,000 msat (80 % of 100k) after the open; with it u64 max, and payments of 150k and 120k pass after a splice to 300k (`Day0SpliceInFlightTests`).
+- **Fix sketch:** Done: channels opened with `option_splice` negotiated announce no cap (u64 max); others announce `Node:AllowUpToPercentageOfChannelFundsInFlight` of the capacity; `Node:LimitInFlightOnSpliceableChannels` (default false) keeps the share on spliceable channels. All four open paths go through `MaxHtlcValueInFlightRules`. Tests `MaxHtlcValueInFlightRulesTests`, `DualFundInFlightLimitTests`.
+- **Blocks/Blocked-by:** Related NL-881, NL-021
+- **Plan ref:** SPLICING_PLAN.md
+
+### NL-881 A dual-funded opener announced its in-flight limit from its own share only and stored another value than it announced; an RBF recomputed both sides' limits
+- **Status:** fixed (d2d2a7e5)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`OpenAsync`, the `accept_channel2` handler, `CreateLocalParams`, `WithCapacity`)
+- **Evidence:** FAFO (opener, 60k plus 80k bought) announced 48,000,000 msat but kept 112,000,000 as its own limit. `DualFundInFlightLimitTests` without the fix: stored 800,000 sat against 480,000 announced; the liquidity purchase not counted; after an RBF 840,000 against 480,000.
+- **Fix sketch:** Done: the opener's base is its share plus the requested liquidity; `Local.MaxHtlcValueInFlight` stays the announced value at `accept_channel2`; `WithCapacity` (RBF) moves only the reserve.
+- **Blocks/Blocked-by:** Related NL-880, NL-850
+- **Plan ref:** SPLICING_PLAN.md (DF)
+
+### NL-882 The `closechannel` lease-guard refusal named only the newest sale, not every lease in force
+- **Status:** fixed (730ff053)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/LiquidityAds/LiquidityLeases.cs`, `src/NLightning.Application/Channels/Close/ChannelCloseService.cs`
+- **Evidence:** FAFO2 log 2026-10-03 10:06:06: two refusals each naming one sale; channel 30f245ac also carried the 80,000 sat open purchase.
+- **Fix sketch:** Done: `GetLeasesInForceAsync` (both roles; Active before its end plus the newest Pending attempt, newest first) and `DescribeCloseRefusal(channelId, leases, height)` list amount, role, kind and end block of each.
+- **Blocks/Blocked-by:** Related NL-850
+- **Plan ref:** LIQUIDITY_ADS_PLAN.md
+
+### NL-883 IPC refusals were logged inconsistently (openchannel at ERR with a stack, the others at WRN with the stack, the lease refusal twice)
+- **Status:** fixed (730ff053, ed43ef68)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Ipc/Handlers/` (`ClientCommandIpcHandler`, `OpenChannel`, `OpenChannelSubscription`, `ConnectPeer`, `ListChannels`), `IpcRequestLog.cs` (new)
+- **Evidence:** FAFO log 2026-10-03 09:53:51/09:53:56 ERR with a stack for a refused open; FAFO2 16702-16714 WRN with a stack.
+- **Fix sketch:** Done: `IpcRequestLog`: a refusal (`ClientException` other than `server_error`, a bad address, `ConnectionException`, `ChannelErrorException`) is one WRN line without the exception; `server_error` or anything else an ERR with it; `ChannelCloseService` no longer logs the lease refusal itself. The review follow-up NL-894 keeps a wrapped fault's stack.
+- **Blocks/Blocked-by:** Related NL-894
+- **Plan ref:** none
+
+### NL-884 `liquidityads sellers` showed only a connected seller's init rates, never its node_announcement rates
+- **Status:** fixed (730ff053)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Handlers/LiquidityAdsClientHandler.cs`, `src/NLightning.Client/Printers/LiquidityAdsPrinter.cs`, `LiquiditySellerInfo`, `LiquiditySellerIpcInfo`
+- **Evidence:** 2026-10-03 liquidity-ads test: a connected seller whose announcement carried other rates showed only the init ones.
+- **Fix sketch:** Done: `LiquiditySellerInfo.AnnouncedRates`; IPC keys 6/7 (`AnnouncedRates`, `AnnouncedPaymentTypes`) of `LiquiditySellerIpcInfo`; the printer shows the other source (its rates, "the same rates" or "no rates"; "init: no rates" for a connected announcement-only seller).
+- **Blocks/Blocked-by:** Related NL-850
+- **Plan ref:** LIQUIDITY_ADS_PLAN.md
+
+### NL-885 `info` printed Best Block Time as a UTC wall time with the local offset
+- **Status:** fixed (730ff053)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Services/NodeInfoQueryService.cs`, `src/NLightning.Infrastructure.Repositories/Database/Bitcoin/BlockchainStateDbRepository.cs`, `src/NLightning.Client/Printers/NodeInfoPrinter.cs`
+- **Evidence:** `info` printed "Best Block Time: 2026-10-03T13:52:19-04:00" while the logs (local -04:00) showed 09:52: a kind-less `DateTime` from the database was converted as local.
+- **Fix sketch:** Done: the daemon reports the UTC instant (`NodeInfoQueryService.AsUtc`), the repository marks the value UTC, the printer prints `yyyy-MM-dd HH:mm:ss'Z'` through `PaymentsPrintFormat.FormatTime`; the other printers already convert to UTC. Tests `NodeInfoTimeTests`.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** none
+
+### NL-886 The books reconcile reported a transient channels drift of plus or minus the payment amount between a settle and the end of its commitment round
+- **Status:** fixed (24d3dc4c, 43c7672d)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Accounting/Books/AccountingBooksService.cs` (`BuildReconcileLines`), `Accounting/Books/HtlcOutstandingReader.cs` (new), `Accounting/NodeSnapshotSource.cs` (`InFlightHtlcBucket`)
+- **Evidence:** FAFO2 log 2026-10-03 09:59:07, seq 193: channels drift 20,000,000 msat (books 682,018,782, node 662,018,782); FAFO seq 178: -20,000,000; 0 five seconds later. `InvoiceSettled` is staged in the fulfill's save and `PaymentSucceeded`/`ForwardSettled` when the switch handles the peer's fulfill, while `ChannelCommitments` moves the gross balances only on a final state.
+- **Fix sketch:** Done: the snapshot lists every non-final HTLC per channel; `HtlcOutstandingReader` counts an HTLC whose settle the books booked (incoming by `ForwardSettled` of its channel and id, else `InvoiceSettled` of its hash; outgoing by its stored origin) as outstanding (+ incoming, - outgoing), a failing HTLC never; only the remainder is drift. Review: the plan's preimage-based rule missed a forward whose upstream link is down after the downstream fold; the built rule counts it by its `ForwardSettled` key (test `Given_AForwardFoldedDownstreamWhileTheUpstreamLinkStaysDown_*`, clean). Tests `AccountingReconcileHtlcSettleTests` (8; 6 of the first 7 fail on 0efe066b).
+- **Blocks/Blocked-by:** Related NL-887, NL-602
+- **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-887 The reconcile projected the books before it took the node snapshot, so a settle committed in between read as drift
+- **Status:** fixed (24d3dc4c)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Accounting/Books/AccountingBooksService.cs` (`ReconcileAsync`, `ReconcileCoreAsync`)
+- **Evidence:** Found with NL-886: `ReconcileAsync` sealed and projected, then took the snapshot.
+- **Fix sketch:** Done: the snapshot first, then seal and project, then the books read under the round gate; a settle committed after the snapshot is matched to its HTLC as snapshotted by NL-886's reader (an event always commits before its HTLC can be final). Residual, not fixed: an HTLC added and settled entirely between the snapshot and the projection (milliseconds; it needs a whole commitment round) reads as drift once. The review's two-reads rule was not adopted: nothing is hidden, every reconcile records its gauge.
+- **Blocks/Blocked-by:** Related NL-886
+- **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-890 Wall-clock waits in `QuiescenceServiceTests` and `SpliceConformanceTests` can time out under a loaded full Application run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Channels/Quiescence/QuiescenceServiceTests.cs`, `Channels/Splicing/SpliceConformanceTests.cs`
+- **Evidence:** Failed once (10 s) in the full Application.Tests run on net10.0 (3767/3768, batch12 lane trimmed-loss) while other lanes ran test hosts on the same machine; the class passes 19/19 alone. The lane did not touch quiescence code. The batch12 integrator's run on the merged `wip/fafo` (3872/3873) timed out `SpliceConformanceTests.Given_ACrashAtEverySpliceSave_When_TheNodeRestarts_Then_BothSidesAgreeAndTheChannelWorks(crashing: "Bob")` at its 10 s `start.WaitAsync` (line 750; 12 s under load, 3 s alone); the class passed 17/17 three times alone.
+- **Fix sketch:** Find its wall-clock wait or deadline and make it stepped or event-driven, like NL-512 and NL-565.
+- **Blocks/Blocked-by:** Related NL-512, NL-565
+- **Plan ref:** none
+
+### NL-891 The reestablish deadline counted ReadyForUs channels, took any `Node:ReestablishTimeout`, could fault the inbound loop when its timer failed, and its cluster proof could not fail early
+- **Status:** fixed (384fdfaf)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`GetChannelsAwaitingPeerReestablish`), `src/NLightning.Domain/Node/Options/NodeOptions.cs`, `src/NLightning.Application/Node/Managers/PeerManager.cs` (`ArmReestablishDeadline`), `test/NLightning.Integration.Tests/Cluster/Live/PartitionClusterTests.cs`
+- **Evidence:** Review of NL-796: (1) ReadyForUs (we sent channel_ready, the peer has not) was awaited, but LND sends no `channel_reestablish` for a channel still pending on its side, so a lagging LND would be dropped every ~60 s with all its other channels; (2) a timeout above 4,294,967,294 ms passed validation and made `TimeProvider.System.CreateTimer` throw in the inbound loop of every connection; (3) nothing caught a failure to arm the timer; (4) the cluster test's "not before the deadline" bound was measured after a fixed 17 s hold.
+- **Fix sketch:** Done: ReadyForUs left out (ReadyForThem, Open, ShuttingDown, Negotiating stay); `NodeOptions.MaxReestablishTimeout` (a larger value is a validation error); the arming caught and logged at ERR (test `Given_ADeadlineThatCannotBeArmed_*` fails without the catch); the cluster test polls the connection every 0.5 s and asserts the first connection is gone no earlier than the deadline.
+- **Blocks/Blocked-by:** Related NL-796
+- **Plan ref:** BOLT2 N7
+
+### NL-892 The loss of a trimmed incoming HTLC was staged only in the close's save, so a forward or invoice settled after the close kept its amount in the channels
+- **Status:** fixed (86520723)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/OnchainResolutionExecutor.cs` (`StageTrimmedIncomingLossesAsync`, the round's `StageLateTrimmedLossesAsync`), `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs` (`StageLateTrimmedLossAsync`)
+- **Evidence:** Review of NL-760: a forward whose upstream commitment (with the trimmed HTLC) confirms while the downstream HTLC is pending is fulfilled downstream later; `ForwardSettled` is booked, but no output row exists and the close fact already stood, so `ForwardLostOnchain` was never written. Same for an MPP set completed after the close.
+- **Fix sketch:** Done: every executor round stages the loss for the trimmed incoming HTLCs the standing close event lists (same conditions and generation keys; never twice), and the switch stages it in its own save right after a late settle (a circuit becoming Fulfilled, an HTLC set settled with a part on a channel closed on chain; Closed channels are read from the database). Tests `OnchainAccountingTests.Given_AForwardOfATrimmedIncomingHtlcSettledAfterTheClose_*` and `Given_AnInvoicePartTrimmedByTheCloseSettledAfterIt_*` (both fail without the round's staging); the switch hook has no test of its own.
+- **Blocks/Blocked-by:** Related NL-760, NL-608, NL-688
+- **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-893 An incoming HTLC whose output could not be mapped was listed as trimmed and its loss booked with the reason "below dust"
+- **Status:** fixed (86520723)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Onchain/Accounting/OnchainAccounting.cs` (`TrimmedIncomingHtlcs`, `ForceClosed`), `src/NLightning.Application/Onchain/OnchainChannelWatcher.cs`
+- **Evidence:** Review of NL-760: `TrimmedIncomingHtlcs` took every incoming HTLC without a descriptor as trimmed, also when the mapper left vouts unmapped (B5-GEN-06), so an above-dust HTLC with an output on chain could be booked lost.
+- **Fix sketch:** Done: no HTLC is listed as trimmed (and no trimmed loss staged) when the transaction on chain has unmapped outputs (the watcher passes `unmapped is not null`). Test `Given_OutputsOnChainThatMatchedNothing_*`. The outgoing `trimmedHtlcMsat` keeps the old assumption.
+- **Blocks/Blocked-by:** Related NL-760
+- **Plan ref:** ACCOUNTING_PLAN A2
+
+### NL-894 An IPC refusal that wrapped a fault (an InvalidOperationException from LINQ or EF) was logged as one WRN line without its stack
+- **Status:** fixed (ed43ef68)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Ipc/Handlers/IpcRequestLog.cs`, `ConnectPeerIpcHandler.cs`
+- **Evidence:** Review of NL-883: `CloseChannelClientHandler`, `OfferClientHandlers`, `SpliceClientHandlers` and `AccountingFinancialReportDispatcher` wrap every `InvalidOperationException` as an `InvalidOperation` refusal; `ObjectDisposedException`, EF's "a second operation was started on this context" and `Single()` on an empty sequence are all `InvalidOperationException`s, so a bug left one WRN line with no origin.
+- **Fix sketch:** Done: `IpcRequestLog.IsFault`: an exception only a bug raises, or one thrown outside NLightning code (its `TargetSite`), is logged at ERR with the stack whatever the error code; a refusal thrown by our code stays one WRN line and its exception goes to Debug; `ConnectPeer`'s `InvalidOperationException` catch uses the same rule. Tests `IpcRequestLogTests` (3 new). A dedicated refusal exception type for the services stays a possible cleanup.
+- **Blocks/Blocked-by:** Related NL-883
+- **Plan ref:** none
+
 ## Cashu (ecash)
 
-### NL-811 Cashu ecash integration (epic)
+### NL-900 Cashu ecash integration (epic)
 - **Status:** in-progress
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `docs/agents/CASHU_PLAN.md`; branch `wip/cashu`
 - **Evidence:** NLightning has every Lightning piece a Cashu mint needs (BOLT 11/12 receive and pay, MPP, on-chain wallet), but no Cashu integration: no backend contract the reference mint (CDK `cdk-mintd`) can use, no native ecash wallet, no hold invoices for NUT-14 swaps. CDK has no C# bindings (`cdk-ffi`: Python, Swift, Kotlin), so the integration speaks CDK's wire contracts or implements the NUTs.
-- **Fix sketch:** Waves C0-C4 of `CASHU_PLAN.md`: C0 payment event stream (NL-812), C1 CDK gRPC payment processor (NL-813), C2 Docker proof (NL-814), C3 native wallet (NL-815), C4 hold invoices + NUT-14 (NL-816).
-- **Blocks/Blocked-by:** NL-812..NL-816
+- **Fix sketch:** Waves C0-C4 of `CASHU_PLAN.md`: C0 payment event stream (NL-901), C1 CDK gRPC payment processor (NL-902), C2 Docker proof (NL-903), C3 native wallet (NL-904), C4 hold invoices + NUT-14 (NL-905).
+- **Blocks/Blocked-by:** NL-901..NL-905
 - **Plan ref:** `docs/agents/CASHU_PLAN.md`
 
-### NL-812 No notification when an invoice is settled or a payment finishes
+### NL-901 No notification when an invoice is settled or a payment finishes
 - **Status:** in-progress
 - **Severity:** low
 - **Kind:** feature
-- **Location:** `src/NLightning.Domain/Payments/Events/`, `Domain/Payments/Interfaces/IPaymentEvent{Publisher,Source}.cs`, `src/NLightning.Application/Payments/Events/PaymentEventHub.cs`, `Payments/Switch/HtlcSwitch.cs` (`SettleWithAsync`), `Payments/Send/PaymentService.cs` (`LogSucceeded`/`LogFailed`), `src/NLightning.Daemon/Handlers/WaitInvoiceClientHandler.cs`, IPC 46
+- **Location:** `src/NLightning.Domain/Payments/Events/`, `Domain/Payments/Interfaces/IPaymentEvent{Publisher,Source}.cs`, `src/NLightning.Application/Payments/Events/PaymentEventHub.cs`, `Payments/Switch/HtlcSwitch.cs` (`SettleWithAsync`), `Payments/Send/PaymentService.cs` (`LogSucceeded`/`LogFailed`), `src/NLightning.Daemon/Handlers/WaitInvoiceClientHandler.cs`, IPC 47
 - **Evidence:** Settlement and payment outcomes were only visible by polling `listinvoices`/`listpayments` or the accounting feed; a mint backend (C1), NWC or webhooks need a push. The IPC has no server push.
-- **Fix sketch:** In-process `PaymentEventHub` (`IPaymentEventPublisher`/`IPaymentEventSource`) with bounded per-subscriber queues (oldest dropped, `Overflowed` flag), published after the committing save by the switch (`InvoiceSettledEvent`, once per invoice) and the payment service (`PaymentSucceededEvent`/`PaymentFailedEvent`, only for final outcomes, not retried attempts); `waitinvoice <payment_hash> [--timeout]` (ClientCommand 46) subscribes, then reads, then waits (event or 5 s recheck; 1-300 s). Tests: `Application.Tests/Payments/Events/PaymentEventHubTests`, `PaymentHarnessTests.Given_ASubscriber_*`, `ThreeNodeSwitchTests.Given_ASubscriberAtCarol_*`, `Daemon.Tests/Handlers/WaitInvoiceClientHandlerTests`, `Client/WaitInvoiceCommandTests`.
-- **Blocks/Blocked-by:** Blocks NL-813
+- **Fix sketch:** In-process `PaymentEventHub` (`IPaymentEventPublisher`/`IPaymentEventSource`) with bounded per-subscriber queues (oldest dropped, `Overflowed` flag), published after the committing save by the switch (`InvoiceSettledEvent`, once per invoice) and the payment service (`PaymentSucceededEvent`/`PaymentFailedEvent`, only for final outcomes, not retried attempts); `waitinvoice <payment_hash> [--timeout]` (ClientCommand 47) subscribes, then reads, then waits (event or 5 s recheck; 1-300 s). Tests: `Application.Tests/Payments/Events/PaymentEventHubTests`, `PaymentHarnessTests.Given_ASubscriber_*`, `ThreeNodeSwitchTests.Given_ASubscriberAtCarol_*`, `Daemon.Tests/Handlers/WaitInvoiceClientHandlerTests`, `Client/WaitInvoiceCommandTests`.
+- **Blocks/Blocked-by:** Blocks NL-902
 - **Plan ref:** `CASHU_PLAN.md` C0
 
-### NL-813 Cashu mints cannot use NLightning as their Lightning backend
-- **Status:** open
+### NL-902 Cashu mints cannot use NLightning as their Lightning backend
+- **Status:** in-progress
 - **Severity:** low
 - **Kind:** feature
 - **Location:** new `src/NLightning.Cashu.PaymentProcessor`
 - **Evidence:** `cdk-mintd` talks to external Lightning backends through the `CdkPaymentProcessor` gRPC service (`cdk-payment-processor/src/proto/payment_processor.proto`); the shipped processors (Bark, LDK Server, LNbits, Spark) do not cover NLightning, and none does BOLT 11, BOLT 12 and on-chain together.
-- **Fix sketch:** Implement the service in the daemon on Kestrel behind `Cashu:PaymentProcessor` (default off, loopback, TLS required off loopback, refused on mainnet unless `AllowMainnet`): BOLT 11 create/quote/pay/check and `WaitPaymentEvent` over NL-812's hub first; BOLT 12 and on-chain after.
-- **Blocks/Blocked-by:** Blocked by NL-812; blocks NL-814
+- **Fix sketch:** Implement the service in the daemon on Kestrel behind `Cashu:PaymentProcessor` (default off, loopback, TLS required off loopback, refused on mainnet unless `AllowMainnet`): BOLT 11 create/quote/pay/check and `WaitPaymentEvent` over NL-901's hub first; BOLT 12 and on-chain after.
+- **Blocks/Blocked-by:** Blocked by NL-901; blocks NL-903
 - **Plan ref:** `CASHU_PLAN.md` C1
 
-### NL-814 No Docker proof of a CDK mint running on NLightning
+### NL-903 No Docker proof of a CDK mint running on NLightning
 - **Status:** open
 - **Severity:** low
 - **Kind:** test-gap
 - **Location:** `test/NLightning.Integration.Tests/Docker/` (new `Cashu/`)
 - **Evidence:** C1 is proven only by unit tests until a `cdk-mintd` container runs on our processor.
 - **Fix sketch:** `cdk-mintd` (`ln_backend = grpcprocessor`) + `cdk-cli`: mint (we receive), melt to an LND invoice (we pay), a BOLT 12 melt, and a mint restart with quotes pending.
-- **Blocks/Blocked-by:** Blocked by NL-813
+- **Blocks/Blocked-by:** Blocked by NL-902
 - **Plan ref:** `CASHU_PLAN.md` C2
 
-### NL-815 No native Cashu wallet in the node
+### NL-904 No native Cashu wallet in the node
 - **Status:** open
 - **Severity:** low
 - **Kind:** feature
@@ -7361,7 +8099,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** —
 - **Plan ref:** `CASHU_PLAN.md` C3
 
-### NL-816 No hold invoices (needed for NUT-14 LN/ecash atomic swaps)
+### NL-905 No hold invoices (needed for NUT-14 LN/ecash atomic swaps)
 - **Status:** open
 - **Severity:** low
 - **Kind:** feature
@@ -7370,16 +8108,6 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** An `IHtlcSwitch` decorator (the `DustExposureHtlcSwitch` pattern) holding sets of hold invoices until settle/cancel, failed back before the deadline monitor's CLTV limit.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** `CASHU_PLAN.md` C4
-
-### NL-817 `dotnet format` reports 13 IDE0031 errors with SDK 10.0.4xx
-- **Status:** open
-- **Severity:** low
-- **Kind:** tooling
-- **Location:** `src/NLightning.Infrastructure.Bitcoin/Gossip/FundingOutputLookup.cs`, `src/NLightning.Application/Channels/Splicing/{SpliceService,RetiredScidMap}.cs`, `Gossip/Services/ChannelUpdateService.cs`, `Channels/DualFunding/DualFundedOpenService.cs`, `Channels/Backup/ChannelRestoreService.cs`
-- **Evidence:** On a clean `wip/fafo` checkout (cb5c258) `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` with SDK 10.0.401 (linux-x64) fails with 13 `IDE0031 Null check can be simplified`; the CLAUDE.md gate was verified on SDK 10.0.103, whose analyzers do not report them (null-conditional assignment, C# 14).
-- **Fix sketch:** Apply the null-conditional assignments (or pin the SDK in `global.json`) so the gate passes on every 10.0 feature band.
-- **Blocks/Blocked-by:** —
-- **Plan ref:** —
 
 ## Docs
 

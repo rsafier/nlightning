@@ -11,6 +11,8 @@ using Domain.Enums;
 using Domain.Gossip.Addresses;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Persistence;
+using Domain.LiquidityAds;
+using Domain.LiquidityAds.Enums;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
@@ -236,6 +238,84 @@ public class NodeAnnouncementServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_NoFundingRates_When_Announcing_Then_TheAnnouncementHasNoExtraData()
+    {
+        // Arrange (liquidity ads, NL-850: we do not sell by default)
+        MarkAnnounced();
+        var service = CreateService();
+
+        // Act
+        var announcement = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotNull(announcement);
+        Assert.True(announcement.ExtraData.IsEmpty);
+        Assert.False(NodeAnnouncementRates.TryRead(announcement.ExtraData.Span, out _));
+    }
+
+    [Fact]
+    public async Task Given_FundingRates_When_Announcing_Then_TheSignedAnnouncementCarriesOurRates()
+    {
+        // Arrange
+        MarkAnnounced();
+        Alice.NodeOptions.LiquidityAds.FundingRates = [CreateRate(100_000, 500_000)];
+        var service = CreateService();
+
+        // Act
+        var announcement = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert: fd053b || len || will_fund_rates after the addresses, covered by the signature and stored
+        Assert.NotNull(announcement);
+        Assert.Equal(0xfd, announcement.ExtraData.Span[0]);
+        Assert.True(NodeAnnouncementRates.TryRead(announcement.ExtraData.Span, out var rates));
+        Assert.Equal(Alice.NodeOptions.LiquidityAds.GetWillFundRates(), rates);
+        Assert.True(rates.Supports(LiquidityPaymentType.FromChannelBalance));
+        Assert.True(Alice.Verifier.Verify(announcement.GetSignatureHash(), announcement.Signature, Alice.NodeId));
+        Assert.True(NodeAnnouncementRates.TryReadFromAnnouncement(_stored!.RawAnnouncement, out var storedRates));
+        Assert.Equal(rates, storedRates);
+    }
+
+    [Fact]
+    public async Task Given_OurRatesChange_When_AnnouncingAgain_Then_ANewerOneCarriesTheNewRates()
+    {
+        // Arrange
+        MarkAnnounced();
+        Alice.NodeOptions.LiquidityAds.FundingRates = [CreateRate(100_000, 500_000)];
+        var service = CreateService();
+        var first = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+        Alice.NodeOptions.LiquidityAds.FundingRates = [CreateRate(200_000, 1_000_000)];
+
+        // Act
+        var second = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotSame(first, second);
+        Assert.True(second!.Timestamp > first!.Timestamp);
+        Assert.True(NodeAnnouncementRates.TryRead(second.ExtraData.Span, out var rates));
+        Assert.Equal(200_000u, Assert.Single(rates.Rates).MinAmountSat);
+        Assert.Equal(2, _saves);
+    }
+
+    [Fact]
+    public async Task Given_WeStopSelling_When_AnnouncingAgain_Then_ANewerOneHasNoRates()
+    {
+        // Arrange
+        MarkAnnounced();
+        Alice.NodeOptions.LiquidityAds.FundingRates = [CreateRate(100_000, 500_000)];
+        var service = CreateService();
+        var first = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+        Alice.NodeOptions.LiquidityAds.FundingRates = [];
+
+        // Act
+        var second = await service.AnnounceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotSame(first, second);
+        Assert.True(second!.ExtraData.IsEmpty);
+        Assert.Equal(2, _saves);
+    }
+
+    [Fact]
     public void Given_ConfiguredAndRuntimeAddresses_When_Merged_Then_EachIsKeptOnceInTypeOrder()
     {
         // Arrange
@@ -277,6 +357,17 @@ public class NodeAnnouncementServiceTests : IDisposable
             AnnouncedAddressesChanged?.Invoke(this, EventArgs.Empty);
         }
     }
+
+    private static FundingRateOptions CreateRate(uint min, uint max) =>
+        new()
+        {
+            MinAmountSat = min,
+            MaxAmountSat = max,
+            FundingWeight = 550,
+            FeeBasis = 100,
+            FeeBaseSat = 5_000,
+            ChannelCreationFeeSat = 1_000
+        };
 
     /// <summary>Both halves of the channel's announcement_signatures exchanged.</summary>
     private void MarkAnnounced()

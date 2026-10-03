@@ -14,14 +14,16 @@ public class FeatureOptions
     /// fails <see cref="GetValidationErrors"/>) unless <see cref="AllowExperimentalFeatures"/> is set.
     /// </summary>
     /// <remarks>
-    /// Empty since NL-332 (owner decision 2026-10-02): attribution_data, the last member, left it and is advertised
-    /// Optional by default. Features that left the set before: quiesce, dual_fund and splice by splicing plan D13 after
+    /// Holds trampoline_routing (bits 56/57, NL-875) while trampoline routing is being built. Empty from NL-332 (owner
+    /// decision 2026-10-02, attribution_data, the last member then, left it and is advertised Optional by default)
+    /// until NL-875. Features that left the set before: quiesce, dual_fund and splice by splicing plan D13 after
     /// Proofs SP2, SPR and DF (wave d13); provide_storage with the peer_storage handlers and route_blinding with the
     /// blinded payloads (onion M5), wave rf1; onion_messages with the onion message service after Proof M6, wave M6,
     /// plan D9.
     /// Add a feature here while it is not implemented, and remove it from this set when it is.
     /// </remarks>
-    public static readonly IReadOnlySet<Feature> ExperimentalFeatures = new HashSet<Feature>();
+    public static readonly IReadOnlySet<Feature> ExperimentalFeatures =
+        new HashSet<Feature> { Feature.OptionTrampolineRouting };
 
     /// <summary>
     /// The experimental set these options are gated by: <see cref="ExperimentalFeatures"/>, replaced only by tests of
@@ -121,9 +123,14 @@ public class FeatureOptions
     public FeatureSupport OptionRouteBlinding { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
-    /// Enable beyond segwit shutdown.
+    /// Enable beyond segwit shutdown (BOLT 9 <c>option_shutdown_anysegwit</c> 26/27).
     /// </summary>
-    public FeatureSupport BeyondSegwitShutdown { get; set; } = FeatureSupport.No;
+    /// <remarks>
+    /// Optional by default since NL-776: a peer's <c>shutdown</c> or <c>upfront_shutdown_script</c> may then pay a segwit
+    /// v1-v16 program (P2TR), which CLN v26.06.8 sends on dual-funded channels. Without it negotiated such a script is
+    /// refused (<c>shutdown</c>: warning, B2-SHUT-R02; at the open: the open fails).
+    /// </remarks>
+    public FeatureSupport BeyondSegwitShutdown { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable dual fund (BOLT 2 "Channel Establishment v2", BOLT 9 <c>option_dual_fund</c> 28/29).
@@ -218,6 +225,17 @@ public class FeatureOptions
     public FeatureSupport OptionSimpleClose { get; set; } = FeatureSupport.No;
 
     /// <summary>
+    /// Enable trampoline routing (BOLT 4 "Trampoline Payments", BOLTs PR 836; BOLT 9 <c>trampoline_routing</c> 56/57,
+    /// contexts init, node_announcement and BOLT 11 invoices).
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No and is in <see cref="ExperimentalFeatures"/> while trampoline routing is being built (NL-875):
+    /// enabling it fails <see cref="GetValidationErrors"/> unless <see cref="AllowExperimentalFeatures"/> is set. BOLT 9
+    /// lists no dependency.
+    /// </remarks>
+    public FeatureSupport OptionTrampolineRouting { get; set; } = FeatureSupport.No;
+
+    /// <summary>
     /// Enable initial routing sync.
     /// </summary>
     /// [Deprecated]
@@ -305,6 +323,7 @@ public class FeatureOptions
         { Feature.OptionZeroconf, ZeroConf },
         { Feature.OptionSimpleClose, OptionSimpleClose },
         { Feature.OptionSplice, OptionSplice },
+        { Feature.OptionTrampolineRouting, OptionTrampolineRouting },
     };
 
     /// <summary>
@@ -422,6 +441,12 @@ public class FeatureOptions
         if (IsAdvertised(Feature.OptionSplice, OptionSplice))
         {
             features.SetFeature(Feature.OptionSplice, OptionSplice == FeatureSupport.Compulsory);
+        }
+
+        if (IsAdvertised(Feature.OptionTrampolineRouting, OptionTrampolineRouting))
+        {
+            features.SetFeature(Feature.OptionTrampolineRouting,
+                                OptionTrampolineRouting == FeatureSupport.Compulsory);
         }
 
         return features;
@@ -572,6 +597,11 @@ public class FeatureOptions
                                : featureSet.IsFeatureSet(Feature.OptionSplice, false)
                                    ? FeatureSupport.Optional
                                    : FeatureSupport.No,
+            OptionTrampolineRouting = featureSet.IsFeatureSet(Feature.OptionTrampolineRouting, true)
+                                          ? FeatureSupport.Compulsory
+                                          : featureSet.IsFeatureSet(Feature.OptionTrampolineRouting, false)
+                                              ? FeatureSupport.Optional
+                                              : FeatureSupport.No,
         };
 
         if (extension?.TryGetTlv(new BigSize(1), out var chainHashes) ?? false)

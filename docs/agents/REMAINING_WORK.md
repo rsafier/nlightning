@@ -44,6 +44,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 
 ## Protocol features
 
+- **Trampoline routing (BOLTs PR #836)** — plan: [`TRAMPOLINE_PLAN.md`](TRAMPOLINE_PLAN.md), NL-875: client, relay and target built on `wip/fafo` (2026-10-03), spec format, proven by the spec vectors and in-process end-to-end tests; experimental until an owner decision. Left: blinded hops as trampoline hops (NL-895), Eclair/LDK interop proofs (NL-896), NL-897..NL-899.
 - **BOLT 7 gossip, graph and pathfinding** — plan: [`BOLT7_GOSSIP_PLAN.md`](BOLT7_GOSSIP_PLAN.md), four waves G-A..G-D, NL-099.
   - Public channels: `announce_channel`, `announcement_signatures`, our `channel_announcement` and `node_announcement`.
   - Validation and a graph store.
@@ -72,16 +73,16 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 - MPP send parts persisted across restarts (NL-321); hold times of parts are in memory only.
 - A duplicate HTLC for a Settled invoice from before NL-323 (upgrade path).
 - Wallet features: on-chain send **done in wave M6** (`withdraw`, ClientCommand 25, NL-441); coin control, consolidation, better fee estimation per target (partly done for sweeps) remain.
-- **Cashu ecash** (epic NL-811, plan [`CASHU_PLAN.md`](CASHU_PLAN.md), branch `wip/cashu`): payment event stream and `waitinvoice` (C0, NL-812, in progress), NLightning as a CDK `cdk-mintd` payment processor over gRPC (C1, NL-813), its Docker proof (C2, NL-814), a native ecash wallet (C3, NL-815), hold invoices for NUT-14 swaps (C4, NL-816).
+- **Cashu ecash** (epic NL-900, plan [`CASHU_PLAN.md`](CASHU_PLAN.md), branch `wip/cashu`): payment event stream and `waitinvoice` (C0, NL-901, in progress), NLightning as a CDK `cdk-mintd` payment processor over gRPC (C1, NL-902), its Docker proof (C2, NL-903), a native ecash wallet (C3, NL-904), hold invoices for NUT-14 swaps (C4, NL-905).
 
 ## Interop and testing
 
 - **More implementations.** Eclair and LDK interop suites (CLN done: 22/22; mainnet gossip already exercised against Eclair, CLN and LND peers). Update (lane b10-eclair): the Eclair suite covers the day-0 shapes (splicing, dual-funded RBF, force and simple closes, public channels, gossip queries, offers); left against Eclair: attribution_data (NL-332) and HTLCs resolved on chain. A CLN-funded ABCD-style multi-hop test.
 - **CI.**
-  - Run the Docker suites in CI. They are local only today, and NL-276 blocks the host process on macOS, so an in-container runner is needed.
+  - Run the Docker-class suites in CI. Since the test harness (phases 3-6) and NL-820 the LND-based suites run on the Kubernetes harness only (`scripts/run-cluster.sh --matrix`, the full matrix in about 18 min at 6 namespaces) and since NL-866 the CLN, Eclair, LDK and Postgres suites too (their Docker backends retired), so CI needs a cluster (deferred, owner decision 2026-10-03); Tor interop stays Docker only (`scripts/run-interop.sh tor`).
   - Per-fixture container names, so suites can run in parallel.
 - **Platform checks not yet done.** NativeAOT publish under SDK 11 and the Wasm/Blazor build on SDK 11 (NL-300).
-- **Known flakes.** LNUnit fixture startup races (NL-263 family, NL-319 "server still starting").
+- **Known flakes.** LND fixture startup races (NL-263 family, NL-319 "server still starting"; the LNUnit Docker fixture is gone since NL-820, the LND suites run on the cluster harness).
 
 ## Tech debt worth scheduling
 
@@ -91,4 +92,4 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 
 ## Standard test cycle
 
-Tests run on net10.0 only; net11.0 is build-only. Docker runs skip the SQL Server container tests (Postgres only). See `CLAUDE.md`.
+Tests run on net10.0 only; net11.0 is build-only. Integration runs skip the SQL Server container tests (not ported; Postgres runs on the cluster). See `CLAUDE.md`.

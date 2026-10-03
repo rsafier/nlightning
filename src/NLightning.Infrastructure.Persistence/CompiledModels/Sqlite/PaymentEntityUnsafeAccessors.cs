@@ -49,6 +49,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<InvoiceRequestMetadata>k__BackingField")]
         public static extern ref byte[] InvoiceRequestMetadata(PaymentEntity @this);
 
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<IsTrampolineRelay>k__BackingField")]
+        public static extern ref bool IsTrampolineRelay(PaymentEntity @this);
+
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "<Label>k__BackingField")]
         public static extern ref string Label(PaymentEntity @this);
 

@@ -40,6 +40,7 @@ public sealed class ClnInteropTests : IAsyncLifetime
 
     public ClnInteropTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -52,12 +53,12 @@ public sealed class ClnInteropTests : IAsyncLifetime
         Console.WriteLine("[cln] CLN unusual/broken log lines so far:\n"
                         + await _fixture.Cln.GetLogLinesAsync(string.Empty, CancellationToken.None, 100, "unusual"));
 
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             if (_session is not null)
                 Console.WriteLine($"[cln] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
 
-            await DockerDiagnostics.DumpContainerLogsAsync([ClnFixture.ClnContainerName], 400);
+            await _fixture.DumpClnLogAsync(400);
         }
     }
 
@@ -98,7 +99,7 @@ public sealed class ClnInteropTests : IAsyncLifetime
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_OurListeningNode_When_ClnConnectsToUs_Then_InitExchangedAndConnectionStable()
     {
-        // Arrange: listen on every interface so the CLN container can reach us through the host
+        // Arrange: listen on every interface so CLN (a pod) can reach us through the host
         var ct = TestContext.Current.CancellationToken;
         await using var node = await NLightningTestNode.CreateAsync(
                                    _fixture.Bitcoin, "nltg-inbound",
@@ -111,7 +112,7 @@ public sealed class ClnInteropTests : IAsyncLifetime
 
         // Act
         var connect = await _fixture.Cln.CallAsync("connect", ct, ("id", node.NodeIdHex),
-                                                   ("host", ClnFixture.HostAddressFromContainers),
+                                                   ("host", _fixture.HostAddressForCln),
                                                    ("port", node.Port));
 
         // Assert

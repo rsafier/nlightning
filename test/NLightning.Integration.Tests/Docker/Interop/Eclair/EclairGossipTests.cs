@@ -21,7 +21,7 @@ using Utils;
 /// default <c>Gossip:MinQueryInterval</c> (250 ms) twelve <c>query_short_channel_ids</c> in a row are all answered;
 /// with it at zero (the behavior before the fix) one is left unanswered and ends our querying of that connection.
 /// </summary>
-/// <remarks>Run with <c>scripts/run-interop.sh eclair Release -class
+/// <remarks>Run with <c>scripts/run-cluster.sh -n 1 --suite eclair --class
 /// NLightning.Integration.Tests.Docker.Interop.Eclair.EclairGossipTests</c>.</remarks>
 [Collection(EclairInteropCollection.Name)]
 [Trait("Category", EclairInteropCollection.Category)]
@@ -43,6 +43,7 @@ public sealed class EclairGossipTests : IAsyncLifetime
 
     public EclairGossipTests(EclairFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -51,11 +52,11 @@ public sealed class EclairGossipTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var session in _sessions)
                 Console.WriteLine($"[eclair] channel at failure: {await session.DescribeAsync(CancellationToken.None)}");
-            await DockerDiagnostics.DumpContainerLogsAsync([EclairFixture.EclairContainerName], 400);
+            await _fixture.DumpEclairLogAsync(400);
         }
 
         foreach (var session in _sessions)

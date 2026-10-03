@@ -19,7 +19,22 @@ public sealed class SpliceInIpcRequest
     /// <summary>The splice transaction's feerate, or null for the daemon's estimate.</summary>
     [Key(2)] public uint? FeeRatePerKw { get; init; }
 
-    public SpliceInClientRequest ToClientRequest() => new(ChannelId, AmountSat) { FeeRatePerKw = FeeRatePerKw };
+    /// <summary>
+    /// Inbound liquidity to buy from the peer with the splice (liquidity ads, NL-850, <c>--request-inbound</c>), in
+    /// satoshis, or null; an older client sends none.
+    /// </summary>
+    [Key(3)] public ulong? RequestInboundSat { get; init; }
+
+    /// <summary>The most we pay for the purchase, in satoshis (<c>--max-liquidity-fee</c>), or null.</summary>
+    [Key(4)] public ulong? MaxLiquidityFeeSat { get; init; }
+
+    public SpliceInClientRequest ToClientRequest() =>
+        new(ChannelId, AmountSat)
+        {
+            FeeRatePerKw = FeeRatePerKw,
+            RequestInboundSat = RequestInboundSat,
+            MaxLiquidityFeeSat = MaxLiquidityFeeSat
+        };
 }
 
 /// <summary>

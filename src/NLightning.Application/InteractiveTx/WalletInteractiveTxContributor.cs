@@ -348,6 +348,19 @@ public sealed class WalletInteractiveTxContributor : IInteractiveTxContributor
                 {
                     // NL-600: say what the wallet holds of our inputs (an unloaded UTXO set holds none of them)
                     var seen = string.Join(", ", contribution.Inputs.Select(DescribeWalletInput));
+
+                    // NL-867: an input still reserved but gone from the wallet was spent on chain (an RBF sibling of
+                    // the funding confirmed during this attempt): the attempt can only be abandoned
+                    if (contribution.Inputs.Any(IsSpentWhileReserved))
+                    {
+                        if (_logger.IsEnabled(LogLevel.Information))
+                            _logger.LogInformation(
+                                "Not signing interactive transaction {TxId}: an input of reservation {ReservationId} "
+                              + "was spent on chain; our inputs: {Inputs}", transaction.TxId, reservationId, seen);
+                        throw new InteractiveTxInputsSpentException(
+                            $"An input of interactive transaction {transaction.TxId} was spent on chain ({seen})");
+                    }
+
                     if (_logger.IsEnabled(LogLevel.Error))
                         _logger.LogError(
                             "The signer found no wallet input of reservation {ReservationId} in interactive "
@@ -384,6 +397,14 @@ public sealed class WalletInteractiveTxContributor : IInteractiveTxContributor
             _gate.Release();
         }
     }
+
+    /// <summary>
+    /// The wallet still holds the input's fee reservation but no longer the output: the chain monitor saw it spent (a
+    /// wallet whose UTXO set is not loaded yet holds neither, NL-600).
+    /// </summary>
+    private bool IsSpentWhileReserved(ContributedInput input) =>
+        !_utxoMemoryRepository.TryGetUtxo(input.PrevTxId, input.PrevTxVout, out _)
+     && _utxoMemoryRepository.TryGetFeeReservation(input.PrevTxId, input.PrevTxVout, out _);
 
     private string DescribeWalletInput(ContributedInput input)
     {

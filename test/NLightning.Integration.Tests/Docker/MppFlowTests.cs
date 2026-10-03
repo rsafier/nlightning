@@ -118,11 +118,11 @@ public class MppFlowTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var line in _node?.NodeLog.TakeLast(300) ?? [])
                 Console.WriteLine(line);
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice"]);
+            await _fixture.DumpLndLogsAsync(["alice"]);
         }
 
         if (_node is not null)

@@ -428,6 +428,40 @@ public class FeatureSetTests
             Assert.NotEqual(FeatureContext.None, FeatureSet.GetContexts(feature));
     }
 
+    [Fact]
+    public void Given_TrampolineRouting_When_GetContextsAndDependencies_Then_InitNodeAndInvoiceWithoutDependency()
+    {
+        // Act (BOLTs PR 836, BOLT 9: 56/57 trampoline_routing, context IN9, no dependency)
+        var contexts = FeatureSet.GetContexts(Feature.OptionTrampolineRouting);
+        var dependencies = FeatureSet.GetDependencies(Feature.OptionTrampolineRouting);
+
+        // Assert
+        Assert.Equal(57, (int)Feature.OptionTrampolineRouting);
+        Assert.Equal(FeatureContext.Init | FeatureContext.NodeAnnouncement | FeatureContext.Invoice, contexts);
+        Assert.Empty(dependencies);
+    }
+
+    [Theory]
+    [InlineData(FeatureContext.Init, true)]
+    [InlineData(FeatureContext.NodeAnnouncement, true)]
+    [InlineData(FeatureContext.Invoice, true)]
+    [InlineData(FeatureContext.ChannelAnnouncement, false)]
+    [InlineData(FeatureContext.BlindedPath, false)]
+    [InlineData(FeatureContext.ChannelType, false)]
+    public void Given_TrampolineRoutingSet_When_FilterByContext_Then_KeptOnlyInItsContexts(FeatureContext context,
+        bool kept)
+    {
+        // Arrange
+        var features = new FeatureSet();
+        features.SetFeature(Feature.OptionTrampolineRouting, false);
+
+        // Act
+        var filtered = features.FilterByContext(context);
+
+        // Assert
+        Assert.Equal(kept, filtered.IsFeatureSet(Feature.OptionTrampolineRouting, false));
+    }
+
     #endregion
 
     #region Combine

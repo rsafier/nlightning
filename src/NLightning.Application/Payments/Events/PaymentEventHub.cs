@@ -8,7 +8,7 @@ using Domain.Payments.Events;
 using Domain.Payments.Interfaces;
 
 /// <summary>
-/// The in-process payment event bus (Cashu plan C0, NL-812): <c>HtlcSwitch</c> publishes settled invoices and
+/// The in-process payment event bus (Cashu plan C0, NL-901): <c>HtlcSwitch</c> publishes settled invoices and
 /// <c>PaymentService</c> finished payments, each after its save; subscribers (the <c>waitinvoice</c>
 /// command, the Cashu payment processor) read them through their own bounded queue.
 /// </summary>

@@ -91,7 +91,7 @@ User decision: **drop .NET 9 entirely**; multi-target `net10.0;net11.0`, with ne
 | Microsoft.Extensions.* 10.0.5 | 10.0.12 (done in W4-C). Nine of these packages are in the net11 shared framework. No NU1510 while multi-targeting; drop `Options` and `Logging.Abstractions` if going net11-only. |
 | SQLitePCLRaw 2.1.12 | Keep while on EF 10. |
 | NBitcoin 9.0.5, NBitcoin.Secp256k1 3.2.0 | Work on net11; the major bumps (10.x / 4.x) are optional and separate. |
-| libsodium, BouncyCastle, NetMQ, MessagePack, Serilog, xunit v3, Moq, coverlet, Docker.DotNet, LNUnit | Work unchanged on net11; bumps optional. |
+| libsodium, BouncyCastle, NetMQ, MessagePack, Serilog, xunit v3, Moq, coverlet, Docker.DotNet, LNUnit (removed in NL-820) | Work unchanged on net11; bumps optional. |
 
 ## .NET 11 breaking changes that touch this codebase
 - **`IHost.RunAsync` throws when a BackgroundService fails.** Affects `NltgDaemonService` and `src/NLightning.Daemon/Program.cs:142`. On net11 a crash is caught, logged as Fatal and exits 1; on net10 it exits 0. This is an improvement, but behaviour now differs per TFM.

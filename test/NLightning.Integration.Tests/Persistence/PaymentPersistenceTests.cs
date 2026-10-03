@@ -389,6 +389,34 @@ public class PaymentPersistenceTests
     }
 
     [Fact]
+    public async Task Given_TrampolineOrigin_When_Stored_Then_ItRoundTripsAsKind3AndIsFoundByItsPaymentHashOnly()
+    {
+        // Arrange (NL-875: the outgoing HTLC of a trampoline relay's payment)
+        await using var harness = await OriginHarness.CreateAsync();
+        var add = harness.Driver.TryUsAdd(3_000_000)!;
+        await harness.PersistAsync(add);
+        var key = add.Transition.UpsertedHtlcs.Single().Key;
+        var paymentHash = add.Next.Htlcs[key].PaymentHash;
+        var origin = HtlcOrigin.Trampoline(paymentHash);
+
+        // Act
+        await using (var context = harness.Db.CreateDbContext())
+        {
+            await new ChannelStateDbRepository(context).SetHtlcOriginAsync(harness.ChannelId, key, origin);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Assert
+        await using var readContext = harness.Db.CreateDbContext();
+        var reader = new ChannelStateDbRepository(readContext);
+        Assert.Equal(origin, await reader.GetHtlcOriginAsync(harness.ChannelId, key));
+        Assert.Equal((byte)3, readContext.Htlcs.Single(h => h.HtlcId == key.Id).OriginKind);
+        Assert.Equal(new[] { (harness.ChannelId, key) }, await reader.FindHtlcsByOriginAsync(origin));
+        Assert.Empty(await reader.FindHtlcsByOriginAsync(HtlcOrigin.Local(paymentHash)));
+        Assert.Empty(await reader.FindHtlcsByOriginAsync(HtlcOrigin.Trampoline(new Hash(new byte[32]))));
+    }
+
+    [Fact]
     public async Task Given_InvalidOriginOrUnknownHtlc_When_OriginIsSet_Then_ItThrows()
     {
         // Arrange

@@ -8,6 +8,7 @@ using Database.Accounting;
 using Database.Bitcoin;
 using Database.Channel;
 using Database.Gossip;
+using Database.LiquidityAds;
 using Database.Node;
 using Database.Onchain;
 using Database.Payment;
@@ -23,6 +24,7 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Crypto.Hashes;
 using Domain.Gossip.Interfaces;
+using Domain.LiquidityAds.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.PeerStorage;
@@ -82,12 +84,17 @@ public class UnitOfWork : IUnitOfWork
     private PaymentDbRepository? _paymentDbRepository;
     private PaymentPartDbRepository? _paymentPartDbRepository;
     private ForwardCircuitDbRepository? _forwardCircuitDbRepository;
+    private TrampolineRelayDbRepository? _trampolineRelayDbRepository;
+    private PaymentTrampolineHopDbRepository? _paymentTrampolineHopDbRepository;
 
     // Onion replay set
     private OnionReplayDbRepository? _onionReplayDbRepository;
 
     // BOLT 12 offers
     private OfferDbRepository? _offerDbRepository;
+
+    // Liquidity ads purchases (NL-850 LA3)
+    private LiquidityPurchaseDbRepository? _liquidityPurchaseDbRepository;
 
     // Accounting feed (NL-602)
     private AccountingEventDbRepository? _accountingEventDbRepository;
@@ -169,6 +176,12 @@ public class UnitOfWork : IUnitOfWork
     public IForwardCircuitDbRepository ForwardCircuitDbRepository =>
         _forwardCircuitDbRepository ??= new ForwardCircuitDbRepository(_context);
 
+    public ITrampolineRelayDbRepository TrampolineRelayDbRepository =>
+        _trampolineRelayDbRepository ??= new TrampolineRelayDbRepository(_context);
+
+    public IPaymentTrampolineHopDbRepository PaymentTrampolineHopDbRepository =>
+        _paymentTrampolineHopDbRepository ??= new PaymentTrampolineHopDbRepository(_context);
+
     public IOnionReplayDbRepository OnionReplayDbRepository =>
         _onionReplayDbRepository ??= new OnionReplayDbRepository(_context);
 
@@ -203,6 +216,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IChannelPolicyDbRepository ChannelPolicyDbRepository =>
         _channelPolicyDbRepository ??= new ChannelPolicyDbRepository(_context, _timeProvider);
+
+    public ILiquidityPurchaseDbRepository LiquidityPurchaseDbRepository =>
+        _liquidityPurchaseDbRepository ??= new LiquidityPurchaseDbRepository(_context);
 
     /// <param name="context">The scope's database context.</param>
     /// <param name="logger">The logger.</param>

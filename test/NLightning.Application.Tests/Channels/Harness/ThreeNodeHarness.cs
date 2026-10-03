@@ -40,6 +40,7 @@ using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Gossip.Interfaces;
+using Domain.LiquidityAds.Interfaces;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
@@ -89,7 +90,7 @@ using TestUtils;
 /// meant at a quiescent point, since nothing retransmits.</para>
 /// </remarks>
 [ExcludeFromCodeCoverage]
-internal sealed class ThreeNodeHarness : IAsyncDisposable
+internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
 {
     public const ulong FundingSatoshis = 2_000_000;
     public const ulong PushSatoshis = 800_000;
@@ -335,7 +336,7 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
         }
     }
 
-    internal void Route(SwitchNode from, CompactPubKey to, IChannelMessage message)
+    public void Route(SwitchNode from, CompactPubKey to, IChannelMessage message)
     {
         var target = Find(to);
         if (!from.IsPeerAlive(to) || !target.IsRunning)
@@ -450,11 +451,12 @@ internal sealed record SentMessage(
     IChannelMessage Message,
     IReadOnlyDictionary<ChannelId, ChannelCommitments> SenderStates);
 
-/// <summary>One node of <see cref="ThreeNodeHarness"/>.</summary>
+/// <summary>One node of <see cref="ThreeNodeHarness"/> (or of another <see cref="ISwitchNodeNetwork"/>, such as the
+/// trampoline proofs' four-node <c>TrampolineHarness</c>).</summary>
 [ExcludeFromCodeCoverage]
 internal sealed class SwitchNode
 {
-    private readonly ThreeNodeHarness _harness;
+    private readonly ISwitchNodeNetwork _harness;
     private readonly ConcurrentDictionary<CompactPubKey, bool> _peerAlive = new();
     private ServiceProvider? _provider;
 
@@ -518,7 +520,7 @@ internal sealed class SwitchNode
     /// follows).</summary>
     public long LocalBalanceMsat => Channels.Sum(c => checked((long)c.LocalBalance.MilliSatoshi));
 
-    public SwitchNode(ThreeNodeHarness harness, string name, byte seed, string databasePath, RoutingOptions routing)
+    public SwitchNode(ISwitchNodeNetwork harness, string name, byte seed, string databasePath, RoutingOptions routing)
     {
         _harness = harness;
         Name = name;
@@ -781,6 +783,9 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IPaymentPartDbRepository PaymentPartDbRepository => inner.PaymentPartDbRepository;
     public IOfferDbRepository OfferDbRepository => inner.OfferDbRepository;
     public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;
+    public ITrampolineRelayDbRepository TrampolineRelayDbRepository => inner.TrampolineRelayDbRepository;
+    public IPaymentTrampolineHopDbRepository PaymentTrampolineHopDbRepository =>
+        inner.PaymentTrampolineHopDbRepository;
     public IOnionReplayDbRepository OnionReplayDbRepository => inner.OnionReplayDbRepository;
     public IChannelFundingDbRepository ChannelFundingDbRepository => inner.ChannelFundingDbRepository;
     public IChannelPolicyDbRepository ChannelPolicyDbRepository => inner.ChannelPolicyDbRepository;
@@ -791,6 +796,7 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IAccountingOverrideDbRepository AccountingOverrideDbRepository => inner.AccountingOverrideDbRepository;
     public IAccountingLotDbRepository AccountingLotDbRepository => inner.AccountingLotDbRepository;
     public IAccountingPeriodDbRepository AccountingPeriodDbRepository => inner.AccountingPeriodDbRepository;
+    public ILiquidityPurchaseDbRepository LiquidityPurchaseDbRepository => inner.LiquidityPurchaseDbRepository;
 
     public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
     public void AddUtxo(UtxoModel utxoModel) => inner.AddUtxo(utxoModel);

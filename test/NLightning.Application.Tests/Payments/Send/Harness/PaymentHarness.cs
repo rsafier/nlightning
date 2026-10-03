@@ -363,6 +363,12 @@ internal sealed class PaymentHarnessNode : IDisposable
     public InMemoryPaymentPartDbRepository Parts { get; } = new();
     public InMemoryInvoiceDbRepository Invoices { get; } = new();
 
+    /// <summary>The trampoline hops this node's payments stored (NL-875).</summary>
+    public Trampoline.InMemoryPaymentTrampolineHopDbRepository TrampolineHops { get; } = new();
+
+    /// <summary>The node's service provider (the trampoline stand-ins resolve its services).</summary>
+    public IServiceProvider Services => _provider;
+
     /// <summary>The accounting events this node's saves committed (NL-602).</summary>
     public RecordingAccountingEvents Accounting { get; } = new();
 
@@ -370,7 +376,7 @@ internal sealed class PaymentHarnessNode : IDisposable
     public IPaymentService PaymentService => _provider.GetRequiredService<IPaymentService>();
     public IInvoiceService InvoiceService => _provider.GetRequiredService<IInvoiceService>();
 
-    /// <summary>The node's payment event bus (Cashu plan C0, NL-812).</summary>
+    /// <summary>The node's payment event bus (Cashu plan C0, NL-901).</summary>
     public IPaymentEventSource PaymentEvents => _provider.GetRequiredService<IPaymentEventSource>();
 
     /// <summary>
@@ -568,6 +574,7 @@ internal sealed class PaymentHarnessNode : IDisposable
         unitOfWork.SetupGet(u => u.PaymentDbRepository).Returns(Payments);
         unitOfWork.SetupGet(u => u.PaymentPartDbRepository).Returns(Parts);
         unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(Invoices);
+        unitOfWork.SetupGet(u => u.PaymentTrampolineHopDbRepository).Returns(TrampolineHops);
         var accounting = Accounting.Begin();
         unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(accounting.Repository);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>

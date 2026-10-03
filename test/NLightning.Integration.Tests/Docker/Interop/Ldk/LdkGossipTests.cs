@@ -28,7 +28,7 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// Each test builds its own node (gossip on, public channels accepted, its own alias, color and routing policy) and
-/// channel. Run with <c>scripts/run-interop.sh ldk Release -class
+/// channel. Run with <c>scripts/run-cluster.sh -n 1 --suite ldk --class
 /// NLightning.Integration.Tests.Docker.Interop.Ldk.LdkGossipTests</c>.
 /// </remarks>
 [Collection(LdkInteropCollection.Name)]
@@ -52,6 +52,7 @@ public sealed class LdkGossipTests : IAsyncLifetime
 
     public LdkGossipTests(LdkFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -60,7 +61,7 @@ public sealed class LdkGossipTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var session in _sessions)
             {
@@ -69,7 +70,7 @@ public sealed class LdkGossipTests : IAsyncLifetime
                     Console.WriteLine(line);
             }
 
-            await DockerDiagnostics.DumpContainerLogsAsync([LdkFixture.LdkContainerName], 400);
+            await _fixture.DumpLdkLogAsync(400);
         }
 
         foreach (var session in _sessions)

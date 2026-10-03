@@ -19,6 +19,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Gossip.Addresses;
+using Domain.LiquidityAds.Models;
 using Domain.Money;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
@@ -455,6 +456,7 @@ public class OfferHarnessTests
 
         public DateTimeOffset? LastMessageReceivedAt => null;
         public AddressDescriptor? ObservedAddress => null;
+        public WillFundRates? LiquidityRates => null;
 
 #pragma warning disable CS0067 // events of the interface the harness never raises
         public event EventHandler<PeerDisconnectedEventArgs>? OnDisconnect;

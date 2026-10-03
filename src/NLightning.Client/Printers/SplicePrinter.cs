@@ -53,6 +53,8 @@ public sealed class SplicePrinter : IPrinter<SpliceIpcResponse>
             _output.WriteLine($"  Reason:       {item.FailureReason}");
         if (item.Note is not null)
             _output.WriteLine($"  Note:         {item.Note}");
+        if (item.Purchase is { } purchase)
+            LiquidityAdsPrinter.WritePurchase(_output, purchase);
 
         switch (item.State)
         {

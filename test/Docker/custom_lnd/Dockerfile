@@ -1,3 +1,8 @@
+# LND for the NLightning integration tests (the LND regtest network, NL-768). The cluster harness runs it as
+# custom_lnd:0.21.4-beta with pull policy Never (ImageVersions.Lnd; the only backend since NL-820) and never builds it:
+# build it once with
+#   docker build -t custom_lnd:0.21.4-beta test/Docker/custom_lnd
+# (OrbStack's cluster shares the Docker image store). Bump LND_VERSION, LndImageTag and ImageVersions.Lnd together.
 FROM debian:stable-slim
 
 ARG LND_VERSION=0.21.4-beta

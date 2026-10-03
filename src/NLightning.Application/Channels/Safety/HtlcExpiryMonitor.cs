@@ -16,6 +16,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
+using Domain.Payments.Trampoline;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
@@ -26,6 +27,7 @@ using Onchain;
 using Onchain.Resolvers;
 using Payments.Onion;
 using Payments.Switch;
+using Payments.Trampoline;
 
 /// <summary>
 /// The block-driven BOLT 2 HTLC deadline monitor (BOLT2 plan N9-T2; B2-CLTV-03/05/06, B2-FWD-03). On every new block
@@ -369,6 +371,10 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
         if (circuit is not null || outgoingKeys.Count > 0)
             return IncomingHtlcResolution.AwaitingDownstream;
 
+        // NL-875: a part of a trampoline relay answers to the relay's outgoing payment
+        if (await ResolveTrampolinePartAsync(unitOfWork, channelId, htlc) is { } relayResolution)
+            return relayResolution;
+
         // Final hop (NL-337): we owe the preimage only for an HTLC the switch committed to a set, i.e. its record
         // carries the preimage of the invoice that is Settled with it (the NL-323 commit point, the same test as the
         // on-chain claim). Any other HTLC for our invoice (a duplicate for a Settled invoice whose fail could not be
@@ -377,6 +383,78 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
         return await FinalHopClaims.GetAcceptedPreimageAsync(unitOfWork, htlc) is not null
                    ? IncomingHtlcResolution.PreimageKnown
                    : IncomingHtlcResolution.UnresolvedFinalHop;
+    }
+
+    /// <summary>
+    /// NL-875: what an incoming HTLC that is a part of a trampoline relay waits for, or null when it is not one. The
+    /// preimage is known when the part's record carries it (the relay committed it, NL-322), the relay is
+    /// <c>Fulfilled</c>, or any outgoing HTLC of the relay's payment learnt it (live, archived, or stored on a channel
+    /// closed on chain). Otherwise an outgoing HTLC of the relay that is not resolved yet, or a relay still
+    /// <c>Sending</c> (the engine may offer another attempt), keeps the part alive (the outgoing HTLCs' own deadlines
+    /// protect it): failing it upstream could lose the amount. A relay still collecting, failed, or whose every
+    /// outgoing HTLC is resolved without a preimage leaves the part to the fail-back deadline.
+    /// </summary>
+    private async Task<IncomingHtlcResolution?> ResolveTrampolinePartAsync(IUnitOfWork unitOfWork, ChannelId channelId,
+                                                                          HtlcRecord htlc)
+    {
+        if (await TrampolineRelayReads.GetPartAsync(unitOfWork, channelId, htlc.Id) is not { } part)
+            return null;
+
+        if (htlc.KnownPreimage is { } known && TrampolineRelayReads.Hashes(known, htlc.PaymentHash))
+            return IncomingHtlcResolution.PreimageKnown;
+
+        var relay = (await TrampolineRelayReads.GetAsync(unitOfWork, part.PaymentHash))?.Relay;
+        if (relay is { Preimage: not null })
+            return IncomingHtlcResolution.PreimageKnown;
+
+        var unresolved = 0;
+        foreach (var (outgoingChannelId, outgoingKey) in await TrampolineRelayReads.FindOutgoingAsync(
+                     unitOfWork, part.PaymentHash))
+        {
+            HtlcRecord? record;
+            if (_channelMemoryRepository.TryGetChannel(outgoingChannelId, out var outgoingChannel))
+            {
+                if (outgoingChannel.Commitments is not { } commitments)
+                {
+                    unresolved++;
+                    continue;
+                }
+
+                record = commitments.GetHtlc(outgoingKey.Direction, outgoingKey.Id);
+                if (record is null)
+                {
+                    // Settled and archived: its row tells whether it learnt the preimage
+                    var persisted = await unitOfWork.ChannelStateDbRepository.LoadAsync(outgoingChannelId,
+                                        commitments.Params);
+                    record = persisted?.SettledHtlcs.FirstOrDefault(h => h.Key == outgoingKey);
+                }
+                else if (!HtlcStateTable.IsFinal(record.State) && record.KnownPreimage is null)
+                {
+                    unresolved++;
+                    continue;
+                }
+            }
+            else
+            {
+                // A channel closed on chain resolves nothing any more; any other channel not loaded may still
+                var (closed, closedRecord) = await ClosedChannelHtlcs.FindAsync(unitOfWork, outgoingChannelId,
+                                                                               outgoingKey);
+                record = closedRecord;
+                if (!closed && TrampolineRelayReads.OutgoingPreimage(record, part.PaymentHash) is null)
+                {
+                    unresolved++;
+                    continue;
+                }
+            }
+
+            if (TrampolineRelayReads.OutgoingPreimage(record, part.PaymentHash) is not null)
+                return IncomingHtlcResolution.PreimageKnown;
+        }
+
+        if (unresolved > 0 || relay is { Status: TrampolineRelayStatus.Sending })
+            return IncomingHtlcResolution.AwaitingDownstream;
+
+        return IncomingHtlcResolution.Unresolved;
     }
 
     private async Task FailBackAsync(IUnitOfWork unitOfWork, ChannelId channelId, HtlcRecord htlc, uint height,

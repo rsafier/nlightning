@@ -6,6 +6,7 @@ using Entities.Accounting;
 using Entities.Bitcoin;
 using Entities.Channel;
 using Entities.Gossip;
+using Entities.LiquidityAds;
 using Entities.Node;
 using Entities.Onchain;
 using Entities.Payment;
@@ -13,6 +14,7 @@ using EntityConfiguration.Accounting;
 using EntityConfiguration.Bitcoin;
 using EntityConfiguration.Channel;
 using EntityConfiguration.Gossip;
+using EntityConfiguration.LiquidityAds;
 using EntityConfiguration.Node;
 using EntityConfiguration.Onchain;
 using EntityConfiguration.Payment;
@@ -72,6 +74,9 @@ public class NLightningDbContext : DbContext
     public DbSet<ForwardCircuitEntity> ForwardCircuits { get; set; }
     public DbSet<OnionReplayEntryEntity> OnionReplayEntries { get; set; }
     public DbSet<OfferEntity> Offers { get; set; }
+    public DbSet<TrampolineRelayEntity> TrampolineRelays { get; set; }
+    public DbSet<TrampolineRelayPartEntity> TrampolineRelayParts { get; set; }
+    public DbSet<PaymentTrampolineHopEntity> PaymentTrampolineHops { get; set; }
 
     // Accounting feed (NL-602)
     public DbSet<AccountingEventEntity> AccountingEvents { get; set; }
@@ -95,6 +100,9 @@ public class NLightningDbContext : DbContext
     public DbSet<GraphChannelEntity> GraphChannels { get; set; }
     public DbSet<GraphChannelPolicyEntity> GraphChannelPolicies { get; set; }
     public DbSet<GraphBannedNodeEntity> GraphBannedNodes { get; set; }
+
+    // Liquidity ads purchases (NL-850 LA3, migration AddLiquidityPurchases)
+    public DbSet<LiquidityPurchaseEntity> LiquidityPurchases { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -140,6 +148,7 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureForwardCircuitEntity(_databaseType);
         modelBuilder.ConfigureOnionReplayEntryEntity(_databaseType);
         modelBuilder.ConfigureOfferEntity(_databaseType);
+        modelBuilder.ConfigureTrampolineRelayEntities(_databaseType);
 
         // Accounting feed (NL-602)
         modelBuilder.ConfigureAccountingEventEntity(_databaseType);
@@ -153,5 +162,8 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureGraphChannelEntity(_databaseType);
         modelBuilder.ConfigureGraphChannelPolicyEntity(_databaseType);
         modelBuilder.ConfigureGraphBannedNodeEntity(_databaseType);
+
+        // Liquidity ads purchases
+        modelBuilder.ConfigureLiquidityPurchaseEntity(_databaseType);
     }
 }

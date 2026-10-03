@@ -4,6 +4,7 @@ using Bitcoin.ValueObjects;
 using Channels.ValueObjects;
 using Crypto.ValueObjects;
 using Gossip.Addresses;
+using LiquidityAds.Models;
 using Messages;
 using Money;
 using Tlv;
@@ -13,7 +14,8 @@ public interface IMessageFactory
     /// <summary>
     /// Creates an init message. <paramref name="remoteAddress"/> is the BOLT 1 <c>remote_addr</c> TLV: the address
     /// descriptor of the connection's remote endpoint, which the receiver of an IP connection SHOULD send (NL-009);
-    /// null sends no <c>remote_addr</c>.
+    /// null sends no <c>remote_addr</c>. When we sell liquidity (<c>Node:LiquidityAds:FundingRates</c>, NL-850) our
+    /// <c>option_will_fund</c> rates go with it.
     /// </summary>
     InitMessage CreateInitMessage(AddressDescriptor? remoteAddress = null);
     WarningMessage CreateWarningMessage(string message, ChannelId? channelId);
@@ -35,12 +37,16 @@ public interface IMessageFactory
     TxCompleteMessage CreateTxCompleteMessage(ChannelId channelId);
     TxSignaturesMessage CreateTxSignaturesMessage(ChannelId channelId, byte[] txId, List<Witness> witnesses);
 
+    /// <summary>A <c>tx_init_rbf</c>; <paramref name="requestFunding"/> is our liquidity ads request (NL-850), null
+    /// for none.</summary>
     TxInitRbfMessage CreateTxInitRbfMessage(ChannelId channelId, uint locktime, uint feerate,
                                             long fundingOutputContrubution,
-                                            bool requireConfirmedInputs);
+                                            bool requireConfirmedInputs, RequestFunding? requestFunding = null);
 
+    /// <summary>A <c>tx_ack_rbf</c>; <paramref name="willFund"/> is our liquidity ads answer (NL-850), null for
+    /// none.</summary>
     TxAckRbfMessage CreateTxAckRbfMessage(ChannelId channelId, long fundingOutputContrubution,
-                                          bool requireConfirmedInputs);
+                                          bool requireConfirmedInputs, WillFund? willFund = null);
 
     TxAbortMessage CreateTxAbortMessage(ChannelId channelId, byte[] data);
 
@@ -77,7 +83,8 @@ public interface IMessageFactory
                                                   CompactPubKey secondPerCommitmentPoint, ChannelFlags channelFlags,
                                                   ChannelTypeTlv channelTypeTlv,
                                                   UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
-                                                  bool requireConfirmedInputs = false);
+                                                  bool requireConfirmedInputs = false,
+                                                  RequestFunding? requestFunding = null);
 
     /// <summary>
     /// Creates an accept_channel whose dust limit, reserve, htlc minimum, max accepted HTLCs, max in flight and
@@ -106,7 +113,8 @@ public interface IMessageFactory
                                                       CompactPubKey secondPerCommitmentPoint,
                                                       ChannelTypeTlv channelTypeTlv,
                                                       UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
-                                                      bool requireConfirmedInputs = false);
+                                                      bool requireConfirmedInputs = false,
+                                                      WillFund? willFund = null);
 
     FundingCreatedMessage CreateFundingCreatedMessage(ChannelId temporaryChannelId, TxId fundingTxId,
                                                       ushort fundingOutputIndex, CompactSignature signature);
@@ -170,13 +178,17 @@ public interface IMessageFactory
     /// <param name="locktime">The splice transaction's <c>nLockTime</c>.</param>
     /// <param name="fundingPubKey">Our funding key for the new funding.</param>
     /// <param name="requireConfirmedInputs">Set <c>require_confirmed_inputs</c> (TLV 2).</param>
+    /// <param name="requestFunding">Our liquidity ads request (NL-850), null for none.</param>
     SpliceInitMessage CreateSpliceInitMessage(ChannelId channelId, long fundingContributionSatoshis,
                                               uint fundingFeeratePerKw, uint locktime, CompactPubKey fundingPubKey,
-                                              bool requireConfirmedInputs = false);
+                                              bool requireConfirmedInputs = false,
+                                              RequestFunding? requestFunding = null);
 
-    /// <summary>A <c>splice_ack</c> (BOLT 2, type 81, SP-W-02).</summary>
+    /// <summary>A <c>splice_ack</c> (BOLT 2, type 81, SP-W-02); <paramref name="willFund"/> is our liquidity ads
+    /// answer (NL-850), null for none.</summary>
     SpliceAckMessage CreateSpliceAckMessage(ChannelId channelId, long fundingContributionSatoshis,
-                                            CompactPubKey fundingPubKey, bool requireConfirmedInputs = false);
+                                            CompactPubKey fundingPubKey, bool requireConfirmedInputs = false,
+                                            WillFund? willFund = null);
 
     /// <summary>A <c>splice_locked</c> (BOLT 2, type 77, SP-LK-01).</summary>
     SpliceLockedMessage CreateSpliceLockedMessage(ChannelId channelId, TxId spliceTxId);

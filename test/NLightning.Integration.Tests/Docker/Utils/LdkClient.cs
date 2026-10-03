@@ -1,19 +1,35 @@
 using System.Text.Json.Nodes;
-using Docker.DotNet;
-using Docker.DotNet.Models;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
 /// <summary>
-/// An ldk-server client that runs <c>ldk-server-cli -c /data/config.toml &lt;subcommand&gt; args…</c> in the LDK
-/// container (<c>docker exec</c> through the Docker API, as <see cref="ClnClient"/> does), so the tests need no gRPC,
-/// TLS or macaroon setup of their own (NL-180). The CLI prints the gRPC response as JSON (snake_case proto fields).
+/// An ldk-server client that runs <c>ldk-server-cli -c /data/config.toml &lt;subcommand&gt; args…</c> in the LDK node,
+/// so the tests need no gRPC, TLS or macaroon setup of their own (NL-180). The CLI prints the gRPC response as JSON
+/// (snake_case proto fields). The command runs through the caller's <see cref="LdkExec"/>: a Kubernetes exec in the
+/// node's pod (<c>Fixtures/Ldk/ClusterLdkBackend</c>).
 /// </summary>
-public sealed class LdkClient(DockerClient client, string containerName, string configPath)
+public sealed class LdkClient
 {
     private static readonly TimeSpan s_callTimeout = TimeSpan.FromSeconds(120);
 
-    public string ContainerName { get; } = containerName;
+    private readonly string _configPath;
+    private readonly LdkExec _exec;
+
+    /// <summary>
+    /// A client that runs its commands through <paramref name="exec"/> in the node <paramref name="name"/>, with the
+    /// configuration at <paramref name="configPath"/> there.
+    /// </summary>
+    public LdkClient(string name, string configPath, LdkExec exec)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(configPath);
+        ContainerName = name;
+        _configPath = configPath;
+        _exec = exec ?? throw new ArgumentNullException(nameof(exec));
+    }
+
+    /// <summary>The node the commands run in.</summary>
+    public string ContainerName { get; }
 
     /// <summary>
     /// Runs <paramref name="subcommand"/> with <paramref name="args"/>.
@@ -280,29 +296,27 @@ public sealed class LdkClient(DockerClient client, string containerName, string 
         }
     }
 
-    private async Task<(long ExitCode, string Stdout, string Stderr)> ExecAsync(
-        string subcommand, IEnumerable<string> args, CancellationToken cancellationToken)
+    private async Task<LdkExecResult> ExecAsync(string subcommand, IEnumerable<string> args,
+                                                CancellationToken cancellationToken)
     {
-        List<string> cmd = ["ldk-server-cli", "-c", configPath, subcommand];
+        List<string> cmd = ["ldk-server-cli", "-c", _configPath, subcommand];
         cmd.AddRange(args);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(s_callTimeout);
-
-        var exec = await client.Exec.ExecCreateContainerAsync(ContainerName, new ContainerExecCreateParameters
-        {
-            Cmd = cmd,
-            AttachStdout = true,
-            AttachStderr = true
-        }, timeoutCts.Token);
-        string stdout, stderr;
-        using (var stream = await client.Exec.StartAndAttachContainerExecAsync(exec.ID, false, timeoutCts.Token))
-            (stdout, stderr) = await stream.ReadOutputToEndAsync(timeoutCts.Token);
-
-        var inspect = await client.Exec.InspectContainerExecAsync(exec.ID, timeoutCts.Token);
-        return (inspect.ExitCode, stdout, stderr);
+        return await _exec(cmd, timeoutCts.Token);
     }
 }
+
+/// <summary>
+/// Runs a command (<c>ldk-server-cli ...</c>) in an LDK node.
+/// </summary>
+public delegate Task<LdkExecResult> LdkExec(IReadOnlyList<string> command, CancellationToken cancellationToken);
+
+/// <summary>
+/// What a command run in an LDK node returned.
+/// </summary>
+public sealed record LdkExecResult(long ExitCode, string StdOut, string StdErr);
 
 /// <summary>
 /// An <c>ldk-server-cli</c> call that exited non-zero.

@@ -50,6 +50,16 @@ public interface IInteractiveTxHost
     Task<CompactSignature?> SignSharedInputAsync(ConstructedInteractiveTx transaction,
                                                  CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Asked right before we sign our <c>tx_signatures</c> for <paramref name="transaction"/>: the reason it can never
+    /// confirm (an RBF sibling of the same funding confirmed, NL-867; BOLT 2: "If the previous transaction confirms in
+    /// the middle of an RBF attempt, the attempt MUST be abandoned"), which makes the driver abort it with
+    /// <c>tx_abort</c> instead, or null to sign. A host without such knowledge keeps the default.
+    /// </summary>
+    Task<string?> GetTxSignaturesRefusalAsync(ConstructedInteractiveTx transaction,
+                                              CancellationToken cancellationToken) =>
+        Task.FromResult<string?>(null);
+
     /// <summary>The shared input's full witness from both signatures (the 2-of-2 funding script spend).</summary>
     Witness BuildSharedInputWitness(ConstructedInteractiveTx transaction, CompactSignature localSignature,
                                     CompactSignature remoteSignature);

@@ -36,7 +36,7 @@ using Utils;
 ///   penalty while the commitment is still in the mempool, and one block confirms both.</item>
 /// </list>
 /// </summary>
-/// <remarks>Run with <c>scripts/run-onchain.sh</c> (own process, own fixture, one framework).</remarks>
+/// <remarks>Run with <c>scripts/run-cluster.sh -n 1 --suite onchain</c> (own process, own fixture).</remarks>
 [Collection(OnchainRegtestCollection.Name)]
 public class OnchainMempoolTests : IAsyncLifetime
 {
@@ -178,12 +178,12 @@ public class OnchainMempoolTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var node in _nodes)
                 foreach (var line in node.NodeLog.TakeLast(300))
                     Console.WriteLine(line);
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice", "david"]);
+            await _fixture.DumpLndLogsAsync(["alice", "david"]);
         }
 
         foreach (var node in _nodes)

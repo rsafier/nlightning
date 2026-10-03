@@ -33,7 +33,7 @@ using Utils;
 /// <para>Fails on the pre-O7 <c>RevokedCommitResolver.PrepareUnconfirmedPenaltiesAsync</c>, which puts
 /// <c>PaymentToRemote</c> into the mempool penalty batch (a new ledger entry; the fix belongs to the resolver's lane). The
 /// confirmed-path breach on an anchors channel is <see cref="AnchorsO5Tests"/>.</para>
-/// <para>Run with <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.</para>
+/// <para>Run with <c>scripts/run-cluster.sh -n 1 --suite anchors</c>.</para>
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 [Trait("Category", AnchorsChannelTests.AnchorsCategory)]

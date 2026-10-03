@@ -50,7 +50,6 @@ It fails if a file already sets `csharp_namespace`, has more or fewer than one `
 After a tag change, these tests show what moved:
 
 - **`ProtoManifestTests`** checks each committed file against its manifest hash. It also removes the namespace line from each file and checks the result against the upstream hash, and checks that LND's notice is there.
-- **`LnUnitCoexistenceTests`** pins the API that lnunit.lnd 3.0.4 (LND 0.20) has and the protos here lack. Update its list deliberately.
 
 Loop's protos (LNUnit's `LoopConnection`) are not fetched. They come from another repository, and nothing here uses Loop.
 
@@ -58,7 +57,7 @@ Loop's protos (LNUnit's `LoopConnection`) are not fetched. They come from anothe
 
 The generated types live in `NLightning.Testing.Lnd.Lnrpc`, `.Routerrpc`, `.Walletrpc`, `.Invoicesrpc`, `.Signrpc`, `.Chainrpc`, `.Peersrpc`, `.Devrpc`, `.Verrpc`, `.Autopilotrpc`, `.Watchtowerrpc`, `.Wtclientrpc` and `.Neutrinorpc`:
 
-- **Coexistence with lnunit.lnd.** lnunit.lnd uses the global `Lnrpc`, `Routerrpc` and so on, so this assembly can sit next to it in one test assembly with no `extern alias`. `LnUnitCoexistenceTests` compiles against both.
+- **Coexistence with lnunit.lnd.** lnunit.lnd used the global `Lnrpc`, `Routerrpc` and so on, so this assembly could sit next to it in one test assembly with no `extern alias` while `NLightning.Integration.Tests` still got lnunit.lnd transitively through `LNUnit` (the Docker LND backend's container builder). That is history: NL-820 retired the Docker LND backend and removed every LNUnit package from the solution (`Fixtures/LnUnitAbsenceTests` in Integration.Tests guards it), so this client is the only LND client of the tests.
 - **Wire names are unchanged.** Only the C# namespace moves. The proto packages stay the same, so the services are still `lnrpc.Lightning`, `routerrpc.Router` and so on, and LND sees the same method paths.
 - **Member names are unchanged.** Message, field and enum names are what protoc generates from LND's protos, as in lnunit.lnd. For example, `verrpc.Version.version` is `Version_`.
 
@@ -88,7 +87,7 @@ A pool's readiness check defaults to `State.GetState` answering `SERVER_ACTIVE` 
 
 ## Swap table for phase 3 (LNUnit.LND to this project)
 
-**Done (test harness phase 3 lane B).** Every test in `NLightning.Integration.Tests` uses this client. `Fixtures/LightningRegtestNetworkFixture` keeps LNUnit's `LNUnitBuilder` private, as the container orchestrator only, and builds one `LndNodeConnection` per LND node with `LndSettings.FromBase64` from what the builder read out of each container (endpoint, `tls.cert`, `admin.macaroon`). Tests reach the nodes through `LndNodes`, `GetLndNode(alias)` and `RestartLndAsync(alias)`, and the miner through `Bitcoin` and `BitcoinZmqPorts`. The LNUnit package moved from NLightning.Tests.Utils to NLightning.Integration.Tests; lnunit.lnd still comes with it transitively until the cluster backend replaces the builder, so `LnUnitCoexistenceTests` stays.
+**Done (test harness phase 3 lane B; LNUnit removed in NL-820).** Every test in `NLightning.Integration.Tests` uses this client. `Fixtures/LightningRegtestNetworkFixture` runs the LND regtest network on the Kubernetes harness (`Fixtures/Lnd/ClusterLndBackend` over `NLightning.Testing.Cluster`'s `LndRegtestNetwork`, which reads each pod's `tls.cert` and `admin.macaroon` and builds one `LndNodeConnection` per node). Tests reach the nodes through `LndNodes`, `GetLndNode(alias)` and `RestartLndAsync(alias)`, and the miner through `Bitcoin` and `BitcoinZmqPorts`. Its Docker backend, which kept LNUnit's `LNUnitBuilder` as the container orchestrator, was retired in NL-820 together with the `LNUnit` package (lnunit.lnd came with it transitively); without `NLTG_TEST_BACKEND=cluster` the fixture's tests are reported skipped. The nodes run the image `custom_lnd:0.21.4-beta`; build it once with `docker build -t custom_lnd:0.21.4-beta test/Docker/custom_lnd` (the harness never pulls or builds it).
 
 ### Namespaces
 
@@ -108,7 +107,7 @@ Some code qualifies a type with the namespace, such as `Routerrpc.SendToRouteReq
 - write `Testing.Lnd.Routerrpc.SendToRouteRequest` (works at any time), or
 - use project-wide aliases in the test csproj, such as `<Using Include="NLightning.Testing.Lnd.Routerrpc" Alias="LndRouterrpc"/>`, and write `LndRouterrpc.SendToRouteRequest`.
 
-An alias with the old name (`Alias="Routerrpc"`, so the qualified code compiles unchanged) works only once neither LNUnit nor LNUnit.LND is referenced by the test assembly, directly or transitively (NLightning.Integration.Tests references LNUnit 3.0.4 for its container builder). While lnunit.lnd is there, its global `Routerrpc`/`Lnrpc`/... namespaces conflict with the alias at every use: `error CS0576: Namespace '<global namespace>' contains a definition conflicting with alias 'Routerrpc'`. So either drop the LNUnit package (the Docker fixture builder) in the same step as the swap, or use a non-clashing alias or the `Testing.Lnd.` prefix.
+An alias with the old name (`Alias="Routerrpc"`, so the qualified code compiles unchanged) works only when neither LNUnit nor LNUnit.LND is referenced by the test assembly, directly or transitively: their global `Routerrpc`/`Lnrpc`/... namespaces conflict with the alias at every use (`error CS0576: Namespace '<global namespace>' contains a definition conflicting with alias 'Routerrpc'`). Since NL-820 no project references them, but the tests keep the `Testing.Lnd.` prefix.
 
 ### Types and members
 
@@ -149,7 +148,7 @@ Compared with lnunit.lnd 3.0.4 (LND 0.20 protos), LND 0.21 removed these depreca
 - `Router.SendPayment`, `SendToRoute` and `TrackPayment`, with `routerrpc.SendToRouteResponse`, `PaymentStatus` and `PaymentState`.
 - The `outgoing_chan_id` field of `QueryRoutesRequest` and `routerrpc.SendPaymentRequest`; use `outgoing_chan_ids`. `BuildRouteRequest.OutgoingChanId` is unchanged.
 
-`LnUnitCoexistenceTests` holds the exact list.
+The `LnUnitCoexistenceTests` that held the exact list left with the `LNUnit.LND` reference (NL-819).
 
 ## Live check
 

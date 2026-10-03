@@ -14,7 +14,9 @@ using Interfaces;
 /// <summary>
 /// <c>bumpopen</c> (ClientCommand 38, lane dfrbf): RBF of an unconfirmed dual-funded open, as its opener or its
 /// accepter (NL-530), through
-/// <see cref="IDualFundedOpenService.BumpAsync(Domain.Channels.ValueObjects.ChannelId, uint, LightningMoney?, CancellationToken)"/>.
+/// <see cref="IDualFundedOpenService.BumpAsync(Domain.Channels.ValueObjects.ChannelId, uint, LightningMoney?, Domain.LiquidityAds.Models.LiquidityRequest?, CancellationToken)"/>,
+/// buying inbound liquidity with the new attempt when asked (<c>--request-inbound</c>, liquidity ads NL-850; without it
+/// the service repeats the previous attempt's purchase, if any).
 /// </summary>
 /// <remarks>
 /// Checks here: a feerate of <see cref="MinFeeRatePerKw"/> (BOLT 3's floor) to <see cref="MaxFeeRatePerKw"/> (1,000
@@ -61,12 +63,18 @@ public sealed class BumpOpenClientHandler : IClientCommandHandler<BumpOpenClient
         if (request.ContributionSat is > MaxAmountSat)
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       $"The contribution must be 0 to {MaxAmountSat} sat");
+        if (request.RequestInboundSat is 0 or > MaxAmountSat)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      $"The inbound liquidity to buy must be 1 to {MaxAmountSat} sat");
+        if (request.MaxLiquidityFeeSat is not null && request.RequestInboundSat is null)
+            throw new ClientException(ErrorCodes.InvalidOperation, "--max-liquidity-fee needs --request-inbound");
 
         var contribution = request.ContributionSat is { } sat ? LightningMoney.Satoshis(sat) : null;
         Domain.Channels.DualFunding.Models.DualFundedOpenResult result;
         try
         {
-            result = await _dualFundedOpenService.BumpAsync(request.ChannelId, request.FeeRatePerKw, contribution, ct);
+            result = await _dualFundedOpenService.BumpAsync(request.ChannelId, request.FeeRatePerKw, contribution,
+                                                            request.ToLiquidityRequest(), ct);
         }
         catch (Exception e) when (e is InvalidOperationException or NotSupportedException)
         {
@@ -80,6 +88,6 @@ public sealed class BumpOpenClientHandler : IClientCommandHandler<BumpOpenClient
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Dual-funded open {ChannelId} bumped to funding {TxId} at {Feerate} sat/kw",
                                    request.ChannelId, fundingTxId, request.FeeRatePerKw);
-        return new BumpOpenClientResponse(result.ChannelId, fundingTxId);
+        return new BumpOpenClientResponse(result.ChannelId, fundingTxId) { Purchase = result.Purchase };
     }
 }

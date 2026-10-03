@@ -1,98 +1,128 @@
-using Docker.DotNet;
-using Docker.DotNet.Models;
-using LNUnit.Setup;
-using NBitcoin.RPC;
-
 namespace NLightning.Integration.Tests.Fixtures;
 
+using Cln;
 using Docker.Utils;
 
 /// <summary>
-/// A Core Lightning (CLN) regtest node for the interop tests, on its own bitcoind in its own Docker network, so it
-/// never shares containers, names or chain state with the LND <c>regtest</c> collection and can run while another
-/// test process owns miner/alice/bob/carol/david.
+/// A Core Lightning (CLN) regtest node for the interop tests, on its own bitcoind, never sharing nodes, names or chain
+/// state with the LND <c>regtest</c> collection: a run namespace of the Kubernetes harness
+/// (<see cref="ClusterClnBackend"/>, test harness phase 2), the fixture's only backend since NL-866 retired the Docker
+/// one. Without <c>NLTG_TEST_BACKEND=cluster</c> the fixture starts nothing and every test that uses it is skipped with
+/// the reason (<see cref="UnavailableReason"/>); with it, a missing Kubernetes configuration fails the fixture
+/// (<see cref="ConfigurationError"/>, NL-860). Run the suite with <c>scripts/run-cluster.sh --matrix cln</c>.
 /// </summary>
 /// <remarks>
-/// bitcoind (<see cref="BitcoinContainerName"/>) publishes RPC and the ZMQ raw block/tx feeds on <c>127.0.0.1</c>
-/// for the in-process NLightning nodes; CLN (<see cref="ClnContainerName"/>, the official
-/// <c>elementsproject/lightningd</c> image) reaches bitcoind by name on <see cref="NetworkName"/> and publishes its
-/// p2p port on <c>127.0.0.1</c>. CLN runs with <c>--developer --dev-bitcoind-poll=1</c> so it sees a new block within
-/// a second (the default poll is 30 s), and with <c>--ignore-fee-limits=false</c>: on testnet/regtest CLN ignores its
-/// feerate limits by default (only its mainnet config checks them), which would make any feerate we send look fine.
-/// The containers and the network are force-removed before start and on dispose.
+/// CLN (the official <c>elementsproject/lightningd</c> image, <see cref="ClnTag"/>) runs with
+/// <c>--developer --dev-bitcoind-poll=1</c> so it sees a new block within a second (the default poll is 30 s), and
+/// with <c>--ignore-fee-limits=false</c>: on testnet/regtest CLN ignores its feerate limits by default (only its
+/// mainnet config checks them), which would make any feerate we send look fine. A test class skips in its constructor
+/// (<see cref="SkipIfUnavailable"/>), so its cleanup never touches a fixture that did not start.
 /// </remarks>
 // ReSharper disable once ClassNeverInstantiated.Global
 public sealed class ClnFixture : IAsyncLifetime
 {
-    public const string NetworkName = "nltg-cln-net";
-    public const string BitcoinContainerName = "nltg-cln-bitcoind";
+    /// <summary>The fixture CLN's node name, also its alias.</summary>
     public const string ClnContainerName = "nltg-cln";
 
     /// <summary>
-    /// The CLN release the interop tests were written against (pinned so a new release is a deliberate change).
+    /// The CLN release the interop tests were written against (pinned so a new release is a deliberate change; the
+    /// cluster runs the same release by digest, <c>ImageVersions.Cln</c>, and the Tor suite's container this tag).
     /// </summary>
     public const string ClnImage = "elementsproject/lightningd";
 
     public const string ClnTag = "v26.06.8";
 
-    /// <summary>
-    /// How a container reaches a port the test process listens on (OrbStack and Docker Desktop resolve it to the host,
-    /// on Linux the containers get a <c>host-gateway</c> alias; the listener must bind a non-loopback address).
-    /// </summary>
-    public const string HostAddressFromContainers = "host.docker.internal";
+    /// <summary>CLN's p2p port in its pod.</summary>
+    public const int ClnP2PPort = 9735;
 
-    private const string BitcoinImage = "polarlightning/bitcoind";
-    private const string BitcoinTag = "29.0";
-    private const string RpcUser = "nltg";
-    private const string RpcPassword = "nltg";
-    private const int RpcPort = 18443;
-    private const int ZmqBlockPort = 28334;
-    private const int ZmqTxPort = 28335;
-    private const int P2PPort = 9735;
-
-    private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
-
-    private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
+    private readonly ClusterAvailability _availability;
+    private readonly ClusterClnBackend? _backend;
     private readonly SharedObjectCache _shared = new();
 
-    private RegtestBitcoinEndpoint? _bitcoin;
-    private ClnClient? _cln;
+    public ClnFixture()
+        : this(Environment.GetEnvironmentVariable, ClusterAvailability.KubeConfigurationProbe)
+    {
+    }
+
+    /// <param name="environment">Reads environment variables (<see cref="TestBackend.EnvironmentVariable"/>).</param>
+    /// <param name="kubeConfiguration">Throws when no Kubernetes configuration can be built.</param>
+    /// <param name="skip">Skips the current test with a reason (<see cref="Assert.Skip"/> when null).</param>
+    internal ClnFixture(Func<string, string?> environment, Action kubeConfiguration, Action<string>? skip = null)
+    {
+        _availability = new ClusterAvailability("the CLN fixture", "NL-866", "scripts/run-cluster.sh --matrix cln",
+                                                environment, kubeConfiguration, skip);
+        if (_availability.CanStart)
+            _backend = new ClusterClnBackend();
+    }
+
+    /// <summary>Why the fixture does not run in this process (the skip reason of its tests); null on the cluster.</summary>
+    public string? UnavailableReason => _availability.UnavailableReason;
+
+    /// <summary>Under <c>NLTG_TEST_BACKEND=cluster</c>, why no Kubernetes configuration could be built (NL-860).</summary>
+    public string? ConfigurationError => _availability.ConfigurationError;
 
     /// <summary>
     /// The fixture's bitcoind, for <see cref="NLightningTestNode.CreateAsync(RegtestBitcoinEndpoint, string, TestNodeDatabase?, Action{Domain.Node.Options.NodeOptions}?)"/>.
     /// </summary>
-    public RegtestBitcoinEndpoint Bitcoin =>
-        _bitcoin ?? throw new InvalidOperationException("The CLN fixture is not running");
+    public RegtestBitcoinEndpoint Bitcoin => Backend.Bitcoin;
 
-    public ClnClient Cln => _cln ?? throw new InvalidOperationException("The CLN fixture is not running");
+    public ClnClient Cln => Backend.Cln;
+
+    /// <summary>The host this process dials CLN at (CLN's pod IP).</summary>
+    public string ClnHost => Backend.ClnHost;
 
     /// <summary>
-    /// CLN's p2p port on <c>127.0.0.1</c>.
+    /// CLN's p2p port at <see cref="ClnHost"/>.
     /// </summary>
-    public int ClnHostPort { get; private set; }
+    public int ClnHostPort => Backend.ClnPort;
 
     /// <summary>
     /// CLN's node id (hex, lower case).
     /// </summary>
-    public string ClnNodeId { get; private set; } = string.Empty;
+    public string ClnNodeId => Backend.ClnNodeId;
 
     /// <summary>
-    /// The <c>pubkey@127.0.0.1:port</c> an in-process node connects to.
+    /// The <c>pubkey@host:port</c> an in-process node connects to.
     /// </summary>
-    public string ClnAddress => $"{ClnNodeId}@127.0.0.1:{ClnHostPort}";
+    public string ClnAddress => $"{ClnNodeId}@{ClnHost}:{ClnHostPort}";
+
+    /// <summary>
+    /// The host CLN dials to reach a listener of this process (<c>host.orb.internal</c> on OrbStack's cluster, or
+    /// <c>NLTG_HOST_ADDRESS</c>); listen on every interface.
+    /// </summary>
+    public string HostAddressForCln => Backend.HostAddressForPeers;
 
     /// <summary>
     /// Returns the object stored under <paramref name="key"/>, creating it once with <paramref name="factory"/> (see
     /// <see cref="LightningRegtestNetworkFixture.GetOrCreateAsync{T}"/>). Disposed with the fixture.
     /// </summary>
-    public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class =>
-        _shared.GetOrCreateAsync(key, factory);
+    public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class
+    {
+        SkipIfUnavailable();
+        return _shared.GetOrCreateAsync(key, factory);
+    }
+
+    /// <summary>
+    /// Skips the current test when the fixture does not run in this process (<see cref="UnavailableReason"/>); every
+    /// member that needs CLN calls it, and a test class calls it in its constructor.
+    /// </summary>
+    public void SkipIfUnavailable() => _availability.SkipIfUnavailable();
 
     public async ValueTask InitializeAsync()
     {
+        if (UnavailableReason is not null)
+        {
+            Console.WriteLine($"[fixture] CLN fixture not started: {UnavailableReason}");
+            return;
+        }
+
+        _availability.ThrowIfMisconfigured();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            await StartAsync();
+            await Backend.StartAsync(TestContext.Current.CancellationToken);
+            await WaitAllAtTipAsync([], CancellationToken.None);
+            Console.WriteLine($"[fixture] CLN fixture (cluster) ready in {watch.Elapsed.TotalSeconds:F1} s");
         }
         catch
         {
@@ -104,11 +134,21 @@ public sealed class ClnFixture : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         _shared.DisposeAll();
-        await DockerContainerUtils.RemoveContainerAsync(_client, ClnContainerName);
-        await DockerContainerUtils.RemoveContainerAsync(_client, BitcoinContainerName);
-        await RemoveNetworkAsync();
-        _client.Dispose();
+        if (_backend is not null)
+            await _backend.DisposeAsync();
     }
+
+    /// <summary>
+    /// Starts another CLN on the fixture's bitcoind (<paramref name="spec"/>); disposing it removes it.
+    /// </summary>
+    public Task<ExtraClnNode> StartClnAsync(ClnNodeSpec spec, CancellationToken cancellationToken) =>
+        Backend.StartClnAsync(spec, cancellationToken);
+
+    /// <summary>
+    /// Writes the last <paramref name="tail"/> lines of CLN's log to <see cref="Console"/> (the test output); a failed
+    /// test also gets a full dump of the namespace under <c>TestResults/cluster/</c>. Does nothing when CLN never ran.
+    /// </summary>
+    public Task DumpClnLogAsync(int tail = 300) => _backend?.DumpClnLogAsync(tail) ?? Task.CompletedTask;
 
     /// <summary>
     /// Mines <paramref name="blocks"/> blocks to the bitcoind wallet.
@@ -178,132 +218,12 @@ public sealed class ClnFixture : IAsyncLifetime
         return await WaitAllAtTipAsync(nodes, cancellationToken);
     }
 
-    private async Task StartAsync()
+    private ClusterClnBackend Backend
     {
-        await _client.PullImageAndWaitForCompleted(BitcoinImage, BitcoinTag);
-        await _client.PullImageAndWaitForCompleted(ClnImage, ClnTag);
-
-        await DockerContainerUtils.RemoveContainerAsync(_client, ClnContainerName);
-        await DockerContainerUtils.RemoveContainerAsync(_client, BitcoinContainerName);
-        await RemoveNetworkAsync();
-        await _client.Networks.CreateNetworkAsync(new NetworksCreateParameters
+        get
         {
-            Name = NetworkName,
-            Driver = "bridge"
-        });
-
-        // bitcoind
-        var bitcoinPorts = await StartContainerAsync($"{BitcoinImage}:{BitcoinTag}", BitcoinContainerName, [],
-                                                     [
-                                                         "bitcoind", "-regtest", "-server=1",
-                                                         $"-rpcuser={RpcUser}", $"-rpcpassword={RpcPassword}",
-                                                         "-rpcbind=0.0.0.0", "-rpcallowip=0.0.0.0/0",
-                                                         $"-rpcport={RpcPort}", "-rpcworkqueue=1024",
-                                                         $"-zmqpubrawblock=tcp://0.0.0.0:{ZmqBlockPort}",
-                                                         $"-zmqpubrawtx=tcp://0.0.0.0:{ZmqTxPort}",
-                                                         "-txindex=1", "-fallbackfee=0.0002", "-dnsseed=0",
-                                                         "-listen=0", "-printtoconsole"
-                                                     ], [RpcPort, ZmqBlockPort, ZmqTxPort]);
-        var rpc = new RPCClient($"{RpcUser}:{RpcPassword}", $"http://127.0.0.1:{bitcoinPorts[RpcPort]}",
-                                NBitcoin.Network.RegTest);
-        await DockerContainerUtils.WaitUntilReadyAsync(BitcoinContainerName,
-                                                       async ct => await rpc.GetBlockCountAsync(ct), s_readyTimeout);
-        await rpc.SendCommandAsync("createwallet", "miner");
-        _bitcoin = new RegtestBitcoinEndpoint(rpc, "127.0.0.1", bitcoinPorts[ZmqBlockPort], bitcoinPorts[ZmqTxPort]);
-        await MineAsync(101, CancellationToken.None);
-
-        // CLN
-        var clnPorts = await StartContainerAsync($"{ClnImage}:{ClnTag}", ClnContainerName,
-                                                 ["LIGHTNINGD_NETWORK=regtest"],
-                                                 [
-                                                     $"--bitcoin-rpcconnect={BitcoinContainerName}",
-                                                     $"--bitcoin-rpcport={RpcPort}",
-                                                     $"--bitcoin-rpcuser={RpcUser}",
-                                                     $"--bitcoin-rpcpassword={RpcPassword}",
-                                                     $"--bind-addr=0.0.0.0:{P2PPort}",
-                                                     "--alias=nltg-cln",
-                                                     "--log-level=debug",
-                                                     "--developer",
-                                                     "--dev-bitcoind-poll=1",
-                                                     // CLN's testnet/regtest default is ignore-fee-limits=true (only
-                                                     // mainnet checks them): turn the checks on, so open_channel and
-                                                     // update_fee meet CLN's real feerate range as on mainnet
-                                                     "--ignore-fee-limits=false"
-                                                 ], [P2PPort]);
-        ClnHostPort = clnPorts[P2PPort];
-        var cln = new ClnClient(_client, ClnContainerName);
-        await DockerContainerUtils.WaitUntilReadyAsync(ClnContainerName, async ct => await cln.GetInfoAsync(ct),
-                                                       s_readyTimeout);
-        _cln = cln;
-        ClnNodeId = (await cln.GetInfoAsync(CancellationToken.None))["id"]!.GetValue<string>();
-        await WaitAllAtTipAsync([], CancellationToken.None);
-    }
-
-    /// <summary>
-    /// Creates and starts a container on <see cref="NetworkName"/> with <paramref name="containerPorts"/> published on
-    /// free <c>127.0.0.1</c> ports.
-    /// </summary>
-    /// <returns>The host port of each container port.</returns>
-    private async Task<Dictionary<int, int>> StartContainerAsync(string image, string name, IList<string> env,
-                                                                 IList<string> cmd, IReadOnlyList<int> containerPorts)
-    {
-        var parameters = new CreateContainerParameters
-        {
-            Image = image,
-            Name = name,
-            Hostname = name,
-            Env = env,
-            Cmd = cmd,
-            ExposedPorts = containerPorts.ToDictionary(p => $"{p}/tcp", _ => default(EmptyStruct)),
-            HostConfig = new HostConfig
-            {
-                NetworkMode = NetworkName,
-                PortBindings = containerPorts.ToDictionary(
-                    p => $"{p}/tcp",
-                    IList<PortBinding> (_) => [new PortBinding { HostIP = "127.0.0.1", HostPort = string.Empty }]),
-                // OrbStack and Docker Desktop resolve host.docker.internal themselves; plain Linux Docker needs the alias
-                ExtraHosts = OperatingSystem.IsLinux() ? [$"{HostAddressFromContainers}:host-gateway"] : null
-            }
-        };
-
-        var container = await _client.Containers.CreateContainerAsync(parameters)
-                     ?? throw new InvalidOperationException($"Failed to create the {name} container");
-        await _client.Containers.StartContainerAsync(container.ID, new ContainerStartParameters());
-
-        var deadline = DateTime.UtcNow.AddMinutes(1);
-        while (true)
-        {
-            var inspect = await _client.Containers.InspectContainerAsync(container.ID);
-            var hostPorts = new Dictionary<int, int>();
-            foreach (var port in containerPorts)
-            {
-                if (inspect.NetworkSettings?.Ports is { } ports
-                 && ports.TryGetValue($"{port}/tcp", out var bindings)
-                 && bindings is { Count: > 0 }
-                 && int.TryParse(bindings[0].HostPort, out var hostPort)
-                 && hostPort > 0)
-                    hostPorts[port] = hostPort;
-            }
-
-            if (hostPorts.Count == containerPorts.Count)
-                return hostPorts;
-
-            if (DateTime.UtcNow > deadline)
-                throw new TimeoutException($"Docker did not publish the ports of {name}");
-
-            await Task.Delay(100);
-        }
-    }
-
-    private async Task RemoveNetworkAsync()
-    {
-        try
-        {
-            await _client.Networks.DeleteNetworkAsync(NetworkName);
-        }
-        catch
-        {
-            // ignored: not there
+            SkipIfUnavailable();
+            return _backend ?? throw new InvalidOperationException(UnavailableReason ?? ConfigurationError);
         }
     }
 }

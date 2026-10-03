@@ -18,6 +18,7 @@ public class PostgresTests
 
     public PostgresTests(PostgresFixture fixture)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
     }
 
@@ -249,6 +250,32 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresSchemaFromBeforeAddLiquidityPurchases_When_Migrated_Then_PurchasesRoundTrip()
+    {
+        // Arrange (NL-850 LA3: every field, the assigned ids, staged updates, the queries and the unique funding
+        // attempt, on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_liquidity_purchases");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await LiquidityPurchaseSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                           TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Given_PostgresSchemaFromBeforeAddTrampolineRelays_When_Migrated_Then_RelaysRoundTrip()
+    {
+        // Arrange (NL-875: relays, parts, the relay payment flag and the trampoline hops, on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_trampoline_relays");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await TrampolineRelaySchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                         DatabaseType.PostgreSql,
+                                                         TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresSchemaFromBeforeAddPeerStorage_When_Migrated_Then_BlobsRoundTrip()
     {
         // Arrange (BOLT 1 option_provide_storage: a 65531-byte blob round-trips, replaced and deleted, on a real
@@ -337,7 +364,7 @@ public class PostgresTests
             () => new NLightningDbContext(options, databaseTypeProvider), TestContext.Current.CancellationToken);
     }
 
-    /// <summary>Options for a database of its own on the container's server, once the server accepts
+    /// <summary>Options for a database of its own on the fixture's server, once the server accepts
     /// connections.</summary>
     [Fact]
     public async Task Given_APostgresSpliceLockCommittingMidLoad_When_TheChannelIsLoaded_Then_ItIsAllBeforeOrAllAfterTheLock()

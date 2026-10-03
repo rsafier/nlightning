@@ -1,6 +1,6 @@
 # Cashu (ecash) integration plan
 
-Branch: `wip/cashu`. Epic: NL-811. Written 2026-10-03.
+Branch: `wip/cashu`. Epic: NL-900. Written 2026-10-03.
 
 NLightning already does everything a Cashu mint needs from a Lightning backend:
 - receive BOLT 11 and BOLT 12;
@@ -141,11 +141,11 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
 
 | Wave | Content | Issue | Status |
 |---|---|---|---|
-| C0 | `IPaymentEventSource` / `IPaymentEventPublisher` (Domain), `PaymentEventHub` (Application), published after commit by `HtlcSwitch` (invoice settled) and `PaymentService` (payment succeeded/failed); `waitinvoice` (IPC 46) | NL-812 | in progress |
-| C1 | `NLightning.Cashu.PaymentProcessor`: the `CdkPaymentProcessor` gRPC service on Kestrel in the daemon, behind `Cashu:PaymentProcessor` | NL-813 | in progress |
-| C2 | Docker proof against `cdk-mintd` + `cdk-cli` | NL-814 | open |
-| C3 | Native Cashu wallet | NL-815 | open |
-| C4 | Hold invoices + NUT-14 | NL-816 | open |
+| C0 | `IPaymentEventSource` / `IPaymentEventPublisher` (Domain), `PaymentEventHub` (Application), published after commit by `HtlcSwitch` (invoice settled) and `PaymentService` (payment succeeded/failed); `waitinvoice` (IPC 47) | NL-901 | in progress |
+| C1 | `NLightning.Cashu.PaymentProcessor`: the `CdkPaymentProcessor` gRPC service on Kestrel in the daemon, behind `Cashu:PaymentProcessor` | NL-902 | in progress |
+| C2 | Docker proof against `cdk-mintd` + `cdk-cli` | NL-903 | open |
+| C3 | Native Cashu wallet | NL-904 | open |
+| C4 | Hold invoices + NUT-14 | NL-905 | open |
 
 ### C0 design
 

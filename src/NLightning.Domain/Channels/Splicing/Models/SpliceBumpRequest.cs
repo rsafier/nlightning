@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Channels.Splicing.Models;
 
+using LiquidityAds.Models;
 using ValueObjects;
 
 /// <summary>
@@ -17,4 +18,11 @@ public sealed record SpliceBumpRequest(
     ChannelId ChannelId,
     uint FeeratePerKw,
     ulong? MaxFeeSatoshis = null,
-    long? ContributionSatoshis = null);
+    long? ContributionSatoshis = null)
+{
+    /// <summary>
+    /// The inbound liquidity this attempt buys (liquidity ads, NL-850). Null repeats the purchase of the attempt it
+    /// replaces, if any (BOLT PR #1153: an RBF after a purchase MUST request funding again).
+    /// </summary>
+    public LiquidityRequest? Liquidity { get; init; }
+}

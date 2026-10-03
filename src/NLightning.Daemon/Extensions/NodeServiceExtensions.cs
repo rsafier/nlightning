@@ -31,6 +31,7 @@ using Application.Payments.Invoices;
 using Application.Payments.Routing.Interfaces;
 using Application.Payments.Send;
 using Application.Payments.Switch;
+using Application.Payments.Trampoline;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
@@ -163,7 +164,7 @@ public static class NodeServiceExtensions
                                           sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<ListPaymentsClientRequest, ListPaymentsClientResponse>>(sp =>
             new ListPaymentsClientHandler(GetPaymentLayerService<IPaymentService>(sp)));
-        // Cashu plan C0 (NL-812): wait for an invoice to leave Open (ClientCommand 46)
+        // Cashu plan C0 (NL-901): wait for an invoice to leave Open (ClientCommand 47)
         services.AddScoped<IClientCommandHandler<WaitInvoiceClientRequest, WaitInvoiceClientResponse>>(sp =>
             new WaitInvoiceClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
                                          sp.GetService<IPaymentEventSource>(),
@@ -172,7 +173,8 @@ public static class NodeServiceExtensions
             new ListForwardsClientHandler(GetPaymentLayerService<IForwardCircuitDbRepository>(sp),
                                           sp.GetRequiredService<ILogger<ListForwardsClientHandler>>(),
                                           sp.GetService<IChannelMemoryRepository>(),
-                                          sp.GetService<IRefusedHtlcCounter>()));
+                                          sp.GetService<IRefusedHtlcCounter>(),
+                                          sp.GetService<ITrampolineRelayDbRepository>()));
         services.TryAddSingleton(TimeProvider.System);
 
         // Cooperative close (ClientCommand 13, BOLT2 plan N10); IChannelCloseService comes from AddApplicationServices
@@ -266,6 +268,8 @@ public static class NodeServiceExtensions
         services.Configure<DualFundingOptions>(configuration.GetSection(DualFundingOptions.SectionName));
         // bumpopen (ClientCommand 38, lane dfrbf): RBF of our unconfirmed dual-funded open (Node:DualFund:AllowRbf)
         services.AddDualFundIpcServices();
+        // Liquidity ads (NL-850): liquidityads rates|sellers|purchases (ClientCommand 47)
+        services.AddLiquidityAdsIpcServices();
         // Per-channel routing policies (wave sp1 lane SP1-G): setchannelpolicy/getchannelpolicy (ClientCommand 35/36)
         services.AddChannelPolicyIpcServices();
         // The accounting feed (NL-602): listaccountingevents/accountingsnapshot (ClientCommand 41/42); the sealer and
@@ -273,8 +277,21 @@ public static class NodeServiceExtensions
         services.Configure<AccountingOptions>(configuration.GetSection(AccountingOptions.SectionName));
         services.AddAccountingIpcServices();
         // The financial books' prices (NL-602 A3-T2, Accounting:Prices): the price file and mempool.space's historical
-        // price, asked only by the back-valuation job (PriceValuationService, from AddApplicationServices)
-        services.Configure<AccountingPriceOptions>(configuration.GetSection(AccountingPriceOptions.SectionName));
+        // price, asked only by the back-valuation job (PriceValuationService, from AddApplicationServices). Other invalid
+        // price options only keep the job off (logged); a ThroughTor that contradicts Node:Tor:Mode refuses the start
+        // (NL-868: true with Tor Off, false in TorOnly), never a silent change of route
+        services.AddOptions<AccountingPriceOptions>()
+                .Bind(configuration.GetSection(AccountingPriceOptions.SectionName))
+                .Validate<IOptions<NodeOptions>>((options, nodeOptions) =>
+                 {
+                     var errors = options.GetTorRoutingErrors(nodeOptions.Value.Tor);
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(AccountingPriceOptions.SectionName,
+                                                              typeof(AccountingPriceOptions), errors);
+
+                     return true;
+                 })
+                .ValidateOnStart();
 
         // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
         // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate
@@ -399,6 +416,21 @@ public static class NodeServiceExtensions
 
         // How long the final hop holds an incomplete basic_mpp HTLC set before mpp_timeout (optional; default 60 s)
         services.Configure<HtlcSwitchOptions>(configuration.GetSection("Node:Switch"));
+
+        // Our trampoline relay policy and limits (optional Node:Trampoline section; used only while trampoline_routing
+        // is advertised, NL-875 TR3); an invalid section fails the start
+        services.AddOptions<TrampolineOptions>()
+                .Bind(configuration.GetSection(TrampolineOptions.SectionName))
+                .Validate(options =>
+                 {
+                     var errors = options.GetValidationErrors();
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(TrampolineOptions.SectionName,
+                                                              typeof(TrampolineOptions), errors);
+
+                     return true;
+                 })
+                .ValidateOnStart();
 
         // BOLT 7 funding output lookups of channel announcements (optional Gossip section; defaults apply, G2-T2)
         services.Configure<FundingOutputLookupOptions>(configuration.GetSection("Gossip"));

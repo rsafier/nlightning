@@ -37,7 +37,11 @@ using Domain.Persistence.Interfaces;
 /// <c>nlightning.accounting.reconcile.drift_msat</c> by account; it is never posted. The clearing balance that
 /// transactions in flight explain (<see cref="ClearingOutstandingReader"/>: a funding or splice below its lock, a mutual
 /// close below its depth) is outstanding, not drift: reported apart on the line and on the gauge
-/// <c>nlightning.accounting.reconcile.outstanding_msat</c>, never logged as a warning (NL-621).</para>
+/// <c>nlightning.accounting.reconcile.outstanding_msat</c>, never logged as a warning (NL-621). Likewise the channels
+/// amount of HTLCs whose settle is booked while their channel has not folded them into its balance yet
+/// (<see cref="HtlcOutstandingReader"/>, NL-886): an invoice settled, a payment or a forward fulfilled, until the commitment
+/// dance commits the removal. A reconcile takes the snapshot first, then seals and projects the feed, then reads the
+/// books (see <see cref="ReconcileCoreAsync"/>).</para>
 /// <para>An exception in the books is logged and metered and stops only the books, never the node.</para>
 /// </remarks>
 public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable, IDisposable
@@ -218,11 +222,9 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
         if (_snapshotSource is null)
             throw new InvalidOperationException("No node snapshot source is registered");
 
-        await SealFirstAsync(cancellationToken);
         await _roundGate.WaitAsync(cancellationToken);
         try
         {
-            await ProjectAsync(int.MaxValue, cancellationToken);
             return await ReconcileCoreAsync(cancellationToken);
         }
         finally
@@ -262,10 +264,12 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
     /// </summary>
     /// <remarks>
     /// <list type="bullet">
-    /// <item><see cref="AccountRole.Channels"/>: the gross local balances (our offered HTLCs in flight included, as the
-    /// books keep them) of the channels past their funding confirmation (a short channel id, or a state past the
-    /// funding wait) whose funding is not spent: a channel resolving on chain, or failed with outputs of its close
-    /// already known, is in <see cref="AccountRole.Pending"/> instead.</item>
+    /// <item><see cref="AccountRole.Channels"/>: the gross local balances (our offered HTLCs in flight included) of the
+    /// channels past their funding confirmation (a short channel id, or a state past the funding wait) whose funding is
+    /// not spent: a channel resolving on chain, or failed with outputs of its close already known, is in
+    /// <see cref="AccountRole.Pending"/> instead. <paramref name="htlcs"/> (the HTLCs of those channels whose settle the
+    /// books booked before the commitment dance folded them into the balances, NL-886) is the line's outstanding
+    /// amount.</item>
     /// <item><see cref="AccountRole.Pending"/>: the snapshot's unspent outputs of our force closes, HTLC outputs
     /// included. Definitional gap: the snapshot counts every output that is ours to take (HTLC outputs either way,
     /// the outputs of a revoked commitment we can punish, our anchor when the peer funded), while the books hold only
@@ -279,7 +283,7 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
     /// </remarks>
     internal static IReadOnlyList<AccountingReconcileLine> BuildReconcileLines(
         AccountingSnapshot snapshot, IReadOnlyDictionary<AccountRole, long> balances, string? projectionError = null,
-        ClearingOutstanding? outstanding = null)
+        ClearingOutstanding? outstanding = null, HtlcOutstanding? htlcs = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(balances);
@@ -316,7 +320,10 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
                                         channelsMsat,
                                         $"{prefix}gross local balances of {counted} channels past their funding "
                                       + $"confirmation ({awaitingFunding} awaiting their funding and {onchain} on "
-                                      + "chain left out)"),
+                                      + $"chain left out); outstanding: {htlcs?.Msat ?? 0} msat of {htlcs?.HtlcCount ?? 0} "
+                                      + $"HTLCs on {htlcs?.ChannelCount ?? 0} channels settled in the books and not "
+                                      + "committed in their channels yet",
+                                        htlcs?.Msat ?? 0),
             new AccountingReconcileLine(AccountRole.Pending, balances.GetValueOrDefault(AccountRole.Pending),
                                         pendingMsat,
                                         $"{prefix}{snapshot.PendingSweepCount} unspent outputs of force closes "
@@ -338,6 +345,10 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
                                         outstanding?.Msat ?? 0)
         ];
     }
+
+    /// <summary>The channels whose local balance the channels line counts.</summary>
+    internal static bool IsCountedInChannels(ChannelBalanceBucket bucket) =>
+        !IsOnchain(bucket) && IsPastFundingConfirmation(bucket);
 
     private static bool IsOnchain(ChannelBalanceBucket bucket) =>
         bucket.State is ChannelState.OnchainResolving or ChannelState.Closed or ChannelState.Stale
@@ -531,10 +542,45 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
         }
     }
 
-    /// <summary>The caller holds the round gate.</summary>
+    /// <summary>
+    /// The HTLCs settled in the books and not committed in their channels yet (NL-886), read after the projection; a
+    /// failure is logged and reads as none (their amount is then reported as drift).
+    /// </summary>
+    private async Task<HtlcOutstanding> ReadHtlcOutstandingAsync(AccountingSnapshot snapshot,
+                                                                 CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _scopeFactory.CreateScope();
+            return await HtlcOutstandingReader.ReadAsync(scope.ServiceProvider.GetRequiredService<IUnitOfWork>(),
+                                                         snapshot.Channels.Where(IsCountedInChannels), _logger,
+                                                         cancellationToken);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Accounting reconcile: cannot read the HTLCs settled in flight; their amount is "
+                                + "reported as drift");
+            return HtlcOutstanding.None;
+        }
+    }
+
+    /// <summary>
+    /// The caller holds the round gate (the projector is the only writer of the books, so every read of the books
+    /// below sees the same cursor).
+    /// </summary>
+    /// <remarks>
+    /// The order is what keeps a settle in flight from reading as drift (NL-886): the snapshot first, then the feed
+    /// sealed and projected, then the books. Every settle event is committed before its HTLC can be final (the
+    /// <c>InvoiceSettled</c> in our fulfill's save; the <c>PaymentSucceeded</c> and <c>ForwardSettled</c> while the
+    /// peer's fulfill is handled, before the peer's next message), so an HTLC the snapshot shows folded into a balance
+    /// has its event in the books; and an event booked while the snapshot still shows its HTLC is counted as
+    /// outstanding (<see cref="HtlcOutstandingReader"/>), whichever side of the snapshot it was committed on.
+    /// </remarks>
     private async Task<AccountingReconcileResult> ReconcileCoreAsync(CancellationToken cancellationToken)
     {
         var snapshot = await _snapshotSource!.TakeSnapshotAsync(cancellationToken);
+        await SealFirstAsync(cancellationToken);
+        await ProjectAsync(int.MaxValue, cancellationToken);
 
         long ledgerSeq;
         IReadOnlyDictionary<AccountRole, long> balances;
@@ -546,7 +592,8 @@ public sealed class AccountingBooksService : IAccountingBooks, IAsyncDisposable,
         }
 
         var outstanding = await ReadOutstandingAsync(snapshot, cancellationToken);
-        var lines = BuildReconcileLines(snapshot, balances, _projectionError, outstanding);
+        var htlcs = await ReadHtlcOutstandingAsync(snapshot, cancellationToken);
+        var lines = BuildReconcileLines(snapshot, balances, _projectionError, outstanding, htlcs);
         var result = new AccountingReconcileResult(snapshot.TakenAt, snapshot.BlockHeight, ledgerSeq, lines);
         foreach (var line in lines)
         {

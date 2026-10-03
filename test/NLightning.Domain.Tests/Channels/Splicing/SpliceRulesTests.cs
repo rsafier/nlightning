@@ -343,4 +343,79 @@ public class SpliceRulesTests
     }
 
     #endregion
+
+    #region LA-RES-01 a liquidity purchase's fee and the buyer's reserve (NL-850)
+
+    /// <summary>We splice in 100k sat and buy 200k sat from the peer for a 3,400 sat fee: 1M sat channel, 600k ours.
+    /// </summary>
+    private static readonly SpliceTxCompleteFacts s_purchase = new(1, 1, 1_300_000, 1_000_000, 100_000, 200_000,
+                                                                    600_000_000, 400_000_000, 10_000, 10_000, true,
+                                                                    true, 1_000, null, 3_400_000);
+
+    public static TheoryData<string, SpliceTxCompleteFacts, string?> LiquidityRows => new()
+    {
+        { "we buy and keep our reserve after the fee", s_purchase, null },
+        { "we buy a fee that leaves us below the reserve of the new capacity",
+          s_purchase with
+          {
+              LocalBalanceMsat = 5_000_000, LocalContributionSatoshis = 0, FundingOutputSatoshis = 1_200_000,
+              LocalAddedOtherOutput = false
+          }, "LA-RES-01" },
+        { "we buy a fee above our whole balance",
+          s_purchase with
+          {
+              LocalBalanceMsat = 1_000_000, LocalContributionSatoshis = 0, FundingOutputSatoshis = 1_200_000,
+              LocalAddedOtherOutput = false
+          }, "LA-RES-01" },
+        { "our change output is held to the reserve after the fee",
+          s_purchase with { LocalBalanceMsat = 0, LocalContributionSatoshis = 14_000, FundingOutputSatoshis = 1_214_000 },
+          "SP-TX-05" },
+        { "the peer buys a fee that leaves it below its reserve",
+          s_purchase with
+          {
+              LocalContributionSatoshis = 200_000, RemoteContributionSatoshis = 0, RemoteBalanceMsat = 5_000_000,
+              RemoteAddedOtherOutput = false, LiquidityFeeMsat = -3_400_000, FundingOutputSatoshis = 1_200_000
+          }, "LA-RES-01" },
+        { "we sell from an empty balance: the fee credited to us counts",
+          s_purchase with
+          {
+              LocalContributionSatoshis = 200_000, RemoteContributionSatoshis = 0, LocalBalanceMsat = 0,
+              LiquidityFeeMsat = -3_400_000, FundingOutputSatoshis = 1_200_000
+          }, null }
+    };
+
+    [Theory]
+    [MemberData(nameof(LiquidityRows))]
+    public void Given_ALiquidityPurchase_When_TxCompleteChecked_Then_TheBuyerKeepsItsReserveAfterTheFee(string row,
+        SpliceTxCompleteFacts facts, string? expectedRequirement)
+    {
+        // Act
+        var violation = SpliceRules.CheckTxComplete(facts);
+
+        // Assert
+        Assert.True(expectedRequirement == violation?.RequirementId, $"{row}: {violation?.Reason}");
+        if (violation is not null)
+            Assert.Equal(SpliceRuleAction.TxAbort, violation.Action);
+    }
+
+    [Theory]
+    [InlineData(0UL, true)]
+    [InlineData(18_000_000UL, true)]
+    [InlineData(18_000_001UL, false)]
+    public void Given_ABuyersBalance_When_ItPaysTheFee_Then_ItMustKeepTheReserve(ulong feeMsat, bool keeps)
+    {
+        // Arrange: 30k sat, no contribution, a 1.2M sat channel (reserve 12k sat)
+        // Act
+        var violation = SpliceRules.CheckLiquidityFeeReserve(30_000_000, 0, feeMsat, 10_000, 1_200_000, false);
+
+        // Assert
+        Assert.Equal(keeps, violation is null);
+        if (violation is not null)
+        {
+            Assert.Equal("LA-RES-01", violation.RequirementId);
+            Assert.Contains("the buyer", violation.Reason);
+        }
+    }
+
+    #endregion
 }

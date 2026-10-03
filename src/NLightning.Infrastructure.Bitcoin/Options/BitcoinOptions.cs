@@ -33,8 +33,17 @@ public class BitcoinOptions
     public bool WatchMempool { get; set; } = true;
 
     /// <summary>
+    /// How often the chain monitor asks bitcoind for its tip over RPC, besides following ZMQ <c>rawblock</c>. A ZMQ
+    /// subscriber gets only what is published after its subscription reached bitcoind, so a block mined between the
+    /// start's RPC catch-up and the subscription, or while the ZMQ connection is down or being set up again, is never
+    /// announced; when two polls in a row find the monitor behind the tip without it moving, it catches up over RPC
+    /// and logs a warning. Default 30 s; zero turns the poll off (a lost block then waits for the next one).
+    /// </summary>
+    public TimeSpan TipPollInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// The settings the node cannot run without: a usable RPC endpoint (<see cref="IsUsableRpcEndpoint"/>), the RPC user
-    /// and password, the ZMQ host and block port, and a ZMQ tx port in range.
+    /// and password, the ZMQ host and block port, a ZMQ tx port in range and a tip poll interval that is not negative.
     /// </summary>
     /// <returns>One message per problem, empty when the section is usable.</returns>
     public IReadOnlyList<string> GetValidationErrors()
@@ -58,6 +67,9 @@ public class BitcoinOptions
 
         if (ZmqTxPort is < 0 or > 65535)
             errors.Add($"{SectionName}:{nameof(ZmqTxPort)} must be a port between 1 and 65535 (0 = unset).");
+
+        if (TipPollInterval < TimeSpan.Zero)
+            errors.Add($"{SectionName}:{nameof(TipPollInterval)} must not be negative (0 turns the tip poll off).");
 
         return errors;
     }

@@ -393,12 +393,12 @@ public class AttributionFlowTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var node in _nodes)
                 foreach (var line in node.NodeLog.TakeLast(200))
                     Console.WriteLine(line);
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice"]);
+            await _fixture.DumpLndLogsAsync(["alice"]);
         }
 
         foreach (var node in _nodes)

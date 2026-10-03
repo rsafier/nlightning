@@ -3,8 +3,8 @@ namespace NLightning.Domain.Client.Requests;
 using Crypto.ValueObjects;
 
 /// <summary>
-/// Waits until one of our invoices is no longer <c>Open</c> (<c>ClientCommand.WaitInvoice</c>, 46; Cashu plan C0,
-/// NL-812).
+/// Waits until one of our invoices is no longer <c>Open</c> (<c>ClientCommand.WaitInvoice</c>, 47; Cashu plan C0,
+/// NL-901).
 /// </summary>
 public sealed class WaitInvoiceClientRequest
 {

@@ -40,6 +40,7 @@ public class PaymentRetryFlowTests : IAsyncLifetime
     {
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
+        fixture.SkipIfUnavailable(); // before the port is taken (NL-820)
 
         var port = PortPoolUtil.GetAvailablePortAsync().GetAwaiter().GetResult();
         Assert.True(port > 0);
@@ -59,8 +60,8 @@ public class PaymentRetryFlowTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice", "bob", "david"]);
+        if (TestDiagnostics.CurrentTestFailed)
+            await _fixture.DumpLndLogsAsync(["alice", "bob", "david"]);
 
         await _node.DisposeAsync();
         _node.DeleteFiles();

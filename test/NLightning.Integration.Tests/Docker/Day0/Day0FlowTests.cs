@@ -45,8 +45,8 @@ using Utils;
 /// across a splice, step 5), SP2-B (<c>splice_locked</c>, the new short channel id, re-announcement and the retired
 /// SCID map, steps 3-5), SP2-C (the splice transaction is not a close) and SP2-E (backups on the current funding with
 /// the rotated key index, step 7). The integrator runs it after the merge. Public channels change the LND nodes'
-/// graph for good, so it runs in the gossip collection, in its own process:
-/// <c>scripts/run-gossip.sh 1 Release -namespace NLightning.Integration.Tests.Docker.Day0</c>.</para>
+/// graph for good, so it runs in the gossip collection, in its own process: <c>scripts/run-cluster.sh -n 1 --suite
+/// day0</c>.</para>
 /// <para>Both nodes run the runbook's feature set (<see cref="Day0Harness.EnableDay0Features"/>) and flush their own
 /// gossip every 5 s instead of 60 s (<c>Gossip:OwnGossipFlushInterval</c>), so alice sees each announcement sooner;
 /// A also has a public channel to alice (alice gets a push), the only way alice reaches B. B is connected to alice
@@ -111,7 +111,7 @@ public sealed class Day0FlowTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var node in _nodes)
             {
@@ -120,7 +120,7 @@ public sealed class Day0FlowTests : IAsyncLifetime
                     Console.WriteLine(line);
             }
 
-            await DockerDiagnostics.DumpContainerLogsAsync(["alice"]);
+            await _fixture.DumpLndLogsAsync(["alice"]);
         }
 
         foreach (var node in _nodes)

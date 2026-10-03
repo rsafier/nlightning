@@ -33,7 +33,7 @@ using Utils;
 /// walk over the deltas of its graph) to a blinded path's final CLTV: once LDK knows public channels (after
 /// <see cref="LdkGossipTests"/> in a full run) it exceeded our paths' old <c>max_cltv_expiry</c> margin and (c)/(d)
 /// failed with <c>invalid_onion_blinding</c> (NL-723, fixed: <c>Offers:PathLifetimeMarginBlocks</c> 1008). Our payments
-/// over LDK's blinded paths log that LDK's fulfill <c>attribution_data</c> does not verify for hop 0 (NL-724). Run with <c>scripts/run-interop.sh ldk Release -class
+/// over LDK's blinded paths log that LDK's fulfill <c>attribution_data</c> does not verify for hop 0 (NL-724). Run with <c>scripts/run-cluster.sh -n 1 --suite ldk --class
 /// NLightning.Integration.Tests.Docker.Interop.Ldk.LdkOfferTests</c>.</para>
 /// </remarks>
 [Collection(LdkInteropCollection.Name)]
@@ -53,6 +53,7 @@ public sealed class LdkOfferTests : IAsyncLifetime
 
     public LdkOfferTests(LdkFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -71,12 +72,12 @@ public sealed class LdkOfferTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed && _session is not null)
+        if (TestDiagnostics.CurrentTestFailed && _session is not null)
         {
             Console.WriteLine($"[ldk] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
             foreach (var line in _session.Node.NodeLog.TakeLast(200))
                 Console.WriteLine(line);
-            await DockerDiagnostics.DumpContainerLogsAsync([LdkFixture.LdkContainerName], 400);
+            await _fixture.DumpLdkLogAsync(400);
         }
     }
 

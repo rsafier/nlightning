@@ -31,7 +31,7 @@ using Utils;
 /// monitor replays only its last processed block, which does not hold the sweep) the executor's first round catches
 /// the saved watch up and records the sweep's spend at its block.
 /// </summary>
-/// <remarks>Run with <c>scripts/run-onchain.sh</c> or the in-container runner (NL-276).</remarks>
+/// <remarks>Run with <c>scripts/run-cluster.sh -n 1 --suite onchain</c> (own process, own fixture).</remarks>
 [Collection(OnchainRegtestCollection.Name)]
 public class OnchainWatchCatchUpTests : IAsyncLifetime
 {
@@ -123,11 +123,11 @@ public class OnchainWatchCatchUpTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var line in _node?.NodeLog.TakeLast(300) ?? [])
                 Console.WriteLine(line);
-            await DockerDiagnostics.DumpContainerLogsAsync(["david"]);
+            await _fixture.DumpLndLogsAsync(["david"]);
         }
 
         if (_node is not null)

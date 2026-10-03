@@ -52,6 +52,7 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
 
     public ClnOfferReceiveTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -79,7 +80,7 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
                         + await Cln.GetLogLinesAsync("offers", CancellationToken.None, 60));
         Console.WriteLine("[cln] CLN unusual/broken log lines so far:\n"
                         + await Cln.GetLogLinesAsync(string.Empty, CancellationToken.None, 60, "unusual"));
-        if (DockerDiagnostics.CurrentTestFailed && _session is not null)
+        if (TestDiagnostics.CurrentTestFailed && _session is not null)
             Console.WriteLine($"[cln] channel: {await _session.DescribeAsync(CancellationToken.None)}");
     }
 

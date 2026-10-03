@@ -10,6 +10,7 @@ using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Extensions;
 using Domain.Protocol.Onion.Interfaces;
@@ -56,6 +57,14 @@ using Domain.Serialization.Interfaces;
 ///   would have received). Every failure inside is the blinded failure of the outer layer; the shared secret is the
 ///   outer layer's (the one the sender reads errors with). No replay entry is kept for the inner layers: their HMAC
 ///   is covered by the outer one.</item>
+///   <item>Trampoline (BOLTs PR 836, NL-875), only when we advertise <c>trampoline_routing</c> and an
+///   <see cref="ITrampolineOnionService"/> is registered (otherwise TLV 20 is an unknown even type,
+///   <c>invalid_onion_payload</c>, as before): the outer payload is validated with trampoline allowed, and a final one
+///   carrying <c>trampoline_onion_packet</c> has it peeled, its payload validated with
+///   <see cref="TrampolinePayloadValidator"/> and, inside a blinded trampoline route, its recipient data decrypted →
+///   <see cref="IncomingOnionTrampolineFinal"/> (we are the recipient), <see cref="IncomingOnionTrampolineRelay"/>
+///   (we relay to the next trampoline node) or <see cref="IncomingOnionTrampolineFailed"/> (a failure to create with
+///   both secrets); see <see cref="ProcessTrampolineAsync"/> for the failure rules.</item>
 /// </list>
 /// <para>Pure apart from the replay store (which persists the HMAC before this returns): no channel calls.
 /// Thread-safe.</para>
@@ -73,12 +82,14 @@ public sealed class IncomingOnionProcessor
     private readonly ILogger<IncomingOnionProcessor> _logger;
     private readonly IRouteBlindingService? _routeBlindingService;
     private readonly ISecureKeyManager? _secureKeyManager;
+    private readonly ITrampolineOnionService? _trampolineOnionService;
 
     public IncomingOnionProcessor(ISphinxService sphinxService, IHopPayloadSerializer hopPayloadSerializer,
                                   IOnionReplayStore replayStore, ILogger<IncomingOnionProcessor> logger,
                                   IRouteBlindingService? routeBlindingService = null,
                                   IOptions<NodeOptions>? nodeOptions = null,
-                                  ISecureKeyManager? secureKeyManager = null)
+                                  ISecureKeyManager? secureKeyManager = null,
+                                  ITrampolineOnionService? trampolineOnionService = null)
     {
         _secureKeyManager = secureKeyManager;
         _sphinxService = sphinxService;
@@ -89,12 +100,23 @@ public sealed class IncomingOnionProcessor
         // Blinded payloads are read only when we advertise the feature: nobody should send them to us otherwise
         var advertised = (nodeOptions?.Value.Features.OptionRouteBlinding ?? FeatureSupport.No) != FeatureSupport.No;
         _routeBlindingService = advertised ? routeBlindingService : null;
+
+        // Trampoline payloads likewise (NL-875): without the feature TLV 20 stays an unknown even type
+        _trampolineOnionService = TrampolineRoutingSupport.IsAdvertised(nodeOptions?.Value.Features)
+                                      ? trampolineOnionService
+                                      : null;
     }
 
     /// <summary>
     /// Whether blinded payloads are read (we advertise <c>option_route_blinding</c> and have the service).
     /// </summary>
     public bool ReadsBlindedPayloads => _routeBlindingService is not null;
+
+    /// <summary>
+    /// Whether trampoline onions are processed (we advertise <c>trampoline_routing</c> and have the trampoline onion
+    /// service). Otherwise a payload carrying <c>trampoline_onion_packet</c> is refused as an unknown even type.
+    /// </summary>
+    public bool ProcessesTrampoline => _trampolineOnionService is not null;
 
     /// <summary>
     /// Processes the onion of an incoming HTLC.
@@ -163,15 +185,21 @@ public sealed class IncomingOnionProcessor
             return FromPayloadFailure(e, peeled, onionRoutingPacket, hasPathKey, null);
         }
 
-        if (!HopPayloadValidator.TryValidate(payload, peeled.IsFinal, hasPathKey, out var validationError))
+        if (!HopPayloadValidator.TryValidate(payload, peeled.IsFinal, hasPathKey, ProcessesTrampoline,
+                                             out var validationError))
             return FromPayloadFailure(validationError, peeled, onionRoutingPacket, hasPathKey, payload);
 
-        // 4. Route blinding (ONION M5)
+        // 4. Trampoline (NL-875): the validator allows TLV 20 only in a final, non-blinded payload
+        if (peeled.IsFinal && payload.TrampolineOnionPacket is { } trampolinePacket)
+            return await ProcessTrampolineAsync(peeled, payload, trampolinePacket, paymentHash, incomingAmount,
+                                                incomingCltvExpiry);
+
+        // 5. Route blinding (ONION M5)
         if (hasPathKey || payload.IsBlinded)
             return await ProcessBlindedAsync(peeled, payload, onionRoutingPacket, paymentHash, updateAddPathKey,
                                              incomingAmount, incomingCltvExpiry);
 
-        // 5. Classify
+        // 6. Classify
         if (peeled.IsFinal)
             return new IncomingOnionFinal(peeled.SharedSecret, payload);
 
@@ -248,6 +276,223 @@ public sealed class IncomingOnionProcessor
         return new IncomingOnionForward(peeled.SharedSecret, payload, peeled.NextPacket!.Value,
                                         new IncomingBlindedHop(isIntroduction, data, unblinded.NextPathKey,
                                                                amountToForward, outgoingCltvValue));
+    }
+
+    /// <summary>
+    /// The outer onion ended at us with a <c>trampoline_onion_packet</c> (BOLTs PR 836, NL-875): peel it with the node
+    /// key (with the outer payload's <c>current_path_key</c> as path key when we are a blinded trampoline hop after the
+    /// introduction node), parse and validate the trampoline payload against its own rules and the outer payload,
+    /// decrypt its <c>encrypted_recipient_data</c> inside a blinded route (peeling the trampoline hops of our own path
+    /// that relay to ourselves), and say whether we are the recipient or relay the payment.
+    /// </summary>
+    /// <remarks>
+    /// <para>Failures, all with the outer onion authenticated (so never <c>update_fail_malformed_htlc</c> for it):</para>
+    /// <list type="bullet">
+    ///   <item>An unreadable trampoline onion (bad version, key or HMAC, or too short): there is no trampoline secret to
+    ///   encrypt with, so the outer final hop reports its TLV 20 as <c>invalid_onion_payload</c>
+    ///   (<see cref="IncomingOnionFailed"/>, outer secret only), as Eclair reports an undecryptable trampoline
+    ///   onion.</item>
+    ///   <item>Anything wrong once the trampoline layer peeled (framing, payload, cross-onion checks):
+    ///   <see cref="IncomingOnionTrampolineFailed"/> with the code, created with both secrets.</item>
+    ///   <item>Inside a blinded trampoline route: past the introduction node every failure is
+    ///   <c>update_fail_malformed_htlc</c> + <c>invalid_onion_blinding</c> with the sha256 of the trampoline packet (the
+    ///   PR 836 blinded error vector); at the introduction node a failure of the recipient data, or of the payload when
+    ///   we are not the recipient, is <c>invalid_onion_blinding</c> created with both secrets.</item>
+    /// </list>
+    /// <para>The replay check stays on the outer packet: the trampoline packet is covered by its HMAC.</para>
+    /// </remarks>
+    private async Task<IncomingOnionResult> ProcessTrampolineAsync(PeeledOnion outer, HopPayload outerPayload,
+                                                                   OnionPacket trampolinePacket, Hash paymentHash,
+                                                                   LightningMoney? incomingAmount,
+                                                                   uint? incomingCltvExpiry)
+    {
+        var outerPathKey = outerPayload.CurrentPathKey;
+        var trampolineSha256 = SHA256.HashData(trampolinePacket);
+
+        IncomingOnionResult PastIntroduction(string reason)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Blinded trampoline HTLC refused: {Reason}", reason);
+
+            return new IncomingOnionMalformed(FailureCode.InvalidOnionBlinding, trampolineSha256);
+        }
+
+        if (outerPathKey is not null && _routeBlindingService is null)
+            return PastIntroduction("route blinding is not enabled (option_route_blinding is not advertised).");
+
+        // 1. Peel the trampoline layer
+        PeeledOnion layer;
+        try
+        {
+            layer = _trampolineOnionService!.Peel(trampolinePacket, paymentHash, outerPathKey);
+        }
+        catch (OnionException e)
+        {
+            if (outerPathKey is not null)
+                return PastIntroduction(e.Message);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Trampoline onion peel failed with {FailureCode}: {Message}", e.FailureCode,
+                                 e.Message);
+
+            // Bad framing after the trampoline HMAC verified: the trampoline secret is known
+            if (e.SharedSecret is { } framingSecret && !e.FailureCode.IsBadOnion()
+                                                    && TryCreateFailure(e, out var framing))
+                return new IncomingOnionTrampolineFailed(outer.SharedSecret, framingSecret, framing);
+
+            return new IncomingOnionFailed(outer.SharedSecret, InvalidTrampolinePacket(outerPayload));
+        }
+
+        var trampolineSecret = layer.SharedSecret;
+
+        IncomingOnionResult BlindingFailed(string reason)
+        {
+            if (outerPathKey is not null)
+                return PastIntroduction(reason);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Blinded trampoline HTLC refused at the introduction node: {Reason}", reason);
+
+            return new IncomingOnionTrampolineFailed(outer.SharedSecret, trampolineSecret,
+                                                     FailureMessage.InvalidOnionBlinding(trampolineSha256));
+        }
+
+        IncomingOnionResult PayloadFailed(OnionException e, HopPayload? payload, bool isFinal)
+        {
+            // BOLT 4: an erring node inside a blinded route returns invalid_onion_blinding, except a final
+            // introduction node (the errors of its own payload are its own)
+            if (outerPathKey is not null || (payload?.CurrentPathKey is not null && !isFinal))
+                return BlindingFailed(e.Message);
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Trampoline payload rejected with {FailureCode}: {Message}", e.FailureCode,
+                                 e.Message);
+
+            return new IncomingOnionTrampolineFailed(outer.SharedSecret, trampolineSecret,
+                                                     TryCreateFailure(e, out var failure)
+                                                         ? failure
+                                                         : FailureMessage.TemporaryNodeFailure());
+        }
+
+        // 2. Parse and validate the trampoline payload, alone and against the outer one
+        HopPayload inner;
+        try
+        {
+            inner = await _hopPayloadSerializer.DeserializeAsync(layer.Payload);
+        }
+        catch (OnionException e)
+        {
+            return PayloadFailed(e, null, layer.IsFinal);
+        }
+
+        if (!TrampolinePayloadValidator.TryValidate(inner, layer.IsFinal, outerPayload, false, out var innerError))
+            return PayloadFailed(innerError, inner, layer.IsFinal);
+
+        // 3. Classify. The last trampoline layer is the recipient's, except when it names recipient_blinded_paths: we
+        // are then the last trampoline node, paying a recipient without trampoline support (BOLTs PR 836; the payer's
+        // trampoline onion ends with our payload, as in trampoline-to-blinded-path-payment-onion-test.json)
+        if (!inner.IsBlinded)
+            return layer.IsFinal && inner.RecipientBlindedPaths is null
+                       ? new IncomingOnionTrampolineFinal(outer.SharedSecret, outerPayload, trampolineSecret, inner)
+                       : new IncomingOnionTrampolineRelay(outer.SharedSecret, outerPayload, trampolineSecret, inner,
+                                                          layer.NextPacket);
+
+        // 4. Blinded trampoline hop (a BOLT 12 recipient that supports trampoline): exactly one of the two payloads
+        // carries the path key (checked by the validator)
+        if (_routeBlindingService is null)
+            return BlindingFailed("route blinding is not enabled (option_route_blinding is not advertised).");
+
+        var isIntroduction = outerPathKey is null;
+        var pathKey = outerPathKey ?? inner.CurrentPathKey!.Value;
+
+        // payment_constraints apply to what reaches us: this HTLC at the recipient, the payment (the outer total and
+        // expiry) at a relay, which also computes the next amount and expiry from them with payment_relay
+        var amount = layer.IsFinal ? incomingAmount : TrampolinePayloadValidator.GetOuterTotal(outerPayload);
+        var cltvExpiry = layer.IsFinal ? incomingCltvExpiry : outerPayload.OutgoingCltvValue;
+        for (var depth = 0; ; depth++)
+        {
+            BlindedHopUnblinding unblinded;
+            try
+            {
+                unblinded = _routeBlindingService.UnblindAsLocalNode(pathKey, inner.EncryptedRecipientData!.Value,
+                                                                     layer.PathKeySharedSecret);
+            }
+            catch (OnionException e)
+            {
+                return BlindingFailed(e.Message);
+            }
+
+            var data = unblinded.RecipientData;
+            if (!BlindedRecipientDataValidator.TryValidate(data, layer.IsFinal, amount?.MilliSatoshi, cltvExpiry,
+                                                           out var reason))
+                return BlindingFailed(reason);
+
+            if (layer.IsFinal)
+                return new IncomingOnionTrampolineFinal(outer.SharedSecret, outerPayload, trampolineSecret, inner,
+                                                        new IncomingBlindedHop(isIntroduction, data,
+                                                                               unblinded.NextPathKey)
+                                                        {
+                                                            DummyHops = depth
+                                                        });
+
+            var relay = data.PaymentRelay!;
+            if (amount is not null)
+            {
+                if (!relay.TryComputeAmountToForward(amount.MilliSatoshi, out var forwardMsat))
+                    return BlindingFailed($"{amount.MilliSatoshi} msat does not cover fee_base_msat "
+                                        + $"{relay.FeeBaseMsat}.");
+                amount = LightningMoney.MilliSatoshis(forwardMsat);
+            }
+
+            if (cltvExpiry is { } expiry)
+            {
+                if (!relay.TryComputeOutgoingCltvValue(expiry, out var outgoing))
+                    return BlindingFailed($"cltv_expiry {expiry} is below payment_relay.cltv_expiry_delta "
+                                        + $"{relay.CltvExpiryDelta}.");
+                cltvExpiry = outgoing;
+            }
+
+            if (!IsSelfRelay(data))
+                return new IncomingOnionTrampolineRelay(outer.SharedSecret, outerPayload, trampolineSecret, inner,
+                                                        layer.NextPacket,
+                                                        new IncomingBlindedHop(isIntroduction, data,
+                                                                               unblinded.NextPathKey, amount,
+                                                                               cltvExpiry)
+                                                        {
+                                                            DummyHops = depth
+                                                        });
+
+            // A trampoline hop of our own blinded path that relays to ourselves (a dummy hop, NL-440): peel the next
+            // trampoline layer here, with the next path key, as a node past the introduction point
+            if (depth + 1 > MaxSelfRelayHops)
+                return BlindingFailed($"more than {MaxSelfRelayHops} trampoline hops relay to ourselves.");
+
+            pathKey = unblinded.NextPathKey;
+            try
+            {
+                layer = _trampolineOnionService.Peel(layer.NextPacket!.Value, paymentHash, pathKey);
+                inner = await _hopPayloadSerializer.DeserializeAsync(layer.Payload);
+            }
+            catch (OnionException e)
+            {
+                return BlindingFailed($"trampoline hop {depth + 1} relayed to ourselves: {e.Message}");
+            }
+
+            if (!TrampolinePayloadValidator.TryValidate(inner, layer.IsFinal, outerPayload, true, out innerError))
+                return BlindingFailed($"trampoline hop {depth + 1} relayed to ourselves: {innerError.Message}");
+        }
+    }
+
+    /// <summary>
+    /// <c>invalid_onion_payload</c> naming the outer payload's <c>trampoline_onion_packet</c> at its offset.
+    /// </summary>
+    private static FailureMessage InvalidTrampolinePacket(HopPayload outerPayload)
+    {
+        var offset = outerPayload.TryGetRecordOffset(OnionPayloadTlvTypes.TrampolineOnionPacket, out var recordOffset)
+                         ? recordOffset
+                         : 0;
+        return FailureMessage.InvalidOnionPayload(OnionPayloadTlvTypes.TrampolineOnionPacket,
+                                                  (ushort)Math.Clamp(offset, 0, ushort.MaxValue));
     }
 
     /// <summary>

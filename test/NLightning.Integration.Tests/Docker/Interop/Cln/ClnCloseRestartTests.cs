@@ -51,6 +51,7 @@ public sealed class ClnCloseRestartTests : IAsyncLifetime
 
     public ClnCloseRestartTests(ClnFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -64,12 +65,12 @@ public sealed class ClnCloseRestartTests : IAsyncLifetime
 
         if (_session is not null)
         {
-            if (DockerDiagnostics.CurrentTestFailed)
+            if (TestDiagnostics.CurrentTestFailed)
             {
                 Console.WriteLine($"[close] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
                 Console.WriteLine("[close] CLN close log:\n"
                                 + await _fixture.Cln.GetLogLinesAsync("clos", CancellationToken.None, 80));
-                await DockerDiagnostics.DumpContainerLogsAsync([ClnFixture.ClnContainerName], 300);
+                await _fixture.DumpClnLogAsync(300);
             }
 
             _cutter?.Heal();
@@ -202,6 +203,11 @@ public sealed class ClnCloseRestartTests : IAsyncLifetime
         // in CLOSINGD_SIGEXCHANGE), and its answer carries the agreed fee
         await Poll.UntilAsync(async () => (await session.GetClnChannelAsync(ct))["state"]?.GetValue<string>()
                                        is "CLOSINGD_COMPLETE", s_closeTimeout, "CLN at CLOSINGD_COMPLETE", ct);
+        // CLN lists CLOSINGD_COMPLETE once it sent its answer, which may still be on the wire to us
+        await Poll.UntilAsync(() => cutter.Snapshot().Any(m => m.Message.Sequence >= from && m.Message.Inbound
+                                                            && !m.Dropped
+                                                            && m.Message.Type == (ushort)MessageTypes.ClosingSigned),
+                              s_closeTimeout, "CLN's closing_signed after the restart received", ct);
         AssertReceived(cutter, from, MessageTypes.ClosingSigned);
         Assert.All(cutter.Snapshot().Where(m => m.Message.Sequence >= from && m.Message.Inbound
                                              && m.Message.Type == (ushort)MessageTypes.ClosingSigned),

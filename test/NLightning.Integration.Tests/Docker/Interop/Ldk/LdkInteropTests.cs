@@ -41,6 +41,7 @@ public sealed class LdkInteropTests : IAsyncLifetime
 
     public LdkInteropTests(LdkFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -49,12 +50,12 @@ public sealed class LdkInteropTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var session in _ownSessions.Append(_session).OfType<LdkChannelSession>())
                 Console.WriteLine($"[ldk] channel at failure: {await session.DescribeAsync(CancellationToken.None)}");
 
-            await DockerDiagnostics.DumpContainerLogsAsync([LdkFixture.LdkContainerName], 400);
+            await _fixture.DumpLdkLogAsync(400);
         }
 
         foreach (var session in _ownSessions)
@@ -90,8 +91,8 @@ public sealed class LdkInteropTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// 1b: LDK dials us at <c>host.docker.internal</c> (our listener on every interface): we are the BOLT 8 responder,
-    /// the connection stays up and the same features are negotiated.
+    /// 1b: LDK dials us at <see cref="LdkFixture.HostAddressForLdk"/> (our listener on every interface): we are the
+    /// BOLT 8 responder, the connection stays up and the same features are negotiated.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_OurListeningNode_When_LdkConnectsToUs_Then_InitExchangedAndConnectionStable()
@@ -108,7 +109,7 @@ public sealed class LdkInteropTests : IAsyncLifetime
         CompactPubKey ldkId = Convert.FromHexString(_fixture.LdkNodeId);
 
         // Act
-        await _fixture.Ldk.ConnectPeerAsync(node.NodeIdHex, $"{ClnFixture.HostAddressFromContainers}:{node.Port}", ct);
+        await _fixture.Ldk.ConnectPeerAsync(node.NodeIdHex, $"{_fixture.HostAddressForLdk}:{node.Port}", ct);
 
         // Assert
         await Poll.UntilAsync(async () => node.IsConnectedTo(ldkId)

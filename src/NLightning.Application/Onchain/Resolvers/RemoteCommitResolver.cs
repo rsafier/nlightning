@@ -950,7 +950,10 @@ public sealed class RemoteCommitResolver : IOutputResolver
         if (circuit is { Status: ForwardCircuitStatus.Fulfilled })
             _logger.LogError("Channel {ChannelId}: the forward of HTLC {HtlcId} was fulfilled downstream but its "
                            + "preimage is not stored; the HTLC cannot be claimed on chain", channelId, record.Id);
-        return null;
+
+        // NL-875: a part of a trampoline relay is claimed with the preimage its relay learnt downstream
+        return await TrampolineRelayClaims.GetRelayPreimageAsync(unitOfWork, channelId, record,
+                                                                 (c, k) => FindHtlcRecordAsync(unitOfWork, c, k));
     }
 
     /// <summary>
@@ -1024,6 +1027,10 @@ public sealed class RemoteCommitResolver : IOutputResolver
                     var payment = await unitOfWork.PaymentDbRepository.GetByPaymentHashAsync(paymentHash);
                     return payment is null || payment.Status != PaymentStatus.InFlight;
                 }
+
+            case { Kind: HtlcOriginKind.Trampoline, PaymentHash: { } relayHash }:
+                // NL-875: the upstream is every incoming part of the relay
+                return await TrampolineRelayClaims.IsUpstreamResolvedAsync(unitOfWork, relayHash);
 
             default:
                 // No origin stored (an HTLC offered before NL-250): the switch decides, so keep raising

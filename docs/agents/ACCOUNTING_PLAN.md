@@ -212,7 +212,7 @@ A mismatch is a bug, never an adjustment.
 | any event with `memo=true` | none (statistics only) |
 | `Reversal` | the exact negation of the postings of the entry it reverses (`reverses` key); none if that entry posted nothing |
 
-**Reconcile** (every `SnapshotInterval` and on demand): `Channels` = Σ gross local balances of channels past funding confirmation and not on chain; `Pending` = Σ of our unresolved counted outputs (the snapshot applies `OnchainAccounting.CountsAtClose`, the rule of the close's `countedVouts`; the outputs booked only once claimed are reported apart as `PendingUncountedMsat`, NL-618); `Wallet` = the confirmed wallet balance; `Clearing` = 0 (allowing the outputs of unconfirmed transactions). Differences are reported per bucket and metered, never posted.
+**Reconcile** (every `SnapshotInterval` and on demand): `Channels` = Σ gross local balances of channels past funding confirmation and not on chain; `Pending` = Σ of our unresolved counted outputs (the snapshot applies `OnchainAccounting.CountsAtClose`, the rule of the close's `countedVouts`; the outputs booked only once claimed are reported apart as `PendingUncountedMsat`, NL-618); `Wallet` = the confirmed wallet balance; `Clearing` = 0 (allowing the outputs of unconfirmed transactions). The HTLCs whose settle is booked but not yet committed in their channel are the `Channels` line's outstanding amount, never drift (NL-886: the snapshot is taken before the feed is sealed and projected). Differences are reported per bucket and metered, never posted.
 
 **Reports**, each as IPC plus CLI output and CSV:
 

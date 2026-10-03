@@ -59,6 +59,7 @@ public static class AccountingPostingRules
                 AccountingEventKind.PaymentSucceeded => PostPaymentSucceeded(accountingEvent, lines),
                 AccountingEventKind.PaymentFailed => null,
                 AccountingEventKind.ForwardSettled => PostForwardSettled(accountingEvent, lines),
+                AccountingEventKind.TrampolineRelaySettled => PostTrampolineRelaySettled(accountingEvent, lines),
                 AccountingEventKind.ForwardLostOnchain or AccountingEventKind.InvoiceLostOnchain =>
                     PostForwardLostOnchain(accountingEvent, lines),
                 AccountingEventKind.ChannelFunded => PostWalletToChannel(accountingEvent, AccountRole.FeeFunding, lines),
@@ -71,6 +72,8 @@ public static class AccountingPostingRules
                     or AccountingEventKind.BreachLoss => PostResolution(accountingEvent, lines),
                 AccountingEventKind.AnchorCpfpFee => PostAnchorCpfpFee(accountingEvent, lines),
                 AccountingEventKind.SweepFeeBump => null,
+                AccountingEventKind.LiquidityFeePaid or AccountingEventKind.LiquidityFeeEarned =>
+                    PostLiquidityFee(accountingEvent, lines),
                 AccountingEventKind.WalletReceived => PostWalletReceived(accountingEvent, lines),
                 AccountingEventKind.WalletOutputSpent => PostWalletOutputSpent(accountingEvent, lines),
                 AccountingEventKind.WalletSent => PostWalletSent(accountingEvent, lines),
@@ -112,6 +115,7 @@ public static class AccountingPostingRules
             AccountingEventKind.PaymentFailed => WithDetail("Payment failed",
                                                             Text(accountingEvent, AccountingDetailKeys.Reason)),
             AccountingEventKind.ForwardSettled => WithDetail("Forward settled", Route(accountingEvent)),
+            AccountingEventKind.TrampolineRelaySettled => WithDetail("Trampoline relay settled", Route(accountingEvent)),
             AccountingEventKind.ForwardLostOnchain => WithDetail("Forward lost on chain", Route(accountingEvent)),
             AccountingEventKind.InvoiceLostOnchain => WithDetail("Invoice payment lost on chain", description),
             AccountingEventKind.ChannelFunded => IsSet(accountingEvent, AccountingDetailKeys.DualFunded)
@@ -133,6 +137,9 @@ public static class AccountingPostingRules
                                                          Text(accountingEvent, AccountingDetailKeys.Descriptor)),
             AccountingEventKind.AnchorCpfpFee => "Anchor CPFP fee",
             AccountingEventKind.SweepFeeBump => "Sweep fee bump",
+            AccountingEventKind.LiquidityFeePaid => WithDetail("Liquidity fee paid", LiquidityPurchase(accountingEvent)),
+            AccountingEventKind.LiquidityFeeEarned =>
+                WithDetail("Liquidity fee earned", LiquidityPurchase(accountingEvent)),
             AccountingEventKind.WalletReceived =>
                 Text(accountingEvent, AccountingDetailKeys.Source) == AccountingDetailKeys.ExternalSource
                     ? "Deposit"
@@ -187,6 +194,18 @@ public static class AccountingPostingRules
         return null;
     }
 
+    /// <summary>
+    /// A trampoline relay (NL-875), AmountMsat = what the incoming parts brought minus what the outgoing payment took: Dr
+    /// Channels a; Cr Routing a, the relay's fee, as a forward's. A relay that cost more than it brought (negative) is an
+    /// expense of routing: Cr Channels |a|; Dr RoutingFees |a|.
+    /// </summary>
+    private static string? PostTrampolineRelaySettled(AccountingEventModel e, Lines lines)
+    {
+        lines.Add(AccountRole.Channels, e.AmountMsat);
+        lines.Add(e.AmountMsat >= 0 ? AccountRole.Routing : AccountRole.RoutingFees, -e.AmountMsat);
+        return null;
+    }
+
     /// <summary>AmountMsat = −v: Cr Channels v; Dr LossOnchain v (a gain the other way round). Also the rule of an
     /// <see cref="AccountingEventKind.InvoiceLostOnchain"/> (NL-688): the HTLC amount its <c>InvoiceSettled</c> left in
     /// the channels, which the close never took out (an incoming HTLC is not in our balance at the close).</summary>
@@ -218,6 +237,20 @@ public static class AccountingPostingRules
     {
         lines.Add(AccountRole.Channels, e.AmountMsat);
         lines.Add(e.Kind == AccountingEventKind.PushSent ? AccountRole.PushSent : AccountRole.PushReceived,
+                  -e.AmountMsat);
+        return null;
+    }
+
+    /// <summary>
+    /// A liquidity purchase (liquidity ads, NL-850): AmountMsat is the channel's change, -fee when we bought (Cr Channels
+    /// fee; Dr LiquidityFees fee) and +fee when we sold (Dr Channels fee; Cr LiquidityIncome fee). No on-chain value
+    /// moves: the fee changed hands in the commitment, and the funding's or splice's own event books our contribution
+    /// without it.
+    /// </summary>
+    private static string? PostLiquidityFee(AccountingEventModel e, Lines lines)
+    {
+        lines.Add(AccountRole.Channels, e.AmountMsat);
+        lines.Add(e.Kind == AccountingEventKind.LiquidityFeePaid ? AccountRole.LiquidityFees : AccountRole.LiquidityIncome,
                   -e.AmountMsat);
         return null;
     }
@@ -450,6 +483,13 @@ public static class AccountingPostingRules
         var source = Text(e, AccountingDetailKeys.Source);
         var purpose = Text(e, AccountingDetailKeys.Purpose);
         return purpose is null ? source : $"{source ?? "?"}, {purpose}";
+    }
+
+    private static string? LiquidityPurchase(AccountingEventModel e)
+    {
+        var kind = Text(e, AccountingDetailKeys.Kind);
+        var requested = Text(e, AccountingDetailKeys.RequestedSat);
+        return requested is null ? kind : $"{kind ?? "purchase"}, {requested} sat requested";
     }
 
     private static string WithDetail(string text, string? detail) =>

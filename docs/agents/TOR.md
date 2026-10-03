@@ -12,7 +12,7 @@ whole reply, authenticates with COOKIE or a password only, detaches its services
 | `Node:Tor:Mode` | Outbound `.onion` | Outbound IPv4/IPv6/DNS | Onion service (`OnionServiceEnabled` unset) | BOLT 10 DNS seeds | Fee / Esplora HTTP | Accounting price HTTP |
 |---|---|---|---|---|---|---|
 | `Off` (default) | refused: "set Node:Tor:Mode" | direct | off | as configured | direct | direct |
-| `Hybrid` | through Tor | direct | off (set `OnionServiceEnabled` true to publish one) | as configured | direct (a `.onion` URL through Tor) | through Tor (NL-677) |
+| `Hybrid` | through Tor | direct | off (set `OnionServiceEnabled` true to publish one) | as configured | direct (a `.onion` URL through Tor) | through Tor (NL-677); direct with `Accounting:Prices:ThroughTor=false` (NL-868) |
 | `TorOnly` | through Tor | through Tor (exit), host names resolved by Tor; loopback and private-network IPs direct | on | through Tor (`Bootstrap:TorNameServer`, NL-571) | through Tor | through Tor |
 
 In every mode with Tor on, the node's HTTP clients reach a loopback or private-network IP literal and `localhost`
@@ -21,6 +21,17 @@ directly (Tor refuses them; a self-hosted mempool or Esplora on the host or LAN)
 is on, `Hybrid` included (owner decision (a) on NL-677, 2026-10-02): the hours it asks for mark when the node moved
 money (SECURITY_REVIEW SR-21), so they never go out from the node's IP once Tor is configured; with Tor `Off` they
 still do (use `Accounting:Prices:Source=Csv` and `accounting prices import` to ask nothing).
+
+mempool.space's clearnet API refuses Tor exits (NL-868, seen on Mutinynet 2026-10-03: every request through Tor timed out
+at 30 s, the financial book stayed unvalued). With Tor on, set `Accounting:Prices:Url` to its onion service
+`http://mempoolhqx4isw62xs7abwphsq7ldayuidyx2v2oethdhhj6mlo2r6ad.onion/api/v1/historical-price`
+(`AccountingPriceOptions.MempoolOnionUrl`; plain `http://` to a `.onion` host is allowed, NL-678): the recommended value.
+`DefaultUrl` stays the clearnet API, and its first failure through Tor logs one hint naming the onion URL. The other
+choice, per node, is `Accounting:Prices:ThroughTor`: unset (default) follows the table above, `false` asks a clearnet
+URL directly in `Hybrid` (a `.onion` URL still goes through Tor) at the price of NL-677's privacy (mempool.space sees
+from the node's IP the hours in which it moved money), `true` forces Tor. `true` with Tor `Off` and `false` in `TorOnly`
+refuse the start. Source failures are one warning per back-valuation round (the count of hours that failed), each
+request's failure at Debug.
 
 `Hybrid` is the "clearnet node that can peer with Tor-only nodes" setting. `TorOnly` is the private node.
 
@@ -206,8 +217,8 @@ set `OnionServiceEnabled` false, host the onion service in Arti's own configurat
   Tor's real SOCKS5 refusal (`0x06`, no circuits in that sandbox). The Docker proof against CLN came later (NL-572,
   next item).
 - Docker interop with CLN over Tor (NL-572, `test/NLightning.Integration.Tests/Docker/Interop/Tor/ClnTorInteropTests`,
-  fixture `Fixtures/TorInteropFixture`, trait `Category=Interop.Tor`; `scripts/run-interop.sh tor`, 3.5-5 min from
-  the host; **needs Internet**: the onion services are on the public Tor network). A C Tor client (`nltg-tor`, image
+  fixture `Fixtures/Tor/TorInteropFixture`, trait `Category=Interop.Tor`; `scripts/run-interop.sh tor`, 3.5-5 min from
+  the host; the one suite left on Docker since NL-866, the others run on the cluster harness; **needs Internet**: the onion services are on the public Tor network). A C Tor client (`nltg-tor`, image
   `nltg-tor:alpine3.22` built from `test/Docker/tor` when missing: Alpine's tor, control port with a hashed password,
   `SocksPort`/`ControlPort` published on the host's `127.0.0.1`) hosts CLN's onion service from `torrc`
   (`HiddenServiceDir`); CLN v26.06.8 (`nltg-tor-cln`) shares the Tor container's network namespace, listens on

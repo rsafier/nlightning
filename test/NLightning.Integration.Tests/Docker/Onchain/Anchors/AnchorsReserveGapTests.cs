@@ -34,7 +34,7 @@ using Utils;
 /// estimate is about 1,500 sat). The refusal is read from the open's exception message, which must name the anchors
 /// reserve; that nothing stays locked is read from <c>IUtxoMemoryRepository.GetLockedBalance</c> (channel locks and
 /// fee reservations), since the confirmed balance counts locked outputs too. Run with
-/// <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.
+/// <c>scripts/run-cluster.sh -n 1 --suite anchors</c>.
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 [Trait("Category", AnchorsChannelTests.AnchorsCategory)]

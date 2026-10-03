@@ -145,4 +145,52 @@ public static class ChainSync
 
         throw new TimeoutException($"{lnd.LocalAlias} swept no output of {closingTxId} within {maxBlocks} blocks");
     }
+
+    /// <summary>
+    /// Makes sure <paramref name="lnd"/> can fund <paramref name="minSat"/> from confirmed wallet outputs that no lease
+    /// holds, keeping its anchors reserve: LND's sweeper leases wallet outputs as fee inputs of its anchor and HTLC
+    /// sweeps (after an earlier test's force close), and alice's open right after found "not enough witness outputs to
+    /// create funding transaction, need 0.01000000 BTC only have 0 BTC available" (NL-842). When short, the miner sends
+    /// two outputs of 0.1 BTC (the next sweep may lease one), mines a block and waits until LND counts them.
+    /// </summary>
+    /// <exception cref="TimeoutException">LND did not count the coins in time.</exception>
+    public static async Task EnsureLndSpendableAsync(LightningRegtestNetworkFixture fixture, LndNodeConnection lnd,
+                                                     long minSat, IEnumerable<NLightningTestNode> nodes,
+                                                     CancellationToken cancellationToken)
+    {
+        var nodeList = nodes.ToList();
+        var spendable = await SpendableSatAsync(lnd, cancellationToken);
+        if (spendable >= minSat)
+            return;
+
+        Console.WriteLine($"{lnd.LocalAlias} can spend {spendable} sat, needs {minSat}: funding it");
+        for (var i = 0; i < 2; i++)
+        {
+            var address = await lnd.LightningClient.NewAddressAsync(
+                              new NewAddressRequest
+                              {
+                                  Type = NLightning.Testing.Lnd.Lnrpc.AddressType.WitnessPubkeyHash
+                              }, cancellationToken: cancellationToken);
+            await fixture.Bitcoin.SendToAddressAsync(BitcoinAddress.Create(address.Address, Network.RegTest),
+                                                     Money.Coins(0.1m), cancellationToken: cancellationToken);
+        }
+
+        await MineAndWaitAsync(fixture, 1, fixture.LndNodes, nodeList, cancellationToken);
+        var deadline = DateTime.UtcNow + DefaultTimeout;
+        while ((spendable = await SpendableSatAsync(lnd, cancellationToken)) < minSat)
+        {
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException($"{lnd.LocalAlias} can spend {spendable} sat after its funding, needs {minSat}");
+
+            await Task.Delay(s_pollInterval, cancellationToken);
+        }
+    }
+
+    /// <summary>Confirmed wallet balance, less leased outputs and the anchors reserve.</summary>
+    private static async Task<long> SpendableSatAsync(LndNodeConnection lnd, CancellationToken cancellationToken)
+    {
+        var balance = await lnd.LightningClient.WalletBalanceAsync(new WalletBalanceRequest(),
+                                                                   cancellationToken: cancellationToken);
+        return balance.ConfirmedBalance - balance.LockedBalance - balance.ReservedBalanceAnchorChan;
+    }
 }

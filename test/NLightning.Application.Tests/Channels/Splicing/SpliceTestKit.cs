@@ -64,6 +64,7 @@ internal sealed class SpliceHarness : IDisposable
     public const uint FeeratePerKw = 1_000;
 
     private readonly Dictionary<string, SpliceNode> _nodes = [];
+    private readonly Action<string, NodeOptions>? _configureNode;
 
     public TwoNodeHarness Harness { get; }
 
@@ -87,11 +88,15 @@ internal sealed class SpliceHarness : IDisposable
     /// <param name="announceChannel">A public channel (<see cref="TwoNodeHarness"/>'s <c>announceChannel</c>; lane SP2-B).</param>
     /// <param name="configureServices">Adds or replaces services of each node after the splice services (last
     /// registration wins; lane SP2-B).</param>
+    /// <param name="configureNode">Per-node node options, e.g. the liquidity ads rates a node sells at (NL-850; the
+    /// other node sees them as its peer's <c>init</c> rates).</param>
     public SpliceHarness(Action<string, SpliceOptions>? configureSplice = null, bool realEngine = false,
                          bool announceChannel = false,
-                         Action<HarnessNode, IServiceCollection>? configureServices = null)
+                         Action<HarnessNode, IServiceCollection>? configureServices = null,
+                         Action<string, NodeOptions>? configureNode = null)
     {
         RealEngine = realEngine;
+        _configureNode = configureNode;
         Harness = new TwoNodeHarness(announceChannel: announceChannel,
                                      configureServices: (node, services) =>
                                      {
@@ -133,6 +138,7 @@ internal sealed class SpliceHarness : IDisposable
     {
         node.Sessions.DiscardStaged();
         node.FundingRows.DiscardStaged();
+        node.Purchases.DiscardStaged();
         RestorePendingFundingsFromRows(node);
         var restarted = await Harness.RestartNodeAsync(node.Node);
         AttachNode(node, restarted);
@@ -336,8 +342,15 @@ internal sealed class SpliceHarness : IDisposable
         options.Features.AllowExperimentalFeatures = true;
         options.Features.OptionQuiesce = FeatureSupport.Optional;
         options.Features.OptionSplice = FeatureSupport.Optional;
+        _configureNode?.Invoke(node.Name, options);
+        spliceNode.Options = options;
         services.AddSingleton(Options.Create(options));
         services.Configure<SpliceOptions>(o => configure?.Invoke(node.Name, o));
+
+        // Liquidity ads (NL-850): the other node's rates are this node's peer's init rates
+        var peerName = node.Name == "Alice" ? "Bob" : "Alice";
+        SpliceLiquidityTestKit.AddLiquidityAds(
+            services, () => _nodes.GetValueOrDefault(peerName)?.Options?.LiquidityAds.GetWillFundRates());
 
         // SP1-C's signer members: the proxy over the harness's real signer, unless the real ones run
         if (!RealEngine)
@@ -399,6 +412,12 @@ internal sealed class SpliceNode(string name)
 
     /// <summary>The <c>ChannelFundings</c> rows of the node (real-engine mode; staged, then committed by a save).</summary>
     public InMemoryChannelFundingRepository FundingRows { get; } = new();
+
+    /// <summary>The <c>LiquidityPurchases</c> rows of the node (NL-850; staged, then committed by a save).</summary>
+    public InMemorySpliceLiquidityPurchases Purchases { get; } = new();
+
+    /// <summary>The node options of the node's current process.</summary>
+    public NodeOptions? Options { get; set; }
 
     /// <summary>Funding spends the channel manager handed to the on-chain watcher (a close, never a splice).</summary>
     public ConcurrentQueue<OutpointSpentEventArgs> FundingSpends { get; } = new();
@@ -480,6 +499,7 @@ internal sealed class SpliceNode(string name)
         unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(broadcasts.Object);
         unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(FundingRows);
         unitOfWork.SetupGet(u => u.WatchedOutpointDbRepository).Returns(outpoints.Object);
+        unitOfWork.SetupGet(u => u.LiquidityPurchaseDbRepository).Returns(Purchases);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             try
@@ -498,6 +518,7 @@ internal sealed class SpliceNode(string name)
                 Sessions.DiscardStaged();
                 Port?.DiscardStaged();
                 FundingRows.DiscardStaged();
+                Purchases.DiscardStaged();
                 stagedBroadcasts.Clear();
                 stagedWatches.Clear();
                 stagedOutpoints.Clear();
@@ -508,6 +529,7 @@ internal sealed class SpliceNode(string name)
             Sessions.Commit();
             Port?.Commit();
             FundingRows.Commit();
+            Purchases.Commit();
             Broadcasts.AddRange(stagedBroadcasts);
             Watches.AddRange(stagedWatches);
             WatchedOutpoints.AddRange(stagedOutpoints);

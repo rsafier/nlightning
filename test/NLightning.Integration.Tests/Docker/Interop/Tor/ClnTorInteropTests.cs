@@ -14,6 +14,7 @@ using Domain.Node.Options;
 using Domain.Node.ValueObjects;
 using Domain.Payments.Enums;
 using Fixtures;
+using Fixtures.Tor;
 using Infrastructure.Transport.Tor;
 using Utils;
 
@@ -50,16 +51,26 @@ public sealed class ClnTorInteropTests : IAsyncLifetime
         Console.SetOut(new TestOutputWriter(output));
     }
 
+    /// <summary>
+    /// Why the class runs on Docker only: its fixture runs Tor in a container on the public Tor network, which the
+    /// cluster harness does not have yet (plan phase 4); the CLN suite's cluster port leaves it on Docker.
+    /// </summary>
+    internal const string DockerOnlyReason =
+        "the Tor interop fixture (Tor client and an onion-only CLN on the public Tor network) is Docker-only";
+
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
     public async ValueTask DisposeAsync()
     {
+        if (TestBackend.IsCluster)
+            return;
+
         Console.WriteLine("[cln] CLN unusual/broken log lines so far:\n"
                         + await _fixture.Cln.GetLogLinesAsync(string.Empty, CancellationToken.None, 100, "unusual"));
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             Console.WriteLine("[tor] log tail:\n" + await _fixture.GetTorLogAsync(80, CancellationToken.None));
-            await DockerDiagnostics.DumpContainerLogsAsync([TorInteropFixture.ClnContainerName], 300);
+            await _fixture.DumpClnLogAsync(300);
         }
 
         foreach (var keyFile in _keyFiles)
@@ -82,6 +93,8 @@ public sealed class ClnTorInteropTests : IAsyncLifetime
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_AHybridNode_When_ItDialsClnsOnionService_Then_AChannelOpensAndPaysBothWays()
     {
+        TestBackend.SkipOnCluster(DockerOnlyReason);
+
         // Arrange
         var ct = TestContext.Current.CancellationToken;
         await using var node = await CreateNodeAsync("nltg-tor-hybrid", TorMode.Hybrid, onionService: false);
@@ -105,6 +118,8 @@ public sealed class ClnTorInteropTests : IAsyncLifetime
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_ATorOnlyNodeWithAChannelToCln_When_TorRestarts_Then_ItReconnectsAndPaysAgain()
     {
+        TestBackend.SkipOnCluster(DockerOnlyReason);
+
         // Arrange: Tor-only, onion service up
         var ct = TestContext.Current.CancellationToken;
         await using var node = await CreateNodeAsync("nltg-tor-only", TorMode.TorOnly, onionService: true);
@@ -137,6 +152,8 @@ public sealed class ClnTorInteropTests : IAsyncLifetime
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_ATorOnlyNodesOnionService_When_ClnDialsItAndFundsAChannel_Then_PaymentsWorkBothWays()
     {
+        TestBackend.SkipOnCluster(DockerOnlyReason);
+
         // Arrange
         var ct = TestContext.Current.CancellationToken;
         await using var node = await CreateNodeAsync("nltg-tor-inbound", TorMode.TorOnly, onionService: true);

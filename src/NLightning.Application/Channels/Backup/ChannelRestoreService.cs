@@ -186,16 +186,14 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
 
         // The chain monitor is the outpoint watcher: its blocks drive the checks of unresolved splices
         _blockchainMonitor = outpointWatcher as IBlockchainMonitor;
-        if (_blockchainMonitor is not null)
-            _blockchainMonitor.OnNewBlockDetected += HandleNewBlock;
+        _blockchainMonitor?.OnNewBlockDetected += HandleNewBlock;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>Stops the background spend searches and reconnections.</summary>
     public void Dispose()
     {
-        if (_blockchainMonitor is not null)
-            _blockchainMonitor.OnNewBlockDetected -= HandleNewBlock;
+        _blockchainMonitor?.OnNewBlockDetected -= HandleNewBlock;
         if (!_backgroundCts.IsCancellationRequested)
             _backgroundCts.Cancel();
         _backgroundCts.Dispose();

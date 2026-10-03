@@ -15,6 +15,7 @@ using Domain.Protocol.Payloads;
 internal sealed class SyntheticGraph
 {
     private readonly List<GraphChannel> _channels = [];
+    private readonly List<GraphNode> _nodes = [];
 
     /// <summary>The timestamp of every policy.</summary>
     public uint Timestamp { get; init; } = 1_700_000_000;
@@ -37,7 +38,14 @@ internal sealed class SyntheticGraph
         return this;
     }
 
-    public GraphSnapshot Build() => new(_channels, []);
+    /// <summary>Adds a node announcement (e.g. to advertise its features).</summary>
+    public SyntheticGraph Node(GraphNode node)
+    {
+        _nodes.Add(node);
+        return this;
+    }
+
+    public GraphSnapshot Build() => new(_channels, _nodes);
 
     private GraphPolicy ToPolicy(Policy policy, byte direction) =>
         new(Timestamp, ChannelUpdatePayload.MessageFlagMustBeOne,
