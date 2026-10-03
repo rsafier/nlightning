@@ -59,6 +59,8 @@ public sealed partial class CdkMintdInteropTests
         await using var mintNode = await NLightningTestNode.CreateAsync(_fixture.Bitcoin, "nltg-cashu-mint");
         mintNode.ExtraConfiguration["Cashu:PaymentProcessor:Enabled"] = "true";
         mintNode.ExtraConfiguration["Cashu:PaymentProcessor:Port"] = processorPort.ToString();
+        // h2c on loopback, as cdk-mintd's allow_insecure on its side (NL-998)
+        mintNode.ExtraConfiguration["Cashu:PaymentProcessor:AllowInsecureLoopback"] = "true";
         await using var payer = await NLightningTestNode.CreateAsync(_fixture.Bitcoin, "nltg-cashu-payer");
         await mintNode.StartAsync(ct);
         await payer.StartAsync(ct);

@@ -54,7 +54,8 @@ public static class CashuPaymentProcessorServiceCollectionExtensions
     {
         public ValidateOptionsResult Validate(string? name, CashuPaymentProcessorOptions options)
         {
-            var isMainnet = nodeOptions?.Value.BitcoinNetwork == BitcoinNetwork.Mainnet;
+            // Without the node's options the network is unknown: checked as mainnet
+            var isMainnet = nodeOptions is null || nodeOptions.Value.BitcoinNetwork == BitcoinNetwork.Mainnet;
             var errors = options.GetValidationErrors(isMainnet);
             return errors.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(errors);
         }

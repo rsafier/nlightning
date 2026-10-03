@@ -587,6 +587,9 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     }
 
     /// <inheritdoc />
+    public bool IsPaying(Hash paymentHash) => _sessions.ContainsKey(paymentHash);
+
+    /// <inheritdoc />
     public async Task<PaymentModel?> GetPaymentAsync(Hash paymentHash, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -1795,7 +1798,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             }
 
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
-            LogFailed(payment);
+            // A failure another path already recorded for good was published by that path
+            LogFailed(payment, publish: recordFailure);
         }
 
         if (session.IsTrampolineRelay)
@@ -2684,14 +2688,16 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
 
     /// <summary>
     /// Logs a payment that succeeded and tells the payment event subscribers (Cashu plan C0, NL-991). Every caller
-    /// calls it after the save that marked the payment succeeded.
+    /// calls it after the save that marked the payment succeeded. A trampoline relay's outgoing leg (NL-875) is not one
+    /// of our payments: its relay hears of it (<c>ReportLegSucceeded</c>) and nothing is published, as nothing is
+    /// booked.
     /// </summary>
     private void LogSucceeded(PaymentModel payment)
     {
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Payment {PaymentHash} succeeded ({Amount} msat, fee {Fee} msat)",
                                    payment.PaymentHash, payment.Amount.MilliSatoshi, payment.Fee.MilliSatoshi);
-        if (payment.Preimage is { } preimage)
+        if (!payment.IsTrampolineRelay && payment.Preimage is { } preimage)
             _paymentEventPublisher?.Publish(new PaymentSucceededEvent(payment.PaymentHash, payment.Amount, payment.Fee,
                                                                       preimage,
                                                                       payment.CompletedAt
@@ -2699,14 +2705,16 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     }
 
     /// <summary>
-    /// Logs a payment that failed and tells the payment event subscribers (Cashu plan C0, NL-991). Every caller calls
-    /// it after the save that marked the payment failed.
+    /// Logs a payment that failed and tells the payment event subscribers (Cashu plan C0, NL-991) unless
+    /// <paramref name="publish"/> is false (its failure was published before). Every caller calls it after the save
+    /// that marked the payment failed. A trampoline relay's outgoing leg is not published (see
+    /// <see cref="LogSucceeded"/>).
     /// </summary>
-    private void LogFailed(PaymentModel payment)
+    private void LogFailed(PaymentModel payment, bool publish = true)
     {
         if (_logger.IsEnabled(LogLevel.Warning))
             _logger.LogWarning("Payment {PaymentHash} failed: {Reason}", payment.PaymentHash, payment.FailureReason);
-        if (payment.Status == PaymentStatus.Failed)
+        if (publish && payment is { IsTrampolineRelay: false, Status: PaymentStatus.Failed })
             _paymentEventPublisher?.Publish(new PaymentFailedEvent(payment.PaymentHash, payment.FailureReason,
                                                                    payment.CompletedAt ?? _timeProvider.GetUtcNow()));
     }

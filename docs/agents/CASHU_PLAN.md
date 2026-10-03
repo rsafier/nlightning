@@ -166,7 +166,7 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
 **`waitinvoice <payment_hash> [--timeout <s>]`**
 - Subscribes first, then reads the invoice, then waits. A settle between the read and the wait is never missed.
 - Answers with the invoice when it is no longer `Open`, or with its current state on timeout.
-- The timeout defaults to 60 s, with a maximum of 3,600 s.
+- The timeout defaults to 60 s, with a maximum of 300 s (one IPC pipe instance is held for the wait, as for `payinvoice`); without an event the invoice is read again every 5 s.
 
 ### C1 design
 
@@ -205,7 +205,7 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
 
 **Amounts**
 - Converted with `LightningMoney`, in the configured unit (`sat` or `msat`).
-- A received amount in sat is floored. An amount to pay that is not whole sats is refused for `sat`.
+- A received amount in sat is floored. An amount to pay that is not whole sats is quoted rounded up to the next sat (the mint charges at most 1 sat more) and paid exactly (as built; the first design refused it).
 
 ## 5. Open decisions
 
@@ -217,8 +217,8 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
    - `Grpc.AspNetCore` supports AOT with source-generated protobuf code.
    - The AOT analyzer must stay at 0 warnings in the daemon build.
 3. **Exposure.**
-   - Default loopback with no TLS, for a mint on the same host.
-   - Anything else needs the TLS directory with the CDK layout (`server.pem`/`server.key`, `ca.pem` for mTLS client verification).
+   - Loopback; mutual TLS with the CDK layout (`server.pem`/`server.key`, `ca.pem` for client verification) unless the operator sets `AllowInsecureLoopback` on a single-user host (integration review, NL-998).
+   - Off loopback, mutual TLS is required.
 4. **Mainnet.** Off unless `AllowMainnet`. A mint is a custodial service: the operator owes the outstanding ecash.
 5. **Accounting.**
    - The first cut labels mint invoices and payments `cashu-mint` (A3 labels), so their books show the mint's flows.
@@ -244,40 +244,55 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
   - Both values are rounded up to the unit.
   - Refuses `mpp` options, and a unit other than ours.
 - `MakePayment` (bolt11):
-  - `PayInvoiceAsync`, with `MaxFee` = `max_fee_amount` (or the reserve), the label, and a wait of `PaymentTimeoutSeconds` (60). Payment states map as Succeeded→PAID, Failed→FAILED, in flight→PENDING.
+  - `PayInvoiceAsync`, with `MaxFee` = `max_fee_amount` (or the reserve), the label, and a wait of `PaymentTimeoutSeconds` (60). Payment states map as Succeeded→PAID, Failed→FAILED, in flight→PENDING. A row that reads Failed while the payment service still retries the payment (`IPaymentService.IsPaying`) is PENDING: CDK takes FAILED as final and gives the ecash back (NL-999, integration review).
   - `total_spent` = amount + fee, rounded up. `payment_proof` = the preimage hex.
-  - A duplicate hash answers with the stored payment.
+  - A duplicate hash answers with the stored payment when it is the mint's (its label, not a trampoline relay's leg); a payment of the node outside the mint is `FailedPrecondition`.
   - A bad invoice or amount is `InvalidArgument`.
-  - The request's `quote_id` is remembered for the event stream.
-- `CheckIncomingPayment`: a Settled invoice gives one payment. The received amount is rounded down. `payment_id` is the hash.
-- `CheckOutgoingPayment`: the stored payment, or `UNKNOWN`.
+  - The request's `quote_id` is remembered for the event stream until the payment's outcome is final; a final answer (PAID or FAILED) forgets it.
+- `CreatePayment` errors (an amount that overflows, a description too long for BOLT 11) are `InvalidArgument`.
+- `CheckIncomingPayment`: a Settled invoice of the mint (its label) gives one payment. The received amount is rounded down. `payment_id` is the hash.
+- `CheckOutgoingPayment`: the stored payment of the mint, or `UNKNOWN` (another payment of the node is not the mint's to read, preimage included).
 - `WaitPaymentEvent`: one `IPaymentEventSource` subscription per stream.
   - `payment_received` for invoices settled with our label.
   - `payment_successful` / `payment_failed` for payments with a remembered quote id.
+  - A subscription that overflowed ends the stream with `UNAVAILABLE`, so the mint subscribes again and checks its quotes.
 
 **Startup refusals**
-- An enabled processor on mainnet without `AllowMainnet`.
-- A non-loopback `ListenAddress` without `TlsDirectory`.
+- An enabled processor on mainnet without `AllowMainnet` (also when the node's network is unknown).
+- A non-loopback `ListenAddress` without mutual TLS (`TlsDirectory` with `server.pem`, `server.key` and `ca.pem`).
+- A loopback listener without client authentication (no `TlsDirectory`, or no `ca.pem`) unless `AllowInsecureLoopback` (integration review, NL-998): without it every local process and user could pay from the node's channels through `MakePayment`. `cdk-mintd`'s `grpcprocessor` client speaks only mTLS (`tls_dir`) or plaintext (`allow_insecure`), so there is no token to require instead.
 - A `TlsDirectory` without `server.pem`/`server.key`.
 - A unit other than `sat`/`msat`.
 
 **TLS**
-- `ca.pem` in the `TlsDirectory` turns on mTLS: every client certificate must chain to that CA alone.
+- `ca.pem` in the `TlsDirectory` turns on mTLS: every client certificate must chain to that CA alone and allow client authentication (the TLS client EKU when it lists EKUs; the server's certificate of the same CA is refused as a client).
 - `cdk-mintd`'s `tls_dir` holds `ca.pem`, `client.pem` and `client.key`.
+- The Kestrel instance reads no ambient configuration (no `appsettings.json` of the working directory, no environment variables), so a `Kestrel` section there cannot add a second, unchecked endpoint; a start that does not listen on exactly the configured address stops and fails.
 
 **Not yet**
 - BOLT 12 (`OfferService`/`IOfferPaymentService`), on-chain (NUT-30) and MPP melts (NUT-15).
 - Quote ids for `WaitPaymentEvent` are kept in memory. After a restart the mint learns outcomes through `CheckOutgoingPayment`.
 
-**Tests:** `test/NLightning.Daemon.Tests/Cashu/`. `CdkPaymentProcessorServiceTests` (10) run a real Kestrel server on a free loopback port and call it with the generated client; `CashuPaymentProcessorOptionsTests` cover the startup checks.
+**Tests:** `test/NLightning.Daemon.Tests/Cashu/`. `CdkPaymentProcessorServiceTests` (19 after the integration review) run a real Kestrel server on a free loopback port and call it with the generated client; `CashuPaymentProcessorOptionsTests` cover the startup checks.
 
 ### Running a mint on NLightning
 
 `appsettings.json` of the node:
 
+Mutual TLS (recommended; required off loopback and on a shared host):
+
 ```json
-"Cashu": { "PaymentProcessor": { "Enabled": true, "ListenAddress": "127.0.0.1", "Port": 50051, "Unit": "sat" } }
+"Cashu": { "PaymentProcessor": { "Enabled": true, "ListenAddress": "127.0.0.1", "Port": 50051, "Unit": "sat",
+                                 "TlsDirectory": "/path/to/node-tls" } }
 ```
+
+`/path/to/node-tls` holds `server.pem`, `server.key` (0600) and `ca.pem`; the mint's `tls_dir` holds the same `ca.pem` with `client.pem`/`client.key` signed by it for client authentication. Plaintext on loopback, for a single-user host only (any local process could pay from the node):
+
+```json
+"Cashu": { "PaymentProcessor": { "Enabled": true, "Port": 50051, "AllowInsecureLoopback": true } }
+```
+
+On mainnet add `"AllowMainnet": true` (a mint is custodial).
 
 `cdk-mintd` `config.toml` (v0.18):
 
@@ -290,8 +305,8 @@ unit = "sat"
 address = "127.0.0.1"
 port = 50051
 supported_units = ["sat"]
-allow_insecure = true          # required for the plaintext (loopback) processor; drop it with tls_dir
-# tls_dir = "/path/to/tls"     # ca.pem, client.pem, client.key (mTLS); then set the node's TlsDirectory too
+# tls_dir = "/path/to/tls"     # ca.pem, client.pem, client.key (mTLS), with the node's TlsDirectory
+allow_insecure = true          # only for the plaintext processor (the node's AllowInsecureLoopback)
 ```
 
 

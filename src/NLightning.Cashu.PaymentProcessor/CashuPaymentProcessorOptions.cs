@@ -31,11 +31,20 @@ public sealed class CashuPaymentProcessorOptions
     public int Port { get; set; } = DefaultPort;
 
     /// <summary>
-    /// A directory with <c>server.pem</c> and <c>server.key</c> (TLS) and, optionally, <c>ca.pem</c> (then every
-    /// client must present a certificate it signed: mutual TLS, the layout <c>cdk-mintd</c>'s <c>tls_dir</c> expects).
-    /// Empty: plain HTTP/2, allowed on loopback only.
+    /// A directory with <c>server.pem</c>, <c>server.key</c> and <c>ca.pem</c>: TLS where every client must present a
+    /// certificate <c>ca.pem</c> signed (mutual TLS, the layout <c>cdk-mintd</c>'s <c>tls_dir</c> expects). Empty: plain
+    /// HTTP/2 without client authentication, allowed on loopback only and only with
+    /// <see cref="AllowInsecureLoopback"/>.
     /// </summary>
     public string? TlsDirectory { get; set; }
+
+    /// <summary>
+    /// Allow a loopback listener without client authentication (plain HTTP/2, or TLS without <c>ca.pem</c>): every
+    /// local process and user can then pay invoices from the node's channels through <c>MakePayment</c>, as
+    /// <c>cdk-mintd</c>'s <c>allow_insecure</c> on its side. For a single-user host only. Off by default
+    /// (NL-998).
+    /// </summary>
+    public bool AllowInsecureLoopback { get; set; }
 
     /// <summary>The mint's unit: <c>sat</c> or <c>msat</c>.</summary>
     public string Unit { get; set; } = "sat";
@@ -71,10 +80,18 @@ public sealed class CashuPaymentProcessorOptions
 
         if (isMainnet && !AllowMainnet)
             errors.Add($"{SectionName} is refused on mainnet unless AllowMainnet is true (a mint is custodial).");
+        var hasTls = !string.IsNullOrWhiteSpace(TlsDirectory);
+        var authenticatesClients = hasTls && File.Exists(Path.Combine(TlsDirectory!, "ca.pem"));
         if (!IPAddress.TryParse(ListenAddress, out var address))
             errors.Add($"{SectionName}:ListenAddress '{ListenAddress}' is not an IP address.");
-        else if (!IPAddress.IsLoopback(address) && string.IsNullOrWhiteSpace(TlsDirectory))
-            errors.Add($"{SectionName}:ListenAddress {ListenAddress} is not loopback: set TlsDirectory.");
+        else if (!IPAddress.IsLoopback(address) && !authenticatesClients)
+            errors.Add($"{SectionName}:ListenAddress {ListenAddress} is not loopback: set TlsDirectory with "
+                     + "server.pem, server.key and ca.pem (mutual TLS); anyone who reaches the port could otherwise "
+                     + "pay from the node.");
+        else if (!authenticatesClients && !AllowInsecureLoopback)
+            errors.Add($"{SectionName} has no client authentication ({(hasTls ? "no ca.pem" : "no TlsDirectory")}): "
+                     + "any local process could pay from the node. Set TlsDirectory with server.pem, server.key and "
+                     + "ca.pem (mutual TLS), or AllowInsecureLoopback=true on a single-user host.");
         if (Port is < 0 or > 65_535)
             errors.Add($"{SectionName}:Port {Port} is outside 0-65535 (0: any free port).");
         if (!string.Equals(Unit, "sat", StringComparison.OrdinalIgnoreCase) && !IsMsat)

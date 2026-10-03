@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -19,16 +20,20 @@ namespace NLightning.Cashu.PaymentProcessor;
 /// </summary>
 /// <remarks>
 /// The server has its own small service provider (gRPC and Kestrel only); the service instance comes from the node's
-/// provider, so it uses the node's invoice, payment and event services. Without <c>TlsDirectory</c> it serves
-/// HTTP/2 without TLS (h2c, what <c>cdk-mintd</c> uses without <c>tls_dir</c>), which the options allow on loopback
-/// only. With it, it serves TLS with <c>server.pem</c>/<c>server.key</c>, and when <c>ca.pem</c> is there too every
-/// client must present a certificate that CA signed.
+/// provider, so it uses the node's invoice, payment and event services, and no ambient configuration (only the one
+/// checked endpoint). Without <c>TlsDirectory</c> it serves HTTP/2 without TLS (h2c, what <c>cdk-mintd</c> uses with
+/// <c>allow_insecure</c>), which the options allow on loopback only with <c>AllowInsecureLoopback</c>. With it, it
+/// serves TLS with <c>server.pem</c>/<c>server.key</c>, and with <c>ca.pem</c> (required off loopback) every client
+/// must present a certificate that CA signed for client authentication.
 /// </remarks>
 public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
 {
     private readonly ILogger<CashuPaymentProcessorHost> _logger;
     private readonly CashuPaymentProcessorOptions _options;
     private readonly IServiceProvider _serviceProvider;
+    /// <summary>The TLS web client authentication extended key usage.</summary>
+    private const string ClientAuthenticationOid = "1.3.6.1.5.5.7.3.2";
+
     private WebApplication? _app;
 
     public CashuPaymentProcessorHost(IServiceProvider serviceProvider,
@@ -43,13 +48,23 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
     /// <summary>The port the server listens on once started (the configured one, or the one picked for port 0).</summary>
     public int? BoundPort { get; private set; }
 
+    /// <summary>The addresses the server listens on once started (exactly one).</summary>
+    internal IReadOnlyList<string> ListeningAddresses { get; private set; } = [];
+
     /// <inheritdoc />
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (!_options.Enabled)
             return;
 
-        var builder = WebApplication.CreateSlimBuilder();
+        // No ambient configuration (appsettings.json in the working directory, environment variables): a Kestrel
+        // section there would add endpoints beside the checked one (NL-998)
+        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
+        {
+            Args = [],
+            ContentRootPath = AppContext.BaseDirectory
+        });
+        builder.Configuration.Sources.Clear();
         builder.Logging.ClearProviders();
         builder.Services.AddSingleton(_serviceProvider.GetRequiredService<ILoggerFactory>());
         builder.Services.AddSingleton(typeof(ILogger<>), typeof(Logger<>));
@@ -65,11 +80,25 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
         await app.StartAsync(cancellationToken);
         _app = app;
 
-        var addresses = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()?.Addresses;
-        BoundPort = addresses?.Select(a => new Uri(a).Port).FirstOrDefault(_options.Port) ?? _options.Port;
+        var addresses = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()?.Addresses
+                     ?? [];
+        if (addresses.Count != 1)
+        {
+            await StopAsync(CancellationToken.None);
+            throw new InvalidOperationException("The Cashu payment processor must listen on exactly its configured "
+                                              + $"address, not on {string.Join(", ", addresses)}.");
+        }
+
+        ListeningAddresses = [.. addresses];
+        BoundPort = new Uri(addresses.First()).Port;
+        var transport = string.IsNullOrWhiteSpace(_options.TlsDirectory)
+                            ? "h2c, no client authentication"
+                            : HasCa(_options.TlsDirectory) ? "mutual TLS" : "TLS, no client authentication";
         _logger.LogInformation("Cashu payment processor listening on {Address}:{Port} ({Transport}, unit {Unit})",
-                               _options.ListenAddress, BoundPort,
-                               string.IsNullOrWhiteSpace(_options.TlsDirectory) ? "h2c" : "TLS", _options.Unit);
+                               _options.ListenAddress, BoundPort, transport, _options.Unit);
+        if (!transport.StartsWith("mutual", StringComparison.Ordinal))
+            _logger.LogWarning("The Cashu payment processor authenticates no client (AllowInsecureLoopback): every "
+                             + "local process can pay from this node through it");
     }
 
     /// <inheritdoc />
@@ -100,7 +129,7 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
         var certificate = X509Certificate2.CreateFromPemFile(Path.Combine(directory, "server.pem"),
                                                              Path.Combine(directory, "server.key"));
         var caPath = Path.Combine(directory, "ca.pem");
-        var ca = File.Exists(caPath) ? X509CertificateLoader.LoadCertificateFromFile(caPath) : null;
+        var ca = HasCa(directory) ? X509CertificateLoader.LoadCertificateFromFile(caPath) : null;
         listen.UseHttps(https =>
         {
             https.ServerCertificate = certificate;
@@ -115,12 +144,27 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
     /// <summary>
     /// Whether <paramref name="certificate"/> chains to <paramref name="ca"/> alone (custom trust, no system roots).
     /// </summary>
+    /// <remarks>
+    /// The certificate must allow client authentication (the TLS client EKU, when it lists EKUs). No revocation check:
+    /// the CA is the operator's own for this one mint.
+    /// </remarks>
     internal static bool IsSignedBy(X509Certificate2 certificate, X509Certificate2 ca)
     {
         using var chain = new X509Chain();
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
         chain.ChainPolicy.CustomTrustStore.Add(ca);
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-        return chain.Build(certificate);
+        chain.ChainPolicy.ApplicationPolicy.Add(new Oid(ClientAuthenticationOid));
+        try
+        {
+            return chain.Build(certificate);
+        }
+        finally
+        {
+            foreach (var element in chain.ChainElements)
+                element.Certificate.Dispose();
+        }
     }
+
+    private static bool HasCa(string directory) => File.Exists(Path.Combine(directory, "ca.pem"));
 }

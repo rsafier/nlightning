@@ -21,6 +21,7 @@ using Domain.Node;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Payments.Enums;
+using Domain.Payments.Events;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.Trampoline;
@@ -28,6 +29,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.ValueObjects;
+using Events;
 using Harness;
 
 /// <summary>
@@ -220,6 +222,85 @@ public class TrampolineRelayE2ETests
         Assert.DoesNotContain(await UnsealedEventsAsync(harness.T),
                               e => e.Kind == AccountingEventKind.TrampolineRelaySettled);
         harness.AssertQuiescent();
+    }
+
+    #endregion
+
+    #region Payment events (Cashu plan C0, NL-991)
+
+    [Fact]
+    public async Task Given_SubscribersOnEveryNode_When_APaysThroughT_Then_ASucceedsOnceCSettlesOnceAndTPublishesNothing()
+    {
+        // Arrange
+        await using var harness = await CreateAsync();
+        var invoice = await TrampolineHarness.CreateInvoiceAsync(harness.C, s_amount);
+        using var aEvents = SubscribeEvents(harness.A);
+        using var tEvents = SubscribeEvents(harness.T);
+        using var cEvents = SubscribeEvents(harness.C);
+
+        // Act
+        await harness.PumpUntilAsync(PayAsync(harness.A, invoice.Bolt11!, Through(harness.T)));
+        await WhenRelayIdleAsync(harness);
+
+        // Assert: A (the trampoline client) published its success with the trampoline fee, after its save
+        var succeeded = Assert.IsType<PaymentSucceededEvent>(await PaymentEventHubTests.ReadOneAsync(aEvents));
+        Assert.Equal(invoice.PaymentHash, succeeded.PaymentHash);
+        Assert.Equal(invoice.Preimage, succeeded.Preimage);
+        Assert.Equal(s_amount, succeeded.Amount);
+        Assert.Equal(s_trampolineFee, succeeded.Fee);
+        Assert.Equal(PaymentStatus.Succeeded,
+                     (await TrampolineHarness.GetPaymentAsync(harness.A, invoice.PaymentHash))!.Status);
+
+        // Assert: C (the trampoline target) published the settle after its save
+        var settled = Assert.IsType<InvoiceSettledEvent>(await PaymentEventHubTests.ReadOneAsync(cEvents));
+        Assert.Equal(invoice.PaymentHash, settled.PaymentHash);
+        Assert.Equal(s_amount, settled.Amount);
+        Assert.Equal(InvoiceStatus.Settled,
+                     (await TrampolineHarness.GetInvoiceAsync(harness.C, invoice.PaymentHash))!.Status);
+
+        // Assert: once each, and nothing for T's relay leg, a Succeeded relay payment that is not T's own
+        Assert.True((await TrampolineHarness.GetPaymentAsync(harness.T, invoice.PaymentHash))!.IsTrampolineRelay);
+        await AssertNoOtherEventAsync(harness.A, aEvents, invoice.PaymentHash);
+        await AssertNoOtherEventAsync(harness.C, cEvents, invoice.PaymentHash);
+        await AssertNoOtherEventAsync(harness.T, tEvents, invoice.PaymentHash);
+    }
+
+    [Fact]
+    public async Task Given_CRefusesThePayment_When_ARelayedPaymentFails_Then_AOnlyPublishesTheFailure()
+    {
+        // Arrange: C canceled its invoice
+        await using var harness = await CreateAsync();
+        var invoice = await TrampolineHarness.CreateInvoiceAsync(harness.C, s_amount);
+        Assert.True(await harness.C.Invoices.CancelInvoiceAsync(invoice.PaymentHash,
+                                                                TestContext.Current.CancellationToken));
+        using var aEvents = SubscribeEvents(harness.A);
+        using var tEvents = SubscribeEvents(harness.T);
+
+        // Act
+        var result = await harness.PumpUntilAsync(PayAsync(harness.A, invoice.Bolt11!, Through(harness.T)));
+        await WhenRelayIdleAsync(harness);
+
+        // Assert: A published one failure; T's failed relay leg published nothing
+        Assert.Equal(PaymentStatus.Failed, result.Payment.Status);
+        var failed = Assert.IsType<PaymentFailedEvent>(await PaymentEventHubTests.ReadOneAsync(aEvents));
+        Assert.Equal(invoice.PaymentHash, failed.PaymentHash);
+        Assert.Equal(PaymentStatus.Failed,
+                     (await TrampolineHarness.GetPaymentAsync(harness.T, invoice.PaymentHash))!.Status);
+        await AssertNoOtherEventAsync(harness.A, aEvents, invoice.PaymentHash);
+        await AssertNoOtherEventAsync(harness.T, tEvents, invoice.PaymentHash);
+    }
+
+    private static IPaymentEventSubscription SubscribeEvents(SwitchNode node) =>
+        node.Services.GetRequiredService<IPaymentEventSource>().Subscribe();
+
+    /// <summary>Publishes a marker on <paramref name="node"/> and asserts it is the next event read.</summary>
+    private static async Task AssertNoOtherEventAsync(SwitchNode node, IPaymentEventSubscription events, Hash hash)
+    {
+        node.Services.GetRequiredService<IPaymentEventPublisher>()
+            .Publish(new PaymentFailedEvent(hash, "marker", DateTimeOffset.UnixEpoch));
+        var next = Assert.IsType<PaymentFailedEvent>(await PaymentEventHubTests.ReadOneAsync(events));
+        Assert.Equal("marker", next.Reason);
+        Assert.False(events.Overflowed);
     }
 
     #endregion

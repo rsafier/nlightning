@@ -4,7 +4,7 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
-Updated 2026-10-03 by the Cashu integrator (branch `wip/cashu-int` from `origin/wip/cashu` at `b38d2686`, merged with `wip/fafo`): the Cashu entries are renumbered because `wip/fafo` landed NL-900, NL-903, NL-904 and NL-905 first: NL-900 → NL-990 (epic), NL-901 → NL-991 (C0), NL-902 → NL-992 (C1), NL-903 → NL-993 (C2), NL-904 → NL-994 (C3), NL-905 → NL-995 (C4), NL-906 → NL-996 (IL2026), NL-907 → NL-997 (processor follow-ups), in every doc, code comment and test of the Cashu work (old commit messages keep the old IDs; the C0 commit `e5cb13a8` cites its first numbers NL-811 (epic, now NL-990) and NL-812 (C0, now NL-991), which stay unassigned as the harness note below says). The Cashu mint proof (NL-993) moved from Docker to the cluster harness (matrix suite `cashu`). Summary rows recounted from the entries: 795 entries, no duplicate IDs.
+Updated 2026-10-03 by the Cashu integrator (branch `wip/cashu-int` from `origin/wip/cashu` at `b38d2686`, merged with `wip/fafo`): the Cashu entries are renumbered because `wip/fafo` landed NL-900, NL-903, NL-904 and NL-905 first: NL-900 → NL-990 (epic), NL-901 → NL-991 (C0), NL-902 → NL-992 (C1), NL-903 → NL-993 (C2), NL-904 → NL-994 (C3), NL-905 → NL-995 (C4), NL-906 → NL-996 (IL2026), NL-907 → NL-997 (processor follow-ups), in every doc, code comment and test of the Cashu work (old commit messages keep the old IDs; the C0 commit `e5cb13a8` cites its first numbers NL-811 (epic, now NL-990) and NL-812 (C0, now NL-991), which stay unassigned as the harness note below says). The Cashu mint proof (NL-993) moved from Docker to the cluster harness (matrix suite `cashu`). NL-996 fixed in the merge (`12440f0b`). Integration review of the Cashu diff (listener security, payment event stream, `waitinvoice`, the processor against CDK v0.18.1, trampoline interplay): NL-998 (high), NL-999 and NL-1003 fixed; NL-1000, NL-1001 (medium) and NL-1002 open; rejected: none (the sub-sat melt note in the plan was a doc mismatch, fixed in `CASHU_PLAN.md`). Summary rows recounted from the entries: 801 entries, no duplicate IDs.
 
 Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-913 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920, f0ca4a5c and 5c14c684: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-911 and NL-914 updated. NL-910 (low, open: a `ClnPeerStorageTests` cluster flake). Taproot NL-895..NL-899 renumbered to NL-911..NL-915 (collision with the trampoline follow-ups, which landed first).
 
@@ -153,16 +153,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 3 | 74 | 77 |
+| open | 0 | 0 | 4 | 75 | 79 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 14 | 63 | 201 | 419 | 697 |
+| fixed | 14 | 64 | 202 | 421 | 701 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **213** | **505** | **795** |
+| **Total** | **14** | **64** | **215** | **508** | **801** |
 
 ### Epics
 
-- NL-990: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-991 (fixed), C1 CDK gRPC payment processor NL-992 (fixed, BOLT 11; follow-ups NL-997), C2 proof NL-993 (fixed, on the cluster harness), C3 native wallet NL-994, C4 hold invoices NL-995)
+- NL-990: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-991 (fixed), C1 CDK gRPC payment processor NL-992 (fixed, BOLT 11; follow-ups NL-997), C2 proof NL-993 (fixed, on the cluster harness), C3 native wallet NL-994, C4 hold invoices NL-995; integration review NL-998, NL-999, NL-1003 fixed, NL-1000..NL-1002 open)
 - NL-877: Simple taproot channels (`option_simple_taproot`) (open, medium; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` T0-T6; spec merged 2026-05-04, LND 0.21 and Eclair 0.14 run it as private channels; taproot gossip NL-878 waits for BOLTs #1059)
 - NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, TR0-TR5 built on `wip/fafo` 2026-10-03, merges `7f5c5d85` TR0, `e958b8eb` TR1, `9f0d1050` TR3-P, `165acd77` TR2, `fb2b07ca` TR5 phase 1, `1c09e718` TR4, `dd48b26d` TR3, `c1811bbf` TR5 phase 2; experimental until an owner decision; follow-ups NL-895..NL-899)
 - NL-850: Liquidity ads (BOLT PR #1153) (fixed, medium; plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, LA0-LA7 done on `claude/youthful-hamilton-x4ngo7` at `10b8ba84`: both roles in the dual-funded open, its RBF, the splice and the splice RBF with restarts, `LiquidityPurchases`, the lease guard, `LiquidityFeePaid`/`LiquidityFeeEarned`, `liquidityads` (IPC 46); proven in-process in both roles and against Eclair 0.14.3 as seller (`EclairLiquidityAdsTests` 5/5; Eclair sells only in splices); open follow-ups NL-851..NL-859; integration review fixes NL-870, NL-871)
@@ -8283,12 +8283,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `CASHU_PLAN.md` C4
 
 ### NL-996 The AOT analyzer gate reports IL2026 in `IpcRequestLog` (`Exception.TargetSite`)
-- **Status:** open
+- **Status:** fixed (12440f0b)
 - **Severity:** low
 - **Kind:** tooling
 - **Location:** `src/NLightning.Daemon/Ipc/Handlers/IpcRequestLog.cs:81`
 - **Evidence:** `dotnet build src/NLightning.Daemon -c Release.Native -f net10.0 -r linux-x64 -p:PublishAot=true` (SDK 10.0.401) on `wip/cashu` after merging `wip/fafo` `ed4d7e7a` reports `warning IL2026: Using member 'System.Exception.TargetSite.get' which has 'RequiresUnreferencedCodeAttribute'`; CLAUDE.md requires that analyzer build to stay at 0. The line came with NL-894 (`ed43ef68`); the Cashu code adds no warning.
-- **Fix sketch:** Drop `TargetSite` from the log line (use the exception type and stack), or suppress with a justification if the member name is needed.
+- **Fix sketch:** Done in the wip/fafo integration: `IpcRequestLog.IsFault` suppresses IL2026 with a justification (`TargetSite` is only a hint; without its metadata the exception is taken as a refusal, as the code already did). The daemon AOT analyzer build (`-r osx-arm64 -p:PublishAot=true`) is at 0 warnings again.
 - **Blocks/Blocked-by:** Related NL-894
 - **Plan ref:** —
 
@@ -8302,6 +8302,66 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** Related NL-992, NL-993
 - **Plan ref:** `CASHU_PLAN.md` §6
 
+
+### NL-998 The CDK payment processor authenticated no client (loopback h2c, server-only TLS) and took ambient Kestrel endpoints
+- **Status:** fixed (SHA_FIX)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Cashu.PaymentProcessor/CashuPaymentProcessorOptions.cs`, `CashuPaymentProcessorHost.cs`, `CashuPaymentProcessorServiceCollectionExtensions.cs`
+- **Evidence:** wip/fafo integration review of NL-992 (`SECURITY_REVIEW.md` SR-32, SR-33): the default loopback h2c listener and any TLS listener without `ca.pem` (allowed off loopback) checked no client, so any local process (or anyone reaching a non-loopback port) could call `MakePayment` and pay from the node's channels; `WebApplication.CreateSlimBuilder()` read `appsettings.json` of the working directory and the environment, and a `Kestrel__Endpoints__X__Url` variable added a second plaintext listener on `0.0.0.0` beside the checked one (reproduced by the reviewer); the mTLS chain check did not require the client-authentication EKU; the mainnet gate treated a missing `IOptions<NodeOptions>` as not mainnet.
+- **Fix sketch:** Done: client authentication (mutual TLS: `TlsDirectory` with `ca.pem`) is required off loopback and, on loopback, unless the new `AllowInsecureLoopback` (a start warning names the risk; `cdk-mintd` speaks only mTLS or plaintext, so no token is possible); the Kestrel instance has no configuration sources and fails a start that does not listen on exactly its address; `IsSignedBy` requires the TLS client EKU; unknown network = mainnet. Tests: `Daemon.Tests/Cashu/CashuPaymentProcessorOptionsTests` (loopback without client auth, non-loopback without `ca.pem`, no node options) and `CdkPaymentProcessorServiceTests` (`Given_AnAmbientKestrelEndpoint_*`, `Given_ClientCertificates_*`). Left: NL-1000.
+- **Blocks/Blocked-by:** Related NL-992, NL-1000
+- **Plan ref:** `CASHU_PLAN.md` §5.3, §6
+
+### NL-999 The CDK payment processor answered FAILED between two attempts and served payments and invoices that were not the mint's
+- **Status:** fixed (SHA_FIX)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Cashu.PaymentProcessor/CdkPaymentProcessorService.cs`, `src/NLightning.Domain/Payments/Interfaces/IPaymentService.cs` (`IsPaying`), `src/NLightning.Application/Payments/Send/PaymentService.cs`
+- **Evidence:** wip/fafo integration review of NL-992 against CDK v0.18.1 (`cdk-common` `check_outgoing_payment`: the mint takes Unpaid/Failed as final and may return the melt's proofs; a backend between attempts MUST answer Pending or Unknown): `PaymentService` saves the row `Failed` ("Retrying.") before a retry round, and a `MakePayment` timeout, `CheckOutgoingPayment` or the duplicate path then answered FAILED while the retry could still pay, so the mint could give the ecash back and the invoice be paid anyway. `CheckOutgoingPayment` and the duplicate `MakePayment` answered any payment of the node (preimage as `payment_proof`), a trampoline relay's leg included; `CheckIncomingPayment` any invoice. Smaller: quote ids leaked on refused melts and final answers, an overflowed event subscription went on silently, `CreatePayment` overflow and BOLT 11 refusals came back as `Unknown`.
+- **Fix sketch:** Done: `IPaymentService.IsPaying(hash)` (a live session; default false) and a Failed row of a payment still being paid reads PENDING; only rows with the processor's label and never a relay leg are answered (`UNKNOWN`, no proof; `FailedPrecondition` for a duplicate melt of a payment outside the mint); quote ids are forgotten on refusals and final answers; an overflowed stream ends `UNAVAILABLE` so the mint resubscribes; `CreatePayment` errors are `InvalidArgument`. Tests: `CdkPaymentProcessorServiceTests` `Given_APaymentNotOfTheMint_*`, `Given_AMeltBetweenTwoAttempts_*`, `Given_AnInvoiceThisNodePaidOutsideTheMint_*`, `Given_ASettledInvoiceNotOfTheMint_*`, `Given_AnAmountOrDescriptionOutOfRange_*`, `Given_AnOverflowedSubscription_*`. Left: NL-1001.
+- **Blocks/Blocked-by:** Related NL-992, NL-1001
+- **Plan ref:** `CASHU_PLAN.md` §6
+
+### NL-1000 The CDK payment processor has no spend cap or request limits
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Cashu.PaymentProcessor/`
+- **Evidence:** wip/fafo integration review (`SECURITY_REVIEW.md` SR-35): an authenticated client can pay up to the channels' balance with a fee limit of its choosing (`max_fee_amount`); Kestrel's connections, HTTP/2 streams, concurrent `MakePayment` calls and `WaitPaymentEvent` streams (one database read per event per stream) are unbounded; the server key's file mode is not checked.
+- **Fix sketch:** `MaxPaymentMsat` and/or a rolling budget, a cap on `max_fee_amount` relative to the quote, `MaxConcurrentConnections`, a stream cap (`ResourceExhausted`), a semaphore on `MakePayment`, and a warning or refusal for a group- or other-readable `server.key`.
+- **Blocks/Blocked-by:** Related NL-998
+- **Plan ref:** `CASHU_PLAN.md` §6
+
+### NL-1001 A payment failed for an unknown outcome at startup reads FAILED to the Cashu mint
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`ReconcileStoredPartsAsync`), `src/NLightning.Cashu.PaymentProcessor/CdkPaymentProcessorService.cs` (`ToMakePaymentResponse`)
+- **Evidence:** wip/fafo integration review: after a restart, a payment whose stored parts' HTLCs are gone is stored `Failed` with "their outcomes are unknown" and publishes `PaymentFailedEvent`, while a later fulfill with the preimage still marks it `Succeeded`. The processor maps that `Failed` to the final FAILED, which CDK takes as authoritative (the melt's proofs go back to the user). Not proven by a test yet.
+- **Fix sketch:** A structured marker for an unknown outcome on `PaymentModel` (or a distinct failure kind), published as such and mapped to `QuoteState.Unknown`/PENDING by the processor; a harness test with a restart, the HTLC gone, then a replayed fulfill.
+- **Blocks/Blocked-by:** Related NL-999
+- **Plan ref:** `CASHU_PLAN.md` §6
+
+### NL-1002 `waitinvoice` keeps waiting after its client disconnects; a nil payment hash is a server error
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Handlers/WaitInvoiceClientHandler.cs`
+- **Evidence:** wip/fafo integration review: the handler's token is the server's stop token, so after Ctrl-C the wait holds one of the 64 pipe instances and a hub subscription for up to 300 s (`payinvoice` behaves the same); a hand-crafted IPC request with a nil hash answers `server_error` instead of `invalid_operation` (the CLI checks 64 hex characters).
+- **Fix sketch:** Link the connection's disconnect token (`IpcClientConnectionAccessor`, as `ShutdownClientHandler` does) and refuse a default hash.
+- **Blocks/Blocked-by:** Related NL-991
+- **Plan ref:** `CASHU_PLAN.md` C0
+
+### NL-1003 Trampoline relay legs published payment events; a failure recorded for good could be published twice
+- **Status:** fixed (SHA_FIX)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`LogSucceeded`, `LogFailed`, `FinishFailedAsync`)
+- **Evidence:** wip/fafo integration of C0 (NL-991) with trampoline (NL-875): a relay's outgoing leg (`IsTrampolineRelay`) went through `LogSucceeded`/`LogFailed` and published `PaymentSucceededEvent` (preimage included) or `PaymentFailedEvent` as if it were one of the node's payments (the accounting already skipped those rows); `FinishFailedAsync` published again when another path had already recorded the failure for good. The trampoline client's payments and the trampoline target's settle already published once, after their saves.
+- **Fix sketch:** Done: no event for a relay leg (its relay hears of it through `ReportLegSucceeded`/`ReportLegFailed`), none for a failure recorded before. Tests: `Application.Tests/Payments/Trampoline/TrampolineRelayE2ETests` `Given_SubscribersOnEveryNode_When_APaysThroughT_*` (A succeeds once with the trampoline fee, C settles once, T publishes nothing; it fails without the guard) and `Given_CRefusesThePayment_When_ARelayedPaymentFails_*`.
+- **Blocks/Blocked-by:** Related NL-991, NL-875, NL-981
+- **Plan ref:** `CASHU_PLAN.md` C0
 ## Docs
 
 ### NL-182 REPO_MAP.md has stale pre-M1 claims

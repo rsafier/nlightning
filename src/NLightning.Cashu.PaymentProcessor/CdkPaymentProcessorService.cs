@@ -31,8 +31,13 @@ using Grpc;
 /// <see cref="CashuPaymentProcessorOptions.PaymentTimeoutSeconds"/> and answers <c>PENDING</c> after that (the mint
 /// then checks it, or hears of it on <see cref="WaitPaymentEvent"/>).</para>
 /// <para><see cref="WaitPaymentEvent"/> streams the settles of invoices with our label and the outcomes of the
-/// payments this process made (their quote ids are held in memory: after a restart the mint learns them through
-/// <see cref="CheckOutgoingPayment"/>, as the CDK contract expects of a reconnecting mint).</para>
+/// payments this process made that <see cref="MakePayment"/> left pending (their quote ids are held in memory: after a
+/// restart the mint learns them through <see cref="CheckOutgoingPayment"/>, as the CDK contract expects of a
+/// reconnecting mint). A stream that missed events (its subscription overflowed) ends with <c>UNAVAILABLE</c>, so the
+/// mint subscribes again and checks its quotes.</para>
+/// <para>Only the mint's own invoices and payments (the label; never a trampoline relay's leg) are answered: another
+/// payment of the node reads <c>UNKNOWN</c>, its preimage withheld, and a payment row that reads <c>Failed</c> while
+/// the payment service still retries it reads <c>PENDING</c>, since CDK takes <c>FAILED</c> as final (NL-999).</para>
 /// </remarks>
 public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentProcessorBase
 {
@@ -81,7 +86,15 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
             throw Unimplemented(request.Options?.OptionsCase.ToString() ?? "no method");
 
         var bolt11 = request.Options.Bolt11;
-        var amount = bolt11.Amount is { Value: > 0 } given ? ToMoney(given) : null;
+        LightningMoney? amount;
+        try
+        {
+            amount = bolt11.Amount is { Value: > 0 } given ? ToMoney(given) : null;
+        }
+        catch (OverflowException)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The amount is too large."));
+        }
         uint? expirySeconds = null;
         if (bolt11.HasUnixExpiry)
         {
@@ -91,8 +104,17 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
             expirySeconds = (uint)Math.Min(seconds, uint.MaxValue);
         }
 
-        var invoice = await _invoiceService.CreateInvoiceAsync(amount, bolt11.HasDescription ? bolt11.Description : "",
+        InvoiceModel invoice;
+        try
+        {
+            invoice = await _invoiceService.CreateInvoiceAsync(amount, bolt11.HasDescription ? bolt11.Description : "",
                                                                expirySeconds, _labels, context.CancellationToken);
+        }
+        catch (ArgumentException e)
+        {
+            // A description too long for BOLT 11, an amount or expiry out of range
+            throw new RpcException(new Status(StatusCode.InvalidArgument, e.Message));
+        }
         _logger.LogInformation("Cashu mint quote: invoice {PaymentHash} for {Amount}", invoice.PaymentHash,
                                amount is null ? "any amount" : $"{amount.MilliSatoshi} msat");
         return new CreatePaymentResponse
@@ -137,7 +159,8 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
         var paymentHash = HashOf(invoice);
         var amount = AmountToPay(invoice, options.MeltOptions);
         var maxFee = request.MaxFeeAmount ?? options.MaxFeeAmount;
-        if (!string.IsNullOrEmpty(options.QuoteId))
+        var hasQuoteId = !string.IsNullOrEmpty(options.QuoteId);
+        if (hasQuoteId)
             _quoteIds[paymentHash] = options.QuoteId;
 
         var payOptions = new PayInvoiceOptions
@@ -156,18 +179,33 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
         }
         catch (ArgumentException e)
         {
+            ForgetQuote(paymentHash, hasQuoteId);
             throw new RpcException(new Status(StatusCode.InvalidArgument, e.Message));
         }
         catch (InvalidOperationException e) when (e.GetType() == typeof(InvalidOperationException))
         {
-            // Already in flight or paid: answer with the stored payment
-            payment = await _paymentService.GetPaymentAsync(paymentHash, context.CancellationToken)
-                   ?? throw new RpcException(new Status(StatusCode.FailedPrecondition, e.Message));
+            // Already in flight or paid: answer with the stored payment when it is the mint's (NL-999)
+            var stored = await _paymentService.GetPaymentAsync(paymentHash, context.CancellationToken);
+            if (stored is null || !IsMintPayment(stored))
+            {
+                ForgetQuote(paymentHash, hasQuoteId);
+                throw new RpcException(new Status(StatusCode.FailedPrecondition,
+                                                  stored is null
+                                                      ? e.Message
+                                                      : "This node already pays or paid this invoice outside the "
+                                                      + "mint."));
+            }
+
+            payment = stored;
         }
 
+        var response = ToMakePaymentResponse(payment);
+        // A final answer needs no stream event (the mint resolved the quote with it)
+        if (response.Status is QuoteState.Paid or QuoteState.Failed)
+            ForgetQuote(paymentHash, hasQuoteId);
         _logger.LogInformation("Cashu melt {QuoteId}: payment {PaymentHash} is {Status}", options.QuoteId,
-                               paymentHash, payment.Status);
-        return ToMakePaymentResponse(payment);
+                               paymentHash, response.Status);
+        return response;
     }
 
     /// <inheritdoc />
@@ -177,7 +215,8 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
         var paymentHash = ParseIdentifier(request.RequestIdentifier);
         var invoice = await _invoiceService.GetInvoiceAsync(paymentHash, context.CancellationToken);
         var response = new CheckIncomingPaymentResponse();
-        if (invoice is { Status: InvoiceStatus.Settled })
+        // Only the mint's own invoices (NL-999)
+        if (invoice is { Status: InvoiceStatus.Settled } && invoice.Label == _options.Label)
             response.Payments.Add(Received(invoice));
         return response;
     }
@@ -188,7 +227,8 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
     {
         var paymentHash = ParseIdentifier(request.RequestIdentifier);
         var payment = await _paymentService.GetPaymentAsync(paymentHash, context.CancellationToken);
-        return payment is null
+        // Only the mint's own payments: another payment of the node, its preimage included, is not the mint's to read
+        return payment is null || !IsMintPayment(payment)
                    ? new MakePaymentResponse
                    {
                        PaymentIdentifier = Identifier(paymentHash),
@@ -208,6 +248,15 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
         {
             await foreach (var paymentEvent in subscription.ReadAllAsync(context.CancellationToken))
             {
+                // Events were dropped: end the stream, so the mint reconnects and checks its pending quotes
+                if (subscription.Overflowed)
+                {
+                    _logger.LogWarning("The Cashu mint read payment events too slowly; some were dropped, so its "
+                                     + "stream is ended for it to resubscribe and check its quotes");
+                    throw new RpcException(new Status(StatusCode.Unavailable,
+                                                      "Payment events were dropped; subscribe again."));
+                }
+
                 var response = await ToEventResponseAsync(paymentEvent, context.CancellationToken);
                 if (response is not null)
                     await stream.WriteAsync(response, context.CancellationToken);
@@ -217,10 +266,6 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
         {
             // The mint went away
         }
-
-        if (subscription.Overflowed)
-            _logger.LogWarning("The Cashu mint read payment events too slowly; some were dropped (the mint's checks "
-                             + "recover them)");
     }
 
     /// <summary>
@@ -270,7 +315,9 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
             Status = payment.Status switch
             {
                 PaymentStatus.Succeeded => QuoteState.Paid,
-                PaymentStatus.Failed => QuoteState.Failed,
+                // Between two attempts the stored row reads Failed while a retry is to come: not final (NL-999; CDK
+                // takes FAILED as final and gives the ecash back)
+                PaymentStatus.Failed when !_paymentService.IsPaying(payment.PaymentHash) => QuoteState.Failed,
                 _ => QuoteState.Pending
             },
             TotalSpent = ToAmount(payment.Status == PaymentStatus.Succeeded
@@ -280,6 +327,16 @@ public sealed class CdkPaymentProcessorService : CdkPaymentProcessor.CdkPaymentP
         if (payment.Preimage is { } preimage)
             response.PaymentProof = Convert.ToHexString((byte[])preimage).ToLowerInvariant();
         return response;
+    }
+
+    /// <summary>Whether <paramref name="payment"/> is one the processor made (its label; never a trampoline relay's).</summary>
+    private bool IsMintPayment(PaymentModel payment) =>
+        payment is { IsTrampolineRelay: false } && payment.Label == _options.Label;
+
+    private void ForgetQuote(Hash paymentHash, bool hasQuoteId)
+    {
+        if (hasQuoteId)
+            _quoteIds.TryRemove(paymentHash, out _);
     }
 
     private WaitIncomingPaymentResponse Received(InvoiceModel invoice) => new()
