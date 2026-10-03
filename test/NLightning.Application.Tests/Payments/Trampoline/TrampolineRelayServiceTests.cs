@@ -71,8 +71,10 @@ public class TrampolineRelayServiceTests
         Assert.Equal(payment.Hash, leg.PaymentHash);
         Assert.Equal(s_amountOut, leg.Amount);
         Assert.Equal(CltvOut, leg.FinalCltvExpiry);
-        Assert.Equal(IncomingCltv - 576, leg.MaxFirstHopCltvExpiry);
-        Assert.Equal(LightningMoney.MilliSatoshis(8_000), leg.MaxFee);
+        // Our trampoline fee and delta pay for the route: the leg gets the whole difference and keeps Carol's plain
+        // forwarding delta (40)
+        Assert.Equal(IncomingCltv - 40, leg.MaxFirstHopCltvExpiry);
+        Assert.Equal(LightningMoney.MilliSatoshis(10_000), leg.MaxFee);
         Assert.Equal(harness.Alice.NodeId, leg.NextNodeId);
         Assert.NotNull(leg.NextTrampolinePacket);
         Assert.Equal(payment.Trampoline.Packet.ToBytes().Length, leg.NextTrampolinePacket.Length);
@@ -113,7 +115,7 @@ public class TrampolineRelayServiceTests
 
         // Assert
         var leg = Assert.Single(_legSender.Started);
-        Assert.Equal(LightningMoney.MilliSatoshis(8_000), leg.MaxFee);
+        Assert.Equal(LightningMoney.MilliSatoshis(10_000), leg.MaxFee);
         var (relay, parts) = await GetRelayAsync(harness, payment.Hash);
         Assert.Equal(TrampolineRelayStatus.Sending, relay.Status);
         Assert.Equal(2, parts.Count);

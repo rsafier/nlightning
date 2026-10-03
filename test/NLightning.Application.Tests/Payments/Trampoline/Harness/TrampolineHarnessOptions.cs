@@ -57,11 +57,21 @@ internal sealed class TrampolineHarnessOptions
     /// multi-part payments over two first hops.</summary>
     public bool SecondAliceTrampolineChannel { get; set; }
 
+    /// <summary>Also open a second T–X and a second X–C channel (<see cref="TrampolineHarness.TrampolineX2ChannelId"/>,
+    /// <see cref="TrampolineHarness.XCarol2ChannelId"/>), so T's outgoing leg can split over two routes.</summary>
+    public bool SecondLegChannels { get; set; }
+
     /// <summary>
     /// Every node runs on the harness's shared stepped clock (<see cref="TrampolineHarness.Clock"/>), so MPP timers
     /// fire only from <see cref="TrampolineHarness.AdvanceAsync"/>. Default: true.
     /// </summary>
     public bool SteppedClock { get; set; } = true;
+
+    /// <summary>
+    /// When set, every node's log lines at this level and above go to the test's output, prefixed with the node's name
+    /// (<see cref="HarnessLoggerProvider"/>). Default: off.
+    /// </summary>
+    public Microsoft.Extensions.Logging.LogLevel? LogLevel { get; set; }
 
     /// <summary>Changes to a node before it starts (options: features, routing policy, keysend...).</summary>
     public Action<SwitchNode>? ConfigureNode { get; set; }

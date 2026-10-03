@@ -388,12 +388,14 @@ public sealed class IncomingOnionProcessor
         if (!TrampolinePayloadValidator.TryValidate(inner, layer.IsFinal, outerPayload, false, out var innerError))
             return PayloadFailed(innerError, inner, layer.IsFinal);
 
-        // 3. Classify
+        // 3. Classify. The last trampoline layer is the recipient's, except when it names recipient_blinded_paths: we
+        // are then the last trampoline node, paying a recipient without trampoline support (BOLTs PR 836; the payer's
+        // trampoline onion ends with our payload, as in trampoline-to-blinded-path-payment-onion-test.json)
         if (!inner.IsBlinded)
-            return layer.IsFinal
+            return layer.IsFinal && inner.RecipientBlindedPaths is null
                        ? new IncomingOnionTrampolineFinal(outer.SharedSecret, outerPayload, trampolineSecret, inner)
                        : new IncomingOnionTrampolineRelay(outer.SharedSecret, outerPayload, trampolineSecret, inner,
-                                                          layer.NextPacket!.Value);
+                                                          layer.NextPacket);
 
         // 4. Blinded trampoline hop (a BOLT 12 recipient that supports trampoline): exactly one of the two payloads
         // carries the path key (checked by the validator)
@@ -452,7 +454,7 @@ public sealed class IncomingOnionProcessor
 
             if (!IsSelfRelay(data))
                 return new IncomingOnionTrampolineRelay(outer.SharedSecret, outerPayload, trampolineSecret, inner,
-                                                        layer.NextPacket!.Value,
+                                                        layer.NextPacket,
                                                         new IncomingBlindedHop(isIntroduction, data,
                                                                                unblinded.NextPathKey, amount,
                                                                                cltvExpiry)
