@@ -17,7 +17,7 @@ using static TrampolineVectorKit;
 /// </summary>
 public class TrampolineErrorVectorTests
 {
-    private static readonly FailureCode s_temporaryTrampolineFailure = (FailureCode)0x2019;
+    private static readonly FailureCode s_temporaryTrampolineFailure = FailureCode.TemporaryTrampolineFailure;
 
     private static readonly JsonElement s_vectors = Load("trampoline-onion-error-test.json");
     private static readonly JsonElement s_plain = s_vectors[0];

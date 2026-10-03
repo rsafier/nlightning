@@ -15,7 +15,7 @@ using Infrastructure.Bitcoin.Onion.Trampoline;
 /// </summary>
 public class TrampolineFailureOnionServiceTests
 {
-    private static readonly FailureCode s_temporaryTrampolineFailure = (FailureCode)0x2019;
+    private static readonly FailureCode s_temporaryTrampolineFailure = FailureCode.TemporaryTrampolineFailure;
 
     private readonly FailureOnionService _failureOnionService;
     private readonly TrampolineFailureOnionService _service;
