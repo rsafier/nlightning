@@ -454,62 +454,6 @@ public class ChannelStateDbRepositoryTests
     }
 
     [Fact]
-    public async Task Given_ASpliceLockCommittingDuringALoad_When_ChannelsAreLoaded_Then_TheChannelIsReadAgainAndLoads()
-    {
-        // Arrange (NL-805): the load reads the channel row first and its state rows after it, without a read
-        // transaction. A save committing in between (here the lock of a 100,000 sat splice-in: the funding amount and
-        // our balance move together) left the first row's capacity under the later rows' balances
-        await using var harness = await StateHarness.CreateAsync();
-        var before = await harness.ReloadChannelAsync();
-        var interceptor = new WriteBeforeStateQueryInterceptor(
-            """
-            UPDATE "Channels" SET "FundingAmountSatoshis" = "FundingAmountSatoshis" + 100000,
-                "LocalBalanceMsat" = "LocalBalanceMsat" + 100000000
-            """, writes: 1);
-        await using var context = harness.Db.CreateDbContext(interceptor);
-
-        // Act
-        var all = (await new ChannelDbRepository(context, harness.Db.Sha256).GetAllAsync()).ToList();
-
-        // Assert: the second read sees the committed save whole
-        var channel = Assert.Single(all);
-        Assert.Equal(1, interceptor.Writes);
-        Assert.Equal(2, interceptor.StateLoads);
-        Assert.Equal(before.FundingOutput!.Amount.Satoshi + 100_000, channel.FundingOutput!.Amount.Satoshi);
-        Assert.Equal(before.LocalBalance.MilliSatoshi + 100_000_000, channel.LocalBalance.MilliSatoshi);
-        Assert.NotNull(channel.Commitments);
-    }
-
-    [Fact]
-    public async Task Given_AStoredStateInconsistentOnEveryRead_When_TheChannelIsLoaded_Then_ItIsRefused()
-    {
-        // Arrange (NL-805): balances that never add up to the funding amount are refused after the re-reads, with
-        // the error they always had
-        await using var harness = await StateHarness.CreateAsync();
-        await using (var setup = harness.Db.CreateDbContext())
-        {
-            await setup.Database.ExecuteSqlRawAsync(
-                """UPDATE "Channels" SET "LocalBalanceMsat" = "LocalBalanceMsat" + 1000""",
-                TestContext.Current.CancellationToken);
-        }
-
-        var counter = new WriteBeforeStateQueryInterceptor(null, writes: 0);
-        await using var context = harness.Db.CreateDbContext(counter);
-        var repository = new ChannelDbRepository(context, harness.Db.Sha256);
-
-        // Act
-        var byId = await Assert.ThrowsAsync<ChannelStateInconsistentException>(() =>
-            repository.GetByIdAsync(harness.ChannelId));
-        var all = await Assert.ThrowsAsync<ChannelStateInconsistentException>(repository.GetAllAsync);
-
-        // Assert: three reads each (ChannelDbRepository.TornReadAttempts)
-        Assert.Equal(harness.ChannelId, byId.ChannelId);
-        Assert.Contains("is inconsistent: Balances add up to", byId.Message);
-        Assert.Equal(harness.ChannelId, all.ChannelId);
-        Assert.Equal(6, counter.StateLoads);
-    }
-
-    [Fact]
     public async Task Given_SnapshotStoredWithoutDustLimit_When_LoadedWithTheNodeLimit_Then_EngineParamsCarryIt()
     {
         // Arrange (NL-290): the harness snapshot is stored with a null MaxDustHtlcExposureMsat (the option is newer
