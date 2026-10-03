@@ -374,7 +374,7 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
 
         var kind = (byte)origin.Kind;
         var query = _context.Htlcs.AsNoTracking().Where(h => h.OriginKind == kind);
-        if (origin.Kind == HtlcOriginKind.Local)
+        if (origin.Kind is HtlcOriginKind.Local or HtlcOriginKind.Trampoline)
         {
             var paymentHash = ((byte[])origin.PaymentHash!.Value).ToArray();
             query = query.Where(h => h.OriginPaymentHash == paymentHash);
@@ -607,6 +607,7 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
             HtlcOriginKind.Local when paymentHash is not null => HtlcOrigin.Local(new Hash(paymentHash)),
             HtlcOriginKind.Forwarded when incomingChannelId is { } channel && incomingHtlcId is { } id =>
                 HtlcOrigin.Forwarded(channel, id),
+            HtlcOriginKind.Trampoline when paymentHash is not null => HtlcOrigin.Trampoline(new Hash(paymentHash)),
             _ => default
         };
 

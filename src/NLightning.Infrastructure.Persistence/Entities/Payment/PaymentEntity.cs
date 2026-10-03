@@ -118,6 +118,12 @@ public class PaymentEntity
     public string? Tags { get; set; }
 
     /// <summary>
+    /// The payment is the outgoing leg of a trampoline relay (<c>PaymentModel.IsTrampolineRelay</c>, NL-875, migration
+    /// <c>AddTrampolineRelays</c>; existing rows false through the column default).
+    /// </summary>
+    public bool IsTrampolineRelay { get; set; }
+
+    /// <summary>
     /// The route of the onion, with each hop's shared secret (cascade-deleted with the payment).
     /// </summary>
     public virtual ICollection<PaymentHopEntity>? Hops { get; set; }

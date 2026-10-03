@@ -28,6 +28,14 @@ public enum AccountingEventKind
     /// </summary>
     InvoiceLostOnchain = 6,
 
+    /// <summary>
+    /// A trampoline payment we relayed settled (NL-875): its incoming parts were fulfilled and its outgoing payment
+    /// succeeded. <c>AmountMsat</c> is the channels' net change, what the incoming parts brought minus what the outgoing
+    /// payment took (its amount and the routing fees we paid): routing income, or an expense when negative. The outgoing
+    /// payment books no <see cref="PaymentSucceeded"/> or <see cref="PaymentFailed"/> of its own.
+    /// </summary>
+    TrampolineRelaySettled = 7,
+
     /// <summary>A channel's funding confirmed: our contribution moved from the wallet into the channel.</summary>
     ChannelFunded = 10,
 

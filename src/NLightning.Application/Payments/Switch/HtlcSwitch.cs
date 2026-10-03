@@ -29,6 +29,7 @@ using Domain.Onchain.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
+using Domain.Payments.Trampoline;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
@@ -44,6 +45,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Keysend;
 using Onchain;
 using Onion;
+using Trampoline;
 
 /// <summary>
 /// The HTLC switch of a node that receives and forwards payments (ONION M4-T2 wiring, M4-T4 forward, M4-T5
@@ -103,6 +105,10 @@ using Onion;
 ///   <item><c>HtlcOrigin.Local</c> resolutions go to the registered <see cref="ILocalPaymentHtlcHandler"/>s; so do the
 ///   resolutions of an HTLC with no stored origin (NL-265: offered before origins were persisted — the handlers match
 ///   the event by channel and HTLC id and ignore unknown payments).</item>
+///   <item><c>HtlcOrigin.Trampoline</c> resolutions (NL-875) go to the registered <see cref="ITrampolineHtlcHandler"/>
+///   only, never to the local-payment handlers; its settled record is pruned once the handler agrees and the relay is
+///   completed with every incoming part removed. Without a handler nothing happens and the record is kept. A replayed
+///   lock-in of an incoming HTLC that is already a relay part goes to the handler too, never peeled again.</item>
 ///   <item><see cref="IncomingHtlcSettled"/>: our removal of an incoming HTLC is final and nothing reads its archived
 ///   row any more (the circuit or invoice was resolved before the removal was sent), so it is pruned (NL-243).</item>
 /// </list>
@@ -129,6 +135,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private readonly FinalHopProcessor _finalHopProcessor;
     private readonly IForwardingPolicy _forwardingPolicy;
     private readonly IReadOnlyList<ILocalPaymentHtlcHandler> _localPaymentHandlers;
+    private readonly ITrampolineHtlcHandler? _trampolineHandler;
     private readonly ILogger<HtlcSwitch> _logger;
     private readonly INodeDrainState? _nodeDrainState;
     private readonly IRefusedHtlcCounter? _refusedHtlcCounter;
@@ -143,6 +150,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private readonly KeyedAsyncLock<(ChannelId, ulong)> _incomingLocks = new();
     private readonly KeyedAsyncLock<Hash> _paymentHashLocks = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _unhandledLocalResolutions = new();
+
+    // NL-875: the outgoing trampoline HTLCs whose resolution the relay handler did not take (it threw, or none is
+    // registered): their settled records are kept for the next replay
+    private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _unhandledTrampolineResolutions = new();
+    private int _missingTrampolineHandlerLogged;
 
     /// <summary>
     /// The upstream HTLCs whose preimage was revealed on chain after the upstream was already failed (a close a reorg
@@ -177,8 +189,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                       IAttributionDataService? attributionDataService = null,
                       IOptions<OnchainOptions>? onchainOptions = null, IRetiredScidMap? retiredScidMap = null,
                       INodeDrainState? nodeDrainState = null,
-                      IRefusedHtlcCounter? refusedHtlcCounter = null, ISecureKeyManager? secureKeyManager = null)
+                      IRefusedHtlcCounter? refusedHtlcCounter = null, ISecureKeyManager? secureKeyManager = null,
+                      ITrampolineHtlcHandler? trampolineHandler = null)
     {
+        _trampolineHandler = trampolineHandler;
         _secureKeyManager = secureKeyManager;
         _refusedHtlcCounter = refusedHtlcCounter;
         _nodeDrainState = nodeDrainState;
@@ -311,10 +325,13 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
         ForwardCircuitModel? circuit;
         Secret? storedSecret;
+        TrampolineRelayPartModel? relayPart = null;
         using (var scope = _serviceScopeFactory.CreateScope())
         {
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
             circuit = await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(channelId, htlcId);
+            if (circuit is null)
+                relayPart = await TrampolineRelayReads.GetPartAsync(unitOfWork, channelId, htlcId);
             storedSecret = circuit is null
                                ? await unitOfWork.ChannelStateDbRepository.GetOnionSharedSecretAsync(
                                      channelId, new HtlcKey(HtlcDirection.Incoming, htlcId))
@@ -324,6 +341,14 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         if (circuit is not null)
         {
             await ResumeCircuitAsync(circuit, cancellationToken);
+            return;
+        }
+
+        // NL-875: an HTLC that is already a part of a trampoline relay is resumed by the relay, never peeled again nor
+        // failed here: an outgoing HTLC of its relay may still be fulfilled downstream
+        if (relayPart is not null)
+        {
+            await HandleRelayPartLockedInAsync(lockedIn, relayPart, cancellationToken);
             return;
         }
 
@@ -1378,6 +1403,12 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                        h => h.HandleFulfilledAsync(fulfilled, paymentHash, cancellationToken));
                 return;
 
+            case { Kind: HtlcOriginKind.Trampoline, PaymentHash: { } relayHash }:
+                // NL-875: the relay's outgoing payment; never a local payment's handlers
+                await NotifyTrampolineAsync(fulfilled.ChannelId, fulfilled.HtlcId,
+                                            h => h.HandleFulfilledAsync(fulfilled, relayHash, cancellationToken));
+                return;
+
             case null:
                 // NL-265: an HTLC offered before NL-250 carries no origin: it is our own payment (W2-C "Local or no
                 // circuit"). The handlers match the event by channel and HTLC id and ignore unknown payments
@@ -1413,6 +1444,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             case { Kind: HtlcOriginKind.Local, PaymentHash: { } paymentHash }:
                 await NotifyLocalAsync(failed.ChannelId, failed.HtlcId,
                                        h => h.HandleFailedAsync(failed, paymentHash, cancellationToken));
+                return;
+
+            case { Kind: HtlcOriginKind.Trampoline, PaymentHash: { } relayHash }:
+                await NotifyTrampolineAsync(failed.ChannelId, failed.HtlcId,
+                                            h => h.HandleFailedAsync(failed, relayHash, cancellationToken));
                 return;
 
             case null:
@@ -1555,6 +1591,18 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                 case { Kind: HtlcOriginKind.Local }
                     when _unhandledLocalResolutions.ContainsKey((settled.ChannelId, settled.HtlcId)):
                     return;
+
+                case { Kind: HtlcOriginKind.Trampoline, PaymentHash: { } relayHash }:
+                    if (!await IsTrampolineRelayDoneAsync(settled, relayHash, cancellationToken))
+                    {
+                        if (_logger.IsEnabled(LogLevel.Debug))
+                            _logger.LogDebug("Keeping settled HTLC {HtlcId} of channel {ChannelId}: its trampoline relay "
+                                           + "{PaymentHash} is not resolved yet", settled.HtlcId, settled.ChannelId,
+                                             relayHash);
+                        return;
+                    }
+
+                    break;
 
                 case null when _unhandledLocalResolutions.ContainsKey((settled.ChannelId, settled.HtlcId)):
                     // NL-265: an origin-less HTLC's resolution (treated as our own payment) was not handled yet
@@ -1983,6 +2031,107 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         if (_localPaymentHandlers.Count == 0 && _logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("HTLC {HtlcId} of our payment on channel {ChannelId} resolved (no payment handler)",
                                    htlcId, channelId);
+    }
+
+    /// <summary>
+    /// NL-875: hands an origin-3 resolution to the registered <see cref="ITrampolineHtlcHandler"/>. Without one, or when
+    /// it throws, the outgoing record is kept (and so the event replayed) until a handler takes it.
+    /// </summary>
+    private async Task NotifyTrampolineAsync(ChannelId channelId, ulong htlcId,
+                                             Func<ITrampolineHtlcHandler, Task> notify)
+    {
+        if (_trampolineHandler is null)
+        {
+            _unhandledTrampolineResolutions[(channelId, htlcId)] = 0;
+            LogMissingTrampolineHandler(channelId, htlcId);
+            return;
+        }
+
+        try
+        {
+            await notify(_trampolineHandler);
+            _unhandledTrampolineResolutions.TryRemove((channelId, htlcId), out _);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _unhandledTrampolineResolutions[(channelId, htlcId)] = 0;
+            _logger.LogError(e, "Trampoline relay handler failed on HTLC {HtlcId} of channel {ChannelId}", htlcId,
+                             channelId);
+        }
+    }
+
+    /// <summary>
+    /// NL-875: a replayed lock-in of an incoming HTLC that is a trampoline relay part goes to the relay handler; without
+    /// one it is left alone (the deadline monitor and the resolvers protect it).
+    /// </summary>
+    private async Task HandleRelayPartLockedInAsync(IncomingHtlcLockedIn lockedIn, TrampolineRelayPartModel part,
+                                                    CancellationToken cancellationToken)
+    {
+        if (_trampolineHandler is null)
+        {
+            LogMissingTrampolineHandler(lockedIn.ChannelId, lockedIn.HtlcId);
+            return;
+        }
+
+        try
+        {
+            await _trampolineHandler.HandleIncomingPartLockedInAsync(lockedIn, part, cancellationToken);
+        }
+        catch (Exception e) when (e is not OperationCanceledException and not CommitmentRefusedException
+                                      and not KeyNotFoundException)
+        {
+            _logger.LogError(e, "Trampoline relay handler failed on incoming HTLC {HtlcId} of channel {ChannelId}",
+                             lockedIn.HtlcId, lockedIn.ChannelId);
+        }
+    }
+
+    /// <summary>
+    /// NL-875: an outgoing trampoline HTLC's archived record may go once the handler took its resolution and says so,
+    /// the relay is completed, and every incoming part has its removal (or is gone from a loaded channel). An incoming
+    /// channel that is not loaded keeps the record, as for a forward.
+    /// </summary>
+    private async Task<bool> IsTrampolineRelayDoneAsync(OutgoingHtlcSettled settled, Hash paymentHash,
+                                                        CancellationToken cancellationToken)
+    {
+        if (_trampolineHandler is null
+         || _unhandledTrampolineResolutions.ContainsKey((settled.ChannelId, settled.HtlcId)))
+            return false;
+
+        try
+        {
+            if (!await _trampolineHandler.HandleSettledAsync(settled, paymentHash, cancellationToken))
+                return false;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "Trampoline relay handler failed on settled HTLC {HtlcId} of channel {ChannelId}",
+                             settled.HtlcId, settled.ChannelId);
+            return false;
+        }
+
+        using var scope = _serviceScopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        if (await TrampolineRelayReads.GetAsync(unitOfWork, paymentHash) is not { Relay.IsCompleted: true } relay)
+            return false;
+
+        foreach (var part in relay.Parts)
+        {
+            if (!_channelMemoryRepository.TryGetChannel(part.ChannelId, out var incomingChannel)
+             || incomingChannel.Commitments is not { } commitments
+             || commitments.GetHtlc(HtlcDirection.Incoming, part.HtlcId) is
+             { State: HtlcState.RcvdAddAckRevocation })
+                return false;
+        }
+
+        return true;
+    }
+
+    private void LogMissingTrampolineHandler(ChannelId channelId, ulong htlcId)
+    {
+        if (Interlocked.Exchange(ref _missingTrampolineHandlerLogged, 1) == 0)
+            _logger.LogWarning("HTLC {HtlcId} of channel {ChannelId} belongs to a trampoline relay, but no trampoline "
+                             + "relay handler is registered: its events are kept for a later replay", htlcId,
+                               channelId);
     }
 
     #endregion

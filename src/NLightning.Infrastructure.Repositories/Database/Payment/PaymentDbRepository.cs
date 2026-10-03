@@ -146,7 +146,7 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
                                            entity.Preimage is { } preimage ? new Secret(preimage) : (Secret?)null,
                                            entity.FailureCode is { } code ? (FailureCode)code : (FailureCode?)null,
                                            entity.FailureSourceIndex, entity.FailureReason, entity.CompletedAt, route,
-                                           MapBolt12(entity), MapKeysend(entity));
+                                           MapBolt12(entity), MapKeysend(entity), entity.IsTrampolineRelay);
         payment.Label = entity.Label;
         payment.Tags = entity.Tags;
         return payment;
@@ -185,6 +185,7 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
         entity.PayerNote = payment.Bolt12?.PayerNote;
         entity.Label = payment.Label;
         entity.Tags = payment.Tags;
+        entity.IsTrampolineRelay = payment.IsTrampolineRelay;
         entity.AmountMsat = checked((long)payment.Amount.MilliSatoshi);
         entity.FeeMsat = checked((long)payment.Fee.MilliSatoshi);
         MapMutableFields(payment, entity);

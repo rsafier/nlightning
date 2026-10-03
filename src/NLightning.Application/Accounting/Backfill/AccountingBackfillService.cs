@@ -19,9 +19,11 @@ using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
+using Domain.Payments.Trampoline;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Payments;
+using Payments.Trampoline;
 
 /// <summary>
 /// The accounting feed's one-shot backfill (NL-602 A1-T6, plan <c>docs/agents/ACCOUNTING_PLAN.md</c> §4 "Backfill",
@@ -356,6 +358,7 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
             await MemoInvoicesAsync(cutoverAt, tally, cancellationToken);
             await MemoPaymentsAsync(cutoverAt, tally, cancellationToken);
             await MemoForwardsAsync(cutoverAt, tally, cancellationToken);
+            await MemoTrampolineRelaysAsync(cutoverAt, tally, cancellationToken);
         }
 
         await MemoChannelsAsync(openingSkipped, cutoverAt, cutoverHeight, !firstPassDone, forceCloses, tally,
@@ -469,7 +472,8 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
             var written = 0;
             foreach (var payment in page)
             {
-                if (payment.CompletedAt is not { } completedAt || completedAt > cutoverAt)
+                // NL-875: a trampoline relay's outgoing payment is booked with its relay (MemoTrampolineRelaysAsync)
+                if (payment.CompletedAt is not { } completedAt || completedAt > cutoverAt || payment.IsTrampolineRelay)
                     continue;
 
                 AccountingEventModel? built;
@@ -530,6 +534,53 @@ public sealed class AccountingBackfillService : IAccountingBackfill, IAsyncDispo
             }
 
             await SaveBatchAsync(unitOfWork, "forward", written, tally.Forwards += written);
+            if (page.Count < BatchSize)
+                return;
+        }
+    }
+
+    /// <summary>
+    /// NL-875: the trampoline relays fulfilled before the cutover, as memo <c>TrampolineRelaySettled</c> events (counted
+    /// with the forwards). Their outgoing payments are left out of <see cref="MemoPaymentsAsync"/>. A unit of work that
+    /// stores no relays has none.
+    /// </summary>
+    private async Task MemoTrampolineRelaysAsync(DateTimeOffset cutoverAt, MemoTally tally,
+                                                 CancellationToken cancellationToken)
+    {
+        for (var skip = 0; ; skip += BatchSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var scope = _scopeFactory.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            if (TrampolineRelayReads.TryGetRepository(unitOfWork) is not { } relays)
+                return;
+
+            var page = await relays.ListAsync(
+                           new TrampolineRelayListQuery(skip, BatchSize, Status: TrampolineRelayStatus.Fulfilled),
+                           cancellationToken);
+            var events = unitOfWork.AccountingEventDbRepository;
+            var written = 0;
+            foreach (var relay in page)
+            {
+                if (relay is not { Status: TrampolineRelayStatus.Fulfilled, CompletedAt: { } completedAt }
+                 || completedAt > cutoverAt)
+                    continue;
+
+                var parts = await relays.GetPartsAsync(relay.PaymentHash);
+                var payment = await unitOfWork.PaymentDbRepository.GetByPaymentHashAsync(relay.PaymentHash);
+                var built = Build("trampoline relay", relay.PaymentHash.ToString(), () =>
+                                      PaymentAccountingEvents.TrampolineRelaySettled(
+                                          relay, parts,
+                                          payment is { IsTrampolineRelay: true, Status: PaymentStatus.Succeeded }
+                                              ? payment
+                                              : null, null));
+                if (built is null || !await TryAddMemoAsync(events, built, tally, cancellationToken))
+                    continue;
+
+                written++;
+            }
+
+            await SaveBatchAsync(unitOfWork, "trampoline", written, tally.Forwards += written);
             if (page.Count < BatchSize)
                 return;
         }

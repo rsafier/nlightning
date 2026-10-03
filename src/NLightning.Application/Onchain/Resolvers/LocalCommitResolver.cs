@@ -652,7 +652,10 @@ public sealed class LocalCommitResolver : IOutputResolver
                 return preimage;
         }
 
-        return null;
+        // NL-875: a part of a trampoline relay is claimed with the preimage its relay learnt downstream
+        return await TrampolineRelayClaims.GetRelayPreimageAsync(
+                   context.UnitOfWork, context.Channel.ChannelId, record,
+                   (c, k) => TrampolineRelayClaims.FindRecordAsync(context.UnitOfWork, c, k));
     }
 
     /// <summary>

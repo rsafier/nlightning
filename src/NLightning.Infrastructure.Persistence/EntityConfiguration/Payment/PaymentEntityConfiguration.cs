@@ -37,6 +37,7 @@ public static class PaymentEntityConfiguration
             entity.Property(e => e.PayeeNodeId)
                   .HasConversion<CompactPubKeyConverter>()
                   .IsRequired();
+            entity.Property(e => e.IsTrampolineRelay).IsRequired();
             entity.Property(e => e.AmountMsat).IsRequired();
             entity.Property(e => e.FeeMsat).IsRequired();
             entity.Property(e => e.CreatedAt)

@@ -17,5 +17,13 @@ public enum HtlcOriginKind : byte
     /// <summary>
     /// We forward it: the HTLC continues an incoming HTLC on another (or the same) channel.
     /// </summary>
-    Forwarded = 2
+    Forwarded = 2,
+
+    /// <summary>
+    /// We relay a trampoline payment (BOLTs PR 836, NL-875): the HTLC is one part of the outgoing payment of the
+    /// trampoline relay with this payment hash, which answers for the whole set of incoming HTLCs of that relay
+    /// (<c>TrampolineRelayModel</c>, <c>ITrampolineRelayDbRepository</c>). It is not a forward circuit: N incoming
+    /// HTLCs map to M outgoing ones.
+    /// </summary>
+    Trampoline = 3
 }

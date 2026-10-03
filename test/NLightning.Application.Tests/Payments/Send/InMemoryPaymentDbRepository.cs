@@ -90,7 +90,8 @@ internal sealed class InMemoryPaymentDbRepository : IPaymentDbRepository
     {
         var copy = PaymentModel.Restore(p.PaymentHash, p.Bolt11, p.PayeeNodeId, p.Amount, p.Fee, p.CreatedAt, p.Status,
                                         p.OutgoingChannelId, p.OutgoingHtlcId, p.Preimage, p.FailureCode,
-                                        p.FailureSourceIndex, p.FailureReason, p.CompletedAt, p.Route);
+                                        p.FailureSourceIndex, p.FailureReason, p.CompletedAt, p.Route,
+                                        isTrampolineRelay: p.IsTrampolineRelay);
         // NL-602 A3-T1: the operator's label and tags are stored like the EF repository stores them
         copy.Label = p.Label;
         copy.Tags = p.Tags;

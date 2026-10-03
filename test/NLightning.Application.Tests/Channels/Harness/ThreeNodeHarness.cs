@@ -782,6 +782,9 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IPaymentPartDbRepository PaymentPartDbRepository => inner.PaymentPartDbRepository;
     public IOfferDbRepository OfferDbRepository => inner.OfferDbRepository;
     public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;
+    public ITrampolineRelayDbRepository TrampolineRelayDbRepository => inner.TrampolineRelayDbRepository;
+    public IPaymentTrampolineHopDbRepository PaymentTrampolineHopDbRepository =>
+        inner.PaymentTrampolineHopDbRepository;
     public IOnionReplayDbRepository OnionReplayDbRepository => inner.OnionReplayDbRepository;
     public IChannelFundingDbRepository ChannelFundingDbRepository => inner.ChannelFundingDbRepository;
     public IChannelPolicyDbRepository ChannelPolicyDbRepository => inner.ChannelPolicyDbRepository;

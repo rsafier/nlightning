@@ -2146,6 +2146,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("InvoiceRequestMetadata")
                         .HasColumnType("varbinary(max)");
 
+                    b.Property<bool>("IsTrampolineRelay")
+                        .HasColumnType("bit");
+
                     b.Property<string>("Label")
                         .HasMaxLength(256)
                         .HasColumnType("nvarchar(256)");
@@ -2277,6 +2280,137 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasKey("PaymentHash", "PartIndex", "HopIndex");
 
                     b.ToTable("PaymentPartHops");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentTrampolineHopEntity", b =>
+                {
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<int>("Attempt")
+                        .HasColumnType("int");
+
+                    b.Property<int>("HopIndex")
+                        .HasColumnType("int");
+
+                    b.Property<long>("AmountMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CltvExpiry")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("NodeId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("SharedSecret")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.HasKey("PaymentHash", "Attempt", "HopIndex");
+
+                    b.ToTable("PaymentTrampolineHops");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", b =>
+                {
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("AmountOutMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CltvExpiryOut")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("CompletedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("FailureCode")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FailureReason")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long?>("FeeEarnedMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("IncomingTotalMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("NextEncryptedRecipientData")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("NextNodeId")
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("NextPathKey")
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("NextTrampolinePacket")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("OutgoingPaymentSecret")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("Preimage")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("RecipientBlindedPaths")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("RecipientFeatures")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("PaymentHash");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("Status");
+
+                    b.ToTable("TrampolineRelays");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<decimal>("HtlcId")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<long>("AmountMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CltvExpiry")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("OuterPaymentSecret")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("OuterSharedSecret")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("PaymentHash")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("TrampolineSharedSecret")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.HasKey("ChannelId", "HtlcId");
+
+                    b.HasIndex("PaymentHash");
+
+                    b.ToTable("TrampolineRelayParts");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingLotEntity", b =>
@@ -2487,6 +2621,15 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasOne("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartEntity", null)
                         .WithMany("Hops")
                         .HasForeignKey("PaymentHash", "PartIndex")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", null)
+                        .WithMany()
+                        .HasForeignKey("PaymentHash")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

@@ -74,6 +74,9 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IInvoiceDbRepository InvoiceDbRepository => inner.InvoiceDbRepository;
     public IPaymentDbRepository PaymentDbRepository => inner.PaymentDbRepository;
     public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;
+    public ITrampolineRelayDbRepository TrampolineRelayDbRepository => inner.TrampolineRelayDbRepository;
+    public IPaymentTrampolineHopDbRepository PaymentTrampolineHopDbRepository =>
+        inner.PaymentTrampolineHopDbRepository;
     public IOnionReplayDbRepository OnionReplayDbRepository => inner.OnionReplayDbRepository;
     public IOfferDbRepository OfferDbRepository => inner.OfferDbRepository;
 

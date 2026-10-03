@@ -33,7 +33,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
                 "NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity",
                 typeof(PaymentEntity),
                 baseEntityType,
-                propertyCount: 21,
+                propertyCount: 22,
                 navigationCount: 1,
                 unnamedIndexCount: 2,
                 keyCount: 1);
@@ -665,6 +665,54 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             invoiceRequestMetadata.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
             invoiceRequestMetadata.AddAnnotation("Relational:ColumnName", "invoice_request_metadata");
 
+            var isTrampolineRelay = runtimeEntityType.AddProperty(
+                "IsTrampolineRelay",
+                typeof(bool),
+                propertyInfo: typeof(PaymentEntity).GetProperty("IsTrampolineRelay", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                fieldInfo: typeof(PaymentEntity).GetField("<IsTrampolineRelay>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly),
+                sentinel: false);
+            isTrampolineRelay.SetGetter(
+                bool (PaymentEntity instance) => PaymentEntityUnsafeAccessors.IsTrampolineRelay(instance),
+                bool (PaymentEntity instance) => PaymentEntityUnsafeAccessors.IsTrampolineRelay(instance) == false);
+            isTrampolineRelay.SetSetter(
+                PaymentEntity (PaymentEntity instance, bool value) =>
+                {
+                    PaymentEntityUnsafeAccessors.IsTrampolineRelay(instance) = value;
+                    return instance;
+                });
+            isTrampolineRelay.SetMaterializationSetter(
+                PaymentEntity (PaymentEntity instance, bool value) =>
+                {
+                    PaymentEntityUnsafeAccessors.IsTrampolineRelay(instance) = value;
+                    return instance;
+                });
+            isTrampolineRelay.SetAccessors(
+                bool (IInternalEntry entry) => PaymentEntityUnsafeAccessors.IsTrampolineRelay(((PaymentEntity)(entry.Entity))),
+                bool (IInternalEntry entry) => PaymentEntityUnsafeAccessors.IsTrampolineRelay(((PaymentEntity)(entry.Entity))),
+                bool (IInternalEntry entry) => entry.ReadOriginalValue<bool>(isTrampolineRelay, 12),
+                bool (IInternalEntry entry) => entry.GetCurrentValue<bool>(isTrampolineRelay));
+            isTrampolineRelay.SetPropertyIndexes(
+                index: 12,
+                originalValueIndex: 12,
+                shadowIndex: -1,
+                relationshipIndex: -1,
+                storeGenerationIndex: -1);
+            isTrampolineRelay.TypeMapping = NpgsqlBoolTypeMapping.Default.Clone(
+                comparer: new ValueComparer<bool>(
+                    bool (bool v1, bool v2) => v1 == v2,
+                    int (bool v) => ((object)v).GetHashCode(),
+                    bool (bool v) => v),
+                keyComparer: new ValueComparer<bool>(
+                    bool (bool v1, bool v2) => v1 == v2,
+                    int (bool v) => ((object)v).GetHashCode(),
+                    bool (bool v) => v),
+                providerValueComparer: new ValueComparer<bool>(
+                    bool (bool v1, bool v2) => v1 == v2,
+                    int (bool v) => ((object)v).GetHashCode(),
+                    bool (bool v) => v));
+            isTrampolineRelay.AddAnnotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.None);
+            isTrampolineRelay.AddAnnotation("Relational:ColumnName", "is_trampoline_relay");
+
             var label = runtimeEntityType.AddProperty(
                 "Label",
                 typeof(string),
@@ -690,11 +738,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
             label.SetAccessors(
                 string (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Label(((PaymentEntity)(entry.Entity))),
                 string (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Label(((PaymentEntity)(entry.Entity))),
-                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(label, 12),
+                string (IInternalEntry entry) => entry.ReadOriginalValue<string>(label, 13),
                 string (IInternalEntry entry) => entry.GetCurrentValue<string>(label));
             label.SetPropertyIndexes(
-                index: 12,
-                originalValueIndex: 12,
+                index: 13,
+                originalValueIndex: 13,
                 shadowIndex: -1,
                 relationshipIndex: -1,
                 storeGenerationIndex: -1);
@@ -742,11 +790,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         offerBolt12.SetAccessors(
             string (IInternalEntry entry) => PaymentEntityUnsafeAccessors.OfferBolt12(((PaymentEntity)(entry.Entity))),
             string (IInternalEntry entry) => PaymentEntityUnsafeAccessors.OfferBolt12(((PaymentEntity)(entry.Entity))),
-            string (IInternalEntry entry) => entry.ReadOriginalValue<string>(offerBolt12, 13),
+            string (IInternalEntry entry) => entry.ReadOriginalValue<string>(offerBolt12, 14),
             string (IInternalEntry entry) => entry.GetCurrentValue<string>(offerBolt12));
         offerBolt12.SetPropertyIndexes(
-            index: 13,
-            originalValueIndex: 13,
+            index: 14,
+            originalValueIndex: 14,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -793,11 +841,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         outgoingChannelId.SetAccessors(
             ChannelId? (IInternalEntry entry) => PaymentEntityUnsafeAccessors.OutgoingChannelId(((PaymentEntity)(entry.Entity))),
             ChannelId? (IInternalEntry entry) => PaymentEntityUnsafeAccessors.OutgoingChannelId(((PaymentEntity)(entry.Entity))),
-            ChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ChannelId?>(outgoingChannelId, 14),
+            ChannelId? (IInternalEntry entry) => entry.ReadOriginalValue<ChannelId?>(outgoingChannelId, 15),
             ChannelId? (IInternalEntry entry) => entry.GetCurrentValue<ChannelId?>(outgoingChannelId));
         outgoingChannelId.SetPropertyIndexes(
-            index: 14,
-            originalValueIndex: 14,
+            index: 15,
+            originalValueIndex: 15,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -851,11 +899,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         outgoingHtlcId.SetAccessors(
             ulong? (IInternalEntry entry) => PaymentEntityUnsafeAccessors.OutgoingHtlcId(((PaymentEntity)(entry.Entity))),
             ulong? (IInternalEntry entry) => PaymentEntityUnsafeAccessors.OutgoingHtlcId(((PaymentEntity)(entry.Entity))),
-            ulong? (IInternalEntry entry) => entry.ReadOriginalValue<ulong?>(outgoingHtlcId, 15),
+            ulong? (IInternalEntry entry) => entry.ReadOriginalValue<ulong?>(outgoingHtlcId, 16),
             ulong? (IInternalEntry entry) => entry.GetCurrentValue<ulong?>(outgoingHtlcId));
         outgoingHtlcId.SetPropertyIndexes(
-            index: 15,
-            originalValueIndex: 15,
+            index: 16,
+            originalValueIndex: 16,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -913,11 +961,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         payeeNodeId.SetAccessors(
             CompactPubKey (IInternalEntry entry) => PaymentEntityUnsafeAccessors.PayeeNodeId(((PaymentEntity)(entry.Entity))),
             CompactPubKey (IInternalEntry entry) => PaymentEntityUnsafeAccessors.PayeeNodeId(((PaymentEntity)(entry.Entity))),
-            CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(payeeNodeId, 16),
+            CompactPubKey (IInternalEntry entry) => entry.ReadOriginalValue<CompactPubKey>(payeeNodeId, 17),
             CompactPubKey (IInternalEntry entry) => entry.GetCurrentValue<CompactPubKey>(payeeNodeId));
         payeeNodeId.SetPropertyIndexes(
-            index: 16,
-            originalValueIndex: 16,
+            index: 17,
+            originalValueIndex: 17,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -970,11 +1018,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         payerNote.SetAccessors(
             string (IInternalEntry entry) => PaymentEntityUnsafeAccessors.PayerNote(((PaymentEntity)(entry.Entity))),
             string (IInternalEntry entry) => PaymentEntityUnsafeAccessors.PayerNote(((PaymentEntity)(entry.Entity))),
-            string (IInternalEntry entry) => entry.ReadOriginalValue<string>(payerNote, 17),
+            string (IInternalEntry entry) => entry.ReadOriginalValue<string>(payerNote, 18),
             string (IInternalEntry entry) => entry.GetCurrentValue<string>(payerNote));
         payerNote.SetPropertyIndexes(
-            index: 17,
-            originalValueIndex: 17,
+            index: 18,
+            originalValueIndex: 18,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1020,11 +1068,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         preimage.SetAccessors(
             byte[] (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Preimage(((PaymentEntity)(entry.Entity))),
             byte[] (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Preimage(((PaymentEntity)(entry.Entity))),
-            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(preimage, 18),
+            byte[] (IInternalEntry entry) => entry.ReadOriginalValue<byte[]>(preimage, 19),
             byte[] (IInternalEntry entry) => entry.GetCurrentValue<byte[]>(preimage));
         preimage.SetPropertyIndexes(
-            index: 18,
-            originalValueIndex: 18,
+            index: 19,
+            originalValueIndex: 19,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1068,11 +1116,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         status.SetAccessors(
             byte (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Status(((PaymentEntity)(entry.Entity))),
             byte (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Status(((PaymentEntity)(entry.Entity))),
-            byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 19),
+            byte (IInternalEntry entry) => entry.ReadOriginalValue<byte>(status, 20),
             byte (IInternalEntry entry) => entry.GetCurrentValue<byte>(status));
         status.SetPropertyIndexes(
-            index: 19,
-            originalValueIndex: 19,
+            index: 20,
+            originalValueIndex: 20,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1119,11 +1167,11 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Postgres
         tags.SetAccessors(
             string (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Tags(((PaymentEntity)(entry.Entity))),
             string (IInternalEntry entry) => PaymentEntityUnsafeAccessors.Tags(((PaymentEntity)(entry.Entity))),
-            string (IInternalEntry entry) => entry.ReadOriginalValue<string>(tags, 20),
+            string (IInternalEntry entry) => entry.ReadOriginalValue<string>(tags, 21),
             string (IInternalEntry entry) => entry.GetCurrentValue<string>(tags));
         tags.SetPropertyIndexes(
-            index: 20,
-            originalValueIndex: 20,
+            index: 21,
+            originalValueIndex: 21,
             shadowIndex: -1,
             relationshipIndex: -1,
             storeGenerationIndex: -1);
@@ -1177,6 +1225,7 @@ public static void CreateAnnotations(RuntimeEntityType runtimeEntityType)
     var failureSourceIndex = runtimeEntityType.FindProperty("FailureSourceIndex");
     var feeMsat = runtimeEntityType.FindProperty("FeeMsat");
     var invoiceRequestMetadata = runtimeEntityType.FindProperty("InvoiceRequestMetadata");
+    var isTrampolineRelay = runtimeEntityType.FindProperty("IsTrampolineRelay");
     var label = runtimeEntityType.FindProperty("Label");
     var offerBolt12 = runtimeEntityType.FindProperty("OfferBolt12");
     var outgoingChannelId = runtimeEntityType.FindProperty("OutgoingChannelId");
@@ -1194,7 +1243,7 @@ public static void CreateAnnotations(RuntimeEntityType runtimeEntityType)
         ISnapshot (IInternalEntry source) =>
         {
             var structuralType1 = ((PaymentEntity)(source.Entity));
-            return ((ISnapshot)(new Snapshot<Hash, long, string, byte[], DateTimeOffset?, DateTimeOffset, byte[], ushort?, string, int?, long, byte[], string, string, ChannelId?, ulong?, CompactPubKey, string, byte[], byte, string>(((ValueComparer<Hash>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), ((ValueComparer<long>)(((IProperty)amountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(amountMsat)), (source.GetCurrentValue<string>(bolt11) == null ? null : ((ValueComparer<string>)(((IProperty)bolt11).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(bolt11))), (source.GetCurrentValue<byte[]>(bolt12InvoiceBytes) == null ? null : ((ValueComparer<byte[]>)(((IProperty)bolt12InvoiceBytes).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(bolt12InvoiceBytes))), (source.GetCurrentValue<DateTimeOffset?>(completedAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)completedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(completedAt))), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), (source.GetCurrentValue<byte[]>(customRecords) == null ? null : ((ValueComparer<byte[]>)(((IProperty)customRecords).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(customRecords))), (source.GetCurrentValue<ushort?>(failureCode) == null ? null : ((ValueComparer<ushort?>)(((IProperty)failureCode).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort?>(failureCode))), (source.GetCurrentValue<string>(failureReason) == null ? null : ((ValueComparer<string>)(((IProperty)failureReason).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(failureReason))), (source.GetCurrentValue<int?>(failureSourceIndex) == null ? null : ((ValueComparer<int?>)(((IProperty)failureSourceIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<int?>(failureSourceIndex))), ((ValueComparer<long>)(((IProperty)feeMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(feeMsat)), (source.GetCurrentValue<byte[]>(invoiceRequestMetadata) == null ? null : ((ValueComparer<byte[]>)(((IProperty)invoiceRequestMetadata).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(invoiceRequestMetadata))), (source.GetCurrentValue<string>(label) == null ? null : ((ValueComparer<string>)(((IProperty)label).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(label))), (source.GetCurrentValue<string>(offerBolt12) == null ? null : ((ValueComparer<string>)(((IProperty)offerBolt12).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(offerBolt12))), (source.GetCurrentValue<ChannelId?>(outgoingChannelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)outgoingChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(outgoingChannelId))), (source.GetCurrentValue<ulong?>(outgoingHtlcId) == null ? null : ((ValueComparer<ulong?>)(((IProperty)outgoingHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(outgoingHtlcId))), ((ValueComparer<CompactPubKey>)(((IProperty)payeeNodeId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(payeeNodeId)), (source.GetCurrentValue<string>(payerNote) == null ? null : ((ValueComparer<string>)(((IProperty)payerNote).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(payerNote))), (source.GetCurrentValue<byte[]>(preimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)preimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(preimage))), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)), (source.GetCurrentValue<string>(tags) == null ? null : ((ValueComparer<string>)(((IProperty)tags).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(tags))))));
+            return ((ISnapshot)(new Snapshot<Hash, long, string, byte[], DateTimeOffset?, DateTimeOffset, byte[], ushort?, string, int?, long, byte[], bool, string, string, ChannelId?, ulong?, CompactPubKey, string, byte[], byte, string>(((ValueComparer<Hash>)(((IProperty)paymentHash).GetValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), ((ValueComparer<long>)(((IProperty)amountMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(amountMsat)), (source.GetCurrentValue<string>(bolt11) == null ? null : ((ValueComparer<string>)(((IProperty)bolt11).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(bolt11))), (source.GetCurrentValue<byte[]>(bolt12InvoiceBytes) == null ? null : ((ValueComparer<byte[]>)(((IProperty)bolt12InvoiceBytes).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(bolt12InvoiceBytes))), (source.GetCurrentValue<DateTimeOffset?>(completedAt) == null ? null : ((ValueComparer<DateTimeOffset?>)(((IProperty)completedAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset?>(completedAt))), ((ValueComparer<DateTimeOffset>)(((IProperty)createdAt).GetValueComparer())).Snapshot(source.GetCurrentValue<DateTimeOffset>(createdAt)), (source.GetCurrentValue<byte[]>(customRecords) == null ? null : ((ValueComparer<byte[]>)(((IProperty)customRecords).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(customRecords))), (source.GetCurrentValue<ushort?>(failureCode) == null ? null : ((ValueComparer<ushort?>)(((IProperty)failureCode).GetValueComparer())).Snapshot(source.GetCurrentValue<ushort?>(failureCode))), (source.GetCurrentValue<string>(failureReason) == null ? null : ((ValueComparer<string>)(((IProperty)failureReason).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(failureReason))), (source.GetCurrentValue<int?>(failureSourceIndex) == null ? null : ((ValueComparer<int?>)(((IProperty)failureSourceIndex).GetValueComparer())).Snapshot(source.GetCurrentValue<int?>(failureSourceIndex))), ((ValueComparer<long>)(((IProperty)feeMsat).GetValueComparer())).Snapshot(source.GetCurrentValue<long>(feeMsat)), (source.GetCurrentValue<byte[]>(invoiceRequestMetadata) == null ? null : ((ValueComparer<byte[]>)(((IProperty)invoiceRequestMetadata).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(invoiceRequestMetadata))), ((ValueComparer<bool>)(((IProperty)isTrampolineRelay).GetValueComparer())).Snapshot(source.GetCurrentValue<bool>(isTrampolineRelay)), (source.GetCurrentValue<string>(label) == null ? null : ((ValueComparer<string>)(((IProperty)label).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(label))), (source.GetCurrentValue<string>(offerBolt12) == null ? null : ((ValueComparer<string>)(((IProperty)offerBolt12).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(offerBolt12))), (source.GetCurrentValue<ChannelId?>(outgoingChannelId) == null ? null : ((ValueComparer<ChannelId?>)(((IProperty)outgoingChannelId).GetValueComparer())).Snapshot(source.GetCurrentValue<ChannelId?>(outgoingChannelId))), (source.GetCurrentValue<ulong?>(outgoingHtlcId) == null ? null : ((ValueComparer<ulong?>)(((IProperty)outgoingHtlcId).GetValueComparer())).Snapshot(source.GetCurrentValue<ulong?>(outgoingHtlcId))), ((ValueComparer<CompactPubKey>)(((IProperty)payeeNodeId).GetValueComparer())).Snapshot(source.GetCurrentValue<CompactPubKey>(payeeNodeId)), (source.GetCurrentValue<string>(payerNote) == null ? null : ((ValueComparer<string>)(((IProperty)payerNote).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(payerNote))), (source.GetCurrentValue<byte[]>(preimage) == null ? null : ((ValueComparer<byte[]>)(((IProperty)preimage).GetValueComparer())).Snapshot(source.GetCurrentValue<byte[]>(preimage))), ((ValueComparer<byte>)(((IProperty)status).GetValueComparer())).Snapshot(source.GetCurrentValue<byte>(status)), (source.GetCurrentValue<string>(tags) == null ? null : ((ValueComparer<string>)(((IProperty)tags).GetValueComparer())).Snapshot(source.GetCurrentValue<string>(tags))))));
         });
     runtimeEntityType.SetStoreGeneratedValuesFactory(
         ISnapshot () => Snapshot.Empty);
@@ -1211,11 +1260,11 @@ public static void CreateAnnotations(RuntimeEntityType runtimeEntityType)
             return ((ISnapshot)(new Snapshot<Hash, object>(((ValueComparer<Hash>)(((IProperty)paymentHash).GetKeyValueComparer())).Snapshot(source.GetCurrentValue<Hash>(paymentHash)), SnapshotFactoryFactory.SnapshotCollection(source.GetCurrentValue<ICollection<PaymentHopEntity>>(hops)))));
         });
     runtimeEntityType.SetCounts(new PropertyCounts(
-        propertyCount: 21,
+        propertyCount: 22,
         navigationCount: 1,
         complexPropertyCount: 0,
         complexCollectionCount: 0,
-        originalValueCount: 21,
+        originalValueCount: 22,
         shadowCount: 0,
         relationshipCount: 2,
         storeGeneratedCount: 0));

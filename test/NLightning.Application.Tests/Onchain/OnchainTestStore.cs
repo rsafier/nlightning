@@ -48,6 +48,9 @@ internal sealed class OnchainTestStore
     /// <summary>The origins stored per outgoing HTLC (<c>ChannelStateDbRepository.GetHtlcOriginAsync</c>).</summary>
     public Dictionary<(ChannelId ChannelId, HtlcDirection Direction, ulong HtlcId), HtlcOrigin> Origins { get; } = [];
 
+    /// <summary>The trampoline relays (NL-875): nothing unless a test sets it up.</summary>
+    public Mock<ITrampolineRelayDbRepository> TrampolineRelays { get; } = new();
+
     /// <summary>The forward circuits (<c>ForwardCircuitDbRepository.GetByIncomingAsync</c>).</summary>
     public Dictionary<(ChannelId IncomingChannelId, ulong IncomingHtlcId), ForwardCircuitModel> Circuits { get; } = [];
 
@@ -94,6 +97,7 @@ internal sealed class OnchainTestStore
         unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(CreateInteractiveTxSessions().Object);
         unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(CreateChannelState().Object);
         unitOfWork.SetupGet(u => u.ForwardCircuitDbRepository).Returns(CreateCircuits().Object);
+        unitOfWork.SetupGet(u => u.TrampolineRelayDbRepository).Returns(TrampolineRelays.Object);
         unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(CreateInvoices().Object);
         unitOfWork.SetupGet(u => u.AccountingEventDbRepository).Returns(new AccountingRepository(this));
         unitOfWork.SetupGet(u => u.LiquidityPurchaseDbRepository).Returns(CreatePurchases().Object);
