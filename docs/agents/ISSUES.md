@@ -135,12 +135,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 53 | 54 |
+| open | 0 | 0 | 1 | 54 | 55 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 62 | 187 | 373 | 636 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **194** | **436** | **706** |
+| **Total** | **14** | **62** | **194** | **437** | **707** |
 
 ### Epics
 
@@ -6922,6 +6922,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** When an implementation can buy over #1153 (an Eclair plugin or build that sets `requestFunding_opt`, a Phoenix-style client, or a merged #1153 in CLN/LDK), add a Docker class where it buys from us in an open, a splice and an RBF.
 - **Blocks/Blocked-by:** Related NL-771, NL-180
 - **Plan ref:** LIQUIDITY_ADS_PLAN LA6
+
+### NL-780 `EclairCloseTests`' simple close by Eclair timed out once in a full Eclair category run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Eclair/EclairCloseTests.cs` (`Given_SimpleCloseNegotiated_When_EclairCloses_Then_WeSignAndBothClose`)
+- **Evidence:** NL-771 LA7 (2026-10-03): the full `Category=Interop.Eclair` run (34 tests: 31 passed, 2 `Explicit` not run, 1 failed) failed this test waiting for "our channel is Closed": `closing_complete`/`closing_sig` went both ways, our channel stayed Closing, Eclair no longer listed the channel and the channel was not reestablished (`reestablished=False`). The class passes 4/4 alone. The liquidity ads lease check added to `ChannelManager.CompleteCloseAsync` reads an empty purchase list for this channel and does nothing, so the failure is most likely order-dependent (state left by the earlier classes on the shared Eclair node or bitcoind, or the closing transaction's confirmation not reaching our chain monitor in time).
+- **Fix sketch:** Rerun the category to see whether it reproduces; if it does, log our chain monitor's view of the closing txid (watch registered, confirmations) when the wait times out and check whether Eclair's simple close broadcast a transaction other than the one we stored (the RBF'd variant), which our funding-spend path should still accept as the mutual close.
+- **Blocks/Blocked-by:** Related NL-771, NL-486
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA7
 
 ### NL-779 The Eclair test image cannot be built behind a TLS-intercepting proxy
 - **Status:** open
