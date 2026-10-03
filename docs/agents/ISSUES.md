@@ -4,7 +4,7 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
-Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (anysegwit) unchanged unless noted in its entry.
+Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (lane b12-anysegwit, cfafd698) fixed.
 
 Updated 2026-10-03 by the Docker retirement lane (branch `wip/retire-docker` from 61889866, owner decision 2026-10-03: every suite but Tor on the cluster harness only): NL-866 (low, fixed in cea4bc4f: the CLN, Eclair, LDK and Postgres fixtures lost their Docker backends; Tor stays on Docker). Summary rows recounted from the entries: 749 entries, no duplicate IDs.
 
@@ -147,9 +147,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 58 | 59 |
+| open | 0 | 0 | 1 | 57 | 58 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 63 | 201 | 410 | 688 |
+| fixed | 14 | 63 | 201 | 411 | 689 |
 | wontfix | 0 | 0 | 5 | 9 | 14 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
 | **Total** | **14** | **63** | **210** | **479** | **766** |
@@ -6908,12 +6908,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 2 record"
 
 ### NL-776 CLN v26.06.8 sends a P2TR shutdown script on a dual-funded channel without `option_shutdown_anysegwit`, so our cooperative close stalls
-- **Status:** open
+- **Status:** fixed (cfafd698)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Close/` (`ChannelCloseCoordinator`, B2-SHUT-R02), `FeatureOptions.BeyondSegwitShutdown` (default No); the v2 open accepts CLN's P2TR upfront script without complaint
 - **Evidence:** test harness phase 2 lane A (cluster `InProcessNodeClusterTests`): our node opens a dual-funded channel to CLN (`--experimental-dual-fund`) and closes it cooperatively; CLN's `close_to` is P2TR (`5120…`), our init does not set bits 26/27, so we refuse CLN's `shutdown` with "shutdown scriptpubkey is not a valid form"; our channel stays ShuttingDown and CLN stays in CLOSINGD_SIGEXCHANGE. v1 channels with CLN close fine (Docker `ClnCloseTests`), and the Docker dual-fund proofs never close cooperatively. The cluster proof advertises the option for now (comment in the test).
-- **Fix sketch:** Advertise `option_shutdown_anysegwit` Optional by default (the validator already accepts segwit v1-16), check whether BOLT 9 lists it as assumed now, refuse a P2TR upfront script at open when the feature is not negotiated, and add a Docker dual-fund close proof against CLN.
+- **Fix sketch:** Done (batch12): `FeatureOptions.BeyondSegwitShutdown` defaults to Optional (BOLT 9 does not list 26/27 as assumed); `ShutdownScriptValidator.IsValidUpfront` checks a non-empty `upfront_shutdown_script` in `open_channel`, `accept_channel`, `open_channel2` and `accept_channel2` against the negotiated features, failing the open with a channel `error` before any funds move; the cluster workaround in `InProcessNodeClusterTests` is gone. Tests: validator, `ChannelFactoryTests`, `AcceptChannel1MessageHandlerTests`, `DualFundUpfrontShutdownScriptTests`, `FeatureOptionsTests` (7 fail without the fix); `ClnDualFundTests` gains a dual-funded cooperative close against CLN with its P2TR script.
 - **Blocks/Blocked-by:** Related NL-286, NL-037
 - **Plan ref:** —
 
