@@ -230,7 +230,19 @@ public class TcpService : ITcpService
                         continue;
 
                     var tcpClient = await listener.AcceptTcpClientAsync(cancellationToken);
-                    tcpClient.NoDelay = true; // as on our outbound connections
+                    try
+                    {
+                        tcpClient.NoDelay = true; // as on our outbound connections
+                    }
+                    catch (SocketException e)
+                    {
+                        // The peer is already gone (macOS answers EINVAL for a reset connection); never let one
+                        // connection end the listener
+                        _logger.LogDebug(e, "Dropping a connection closed before it was set up");
+                        tcpClient.Dispose();
+                        continue;
+                    }
+
                     _ = Task.Run(() =>
                     {
                         try

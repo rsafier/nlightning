@@ -586,10 +586,10 @@ interop suite). Then:
 - **Found and fixed on the way.**
   - ZMQ start race: a node funded right after its start never saw the 6 blocks. A subscriber gets only what is
     published after its subscription reached bitcoind, and the subscription to a pod is slower to set up than to
-    Docker's 127.0.0.1 port. Two hits in the first 3-at-once batch (243 executions). Fixed with
-    `RegtestBitcoinEndpoint.ZmqStartupGuard` (20 s from `ClusterChainEndpoint`, null on Docker): for that long after a
-    start, `NLightningTestNode` hands the monitor bitcoind's tip when it stays 2 s behind without moving, and logs it.
-    The second batch had no hit and the guard fired once.
+    Docker's 127.0.0.1 port. Two hits in the first 3-at-once batch (231 executions). First worked around with a
+    test-only `RegtestBitcoinEndpoint.ZmqStartupGuard`; the review found that this hid a product gap (any block ZMQ
+    misses, also after a reconnect, waited for the next block), so it was replaced by the chain monitor's tip poll
+    (see the review-fix record below).
   - `ClnCloseRestartTests` agreed-close case: CLN lists `CLOSINGD_COMPLETE` once it sent its `closing_signed`, which may
     still be in flight; the test now waits for it before the same assertion.
   - `ClnGossipCaptureTests` (Explicit): our node never funded the anchors reserve (NL-379), so CLN's open to it was
@@ -599,19 +599,65 @@ Evidence (OrbStack, Release, net10.0; logs under `TestResults/cluster/hp2b-*`):
 
 | Run | Result | Time |
 |---|---|---|
-| Cluster, alone (`hp2b-full1`) | 81/81, 4 Explicit not run; topology up in 13.3 s | 964 s |
+| Cluster, alone (`hp2b-full1`) | 77/77 (81 discovered, the 4 Explicit captures not run); topology up in 13.3 s | 964 s |
 | Cluster, the 4 Explicit captures (`hp2b-capt2`) | 4/4 | 46 s |
-| Cluster, 3 at once (`hp2b-cln3`, before the fixes) | 75, 76 and 75 of 81; topologies up in 5.0-6.8 s | 877-933 s |
-| Cluster, 3 at once (`hp2b-cln3b`, ZMQ guard) | 76, 76 and 75 of 81 | 864-886 s |
-| Docker (`run-interop.sh cln`, under the lock, at c71d9d39) | 81/81, 4 Explicit not run; matches the batch10 baseline | 876 s |
-| Docker again on the final test code (bca39fb6) | 81/81, 4 Explicit not run | 886 s |
+| Cluster, 3 at once (`hp2b-cln3`, before the fixes) | 75, 76 and 75 of 77; topologies up in 5.0-6.8 s | 877-933 s |
+| Cluster, 3 at once (`hp2b-cln3b`, ZMQ guard) | 76, 76 and 75 of 77 | 864-886 s |
+| Docker (`run-interop.sh cln`, under the lock, at c71d9d39) | 77/77, 4 Explicit not run (81 discovered); matches the batch10 baseline | 876 s |
+| Docker again on the final test code (bca39fb6) | 77/77, 4 Explicit not run | 886 s |
 
 Every 3-at-once run failed `ClnQuiescenceTests.Given_OurHtlcInFlight_*` (NL-477, closed in d13 as "not reproduced").
 CLN logs "STFU but you still have updates pending?" when its `update_fulfill_htlc` for our HTLC (sent about 24 ms
 after our `revoke_and_ack`) crosses our `stfu` on the wire (same millisecond in CLN's log). The pod's extra latency and
 the load make the crossing likely. It also failed once alone on the cluster (`hp2b-alone`) and passed in `hp2b-full1`
-and on Docker. This is a protocol and CLN question, not the harness's, so it is left failing and reported. The other
+and on Docker. This was first read as a protocol and CLN question and left failing; the review fixes below found our
+side of it (Nagle) and fixed it. The other
 cluster failures were the two fixed above.
+
+### Phase 2 review fixes and proof record (2026-10-02, `wip/harness-spike`)
+
+The review of 7439d024..09760b27 confirmed three findings; all three are fixed, two of them in the product:
+
+- **ZMQ guard hid a chain-monitor gap (medium).** `BlockchainMonitorService.StartAsync` caught up over RPC and only then
+  subscribed to ZMQ (NetMQ connects in the background) and never read the tip again, so a block mined in between, or
+  while ZMQ reconnects, waited for the next block (about 10 min on mainnet). The test-only `ZmqStartupGuard` fed the tip
+  in and hid it. Fixed in the product: `Bitcoin:TipPollInterval` (default 30 s, 0 = off) reads the tip over RPC; a
+  poll that finds the monitor behind only notes it, the next one at the same processed height catches up under the ZMQ
+  path's lock, logs a Warning and counts `TipPollCatchUps` (none while halted). `NLightningTestNode` sets 1 s on both
+  backends; the guard is reverted. Unit tests in `BlockchainMonitorServiceTests` (5) and `BitcoinOptionsTests`. In the
+  proof runs below the poll never had to catch up (0 hits in 4 cluster runs): the race is rare, and when it happens the
+  product now recovers.
+- **A failed `RemoveNodeAsync` blocked the name (low).** A failed removal now keeps the handle marked
+  (`IsRemovalPending`) and the next `DeployAsync` of the name finishes it first. Live proof
+  `RunLifecycleTests.Given_ANodeRemovalThatFailed_*` (removal cut at 300 ms, redeployed with a new pod in 3.3 s).
+- **NL-477 is back (low; ledger).** Root cause found: **Nagle**. CLN read our `revoke_and_ack` at .152 and our `stfu`
+  at .193 although we wrote them 1 ms apart: the `stfu` waited for CLN's delayed ACK (about 40 ms), and CLN fulfills
+  our HTLC about 20 ms after that `revoke_and_ack`, so its fulfill was out first and CLN v26.06.8 answered "STFU but you
+  still have updates pending?". Every peer TCP connection now has `NoDelay` (`TcpService` dialed and accepted,
+  `TorSocksDialer`), as Go sets it for LND. Before: every attempt of two cluster runs crossed (`hp2f-q1`, with a test
+  tolerance that was then dropped); after: no crossing in 6 runs (`hp2f-q2` x2, `hp2f-alone`, `hp2f-cln3` x3), the
+  proof unchanged. The Docker suite also got faster (807 s against 876-886 s). The ledger entries (NL-477 reopened with
+  the cause, the tip poll gap) are left to the integrator.
+- The record's "81/81" counts are corrected: 81 discovered, 77 executed, the 4 Explicit captures not run, on both
+  backends.
+
+Also: `ClnFixture` logs "[fixture] CLN fixture (<backend>) ready in N s" after the start and the tip wait.
+
+Proof (OrbStack k8s v1.35.6+orb1, Release, net10.0, `--no-incremental` build 0 warnings; logs under
+`TestResults/cluster/hp2f-*` and `TestResults/hp2f/`):
+
+| # | Run | Result | Time |
+|---|---|---|---|
+| 1 | Cluster alone (`hp2f-alone`) | 77/77 (81 discovered, 4 Explicit not run), 0 dumps | 889 s |
+| 2 | Cluster 3 at once (`hp2f-cln3`), one namespace each | 77/77, 77/77, 77/77; every namespace gone after the batch | 882, 846, 823 s; batch 890 s |
+| 3 | Docker (`run-interop.sh cln` under the machine lock) | 77/77, 4 Explicit not run | 807 s |
+| 4 | Fixture ready (the new log line) | cluster 7.2 s alone, 5.5 / 6.5 / 5.5 s 3 at once (topology 5.4-7.1 s); Docker 3.0 s (3 starts) | |
+| 5 | k8s containers of the batch (`docker stats`, 5 s samples) | peak 9 containers, 0.91 CPU cores, 539 MiB; median 0.13 cores | |
+
+No cross-talk: each run on its own chain (heights 1149, 1149, 1150 at the end; one shared chain would have reached
+about three times that), and each run's nodes reach only their own namespace's pods (bitcoind and CLN by the pod IPs of
+the run's own topology). Wall time per run is about Docker's (14-15 min against 13.5); the gain is concurrency: 3
+suites in 890 s instead of about 2,400 s one after another under the Docker lock.
 
 ## 6. Risks and open questions
 
