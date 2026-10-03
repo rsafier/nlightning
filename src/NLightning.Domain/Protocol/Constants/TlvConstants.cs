@@ -167,4 +167,12 @@ public static class TlvConstants
     /// BOLT 7 <c>reply_channel_range_tlvs</c> type 3 (<c>checksums_tlv</c>).
     /// </remarks>
     public static readonly BigSize ReplyChannelRangeChecksums = 3;
+
+    /// <summary>
+    /// Liquidity ads (BOLT PR #1153, NL-771): <c>request_funding</c> in <c>open_channel2</c>, <c>tx_init_rbf</c> and
+    /// <c>splice_init</c>; <c>provide_funding</c> in <c>accept_channel2</c>, <c>tx_ack_rbf</c> and <c>splice_ack</c>;
+    /// <c>option_will_fund</c> in <c>init</c>. Eclair 0.14.3's temporary odd type
+    /// (<see cref="Domain.LiquidityAds.Constants.LiquidityAdsConstants.TlvType"/>).
+    /// </summary>
+    public static readonly BigSize LiquidityAds = Domain.LiquidityAds.Constants.LiquidityAdsConstants.TlvType;
 }

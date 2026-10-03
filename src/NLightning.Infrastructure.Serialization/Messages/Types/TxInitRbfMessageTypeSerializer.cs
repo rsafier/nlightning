@@ -18,7 +18,11 @@ public class TxInitRbfMessageTypeSerializer : IMessageTypeSerializer<TxInitRbfMe
     /// The <c>tx_init_rbf_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
     /// </summary>
     private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
-        new HashSet<BigSize> { TlvConstants.FundingOutputContribution, TlvConstants.RequireConfirmedInputs };
+        new HashSet<BigSize>
+        {
+            TlvConstants.FundingOutputContribution, TlvConstants.RequireConfirmedInputs,
+            TlvConstants.LiquidityAds
+        };
 
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
@@ -90,7 +94,17 @@ public class TxInitRbfMessageTypeSerializer : IMessageTypeSerializer<TxInitRbfMe
                 requireConfirmedInputsTlv = tlvConverter.ConvertFromBase(baserequireConfirmedInputsTlv!);
             }
 
-            return new TxInitRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv);
+            RequestFundingTlv? requestFundingTlv = null;
+            if (extension.TryGetTlv(TlvConstants.LiquidityAds, out var baseLiquidityAdsTlv))
+            {
+                var tlvConverter = _tlvConverterFactory.GetConverter<RequestFundingTlv>()
+                                ?? throw new SerializationException(
+                                       $"No serializer found for tlv type {nameof(RequestFundingTlv)}");
+                requestFundingTlv = tlvConverter.ConvertFromBase(baseLiquidityAdsTlv!);
+            }
+
+            return new TxInitRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv,
+                                        requestFundingTlv);
         }
         catch (SerializationException e)
         {

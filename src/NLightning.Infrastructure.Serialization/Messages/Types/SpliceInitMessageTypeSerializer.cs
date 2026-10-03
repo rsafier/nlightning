@@ -21,7 +21,7 @@ public class SpliceInitMessageTypeSerializer : IMessageTypeSerializer<SpliceInit
     /// The <c>splice_init_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
     /// </summary>
     private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
-        new HashSet<BigSize> { TlvConstants.RequireConfirmedInputs };
+        new HashSet<BigSize> { TlvConstants.RequireConfirmedInputs, TlvConstants.LiquidityAds };
 
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
@@ -67,14 +67,25 @@ public class SpliceInitMessageTypeSerializer : IMessageTypeSerializer<SpliceInit
                 return new SpliceInitMessage(payload);
 
             var extension = await _tlvStreamSerializer.DeserializeStrictAsync(stream, s_knownExtensionTypes);
-            if (!extension.TryGetTlv(TlvConstants.RequireConfirmedInputs, out var baseRequireConfirmedInputsTlv))
-                return new SpliceInitMessage(payload);
+            RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null;
+            if (extension.TryGetTlv(TlvConstants.RequireConfirmedInputs, out var baseRequireConfirmedInputsTlv))
+            {
+                var tlvConverter = _tlvConverterFactory.GetConverter<RequireConfirmedInputsTlv>()
+                                ?? throw new SerializationException(
+                                       $"No serializer found for tlv type {nameof(RequireConfirmedInputsTlv)}");
+                requireConfirmedInputsTlv = tlvConverter.ConvertFromBase(baseRequireConfirmedInputsTlv!);
+            }
 
-            var tlvConverter = _tlvConverterFactory.GetConverter<RequireConfirmedInputsTlv>()
-                            ?? throw new SerializationException(
-                                   $"No serializer found for tlv type {nameof(RequireConfirmedInputsTlv)}");
+            RequestFundingTlv? requestFundingTlv = null;
+            if (extension.TryGetTlv(TlvConstants.LiquidityAds, out var baseLiquidityAdsTlv))
+            {
+                var tlvConverter = _tlvConverterFactory.GetConverter<RequestFundingTlv>()
+                                ?? throw new SerializationException(
+                                       $"No serializer found for tlv type {nameof(RequestFundingTlv)}");
+                requestFundingTlv = tlvConverter.ConvertFromBase(baseLiquidityAdsTlv!);
+            }
 
-            return new SpliceInitMessage(payload, tlvConverter.ConvertFromBase(baseRequireConfirmedInputsTlv!));
+            return new SpliceInitMessage(payload, requireConfirmedInputsTlv, requestFundingTlv);
         }
         catch (SerializationException e)
         {

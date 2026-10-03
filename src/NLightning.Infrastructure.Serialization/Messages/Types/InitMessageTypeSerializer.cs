@@ -18,7 +18,7 @@ public class InitMessageTypeSerializer : IMessageTypeSerializer<InitMessage>
     /// The <c>init_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
     /// </summary>
     private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
-        new HashSet<BigSize> { TlvConstants.Networks, TlvConstants.RemoteAddress };
+        new HashSet<BigSize> { TlvConstants.Networks, TlvConstants.RemoteAddress, TlvConstants.LiquidityAds };
 
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
@@ -98,7 +98,24 @@ public class InitMessageTypeSerializer : IMessageTypeSerializer<InitMessage>
                 }
             }
 
-            return new InitMessage(payload, networksTlv, remoteAddressTlv)
+            WillFundRatesTlv? willFundRatesTlv = null;
+            if (extension.TryGetTlv(TlvConstants.LiquidityAds, out var baseLiquidityAdsTlv))
+            {
+                var tlvConverter = _tlvConverterFactory.GetConverter<WillFundRatesTlv>()
+                                ?? throw new SerializationException(
+                                       $"No serializer found for tlv type {nameof(WillFundRatesTlv)}");
+                try
+                {
+                    willFundRatesTlv = tlvConverter.ConvertFromBase(baseLiquidityAdsTlv!);
+                }
+                catch (InvalidCastException)
+                {
+                    // option_will_fund is odd and advisory (liquidity ads, NL-771): rates we cannot decode only mean
+                    // we do not buy from this peer, never a failed init.
+                }
+            }
+
+            return new InitMessage(payload, networksTlv, remoteAddressTlv, willFundRatesTlv)
             {
                 UndecodableRemoteAddress = undecodableRemoteAddress
             };

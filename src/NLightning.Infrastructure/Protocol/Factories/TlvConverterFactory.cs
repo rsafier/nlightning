@@ -51,6 +51,11 @@ public class TlvConverterFactory : ITlvConverterFactory
         _converters.Add(typeof(StartBatchMessageTypeTlv), new StartBatchMessageTypeTlvConverter());
         _converters.Add(typeof(UpfrontShutdownScriptTlv), new UpfrontShutdownScriptTlvConverter());
 
+        // Liquidity ads (BOLT PR #1153, TLV 1339; NL-771)
+        _converters.Add(typeof(RequestFundingTlv), new RequestFundingTlvConverter());
+        _converters.Add(typeof(ProvideFundingTlv), new ProvideFundingTlvConverter());
+        _converters.Add(typeof(WillFundRatesTlv), new WillFundRatesTlvConverter());
+
         // Onion hop payload (BOLT 4) TLVs
         _converters.Add(typeof(AmtToForwardTlv), new AmtToForwardTlvConverter());
         _converters.Add(typeof(OutgoingCltvValueTlv), new OutgoingCltvValueTlvConverter());

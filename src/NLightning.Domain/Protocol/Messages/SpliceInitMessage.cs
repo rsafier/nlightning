@@ -24,15 +24,19 @@ public sealed class SpliceInitMessage : BaseChannelMessage
     /// </summary>
     public RequireConfirmedInputsTlv? RequireConfirmedInputsTlv { get; }
 
-    public SpliceInitMessage(SpliceInitPayload payload, RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null)
+    /// <summary>Liquidity ads (TLV 1339, NL-771).</summary>
+    public RequestFundingTlv? RequestFundingTlv { get; }
+
+    public SpliceInitMessage(SpliceInitPayload payload, RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null, RequestFundingTlv? requestFundingTlv = null)
         : base(MessageTypes.SpliceInit, payload)
     {
+        RequestFundingTlv = requestFundingTlv;
         RequireConfirmedInputsTlv = requireConfirmedInputsTlv;
 
-        if (RequireConfirmedInputsTlv is not null)
+        if (RequireConfirmedInputsTlv is not null || requestFundingTlv is not null)
         {
             Extension = new TlvStream();
-            Extension.Add(RequireConfirmedInputsTlv);
+            Extension.Add(RequireConfirmedInputsTlv, requestFundingTlv);
         }
     }
 }

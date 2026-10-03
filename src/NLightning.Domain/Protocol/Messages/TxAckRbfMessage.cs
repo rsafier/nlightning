@@ -22,17 +22,21 @@ public sealed class TxAckRbfMessage : BaseChannelMessage
     public FundingOutputContributionTlv? FundingOutputContributionTlv { get; }
     public RequireConfirmedInputsTlv? RequireConfirmedInputsTlv { get; }
 
+    /// <summary>Liquidity ads (TLV 1339, NL-771).</summary>
+    public ProvideFundingTlv? ProvideFundingTlv { get; }
+
     public TxAckRbfMessage(TxAckRbfPayload payload, FundingOutputContributionTlv? fundingOutputContributionTlv = null,
-                           RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null)
+                           RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null, ProvideFundingTlv? provideFundingTlv = null)
         : base(MessageTypes.TxAckRbf, payload)
     {
+        ProvideFundingTlv = provideFundingTlv;
         FundingOutputContributionTlv = fundingOutputContributionTlv;
         RequireConfirmedInputsTlv = requireConfirmedInputsTlv;
 
-        if (FundingOutputContributionTlv is not null || RequireConfirmedInputsTlv is not null)
+        if (FundingOutputContributionTlv is not null || RequireConfirmedInputsTlv is not null || provideFundingTlv is not null)
         {
             Extension = new TlvStream();
-            Extension.Add(FundingOutputContributionTlv, RequireConfirmedInputsTlv);
+            Extension.Add(FundingOutputContributionTlv, RequireConfirmedInputsTlv, provideFundingTlv);
         }
     }
 }

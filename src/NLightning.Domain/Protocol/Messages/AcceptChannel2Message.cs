@@ -34,17 +34,21 @@ public sealed class AcceptChannel2Message : BaseChannelMessage
     /// </summary>
     public RequireConfirmedInputsTlv? RequireConfirmedInputsTlv { get; }
 
-    public AcceptChannel2Message(AcceptChannel2Payload payload, UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null, ChannelTypeTlv? channelTypeTlv = null, RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null)
+    /// <summary>Liquidity ads (TLV 1339, NL-771).</summary>
+    public ProvideFundingTlv? ProvideFundingTlv { get; }
+
+    public AcceptChannel2Message(AcceptChannel2Payload payload, UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null, ChannelTypeTlv? channelTypeTlv = null, RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null, ProvideFundingTlv? provideFundingTlv = null)
         : base(MessageTypes.AcceptChannel2, payload)
     {
+        ProvideFundingTlv = provideFundingTlv;
         UpfrontShutdownScriptTlv = upfrontShutdownScriptTlv;
         ChannelTypeTlv = channelTypeTlv;
         RequireConfirmedInputsTlv = requireConfirmedInputsTlv;
 
-        if (UpfrontShutdownScriptTlv is not null || ChannelTypeTlv is not null || RequireConfirmedInputsTlv is not null)
+        if (UpfrontShutdownScriptTlv is not null || ChannelTypeTlv is not null || RequireConfirmedInputsTlv is not null || provideFundingTlv is not null)
         {
             Extension = new TlvStream();
-            Extension.Add(UpfrontShutdownScriptTlv, ChannelTypeTlv, RequireConfirmedInputsTlv);
+            Extension.Add(UpfrontShutdownScriptTlv, ChannelTypeTlv, RequireConfirmedInputsTlv, provideFundingTlv);
         }
     }
 }
