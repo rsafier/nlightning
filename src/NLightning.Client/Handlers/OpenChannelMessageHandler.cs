@@ -238,9 +238,10 @@ internal class OpenChannelMessageHandler
         else if (positional.Count > 3)
             error = $"Too many arguments. Usage: openchannel {Usage}";
         else if (OpenChannelIpcRequest.IsSimpleTaprootChannelType(channelType) == true
-              && (isPublic || isDualFunded || liquidity.IsRequested))
-            error = $"{ChannelTypeOption} {OpenChannelIpcRequest.TaprootChannelType} opens a private v1 channel; it "
-                  + $"can't be used with {PublicOption}, {DualFundOption} or {LiquidityOptions.RequestInboundOption}.";
+              && (isPublic || liquidity.IsRequested))
+            error = $"{ChannelTypeOption} {OpenChannelIpcRequest.TaprootChannelType} opens a private channel without a "
+                  + $"liquidity purchase; it can't be used with {PublicOption} or "
+                  + $"{LiquidityOptions.RequestInboundOption}.";
 
         return positional.ToArray();
     }
