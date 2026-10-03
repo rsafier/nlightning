@@ -53,6 +53,34 @@ public class Bip327SignVectorTests
     }
 
     [Theory]
+    [InlineData("000000000000000000000000000000000000000000000000000000000000000000"
+                + "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                "1d83b7bf6a91c616f04bbf62a60ca78408aacf935291daf40c6387c3c09980f5")]
+    [InlineData("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+                + "000000000000000000000000000000000000000000000000000000000000000000",
+                "8b2a3d94fab3567f1677e8b967ca64e6749ed889a1e17458a8174596c4823ab7")]
+    public void Given_AnAggregateNonceWithOneInfinityHalf_When_Signed_Then_PartialSignatureEqualsReferenceAndVerifies(
+        string aggNonceHex, string expectedHex)
+    {
+        // Arrange: the sign_verify fixture (sk, secnonce 0, keys 0-2, msg 0) over an aggregate nonce with one half
+        // at infinity (33 zero bytes); expected values from BIP 327's reference.py sign()
+        var vector = Load(SignVerifyFile);
+        var secretKey = Hex(vector.GetProperty("sk"));
+        var pubKeys = HexArray(vector.GetProperty("pubkeys"))[..3];
+        var msg = HexArray(vector.GetProperty("msgs"))[0];
+        var secNonce = HexArray(vector.GetProperty("secnonces"))[0];
+        var aggNonce = Convert.FromHexString(aggNonceHex);
+        var session = new Bip327.SessionContext(aggNonce, pubKeys, [], msg);
+
+        // Act
+        var partialSig = Bip327.Sign((byte[])secNonce.Clone(), secretKey, session);
+
+        // Assert
+        Assert.Equal(Convert.FromHexString(expectedHex), partialSig);
+        Assert.True(Bip327.PartialSigVerifyInternal(partialSig, PublicNonceOf(secNonce), pubKeys[0], session));
+    }
+
+    [Theory]
     [MemberData(nameof(SignVerifyValidCases))]
     public void Given_SignVerifyValidCase_When_Signed_Then_PartialSignatureEqualsExpectedAndVerifies(int index)
     {

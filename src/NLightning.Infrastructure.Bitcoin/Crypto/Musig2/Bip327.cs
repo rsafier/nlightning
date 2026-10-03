@@ -217,6 +217,7 @@ internal static class Bip327
                 var auxHash = TaggedHash("MuSig/aux", rand);
                 for (var i = 0; i < ScalarLen; i++)
                     mixedRand[i] = (byte)(secretKey[i] ^ auxHash[i]);
+                CryptographicOperations.ZeroMemory(auxHash);
             }
             else
             {
@@ -437,8 +438,11 @@ internal static class Bip327
         var s = Scalar.Zero;
         for (var i = 0; i < partialSigs.Count; i++)
         {
+            if (partialSigs[i] is not { Length: MusigConstants.PartialSignatureLen })
+                throw new MusigInvalidContributionException(i, MusigContribution.PartialSignature);
+
             var si = new Scalar(partialSigs[i], out var overflow);
-            if (partialSigs[i].Length != MusigConstants.PartialSignatureLen || overflow != 0)
+            if (overflow != 0)
                 throw new MusigInvalidContributionException(i, MusigContribution.PartialSignature);
 
             s = s.Add(si);
@@ -476,6 +480,7 @@ internal static class Bip327
                 var auxHash = TaggedHash("MuSig/aux", rand);
                 for (var i = 0; i < ScalarLen; i++)
                     skPrime[i] = (byte)(secretKey[i] ^ auxHash[i]);
+                CryptographicOperations.ZeroMemory(auxHash);
             }
             else
             {
@@ -662,8 +667,8 @@ internal static class Bip327
         return scalar;
     }
 
-    private static ReadOnlySpan<byte> Half(byte[] nonce, int j) =>
-        nonce.Length == MusigConstants.PublicNonceLen ? nonce.AsSpan(j * PointLen, PointLen) : [];
+    private static ReadOnlySpan<byte> Half(byte[]? nonce, int j) =>
+        nonce is { Length: MusigConstants.PublicNonceLen } ? nonce.AsSpan(j * PointLen, PointLen) : [];
 
     /// <summary>
     /// <c>cpoint</c>: a 33-byte compressed point with prefix 02 or 03 and x on the curve.

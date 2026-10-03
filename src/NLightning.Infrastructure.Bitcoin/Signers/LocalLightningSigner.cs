@@ -1538,7 +1538,8 @@ public partial class LocalLightningSigner : ILightningSigner
 
     /// <summary>
     /// The BIP 341 script-path sighash of a simple taproot HTLC transaction: <c>SIGHASH_ALL</c> becomes
-    /// <c>SIGHASH_DEFAULT</c> (the same digest, no sighash byte), the counterparty's
+    /// <c>SIGHASH_DEFAULT</c> (64-byte signature, no sighash byte; not the same digest as <c>SIGHASH_ALL</c>, since
+    /// BIP 341 commits to the hash type, whatever the spec's text says), the counterparty's
     /// <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> stays. Simple taproot keeps the anchors rules, so the context must
     /// say so.
     /// </summary>

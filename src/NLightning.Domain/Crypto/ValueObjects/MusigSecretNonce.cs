@@ -69,12 +69,13 @@ public sealed class MusigSecretNonce : IDisposable
     }
 
     /// <summary>
-    /// Zeroes the nonce and marks it used.
+    /// Zeroes the nonce and marks it used. A nonce already consumed is left alone: <see cref="Consume"/> zeroes its
+    /// scalars itself, and zeroing here could race its copy and corrupt the signature being made.
     /// </summary>
     public void Clear()
     {
-        Interlocked.Exchange(ref _state, StateConsumed);
-        CryptographicOperations.ZeroMemory(_value);
+        if (Interlocked.CompareExchange(ref _state, StateConsumed, StateLive) == StateLive)
+            CryptographicOperations.ZeroMemory(_value);
     }
 
     /// <inheritdoc cref="Clear"/>

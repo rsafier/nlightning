@@ -1,3 +1,5 @@
+using System.Reflection;
+
 namespace NLightning.Domain.Tests.Crypto.ValueObjects;
 
 using Domain.Crypto.Constants;
@@ -122,6 +124,26 @@ public class MusigValueObjectTests
         Assert.All(second, b => Assert.Equal(0, b));
         Assert.Contains("already used", exception.Message);
         Assert.Equal(s_pubKey, (byte[])secretNonce.PublicKey);
+    }
+
+    [Fact]
+    public void Given_AConsumedSecretNonce_When_Cleared_Then_ItWritesNothing()
+    {
+        // Arrange: Clear racing a Consume that already won must not zero the buffer Consume is copying from, so
+        // once consumed Clear leaves it alone (the scalars are already zero, the public key is not secret)
+        var bytes = SecretNonceBytes();
+        var secretNonce = new MusigSecretNonce(bytes);
+        secretNonce.Consume(new byte[MusigConstants.SecretNonceLen]);
+        var buffer = (byte[])typeof(MusigSecretNonce)
+                             .GetField("_value", BindingFlags.NonPublic | BindingFlags.Instance)!
+                             .GetValue(secretNonce)!;
+
+        // Act
+        secretNonce.Clear();
+
+        // Assert
+        Assert.All(buffer[..MusigConstants.SecretNonceScalarsLen], b => Assert.Equal(0, b));
+        Assert.Equal(bytes[MusigConstants.SecretNonceScalarsLen..], buffer[MusigConstants.SecretNonceScalarsLen..]);
     }
 
     [Fact]

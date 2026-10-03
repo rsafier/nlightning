@@ -85,6 +85,35 @@ public class HtlcTransactionModelFactoryTests
         Assert.True(model.HasAnchors);
     }
 
+    [Theory]
+    [InlineData(CommitmentFormat.Anchors, true)]
+    [InlineData(CommitmentFormat.StaticRemoteKey, false)]
+    public void Given_ACommitmentWhoseHasAnchorsContradictsItsFormat_When_CreatingHtlcTx_Then_TheFormatDecides(
+        CommitmentFormat format, bool expectedAnchors)
+    {
+        // Arrange
+        var template = CreateCommitment(5_000, !expectedAnchors);
+        var commitment = new CommitmentTransactionModel(template.CommitmentNumber, 0, LightningMoney.Zero,
+                                                        template.FundingOutput)
+        {
+            FeeRatePerKw = template.FeeRatePerKw,
+            HasAnchors = !expectedAnchors,
+            Format = format,
+            ToSelfDelay = template.ToSelfDelay,
+            LocalDelayedPubKey = template.LocalDelayedPubKey,
+            RevocationPubKey = template.RevocationPubKey
+        };
+        var output = new ReceivedHtlcOutputInfo(CreateHtlc(7_000_999, 600), s_keyA, s_keyB, s_revocationKey);
+
+        // Act
+        var model = HtlcTransactionModelFactory.CreateHtlcTransactionModel(commitment, s_commitmentTxId, output, 0);
+
+        // Assert
+        Assert.Equal(expectedAnchors, commitment.HasAnchors);
+        Assert.Equal(format, model.Format);
+        Assert.Equal(expectedAnchors, model.HasAnchors);
+    }
+
     [Fact]
     public void Given_HtlcBelowItsFee_When_CreatingHtlcTx_Then_Throws()
     {

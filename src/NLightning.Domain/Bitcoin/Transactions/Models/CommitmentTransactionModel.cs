@@ -82,12 +82,13 @@ public class CommitmentTransactionModel
 
     /// <summary>
     /// Gets whether option_anchors applies (HTLC scripts with <c>1 OP_CSV</c>, zero-fee HTLC transactions with
-    /// sequence 1 and <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> remote HTLC signatures). Always true for
-    /// <see cref="CommitmentFormat.SimpleTaproot"/>, which keeps those rules.
+    /// sequence 1 and <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> remote HTLC signatures). When <see cref="Format"/> is
+    /// set it decides (always true for <see cref="CommitmentFormat.SimpleTaproot"/>, which keeps those rules), so the
+    /// two never contradict each other.
     /// </summary>
     public bool HasAnchors
     {
-        get => _hasAnchors || _format == CommitmentFormat.SimpleTaproot;
+        get => _format?.HasAnchorOutputs() ?? _hasAnchors;
         init => _hasAnchors = value;
     }
 

@@ -185,6 +185,58 @@ public class Musig2ServiceTests
     }
 
     [Fact]
+    public void Given_ADefaultPublicNonce_When_Aggregated_Then_ThatPeerIsBlamed()
+    {
+        // Arrange
+        var party = TwoPartySession.Create(_service, RandomNumberGenerator.GetBytes(32));
+
+        // Act
+        var exception = Assert.Throws<MusigInvalidContributionException>(
+            () => _service.AggregateNonces([party.NonceA.PublicNonce, default]));
+
+        // Assert
+        Assert.Equal(1, exception.Signer);
+        Assert.Equal(MusigContribution.PubNonce, exception.Contribution);
+    }
+
+    [Fact]
+    public void Given_ADefaultPartialSignature_When_Aggregated_Then_ThatSignerIsBlamed()
+    {
+        // Arrange
+        var party = TwoPartySession.Create(_service, RandomNumberGenerator.GetBytes(32));
+        var signatureA = _service.Sign(party.NonceA.SecretNonce, party.KeyA, party.Session);
+
+        // Act
+        var exception = Assert.Throws<MusigInvalidContributionException>(
+            () => _service.AggregatePartialSignatures([signatureA, default], party.Session));
+
+        // Assert
+        Assert.Equal(1, exception.Signer);
+        Assert.Equal(MusigContribution.PartialSignature, exception.Contribution);
+    }
+
+    [Fact]
+    public void Given_APartialSignatureOfAWrongLength_When_AggregatedByBip327_Then_ThatSignerIsBlamed()
+    {
+        // Arrange
+        var party = TwoPartySession.Create(_service, RandomNumberGenerator.GetBytes(32));
+        var signatureA = _service.Sign(party.NonceA.SecretNonce, party.KeyA, party.Session);
+        var context = new Bip327.SessionContext(party.Session.AggregateNonce,
+                                                party.Session.PubKeys.Select(k => (byte[])k).ToArray(),
+                                                party.Session.Tweaks.Select(t => (t.Value.ToArray(), t.IsXOnly))
+                                                     .ToArray(),
+                                                party.Session.Message.ToArray());
+
+        // Act
+        var exception = Assert.Throws<MusigInvalidContributionException>(
+            () => Bip327.PartialSigAgg([signatureA, new byte[31]], context));
+
+        // Assert
+        Assert.Equal(1, exception.Signer);
+        Assert.Equal(MusigContribution.PartialSignature, exception.Contribution);
+    }
+
+    [Fact]
     public void Given_RandomnessOfAWrongLength_When_GeneratingANonce_Then_Refused()
     {
         // Arrange
