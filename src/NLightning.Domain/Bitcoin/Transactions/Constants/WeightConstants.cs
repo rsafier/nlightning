@@ -35,6 +35,15 @@ public static class WeightConstants
     public const int CommitmentWeightAnchors = 1124;
 
     /// <summary>
+    /// Expected commitment weight without HTLC outputs with option_simple_taproot (bolt-simple-taproot.md). The spec
+    /// text gives no number; its three commitment vectors fix it: with 2 x 330 sat anchors the fees 14,520 sat at
+    /// 15,000 sat/kw (no HTLC), 1,177 sat at 644 sat/kw (5 HTLCs) and 844 sat at 644 sat/kw (2 HTLCs) are exactly
+    /// <c>feerate * (968 + 172 * n) / 1000</c> rounded down, the 172 per HTLC output of BOLT 3. It is what LND computes:
+    /// the anchors base 1124 less the P2WSH 2-of-2 funding witness (222) plus a 64-byte key-path signature (66).
+    /// </summary>
+    public const int CommitmentWeightSimpleTaproot = 968;
+
+    /// <summary>
     /// BOLT 3 expected HTLC-timeout weight with option_anchors. Informational only: with anchors the HTLC-timeout fee
     /// is 0, so this weight never feeds a fee or a trimming decision (NL-195). Use <c>CommitmentFeeCalculator</c>.
     /// </summary>
