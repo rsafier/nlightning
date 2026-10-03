@@ -147,12 +147,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 58 | 60 |
+| open | 0 | 0 | 2 | 60 | 62 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
 | fixed | 14 | 63 | 201 | 411 | 689 |
-| wontfix | 0 | 0 | 5 | 9 | 14 |
+| wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **211** | **480** | **768** |
+| **Total** | **14** | **63** | **211** | **483** | **771** |
 
 ### Epics
 
@@ -1782,6 +1782,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-556, NL-021
 - **Plan ref:** `docs/agents/SPLICING_PLAN.md` (IT-R-04)
 
+### NL-897 `option_simple_close` on by default: cluster proof of the changed close flows pending
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `src/NLightning.Domain/Node/Options/FeatureOptions.cs` (`OptionSimpleClose` Optional, D-T1); `test/NLightning.Integration.Tests/Docker/{CooperativeCloseFlowTests,CloseRestartFlowTests,Day0/Day0FlowTests}.cs`, `Docker/Interop/Eclair/{EclairInteropTests,EclairCloseTests}.cs`, `Docker/Interop/Cln/{ClnCloseTests,ClnCloseRestartTests,ClnDualFundTests}.cs`
+- **Evidence:** Wave t01 lane SC (`a2e7d6bc`): the close flow is chosen per peer from the negotiated features (simple close with Eclair 0.14.3, LND with `--protocol.rbf-coop-close` and NLightning; legacy `closing_signed` with default LND and LDK). The legacy Docker proofs now pin `OptionSimpleClose = No` (CooperativeCloseFlowTests legacy theories, CloseRestartFlowTests, the EclairInteropTests closes, ClnCloseTests, ClnCloseRestartTests through `ClnChannelSession.PinLegacyClose`), and `Day0FlowTests` step 8 now proves a simple close between two default nodes. None of these ran: they need the cluster. Open question: whether CLN v26.06.8 signals simple close (`test/CLAUDE.md` says no); `ClnDualFundTests`' cooperative close changes if it does.
+- **Fix sketch:** `scripts/run-cluster.sh --matrix cln,eclair,lnd,day0` on the owner's machine; fix what fails.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN D-T1
+
 ## BOLT 3: Transactions and scripts
 
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
@@ -2013,6 +2023,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Plan T0 MuSig2 (BIP 327 vectors) → T1 scripts/txs (spec vectors) → T2 wire TLVs → T3 signer, nonces (counter scheme, never reused across a crash), persistence, reestablish → T4 BOLT 5 resolvers → T5 simple close, dual fund, splicing, backups → T6 cluster proofs against LND 0.21.4 and Eclair 0.14.3; experimental until T6 and an owner decision (D-T1 `option_simple_close` default, D-T2 taproot default).
 - **Blocks/Blocked-by:** Blocks NL-878
 - **Plan ref:** TAPROOT_CHANNELS_PLAN T0-T6
+- **Update (wave t01, 2026-10-03, branch `wip/taproot-plan`):** T0 merged (`795ae14b`): BIP 327 MuSig2 behind `IMusig2Service` (our own module, D-T3; NBitcoin's MuSig2 refused, NL-896), every BIP 327 vector and the spec's signed commitment (partial and aggregated signatures) byte-exact. D-T1 done (lane SC, `a2e7d6bc`): `option_simple_close` Optional by default on every network; cluster re-run pending (NL-897). T1 (scripts and transactions) in progress.
 
 ---
 
@@ -5753,6 +5764,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md` §4
 
 ## Crypto providers and key management
+
+### NL-895 MuSig2 secrets are zeroed on a best-effort basis only
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Crypto/Musig2/Bip327.cs`
+- **Evidence:** Wave t01 lane T0: the nonce scalars and the secret key are `Scalar` structs copied by value through the BIP 327 steps, and the tagged-SHA256 state that absorbed the randomness or the secret key in `NonceGen`/`DeterministicSign` is not wiped; only the byte buffers and the `Scalar` locals are cleared. Same class of residual as the managed-memory key material notes in `SECURITY_REVIEW.md` (SR-09, NL-437: a .NET limitation).
+- **Fix sketch:** Reset the hash states after use where the API allows it; record the residual in `SECURITY_REVIEW.md` next to SR-09 when T3 wires the signer.
+- **Blocks/Blocked-by:** Related NL-877, NL-437
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T0, T3
+
+### NL-896 NBitcoin.Secp256k1 3.2.0's MuSig2 accepts the point at infinity in a signer's public nonce
+- **Status:** wontfix (we do not use NBitcoin's MuSig2: D-T3 chose our own BIP 327 module; it stays only as a cross-check in tests)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `NBitcoin.Secp256k1.Musig.MusigPubNonce` (third-party); `test/NLightning.Infrastructure.Bitcoin.Tests/Crypto/Musig2/`
+- **Evidence:** Wave t01 lane T0 ran every BIP 327 vector against it: 51/56 pass; `det_sign_vectors` error case 3 (33 zero bytes in an individual nonce) is accepted where BIP 327 refuses it, and `MusigContext.Sign` cannot take an aggregate nonce or an existing 97-byte secret nonce, so sign_error 2-5 cannot run.
+- **Fix sketch:** None needed while unused. Any future use must reject an infinity half in individual nonces first.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN D-T3
 
 ### NL-158 Key file encryption: fixed Argon2 salt, all-zero XChaCha nonce, 64 KiB Argon2 memory
 - **Status:** fixed (953a33b, b999208)

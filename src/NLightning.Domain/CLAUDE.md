@@ -32,7 +32,7 @@ This is the pure domain layer: it holds value objects, models, wire-message mode
 ## Dependency rules
 - Do NOT reference NBitcoin, libsodium, EF Core, Microsoft.Extensions.* or any other src project. Keep the code library-free.
 - Declare interfaces here and implement them outward: Infrastructure, Infrastructure.Bitcoin, Infrastructure.Serialization, Application.
-- Internals are exposed through `AssemblyInfo.cs`, which lists Application, Infrastructure(.Blazor/.Bitcoin/.Serialization), Infrastructure.Serialization.Tests, Infrastructure.Tests, Tests.Utils and `DynamicProxyGenAssembly2` (Moq proxies). **`NLightning.Domain.Tests` is not in that list**, so Domain tests can only use the public API.
+- Internals are exposed through `AssemblyInfo.cs`, which lists Application, Domain.Tests (since batch4, NL-179), Infrastructure(.Blazor/.Bitcoin/.Serialization), Infrastructure.Serialization.Tests, Infrastructure.Tests, Tests.Utils and `DynamicProxyGenAssembly2` (Moq proxies).
 - Domain has no DI of its own. Its factories and validators are registered in `AddApplicationServices` (`src/NLightning.Application/DependencyInjection.cs`); the rest in each layer's `DependencyInjection.cs`, composed by `NodeServiceExtensions.AddNltgNodeServices`.
 
 ## Conventions
