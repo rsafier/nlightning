@@ -155,4 +155,42 @@ public class TrampolineRelayPolicyTests
         // Assert
         Assert.Equal(1_000UL + 2_100_000_000_000_000UL, fee.MilliSatoshi);
     }
+
+    [Fact]
+    public void Given_ABlindedSetBelowOurTrampolinePolicy_When_EvaluatedBlinded_Then_AcceptedWithTheWholeDifference()
+    {
+        // Arrange: 110 msat above the amount out and 50 blocks of delta, far below our 2,000 msat and 576 blocks (the
+        // recipient's payment_relay set them, NL-895)
+        var sumIn = LightningMoney.MilliSatoshis(1_000_110);
+
+        // Act
+        var decision = TrampolineRelayPolicy.EvaluateBlinded(s_options, sumIn, CltvOut + 50, s_amountOut, CltvOut,
+                                                             Height, ForwardingDelta);
+
+        // Assert
+        Assert.True(decision.IsAccepted);
+        Assert.Equal(LightningMoney.MilliSatoshis(110), decision.MaxFee);
+        Assert.Equal(CltvOut + 50 - ForwardingDelta, decision.MaxFirstHopCltvExpiry);
+        Assert.Null(decision.Failure);
+    }
+
+    [Theory]
+    [InlineData(999_999UL, CltvOut + 50, CltvOut, "out")]
+    [InlineData(1_000_110UL, CltvOut + 39, CltvOut, "forwarding delta")]
+    [InlineData(1_000_110UL, CltvOut - 1, CltvOut, "forwarding delta")]
+    [InlineData(1_000_110UL, Height + 48, Height + 1, "margin")]
+    [InlineData(1_000_110UL, CltvOut + 50, Height, "height")]
+    public void Given_ABlindedSetBreakingOurSafety_When_EvaluatedBlinded_Then_InvalidOnionBlindingNeverNodeTwentySix(
+        ulong sumInMsat, uint minCltvIn, uint cltvOut, string reason)
+    {
+        // Act
+        var decision = TrampolineRelayPolicy.EvaluateBlinded(s_options, LightningMoney.MilliSatoshis(sumInMsat),
+                                                             minCltvIn, s_amountOut, cltvOut, Height,
+                                                             ForwardingDelta);
+
+        // Assert
+        Assert.False(decision.IsAccepted);
+        Assert.Equal(FailureCode.InvalidOnionBlinding, decision.Failure!.Code);
+        Assert.Contains(reason, decision.Reason);
+    }
 }

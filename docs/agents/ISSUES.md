@@ -8,6 +8,8 @@ Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` 
 
 Updated 2026-10-03 by the namespace-cap lane (branch `wip/nscap`, owner decision 2026-10-03): NL-844 (fixed, b8362d19, 501bebd7: the harness cap on run namespaces is 12, set once in `RunAdmission.DefaultMaxRuns`; the matrix in 1,058 s at a peak of 11 namespaces) and NL-905 (open, low: the cln suite is the matrix long pole at 12 namespaces). Summary rows recounted from the entries after the merge of `wip/fafo` at bd1a0dc5 (NL-806 lane): 773 entries, no duplicate IDs.
 
+Updated 2026-10-03 by the NL-895 lane (worktree branch `worktree-agent-a5cefe035b538e693` from `wip/fafo` at `ed4d7e7a`): NL-895 (low) fixed in 3dcd390d (product `053bb672`); NL-920 (low, open) added: a dual-fund test that already fails at `ed4d7e7a`. Summary: open low 62 -> 61 -> 62, fixed low 411 -> 412, total 771 -> 772.
+
 Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (lane b12-anysegwit, cfafd698) fixed.
 
 Updated 2026-10-03 by the Docker retirement lane (branch `wip/retire-docker` from 61889866, owner decision 2026-10-03: every suite but Tor on the cluster harness only): NL-866 (low, fixed in cea4bc4f: the CLN, Eclair, LDK and Postgres fixtures lost their Docker backends; Tor stays on Docker). Summary rows recounted from the entries: 749 entries, no duplicate IDs.
@@ -153,10 +155,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 3 | 70 | 73 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 63 | 201 | 416 | 694 |
+| fixed | 14 | 63 | 201 | 417 | 695 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **212** | **498** | **787** |
+| **Total** | **14** | **63** | **212** | **499** | **788** |
 
 ### Epics
 
@@ -2721,12 +2723,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN TR0-TR5
 
 ### NL-895 Blinded hops as trampoline hops (BOLT 12 recipient with bit 57) do not relay
-- **Status:** open
+- **Status:** fixed (3dcd390d; product `053bb672`, payer vector check `5e9042d8`)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Trampoline/TrampolineRelayService.cs`, `Payments/Onion/IncomingOnionProcessor.cs` (blinded trampoline relay data), `Payments/Send/PaymentService.Trampoline*.cs`
 - **Evidence:** TR5 phase 2 scenario 10(b) (2026-10-03): C's `BlindedPathBuilder` path names the X–C hop by `short_channel_id`, which the relay engine does not resolve to a node ("lacks its relay instructions"); with it resolved by hand, X applies its own `Node:Trampoline` fee/delta although the recipient fixed that hop's price in the path's `payment_relay`, so X refuses with NODE|26. TR-R-07/TR-R-10.
 - **Fix sketch:** resolve `short_channel_id` in blinded trampoline recipient data to the channel peer; use the path's `payment_relay`/constraints (not `Node:Trampoline`) as a blinded hop's policy; prove 10(b) in `TrampolineRelayE2ETests` (X running the relay engine).
+- **Fix (2026-10-03, owner-approved D-NL895-1/2):** the relay engine resolves a blinded hop's next node from `next_node_id` or from the recipient data's `short_channel_id` against our open channels (real scid, aliases, retired scids) through `Payments/Switch/OutgoingChannelResolver`, the switch's blinded-forward rule moved out of `HtlcSwitch`, and saves it as the relay's `NextNodeId`; an unknown scid, an HTLC below the outer `amt_to_forward` or an expiry below the outer `outgoing_cltv_value` refuse the part with `invalid_onion_blinding` (our own at the introduction node, malformed past it). A blinded hop is priced by `payment_relay` (already applied by `IncomingOnionProcessor` to the outer total and expiry) with `TrampolineRelayPolicy.EvaluateBlinded`, never `Node:Trampoline` or NODE|26; the leg's budget is sum in − amount out and the lowest incoming expiry − our forwarding delta. The payer side needed no change: its inner payloads, its whole trampoline onion and the leg's outer payload equal PR 836 vector [1] byte for byte (`TrampolineOnionFactoryTests`). Proofs: `Payments/Trampoline/BlindedTrampolineRelayTests` (10 cases on `ThreeNodeHarness`), `TrampolineRelayPolicyTests` (`EvaluateBlinded`), scenario 10(b) in `TrampolineRelayE2ETests` (with and without C's dummy hop; a `payment_constraints` violation read by A as X's own `invalid_onion_blinding`).
 - **Blocks/Blocked-by:** Follow-up of NL-875
 - **Plan ref:** TRAMPOLINE_PLAN TR5 scenario 10(b)
 
@@ -2770,6 +2773,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** show the trampoline node/inner route in `listpayments`, hide or mark relay legs, keep failed relay attempts (attempt column or history table), split relay income per incoming part.
 - **Blocks/Blocked-by:** Follow-up of NL-875
 - **Plan ref:** TRAMPOLINE_PLAN TR3/TR4
+
+### NL-920 `DualFundUpfrontShutdownScriptTests.Given_AP2TrScriptWithAnySegwit_*` fails on `wip/fafo` at `ed4d7e7a`
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Channels/DualFunding/DualFundUpfrontShutdownScriptTests.cs:92`, `src/NLightning.Application/Channels/DualFunding/`
+- **Evidence:** found by the NL-895 lane's gate (2026-10-03): the test fails every run, alone too, with "the dual-funded open timed out" after Bob's first `commitment_signed` (wire: OpenChannel2, AcceptChannel2, the tx_add/tx_complete exchange, Bob CommitmentSigned, then nothing). It fails identically with the base `ed4d7e7a` Application assembly, so it predates NL-895; the test came with NL-776 (`cfafd698`, batch12) and probably met the trampoline merges on `wip/fafo`. The other three cases of the class pass. Not diagnosed further (out of the NL-895 lane's scope).
+- **Fix sketch:** run the class with logs on, find why Alice does not answer Bob's `commitment_signed` when its accepter announced a P2TR `upfront_shutdown_script` with anysegwit negotiated (a validation or signing refusal swallowed into the open's timeout?); fix and keep the test green.
+- **Blocks/Blocked-by:** related NL-776
+- **Plan ref:** none
 
 ## BOLT 5: On-chain handling
 
