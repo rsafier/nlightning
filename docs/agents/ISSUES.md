@@ -6847,12 +6847,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-746 A banned gossip peer's in-flight invalid messages banned it a second time
-- **Status:** fixed (2c6475d9)
+- **Status:** fixed (2c6475d9, see batch12 below)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.cs` (`ScoreMisbehaviour`)
 - **Evidence:** `GossipFloodTests.Given_APeerFloodingInvalidSignatures_*` failed in the batch10 finalize's loaded full run with two `Disconnect` calls carrying "Too much invalid gossip" (expected once). `GossipMisbehaviourTracker.Record` clears the peer's events when it crosses the threshold, and the worker's ban check runs before the validation, so five more invalid messages already past that check scored a fresh threshold: a second ban (renewed end), `peers.banned` counted twice and a second disconnect. Reproduced deterministically by `GossipIngressLimitsTests.Given_APeerJustBanned_When_ItsInFlightInvalidGossipIsProcessed_*` (five invalid signatures processed after the ban; fails before the fix).
-- **Fix sketch:** Done: `ScoreMisbehaviour` skips a peer that is banned already. The NL-382 flood test's residual is this bug.
+- **Fix sketch:** Done: `ScoreMisbehaviour` skips a peer that is banned already. The NL-382 flood test's residual is this bug. Batch12: the same two disconnects came back once in the batch12 integrator's loaded full run (3785/3786): the banned check, the count and the in-memory ban were separate steps and the store wrote the ban before the memory had it, so other workers could reach the threshold again meanwhile; now the check, `Record` and `AddBan` run under `_banGate` and the store write follows.
 - **Blocks/Blocked-by:** Related NL-382, NL-370
 - **Plan ref:** BOLT7 G5-T2
 

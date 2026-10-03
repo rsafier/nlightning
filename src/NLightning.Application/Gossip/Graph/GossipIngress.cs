@@ -1377,13 +1377,23 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IGossipPendi
     {
         // A peer banned already is not scored again: its messages that were past the door before the ban (in flight
         // in other workers) would otherwise ban it a second time, extend the ban and disconnect it twice (NL-746)
-        if (peerId is not { } peer || peer == _ourNodeId || IsPeerBanned(peer) || !_misbehaviour.Record(peer))
+        if (peerId is not { } peer || peer == _ourNodeId)
             return false;
 
-        var until = _timeProvider.GetUtcNow() + _options.MisbehaviourBanDuration;
+        // The check, the count and the ban are one step (NL-746 residual): the ban is in memory before any other
+        // worker can count the peer again, so no second threshold is reached while the store writes the ban
+        DateTimeOffset until;
+        lock (_banGate)
+        {
+            if (IsPeerBanned(peer) || !_misbehaviour.Record(peer))
+                return false;
+
+            until = _timeProvider.GetUtcNow() + _options.MisbehaviourBanDuration;
+            AddBan(peer, until);
+        }
+
         _store.Ban(peer, $"{MisbehaviourBanReason} ({_options.MisbehaviourThreshold} in "
                        + $"{_options.MisbehaviourWindow}), the last: {why}", until);
-        AddBan(peer, until);
         _metrics?.RecordPeerBanned();
         _logger.LogWarning("Peer {Peer} sent {Threshold} invalid gossip messages within {Window}; ignoring its gossip "
                          + "until {Until} and disconnecting it (last: {Why})", peer,
