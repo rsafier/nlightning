@@ -2,12 +2,15 @@ using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Tests.Payments.Trampoline.Harness;
 
 using Application.Gossip.Graph.Interfaces;
 using Application.Payments.Send;
+using Application.Payments.Send.Interfaces;
 using Application.Payments.Switch;
+using Application.Payments.Trampoline;
 using Channels.Harness;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
@@ -34,7 +37,8 @@ using TestUtils;
 /// </summary>
 /// <remarks>
 /// <para>Channels: A–T (A funds), T–X (T funds), X–C (X funds), each 2,000,000 sat with 800,000 sat pushed to the
-/// fundee, and optionally a second A–T channel (<see cref="TrampolineHarnessOptions.SecondAliceTrampolineChannel"/>).
+/// fundee, and optionally a second A–T channel (<see cref="TrampolineHarnessOptions.SecondAliceTrampolineChannel"/>)
+/// and a second T–X and X–C channel (<see cref="TrampolineHarnessOptions.SecondLegChannels"/>).
 /// T and X forward with distinct policies (<see cref="TrampolineRouting"/>, <see cref="XRouting"/>), so a fee mix-up
 /// shows. T and C advertise <c>trampoline_routing</c> by default (<see cref="TrampolineHarnessOptions.Trampoline"/>).
 /// </para>
@@ -58,11 +62,15 @@ internal sealed partial class TrampolineHarness : ISwitchNodeNetwork, IAsyncDisp
     public static readonly ChannelId AliceTrampoline2ChannelId = new(Enumerable.Repeat((byte)0xA8, 32).ToArray());
     public static readonly ChannelId TrampolineXChannelId = new(Enumerable.Repeat((byte)0x7E, 32).ToArray());
     public static readonly ChannelId XCarolChannelId = new(Enumerable.Repeat((byte)0xEC, 32).ToArray());
+    public static readonly ChannelId TrampolineX2ChannelId = new(Enumerable.Repeat((byte)0x7F, 32).ToArray());
+    public static readonly ChannelId XCarol2ChannelId = new(Enumerable.Repeat((byte)0xED, 32).ToArray());
 
     public static readonly ShortChannelId AliceTrampolineScid = new(400, 1, 0);
     public static readonly ShortChannelId TrampolineXScid = new(400, 2, 1);
     public static readonly ShortChannelId XCarolScid = new(400, 3, 0);
     public static readonly ShortChannelId AliceTrampoline2Scid = new(400, 4, 0);
+    public static readonly ShortChannelId TrampolineX2Scid = new(400, 5, 1);
+    public static readonly ShortChannelId XCarol2Scid = new(400, 6, 0);
 
     /// <summary>T's forwarding policy as a plain hop (its trampoline relay policy is the relay engine's own).</summary>
     public static RoutingOptions TrampolineRouting => new()
@@ -158,6 +166,12 @@ internal sealed partial class TrampolineHarness : ISwitchNodeNetwork, IAsyncDisp
         if (options.SecondAliceTrampolineChannel)
             await harness.OpenChannelAsync(harness.A, 2, harness.T, 3, AliceTrampoline2ChannelId,
                                            AliceTrampoline2Scid, 0x74);
+        if (options.SecondLegChannels)
+        {
+            await harness.OpenChannelAsync(harness.T, 4, harness.X, 3, TrampolineX2ChannelId, TrampolineX2Scid, 0x75);
+            await harness.OpenChannelAsync(harness.X, 4, harness.C, 2, XCarol2ChannelId, XCarol2Scid, 0x76);
+        }
+
         return harness;
     }
 
@@ -239,7 +253,10 @@ internal sealed partial class TrampolineHarness : ISwitchNodeNetwork, IAsyncDisp
     /// <summary>
     /// Stops <paramref name="node"/> (queued messages to and from it are lost; its peers see it disconnected), then
     /// starts it again from its database and registers every stored channel (the startup replay runs while no link
-    /// is up). Call <see cref="ReconnectAsync"/> next.
+    /// is up), then runs the daemon's startup steps that follow: the payment reconciliation
+    /// (<c>IPaymentOutcomeHandler.ReconcileInFlightPaymentsAsync</c>) and the trampoline relays' resumption
+    /// (<see cref="TrampolineRelayService.StartAsync"/>), when the node has them. Call <see cref="ReconnectAsync"/>
+    /// next.
     /// </summary>
     public async Task RestartAsync(SwitchNode node)
     {
@@ -258,6 +275,12 @@ internal sealed partial class TrampolineHarness : ISwitchNodeNetwork, IAsyncDisp
             node.SetPeerAlive(peer.NodeId, false);
 
         await node.LoadStoredChannelsAsync();
+
+        // As NltgDaemonService: every channel is loaded, so settle the payments, then resume the relays
+        if (node.Services.GetService<IPaymentOutcomeHandler>() is { } payments)
+            await payments.ReconcileInFlightPaymentsAsync(TestContext.Current.CancellationToken);
+        if (node.Services.GetService<TrampolineRelayService>() is { } relays)
+            await relays.StartAsync(TestContext.Current.CancellationToken);
     }
 
     /// <summary>
@@ -412,6 +435,11 @@ internal sealed partial class TrampolineHarness : ISwitchNodeNetwork, IAsyncDisp
         // Before AddPaymentSendServices' TryAdd(TimeProvider.System)
         if (Options.SteppedClock)
             services.Replace(ServiceDescriptor.Singleton<TimeProvider>(Clock));
+        if (Options.LogLevel is { } logLevel)
+        {
+            services.AddSingleton<ILoggerProvider>(new HarnessLoggerProvider(node.Name, logLevel));
+            services.Configure<LoggerFilterOptions>(o => o.MinLevel = logLevel);
+        }
 
         if (Is(node, Options.PaymentSenders))
         {
