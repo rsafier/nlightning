@@ -1,6 +1,6 @@
 # Trampoline Routing: Implementation Plan for NLightning
 
-**Status (2026-10-03, `wip/fafo` @ `c1811bbf`):** TR0-TR5 built and merged (record in §10). Client, relay and target work end to end in-process (13 relay scenarios plus the target proofs); `Feature.OptionTrampolineRouting` stays in `ExperimentalFeatures` until an owner decision. Open follow-ups NL-895..NL-899.
+**Status (2026-10-03, `wip/fafo` @ `c1811bbf`):** TR0-TR5 built and merged (record in §10). Client, relay and target work end to end in-process (13 relay scenarios plus the target proofs); `Feature.OptionTrampolineRouting` stays in `ExperimentalFeatures` until an owner decision. Open follow-ups NL-896..NL-899 (NL-895, blinded hops as trampoline hops, fixed on its lane; §10).
 
 **Spec source:** lightning/bolts PR #836, "Trampoline onion format (Feature 56/57)".
 - Author t-bast, branch `trampoline-onion`, head `8f5f37a8`, last rebased 2026-08-28, open.
@@ -314,4 +314,8 @@ Lanes ran in parallel worktrees, were merged with `--no-ff` into `wip/fafo` and 
 
 **D-TR6 amended:** the relay's policy check is unchanged (the payer must offer at least our fee and delta), but the leg's routing budget is the whole difference (incoming sum − amount out) and its first HTLC may expire at the lowest incoming expiry minus `Node:Routing:CltvExpiryDelta` (capped by the trampoline delta). Our earned fee is what routing leaves.
 
-**Not done:** scenario 10(b), blinded hops as trampoline hops (NL-895); interop proofs (NL-896); outer-only failures from the deadline monitor and dust switch (NL-897); attribution verification on trampoline failures (NL-898); listing gaps (NL-899). Owner decision pending: take `OptionTrampolineRouting` out of `ExperimentalFeatures`.
+**NL-895 (lane `worktree-agent-a5cefe035b538e693`, 2026-10-03):** blinded hops as trampoline hops relay: the relay engine resolves a blinded hop's `short_channel_id` to our channel's peer (the switch's `OutgoingChannelResolver`, aliases and retired scids included; D-NL895-1) and prices it with the path's `payment_relay`/`payment_constraints`, never `Node:Trampoline` or NODE|26 (`TrampolineRelayPolicy.EvaluateBlinded`; D-NL895-2); the payer's inner payloads, its whole trampoline onion and the leg's outer payload (TLV 12 next to 20) equal vector [1] byte for byte; scenario 10(b) proven end to end (with and without C's dummy hop, and X's own `invalid_onion_blinding` on a constraint).
+
+**Not done:** interop proofs (NL-896); outer-only failures from the deadline monitor and dust switch (NL-897); attribution verification on trampoline failures (NL-898); listing gaps (NL-899). Owner decision pending: take `OptionTrampolineRouting` out of `ExperimentalFeatures`.
+
+**Cluster regression pass (2026-10-03, run `trreg-mx1` on the owner's box, `wip/fafo` @ `9418c968`, 6 namespaces, 1373 s):** every suite green with trampoline merged (feature off by default): `lnd` 58/58, `cln` 91 (4 `Explicit` not run), `gossip` 30/30, `eclair` 25 / `eclair2` 7, `ldk` 27/27, `onchain` 33 / `anchors` 18, `faults` 6/6, `abcd` 11/11, `postgres` 27/27 (incl. the first run of the `AddTrampolineRelays` round trip), `day0` failed once and was green when its class was rerun alone. NL-921 (`4384841b`), NL-922 and the payer/listing follow-ups landed after this pass.

@@ -480,25 +480,26 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
             }
 
             // NL-897: an HTLC that reached us as a trampoline node (a held final part, a relay part) is failed at the
-            // trampoline layer, as the switch and the relay engine fail it; any other HTLC as before
-            if (await TrampolineHtlcFailures.ResolveKeysAsync(_incomingOnionProcessor, unitOfWork, channelId, htlc,
-                                                              _logger) is { } trampolineKeys)
+            // trampoline layer, as the switch and the relay engine fail it; any other HTLC as before, with the onion
+            // peeled here once (no replay check) for its secret and its blinded role (NL-921)
+            var (trampolineKeys, processed) =
+                await TrampolineHtlcFailures.ResolveAsync(_incomingOnionProcessor, unitOfWork, channelId, htlc,
+                                                          _logger);
+            if (trampolineKeys is not null)
             {
                 LogFailedBack(channelId, htlc, height,
                               await TrampolineHtlcFailures.FailAsync(_channelOperations, _failureOnionService,
                                                                      _attributionDataService, channelId, htlc,
                                                                      trampolineKeys,
-                                                                     FailureMessage.TemporaryNodeFailure(),
+                                                                     FailureMessage.TemporaryNodeFailure(), _logger,
                                                                      cancellationToken));
                 return;
             }
 
             var secret = await unitOfWork.ChannelStateDbRepository.GetOnionSharedSecretAsync(channelId, htlc.Key);
-            if (secret is null && _incomingOnionProcessor is not null && !htlc.OnionRoutingPacket.IsEmpty)
+            if (secret is null && processed is not null)
             {
-                // Never processed (e.g. before a restart): peel again, without the replay check
-                var processed = await _incomingOnionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash,
-                                                                           replayOwner: null, htlc.PathKey);
+                // Never processed (e.g. before a restart): the onion peeled again above
                 if (processed is IncomingOnionMalformed malformed)
                 {
                     await _channelOperations.FailMalformedHtlcAsync(channelId, htlc.Id, malformed.FailureCode,
@@ -518,10 +519,9 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
                 return;
             }
 
-            // Inside a blinded route the BOLT 2 invalid_onion_blinding rules replace temporary_node_failure (M5)
-            var isIntroductionForward = _incomingOnionProcessor is not null
-                                     && await BlindedHtlcFailures.IsIntroductionForwardAsync(_incomingOnionProcessor,
-                                                                                            htlc);
+            // Inside a blinded route the BOLT 2 invalid_onion_blinding rules replace temporary_node_failure (M5); the
+            // HTLC has no path_key here (failed malformed above), so the onion tells whether we are its introduction
+            var isIntroductionForward = processed is not null && BlindedHtlcFailures.IsIntroductionForward(processed);
             var sent = await BlindedHtlcFailures.FailAsync(_channelOperations, _failureOnionService, channelId, htlc,
                                                            sharedSecret, FailureMessage.TemporaryNodeFailure(),
                                                            isIntroductionForward, cancellationToken);

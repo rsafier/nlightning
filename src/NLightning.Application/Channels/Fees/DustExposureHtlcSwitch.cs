@@ -11,6 +11,7 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Money;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
@@ -134,8 +135,12 @@ public sealed class DustExposureHtlcSwitch : IHtlcSwitch
                 return true;
             }
 
+            // The HTLC's amount and expiry, as the switch and the deadline monitor pass them, so the blinded
+            // payment_constraints are checked (NL-921)
             var result = await _onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash,
-                                                            replayOwner: null, htlc.PathKey);
+                                                            replayOwner: null, htlc.PathKey,
+                                                            LightningMoney.MilliSatoshis(htlc.AmountMsat),
+                                                            htlc.CltvExpiry);
             // NL-897: an HTLC that reached us as a trampoline node is failed at the trampoline layer (trampoline
             // secret, then the outer one), as the switch and the relay engine fail it
             if (TrampolineHtlcFailures.KeysFrom(result) is { } trampolineKeys)
@@ -147,7 +152,7 @@ public sealed class DustExposureHtlcSwitch : IHtlcSwitch
                                                                             attribution, channelId, htlc,
                                                                             trampolineKeys,
                                                                             FailureMessage.TemporaryChannelFailure(),
-                                                                            cancellationToken);
+                                                                            _logger, cancellationToken);
                 _logger.LogWarning("Failed incoming HTLC {HtlcId} of channel {ChannelId} ({AmountMsat} msat) with "
                                  + "{Sent}: {Excess} (B2-DUST-01/02)", htlcId, channelId, htlc.AmountMsat,
                                    sentTrampoline, excess);

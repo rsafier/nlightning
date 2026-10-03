@@ -4,11 +4,13 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
-Updated 2026-10-03 by the Cashu integrator (branch `wip/cashu-int` from `origin/wip/cashu` at `b38d2686`, merged with `wip/fafo`): the Cashu entries are renumbered because `wip/fafo` landed NL-900, NL-903, NL-904 and NL-905 first: NL-900 → NL-990 (epic), NL-901 → NL-991 (C0), NL-902 → NL-992 (C1), NL-903 → NL-993 (C2), NL-904 → NL-994 (C3), NL-905 → NL-995 (C4), NL-906 → NL-996 (IL2026), NL-907 → NL-997 (processor follow-ups), in every doc, code comment and test of the Cashu work (old commit messages keep the old IDs; the C0 commit `e5cb13a8` cites its first numbers NL-811 (epic, now NL-990) and NL-812 (C0, now NL-991), which stay unassigned as the harness note below says). The Cashu mint proof (NL-993) moved from Docker to the cluster harness (matrix suite `cashu`). NL-996 fixed in the merge (`12440f0b`). Integration review of the Cashu diff (listener security, payment event stream, `waitinvoice`, the processor against CDK v0.18.1, trampoline interplay): NL-998 (high), NL-999 and NL-1003 fixed; NL-1000, NL-1001 (medium) and NL-1002 open; rejected: none (the sub-sat melt note in the plan was a doc mismatch, fixed in `CASHU_PLAN.md`). Summary rows recounted from the entries: 801 entries, no duplicate IDs.
+Updated 2026-10-03 by the Cashu integrator (branch `wip/cashu-int` from `origin/wip/cashu` at `b38d2686`, merged with `wip/fafo`): the Cashu entries are renumbered because `wip/fafo` landed NL-900, NL-903, NL-904 and NL-905 first: NL-900 → NL-990 (epic), NL-901 → NL-991 (C0), NL-902 → NL-992 (C1), NL-903 → NL-993 (C2), NL-904 → NL-994 (C3), NL-905 → NL-995 (C4), NL-906 → NL-996 (IL2026), NL-907 → NL-997 (processor follow-ups), in every doc, code comment and test of the Cashu work (old commit messages keep the old IDs; the C0 commit `e5cb13a8` cites its first numbers NL-811 (epic, now NL-990) and NL-812 (C0, now NL-991), which stay unassigned as the harness note below says). The Cashu mint proof (NL-993) moved from Docker to the cluster harness (matrix suite `cashu`). NL-996 fixed in the merge (`12440f0b`). Integration review of the Cashu diff (listener security, payment event stream, `waitinvoice`, the processor against CDK v0.18.1, trampoline interplay): NL-998 (high), NL-999 and NL-1003 fixed; NL-1000, NL-1001 (medium) and NL-1002 open; rejected: none (the sub-sat melt note in the plan was a doc mismatch, fixed in `CASHU_PLAN.md`). Summary rows recounted from the entries after merging wip/fafo at `83494ee8`: 803 entries, no duplicate IDs.
 
 Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-913 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920, f0ca4a5c and 5c14c684: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-911 and NL-914 updated. NL-910 (low, open: a `ClnPeerStorageTests` cluster flake). Taproot NL-895..NL-899 renumbered to NL-911..NL-915 (collision with the trampoline follow-ups, which landed first).
 
 Updated 2026-10-03 by the namespace-cap lane (branch `wip/nscap`, owner decision 2026-10-03): NL-844 (fixed, b8362d19, 501bebd7: the harness cap on run namespaces is 12, set once in `RunAdmission.DefaultMaxRuns`; the matrix in 1,058 s at a peak of 11 namespaces) and NL-905 (open, low: the cln suite is the matrix long pole at 12 namespaces). Summary rows recounted from the entries after the merge of `wip/fafo` at bd1a0dc5 (NL-806 lane): 773 entries, no duplicate IDs.
+
+Updated 2026-10-03 by the NL-895 lane (worktree branch `worktree-agent-a5cefe035b538e693` from `wip/fafo` at `ed4d7e7a`): NL-895 (low) fixed in 3dcd390d (product `053bb672`); NL-920 (low, open) added: a dual-fund test that already fails at `ed4d7e7a`. Summary: open low 62 -> 61 -> 62, fixed low 411 -> 412, total 771 -> 772.
 
 Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (lane b12-anysegwit, cfafd698) fixed.
 
@@ -153,12 +155,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 4 | 75 | 79 |
+| open | 0 | 0 | 4 | 74 | 78 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 14 | 64 | 202 | 421 | 701 |
+| fixed | 14 | 64 | 202 | 423 | 703 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
-| duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **64** | **215** | **508** | **801** |
+| duplicate | 0 | 0 | 2 | 3 | 5 |
+| **Total** | **14** | **64** | **215** | **510** | **803** |
 
 ### Epics
 
@@ -2724,12 +2726,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN TR0-TR5
 
 ### NL-895 Blinded hops as trampoline hops (BOLT 12 recipient with bit 57) do not relay
-- **Status:** open
+- **Status:** fixed (3dcd390d; product `053bb672`, payer vector check `5e9042d8`)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Trampoline/TrampolineRelayService.cs`, `Payments/Onion/IncomingOnionProcessor.cs` (blinded trampoline relay data), `Payments/Send/PaymentService.Trampoline*.cs`
 - **Evidence:** TR5 phase 2 scenario 10(b) (2026-10-03): C's `BlindedPathBuilder` path names the X–C hop by `short_channel_id`, which the relay engine does not resolve to a node ("lacks its relay instructions"); with it resolved by hand, X applies its own `Node:Trampoline` fee/delta although the recipient fixed that hop's price in the path's `payment_relay`, so X refuses with NODE|26. TR-R-07/TR-R-10.
 - **Fix sketch:** resolve `short_channel_id` in blinded trampoline recipient data to the channel peer; use the path's `payment_relay`/constraints (not `Node:Trampoline`) as a blinded hop's policy; prove 10(b) in `TrampolineRelayE2ETests` (X running the relay engine).
+- **Fix (2026-10-03, owner-approved D-NL895-1/2):** the relay engine resolves a blinded hop's next node from `next_node_id` or from the recipient data's `short_channel_id` against our open channels (real scid, aliases, retired scids) through `Payments/Switch/OutgoingChannelResolver`, the switch's blinded-forward rule moved out of `HtlcSwitch`, and saves it as the relay's `NextNodeId`; an unknown scid, an HTLC below the outer `amt_to_forward` or an expiry below the outer `outgoing_cltv_value` refuse the part with `invalid_onion_blinding` (our own at the introduction node, malformed past it). A blinded hop is priced by `payment_relay` (already applied by `IncomingOnionProcessor` to the outer total and expiry) with `TrampolineRelayPolicy.EvaluateBlinded`, never `Node:Trampoline` or NODE|26; the leg's budget is sum in − amount out and the lowest incoming expiry − our forwarding delta. The payer side needed no change: its inner payloads, its whole trampoline onion and the leg's outer payload equal PR 836 vector [1] byte for byte (`TrampolineOnionFactoryTests`). Proofs: `Payments/Trampoline/BlindedTrampolineRelayTests` (10 cases on `ThreeNodeHarness`), `TrampolineRelayPolicyTests` (`EvaluateBlinded`), scenario 10(b) in `TrampolineRelayE2ETests` (with and without C's dummy hop; a `payment_constraints` violation read by A as X's own `invalid_onion_blinding`).
 - **Blocks/Blocked-by:** Follow-up of NL-875
 - **Plan ref:** TRAMPOLINE_PLAN TR5 scenario 10(b)
 
@@ -2773,6 +2776,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** show the trampoline node/inner route in `listpayments`, hide or mark relay legs, keep failed relay attempts (attempt column or history table), split relay income per incoming part.
 - **Blocks/Blocked-by:** Follow-up of NL-875
 - **Plan ref:** TRAMPOLINE_PLAN TR3/TR4
+
+### NL-920 `DualFundUpfrontShutdownScriptTests.Given_AP2TrScriptWithAnySegwit_*` fails on `wip/fafo` at `ed4d7e7a`
+- **Status:** duplicate of NL-903 (fixed upstream in `f0ca4a5c`/`5c14c684`: the test no longer runs on the 1 s open timeout; 4/4 on `wip/fafo` after the NL-895 merge)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Channels/DualFunding/DualFundUpfrontShutdownScriptTests.cs:92`, `src/NLightning.Application/Channels/DualFunding/`
+- **Evidence:** found by the NL-895 lane's gate (2026-10-03): the test fails every run, alone too, with "the dual-funded open timed out" after Bob's first `commitment_signed` (wire: OpenChannel2, AcceptChannel2, the tx_add/tx_complete exchange, Bob CommitmentSigned, then nothing). It fails identically with the base `ed4d7e7a` Application assembly, so it predates NL-895; the test came with NL-776 (`cfafd698`, batch12) and probably met the trampoline merges on `wip/fafo`. The other three cases of the class pass. Not diagnosed further (out of the NL-895 lane's scope).
+- **Fix sketch:** run the class with logs on, find why Alice does not answer Bob's `commitment_signed` when its accepter announced a P2TR `upfront_shutdown_script` with anysegwit negotiated (a validation or signing refusal swallowed into the open's timeout?); fix and keep the test green.
+- **Blocks/Blocked-by:** related NL-776
+- **Plan ref:** none
+
+### NL-921 NL-897 review follow-ups: blinded trampoline failure shapes outside the switch
+- **Status:** fixed (c7bc7ecf)
+- **Severity:** low
+- **Kind:** spec
+- **Location:** `src/NLightning.Application/Payments/Switch/TrampolineHtlcFailures.cs`, `Channels/Safety/HtlcExpiryMonitor.cs` (`FailBackAsync`), `Channels/Fees/DustExposureHtlcSwitch.cs`, `Payments/Trampoline/TrampolineRelayService.cs` (`GetFailureKeysAsync`)
+- **Evidence:** adversarial review of NL-897 (2026-10-03): (1) at the introduction node of a blinded trampoline route that is not ours to end, a recipient data the processor refuses gives `IncomingOnionTrampolineFailed(..., invalid_onion_blinding)`, but `KeysFrom` kept only the secrets, so the dust switch sent `temporary_channel_failure` and the monitor `temporary_node_failure` instead of our own `invalid_onion_blinding` (BOLT 4, TR-R-14); (2) a relay part past a blinded introduction node whose re-peel only answers malformed `invalid_onion_blinding` (route blinding turned off since) fell back to its `TrampolineRelayParts` row without the blinded answer and was failed double-wrapped (same in the relay engine); (3) the dust switch peeled without the HTLC's amount and expiry, so `payment_constraints` were not checked; (4) a zero secret (a damaged row) silently made a failure nobody can read; (5) the monitor peeled an ordinary HTLC up to three times. Missing tests: the blinded branches of both paths, the switch's added-after-shutdown relay at the introduction node, attribution off, attribution in the dust switch.
+- **Fix (c7bc7ecf):** `KeysFrom` keeps the processor's `invalid_onion_blinding` as `IntroductionSha256` (the switch builds its keys with it too); `TrampolineHtlcFailures.FromStoredPart`, shared with the relay engine (its `PartFailureKeys` removed), keeps a re-peel's malformed `invalid_onion_blinding` as `BlindedMalformedSha256`; a row without a usable outer secret (32 non-zero bytes) gives no keys (the caller's ordinary path, the HTLC's stored secret) and `FailAsync` never uses an unusable trampoline secret (outer-only failure, warning, no throw); `ResolveAsync` returns the re-peel, reused by the monitor for the secret and the introduction check; the dust switch passes the HTLC's amount and expiry. The BOLT 2/4 random delay before an introduction node's `invalid_onion_blinding` stays out of these paths (documented, as `BlindedHtlcFailures.FailAsync`). Tests: region NL-921 of `HtlcExpiryMonitorTests` and `DustExposureHtlcSwitchTests` (new `TrampolineFailureTestKit.BuildBlindedRelayAsync`/`BuildBlindedFinalAsync`/`CreateUsWithoutRouteBlinding`) and `BlindedTrampolineRelayTests.Given_ARelayPartAtTheIntroductionNodeAddedAfterOurShutdown_*`; the six covering a fix fail on 9418c968.
+- **Blocks/Blocked-by:** Follow-up of NL-897 (and NL-895)
+- **Plan ref:** TRAMPOLINE_PLAN TR-R-14
 
 ## BOLT 5: On-chain handling
 

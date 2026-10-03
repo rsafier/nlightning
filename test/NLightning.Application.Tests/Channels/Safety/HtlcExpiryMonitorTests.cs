@@ -16,6 +16,7 @@ using Domain.Channels.Models;
 using Domain.Channels.Policies;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
@@ -708,13 +709,15 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
     public async Task Given_AFailedTrampolineRelayWithNoOutgoingHtlc_When_TheFailBackDeadlineIsReached_Then_ThePartIsFailedBack()
     {
         // Arrange (NL-875): nothing downstream can fulfill it any more; failed with its row's secrets at the trampoline
-        // layer (NL-897), so the failure onion is the real one
+        // layer (NL-897), so the failure onion is the real one (NL-921: a zero secret is never used)
         using var kit = new TrampolineFailureTestKit();
         var preimage = RealSigningCommitmentPair.Preimage(1);
         var incomingId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
         _pair.Settle(_pair.Alice);
         UseChannel(_pair.Bob);
-        UseRelayPart(incomingId, RealSigningCommitmentPair.Hash(preimage), TrampolineRelayStatus.Failed);
+        UseRelayPart(incomingId, RealSigningCommitmentPair.Hash(preimage), TrampolineRelayStatus.Failed,
+                     outerSecret: new Secret(Enumerable.Repeat((byte)0x0A, 32).ToArray()),
+                     trampolineSecret: new Secret(Enumerable.Repeat((byte)0x0B, 32).ToArray()));
         var monitor = CreateMonitor(kit.Us.FailureOnion, processor: null);
 
         // Act
@@ -879,6 +882,187 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
                            Times.Never);
     }
 
+    #endregion
+
+    #region NL-921: blinded trampoline failures, zero secrets, attribution off
+
+    [Fact]
+    public async Task Given_AnIntroductionNodeRelayWhoseRecipientDataFails_When_FailedBack_Then_OurOwnInvalidOnionBlindingAtTheTrampolineLayer()
+    {
+        // Arrange: we introduce a blinded trampoline route that is not ours to end, and our recipient data refuses the
+        // HTLC (max_cltv_expiry below its expiry): the processor's answer is our own invalid_onion_blinding
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildBlindedRelayAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv,
+                                                     introduction: true, maxCltvExpiry: Cltv - 1);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert: never temporary_node_failure (BOLT 4: the introduction node replaces every error by its own)
+        var failure = kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.InvalidOnionBlinding);
+        Assert.Equal(onion.TrampolineSha256, failure.Sha256OfOnion!.Value.ToArray());
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_AnIntroductionNodeRelay_When_FailedBack_Then_OurOwnInvalidOnionBlindingAtTheTrampolineLayer()
+    {
+        // Arrange: a valid blinded trampoline relay part we introduce, never relayed
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildBlindedRelayAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv,
+                                                     introduction: true);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert
+        var failure = kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.InvalidOnionBlinding);
+        Assert.Equal(onion.TrampolineSha256, failure.Sha256OfOnion!.Value.ToArray());
+    }
+
+    [Fact]
+    public async Task Given_ARelayPastTheIntroductionNode_When_FailedBack_Then_MalformedWithTheTrampolinePacketHash()
+    {
+        // Arrange: our path key came in the outer payload
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildBlindedRelayAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv,
+                                                     introduction: false);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert: update_fail_malformed_htlc + invalid_onion_blinding with the trampoline packet's sha256 (PR 836)
+        VerifyMalformedOnce(id, onion.TrampolineSha256);
+    }
+
+    [Fact]
+    public async Task Given_ARelayPartPastTheIntroductionNodeAndRouteBlindingOff_When_FailedBack_Then_MalformedNotAWrappedFailure()
+    {
+        // Arrange: a relay part past a blinded introduction node with its row, then a restart with route blinding
+        // off: the onion peeled again only says malformed invalid_onion_blinding, the row has the secrets
+        using var kit = new TrampolineFailureTestKit();
+        using var restarted = TrampolineFailureTestKit.CreateUsWithoutRouteBlinding();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        var onion = await kit.BuildBlindedRelayAsync(hash, 20_000_000, Cltv, introduction: false);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        UseRelayPart(id, hash, TrampolineRelayStatus.Failed, outerSecret: onion.OuterSecret,
+                     trampolineSecret: onion.TrampolineSecrets[0]);
+        var monitor = CreateMonitor(restarted.FailureOnion, restarted.OnionProcessor);
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert: as the switch and the relay engine fail it, never temporary_node_failure double-wrapped
+        VerifyMalformedOnce(id, onion.TrampolineSha256);
+    }
+
+    [Fact]
+    public async Task Given_ARelayRowWithAZeroTrampolineSecret_When_FailedBack_Then_TheOuterSecretAloneMakesAReadableFailure()
+    {
+        // Arrange: the monitor cannot peel; the row's trampoline secret is zero (damaged), its outer secret real
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        var onion = await kit.BuildRelayAsync(hash, 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        UseRelayPart(id, hash, TrampolineRelayStatus.Failed, outerSecret: onion.OuterSecret);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, processor: null);
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert: our failure with the outer secret only, not one wrapped under a zero key nobody can read
+        kit.AssertOuterLayerOnly(onion, Assert.Single(reasons), FailureCode.TemporaryNodeFailure);
+    }
+
+    [Fact]
+    public async Task Given_ARelayRowWithZeroSecrets_When_FailedBack_Then_TheHtlcsStoredSecretIsUsed()
+    {
+        // Arrange: no usable secret in the row: the HTLC is failed as an ordinary one, with its stored outer secret
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        var onion = await kit.BuildRelayAsync(hash, 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        UseRelayPart(id, hash, TrampolineRelayStatus.Failed);
+        StoreOuterSecret(onion.OuterSecret);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, processor: null);
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert
+        kit.AssertOuterLayerOnly(onion, Assert.Single(reasons), FailureCode.TemporaryNodeFailure);
+    }
+
+    [Fact]
+    public async Task Given_AttributionNotAdvertised_When_ATrampolinePartIsFailedBack_Then_NoAttributionData()
+    {
+        // Arrange: the attribution service is there, option_attribution_data is not advertised
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildFinalAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        var reasons = CaptureFailures();
+        var options = new NodeOptions();
+        options.Features.OptionAttributionData = FeatureSupport.No;
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor, kit.Us.AttributionData, options);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert: the plain double-wrapped reason
+        kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.TemporaryNodeFailure);
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<AttributedErrorPacket>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+    }
+
+    private void VerifyMalformedOnce(ulong htlcId, byte[] sha256)
+    {
+        _operations.Verify(o => o.FailMalformedHtlcAsync(_channel.ChannelId, htlcId, FailureCode.InvalidOnionBlinding,
+                                                         It.Is<Hash>(h => ((byte[])h).SequenceEqual(sha256)),
+                                                         It.IsAny<CancellationToken>()), Times.Once);
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+    }
+
     private List<byte[]> CaptureFailures()
     {
         var reasons = new List<byte[]>();
@@ -934,9 +1118,10 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
             _provider.GetRequiredService<IServiceScopeFactory>());
 
     private HtlcExpiryMonitor CreateMonitor(IFailureOnionService failureOnion, IncomingOnionProcessor? processor,
-                                            IAttributionDataService? attribution = null) =>
+                                            IAttributionDataService? attribution = null,
+                                            NodeOptions? nodeOptions = null) =>
         new(_blockchainMonitor.Object, _failureService.Object, _memory.Object, _operations.Object, failureOnion,
-            NullLogger<HtlcExpiryMonitor>.Instance, Options.Create(new NodeOptions()),
+            NullLogger<HtlcExpiryMonitor>.Instance, Options.Create(nodeOptions ?? new NodeOptions()),
             _provider.GetRequiredService<IServiceScopeFactory>(), incomingOnionProcessor: processor,
             attributionDataService: attribution);
 
