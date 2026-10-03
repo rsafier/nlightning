@@ -191,7 +191,8 @@ internal static class OnchainAccounting
                                                    ChainTx spend, ulong? commitmentNumber, uint height,
                                                    IReadOnlyList<CommitmentOutputDescriptor> descriptors,
                                                    CommitmentTxSpec? spec, CommitmentTxSpec? latestSpec,
-                                                   ChannelFunding spentFunding, DateTimeOffset occurredAt)
+                                                   ChannelFunding spentFunding, DateTimeOffset occurredAt,
+                                                   bool outputsUnmapped = false)
     {
         var weFund = channel.IsInitiator;
         var latest = latestSpec is null ? (long?)null : OurBalanceMsat(latestSpec);
@@ -219,7 +220,7 @@ internal static class OnchainAccounting
                                 ? (spentFunding.CapacitySatoshis - outputsSat).ToString(CultureInfo.InvariantCulture)
                                 : null;
         var ours = descriptors.Where(d => d.IsOurs).Aggregate(0UL, (sum, d) => sum + d.AmountSat);
-        var trimmedIncoming = TrimmedIncomingHtlcs(closeKind, spec, descriptors);
+        var trimmedIncoming = TrimmedIncomingHtlcs(closeKind, spec, descriptors, outputsUnmapped);
 
         return new AccountingEventModel
         {
@@ -256,13 +257,18 @@ internal static class OnchainAccounting
     /// <summary>
     /// The incoming HTLCs of the commitment that confirmed that have no output on it (trimmed: below dust), for a close
     /// whose B comes from that commitment (ours, the peer's current or next one; see the remarks, (e)); empty for any
-    /// other close (a revoked commitment's B is our latest local balance, a commitment we cannot rebuild has no spec).
+    /// other close (a revoked commitment's B is our latest local balance, a commitment we cannot rebuild has no spec),
+    /// and empty when some outputs of the transaction on chain matched no expected output
+    /// (<paramref name="outputsUnmapped"/>): an HTLC without a descriptor may then have an output we could not identify,
+    /// so it is not known to be trimmed (NL-893).
     /// </summary>
     public static IReadOnlyList<Htlc> TrimmedIncomingHtlcs(ChannelCloseKind closeKind, CommitmentTxSpec? spec,
-                                                           IReadOnlyList<CommitmentOutputDescriptor> descriptors)
+                                                           IReadOnlyList<CommitmentOutputDescriptor> descriptors,
+                                                           bool outputsUnmapped = false)
     {
         ArgumentNullException.ThrowIfNull(descriptors);
-        if (spec is null || closeKind is not (ChannelCloseKind.LocalCommitment or ChannelCloseKind.RemoteCommitment
+        if (spec is null || outputsUnmapped
+                         || closeKind is not (ChannelCloseKind.LocalCommitment or ChannelCloseKind.RemoteCommitment
                                                   or ChannelCloseKind.RemoteNextCommitment))
             return [];
 

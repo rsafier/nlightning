@@ -407,7 +407,8 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
     private async Task StageForceClosedEventAsync(IUnitOfWork unitOfWork, ChannelModel channel,
                                                   ChannelCloseKind closeKind, ChainTx spend, ulong? commitmentNumber,
                                                   uint height, IReadOnlyList<CommitmentOutputDescriptor> descriptors,
-                                                  CommitmentTxSpec? spec, ChannelFunding spentFunding)
+                                                  CommitmentTxSpec? spec, ChannelFunding spentFunding,
+                                                  bool outputsUnmapped)
     {
         try
         {
@@ -423,11 +424,11 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
             var now = _timeProvider.GetUtcNow();
             accounting.Add(OnchainAccounting.ForceClosed(channel, key, closeKind, spend, commitmentNumber, height,
                                                          descriptors, spec, LocalSource(channel)?.Spec, spentFunding,
-                                                         now));
+                                                         now, outputsUnmapped));
 
             // NL-760: an incoming HTLC trimmed on the commitment that confirmed is lost with the close; when a settled
             // invoice or forward booked it (the NL-688/NL-608 conditions), its loss goes in the close's save
-            foreach (var htlc in OnchainAccounting.TrimmedIncomingHtlcs(closeKind, spec, descriptors))
+            foreach (var htlc in OnchainAccounting.TrimmedIncomingHtlcs(closeKind, spec, descriptors, outputsUnmapped))
             {
                 await OnchainResolutionExecutor.StageForwardLossAsync(unitOfWork, accounting, channel, spend.TxId,
                                                                       htlc.Id, null, height, now, true,
@@ -1008,7 +1009,7 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 
         // NL-602: our channel balance moves to pending on-chain funds in the save that records the close
         await StageForceClosedEventAsync(unitOfWork, channel, closeKind, spend, classification.CommitmentNumber,
-                                         args.BlockHeight, descriptors, spec, spentFunding);
+                                         args.BlockHeight, descriptors, spec, spentFunding, unmapped is not null);
         await unitOfWork.SaveChangesAsync();
 
         if (errorBytes is not null)

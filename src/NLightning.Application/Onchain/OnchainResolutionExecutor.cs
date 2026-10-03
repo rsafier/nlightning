@@ -721,6 +721,11 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 });
             }
 
+            // NL-892: an incoming HTLC the close trimmed whose forward or invoice was settled after the close's save
+            // (the switch stages it at the settle too; this catches a crash between the two saves)
+            if (spent is null && await StageLateTrimmedLossesAsync(unitOfWork, channel, close, height))
+                stageMore.Add(() => Task.CompletedTask);
+
             // NL-602: the accounting events of this round's resolutions, in its save
             if (AccountingStage(unitOfWork, channel, close, before, outputs, spent, height, cancellationToken) is
                 { } accountingStage)
@@ -994,6 +999,26 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     }
 
     /// <summary>
+    /// <see cref="StageTrimmedIncomingLossesAsync"/> for every trimmed incoming HTLC of the close (NL-892). Never
+    /// throws: a failure is logged and the round goes on without it.
+    /// </summary>
+    private async Task<bool> StageLateTrimmedLossesAsync(IUnitOfWork unitOfWork, ChannelModel channel,
+                                                         ChannelCloseModel close, uint height)
+    {
+        try
+        {
+            return await StageTrimmedIncomingLossesAsync(unitOfWork, channel, close, null, height,
+                                                         _timeProvider.GetUtcNow(), _logger, CancellationToken.None);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "Channel {ChannelId}: the losses of trimmed incoming HTLCs settled after the close "
+                              + "could not be staged", channel.ChannelId);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Stages the round's accounting events in its unit of work: an <see cref="AccountingEventKind.OutputResolved"/>,
     /// <see cref="AccountingEventKind.PenaltyClaimed"/> or <see cref="AccountingEventKind.BreachLoss"/> for the row a
     /// spend resolved (only on its move to <see cref="OutputResolutionState.Resolved"/>, so a replay writes nothing),
@@ -1239,25 +1264,61 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     /// <see cref="ForwardCircuitStatus.Fulfilled"/>): its output was taken by the peer or given up (NL-608), or it had
     /// none (<paramref name="trimmed"/>, NL-760). Nothing when the fact stands already.
     /// </summary>
-    internal static async Task StageForwardLossAsync(IUnitOfWork unitOfWork, IAccountingEventDbRepository accounting,
-                                                     ChannelModel channel, TxId closeTxId, ulong htlcId,
-                                                     TxId? spenderTxId, uint height, DateTimeOffset now, bool trimmed,
-                                                     CancellationToken cancellationToken)
+    internal static async Task<bool> StageForwardLossAsync(IUnitOfWork unitOfWork,
+                                                           IAccountingEventDbRepository accounting,
+                                                           ChannelModel channel, TxId closeTxId, ulong htlcId,
+                                                           TxId? spenderTxId, uint height, DateTimeOffset now,
+                                                           bool trimmed, CancellationToken cancellationToken)
     {
         if (unitOfWork.ForwardCircuitDbRepository is not { } circuits)
-            return;
+            return false;
 
         var circuit = await circuits.GetByIncomingAsync(channel.ChannelId, htlcId);
         if (circuit is not { Status: ForwardCircuitStatus.Fulfilled })
-            return;
+            return false;
 
         var key = await OnchainAccounting.NewKeyAsync(
                       accounting, AccountingEventKeys.ForwardLostOnchain(channel.ChannelId, htlcId), cancellationToken);
         if (key is null)
-            return;
+            return false;
 
         accounting.Add(PaymentAccountingEvents.ForwardUpstreamLostOnchain(key, circuit, channel, closeTxId, spenderTxId,
                                                                           now, height, trimmed));
+        return true;
+    }
+
+    /// <summary>
+    /// Stages the losses of the incoming HTLCs the standing close event of <paramref name="close"/> lists as trimmed
+    /// (<see cref="OnchainAccounting.TrimmedIncomingHtlcsOf"/>) whose forward or invoice was booked as settled after the
+    /// close's save (NL-892: the downstream peer fulfilled the forward, or the invoice's set completed, once the
+    /// commitment had confirmed), under the same conditions and keys as in the close's save; only
+    /// <paramref name="htlcId"/> when given. A loss already standing is never written again. True when one was staged.
+    /// </summary>
+    internal static async Task<bool> StageTrimmedIncomingLossesAsync(IUnitOfWork unitOfWork, ChannelModel channel,
+                                                                     ChannelCloseModel close, ulong? htlcId,
+                                                                     uint height, DateTimeOffset now, ILogger logger,
+                                                                     CancellationToken cancellationToken)
+    {
+        if (unitOfWork.AccountingEventDbRepository is not { } accounting)
+            return false;
+
+        var closeEvent = await OnchainAccounting.FindAsync(
+                             accounting,
+                             AccountingEventKeys.ChannelForceClosed(channel.ChannelId, close.CommitmentTransactionId),
+                             close.SpentAtHeight, cancellationToken);
+        var staged = false;
+        foreach (var (id, paymentHash) in OnchainAccounting.TrimmedIncomingHtlcsOf(closeEvent))
+        {
+            if (htlcId is { } only && only != id)
+                continue;
+
+            staged |= await StageForwardLossAsync(unitOfWork, accounting, channel, close.CommitmentTransactionId, id,
+                                                  null, height, now, true, cancellationToken);
+            staged |= await StageInvoiceLossAsync(unitOfWork, accounting, channel, close.CommitmentTransactionId, id,
+                                                  paymentHash, null, height, now, true, logger, cancellationToken);
+        }
+
+        return staged;
     }
 
     /// <summary>
@@ -1306,11 +1367,12 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     /// (<see cref="AccountingEventKeys.InvoiceLostOnchain"/>, by generation after a reorg's reversal). A forward (a
     /// circuit on the HTLC) is NL-608's.
     /// </summary>
-    internal static async Task StageInvoiceLossAsync(IUnitOfWork unitOfWork, IAccountingEventDbRepository accounting,
-                                                     ChannelModel channel, TxId closeTxId, ulong htlcId,
-                                                     Hash paymentHash, TxId? spenderTxId, uint height,
-                                                     DateTimeOffset now, bool trimmed, ILogger logger,
-                                                     CancellationToken cancellationToken)
+    internal static async Task<bool> StageInvoiceLossAsync(IUnitOfWork unitOfWork,
+                                                           IAccountingEventDbRepository accounting,
+                                                           ChannelModel channel, TxId closeTxId, ulong htlcId,
+                                                           Hash paymentHash, TxId? spenderTxId, uint height,
+                                                           DateTimeOffset now, bool trimmed, ILogger logger,
+                                                           CancellationToken cancellationToken)
     {
         // The lookups never cost the round its other events: a failure is logged and the loss is not recorded
         InvoiceModel? invoice;
@@ -1318,7 +1380,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         {
             if (unitOfWork.ForwardCircuitDbRepository is { } circuits
              && await circuits.GetByIncomingAsync(channel.ChannelId, htlcId) is not null)
-                return;
+                return false;
 
             invoice = unitOfWork.InvoiceDbRepository is { } invoices
                           ? await invoices.GetByPaymentHashAsync(paymentHash)
@@ -1328,7 +1390,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         {
             logger.LogWarning(e, "Channel {ChannelId}: whether incoming HTLC {HtlcId} paid a settled invoice of ours "
                                + "could not be read; its loss on chain is not recorded", channel.ChannelId, htlcId);
-            return;
+            return false;
         }
 
         if (invoice is not { Status: InvoiceStatus.Settled }
@@ -1337,16 +1399,17 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
          || record.Removal is { IsFulfill: false }
          || (record.KnownPreimage ?? record.Removal?.PaymentPreimage) is not { } preimage
          || preimage != invoice.Preimage)
-            return;
+            return false;
 
         var key = await OnchainAccounting.NewKeyAsync(
                       accounting, AccountingEventKeys.InvoiceLostOnchain(paymentHash, channel.ChannelId, htlcId),
                       cancellationToken);
         if (key is null)
-            return;
+            return false;
 
         accounting.Add(PaymentAccountingEvents.InvoiceLostOnchain(key, invoice, htlcId, record.AmountMsat, channel,
                                                                   closeTxId, spenderTxId, now, height, trimmed));
+        return true;
     }
 
     /// <summary>

@@ -718,6 +718,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         }
 
         RemoveHtlcSet(set);
+
+        // NL-892: a part on a channel whose close trimmed it is lost with the close
+        foreach (var part in set.Parts.Where(p => IsOnchain(p.ChannelId)).ToList())
+            await StageLateTrimmedLossAsync(part.ChannelId, part.HtlcId);
+
         foreach (var part in set.Parts.Where(p => p.Key != settledBy.Key).ToList())
         {
             // Marked above: on chain the resolver claims it; one resolved elsewhere meanwhile is left alone
@@ -2256,6 +2261,50 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         }
 
         await unitOfWork.SaveChangesAsync();
+
+        // NL-892: a forward settled after its incoming channel's close, whose incoming HTLC the close trimmed
+        if (before != ForwardCircuitStatus.Fulfilled && circuit.Status == ForwardCircuitStatus.Fulfilled)
+            await StageLateTrimmedLossAsync(incomingChannelId, incomingHtlcId);
+    }
+
+    /// <summary>
+    /// NL-892: a forward or an invoice part settled after the force close of its incoming channel had been recorded,
+    /// whose incoming HTLC that close trimmed (below dust, no output), is lost with the close: its
+    /// <c>ForwardLostOnchain</c>/<c>InvoiceLostOnchain</c> goes in a save of its own right after the settle's (the
+    /// close's save could not book it, and no resolution ever sees the HTLC; the executor's rounds catch a crash in
+    /// between). Nothing for a channel that is not closed on chain. Never throws: a failure is logged.
+    /// </summary>
+    private async Task StageLateTrimmedLossAsync(ChannelId channelId, ulong htlcId)
+    {
+        // Only a channel closing on chain (Failed waits for its commitment) or gone from memory (Closed) can have one
+        if (_channelMemoryRepository.TryGetChannel(channelId, out var loaded)
+         && loaded.State is not (ChannelState.Failed or ChannelState.OnchainResolving or ChannelState.Closed))
+            return;
+
+        try
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            if (unitOfWork.AccountingEventDbRepository is null
+             || await unitOfWork.OnchainResolutionDbRepository.GetCloseAsync(channelId) is not { } close)
+                return;
+
+            var channel = loaded ?? await unitOfWork.ChannelDbRepository.GetByIdAsync(channelId);
+            if (channel is null
+             || !await OnchainResolutionExecutor.StageTrimmedIncomingLossesAsync(
+                    unitOfWork, channel, close, htlcId, CurrentHeight, _timeProvider.GetUtcNow(), _logger,
+                    CancellationToken.None))
+                return;
+
+            await unitOfWork.SaveChangesAsync();
+            _logger.LogWarning("Incoming HTLC {HtlcId} of channel {ChannelId} was settled after the channel's close, "
+                             + "which trimmed it: recorded as lost on chain", htlcId, channelId);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "Could not record the loss of trimmed incoming HTLC {HtlcId} of closed channel "
+                              + "{ChannelId}", htlcId, channelId);
+        }
     }
 
     private static Hash Sha256Of(ReadOnlyMemory<byte> bytes) =>
