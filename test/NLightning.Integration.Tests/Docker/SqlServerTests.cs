@@ -310,6 +310,21 @@ public class SqlServerTests
 
     /// <summary>Options for a database of its own on the container's server, once the server accepts
     /// connections.</summary>
+    [Fact]
+    public async Task Given_ASqlServerSpliceLockCommittingMidLoad_When_TheChannelIsLoaded_Then_ItIsAllBeforeOrAllAfterTheLock()
+    {
+        // Arrange (NL-810: the channel loads read one snapshot of the database; a database of its own)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_consistent_read");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.MicrosoftSql);
+
+        // Act & Assert
+        await ChannelConsistentReadRoundTrip.AssertAsync(
+            interceptors => new NLightningDbContext(
+                new DbContextOptionsBuilder<NLightningDbContext>(options).AddInterceptors(interceptors).Options,
+                databaseTypeProvider),
+            TestContext.Current.CancellationToken);
+    }
+
     private async Task<DbContextOptions<NLightningDbContext>> CreateOwnDatabaseOptionsAsync(string database)
     {
         var connectionString = _fixture.DbConnectionString!.Replace("Database=tempdb", $"Database={database}",

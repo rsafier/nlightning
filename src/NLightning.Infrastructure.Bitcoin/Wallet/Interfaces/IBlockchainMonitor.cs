@@ -6,6 +6,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Onchain.Interfaces;
+using Domain.Onchain.Models;
 
 /// <summary>
 /// Follows the chain block by block (ZMQ <c>rawblock</c> plus RPC catch-up): watched transactions and their depth,
@@ -52,7 +53,7 @@ public interface IBlockchainMonitor : IChainBroadcaster, IOutpointWatcher
     event EventHandler<WalletMovementEventArgs>? OnWalletMovementDetected;
 
     /// <summary>
-    /// Saves the watch and a pending <see cref="Domain.Onchain.Models.BroadcastTransactionModel"/> for the transaction
+    /// Saves the watch and a pending <see cref="BroadcastTransactionModel"/> for the transaction
     /// (purpose <c>Unspecified</c>) in one save, then publishes it. A refused publish throws, and the stored row makes
     /// the monitor send it again after every block until it confirms.
     /// </summary>
@@ -65,6 +66,13 @@ public interface IBlockchainMonitor : IChainBroadcaster, IOutpointWatcher
     /// leaves the state without its watch). Nothing is written.
     /// </summary>
     void TrackWatchedTransaction(WatchedTransactionModel watchedTransaction);
+
+    /// <summary>
+    /// Follows a pending broadcast whose row the caller saved without publishing it (NL-779: the peer's commitment the
+    /// mempool reactor handed over): it is sent again after every block and marked confirmed when a processed block
+    /// holds it. Nothing is written or sent; a row that is not pending is ignored.
+    /// </summary>
+    void TrackPendingBroadcast(BroadcastTransactionModel transaction);
 
     /// <summary>Publishes a transaction (its watch, if any, is the caller's). Nothing is stored.</summary>
     Task PublishTransactionAsync(SignedTransaction signedTransaction);

@@ -190,18 +190,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
 
     public async Task<ChannelModel?> GetByIdAsync(ChannelId channelId)
     {
-        var channelEntity = await DbSet
-                                 .AsNoTracking()
-                                 .Include(c => c.Config)
-                                 .Include(c => c.KeySets)
-                                 .Include(c => c.ChangeAddress)
-                                 .Include(c => c.LocalAliases)
-                                 .FirstOrDefaultAsync(c => c.ChannelId == channelId);
-
-        if (channelEntity is null)
-            return null;
-
-        return await MapWithStateAsync(channelEntity);
+        // A channel refused for legacy HTLC rows throws here (NL-025)
+        return await LoadConsistentlyAsync(channelId, _ => true);
     }
 
     /// <inheritdoc />
@@ -221,15 +211,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
 
     public async Task<IEnumerable<ChannelModel>> GetAllAsync()
     {
-        var channelEntities = await DbSet
-                                   .AsNoTracking()
-                                   .Include(c => c.Config)
-                                   .Include(c => c.KeySets)
-                                   .Include(c => c.ChangeAddress)
-                                   .Include(c => c.LocalAliases)
-                                   .ToListAsync();
-
-        return await MapAllWithStateAsync(channelEntities);
+        return await LoadAllConsistentlyAsync(_ => true);
     }
 
     public async Task<IEnumerable<ChannelModel>> GetReadyChannelsAsync()
@@ -246,35 +228,68 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             (byte)ChannelState.Closing
         ];
 
-        var channelEntities = await DbSet
-                                   .AsNoTracking()
-                                   .Include(c => c.Config)
-                                   .Include(c => c.KeySets)
-                                   .Include(c => c.ChangeAddress)
-                                   .Include(c => c.LocalAliases)
-                                   .Where(c => readyStateList.Contains(c.State))
-                                   .ToListAsync();
-
-        return await MapAllWithStateAsync(channelEntities);
+        return await LoadAllConsistentlyAsync(c => readyStateList.Contains(c.State));
     }
 
     public async Task<IEnumerable<ChannelModel?>> GetByPeerIdAsync(CompactPubKey peerNodeId)
     {
-        var channelEntities = await DbSet
-                                   .AsNoTracking()
-                                   .Include(c => c.Config)
-                                   .Include(c => c.KeySets)
-                                   .Include(c => c.ChangeAddress)
-                                   .Include(c => c.LocalAliases)
-                                   .Where(c => c.RemoteNodeId.Equals(peerNodeId))
-                                   .ToListAsync();
+        return await LoadAllConsistentlyAsync(c => c.RemoteNodeId.Equals(peerNodeId));
+    }
 
-        return await MapAllWithStateAsync(channelEntities);
+    /// <summary>
+    /// Loads a channel matching <paramref name="filter"/>: its row, current funding and commitment state, all from one
+    /// snapshot of the database (NL-810). Read query by query, a save that commits in between (a splice lock moves the
+    /// funding columns and the capacity) gave a torn channel, or one the engine refused as inconsistent.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The channel has HTLC rows in a legacy state (NL-025).</exception>
+    private Task<ChannelModel?> LoadConsistentlyAsync(ChannelId channelId,
+                                                      Expression<Func<ChannelEntity, bool>> filter) =>
+        _context.ReadConsistentlyAsync(async () =>
+        {
+            var channelEntity = await DbSet
+                                     .AsNoTracking()
+                                     .Include(c => c.Config)
+                                     .Include(c => c.KeySets)
+                                     .Include(c => c.ChangeAddress)
+                                     .Include(c => c.LocalAliases)
+                                     .Where(filter)
+                                     .FirstOrDefaultAsync(c => c.ChannelId == channelId);
+
+            return channelEntity is null ? null : await MapWithStateAsync(channelEntity);
+        });
+
+    /// <summary>
+    /// Loads every channel matching <paramref name="filter"/>, each from one snapshot of the database
+    /// (<see cref="LoadConsistentlyAsync"/>): one short read per channel, so a long list never keeps a SQLite writer
+    /// waiting for all of it. A channel refused for legacy HTLC rows (NL-025) is logged and left out, so it does not
+    /// keep the healthy channels (and the node) from loading; <see cref="GetByIdAsync"/> still throws for it.
+    /// </summary>
+    private async Task<List<ChannelModel>> LoadAllConsistentlyAsync(Expression<Func<ChannelEntity, bool>> filter)
+    {
+        var channelIds = await DbSet.AsNoTracking().Where(filter).Select(c => c.ChannelId).ToListAsync();
+
+        var channelModels = new List<ChannelModel>();
+        foreach (var channelId in channelIds)
+        {
+            try
+            {
+                // Null when the channel left the filter (or was removed) after the list was read
+                if (await LoadConsistentlyAsync(channelId, filter) is { } channelModel)
+                    channelModels.Add(channelModel);
+            }
+            catch (LegacyHtlcStateException e)
+            {
+                _logger.LogError(e, "Channel {ChannelId} was not loaded", e.ChannelId);
+            }
+        }
+
+        return channelModels;
     }
 
     /// <summary>
     /// Maps a channel and attaches its commitment snapshot, if it has one. One query at a time: the context does not
-    /// allow concurrent operations.
+    /// allow concurrent operations. Run it inside <see cref="LoadConsistentlyAsync"/>, which reads
+    /// <paramref name="channelEntity"/> from the same snapshot.
     /// </summary>
     /// <exception cref="InvalidOperationException">The channel has HTLC rows in a legacy state (NL-025).</exception>
     private async Task<ChannelModel> MapWithStateAsync(ChannelEntity channelEntity)
@@ -315,28 +330,6 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             });
 
         return channelModel;
-    }
-
-    /// <summary>
-    /// Maps several channels. A channel refused for legacy HTLC rows (NL-025) is logged and left out, so it does not
-    /// keep the healthy channels (and the node) from loading; <see cref="GetByIdAsync"/> still throws for it.
-    /// </summary>
-    private async Task<List<ChannelModel>> MapAllWithStateAsync(IEnumerable<ChannelEntity> channelEntities)
-    {
-        var channelModels = new List<ChannelModel>();
-        foreach (var channelEntity in channelEntities)
-        {
-            try
-            {
-                channelModels.Add(await MapWithStateAsync(channelEntity));
-            }
-            catch (LegacyHtlcStateException e)
-            {
-                _logger.LogError(e, "Channel {ChannelId} was not loaded", e.ChannelId);
-            }
-        }
-
-        return channelModels;
     }
 
     /// <summary>
