@@ -204,6 +204,21 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   `--explicit on` adds the two by-hand O5 variants), or in the default matrix. `scripts/run-onchain.sh` is unchanged
   and runs the Docker backend (under the machine's Docker lock, `ONCHAIN_SUITE=all` for both namespaces).
 
+## The gossip suite on the cluster (test harness phase 6)
+
+- The catalog's `gossip` (collection `gossip-regtest`, one namespace): `Docker.Gossip.*` without the Explicit
+  `Gossip.Capture` sub-namespace, `Docker.Day0.*`, `ChannelPolicyPublicFlowTests` and `SpliceLndObserverTests`, 35 tests
+  (8 of them the container-free `GossipProofHelperTests`). They run unchanged on either backend: LND only through
+  `LightningRegtestNetworkFixture` (`GetLndNode`, `LndNodes`, `Bitcoin`, `GetLndPeerEndpointAsync` for
+  `GraphStoreFlowTests`' LND-to-LND opens, `DumpLndLogsAsync`), our nodes dial LND at the Service names.
+- NL-830 (test): `SpliceLndObserverTests` waited only for alice's edge of the open before splicing; with two runs at
+  once the splice confirmed 7 s after the open's sixth block while bob (who hears it only through alice's 5 s trickle)
+  was still taking it in, and bob's LND kept the spent edge for good (his graph closed 0 channels at the splice's block,
+  alice's 1). The test now waits for bob's edge too before the splice.
+- Run: `scripts/run-cluster.sh -n 1 --suite gossip` (no Docker lock; about 20 min, network ready 29-58 s), or in the
+  default matrix. `scripts/run-gossip.sh` is unchanged and runs the Docker backend (under the machine's Docker lock; by
+  default only the `Docker.Gossip` namespace, give the catalog's `-class` filters for the whole suite).
+
 ## Reachability (OrbStack, host-side tests)
 
 - Our node listens on 127.0.0.1 (all interfaces when `NLTG_HOST_ADDRESS` names another host) and is announced to the

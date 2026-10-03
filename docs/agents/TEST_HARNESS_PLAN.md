@@ -1338,6 +1338,35 @@ Still open: the cluster proofs of `onchain`, `anchors`, `gossip` and `abcd` (pha
   `BackupRestoreFlowTests` 6/6 (41 s). Unit tests: `StoppedNodeMaintenanceTests` 3, matrix 76/76, Integration
   `Cluster` namespace 27/27.
 
+### Phase 6 gossip lane record: the gossip suite on the cluster (2026-10-03, `wip/harness-spike` from 3e31759f)
+
+- The catalog's `gossip` (collection `gossip-regtest`, one network): `Docker.Gossip.*` without the Explicit `Capture`
+  sub-namespace, `Docker.Day0.*`, `ChannelPolicyPublicFlowTests` and `SpliceLndObserverTests`, 35 tests (the Docker
+  baseline's 30 of `run-gossip.sh`'s `Docker.Gossip` namespace plus the 5 day-0/observer/policy tests the integration
+  moved into the suite). The bodies needed no change for the cluster: they reach LND only through the backend-neutral
+  fixture, and `GraphStoreFlowTests` already dials `GetLndPeerEndpointAsync` (NL-821). The first run was green 35/35
+  alone (`gsp-c1`, network ready 29.4 s, 1,158 s).
+- NL-830 (test, fixed in b246306e): two runs at once (`gsp-c2`) were 35/35 and 34/35: `SpliceLndObserverTests` "bob
+  still has 494x2x1 73 blocks later". The test waited only for alice's edge of the A-B open before splicing; the splice
+  confirmed 7 s after the open's sixth block while bob, who hears the open only through alice's 5 s trickle, was still
+  taking it in, and his graph closed 0 channels at the splice's block (alice's 1), so he kept the spent edge for good
+  (LND 0.21's info log cannot show why; most likely the new edge's spend filter came after the spending block, whose
+  re-scan the graph builder skips). The test now also waits for bob's edge on the open's outpoint before the splice,
+  which is also what its step (4) proves him to forget. Not a product bug (the edge LND kept is LND's own
+  graph state); NL-831..NL-834 unused.
+- `gossip` loses `ClusterProofPending` (6f5b02ce): every LND suite now runs in the default matrix.
+- Evidence (OrbStack, Release, net10.0, beside the on-chain lane's runs): the class 2 x 1/1 at once with the fix
+  (`gsp-obs1`, 115-123 s); `-n 2 --suite gossip` 2 x 35/35 at once (`gsp-c3`, network ready 40.3 / 34.8 s, 1,173 /
+  1,166 s); `--matrix gossip -j 1 --max-namespaces 2` green 35/35 (`gsp-mx1`, fixture ready 27.0 s, wall 1,166 s, peak 1
+  namespace). Per class on the cluster (`gsp-c3` x 2, `gsp-mx1`): `GossipProofHelperTests` 8, `GossipFixtureTests` 2
+  (62 s), `PublicChannelFlowTests` 4 (270 s), `GraphStoreFlowTests` 4 (155 s), `GossipSyncFlowTests` 3 (84 s),
+  `PublicPaymentFlowTests` 3 (82 s), `RouteBlindingFlowTests` 4 (85 s), `Bolt11BlindedPathFlowTests` 2 (8 s),
+  `Day0FlowTests` 1 (256 s), `Day0UpgradeInPlaceTests` 2 (35 s), `SpliceLndObserverTests` 1 (80-86 s),
+  `ChannelPolicyPublicFlowTests` 1 (14 s). Docker unchanged under the machine lock: `scripts/run-gossip.sh 1` with the
+  catalog's `-class` filters 35/35 (network ready 9.9 s, 1,140 s), the NL-830 wait included. Gates: Release build 0
+  warnings, format, sln check; matrix unit tests 74 passed + 2 skipped (the pending-suite cases: none is pending),
+  `SuiteCatalogMembershipTests` green, `scripts/tests/run-cluster-tests.sh` 48/48.
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.
