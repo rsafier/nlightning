@@ -188,7 +188,7 @@ Live proof: the `Explicit` `Category=Live` test `DnsSeedLiveTests` (nodes.lightn
 
 ## bLIPs / extensions
 
-Keysend and custom onion records (>= 65536) are implemented since wave lh1 (NL-459, BOLT 4 table above); no other bLIP-specific code exists. BOLT 12 (offers, `12-offer-encoding.md`) is below.
+Keysend and custom onion records (>= 65536) are implemented since wave lh1 (NL-459, BOLT 4 table above); no other bLIP-specific code exists. BOLT 12 (offers, `12-offer-encoding.md`) and liquidity ads (BOLT PR #1153, not merged) are below.
 
 ## BOLT 12: Offers
 
@@ -202,6 +202,18 @@ Keysend and custom onion records (>= 65536) are implemented since wave lh1 (NL-4
 | Receive: offers and invoice_requests | complete (B3), proven against CLN v26.06.8 | `src/NLightning.Application/Offers/Receive/` (`OfferService`, `InvoiceRequestHandler` type 64, `OfferInvoiceFactory`, `BlindedPaymentPathFactory`), `FinalHopProcessor` | `Application.Tests/Offers/Receive/`, Docker `Interop/Cln/ClnOfferReceiveTests` (4) | `createoffer` 26, `listoffers` 27, `disableoffer` 28. Unknown offers ignored silently; caps and rate limits (D10, D11). Private-channel payment paths only usable by that peer (NL-452). |
 | Pay: invoice_request, verify, blinded payment | complete (B4), proven against CLN v26.06.8 | `src/NLightning.Application/Offers/Send/` (`InvoiceRequestFactory`, `InvoiceVerifier`, `OfferPaymentService`), `PaymentService.PayBlindedAsync` | `Application.Tests/Offers/{Send/,OfferHarnessTests}`, Docker `Interop/Cln/ClnOfferPayTests` (4) | `payoffer` 29, `fetchinvoice` 30. Introduction = us proven in-process only (CLN introduces its own paths). Refunds, recurrence, payer proofs, currency offers without an amount: out of scope. |
 | Feature bits | n/a | — | — | BOLT 12 has no init bit; offers use `option_onion_messages` and `option_route_blinding` (both Optional by default). |
+
+## Liquidity ads (BOLT PR #1153, not merged into the BOLTs)
+
+> Plan: [`LIQUIDITY_ADS_PLAN.md`](LIQUIDITY_ADS_PLAN.md) ("Record"). Epic NL-771 (fixed at `10b8ba84`); follow-ups NL-772..NL-779. Wire as Eclair 0.14.3 speaks it (the interop target); the PR is still open, so the TLV tag 1339 is one constant (`LiquidityAdsConstants.TlvType`) to switch when it merges.
+
+| Feature | Status | Primary files | Tests | Notes |
+|---|---|---|---|---|
+| Codecs and rules (`funding_rate`, `request_funding`, `will_fund`, `will_fund_rates`, fees, signature) | complete (LA1) | `src/NLightning.Domain/LiquidityAds/` (`LiquidityAdsCodec`, `LiquidityAdsRules`, `NodeAnnouncementRates`) | `Domain.Tests/LiquidityAds/`, `Infrastructure.Bitcoin.Tests/Signers/LocalLightningSignerLiquidityAdsTests` | Byte-exact against Eclair's vectors (`LiquidityAdsEclairVectors`); fee = mining (`funding_weight` x feerate / 1000) + service (base + channel creation fee for a new channel + basis points of min(requested, contributed)); `will_fund` signed by the node key over SHA256("liquidity_ads_purchase" \|\| funding_rate \|\| funding_script), Eclair's signatures reproduced. |
+| Wire: TLV 1339 | complete (LA2) | `RequestFundingTlv`/`ProvideFundingTlv`/`WillFundRatesTlv` and converters, the `init`, `open_channel2`, `accept_channel2`, `tx_init_rbf`, `tx_ack_rbf`, `splice_init`, `splice_ack` serializers, `NodeAnnouncementService` | `Serialization.Tests/Messages/LiquidityAdsMessageTests`, `Infrastructure.Tests/Protocol/Tlv/Converters/LiquidityAdsTlvConverterTests`, `Integration.Tests/BOLT7/LiquidityAdsNodeAnnouncementVectorTests` | Byte-exact round trips of Eclair's `LightningMessageCodecsSpec` messages. No feature bit: support is the peer's `init` rates (`IPeerService.LiquidityRates`); our rates go in `init` and `node_announcement` only when we sell. |
+| Buyer | complete (LA4), proven against Eclair 0.14.3 for splices | `Application/LiquidityAds/LiquidityAdsService`, `Channels/DualFunding/DualFundLiquidity*`, `Channels/Splicing/SpliceService.Liquidity` | `Application.Tests/Channels/DualFunding/DualFundLiquidity*Tests`, `Channels/Splicing/SpliceLiquidityAdsTests`, Docker `Interop/Eclair/EclairLiquidityAdsTests` (5/5) | In the dual-funded open, its RBF, the splice and the splice RBF, with restarts; `from_channel_balance` only (D-L2); fee limit per request or `Node:LiquidityAds:MaxFeeSat`. Eclair 0.14.3 sells only in splices and splice RBF (not in a new channel without an interceptor plugin), so buying at the open and its RBF is proven in-process only. |
+| Seller | complete (LA3), proven in-process only (NL-778) | same | same (in-process, NLightning ↔ NLightning) | Off until `Node:LiquidityAds:FundingRates` lists a rate (D-L3); sale slots `MaxConcurrentSales` 4 / `MaxSalesPerPeer` 1 (D-L5); only the buyer bumps a sale; no other implementation buys over #1153 (Eclair's API never buys, CLN and LND do not speak it). |
+| Persistence, lease, accounting, IPC | complete (LA3-LA5) | migration `AddLiquidityPurchases` (3 providers), `LiquidityLeases`, `ChannelCloseService`, `DualFundLiquidityAccounting`, `liquidityads` (IPC 46) | `Integration.Tests/Persistence/LiquidityPurchase*`, `LiquidityLeasesTests`, `LiquidityAccountingEventsTests`, Daemon `LiquidityAds*Tests` | Purchases Pending/Active/Replaced/Closed, lease 4,032 blocks from the confirmation, our cooperative close refused inside it unless `--force` (D-L4, nothing else enforces it); fee booked as `LiquidityFeePaid`/`LiquidityFeeEarned` at the funding confirmation or the splice lock. |
 
 ---
 

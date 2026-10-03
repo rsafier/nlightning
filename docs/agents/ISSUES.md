@@ -4,6 +4,8 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the liquidity ads LA7 lane (branch `claude/youthful-hamilton-x4ngo7`, docs only, after the NL-771 commits `8b79a46c`..`10b8ba84`): the epic NL-771 is fixed at `10b8ba84` (LA0-LA7 done; plan `docs/agents/LIQUIDITY_ADS_PLAN.md` Record; Docker `EclairLiquidityAdsTests` 5/5 against Eclair 0.14.3 as seller, which sells only in splices and splice RBF, not in a new channel without an interceptor plugin). New open follow-ups NL-772..NL-779 (all low: two missing tests, two RBF gaps, `bumpsplice` without `--request-inbound`, the splice-RBF sale contribution, no live seller proof, the Eclair image behind a TLS-intercepting proxy). `SECURITY_REVIEW.md` SR-28..SR-31 cover the liquidity ads surface. Gates at the merge: full non-Docker net10.0 suite 13,866 passed, 4 skipped (Domain 4339, Application 3738, Integration 1067, Infrastructure.Bitcoin 1617, Daemon 1358, Infrastructure 663, Serialization 633, Bolt11 343, Testing.Lnd 108).
+
 Updated 2026-10-02 by the batch10 integrator (branch `wip/batch10` from `wip/fafo` at `44aeaf5f`; 13 lanes run in parallel worktrees on the owner decisions of 2026-10-02 and merged with `--no-ff` in lane order — lane branches `b10-*` hold the originals; the statuses carry the lane SHAs and the merge SHA): merges `a8bfc61a` (b10-plugin: NL-151 fixed, new NL-706, NL-707), `94d3e68e` (b10-chain: NL-012 fixed, testnet4), `666ec562` (b10-sec: NL-677, NL-678, NL-679 fixed, new NL-693), `d8ffd72e` (b10-acct-edges: NL-606, NL-607, NL-608, NL-610, NL-611, NL-612, NL-613, NL-645 fixed, new NL-688; migration `AddMutualCloseTerms`), `7b778718` (b10-lots: NL-674 (owner decision A, D-A12 amended), NL-657, NL-675, NL-680, NL-681, NL-658 fixed; migration `AddLotBuckets`), `f24b7ba3` (b10-splice-resume: NL-600 fixed, NL-698 new and fixed, NL-496 partial), `cb806664` (b10-attr: NL-332 fixed, `option_attribution_data` Optional by default), `a38caf6c` (b10-aot: NL-338 fixed, NL-300 partial, new NL-708, NL-709, NL-710 (fixed)), `1600d945` (b10-db-proofs: NL-662, NL-429, NL-347 fixed), `0419d687` (b10-eclair: NL-557, NL-407 fixed, NL-554 partial, NL-717, NL-718, NL-719 new and fixed), `4178186b` (b10-ldk: NL-556 fixed, NL-722, NL-723 new and fixed, new NL-721, NL-724), `9cabb01e` (b10-close-interop: NL-286 fixed, NL-725 new and fixed), `ee20aa9f` (b10-tor-interop: NL-572 fixed, new NL-729). Integration fixes: `5602e27b` (the later migration's Designers regenerated over both lanes' columns; `HasPendingModelChanges` false on all three providers), `08caba71` (the AOT MessagePack test after the plugin deletion). Review findings fixed with regression tests (each fails before its fix): NL-732 (`8be600e6`, a stalled HTTP body hung the fee/price/Esplora readers), NL-735 (`8be600e6`, LAN IP `http://` accepted), NL-733 and NL-734 (`1f956f72`), NL-736, NL-737, NL-738 (`290f3dcc`; plus `SetClosingTransaction`'s doc), NL-739 (`017d3ff0`, lots stranded by an unsettled claim), NL-740, NL-741 (`8a094fa9`, `2a26ac15`), NL-742, NL-743 (`fe957403`, route hints by the peer's alias; the template's old 144 margin raised on existing nodes), NL-744 (`3655e6f3`), and two test-strength findings without new IDs: the NL-600 wallet-load test now counts the loads (`41ab5a74`) and the NL-725 CLN proof asserts CLOSINGD_COMPLETE (`4e1f7763`, class 4/4 under the Docker lock). Rejected review findings: the BlindedPathBuilder scid choice "has no unit test" (the three arms are the `BlindedPaymentPathFactoryTests` alias theory), the blinded BOLT 11 margin "still 144" and the stale Application CLAUDE.md margin (both already 1,008 once b10-eclair and b10-ldk were merged). Owner decisions recorded: NL-161, NL-162, NL-169 wontfix (WASM/Blazor parked until there is a browser-wallet goal), NL-157 wontfix (layering left as is, do not make it worse), NL-437 wontfix (a .NET limitation; `SECURITY_REVIEW.md` SR-09 note), NL-180 stays open (interop stays local, no CI Docker). FAFO/FAFO2 (`~/.nltg`, not touched): NL-743 raises their pinned 144 margin at the next start with a warning. Gates on the merged tree: Release build `--no-incremental` 0 warnings, `dotnet format` clean, `check-sln-configs` OK, full non-Docker net10.0 suite green (see the final run in the integrator's report).
 
 Updated 2026-10-02 by the batch10 finalizer (branch `wip/batch10`, after the full Docker pass at `e84f43f6`: LND 87/87, on-chain all 47/47, CLN 78/81, Eclair 29/29, LDK 27/27, gossip 30/30, ABCD 10/10, Tor 3/3): NL-745 new and fixed (`b22d157f`, the three order-dependent `ClnCloseTests` failures of the pass: CLN took our own closing fee, B2-CLS-R02; full CLN rerun 81/81 + 4 `Explicit`), NL-676 fixed (`c9f2b083`, the A3 Docker smoke: bob and carol run `Profile=Financial` for the whole ABCD suite, `AbcdAccountingTests`; ABCD 11/11), and two loaded-run failures of the final non-Docker run root-caused: NL-746 new and fixed (`2c6475d9`, a banned gossip peer's in-flight invalid messages banned it twice; the NL-382 residual, regression test fails before the fix) and NL-747 new and fixed (`08fa0b0a`, `ClearAllPools` in parallel test teardowns disposed other tests' SQLite connections). All Docker runs under the machine-wide lock; no SQL Server container tests. Gates: Release `--no-incremental` build 0 CS warnings, `dotnet format` clean, `check-sln-configs` OK, full non-Docker net10.0 suite green (13,302 passed, 6 platform/explicit skips: Domain 4201, Application 3594, Infrastructure.Bitcoin 1577, Daemon 1268, Integration 1041, Infrastructure 656, Serialization 622, Bolt11 343).
@@ -133,16 +135,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 2 | 45 | 47 |
+| open | 0 | 0 | 1 | 53 | 54 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 62 | 186 | 373 | 635 |
+| fixed | 14 | 62 | 187 | 373 | 636 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **194** | **428** | **698** |
+| **Total** | **14** | **62** | **194** | **436** | **706** |
 
 ### Epics
 
-- NL-771: Liquidity ads (BOLT PR #1153) (open, medium; plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, tasks LA0-LA7; interop target Eclair 0.14.3 as seller)
+- NL-771: Liquidity ads (BOLT PR #1153) (fixed, medium; plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, LA0-LA7 done on `claude/youthful-hamilton-x4ngo7` at `10b8ba84`: both roles in the dual-funded open, its RBF, the splice and the splice RBF with restarts, `LiquidityPurchases`, the lease guard, `LiquidityFeePaid`/`LiquidityFeeEarned`, `liquidityads` (IPC 46); proven in-process in both roles and against Eclair 0.14.3 as seller (`EclairLiquidityAdsTests` 5/5; Eclair sells only in splices); open follow-ups NL-772..NL-779)
 - NL-602: Accounting: core event feed and built-in books (fixed, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3 all built on `wip/acct-a3`: A1 feed, A2 operational books, A3 financial profile (labels, classification, prices, projector and lots, period close, financial reports, config/security/docs; merge `c62d861b`, review fixes `94af679d`, `ecd983b1`); data gaps NL-603..NL-605 and the plugin stub NL-151 done; open follow-ups NL-606..NL-608, NL-610..NL-613, NL-645, NL-657, NL-658, NL-662, NL-674..NL-681 (NL-660, NL-665, NL-667 fixed on `wip/nl660`), flakes NL-620, NL-653)
 - NL-569: Tor: onion peers, our onion service, Tor-only mode (fixed, medium; lane tor, branch `wip/tor`: `Node:Tor` Off/Hybrid/TorOnly, SOCKS5 with isolation, control port with SAFECOOKIE, persisted v3 onion service announced in `node_announcement`, NL-542 and NL-178 fixed; `docs/agents/TOR.md`; follow-ups NL-571..NL-573; review fixes NL-575..NL-590)
 - NL-426: Static channel backup and restore (fixed, high; wave rf1: encrypted SCB, export/verify/restore IPC 21-23, recovery channels and the data-loss reestablish, proven against LND; wave lh1: NL-430, NL-431 old spends and every peer address, NL-432 persisted peer-storage retrievals with `listpeerstorage` (32); follow-up NL-435)
@@ -6842,14 +6844,94 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-771 [EPIC] Liquidity ads (BOLT PR #1153): buy and sell inbound liquidity in dual-funded opens, RBF and splices
-- **Status:** open
+- **Status:** fixed (10b8ba84)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** new Domain `LiquidityAds/`; TLV 1339 on `open_channel2`/`accept_channel2`/`tx_init_rbf`/`tx_ack_rbf`/`splice_init`/`splice_ack`/`init`/`node_announcement`; `Channels/DualFunding/DualFundedOpenService.cs`, `Channels/Splicing/SpliceService*.cs`; IPC/CLI; accounting
-- **Evidence:** Owner decision 2026-10-03: liquidity ads instead of LSPS. NLightning has dual funding, splicing and RBF in both roles but no way to request or sell the peer's contribution for a fee; Eclair 0.14.3 sells liquidity this way (TLV 1339, `eclair.liquidity-ads`).
+- **Evidence:** Owner decision 2026-10-03: liquidity ads instead of LSPS. NLightning has dual funding, splicing and RBF in both roles but no way to request or sell the peer's contribution for a fee; Eclair 0.14.3 sells liquidity this way (TLV 1339, `eclair.liquidity-ads`). Built (2026-10-03, `959b7967`..`10b8ba84`, plan Record): LA1 Domain `LiquidityAds/` (codec, rules, fees, `SignedData`; byte-exact against Eclair's vectors, its `will_fund` signatures reproduced); LA2 TLV 1339 (`request_funding`/`provide_funding`/`option_will_fund`) on `init`, `open_channel2`/`accept_channel2`, `tx_init_rbf`/`tx_ack_rbf`, `splice_init`/`splice_ack` and `node_announcement`, no feature bit, `Node:LiquidityAds` (in the daemon template, no rates); LA3/LA4 both roles in the dual-funded open, its RBF, the splice and the splice RBF, with restarts (`LiquidityAdsService`, `DualFundLiquidity*`, `SpliceService.Liquidity`): selling off until rates are set (D-L3), `from_channel_balance` only (D-L2), sale slots `MaxConcurrentSales` 4 / `MaxSalesPerPeer` 1 (D-L5), an RBF after a purchase requests again (ours repeats it, a peer's without it gets `tx_abort`), only the buyer bumps a sale (`LA-RBF-01`; `SpliceAutoBumper` skips sales), buyer refusals `error` before the interactive tx / `tx_abort` after, seller refusals `error` for an open / `tx_abort` for a splice or RBF, new splice rule LA-RES-01 (the buyer keeps its reserve after the fee); `LiquidityPurchases` (migration `AddLiquidityPurchases`, Pending/Active/Replaced/Closed, lease 4,032 blocks from the confirmation) and the lease guard (D-L4: our `closechannel` refused inside a sold lease unless `--force`, peer closes and `forceclosechannel` never blocked, purchases Closed with the channel); LA5 `LiquidityFeePaid` 21 / `LiquidityFeeEarned` 22 (`expenses:fees:liquidity`/`income:liquidity`) staged with `ChannelFunded` at the funding confirmation or `SpliceLocked` at the lock; LA4 IPC/CLI `openchannel --request-inbound [--max-liquidity-fee]` (keys 9/10, response key 3; v2 only), `splicein --request-inbound` (keys 3/4, response key 6), `bumpopen [--request-inbound]` (keys 3/4, response key 2), `closechannel --force` (key 4), `ClientCommand.LiquidityAds = 46` (`liquidityads rates|sellers|purchases`, next free 47). Proofs: the in-process suites (`DualFundLiquidity*Tests`, `SpliceLiquidityAdsTests`, `LiquidityAdsServiceTests`, `LiquidityLeasesTests`, Domain, serialization, BOLT 7 vector and signer tests) and Docker `EclairLiquidityAdsTests` 5/5 against Eclair 0.14.3 as seller. Eclair 0.14.3 without an open-channel interceptor plugin does not sell in a new channel (`OpenChannelInterceptor.checkLiquidityAdsRequest`), so the Docker proof refuses that open and buys in a splice and its RBF; buying at the open and its RBF and the whole seller role are proven in-process only. Full non-Docker run on net10.0: 13,866 passed, 4 skipped. Open follow-ups: NL-772..NL-779.
 - **Fix sketch:** Plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, tasks LA0..LA7: Eclair capture and vectors, Domain codecs and rules, wire plumbing, seller and buyer with the `LiquidityPurchases` table, accounting kinds, proofs in-process (both roles) and against Eclair 0.14.3 as seller in Docker.
 - **Blocks/Blocked-by:** Related NL-037, NL-021, NL-602
 - **Plan ref:** LIQUIDITY_ADS_PLAN LA0-LA7
+
+### NL-772 The late funding confirmation path with a liquidity purchase has no test
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (the NL-617 branch for a `Failed`/`OnchainResolving` channel whose funding confirms), `src/NLightning.Application/Channels/DualFunding/DualFundLiquidityAccounting.cs` (`StageFundingConfirmedAsync`), `src/NLightning.Application/Channels/Accounting/ChannelAccountingEvents.cs` (`RecordLateChannelFundedAsync`)
+- **Evidence:** NL-771 LA7 (2026-10-03): a dual-funded channel that failed (or went on chain) before its funding reached the depth still books `ChannelFunded` through `RecordLateChannelFundedAsync`, and since NL-771 the confirmed attempt's purchase is marked Active and its `LiquidityFeePaid`/`LiquidityFeeEarned` staged in the same save with the same `liquidityFeeMsat`. No test drives that branch with a purchase; the in-process liquidity suites confirm only through the normal path.
+- **Fix sketch:** In `DualFundLiquidityAdsTests` (or the accounting tests), fail the bought channel before its funding confirms, then confirm it: the purchase row Active, one fee event with `ChannelFunded`'s fee, the books reconciling.
+- **Blocks/Blocked-by:** Related NL-771, NL-617
+- **Plan ref:** LIQUIDITY_ADS_PLAN Record (LA5, LA6)
+
+### NL-773 Purchases of dual-funded RBF attempts that never confirm stay Pending until the funding confirms; an abandoned attempt's read as an early close
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundLiquidityAccounting.cs` (`StageFundingConfirmedAsync`), `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (the abandon path of a never-signed first attempt), `src/NLightning.Domain/LiquidityAds/Models/LiquidityPurchaseModel.cs` (`MarkClosed`)
+- **Evidence:** NL-771 LA7 (2026-10-03): each signed attempt of a dual-funded open stores its own purchase row (Pending). The rows of the attempts that lose are marked Replaced only in the save of the funding confirmation (the splice marks its siblings Replaced at the lock, which is the same moment), so until then `liquidityads purchases` lists several Pending purchases for one open. An abandoned first attempt (stored with our `commitment_signed`, never signed) marks its row Closed, and a channel that closes before any attempt confirms marks every Pending row Closed (`LiquidityLeases.StageChannelClosedAsync`); `MarkClosed` sets `ClosedEarly` whenever the lease had not started, so these rows read like a seller that broke its lease.
+- **Fix sketch:** Mark the earlier attempts' rows Replaced when a newer attempt is fully signed (or show them as superseded in `liquidityads purchases`), and give a purchase whose funding never confirmed its own outcome (Replaced, or an `Abandoned` status) instead of `ClosedEarly`.
+- **Blocks/Blocked-by:** Related NL-771, NL-529
+- **Plan ref:** LIQUIDITY_ADS_PLAN Record (LA3)
+
+### NL-774 `bumpsplice` cannot change the liquidity it buys
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Client/Handlers/SpliceCommands.cs`, `src/NLightning.Transport.Ipc/Requests/SpliceIpcRequests.cs` (`BumpSpliceIpcRequest`), `src/NLightning.Daemon/Handlers/SpliceClientHandlers.cs`
+- **Evidence:** NL-771 LA7 (2026-10-03): `bumpsplice` has no `--request-inbound`/`--max-liquidity-fee`: an RBF of a splice that bought liquidity repeats the latest purchase (same amount and rate, the fee at the new feerate), as #1153 requires. `SpliceService` already takes a new `LiquidityRequest` in a bump (`CreateRbfPurchaseRequest`, proven in-process by `SpliceLiquidityAdsTests.Given_ASpliceThatBoughtLiquidity_When_TheBumpBuysMore_*`), and `bumpopen` has the options; only the operator surface is missing. The repeated purchase is checked against `Node:LiquidityAds:MaxFeeSat` only.
+- **Fix sketch:** `BumpSpliceIpcRequest` keys 3/4 (`RequestInboundSat`, `MaxLiquidityFeeSat`) and the client flags, as on `bumpopen`; the response's purchase as `SpliceIpcResponse` key 6.
+- **Blocks/Blocked-by:** Related NL-771
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA4
+
+### NL-775 A seller dual-funded RBF whose share must grow beyond the earlier inputs is refused instead of adding inputs
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`DecideLiquidityRbfAsync`)
+- **Evidence:** NL-771 LA7 (2026-10-03): when a buyer's `tx_init_rbf` asks for more liquidity than the attempt it replaces, or the higher feerate needs more of our inputs, and our earlier inputs cannot fund the new share, the seller answers `tx_abort` ("our inputs cannot fund ...") instead of adding fresh wallet inputs to the RBF attempt (the RBF must keep spending at least one input of each earlier attempt, so fresh inputs are an addition, not a replacement). The splice seller's RBF falls back to fresh inputs (`PlanFreshInputRbfContributionAsync`, NL-510). Seen in code review, no test.
+- **Fix sketch:** Add fresh wallet inputs on top of the earlier ones (one reservation per attempt, released with the losing attempts), as `CreateInitiatorRbfContributionAsync` does for an accepter without inputs in the earlier attempts; a test with a re-purchase of a larger amount.
+- **Blocks/Blocked-by:** Related NL-771, NL-521
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA3
+
+### NL-776 The accepter buying liquidity in its own dual-funded RBF is untested
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `src/NLightning.Application/Channels/DualFunding/DualFundedOpenService.cs` (`BumpAsync` with a `LiquidityRequest`, `CreateRbfLiquidityRequest`), `test/NLightning.Application.Tests/Channels/DualFunding/DualFundLiquidityAdsTests.cs`
+- **Evidence:** NL-771 LA7 (2026-10-03): since lane accrbf (NL-530) either role may send `tx_init_rbf`, and `BumpAsync` accepts a `LiquidityRequest` in either role, so the accepter can buy from the opener in its own RBF (the opener then sells, contributing the requested amount as the interactive-tx non-initiator). The in-process tests buy only as the opener (Alice opens and bumps); the accepter-as-buyer path, its balances (the fee moves from the accepter's share) and its restart are not exercised.
+- **Fix sketch:** A `DualFundLiquidityAdsTests` case where Bob (accepter) bumps Alice's open with `--request-inbound` against Alice's rates: Alice's share is the requested amount, the fee moves from Bob to Alice, the purchase rows (Buyer on Bob, Seller on Alice) and a restart.
+- **Blocks/Blocked-by:** Related NL-771, NL-530
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA6
+
+### NL-777 A peer buying in an RBF of a splice we also spliced in replaces our contribution with exactly the requested amount
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Splicing/SpliceService.Rbf.cs` (`HandleTxInitRbfAsync` with `request_funding`), `src/NLightning.Application/Channels/Splicing/SpliceService.Liquidity.cs` (`ReserveSaleContributionAsync`)
+- **Evidence:** NL-771 LA7 (2026-10-03): the seller contributes exactly the requested amount (Eclair `validateRequest` semantics, D-L2). When the peer's `tx_init_rbf` buys liquidity in an RBF of a splice in which we had contributed our own splice-in, our contribution to the new attempt becomes the requested amount alone: our own splice-in is replaced, not added to. Whether Eclair (or #1153) expects the sum is unchecked; Eclair's API never buys, so there is no live proof either way, and no test covers this combination.
+- **Fix sketch:** Decide against Eclair's `InteractiveTxBuilder`/splice RBF code whether the seller's contribution is its earlier contribution plus the requested amount; then add or keep with a test (`SpliceLiquidityAdsTests`) and say so in the plan.
+- **Blocks/Blocked-by:** Related NL-771, NL-489
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA3
+
+### NL-778 No proof of NLightning as a liquidity seller against another implementation
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Eclair/EclairLiquidityAdsTests.cs`; the seller paths of `DualFundedOpenService` and `SpliceService.Liquidity`
+- **Evidence:** NL-771 LA7 (2026-10-03): Eclair 0.14.3's API never buys (`open`, `rbfopen` and `splicein` hardcode `requestFunding_opt = None`; only its on-the-fly-funding wallets request funding), and CLN and LND do not speak #1153 liquidity ads. The seller role (our `accept_channel2`/`splice_ack`/`tx_ack_rbf` with `provide_funding` and our `will_fund` signature) is proven in-process only (NLightning ↔ NLightning, `DualFundLiquidity*Tests`, `SpliceLiquidityAdsTests`); our signature format is checked against Eclair's vectors (`LocalLightningSignerLiquidityAdsTests`), not by a live Eclair buyer.
+- **Fix sketch:** When an implementation can buy over #1153 (an Eclair plugin or build that sets `requestFunding_opt`, a Phoenix-style client, or a merged #1153 in CLN/LDK), add a Docker class where it buys from us in an open, a splice and an RBF.
+- **Blocks/Blocked-by:** Related NL-771, NL-180
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA6
+
+### NL-779 The Eclair test image cannot be built behind a TLS-intercepting proxy
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `test/Docker/eclair/Dockerfile` (the `curl` download of the release zip), `test/NLightning.Integration.Tests/Fixtures/EclairFixture.cs` (builds the image when the tag is missing)
+- **Evidence:** NL-771 LA6 (2026-10-03): on an agent host whose HTTPS goes through an intercepting proxy, `docker build` of `test/Docker/eclair` fails at `curl -fsSL ... eclair-node-0.14.3-...-bin.zip`: curl inside the build does not trust the proxy's CA. The image `nltg-eclair:0.14.3` was built instead from a zip downloaded on the host, with the same sha256, and the fixture then used the existing tag. Environment-specific, no effect on a normal host.
+- **Fix sketch:** Let the Dockerfile take the zip from the build context when present (a `COPY` of an optional file before the `curl`, the sha256 check unchanged), or pass the proxy CA as a build secret; document the host-download route in `test/CLAUDE.md` (done in LA7).
+- **Blocks/Blocked-by:** Related NL-553
+- **Plan ref:** —
 
 ### NL-770 LND 0.21.4 gives up its `to_remote` sweep after a burst of blocks, so the O3 push proofs never saw `RemoteForceClose`
 - **Status:** fixed (46d0538e)
