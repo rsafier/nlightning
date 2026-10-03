@@ -422,7 +422,7 @@ public class CooperativeCloseHarnessTests
         // Act
         var warning = await Assert.ThrowsAsync<ChannelWarningException>(
                           () => close.Alice.ChannelManager.HandleChannelMessageAsync(
-                              add, new FeatureOptions(), close.Bob.NodeId));
+                              add, CloseHarness.LegacyCloseFeatures(), close.Bob.NodeId));
 
         // Assert
         Assert.True(warning.CloseConnection);
@@ -496,7 +496,7 @@ public class CooperativeCloseHarnessTests
 
         // Act
         var warning = await Assert.ThrowsAsync<ChannelWarningException>(
-                          () => close.Alice.ChannelManager.HandleChannelMessageAsync(other, new FeatureOptions(),
+                          () => close.Alice.ChannelManager.HandleChannelMessageAsync(other, CloseHarness.LegacyCloseFeatures(),
                                                                                      close.Bob.NodeId));
 
         // Assert
@@ -519,7 +519,7 @@ public class CooperativeCloseHarnessTests
 
         // Act
         var warning = await Assert.ThrowsAsync<ChannelWarningException>(
-                          () => close.Bob.ChannelManager.HandleChannelMessageAsync(forged, new FeatureOptions(),
+                          () => close.Bob.ChannelManager.HandleChannelMessageAsync(forged, CloseHarness.LegacyCloseFeatures(),
                                                                                    close.Alice.NodeId));
 
         // Assert (B2-CLS-R01)
@@ -552,7 +552,7 @@ public class CooperativeCloseHarnessTests
                                                                         LightningMoney.Satoshis(1_500), signature));
 
         // Act: Bob (non-funder, no range) accepts any fee from the relay floor up
-        await close.Bob.ChannelManager.HandleChannelMessageAsync(message, new FeatureOptions(), close.Alice.NodeId);
+        await close.Bob.ChannelManager.HandleChannelMessageAsync(message, CloseHarness.LegacyCloseFeatures(), close.Alice.NodeId);
 
         // Assert: Bob closes with Alice's variant: only his own output
         Assert.Equal(ChannelState.Closing, close.Bob.Channel.State);
@@ -573,7 +573,7 @@ public class CooperativeCloseHarnessTests
 
         // Act
         var warning = await Assert.ThrowsAsync<ChannelWarningException>(
-                          () => close.Alice.ChannelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
+                          () => close.Alice.ChannelManager.HandleChannelMessageAsync(message, CloseHarness.LegacyCloseFeatures(),
                                                                                      close.Bob.NodeId));
 
         // Assert

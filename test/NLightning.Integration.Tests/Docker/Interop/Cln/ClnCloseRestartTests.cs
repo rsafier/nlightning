@@ -236,8 +236,10 @@ public sealed class ClnCloseRestartTests : IAsyncLifetime
     {
         var cutter = new SpliceLinkCutter();
         _cutter = cutter;
+        // Legacy closing_signed proofs: option_simple_close (Optional by default since taproot plan D-T1) pinned off
         _session = await ClnChannelSession.BuildOurFundedAsync(_fixture, nodeName, s_capacity, s_push, ct,
-                                                               node => node.ConfigureServices = cutter.Install);
+                                                               node => node.ConfigureServices = cutter.Install,
+                                                               ClnChannelSession.PinLegacyClose);
         return (_session, cutter);
     }
 

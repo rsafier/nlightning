@@ -8,6 +8,7 @@ using Bootstrap;
 using Builders;
 using Builders.Interfaces;
 using Crypto.Functions;
+using Crypto.Musig2;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Crypto.Interfaces;
@@ -63,6 +64,7 @@ public static class DependencyInjection
         services.AddSingleton<IFundingTransactionBuilder, FundingTransactionBuilder>();
         services.AddSingleton<IHtlcTransactionBuilder, HtlcTransactionBuilder>();
         services.AddSingleton<IKeyDerivationService, KeyDerivationService>();
+        services.AddSingleton<IMusig2Service, Musig2Service>(); // BIP 327 MuSig2 (simple taproot channels, NL-877 T0)
         services.AddSingleton<IPerCommitmentSecretVerifier, PerCommitmentSecretVerifier>();
         services.AddSingleton<ISecp256K1Math, Secp256K1Math>();
         services.AddSingleton<ISphinxService, SphinxService>();

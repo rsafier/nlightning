@@ -14,13 +14,12 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Domain.Protocol.ValueObjects;
-using Fixtures;
 using Fixtures.Cashu;
 using Utils;
 
 /// <summary>
-/// Proof C2 of the Cashu plan (NL-903): CDK's own mint, <c>cdk-mintd</c> 0.18.1 with <c>backend = "grpcprocessor"</c>,
-/// runs on our node through the CDK payment processor (C1, NL-902), and CDK's own wallet, <c>cdk-cli</c>, mints and
+/// Proof C2 of the Cashu plan (NL-993): CDK's own mint, <c>cdk-mintd</c> 0.18.1 with <c>backend = "grpcprocessor"</c>,
+/// runs on our node through the CDK payment processor (C1, NL-992), and CDK's own wallet, <c>cdk-cli</c>, mints and
 /// melts ecash against it.
 /// </summary>
 /// <remarks>
@@ -37,10 +36,6 @@ public sealed partial class CdkMintdInteropTests
 {
     private const int TestTimeoutMs = 20 * 60 * 1_000;
 
-    /// <summary>Why the class runs on Docker only.</summary>
-    internal const string DockerOnlyReason =
-        "the Cashu mint proof runs cdk-mintd and cdk-cli as host-network Docker containers";
-
     private static readonly LightningMoney s_capacity = LightningMoney.Satoshis(1_000_000);
     private static readonly LightningMoney s_push = LightningMoney.Satoshis(200_000);
     private static readonly TimeSpan s_usableTimeout = TimeSpan.FromMinutes(3);
@@ -51,18 +46,16 @@ public sealed partial class CdkMintdInteropTests
     public CdkMintdInteropTests(CashuMintFixture fixture, ITestOutputHelper output)
     {
         _fixture = fixture;
+        fixture.SkipIfUnavailable();
         Console.SetOut(new TestOutputWriter(output));
     }
 
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_ACdkMintOnOurNode_When_TheWalletMintsAndMelts_Then_OurNodeReceivesAndPays()
     {
-        TestBackend.SkipOnCluster(DockerOnlyReason);
-
         // Arrange: the mint's node with the processor, a payer with a channel to it, and cdk-mintd on the processor
         var ct = TestContext.Current.CancellationToken;
         var processorPort = await PortPoolUtil.GetAvailablePortAsync();
-        var mintPort = await PortPoolUtil.GetAvailablePortAsync();
         await using var mintNode = await NLightningTestNode.CreateAsync(_fixture.Bitcoin, "nltg-cashu-mint");
         mintNode.ExtraConfiguration["Cashu:PaymentProcessor:Enabled"] = "true";
         mintNode.ExtraConfiguration["Cashu:PaymentProcessor:Port"] = processorPort.ToString();
@@ -74,11 +67,11 @@ public sealed partial class CdkMintdInteropTests
         try
         {
             var channelId = await OpenPayerChannelAsync(payer, mintNode, ct);
-            await _fixture.StartMintAsync(processorPort, mintPort, ct);
-            var wallet = _fixture.CreateWalletDirectory();
+            await _fixture.StartMintAsync(processorPort, ct);
+            var wallet = await _fixture.CreateWalletDirectoryAsync(ct);
 
             // Act 1: the wallet asks the mint for 10,000 sat of ecash; the payer pays the mint's invoice
-            var mintRun = await _fixture.StartWalletAsync(wallet, ["mint", _fixture.MintUrl, "10000"], ct);
+            var mintRun = _fixture.StartWallet(wallet, ["mint", _fixture.MintUrl, "10000"], ct);
             var mintInvoice = await WaitForInvoiceAsync(mintRun, ct);
             var mintHash = HashOf(mintInvoice);
             var paid = await payer.PayInvoiceAsync(mintInvoice, ct, 120);
@@ -130,10 +123,9 @@ public sealed partial class CdkMintdInteropTests
         }
         finally
         {
-            await _fixture.StopMintAsync();
+            await _fixture.StopMintAsync(CancellationToken.None);
             await processor.StopAsync(CancellationToken.None);
             PortPoolUtil.ReleasePort(processorPort);
-            PortPoolUtil.ReleasePort(mintPort);
         }
     }
 
@@ -177,7 +169,7 @@ public sealed partial class CdkMintdInteropTests
     }
 
     /// <summary>The BOLT 11 invoice <c>cdk-cli mint</c> prints for its mint quote.</summary>
-    private async Task<string> WaitForInvoiceAsync(string walletRun, CancellationToken ct) =>
+    private async Task<string> WaitForInvoiceAsync(CashuMintFixture.WalletRun walletRun, CancellationToken ct) =>
         await Poll.ForAsync(async () =>
         {
             var match = Bolt11Regex().Match(await _fixture.GetWalletOutputAsync(walletRun, ct));

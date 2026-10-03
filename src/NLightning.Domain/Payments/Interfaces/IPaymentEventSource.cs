@@ -3,7 +3,7 @@ namespace NLightning.Domain.Payments.Interfaces;
 using Events;
 
 /// <summary>
-/// Subscriptions to payment outcomes: invoices settled and payments succeeded or failed (Cashu plan C0, NL-901).
+/// Subscriptions to payment outcomes: invoices settled and payments succeeded or failed (Cashu plan C0, NL-991).
 /// </summary>
 /// <remarks>
 /// <para>Events are kept in memory only, from the moment of the subscription: a consumer that must not miss an

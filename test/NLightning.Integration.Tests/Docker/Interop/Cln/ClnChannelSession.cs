@@ -8,6 +8,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Node.ValueObjects;
@@ -246,6 +247,12 @@ public sealed class ClnChannelSession : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Node options of the legacy close proofs: <c>option_simple_close</c> off (Optional by default since taproot plan
+    /// D-T1), so a close with CLN is the <c>shutdown</c>/<c>closing_signed</c> negotiation whatever CLN signals.
+    /// </summary>
+    public static void PinLegacyClose(NodeOptions options) => options.Features.OptionSimpleClose = FeatureSupport.No;
+
     private static Task<ClnChannelSession> BuildAsync(ClnFixture fixture, CancellationToken cancellationToken) =>
         BuildOurFundedAsync(fixture, "nltg", Capacity, Push, cancellationToken);
 
@@ -253,14 +260,17 @@ public sealed class ClnChannelSession : IAsyncDisposable
     /// A separate node <paramref name="nodeName"/> that funds a private channel of <paramref name="capacity"/> to CLN
     /// (pushing <paramref name="push"/>) at our default feerate, followed until both ends are usable. The caller
     /// disposes the session (and so the node). <paramref name="configureNode"/> runs before the node starts (e.g. to set
-    /// <see cref="NLightningTestNode.ConfigureServices"/>).
+    /// <see cref="NLightningTestNode.ConfigureServices"/>); <paramref name="configureNodeOptions"/> changes the node's
+    /// options (e.g. <see cref="PinLegacyClose"/>).
     /// </summary>
     public static async Task<ClnChannelSession> BuildOurFundedAsync(ClnFixture fixture, string nodeName,
                                                                     LightningMoney capacity, LightningMoney push,
                                                                     CancellationToken cancellationToken,
-                                                                    Action<NLightningTestNode>? configureNode = null)
+                                                                    Action<NLightningTestNode>? configureNode = null,
+                                                                    Action<NodeOptions>? configureNodeOptions = null)
     {
-        var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName);
+        var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName,
+                                                        configureNodeOptions: configureNodeOptions);
         configureNode?.Invoke(node);
         var session = new ClnChannelSession(fixture, node);
         try

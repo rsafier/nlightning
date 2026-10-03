@@ -15,8 +15,12 @@ public static class RunAdmission
     /// <summary>The cap; <c>0</c> or <c>off</c> turns it off.</summary>
     public const string MaxRunsVariable = "NLTG_MAX_CONCURRENT_RUNS";
 
-    /// <summary>The default cap (the spike's rule: at most 6 spike namespaces at once).</summary>
-    public const int DefaultMaxRuns = 6;
+    /// <summary>
+    /// The default cap and the machine's cap on run namespaces: 12 since NL-844 (owner decision 2026-10-03; it was the
+    /// spike's 6). <c>scripts/run-cluster.sh</c> reads it through <c>nltg-cluster matrix cap</c>, so this is the one
+    /// place it is set.
+    /// </summary>
+    public const int DefaultMaxRuns = 12;
 
     /// <summary>How often a waiting run looks again.</summary>
     public static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);

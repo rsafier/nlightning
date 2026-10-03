@@ -9,7 +9,7 @@ using Domain.Node.Options;
 using Domain.Protocol.ValueObjects;
 
 /// <summary>
-/// Registers the Cashu CDK payment processor (Cashu plan C1, NL-902).
+/// Registers the Cashu CDK payment processor (Cashu plan C1, NL-992).
 /// </summary>
 public static class CashuPaymentProcessorServiceCollectionExtensions
 {

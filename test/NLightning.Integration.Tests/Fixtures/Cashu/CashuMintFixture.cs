@@ -1,251 +1,274 @@
-using System.Diagnostics;
-using System.Text;
-using Docker.DotNet;
+using System.Globalization;
 
 namespace NLightning.Integration.Tests.Fixtures.Cashu;
 
+using Cluster;
 using Docker.Utils;
-using Tor;
+using Testing.Cluster.Images;
+using Testing.Cluster.Kube;
+using Testing.Cluster.Nodes;
+using Testing.Cluster.Nodes.Cashu;
+using Testing.Cluster.Reach;
+using Testing.Cluster.Run;
+using Testing.Cluster.Topology;
 
 /// <summary>
-/// The Cashu mint proof's topology (Cashu plan C2, NL-903): its own bitcoind (<see cref="TorChainHost"/> on network
-/// <see cref="NetworkName"/>), CDK's mint daemon <c>cdk-mintd</c> (<see cref="MintdImage"/>) and CDK's wallet CLI
-/// <c>cdk-cli</c> (<see cref="CliImage"/>, built from <c>test/Docker/cdk-cli</c> when the tag is missing; CDK publishes
-/// no image of it). It runs on Docker only and its tests skip under <c>NLTG_TEST_BACKEND=cluster</c>; run it with
-/// <c>scripts/run-interop.sh cashu</c>.
+/// The Cashu mint proof's topology (Cashu plan C2, NL-993) on the Kubernetes harness, its only backend: a run namespace
+/// (suite <c>cashu-mint</c>) with the harness's bitcoind (<c>miner</c>, Bitcoin Core 31.1, <c>emptyDir</c>), CDK's mint
+/// daemon <c>cdk-mintd</c> (<see cref="ImageVersions.CdkMintd"/>, deployed per test by <see cref="StartMintAsync"/>)
+/// and CDK's wallet CLI <c>cdk-cli</c> in an idle pod (<see cref="ImageVersions.CdkCli"/>, built locally from
+/// <c>test/Docker/cdk-cli</c> and never pulled; CDK publishes no image of it). Without <c>NLTG_TEST_BACKEND=cluster</c>
+/// the fixture starts nothing and its tests are skipped with the reason (<see cref="UnavailableReason"/>); with it, a
+/// missing Kubernetes configuration fails the fixture (<see cref="ConfigurationError"/>). Run the suite with
+/// <c>scripts/run-cluster.sh --matrix cashu</c>.
 /// </summary>
 /// <remarks>
-/// <para>The mint and the wallet run with the host's network (<c>--network host</c>): the mint reaches the in-process
-/// node's CDK payment processor on <c>127.0.0.1</c> over plain HTTP/2, which the processor allows on loopback only,
-/// and the wallet and the test reach the mint on <c>127.0.0.1</c>. Docker Desktop and OrbStack need host networking
-/// turned on.</para>
-/// <para>The mint is configured through <c>cdk-mintd config init</c> (CDK 0.18 keeps its configuration in its
-/// database) with <c>backend = "grpcprocessor"</c> in sat. Each test starts its own mint (<see cref="StartMintAsync"/>)
-/// because the processor's port belongs to the test's node.</para>
+/// <para>The mint reaches the in-process node's CDK payment processor, which listens on the host's loopback over plain
+/// HTTP/2 (the processor allows that on loopback only), at <see cref="HostEndpoints.ForPods"/>
+/// (<c>host.orb.internal</c>, which OrbStack forwards to the host's loopback). The wallet reaches the mint by its
+/// Service name (<see cref="MintUrl"/>), the test process by its pod IP.</para>
+/// <para>CDK 0.18 keeps the mint's configuration in its database, so the mint pod loads its <c>config.toml</c> with
+/// <c>cdk-mintd config init --new-mint</c> when it starts (<see cref="CdkNodes.MintWorkload"/>). Each test starts its
+/// own mint because the processor's port belongs to the test's node.</para>
 /// </remarks>
 // ReSharper disable once ClassNeverInstantiated.Global
 public sealed class CashuMintFixture : IAsyncLifetime
 {
-    public const string NetworkName = "nltg-cashu-net";
-    public const string BitcoinContainerName = "nltg-cashu-bitcoind";
-    public const string MintdContainerName = "nltg-cashu-mintd";
-    public const string WalletContainerPrefix = "nltg-cashu-wallet";
-
     /// <summary>The CDK release of the mint, the wallet and the vendored processor proto.</summary>
     public const string CdkVersion = "0.18.1";
-
-    public const string MintdRepository = "cashubtc/mintd";
-    public const string MintdImage = $"{MintdRepository}:{CdkVersion}";
-    public const string CliImage = $"nltg-cdk-cli:{CdkVersion}";
 
     /// <summary>The BIP-39 test mnemonic of the mint's keysets (regtest only).</summary>
     private const string MintMnemonic =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
-    private static readonly TimeSpan s_cliBuildTimeout = TimeSpan.FromMinutes(60);
-    private static readonly TimeSpan s_mintReadyTimeout = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
 
-    private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
-    private readonly TorChainHost _chain;
-    private readonly List<string> _directories = [];
+    private readonly ClusterAvailability _availability;
+    private readonly CashuTopology? _topology;
+
+    private RegtestBitcoinEndpoint? _bitcoin;
+    private KubeNodeHandle? _wallet;
+    private KubeNodeHandle? _mint;
 
     public CashuMintFixture()
+        : this(Environment.GetEnvironmentVariable, ClusterAvailability.KubeConfigurationProbe)
     {
-        _chain = new TorChainHost(_client, NetworkName, BitcoinContainerName);
     }
 
-    public RegtestBitcoinEndpoint Bitcoin => _chain.Bitcoin;
+    /// <param name="environment">Reads environment variables (<see cref="TestBackend.EnvironmentVariable"/>).</param>
+    /// <param name="kubeConfiguration">Throws when no Kubernetes configuration can be built.</param>
+    /// <param name="skip">Skips the current test with a reason (<see cref="Assert.Skip"/> when null).</param>
+    internal CashuMintFixture(Func<string, string?> environment, Action kubeConfiguration,
+                              Action<string>? skip = null)
+    {
+        _availability = new ClusterAvailability("the Cashu mint fixture", "NL-993",
+                                                "scripts/run-cluster.sh --matrix cashu", environment,
+                                                kubeConfiguration, skip);
+        if (_availability.CanStart)
+            _topology = new CashuTopology();
+    }
 
-    /// <summary>The mint's URL once <see cref="StartMintAsync"/> ran.</summary>
-    public string MintUrl { get; private set; } = string.Empty;
+    /// <summary>Why the fixture does not run in this process (the skip reason of its tests); null on the cluster.</summary>
+    public string? UnavailableReason => _availability.UnavailableReason;
+
+    /// <summary>Under <c>NLTG_TEST_BACKEND=cluster</c>, why no Kubernetes configuration could be built (NL-860).</summary>
+    public string? ConfigurationError => _availability.ConfigurationError;
+
+    public RegtestBitcoinEndpoint Bitcoin =>
+        _bitcoin ?? throw new InvalidOperationException("The Cashu mint fixture is not running");
+
+    /// <summary>The host the mint dials to reach the processor of an in-process node (listening on loopback).</summary>
+    public string HostAddressForMint { get; } = HostEndpoints.ForPods();
+
+    /// <summary>The mint's URL for the wallet (its Service name in the run's namespace).</summary>
+    public string MintUrl => CdkNodes.MintServiceUrl;
+
+    private CashuTopology Topology =>
+        _topology ?? throw new InvalidOperationException("The Cashu mint fixture is not running");
+
+    private TestRun Run => Topology.Run;
+
+    private KubeNodeHandle Wallet =>
+        _wallet ?? throw new InvalidOperationException("The Cashu mint fixture is not running");
+
+    /// <summary>
+    /// Skips the current test when the fixture does not run in this process (<see cref="UnavailableReason"/>); a test
+    /// class calls it in its constructor.
+    /// </summary>
+    public void SkipIfUnavailable() => _availability.SkipIfUnavailable();
 
     public async ValueTask InitializeAsync()
     {
-        if (TestBackend.IsCluster)
+        if (UnavailableReason is not null)
+        {
+            Console.WriteLine($"[fixture] Cashu mint fixture not started: {UnavailableReason}");
             return;
+        }
 
-        await DockerContainerUtils.EnsureImageAsync(_client, MintdRepository, CdkVersion);
-        if (!await DockerContainerUtils.ImageExistsAsync(_client, CliImage))
-            await DockerContainerUtils.BuildImageAsync(_client, DockerContainerUtils.FindDockerDirectory("cdk-cli"),
-                                                       CliImage, s_cliBuildTimeout);
-        await _chain.StartAsync();
+        _availability.ThrowIfMisconfigured();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var ct = TestContext.Current.CancellationToken;
+        await Topology.EnsureStartedAsync(ct);
+        foreach (var line in Topology.StartLog)
+            Console.WriteLine(line);
+
+        _bitcoin = ClusterChainEndpoint.Create(Topology.Topology.Chain);
+        var tip = await GetTipAsync(ct);
+        if (tip < 101)
+            await MineAsync(101 - (int)tip, ct);
+
+        _wallet = await Run.DeployAsync(CdkNodes.WalletWorkload(), s_readyTimeout, ct);
+        Console.WriteLine($"[fixture] Cashu mint fixture (cluster) ready in {watch.Elapsed.TotalSeconds:F1} s");
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (!TestBackend.IsCluster)
-        {
-            await StopMintAsync();
-            await _chain.RemoveAsync();
-        }
-
-        foreach (var directory in _directories)
-        {
-            try
-            {
-                Directory.Delete(directory, true);
-            }
-            catch (IOException)
-            {
-                // best effort (files the containers wrote as root)
-            }
-            catch (UnauthorizedAccessException)
-            {
-                // best effort
-            }
-        }
-
-        _client.Dispose();
+        if (_topology is not null)
+            await _topology.DisposeAsync();
     }
 
     /// <summary>Mines <paramref name="blocks"/> blocks to the miner wallet.</summary>
-    public Task MineAsync(int blocks, CancellationToken cancellationToken) => _chain.MineAsync(blocks, cancellationToken);
-
-    /// <summary>The chain tip.</summary>
-    public Task<uint> GetTipAsync(CancellationToken cancellationToken) => _chain.GetTipAsync(cancellationToken);
-
-    /// <summary>
-    /// Starts <c>cdk-mintd</c> (replacing a running one) on <c>127.0.0.1:<paramref name="mintPort"/></c>, backed by
-    /// the CDK payment processor on <c>127.0.0.1:<paramref name="processorPort"/></c>, and waits until it answers
-    /// <c>/v1/info</c>. The mint's database is fresh.
-    /// </summary>
-    public async Task StartMintAsync(int processorPort, int mintPort, CancellationToken cancellationToken)
+    public async Task MineAsync(int blocks, CancellationToken cancellationToken)
     {
-        await StopMintAsync();
-        var directory = CreateDirectory("mintd");
-        MintUrl = $"http://127.0.0.1:{mintPort}";
-        await File.WriteAllTextAsync(Path.Combine(directory, "config.toml"), $"""
-            [info]
-            url = "{MintUrl}/"
-            listen_host = "127.0.0.1"
-            listen_port = {mintPort}
-            mnemonic = "env:CDK_MINTD_MNEMONIC"
-
-            [database]
-            engine = "sqlite"
-
-            [payment_backend]
-            backend = "grpcprocessor"
-            unit = "sat"
-
-            [grpc_processor]
-            address = "127.0.0.1"
-            port = {processorPort}
-            supported_units = ["sat"]
-            # cdk-mintd 0.18 refuses a processor without TLS unless told so, loopback included
-            allow_insecure = true
-            """, cancellationToken);
-
-        await DockerAsync(["run", "-d", "--name", MintdContainerName, "--network", "host",
-                           "-v", $"{directory}:/data", "-e", $"CDK_MINTD_MNEMONIC={MintMnemonic}", MintdImage,
-                           "sh", "-c",
-                           "cdk-mintd -w /data config init --file /data/config.toml --new-mint "
-                         + "&& exec cdk-mintd -w /data --enable-logging"], cancellationToken);
-        using var http = new HttpClient();
-        await DockerContainerUtils.WaitUntilReadyAsync(MintdContainerName, async ct =>
-        {
-            using var response = await http.GetAsync($"{MintUrl}/v1/info", ct);
-            response.EnsureSuccessStatusCode();
-        }, s_mintReadyTimeout);
-        Console.WriteLine($"[cashu] cdk-mintd {CdkVersion} up at {MintUrl}, processor 127.0.0.1:{processorPort}");
+        var rpc = Bitcoin.Rpc;
+        await rpc.GenerateToAddressAsync(blocks, await rpc.GetNewAddressAsync(cancellationToken), cancellationToken);
     }
 
-    /// <summary>Removes the mint container.</summary>
-    public Task StopMintAsync() => DockerContainerUtils.RemoveContainerAsync(_client, MintdContainerName);
-
-    /// <summary>The mint's log (its last <paramref name="lines"/> lines).</summary>
-    public async Task<string> GetMintLogAsync(int lines, CancellationToken cancellationToken) =>
-        (await DockerAsync(["logs", "--tail", lines.ToString(), MintdContainerName], cancellationToken,
-                           throwOnError: false)).Output;
-
-    /// <summary>A fresh wallet directory for <see cref="RunWalletAsync"/>.</summary>
-    public string CreateWalletDirectory() => CreateDirectory("wallet");
+    /// <summary>The chain tip.</summary>
+    public async Task<uint> GetTipAsync(CancellationToken cancellationToken) =>
+        (uint)await Bitcoin.Rpc.GetBlockCountAsync(cancellationToken);
 
     /// <summary>
-    /// Runs <c>cdk-cli --work-dir /wallet <paramref name="arguments"/></c> to its end in a throwaway container on the
-    /// host's network, with <paramref name="walletDirectory"/> as its wallet.
+    /// Deploys <c>cdk-mintd</c> (replacing a running one) with a fresh database, backed by the CDK payment processor
+    /// on this host's loopback port <paramref name="processorPort"/>, and waits until it answers <c>/v1/info</c>.
+    /// </summary>
+    public async Task StartMintAsync(int processorPort, CancellationToken cancellationToken)
+    {
+        await StopMintAsync(cancellationToken);
+        var workload = CdkNodes.MintWorkload(CdkNodes.MintConfig(HostAddressForMint, processorPort), MintMnemonic);
+        _mint = await Run.DeployAsync(workload, s_readyTimeout, cancellationToken);
+        var hostUrl = string.Create(CultureInfo.InvariantCulture, $"http://{_mint.PodIp}:{CdkNodes.MintPort}");
+        using var http = new HttpClient();
+        await Testing.Cluster.Poll.UntilDoneAsync(async ct =>
+        {
+            try
+            {
+                using var response = await http.GetAsync($"{hostUrl}/v1/info", ct);
+                return response.IsSuccessStatusCode ? null : $"/v1/info answered {(int)response.StatusCode}";
+            }
+            catch (HttpRequestException e)
+            {
+                return e.Message;
+            }
+        }, s_readyTimeout, "cdk-mintd answers /v1/info", cancellationToken, TimeSpan.FromMilliseconds(250));
+        Console.WriteLine($"[cashu] cdk-mintd {CdkVersion} up at {MintUrl} ({hostUrl}), processor "
+                        + $"{HostAddressForMint}:{processorPort}");
+    }
+
+    /// <summary>Removes the mint's node, if one runs.</summary>
+    public async Task StopMintAsync(CancellationToken cancellationToken)
+    {
+        if (_mint is null)
+            return;
+
+        await Run.RemoveNodeAsync(CdkNodes.MintName, cancellationToken);
+        _mint = null;
+    }
+
+    /// <summary>The mint's log (its last <paramref name="lines"/> lines), or why it is unavailable.</summary>
+    public async Task<string> GetMintLogAsync(int lines, CancellationToken cancellationToken)
+    {
+        if (_mint is null)
+            return "(no mint)";
+
+        try
+        {
+            return await _mint.ReadLogAsync(lines, cancellationToken);
+        }
+        catch (Exception e)
+        {
+            return $"(unavailable: {e.Message})";
+        }
+    }
+
+    /// <summary>A fresh wallet work directory in the wallet pod for <see cref="RunWalletAsync"/>.</summary>
+    public async Task<string> CreateWalletDirectoryAsync(CancellationToken cancellationToken)
+    {
+        var directory = $"{CdkNodes.WalletDataPath}/{Guid.NewGuid():N}";
+        (await Wallet.ExecAsync(["mkdir", "-p", directory], cancellationToken)).EnsureSuccess($"mkdir {directory}");
+        return directory;
+    }
+
+    /// <summary>
+    /// Runs <c>cdk-cli --work-dir <paramref name="walletDirectory"/> <paramref name="arguments"/></c> to its end in the
+    /// wallet pod.
     /// </summary>
     /// <returns>Its standard output and error.</returns>
     public async Task<string> RunWalletAsync(string walletDirectory, IReadOnlyList<string> arguments,
                                              CancellationToken cancellationToken)
     {
-        var (exitCode, output) = await DockerAsync(WalletRun(walletDirectory, arguments, detach: false),
-                                                   cancellationToken, throwOnError: false);
-        Console.WriteLine($"[cashu] cdk-cli {string.Join(' ', arguments)} (exit {exitCode}):\n{output}");
-        if (exitCode != 0)
-            throw new InvalidOperationException($"cdk-cli {string.Join(' ', arguments)} exited {exitCode}: {output}");
+        var result = await Wallet.ExecAsync(WalletCommand(walletDirectory, arguments), cancellationToken);
+        var output = result.StdOutText + result.StdErrText;
+        Console.WriteLine($"[cashu] cdk-cli {string.Join(' ', arguments)} (exit {result.ExitCode}):\n{output}");
+        if (result.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"cdk-cli {string.Join(' ', arguments)} exited {result.ExitCode}: {output}");
         return output;
     }
 
     /// <summary>
-    /// Starts <c>cdk-cli --work-dir /wallet <paramref name="arguments"/></c> in the background (a command that waits,
-    /// such as <c>mint</c> waiting for its invoice to be paid); read it with <see cref="GetWalletOutputAsync"/> and
+    /// Starts <c>cdk-cli</c> in the wallet pod for a command that waits (<c>mint</c> waits for its invoice to be paid),
+    /// its output going to a log file next to the wallet; read it with <see cref="GetWalletOutputAsync"/> and
     /// <see cref="WaitWalletExitAsync"/>.
     /// </summary>
-    /// <returns>The container's name.</returns>
-    public async Task<string> StartWalletAsync(string walletDirectory, IReadOnlyList<string> arguments,
-                                               CancellationToken cancellationToken)
+    public WalletRun StartWallet(string walletDirectory, IReadOnlyList<string> arguments,
+                                 CancellationToken cancellationToken)
     {
-        var name = $"{WalletContainerPrefix}-{Guid.NewGuid():N}"[..40];
-        await DockerAsync(WalletRun(walletDirectory, arguments, detach: true, name), cancellationToken);
-        return name;
+        var log = $"{walletDirectory}.log";
+        var command = string.Join(' ', WalletCommand(walletDirectory, arguments).Select(Quote));
+        var exec = Wallet.ExecAsync(["sh", "-c", $"{command} > {log} 2>&1"], cancellationToken);
+        return new WalletRun(log, exec);
     }
 
-    /// <summary>What a background wallet command printed so far.</summary>
-    public async Task<string> GetWalletOutputAsync(string container, CancellationToken cancellationToken) =>
-        (await DockerAsync(["logs", container], cancellationToken, throwOnError: false)).Output;
+    /// <summary>What a background wallet command printed so far (empty before its first line).</summary>
+    public async Task<string> GetWalletOutputAsync(WalletRun run, CancellationToken cancellationToken)
+    {
+        var result = await Wallet.ExecAsync(["sh", "-c", $"cat {run.LogPath} 2>/dev/null || true"],
+                                            cancellationToken);
+        return result.StdOutText;
+    }
 
-    /// <summary>Waits for a background wallet command to end and removes its container.</summary>
+    /// <summary>Waits for a background wallet command to end.</summary>
     /// <returns>Its exit code and everything it printed.</returns>
-    public async Task<(int ExitCode, string Output)> WaitWalletExitAsync(string container,
+    public async Task<(int ExitCode, string Output)> WaitWalletExitAsync(WalletRun run,
                                                                         CancellationToken cancellationToken)
     {
-        var (_, status) = await DockerAsync(["wait", container], cancellationToken);
-        var output = await GetWalletOutputAsync(container, cancellationToken);
-        await DockerContainerUtils.RemoveContainerAsync(_client, container);
-        return (int.Parse(status.Trim()), output);
+        var result = await run.Exec.WaitAsync(cancellationToken);
+        return (result.ExitCode, await GetWalletOutputAsync(run, cancellationToken));
     }
 
-    private static List<string> WalletRun(string walletDirectory, IReadOnlyList<string> arguments, bool detach,
-                                          string? name = null)
+    private static List<string> WalletCommand(string walletDirectory, IReadOnlyList<string> arguments)
     {
-        List<string> args = ["run"];
-        if (detach)
-            args.AddRange(["-d", "--name", name!]);
-        else
-            args.Add("--rm");
-        args.AddRange(["--network", "host", "-v", $"{walletDirectory}:/wallet", CliImage, "--work-dir", "/wallet"]);
-        args.AddRange(arguments);
-        return args;
+        List<string> command = ["cdk-cli", "--work-dir", walletDirectory];
+        command.AddRange(arguments);
+        return command;
     }
 
-    private string CreateDirectory(string kind)
-    {
-        var directory = Path.Combine(Path.GetTempPath(), $"nltg-cashu-{kind}-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(directory);
-        _directories.Add(directory);
-        return directory;
-    }
+    /// <summary>One shell word in single quotes.</summary>
+    private static string Quote(string word) => $"'{word.Replace("'", "'\\''")}'";
 
-    private static async Task<(int ExitCode, string Output)> DockerAsync(IReadOnlyList<string> arguments,
-                                                                        CancellationToken cancellationToken,
-                                                                        bool throwOnError = true)
+    /// <summary>A <c>cdk-cli</c> command running in the background in the wallet pod.</summary>
+    public sealed record WalletRun(string LogPath, Task<ExecResult> Exec);
+
+    /// <summary>The collection's topology: bitcoind <c>miner</c> (31.1, <c>emptyDir</c>), nothing else.</summary>
+    private sealed class CashuTopology : ClusterTopologyFixture
     {
-        var info = new ProcessStartInfo("docker")
+        protected override string Suite => "cashu-mint";
+
+        protected override void Configure(TopologyBuilder builder)
         {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-        foreach (var argument in arguments)
-            info.ArgumentList.Add(argument);
-
-        using var process = Process.Start(info) ?? throw new InvalidOperationException("Could not start docker");
-        var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderr = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-        var output = new StringBuilder(await stdout).Append(await stderr).ToString();
-        if (throwOnError && process.ExitCode != 0)
-            throw new InvalidOperationException($"docker {arguments[0]} exited {process.ExitCode}: {output}");
-        return (process.ExitCode, output);
+            builder.Storage = NodeStorage.Ephemeral;
+            builder.AddBitcoinCore("miner", ImageVersions.BitcoinCore31);
+        }
     }
 }

@@ -6,7 +6,7 @@ using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
 
 /// <summary>
-/// Request for WaitInvoice (ClientCommand 47, Cashu plan C0, NL-901).
+/// Request for WaitInvoice (ClientCommand 47, Cashu plan C0, NL-991).
 /// </summary>
 [MessagePackObject]
 public sealed class WaitInvoiceIpcRequest

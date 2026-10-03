@@ -376,7 +376,7 @@ internal sealed class PaymentHarnessNode : IDisposable
     public IPaymentService PaymentService => _provider.GetRequiredService<IPaymentService>();
     public IInvoiceService InvoiceService => _provider.GetRequiredService<IInvoiceService>();
 
-    /// <summary>The node's payment event bus (Cashu plan C0, NL-901).</summary>
+    /// <summary>The node's payment event bus (Cashu plan C0, NL-991).</summary>
     public IPaymentEventSource PaymentEvents => _provider.GetRequiredService<IPaymentEventSource>();
 
     /// <summary>

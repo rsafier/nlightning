@@ -1125,7 +1125,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// Tells the payment event subscribers (Cashu plan C0, NL-901) that the invoice of <paramref name="paymentHash"/>
+    /// Tells the payment event subscribers (Cashu plan C0, NL-991) that the invoice of <paramref name="paymentHash"/>
     /// is settled: called after the save that settled it.
     /// </summary>
     private void PublishSettled(Hash paymentHash, LightningMoney amount) =>
@@ -1990,6 +1990,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                                             new Hash(sha256), cancellationToken);
             return;
         }
+
+        // The introduction node of a blinded trampoline route that is not its final node replaces every error by its
+        // own (TR-R-14)
+        if (trampoline.IntroductionSha256 is { } introductionSha256)
+            failure = FailureMessage.InvalidOnionBlinding(introductionSha256);
 
         if (failure.Code == FailureCode.InvalidOnionBlinding)
             await DelayBlindedErrorAsync(cancellationToken);

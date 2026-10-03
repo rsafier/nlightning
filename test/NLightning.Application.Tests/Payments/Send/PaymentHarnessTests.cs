@@ -77,7 +77,7 @@ public class PaymentHarnessTests : IDisposable
     [Fact]
     public async Task Given_ASubscriber_When_BobPaysCarol_Then_BobPublishesTheSuccessAfterItsSave()
     {
-        // Arrange - Cashu plan C0 (NL-901)
+        // Arrange - Cashu plan C0 (NL-991)
         var ct = TestContext.Current.CancellationToken;
         var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "event", null, ct);
         using var subscription = _harness.Bob.PaymentEvents.Subscribe();
@@ -98,7 +98,7 @@ public class PaymentHarnessTests : IDisposable
     [Fact]
     public async Task Given_ASubscriber_When_BobsPaymentFailsForGood_Then_BobPublishesTheFailureOnce()
     {
-        // Arrange - Cashu plan C0 (NL-901)
+        // Arrange - Cashu plan C0 (NL-991)
         var ct = TestContext.Current.CancellationToken;
         var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "event", null, ct);
         _harness.Carol.Switch.FinalHopInterceptor = (_, _) => FailureMessage.TemporaryNodeFailure();

@@ -1,5 +1,5 @@
 // Vendored from cashubtc/cdk v0.18.1, crates/cdk-payment-processor/src/proto/payment_processor.proto (MIT).
-// Only the csharp_namespace option was added; keep the rest byte-identical to the CDK release it names (NL-902).
+// Only the csharp_namespace option was added; keep the rest byte-identical to the CDK release it names (NL-992).
 syntax = "proto3";
 
 package cdk_payment_processor;

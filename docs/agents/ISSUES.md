@@ -4,6 +4,12 @@ The single durable issue ledger for this repo. GitHub issues are disabled on the
 
 Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,ONION_ROUTING_PLAN,LNBOLT_REVIEW}.md`, every `CLAUDE.md`, the onion M1/M2 workflow reports (open items, review fixes, final follow-ups), a `TODO`/`FIXME`/`NotImplementedException`/commented-out-file sweep, and a Release build. Bug claims were re-checked against the code at that snapshot; items still marked "unverified" in the evidence were not reproduced. Line numbers drift, so re-check the cited line before editing.
 
+Updated 2026-10-03 by the Cashu integrator (branch `wip/cashu-int` from `origin/wip/cashu` at `b38d2686`, merged with `wip/fafo`): the Cashu entries are renumbered because `wip/fafo` landed NL-900, NL-903, NL-904 and NL-905 first: NL-900 → NL-990 (epic), NL-901 → NL-991 (C0), NL-902 → NL-992 (C1), NL-903 → NL-993 (C2), NL-904 → NL-994 (C3), NL-905 → NL-995 (C4), NL-906 → NL-996 (IL2026), NL-907 → NL-997 (processor follow-ups), in every doc, code comment and test of the Cashu work (old commit messages keep the old IDs; the C0 commit `e5cb13a8` cites its first numbers NL-811 (epic, now NL-990) and NL-812 (C0, now NL-991), which stay unassigned as the harness note below says). The Cashu mint proof (NL-993) moved from Docker to the cluster harness (matrix suite `cashu`). Summary rows recounted from the entries: 795 entries, no duplicate IDs.
+
+Updated 2026-10-03 by the taproot wave t01 integrator (branch `wip/taproot-int` from `origin/wip/taproot-plan` at `ee682a23`, merged into `wip/fafo`): NL-913 fixed (cluster proof `tap-mx1`; CLN v26.06.8 does not signal simple close), NL-903 (low, fixed in 075a7920, f0ca4a5c and 5c14c684: review fixes) and NL-904 (medium, open: T3/T4 obligations from the review) new; NL-911 and NL-914 updated. NL-910 (low, open: a `ClnPeerStorageTests` cluster flake). Taproot NL-895..NL-899 renumbered to NL-911..NL-915 (collision with the trampoline follow-ups, which landed first).
+
+Updated 2026-10-03 by the namespace-cap lane (branch `wip/nscap`, owner decision 2026-10-03): NL-844 (fixed, b8362d19, 501bebd7: the harness cap on run namespaces is 12, set once in `RunAdmission.DefaultMaxRuns`; the matrix in 1,058 s at a peak of 11 namespaces) and NL-905 (open, low: the cln suite is the matrix long pole at 12 namespaces). Summary rows recounted from the entries after the merge of `wip/fafo` at bd1a0dc5 (NL-806 lane): 773 entries, no duplicate IDs.
+
 Updated 2026-10-03 by the batch12 integrator (branch `wip/batch12` from `wip/fafo` at `fedb876b`; lanes b12-splice-htlc, b12-ux, b12-reconcile-drift, b12-reestablish-deadline and b12-trimmed-loss merged with `--no-ff`): NL-880 (high) and NL-881 (medium) fixed in d2d2a7e5, NL-882..NL-885 (low) in 730ff053, NL-886/NL-887 (low) in 24d3dc4c, NL-760 and NL-796 fixed, NL-890 (low flake, open); review fixes NL-891 (medium), NL-892 (medium), NL-893 and NL-894 (low), all fixed. NL-888 and NL-889 are unused. NL-776 (lane b12-anysegwit, cfafd698) fixed.
 
 Updated 2026-10-03 by the Docker retirement lane (branch `wip/retire-docker` from 61889866, owner decision 2026-10-03: every suite but Tor on the cluster harness only): NL-866 (low, fixed in cea4bc4f: the CLN, Eclair, LDK and Postgres fixtures lost their Docker backends; Tor stays on Docker). Summary rows recounted from the entries: 749 entries, no duplicate IDs.
@@ -147,16 +153,17 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 66 | 67 |
+| open | 0 | 0 | 3 | 74 | 77 |
 | in-progress | 0 | 0 | 2 | 0 | 2 |
-| fixed | 14 | 63 | 201 | 414 | 692 |
-| wontfix | 0 | 0 | 5 | 9 | 14 |
+| fixed | 14 | 63 | 201 | 419 | 697 |
+| wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 2 | 4 |
-| **Total** | **14** | **63** | **211** | **491** | **779** |
+| **Total** | **14** | **63** | **213** | **505** | **795** |
 
 ### Epics
 
-- NL-900: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-901 (fixed), C1 CDK gRPC payment processor NL-902 (fixed, BOLT 11; follow-ups NL-907), C2 Docker proof NL-903 (fixed), C3 native wallet NL-904, C4 hold invoices NL-905)
+- NL-990: Cashu ecash integration (in-progress, medium; plan `docs/agents/CASHU_PLAN.md`, branch `wip/cashu`: C0 payment event stream NL-991 (fixed), C1 CDK gRPC payment processor NL-992 (fixed, BOLT 11; follow-ups NL-997), C2 proof NL-993 (fixed, on the cluster harness), C3 native wallet NL-994, C4 hold invoices NL-995)
+- NL-877: Simple taproot channels (`option_simple_taproot`) (open, medium; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` T0-T6; spec merged 2026-05-04, LND 0.21 and Eclair 0.14 run it as private channels; taproot gossip NL-878 waits for BOLTs #1059)
 - NL-875: Trampoline routing (BOLTs PR #836): client, relay and target (in-progress, medium; plan `docs/agents/TRAMPOLINE_PLAN.md`, TR0-TR5 built on `wip/fafo` 2026-10-03, merges `7f5c5d85` TR0, `e958b8eb` TR1, `9f0d1050` TR3-P, `165acd77` TR2, `fb2b07ca` TR5 phase 1, `1c09e718` TR4, `dd48b26d` TR3, `c1811bbf` TR5 phase 2; experimental until an owner decision; follow-ups NL-895..NL-899)
 - NL-850: Liquidity ads (BOLT PR #1153) (fixed, medium; plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, LA0-LA7 done on `claude/youthful-hamilton-x4ngo7` at `10b8ba84`: both roles in the dual-funded open, its RBF, the splice and the splice RBF with restarts, `LiquidityPurchases`, the lease guard, `LiquidityFeePaid`/`LiquidityFeeEarned`, `liquidityads` (IPC 46); proven in-process in both roles and against Eclair 0.14.3 as seller (`EclairLiquidityAdsTests` 5/5; Eclair sells only in splices); open follow-ups NL-851..NL-859; integration review fixes NL-870, NL-871)
 - NL-602: Accounting: core event feed and built-in books (fixed, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3 all built on `wip/acct-a3`: A1 feed, A2 operational books, A3 financial profile (labels, classification, prices, projector and lots, period close, financial reports, config/security/docs; merge `c62d861b`, review fixes `94af679d`, `ecd983b1`); data gaps NL-603..NL-605 and the plugin stub NL-151 done; open follow-ups NL-606..NL-608, NL-610..NL-613, NL-645, NL-657, NL-658, NL-662, NL-674..NL-681 (NL-660, NL-665, NL-667 fixed on `wip/nl660`), flakes NL-620, NL-653)
@@ -1782,8 +1789,110 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-556, NL-021
 - **Plan ref:** `docs/agents/SPLICING_PLAN.md` (IT-R-04)
 
+### NL-913 `option_simple_close` on by default: cluster proof of the changed close flows pending
+- **Status:** fixed (a2e7d6bc; cluster proof `tap-mx1` on 78907b32)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `src/NLightning.Domain/Node/Options/FeatureOptions.cs` (`OptionSimpleClose` Optional, D-T1); `test/NLightning.Integration.Tests/Docker/{CooperativeCloseFlowTests,CloseRestartFlowTests,Day0/Day0FlowTests}.cs`, `Docker/Interop/Eclair/{EclairInteropTests,EclairCloseTests}.cs`, `Docker/Interop/Cln/{ClnCloseTests,ClnCloseRestartTests,ClnDualFundTests}.cs`
+- **Evidence:** Wave t01 lane SC (`a2e7d6bc`): the close flow is chosen per peer from the negotiated features (simple close with Eclair 0.14.3, LND with `--protocol.rbf-coop-close` and NLightning; legacy `closing_signed` with default LND and LDK). The legacy Docker proofs now pin `OptionSimpleClose = No` (CooperativeCloseFlowTests legacy theories, CloseRestartFlowTests, the EclairInteropTests closes, ClnCloseTests, ClnCloseRestartTests through `ClnChannelSession.PinLegacyClose`), and `Day0FlowTests` step 8 now proves a simple close between two default nodes. None of these ran: they need the cluster. Open question: whether CLN v26.06.8 signals simple close (`test/CLAUDE.md` says no); `ClnDualFundTests`' cooperative close changes if it does.
+- **Fix:** Proven on the cluster (`scripts/run-cluster.sh --matrix cln,eclair,lnd,day0,abcd --id tap-mx1` on the T0+SC tree 78907b32, 2026-10-03): lnd 58/58, cln 90 passed + 1 rerun-green (`ClnPeerStorageTests`, rerun alone green) + 4 `Explicit` not run, eclair 25/25 + 2 `Explicit`, day0 6/6 (incl. `Day0FlowTests` step 8, the simple close between two default nodes), abcd 11/11; T1 added no channel wiring, so the proof stands for the t01 tree. CLN v26.06.8 does not signal simple close: its `getinfo` `our_features.init` has bits 0, 5, 7, 8, 11, 12, 14, 17, 19, 23, 25, 27, 35, 39, 43, 44, 47, 51, 63 (no 60/61) and its log of the whole `cln` suite shows only `WIRE_CLOSING_SIGNED`, so every close with CLN (`ClnDualFundTests`' included) stays legacy; `test/CLAUDE.md` corrected.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN D-T1
+
+### NL-914 Simple taproot spec (`bolt-simple-taproot.md`) text and vectors disagree in four places
+- **Status:** open
+- **Severity:** low
+- **Kind:** spec-violation
+- **Location:** upstream `lightning/bolts` `bolt-simple-taproot.md`; our record in `test/NLightning.Infrastructure.Bitcoin.Tests/Taproot/Vectors/README.md`
+- **Evidence:** Wave t01 (lanes T0, T1): (1) §To Remote Outputs names a second NUMS point `0245b181...` and a control block with `combined_funding_key`, while the vectors use `02dca094...` as the internal key of to_local and to_remote; (2) `scripts.funding.combined_key` is the BIP 86-tweaked output key, not the untweaked aggregate the text calls `combined_funding_key`; (3) the `scripts.accepted_htlc_*` vectors swap the local and remote HTLC keys relative to their names (the transaction vectors use the spec's roles, as does our code); (4) the `*_local_commit` and `*_remote_commit` script entries are identical. We follow the vectors and the transaction cases. The t01 integration review checked each against LND master (`input/script_utils.go`, `lnwallet/commitment.go`): (1) LND uses `TaprootNUMSKey` 02dca094... for to_remote, so the text is wrong; (2) the vector is LND's BIP 86 `FinalKey`, our `TaprootFundingOutput` tweaks the untweaked aggregate; (3) the script vector is what LND builds for an outgoing HTLC on the remote commitment, the holder's own accepted HTLC uses the spec's roles, as do we and the transaction vectors; (4) a generator artefact (remote-commitment bytes are not covered by the vectors, NL-904). More text errata found then: §To Local calls the delay control block 33 bytes and ends the revoke one with `revoke_script` (a two-leaf control block is 65 bytes and ends with the sibling leaf's hash); the anchor, offered and accepted output-key formulas leave out `*G`; §HTLC Second Level says CLTV for a CSV delay; §SIGHASH_ALL vs SIGHASH_DEFAULT claims one digest (BIP 341 commits to the hash type, so they differ).
+- **Fix sketch:** Report upstream (an issue or PR on lightning/bolts); re-check when the file changes.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN "Spec errata", wave t01 record
+
+### NL-915 `AnchorOutputInfo.FundingPubKey` holds a taproot anchor's internal key
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `AnchorOutputInfo` (Domain transaction models), the simple taproot commitment factory path (wave t01 lane T1)
+- **Evidence:** For `CommitmentFormat.SimpleTaproot` the anchor is keyed to `local_delayedpubkey`/`remotepubkey`, not the funding key, but the field keeps its anchors-era name.
+- **Fix sketch:** Rename to `AnchorPubKey` (or similar) when T3/T4 touch the anchor paths.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN wave t01 hand-off
+
+
+### NL-903 Taproot wave t01 integration review: MuSig2 blame, nonce Clear race, format/anchors contradiction, a dual-fund test flake
+- **Status:** fixed (075a7920, f0ca4a5c, 5c14c684, e82293ac)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Crypto/Musig2/Bip327.cs` (`PartialSigAgg`, `NonceAgg`'s `Half`, `NonceGen`/`DeterministicSign`), `src/NLightning.Domain/Crypto/ValueObjects/MusigSecretNonce.cs` (`Clear`), `src/NLightning.Domain/Bitcoin/Transactions/Models/CommitmentTransactionModel.cs` (`HasAnchors`), `test/NLightning.Application.Tests/Channels/DualFunding/DualFundUpfrontShutdownScriptTests.cs`
+- **Evidence:** The t01 integration review (three reviewers: MuSig2 against BIP 327 `reference.py`, scripts/signatures against BIP 340-342, the spec and LND master, transactions/fees against the spec and the legacy/anchors paths): (1) a 31-byte or default partial signature threw `IndexOutOfRangeException` and a default public nonce `NullReferenceException` instead of `MusigInvalidContributionException` blaming that signer (the reference raises `InvalidContributionError`); (2) `MusigSecretNonce.Clear` zeroed the buffer unconditionally, so a `Clear` racing a `Consume` that had won its compare-and-swap could zero `k1` while `Consume` copied it and the signer would sign with a wrong nonce; (3) `CommitmentTransactionModel` accepted `HasAnchors` contradicting `Format` (`HtlcTransactionModel` then threw); (4) the signer's comment said `SIGHASH_ALL` and `SIGHASH_DEFAULT` give one digest. Integration gate: `DualFundUpfrontShutdownScriptTests.Given_AP2TrScriptWithAnySegwit_*` (batch12) failed once in the loaded full run (Alice's `tx_abort` after the test's 1 s open timeout), green 3/3 alone. No legacy or anchors regression was found (byte-identity of every shared path checked; BOLT 3 248/248).
+- **Fix:** (1) length/null checked before the scalar is built, a null nonce half is an invalid contribution; (2) `Clear` zeroes only when it wins the compare-and-swap from live; the `MuSig/aux` hash is zeroed after use; (3) `HasAnchors` follows `Format` when it is set; (4) comment corrected; the dual-fund test's opens that complete use the harness's default open timeout (the refused ones keep 1 s: they end at Alice's deadline on the stepped clock, and a 60 s deadline is out of the harness's 1,000 rounds of 10 ms, so a first fix that moved them hung the test host; `DualFundHarness.RunAsync` now bounds its final wait at 30 s, so such a test fails instead of hanging). Tests (fail without the fix): `Musig2ServiceTests.Given_ADefaultPublicNonce_*`, `Given_ADefaultPartialSignature_*`, `Given_APartialSignatureOfAWrongLength_*`, `MusigValueObjectTests.Given_AConsumedSecretNonce_When_Cleared_Then_ItWritesNothing`, `HtlcTransactionModelFactoryTests.Given_ACommitmentWhoseHasAnchorsContradictsItsFormat_*`; plus `Bip327SignVectorTests.Given_AnAggregateNonceWithOneInfinityHalf_*` (regression vectors from `reference.py`). Rejected: "the pubkey-mismatch throw in `Sign` leaves the secret key scalar uncleared" (it is cleared before the throw).
+- **Blocks/Blocked-by:** Related NL-877, NL-911
+- **Plan ref:** TAPROOT_CHANNELS_PLAN wave t01 integration
+
+### NL-904 Simple taproot T3/T4 obligations found by the t01 review (fees by format, the format switch, nonce binding per funding, HTLC fee inputs)
+- **Status:** open
+- **Severity:** medium
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentFeeCalculator.cs` (the `CommitmentSpec` region: `IsHtlcTrimmed`, `UntrimmedHtlcCount`, `TrimmedHtlcTotalMsat`, `CommitmentBaseFeeSatoshis`, `FunderCostMsat` take only `bool hasAnchors`) and its callers (`UpdateValidator`, `ChannelOpenValidator`, `ChannelFactory`, `DualFundedOpenService`, `HtlcSwitch`, `InvoiceService`, `ChannelCloseCoordinator`, `DustExposurePolicy`, `AnchorCpfpService*`); `ChannelParams.CommitmentFormat` and the ~25 places that branch on `OptionAnchorOutputs`; `Musig2Service.GenerateNonce`; `HtlcTransactionBuilder` (`ThrowIfSimpleTaproot`), `TaprootSignatures`, `LocalLightningSigner` HTLC signing
+- **Evidence:** Latent while `CommitmentFormat` never returns `SimpleTaproot` (wave t01 is library code). (1) The `CommitmentSpec` fee methods would charge a taproot channel the anchors weight (1,124 + 172/HTLC) where its commitment pays 968: funder-cost, reserve, fee-spike and close-fee checks would ask 156 x feerate/1000 sat too much and refuse an exactly affordable add or `update_fee`. (2) A taproot channel type without the anchors bit would take the non-anchors branches (HTLC fees, sequence 0, SIGHASH_ALL peer signatures) unless those places use `format.HasAnchorOutputs()`. (3) `GenerateNonce` takes the caller's randomness and makes a new live object for the same inputs; the spec's counter-derived verification nonces must bind the funding txid (a splice signs one height once per funding) or one nonce signs two messages; an overload that draws its own randomness with `sk` required would remove the footgun for signing nonces; `VerifyPartialSignature` does not tie the public nonce to the session's aggregate (as the reference), so the caller must build the aggregate from the TLV's nonce. (4) Taproot HTLC transactions pay no fee and their output is behind the CSV, so they confirm only with wallet fee inputs, which are refused for taproot (`NotSupportedException`); `SIGHASH_DEFAULT` commits to every input's amount and script, so our signature must come after the fee inputs and the sighash must get every spent output; keep the HTLC input index equal to its output index for the peer's 0x83 signature. (5) No byte-level test of a commitment built from the remote side (the `*_remote_commit` vectors duplicate the local ones): Alice's remote commitment and Bob's local one must have one txid and Alice's HTLC signatures must pass Bob's validation. (6) LND's deployed staging type (bits 180/181) uses other leaves (`OP_CHECKSIG ... OP_CSV OP_DROP` forms) than the final type we build; staging peers would need a second script set. (7) Hardening: verify our own BIP 340 signature after signing (BIP 340's fault-attack advice); a taproot context with `HasAnchors = false` throws `ArgumentException` instead of `SignerException` in `ValidateLocalHtlcSignatures`.
+- **Fix sketch:** T3: carry `CommitmentFormat` through the commitment params and give the `CommitmentSpec` methods format overloads; move the anchors branches to `format.HasAnchorOutputs()` (or keep `OptionAnchorOutputs` true for the taproot type); bind the funding txid into the counter nonce derivation (`extra_in`); the mirrored-commitment test. T4: wallet fee inputs for taproot HTLC transactions. (6) and (7) when the channel type is wired.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T3, T4
 ## BOLT 3: Transactions and scripts
 
+
+### NL-910 `ClnPeerStorageTests` reconnect case failed once on the cluster (Assert.NotNull), green rerun alone
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnPeerStorageTests.cs` (`Given_AChannelWithCln_When_Reconnected_Then_BothSidesHandBackTheOthersBlob`; `Assert.NotNull` at the blob CLN keeps, the retrieval's contents or the stored blob after our restart)
+- **Evidence:** Cluster run `tap-mx1` (wip/taproot-plan 78907b32, 2026-10-03, cln suite run alongside lnd/eclair): `Xunit.Sdk.NotNullException: Assert.NotNull() Failure: Value is null` at 18:50:06 UTC; the class rerun alone was green. Diagnostics in `/Users/ms/nlightning-taproot/TestResults/cluster/tap-mx1/cln/diag/ClnPeerStorageTests.Given_AChannelWithCln_When_Reconnected_Then_BothSidesHandBackTheOthersBlob/` (CLN log, `listpeerchannels`, `getinfo`). Which of the three `NotNull`s failed is not in the summary; a likely candidate is CLN's datastore holding an earlier blob of ours that `TryReadBlobAsync` does not decode, or a retrieval without contents, as in NL-428's ordering.
+- **Fix sketch:** Log which assertion failed (the message), read the full test output of the run, and make the polls wait for the blob naming the test's channel.
+- **Blocks/Blocked-by:** Related NL-428, NL-010
+- **Plan ref:** —
+- **Second occurrence:** cluster run `nscap-mx1` (wip/nscap, 2026-10-03, the full matrix at 12 namespaces): the same test failed once and the class rerun alone was green (`/Users/ms/nlightning-nscap/TestResults/cluster/nscap-mx1/cln/diag/`). Two of the day's three full or cln matrices hit it, so treat it as a race rather than noise.
+
+### NL-916 `GossipSyncManagerTests.Given_ATimedOutScidQuery_When_ItsLateEndNeverArrives_*` failed once in a loaded Application.Tests run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Gossip/Sync/GossipSyncManagerTests.cs`
+- **Evidence:** taproot t01 integration (wip/taproot-int, 2026-10-03): one failure in a full Application.Tests run on a loaded machine; the class passed 45/45 three times alone. Same family as the fixed timing flakes NL-394/NL-501.
+- **Fix sketch:** find the remaining wall-clock wait in the late-end path and drive it from the stepped clock or a bounded event.
+- **Blocks/Blocked-by:** Related NL-394, NL-501
+- **Plan ref:** —
+
+
+### NL-980 The payer prefers a costly single-part route through strangers over a zero-fee split across its own direct channels
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Routing/PaymentRoutePlanner.cs`, `Payments/Send/PaymentService.cs` (part selection before splitting)
+- **Evidence:** Mutinynet trampoline live test (2026-10-03, FAFO2 → FAFO → FAFO3, build 96a2fb0a). The outer leg to FAFO, a direct peer over two channels, first tried single-part routes through public third-party nodes (fee about 121,000 msat) before splitting across FAFO2's own two channels at fee 0. That cost about 10 s and exposed the attempts to strangers. The planner is general: this is not trampoline-specific.
+- **Fix sketch:** when the destination (or the trampoline) is a direct peer and the direct channels can carry the amount together, try the zero-fee split first, or weigh fee against part count.
+- **Blocks/Blocked-by:** Related NL-270, NL-875
+- **Plan ref:** —
+
+### NL-981 `listforwards` totals leave out trampoline relay fees, and the relay's outgoing leg shows in `listpayments` as a plain payment
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Daemon/Handlers/ListForwardsClientHandler.cs` (summary totals), `Payments.IsTrampolineRelay` consumers in the `listpayments` path
+- **Evidence:** Mutinynet trampoline live test (2026-10-03). FAFO earned 92,000 msat in 5 trampoline relays, booked correctly as `TrampolineRelaySettled` (income:lightning:routing 93,007 msat with 1,007 msat from a plain forward). But the `listforwards` "fees earned" total counts only the plain forward. FAFO's relay legs appear in `listpayments` without a marker. A failed relay row is replaced when the payer retries the same hash. The failed-row history and the listing gaps overlap NL-899; the totals gap is new.
+- **Fix sketch:** add the relay rows (key 2) to the totals, mark relay legs in `listpayments` (or hide them behind a flag), and keep failed relay attempts.
+- **Blocks/Blocked-by:** Related NL-899, NL-875
+- **Plan ref:** `TRAMPOLINE_PLAN.md`
+
+### NL-982 A failed trampoline payment shows its last attempt's fee budget as its fee
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.TrampolinePayer.cs` (the payment row's fee on failure)
+- **Evidence:** Mutinynet trampoline live test (2026-10-03, test e2: recipient offline, 0x2019 from the trampoline): the failed payment's "Fee (msat)" read 10,000, the doubled budget of the last attempt, while nothing was paid. Cosmetic: the books recorded no fee.
+- **Fix sketch:** record 0 (or the budget in a separate field) for a payment that ends Failed.
+- **Blocks/Blocked-by:** Related NL-875
+- **Plan ref:** —
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
 - **Status:** fixed (dfe8866, b222896)
 - **Severity:** high
@@ -2003,6 +2112,17 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Give the builders a slim HTLC input type or make `AddMessage` nullable.
 - **Blocks/Blocked-by:** Related NL-230
 - **Plan ref:** —
+
+### NL-877 [EPIC] Simple taproot channels (`option_simple_taproot`, bits 80/81) not implemented
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** none yet; plan `docs/agents/TAPROOT_CHANNELS_PLAN.md` (T0-T6)
+- **Evidence:** No MuSig2, no taproot channel type, no taproot commitment, HTLC or sweep scripts; the only taproot code is wallet P2TR signing and the BOLT 11 v1 fallback (NL-118). The spec is merged (BOLTs #995, `bolt-simple-taproot.md`, 2026-05-04; depends on `option_channel_type` and `option_simple_close`, MUST NOT set `announce_channel`). LND 0.21 (production, private, on explicit request) and Eclair 0.14 (default, private) run it, so we fall back to anchors with both.
+- **Fix sketch:** Plan T0 MuSig2 (BIP 327 vectors) → T1 scripts/txs (spec vectors) → T2 wire TLVs → T3 signer, nonces (counter scheme, never reused across a crash), persistence, reestablish → T4 BOLT 5 resolvers → T5 simple close, dual fund, splicing, backups → T6 cluster proofs against LND 0.21.4 and Eclair 0.14.3; experimental until T6 and an owner decision (D-T1 `option_simple_close` default, D-T2 taproot default).
+- **Blocks/Blocked-by:** Blocks NL-878
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T0-T6
+- **Update (wave t01, 2026-10-03, branch `wip/taproot-plan`):** T0 merged (`795ae14b`): BIP 327 MuSig2 behind `IMusig2Service` (our own module, D-T3; NBitcoin's MuSig2 refused, NL-912), every BIP 327 vector and the spec's signed commitment (partial and aggregated signatures) byte-exact. D-T1 done (lane SC, `a2e7d6bc`): `option_simple_close` Optional by default on every network; cluster re-run pending (NL-913). T1 (scripts and transactions) in progress. T1 merged (`c7da7b8b`): `CommitmentFormat` with the simple taproot weights and 354 sat dust in the one fee calculator, `Infrastructure.Bitcoin/Taproot/` scripts, tapscript trees, outputs, builders and BIP 340 HTLC signatures; every spec script vector, the three signed commitment transactions and the 9 HTLC resolution transactions byte-exact. Library only, not wired. Hand-off and wave t02 (T2 wire, T3 signer/state) in `TAPROOT_CHANNELS_PLAN.md` "Wave t01 hand-off". Integrated into `wip/fafo` (2026-10-03): review fixes NL-903, T3/T4 obligations NL-904, NL-913 proven on the cluster.
 
 ---
 
@@ -2624,12 +2744,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** TRAMPOLINE_PLAN §7
 
 ### NL-897 Trampoline parts failed by the deadline monitor or the dust switch use the outer secret only
-- **Status:** open
+- **Status:** fixed (9c76b07f)
 - **Severity:** low
 - **Kind:** spec
 - **Location:** `src/NLightning.Application/Channels/Safety/HtlcExpiryMonitor.cs` (`FailBackAsync`), `Channels/Fees/DustExposureHtlcSwitch.cs`
 - **Evidence:** TR2/TR3 reports (2026-10-03): the switch and the relay engine double-wrap (trampoline then outer secret) every failure of a trampoline part, but the two failure paths outside them create the error with the outer secret only. The payer still decrypts it (outer layer, TR-R-15) but cannot attribute it to the trampoline layer.
 - **Fix sketch:** have both paths rebuild the trampoline keys (re-peel the stored onion as `HtlcSwitch` does) and use `TrampolineErrorPackets.CreateAttributed`.
+- **Fix (9c76b07f):** `Payments/Switch/TrampolineHtlcFailures`: `ResolveKeysAsync` peels the stored onion again (no replay owner) or reads the relay part's `TrampolineRelayParts` secrets; `FailAsync` creates the failure with the trampoline then the outer secret (outer-layer attribution when advertised; malformed `invalid_onion_blinding` past a blinded introduction node, our own `invalid_onion_blinding` at the introduction node of a relay, `TrampolineFailureKeys.IntroductionSha256`, also honored by the switch now). Used by `HtlcExpiryMonitor.FailBackAsync` and `DustExposureHtlcSwitch`; ordinary HTLCs unchanged. Tests in `HtlcExpiryMonitorTests` and `DustExposureHtlcSwitchTests` (the payer decrypts at the trampoline layer). Left as before: a held final trampoline part after a restart with trampoline routing turned off peels as an unknown TLV 20 and is failed with the outer secret only.
 - **Blocks/Blocked-by:** Follow-up of NL-875
 - **Plan ref:** TRAMPOLINE_PLAN TR-R-14
 
@@ -3820,6 +3941,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Collect right before taking a backlog snapshot, or skip pending items whose version equals the one the backlog sent.
 - **Blocks/Blocked-by:** Related NL-548
 - **Plan ref:** BOLT7 G3-T3
+
+### NL-878 Taproot gossip (`channel_announcement_2` and related; public taproot channels) not implemented
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Gossip/`, `src/NLightning.Domain/Gossip/` (v1 messages only)
+- **Evidence:** BOLTs #1059 (bits 70-75: TLV-only `channel_announcement_2`, `channel_update_2`, `announcement_signatures_2`, `node_announcement_2`, MuSig2/Schnorr signatures, block heights) was still a draft on 2026-10-03; LND's gossip v2 wire work (lnd #11164) was approved but not merged. No implementation announces taproot channels yet, so nothing is lost today; the BOLT 7 plan lists it as out of scope.
+- **Fix sketch:** After #1059 is merged: plan T7 (typed v2 messages, MuSig2 announcement signing, graph and sync for v2 next to v1), proven against LND's implementation.
+- **Blocks/Blocked-by:** Blocked-by NL-877 and BOLTs #1059
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T7; BOLT7_GOSSIP_PLAN "Out of scope"
 
 ## BOLT 8: Transport
 
@@ -5470,6 +5601,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Node/Managers/PeerManagerBatchTests.cs`
 - **Evidence:** Lane acct-a3-fixes-b (2026-10-02, several lanes building and testing on the machine): failed once in the full non-Docker run; the class passed 15/15 three times alone. The failure message was not captured. The test waits on `WaitForHandledAsync` and a disconnect `TaskCompletionSource` with `s_timeout`. Not hit in the A3 integration runs.
+- **Evidence (2):** Lane nl806 (2026-10-03, full non-Docker run on net10.0): `(batchSize: 0)` failed once with `Assert.Single() Failure: The collection was empty` at line 153 (`Warnings()` still empty after `WaitForHandledAsync(1)`: the warning is read before it was raised); the class passed 15/15 three times alone. Again `(batchSize: 0)` in the post-merge full run of the same lane, same message.
 - **Fix sketch:** Find the wait it races (as in the de-timing pass, NL-620 style); rerun alone before treating it as a regression.
 - **Blocks/Blocked-by:** Related NL-620
 - **Plan ref:** —
@@ -5784,6 +5916,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `docs/agents/ACCOUNTING_PLAN.md` §4
 
 ## Crypto providers and key management
+
+### NL-911 MuSig2 secrets are zeroed on a best-effort basis only
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Crypto/Musig2/Bip327.cs`
+- **Evidence:** Wave t01 lane T0: the nonce scalars and the secret key are `Scalar` structs copied by value through the BIP 327 steps, and the tagged-SHA256 state that absorbed the randomness or the secret key in `NonceGen`/`DeterministicSign` is not wiped; only the byte buffers and the `Scalar` locals are cleared (the `MuSig/aux` hash is zeroed since the t01 integration, NL-903; the caller's randomness buffer of `GenerateNonce` is the caller's to zero). Same class of residual as the managed-memory key material notes in `SECURITY_REVIEW.md` (SR-09, NL-437: a .NET limitation).
+- **Fix sketch:** Reset the hash states after use where the API allows it; record the residual in `SECURITY_REVIEW.md` next to SR-09 when T3 wires the signer.
+- **Blocks/Blocked-by:** Related NL-877, NL-437
+- **Plan ref:** TAPROOT_CHANNELS_PLAN T0, T3
+
+### NL-912 NBitcoin.Secp256k1 3.2.0's MuSig2 accepts the point at infinity in a signer's public nonce
+- **Status:** wontfix (we do not use NBitcoin's MuSig2: D-T3 chose our own BIP 327 module; it stays only as a cross-check in tests)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `NBitcoin.Secp256k1.Musig.MusigPubNonce` (third-party); `test/NLightning.Infrastructure.Bitcoin.Tests/Crypto/Musig2/`
+- **Evidence:** Wave t01 lane T0 ran every BIP 327 vector against it: 51/56 pass; `det_sign_vectors` error case 3 (33 zero bytes in an individual nonce) is accepted where BIP 327 refuses it, and `MusigContext.Sign` cannot take an aggregate nonce or an existing 97-byte secret nonce, so sign_error 2-5 cannot run.
+- **Fix sketch:** None needed while unused. Any future use must reject an infinity half in individual nonces first.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** TAPROOT_CHANNELS_PLAN D-T3
 
 ### NL-158 Key file encryption: fixed Argon2 salt, all-zero XChaCha nonce, 64 KiB Argon2 memory
 - **Status:** fixed (953a33b, b999208)
@@ -6478,6 +6630,7 @@ Update (batch11, lane aot-ef, 6a6911a1): a real `dotnet publish -r osx-arm64` ra
 - **Blocks/Blocked-by:** Related NL-382
 - **Plan ref:** —
 - **Update (2026-10-02, NL-602 integration):** after the de-timing pass the deterministic bound held (at most 6,112 adjacency scans per query, bound 40,000), but the 2,500 ms wall-clock canary tripped once (3,108 ms for 20 queries) on a 4-core cloud host at load average 26 (three agent builds running); the class passed 44/44 alone. The canary only catches a gross regression; on an oversubscribed host it can still fire.
+- **Update (2026-10-03, wave t01 integration):** the wall-clock canary tripped once more in the full net10.0 run on the 4-core cloud host while lane T1 built in parallel; 3/3 green alone (0.66-0.91 s).
 
 ### NL-445 GossipIngressTests retry case failed once under a loaded full run
 - **Status:** fixed (2b9fd41d)
@@ -7668,12 +7821,12 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** —
 
 ### NL-806 After a cluster Eclair restart one in-process node kept a dead connection and our 30-300 s keep-alive did not notice within 2 min
-- **Status:** open
+- **Status:** fixed (31f2f11e)
 - **Severity:** low
 - **Kind:** gap
-- **Location:** `test/NLightning.Integration.Tests/Fixtures/Eclair/ClusterEclairBackend.cs` (`RestartEclairAsync`; the host to ClusterIP path on OrbStack), `src/NLightning.Infrastructure/Protocol/Services/PingPongService.cs` (`StartPingAsync`, random 30-300 s interval)
-- **Evidence:** test harness phase 3/4 proof, `pf-ecl3-3`: `EclairSpliceTests.Given_OurPendingSplice_When_EclairRestarts_*` timed out waiting for Eclair's `channel_reestablish`. Eclair stopped at 02:45:22; another node of ours logged the close at 02:45:27.47 and reestablished at 02:45:45; `nltg-eclair-splice-g` logged nothing and still showed connected and reestablished while Eclair had it DISCONNECTED and the channel OFFLINE. Once in 8 cluster Eclair suite/class runs; reruns green (class 7/7 alone, 7/7 x3 at once). Docker never hits it (docker-proxy closes the host socket).
-- **Fix sketch:** Not decided: find why OrbStack's host-to-ClusterIP path lost the close of that one connection, or use a shorter or deterministic keep-alive (LND pings every minute). A product or owner call; no assertion was weakened.
+- **Location:** `src/NLightning.Infrastructure/Protocol/Services/PingPongService.cs` (`StartPingAsync`, was a random 30-300 s interval), `src/NLightning.Domain/Node/Options/NodeOptions.cs` (`PingInterval`), `src/NLightning.Infrastructure/Transport/Services/TcpService.cs`; seen through `test/NLightning.Integration.Tests/Fixtures/Eclair/ClusterEclairBackend.cs` (`RestartEclairAsync`; the host to ClusterIP path on OrbStack)
+- **Evidence:** test harness phase 3/4 proof, `pf-ecl3-3`: `EclairSpliceTests.Given_OurPendingSplice_When_EclairRestarts_*` timed out waiting for Eclair's `channel_reestablish`. Eclair stopped at 02:45:22; another node of ours logged the close at 02:45:27.47 and reestablished at 02:45:45; `nltg-eclair-splice-g` logged nothing and still showed connected and reestablished while Eclair had it DISCONNECTED and the channel OFFLINE. Once in 8 cluster Eclair suite/class runs; reruns green (class 7/7 alone, 7/7 x3 at once). Docker never hits it (docker-proxy closes the host socket). Second occurrence in matrix `b12-mx2` (`/Users/ms/nlightning-b12/TestResults/cluster/b12-mx2/eclair2/`): Eclair restarted at about 17:12, node `nltg-eclair-splice-g` logged nothing until the teardown at 17:14:13, and the test timed out after 2 min waiting for Eclair's `channel_reestablish`. The reestablish deadline (`Node:ReestablishTimeout`, NL-796) is armed per new connection and so never fired: no new connection was made.
+- **Fix:** Owner decision 2026-10-03 (option (b)). `Node:PingInterval` (`NodeOptions.PingInterval`, a nullable `TimeSpan`; `GetEffectivePingInterval`): unset is 15 s on regtest (and so for the in-process test nodes, which `NLightningTestNode` puts on regtest) and 60 s on mainnet, testnet, testnet4, signet and mutinynet (LND pings every minute); each wait moves by up to ±10 % (`PingPongService.PingJitter`). Zero, negative or under 5 s is refused at start on every network, regtest included (`GetValidationErrors`; also above a timer's limit). There is no 30 s floor: BOLT 1 has had no ping-rate rule since PR #918 (2021, commit 49e1c1cba9, "Drop ping sending rate-limit suggestion"), which removed "SHOULD NOT send `ping` messages more often than once every 30 seconds." and "SHOULD fail the channels if it has received significantly in excess of one `ping` per 30 seconds."; its rationale keeps only "Limited precautions are recommended against `ping` flooding, however some latitude is given because of network delays." Our receive side answers every `ping` and enforces no rate, so 15 s between two of our nodes is never punished. The pong wait stays `Node:NetworkTimeout` (the Tor timeout through Tor, NL-590), and a missing `pong` still only closes the connection (BOLT 1: "if it doesn't receive a corresponding `pong`: MAY close the network connection, and MUST NOT fail the channels in this case"); the reconnect backoff redials and reestablishes. Second guard: TCP keepalive on direct peer sockets in both directions (`TcpService.EnableKeepAlive`: 60 s idle, 10 s interval, 5 probes; a refused option is logged at debug; Tor-routed sockets end at the local proxy and are left alone). The config template writes the network's interval. Tests: `PingPongServiceTests` (network defaults, jitter bounds, a stepped loop whose every wait is 15 s ± 10 %, a silent peer after a good ping disconnected by the pong timeout; the stepped tests fail with the old random wait), `TcpServiceTests` (keepalive read back on both directions; fail without it), `NodeOptionsTests` (defaults per network, the 5 s refusal on regtest and elsewhere, binding), `NodeServiceExtensionsTests` (the template's interval per network). Cluster proof: `scripts/run-cluster.sh --matrix eclair,eclair2` green (eclair 25 + 2 not run, eclair2 7/7), `--matrix faults,cln` green (faults 6/6, cln 91 + 4 not run), and `EclairSpliceTests` `-n 3` (3 x 7/7). The NL-806 case itself appeared in run `nl806-es3-1`: the splice was signed at 19:11:43.5 and Eclair restarted, no close reached `nltg-eclair-splice-g`, and its keep-alive dropped the connection with a `PingTimeoutException` at 19:12:19.4; it redialled at 19:12:20.5 and Eclair's `channel_reestablish` came at once (the other two runs got the close at once, as before). New faults test `PartitionClusterTests.Given_AFrozenClnOnAQuietChannel_*` (CLN frozen by SIGSTOP right after a fresh connection on a quiet channel, so only the keep-alive can notice): dropped 28.9 s after the freeze (bound 36.5 s: interval + 10 % + `NetworkTimeout` + 5 s), channel active 1.1 s after the resume; with the old random 30-300 s wait put back it failed (dropped after 102.4 s).
 - **Blocks/Blocked-by:** Related NL-796
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 3/4 record"
 
@@ -7828,14 +7981,14 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
 
 ### NL-844 The ~15 min full-matrix target is not reachable within the 6-namespace cap
-- **Status:** open
+- **Status:** fixed (b8362d19, 501bebd7)
 - **Severity:** low
 - **Kind:** test
-- **Location:** `docs/agents/TEST_HARNESS_PLAN.md` "Phase 6 proof record", `scripts/run-cluster.sh` (`--max-namespaces`, cap 6)
-- **Evidence:** test harness phase 6 proof: `p6-tuned1` used 6,131 namespace-seconds, so 6 namespaces need at least 1,022 s; the run took 1,088 s (18.1 min). A simulation of 300,000 random suite orders found none below 1,052 s. CLN at 902 s is now the longest suite.
-- **Fix sketch:** Owner decision: allow about 7 namespaces (the VM has 28 cores and 64 GiB), or shorten the long poles (CLN, gossip, eclair).
-- **Blocks/Blocked-by:** Related NL-841
-- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record"
+- **Location:** `test/NLightning.Testing.Cluster/Run/RunAdmission.cs` (`DefaultMaxRuns`), `scripts/run-cluster.sh` (`--max-namespaces`, `-j`), `nltg-cluster matrix cap`
+- **Evidence:** test harness phase 6 proof: `p6-tuned1` used 6,131 namespace-seconds, so 6 namespaces need at least 1,022 s; the run took 1,088 s (18.1 min). A simulation of 300,000 random suite orders found none below 1,052 s. CLN at 902 s is now the longest suite. Update (2026-10-03, branch `wip/nscap`): owner decision 2026-10-03, the cap is 12. `RunAdmission.DefaultMaxRuns` = 12 is the one place it is set (`MatrixPlanner.MaxNamespaces` uses it, `run-cluster.sh` reads it through `nltg-cluster matrix cap` for the `--max-namespaces` default and limit and the `-j` cap; b8362d19) and the matrix's `-j` defaults to the namespace budget (501bebd7); tests pin 12 (`RunAdmissionTests`, `MatrixPlannerTests`, `MatrixReportTests`, `run-cluster-tests.sh`). Proof `nscap-mx1` (`--matrix -j 12 --max-namespaces 12`): 11 green + cln rerun-green (`ClnPeerStorageTests` timed out once and was green alone, NL-910), **1,058 s** against 1,088 s at 6, peak 11 run namespaces sampled; OrbStack's helper peaked at 12.4 GB RSS and 318 % CPU, the test hosts at 15.1 GB, host memory in use 35.3 GB (31.0 GB idle). At 12 the wall is the longest suite's (cln 1,052 s, eclair 943 s, gossip 840 s), so the 15 min target now needs the long poles split (NL-905), not more namespaces (`TEST_HARNESS_PLAN.md` "Namespace cap 12 record").
+- **Fix sketch:** Done: cap 12. The rest (shorter long poles) is NL-905.
+- **Blocks/Blocked-by:** Related NL-841, NL-905
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Phase 6 proof record", "Namespace cap 12 record"
 
 ### NL-860 With `NLTG_TEST_BACKEND=cluster` but no buildable Kubernetes configuration the LND fixture skipped every test, and the matrix judged the all-skipped suites green
 - **Status:** fixed (5a62e771)
@@ -8047,49 +8200,69 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** Related NL-883
 - **Plan ref:** none
 
+### NL-900 `FinancialReclassificationTests.Given_AClosedEntry_When_ARuleIsAddedDisabledEnabledAndAddedAgain_*` failed once under a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Accounting/Financial/FinancialReclassificationTests.cs` (line 128)
+- **Evidence:** Lane nl806 (2026-10-03, the post-merge full non-Docker run on net10.0 while other sessions built SDK 11 and ran cluster suites): `Assert.Null(entries[1].RuleId)` got 1 after 11 s (the first `RuleChange` adjustment carried the rule's id although "the rule had no id before its save"); the class (with `PeerManagerBatchTests`) passed 21/21 three times alone. Seen once.
+- **Fix sketch:** Find what the adjustment's `RuleId` reads under load (the rule row's id assigned before the adjustment is staged, or the entries' order); rerun alone before treating it as a regression.
+- **Blocks/Blocked-by:** Related NL-660
+- **Plan ref:** —
+
+### NL-905 The cln suite is the matrix's long pole at 12 namespaces
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Testing.Cluster/Run/Matrix/SuiteCatalog.cs` (`cln`, `eclair`), `scripts/run-cluster.sh --matrix`
+- **Evidence:** proof `nscap-mx1` of NL-844 (2026-10-03, `--matrix -j 12 --max-namespaces 12`): the matrix took 1,058 s and cln alone 1,052 s; the next suites are eclair 943 s and gossip 840 s, every other suite at most 658 s (ldk). With 12 namespaces every suite starts at once, so the matrix wall is the longest suite's.
+- **Fix sketch:** Owner decision 2026-10-03: left as an issue for now. Split cln as eclair/gossip were (NL-841) and maybe eclair again, for a matrix of about 10-12 min.
+- **Blocks/Blocked-by:** Related NL-844, NL-841
+- **Plan ref:** `TEST_HARNESS_PLAN.md` "Namespace cap 12 record"
+
 ## Cashu (ecash)
 
-### NL-900 Cashu ecash integration (epic)
+### NL-990 Cashu ecash integration (epic)
 - **Status:** in-progress
 - **Severity:** medium
 - **Kind:** feature
 - **Location:** `docs/agents/CASHU_PLAN.md`; branch `wip/cashu`
 - **Evidence:** NLightning has every Lightning piece a Cashu mint needs (BOLT 11/12 receive and pay, MPP, on-chain wallet), but no Cashu integration: no backend contract the reference mint (CDK `cdk-mintd`) can use, no native ecash wallet, no hold invoices for NUT-14 swaps. CDK has no C# bindings (`cdk-ffi`: Python, Swift, Kotlin), so the integration speaks CDK's wire contracts or implements the NUTs.
-- **Fix sketch:** Waves C0-C4 of `CASHU_PLAN.md`: C0 payment event stream (NL-901), C1 CDK gRPC payment processor (NL-902), C2 Docker proof (NL-903), C3 native wallet (NL-904), C4 hold invoices + NUT-14 (NL-905).
-- **Blocks/Blocked-by:** NL-901..NL-905
+- **Fix sketch:** Waves C0-C4 of `CASHU_PLAN.md`: C0 payment event stream (NL-991), C1 CDK gRPC payment processor (NL-992), C2 proof against `cdk-mintd` (NL-993), C3 native wallet (NL-994), C4 hold invoices + NUT-14 (NL-995).
+- **Blocks/Blocked-by:** NL-991..NL-995
 - **Plan ref:** `docs/agents/CASHU_PLAN.md`
 
-### NL-901 No notification when an invoice is settled or a payment finishes
+### NL-991 No notification when an invoice is settled or a payment finishes
 - **Status:** fixed (e5cb13a8)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.Domain/Payments/Events/`, `Domain/Payments/Interfaces/IPaymentEvent{Publisher,Source}.cs`, `src/NLightning.Application/Payments/Events/PaymentEventHub.cs`, `Payments/Switch/HtlcSwitch.cs` (`SettleWithAsync`), `Payments/Send/PaymentService.cs` (`LogSucceeded`/`LogFailed`), `src/NLightning.Daemon/Handlers/WaitInvoiceClientHandler.cs`, IPC 47
 - **Evidence:** Settlement and payment outcomes were only visible by polling `listinvoices`/`listpayments` or the accounting feed; a mint backend (C1), NWC or webhooks need a push. The IPC has no server push.
 - **Fix sketch:** In-process `PaymentEventHub` (`IPaymentEventPublisher`/`IPaymentEventSource`) with bounded per-subscriber queues (oldest dropped, `Overflowed` flag), published after the committing save by the switch (`InvoiceSettledEvent`, once per invoice) and the payment service (`PaymentSucceededEvent`/`PaymentFailedEvent`, only for final outcomes, not retried attempts); `waitinvoice <payment_hash> [--timeout]` (ClientCommand 47) subscribes, then reads, then waits (event or 5 s recheck; 1-300 s). Tests: `Application.Tests/Payments/Events/PaymentEventHubTests`, `PaymentHarnessTests.Given_ASubscriber_*`, `ThreeNodeSwitchTests.Given_ASubscriberAtCarol_*`, `Daemon.Tests/Handlers/WaitInvoiceClientHandlerTests`, `Client/WaitInvoiceCommandTests`.
-- **Blocks/Blocked-by:** Blocks NL-902
+- **Blocks/Blocked-by:** Blocks NL-992
 - **Plan ref:** `CASHU_PLAN.md` C0
 
-### NL-902 Cashu mints cannot use NLightning as their Lightning backend
-- **Status:** fixed (f5f69d23; BOLT 11 scope, follow-ups NL-907)
+### NL-992 Cashu mints cannot use NLightning as their Lightning backend
+- **Status:** fixed (f5f69d23; BOLT 11 scope, follow-ups NL-997)
 - **Severity:** low
 - **Kind:** feature
 - **Location:** new `src/NLightning.Cashu.PaymentProcessor`
 - **Evidence:** `cdk-mintd` talks to external Lightning backends through the `CdkPaymentProcessor` gRPC service (`cdk-payment-processor/src/proto/payment_processor.proto`); the shipped processors (Bark, LDK Server, LNbits, Spark) do not cover NLightning, and none does BOLT 11, BOLT 12 and on-chain together.
-- **Fix sketch:** Built (BOLT 11): `src/NLightning.Cashu.PaymentProcessor` (vendored CDK v0.18.1 proto, `CdkPaymentProcessorService`, `CashuPaymentProcessorHost` on its own Kestrel, HTTP/2, h2c on loopback or TLS/mTLS from `TlsDirectory`), `Cashu:PaymentProcessor` (default off, refused on mainnet unless `AllowMainnet`, refused off loopback without TLS), invoices and payments labelled `cashu-mint`, `WaitPaymentEvent` over NL-901's hub; `CASHU_PLAN.md` §6. Tests: `Daemon.Tests/Cashu/` (real gRPC round trips). Remaining before `fixed`: the Docker proof against `cdk-mintd` (NL-903); BOLT 12 and on-chain methods are follow-ups.
-- **Blocks/Blocked-by:** Blocked by NL-901; blocks NL-903
+- **Fix sketch:** Built (BOLT 11): `src/NLightning.Cashu.PaymentProcessor` (vendored CDK v0.18.1 proto, `CdkPaymentProcessorService`, `CashuPaymentProcessorHost` on its own Kestrel, HTTP/2, h2c on loopback or TLS/mTLS from `TlsDirectory`), `Cashu:PaymentProcessor` (default off, refused on mainnet unless `AllowMainnet`, refused off loopback without TLS), invoices and payments labelled `cashu-mint`, `WaitPaymentEvent` over NL-991's hub; `CASHU_PLAN.md` §6. Tests: `Daemon.Tests/Cashu/` (real gRPC round trips). Remaining before `fixed`: the proof against `cdk-mintd` (NL-993, done); BOLT 12 and on-chain methods are follow-ups.
+- **Blocks/Blocked-by:** Blocked by NL-991; blocks NL-993
 - **Plan ref:** `CASHU_PLAN.md` C1
 
-### NL-903 No Docker proof of a CDK mint running on NLightning
-- **Status:** fixed (9dea34a2)
+### NL-993 No proof of a CDK mint running on NLightning
+- **Status:** fixed (9dea34a2 on Docker; ported to the cluster harness in the wip/fafo integration, merge `wip/cashu-int`)
 - **Severity:** low
 - **Kind:** test-gap
-- **Location:** `test/NLightning.Integration.Tests/Docker/` (new `Cashu/`)
-- **Evidence:** C1 is proven only by unit tests until a `cdk-mintd` container runs on our processor.
-- **Fix sketch:** Done: `Docker/Interop/Cashu/CdkMintdInteropTests` (collection `cashu-mint`, trait `Interop.Cashu`, Docker-only suite `cashu` in the catalog, `scripts/run-interop.sh cashu`) on `Fixtures/Cashu/CashuMintFixture` (own bitcoind, `cashubtc/mintd:0.18.1` and `nltg-cdk-cli:0.18.1` built from `test/Docker/cdk-cli`, both `--network host`): two in-process nodes, the mint's node runs the processor; `cdk-cli mint` 10,000 sat (our labelled invoice paid by the payer; quote UNPAID → PAID → ISSUED), `cdk-cli melt` 4,000 sat to the payer's invoice (fee reserve 20 sat = the processor's quote, paid by our node, change returned: wallet 6,000 sat). Green twice in a row, about 18 s. Found: `cdk-mintd` 0.18 needs `allow_insecure = true` for a plaintext processor even on loopback. Not covered: a BOLT 12 melt (C1 is BOLT 11 only, NL-907) and a mint restart with quotes pending.
-- **Blocks/Blocked-by:** Blocked by NL-902
-- **Plan ref:** `CASHU_PLAN.md` C2
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cashu/`, `Fixtures/Cashu/CashuMintFixture.cs`, `test/NLightning.Testing.Cluster/Nodes/Cashu/CdkNodes.cs`
+- **Evidence:** C1 is proven only by unit tests until a `cdk-mintd` runs on our processor.
+- **Fix sketch:** Done: `Docker/Interop/Cashu/CdkMintdInteropTests` (collection `cashu-mint`, trait `Interop.Cashu`, matrix suite `cashu`, `scripts/run-cluster.sh --matrix cashu`) on `Fixtures/Cashu/CashuMintFixture`: two in-process nodes, the mint's node runs the processor; `cdk-cli mint` 10,000 sat (our labelled invoice paid by the payer; quote UNPAID → PAID → ISSUED), `cdk-cli melt` 4,000 sat to the payer's invoice (fee reserve 20 sat = the processor's quote, paid by our node, change returned: wallet 6,000 sat). First proven on Docker (host-network `cashubtc/mintd:0.18.1` and `nltg-cdk-cli:0.18.1`, green twice, about 18 s); the wip/fafo integration moved it to the cluster harness (owner decision NL-866: every suite but Tor on the cluster; `DockerAbsenceTests` unchanged): a run namespace with bitcoind, `cdk-mintd` pinned by digest and deployed per test, `cdk-cli` as an idle pod (`nltg-cdk-cli:0.18.1`, pull policy `Never`, built from `test/Docker/cdk-cli`) driven by `kubectl exec`; the mint dials the processor on the host's loopback at `host.orb.internal`. Green on the cluster in 35 s. Found: `cdk-mintd` 0.18 needs `allow_insecure = true` for a plaintext processor even on loopback. Not covered: a BOLT 12 melt (C1 is BOLT 11 only, NL-997) and a mint restart with quotes pending.
+- **Blocks/Blocked-by:** Blocked by NL-992
+- **Plan ref:** `CASHU_PLAN.md` C2, §7
 
-### NL-904 No native Cashu wallet in the node
+### NL-994 No native Cashu wallet in the node
 - **Status:** open
 - **Severity:** low
 - **Kind:** feature
@@ -8099,7 +8272,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** —
 - **Plan ref:** `CASHU_PLAN.md` C3
 
-### NL-905 No hold invoices (needed for NUT-14 LN/ecash atomic swaps)
+### NL-995 No hold invoices (needed for NUT-14 LN/ecash atomic swaps)
 - **Status:** open
 - **Severity:** low
 - **Kind:** feature
@@ -8109,7 +8282,7 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** —
 - **Plan ref:** `CASHU_PLAN.md` C4
 
-### NL-906 The AOT analyzer gate reports IL2026 in `IpcRequestLog` (`Exception.TargetSite`)
+### NL-996 The AOT analyzer gate reports IL2026 in `IpcRequestLog` (`Exception.TargetSite`)
 - **Status:** open
 - **Severity:** low
 - **Kind:** tooling
@@ -8119,14 +8292,14 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Blocks/Blocked-by:** Related NL-894
 - **Plan ref:** —
 
-### NL-907 The CDK payment processor offers BOLT 11 only
+### NL-997 The CDK payment processor offers BOLT 11 only
 - **Status:** open
 - **Severity:** low
 - **Kind:** feature
 - **Location:** `src/NLightning.Cashu.PaymentProcessor/CdkPaymentProcessorService.cs`
-- **Evidence:** C1 (NL-902) answers `UNIMPLEMENTED` for BOLT 12 (NUT-25) and on-chain (NUT-30) mint and melt, refuses partial (NUT-15 MPP) melts, and keeps the melt quote ids for `WaitPaymentEvent` in memory only (after a restart the mint learns outcomes through `CheckOutgoingPayment`). A mint restart with quotes pending is not proven in Docker.
+- **Evidence:** C1 (NL-992) answers `UNIMPLEMENTED` for BOLT 12 (NUT-25) and on-chain (NUT-30) mint and melt, refuses partial (NUT-15 MPP) melts, and keeps the melt quote ids for `WaitPaymentEvent` in memory only (after a restart the mint learns outcomes through `CheckOutgoingPayment`). A mint restart with quotes pending is not proven in Docker.
 - **Fix sketch:** BOLT 12 through `IOfferService.CreateOfferAsync` (identifier `OFFER_ID`, `payment_received` per invoice of the offer) and `IOfferPaymentService.PayOfferAsync`; on-chain through `GetUnusedAddressAsync`/`IWalletSpendService` with the chain monitor's deposits; MPP melts as `PayInvoiceOptions` parts; persist quote ids with the payment label; extend `CdkMintdInteropTests`.
-- **Blocks/Blocked-by:** Related NL-902, NL-903
+- **Blocks/Blocked-by:** Related NL-992, NL-993
 - **Plan ref:** `CASHU_PLAN.md` §6
 
 ## Docs

@@ -7,7 +7,7 @@ using NLightning.Client.Printers;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// The CLI side of <c>waitinvoice</c> (ClientCommand 47, Cashu plan C0, NL-901).
+/// The CLI side of <c>waitinvoice</c> (ClientCommand 47, Cashu plan C0, NL-991).
 /// </summary>
 public class WaitInvoiceCommandTests
 {

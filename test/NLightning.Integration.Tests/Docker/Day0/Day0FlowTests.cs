@@ -37,8 +37,8 @@ using Utils;
 /// funding. (9) A splices in at BOLT 3's floor feerate and bumps the splice with <c>bumpsplice</c> (RBF, wave SPR):
 /// the bump replaces the first attempt in the mempool, both nodes list both attempts pending, a payment goes through
 /// while they are, the bumped attempt confirms and locks, the first never confirms, and alice has the new short channel
-/// id and forgets the old one. (8) A closes cooperatively and alice forgets the channel (the close runs last, after
-/// step 9).
+/// id and forgets the old one. (8) A closes cooperatively, with <c>option_simple_close</c> (both nodes' default since
+/// taproot plan D-T1), and alice forgets the channel (the close runs last, after step 9).
 /// </summary>
 /// <remarks>
 /// <para>Written against the SP2 contracts (<c>3560f3a9</c>); the splice completion lands in lanes SP2-A (reestablish
@@ -432,15 +432,36 @@ public sealed class Day0FlowTests : IAsyncLifetime
         await BackupBothAsync(a, b, channelId, "step 9 (splice rbf)", ct);
 
         // ---- Step 8: cooperative close ----
+        // Both nodes run the default features, so option_simple_close (Optional by default since taproot plan D-T1)
+        // is negotiated: each side proposes its own closing transaction and signs the other's, both are broadcast and
+        // bitcoind keeps one of the two conflicting transactions, so the test follows the funding output's spender
         var close = await Day0Harness.HandleAsync<CloseChannelClientRequest, CloseChannelClientResponse>(
                         a, new CloseChannelClientRequest(channelId) { WaitSeconds = 60 }, ct);
         Assert.NotNull(close.ClosingTxId);
-        var closingTxId = Day0Harness.ToUint256(close.ClosingTxId.Value);
-        Console.WriteLine($"[day0] step 8: closing transaction {closingTxId} ({close.State})");
-        await Day0Harness.WaitInMempoolAsync(_fixture, closingTxId, ct);
-        var closingTx = await _fixture.Bitcoin.GetRawTransactionAsync(closingTxId, true, ct);
+        Console.WriteLine($"[day0] step 8: A's closing transaction {Day0Harness.Display(close.ClosingTxId)} "
+                        + $"({close.State})");
+        var closedFunding = Day0Harness.ToUint256(lockedA9.FundingTxId!.Value);
+        var closingTx = await Poll.ForAsync(async () =>
+        {
+            foreach (var txid in await _fixture.Bitcoin.GetRawMempoolAsync(ct))
+            {
+                var mempoolTx = await _fixture.Bitcoin.GetRawTransactionAsync(txid, true, ct);
+                if (mempoolTx.Inputs.Any(i => i.PrevOut.Hash == closedFunding))
+                    return mempoolTx;
+            }
+
+            return null;
+        }, Day0Harness.StepTimeout, "a closing transaction of the channel in the mempool", ct,
+                                            TimeSpan.FromMilliseconds(500));
+        Console.WriteLine($"[day0] step 8: closing transaction {closingTx.GetHash()} in the mempool");
         Assert.Single(closingTx.Inputs);
-        Assert.Equal(Day0Harness.ToUint256(lockedA9.FundingTxId!.Value), closingTx.Inputs[0].PrevOut.Hash);
+        Assert.Equal(2U, closingTx.Version);
+        Assert.Equal(0xFFFFFFFDU, (uint)closingTx.Inputs[0].Sequence); // BOLT 3 simple close
+        foreach (var node in new[] { a, b })
+        {
+            Assert.True(node.CountLogLines("Sending closing_complete") >= 1, $"{node.Name} sent no closing_complete");
+            Assert.Equal(0, node.CountLogLines("closing_signed for channel"));
+        }
         await ChainSync.MineAndWaitAsync(_fixture, 6, observers, [a, b], ct);
         foreach (var node in new[] { a, b })
             await Poll.UntilAsync(() => IsClosed(node, channelId), Day0Harness.StepTimeout,

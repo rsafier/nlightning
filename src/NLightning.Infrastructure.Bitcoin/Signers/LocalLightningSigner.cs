@@ -27,6 +27,7 @@ using Domain.Protocol.Models;
 using Domain.Protocol.ValueObjects;
 using Gossip;
 using Networks;
+using Taproot;
 
 public partial class LocalLightningSigner : ILightningSigner
 {
@@ -679,11 +680,22 @@ public partial class LocalLightningSigner : ILightningSigner
         for (var i = 0; i < htlcTransactions.Count; i++)
         {
             var context = htlcTransactions[i];
-            var signature = ParseLowSSignature(channelId, signatures[i], i);
 
             // The peer's HTLC key for our commitment: remote_htlc_basepoint tweaked by our per-commitment point
             var remoteHtlcPubKey = _keyDerivationService.DerivePublicKey(signingInfo.RemoteHtlcBasepoint.Value,
                                                                          context.PerCommitmentPoint);
+
+            if (context.HtlcTransaction.IsTaproot)
+            {
+                // Simple taproot: a BIP 340 signature of the script-path sighash, SIGHASH_SINGLE|SIGHASH_ANYONECANPAY
+                var taprootSigHash = ComputeTaprootHtlcSigHash(context, GetCounterpartyHtlcSigHash(context.HasAnchors));
+                if (!TaprootSignatures.Verify(new PubKey(remoteHtlcPubKey), taprootSigHash, signatures[i].Value))
+                    throw new SignerException($"HTLC signature {i} is invalid", channelId,
+                                              "Invalid htlc_signature provided");
+                continue;
+            }
+
+            var signature = ParseLowSSignature(channelId, signatures[i], i);
             var sigHash = ComputeHtlcSigHash(context, GetCounterpartyHtlcSigHash(context.HasAnchors));
 
             if (!new PubKey(remoteHtlcPubKey).Verify(sigHash, signature))
@@ -1499,6 +1511,11 @@ public partial class LocalLightningSigner : ILightningSigner
                                                                  context.PerCommitmentPoint);
         using var htlcKey = new Key(htlcPrivKey);
 
+        // Simple taproot: a BIP 340 signature (fresh aux randomness) of the BIP 341 script-path sighash of the spent
+        // leaf; the sighash byte (0x83 for the counterparty, none for SIGHASH_DEFAULT) is added by the tx builder
+        if (context.HtlcTransaction.IsTaproot)
+            return TaprootSignatures.Sign(htlcKey, ComputeTaprootHtlcSigHash(context, sigHash));
+
         // RFC 6979 without low-R grinding, like SignChannelTransaction; the sighash flag is added by the tx builder
         var signature = htlcKey.Sign(ComputeHtlcSigHash(context, sigHash, allowFeeInputs),
                                      new SigningOptions(sigHash, false));
@@ -1517,6 +1534,28 @@ public partial class LocalLightningSigner : ILightningSigner
         var witnessScript = new Script((byte[])built.SpentWitnessScript);
         var spentOutput = new TxOut(Money.Satoshis(built.SpentAmount.Satoshi), witnessScript.WitHash.ScriptPubKey);
         return tx.GetSignatureHash(witnessScript, 0, sigHash, spentOutput, HashVersion.WitnessV0);
+    }
+
+    /// <summary>
+    /// The BIP 341 script-path sighash of a simple taproot HTLC transaction: <c>SIGHASH_ALL</c> becomes
+    /// <c>SIGHASH_DEFAULT</c> (64-byte signature, no sighash byte; not the same digest as <c>SIGHASH_ALL</c>, since
+    /// BIP 341 commits to the hash type, whatever the spec's text says), the counterparty's
+    /// <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> stays. Simple taproot keeps the anchors rules, so the context must
+    /// say so.
+    /// </summary>
+    private uint256 ComputeTaprootHtlcSigHash(HtlcSigningContext context, SigHash sigHash)
+    {
+        if (!context.HasAnchors)
+            throw new ArgumentException("A simple taproot HTLC transaction has the anchors semantics",
+                                        nameof(context));
+
+        var taprootSigHash = sigHash switch
+        {
+            SigHash.All => TaprootSignatures.HolderHtlcSigHash,
+            SigHash.Single | SigHash.AnyoneCanPay => TaprootSignatures.CounterpartyHtlcSigHash,
+            _ => throw new ArgumentOutOfRangeException(nameof(sigHash), sigHash, "Not an HTLC signature flag")
+        };
+        return TaprootSignatures.ComputeHtlcSigHash(context.HtlcTransaction, taprootSigHash, _network);
     }
 
     private static ECDSASignature ParseLowSSignature(ChannelId channelId, CompactSignature signature, int index)

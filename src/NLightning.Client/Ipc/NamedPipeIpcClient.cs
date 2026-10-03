@@ -269,7 +269,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Waits until one of our invoices is no longer open (ClientCommand 47, Cashu plan C0, NL-901).
+    /// Waits until one of our invoices is no longer open (ClientCommand 47, Cashu plan C0, NL-991).
     /// </summary>
     /// <param name="paymentHash">The invoice's payment hash.</param>
     /// <param name="timeoutSeconds">How long the daemon waits, or null for its default.</param>

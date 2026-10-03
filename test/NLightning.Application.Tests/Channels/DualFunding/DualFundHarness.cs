@@ -195,7 +195,9 @@ internal sealed class DualFundHarness : IAsyncDisposable
                 await Task.WhenAny(operation, Task.Delay(10));
         }
 
-        return await operation;
+        // Bounded: an operation the rounds did not finish (an open whose deadline is beyond 1,000 clock steps of
+        // 10 ms) fails the test instead of hanging the test host
+        return await operation.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
     }
 
     /// <summary>The link drops: queued messages are lost and both channel managers are told.</summary>

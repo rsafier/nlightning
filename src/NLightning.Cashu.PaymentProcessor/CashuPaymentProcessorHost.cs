@@ -15,7 +15,7 @@ namespace NLightning.Cashu.PaymentProcessor;
 
 /// <summary>
 /// Runs the gRPC server of <see cref="CdkPaymentProcessorService"/> on its own Kestrel instance inside the node's host
-/// (Cashu plan C1, NL-902). It does nothing unless <c>Cashu:PaymentProcessor:Enabled</c>.
+/// (Cashu plan C1, NL-992). It does nothing unless <c>Cashu:PaymentProcessor:Enabled</c>.
 /// </summary>
 /// <remarks>
 /// The server has its own small service provider (gRPC and Kestrel only); the service instance comes from the node's

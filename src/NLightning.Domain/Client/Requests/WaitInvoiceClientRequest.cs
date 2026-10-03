@@ -4,7 +4,7 @@ using Crypto.ValueObjects;
 
 /// <summary>
 /// Waits until one of our invoices is no longer <c>Open</c> (<c>ClientCommand.WaitInvoice</c>, 47; Cashu plan C0,
-/// NL-901).
+/// NL-991).
 /// </summary>
 public sealed class WaitInvoiceClientRequest
 {

@@ -22,8 +22,8 @@ using Utils;
 /// commitment and closes its side, and once Eclair's 720-block <c>to_self_delay</c> has passed our <c>to_local</c> sweep
 /// pays our wallet; (b) Eclair force closes (<c>forceclose</c>): we record its commitment as the peer's and sweep our
 /// CSV-1 <c>to_remote</c> into our wallet; (c) and (d) <c>option_simple_close</c> (<c>closing_complete</c>/
-/// <c>closing_sig</c>, BOLT 2 since N11), which Eclair offers and our node turns on (it is off by default): we close,
-/// and Eclair closes.
+/// <c>closing_sig</c>, BOLT 2 since N11), which Eclair offers and our node advertises by default (Optional since
+/// taproot plan D-T1): we close, and Eclair closes.
 /// </summary>
 /// <remarks>Run with <c>scripts/run-cluster.sh -n 1 --suite eclair --class
 /// NLightning.Integration.Tests.Docker.Interop.Eclair.EclairCloseTests</c>.</remarks>
@@ -224,20 +224,13 @@ public sealed class EclairCloseTests : IAsyncLifetime
 
     /// <summary>
     /// The dual-funded channel we open to Eclair (plain <c>openchannel</c>, 1M sat) with 300k sat paid to Eclair, so
-    /// both sides have an output; with <paramref name="simpleClose"/> our node offers <c>option_simple_close</c> (and
-    /// its dependency <c>option_shutdown_anysegwit</c>).
+    /// both sides have an output, from a node with the default features (<c>option_simple_close</c> and its dependency
+    /// <c>option_shutdown_anysegwit</c> Optional since taproot plan D-T1); with <paramref name="simpleClose"/> the test
+    /// checks that simple close was negotiated with Eclair.
     /// </summary>
     private async Task<EclairChannelSession> BuildAsync(string nodeName, CancellationToken ct, bool simpleClose = false)
     {
-        _session = await EclairChannelSession.BuildOurFundedAsync(
-                       _fixture, nodeName, s_capacity, null, ct,
-                       configureNodeOptions: simpleClose
-                                                 ? o =>
-                                                 {
-                                                     o.Features.OptionSimpleClose = FeatureSupport.Optional;
-                                                     o.Features.BeyondSegwitShutdown = FeatureSupport.Optional;
-                                                 }
-        : null);
+        _session = await EclairChannelSession.BuildOurFundedAsync(_fixture, nodeName, s_capacity, null, ct);
         if (simpleClose)
         {
             var peer = _session.Node.PeerManager.GetPeer(_session.EclairPubKey);

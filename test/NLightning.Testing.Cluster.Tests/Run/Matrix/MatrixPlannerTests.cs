@@ -12,8 +12,8 @@ public class MatrixPlannerTests
 
         // Assert
         Assert.Equal(SuiteCatalog.Names, plan.Select(p => p.Suite.Name));
-        // Skipped by default: the suites whose cluster proof is pending, and tor and cashu (Docker only)
-        Assert.Equal([.. PendingSuites(), "tor", "cashu"], plan.Where(p => !p.Runs).Select(p => p.Suite.Name));
+        // Skipped by default: the suites whose cluster proof is pending, and tor (Docker only)
+        Assert.Equal([.. PendingSuites(), "tor"], plan.Where(p => !p.Runs).Select(p => p.Suite.Name));
         Assert.All(plan.Where(p => p.Runs), p => Assert.False(p.Serial));
     }
 
@@ -71,12 +71,11 @@ public class MatrixPlannerTests
 
         // Assert
         var skipped = plan.Where(p => !p.Runs).ToList();
-        Assert.Equal(["lnd", "gossip", "day0", "onchain", "anchors", "abcd", "tor", "cashu"],
+        Assert.Equal(["lnd", "gossip", "day0", "onchain", "anchors", "abcd", "tor"],
                      skipped.Select(p => p.Suite.Name));
-        Assert.All(skipped.Where(p => p.Suite.Name is not ("tor" or "cashu")),
+        Assert.All(skipped.Where(p => p.Suite.Name != "tor"),
                    p => Assert.Contains("would start Docker containers", p.SkipReason));
         Assert.StartsWith("Docker only", skipped.Single(p => p.Suite.Name == "tor").SkipReason);
-        Assert.StartsWith("Docker only", skipped.Single(p => p.Suite.Name == "cashu").SkipReason);
         Assert.All(skipped, p => Assert.Equal(0, p.Namespaces));
     }
 
@@ -109,11 +108,21 @@ public class MatrixPlannerTests
 
     [Theory]
     [InlineData(0)]
-    [InlineData(7)]
+    [InlineData(13)]
     public void Given_ABudgetOutsideTheCap_When_Planned_Then_ItIsRefused(int budget)
     {
         // Act & Assert
         Assert.Throws<ArgumentException>(() => MatrixPlanner.Plan(["cln"], budget, false));
+    }
+
+    [Fact]
+    public void Given_TheWholeCap_When_Planned_Then_TwelveNamespacesAreAccepted()
+    {
+        // Act: NL-844 raised the cap from 6 to 12
+        var plan = MatrixPlanner.Plan(["lnd"], 12, true);
+
+        // Assert
+        Assert.Single(plan);
     }
 
     [Fact]

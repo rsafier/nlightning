@@ -1,7 +1,7 @@
 namespace NLightning.Domain.Client.Responses;
 
 /// <summary>
-/// The invoice a <c>WaitInvoice</c> (47) waited on, as it was when the wait ended (Cashu plan C0, NL-901).
+/// The invoice a <c>WaitInvoice</c> (47) waited on, as it was when the wait ended (Cashu plan C0, NL-991).
 /// </summary>
 public sealed class WaitInvoiceClientResponse
 {

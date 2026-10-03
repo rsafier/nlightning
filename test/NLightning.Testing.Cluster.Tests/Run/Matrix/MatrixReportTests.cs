@@ -389,10 +389,26 @@ public sealed class MatrixReportTests : IDisposable
         Assert.Equal("", error.ToString());
     }
 
+    [Fact]
+    public async Task Given_TheCapCommand_When_Run_Then_ItPrintsTheMachinesNamespaceCap()
+    {
+        // Arrange
+        var output = new StringWriter();
+
+        // Act
+        var code = await MatrixCli.RunAsync(["cap"], output, TextWriter.Null);
+
+        // Assert: run-cluster.sh reads its --max-namespaces and -j limit from here (NL-844)
+        Assert.Equal(ClusterCli.Ok, code);
+        Assert.Equal(RunAdmission.DefaultMaxRuns.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                     output.ToString().Trim());
+    }
+
     [Theory]
     [InlineData("bogus")]
     [InlineData("plan", "--suites", "bogus")]
-    [InlineData("plan", "--max-namespaces", "9")]
+    [InlineData("plan", "--max-namespaces", "13")]
+    [InlineData("cap", "--suites", "cln")]
     [InlineData("plan", "--max-namespaces", "x")]
     [InlineData("plan", "--max")]
     [InlineData("summary")]

@@ -1,6 +1,6 @@
 # Cashu (ecash) integration plan
 
-Branch: `wip/cashu`. Epic: NL-900. Written 2026-10-03.
+Branch: `wip/cashu`. Epic: NL-990. Written 2026-10-03.
 
 NLightning already does everything a Cashu mint needs from a Lightning backend:
 - receive BOLT 11 and BOLT 12;
@@ -141,11 +141,11 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
 
 | Wave | Content | Issue | Status |
 |---|---|---|---|
-| C0 | `IPaymentEventSource` / `IPaymentEventPublisher` (Domain), `PaymentEventHub` (Application), published after commit by `HtlcSwitch` (invoice settled) and `PaymentService` (payment succeeded/failed); `waitinvoice` (IPC 47) | NL-901 | done |
-| C1 | `NLightning.Cashu.PaymentProcessor`: the `CdkPaymentProcessor` gRPC service on Kestrel in the daemon, behind `Cashu:PaymentProcessor` (BOLT 11; BOLT 12, on-chain, MPP melts: NL-907) | NL-902 | done |
-| C2 | Docker proof against `cdk-mintd` + `cdk-cli` | NL-903 | done (§7) |
-| C3 | Native Cashu wallet | NL-904 | open |
-| C4 | Hold invoices + NUT-14 | NL-905 | open |
+| C0 | `IPaymentEventSource` / `IPaymentEventPublisher` (Domain), `PaymentEventHub` (Application), published after commit by `HtlcSwitch` (invoice settled) and `PaymentService` (payment succeeded/failed); `waitinvoice` (IPC 47) | NL-991 | done |
+| C1 | `NLightning.Cashu.PaymentProcessor`: the `CdkPaymentProcessor` gRPC service on Kestrel in the daemon, behind `Cashu:PaymentProcessor` (BOLT 11; BOLT 12, on-chain, MPP melts: NL-997) | NL-992 | done |
+| C2 | Proof against `cdk-mintd` + `cdk-cli` (cluster harness since the wip/fafo integration) | NL-993 | done (§7) |
+| C3 | Native Cashu wallet | NL-994 | open |
+| C4 | Hold invoices + NUT-14 | NL-995 | open |
 
 ### C0 design
 
@@ -225,7 +225,7 @@ Before C0 there was no "invoice paid" or "payment finished" notification, only p
    - A liabilities role for outstanding ecash belongs to C3/embedded-mint work.
 
 
-## 6. C1 as built (NL-902)
+## 6. C1 as built (NL-992)
 
 **Project:** `src/NLightning.Cashu.PaymentProcessor` (references Application, Bolt11, Domain; `FrameworkReference Microsoft.AspNetCore.App`, `Grpc.AspNetCore.Server` 2.76.0).
 - `Protos/payment_processor.proto` is CDK v0.18.1's, byte-identical apart from `option csharp_namespace`. Both server and client are generated; the client serves the tests and the C2 proof.
@@ -295,21 +295,22 @@ allow_insecure = true          # required for the plaintext (loopback) processor
 ```
 
 
-## 7. C2 record (NL-903): CDK's mint on our node, proven in Docker
+## 7. C2 record (NL-993): CDK's mint on our node, proven on the cluster harness
 
-**Class:** `test/NLightning.Integration.Tests/Docker/Interop/Cashu/CdkMintdInteropTests`. It runs in collection `cashu-mint` with trait `Category=Interop.Cashu`, on the Docker-only suite `cashu` (catalog `SuiteCatalog`, listed and skipped by the cluster matrix like `tor`).
-- Run it with `scripts/run-interop.sh cashu`, or `dotnet run --project test/NLightning.Integration.Tests -c Release -f net10.0 --no-build -- -trait "Category=Interop.Cashu"` without `NLTG_TEST_BACKEND`.
+**Class:** `test/NLightning.Integration.Tests/Docker/Interop/Cashu/CdkMintdInteropTests`. It runs in collection `cashu-mint` with trait `Category=Interop.Cashu`, as the matrix suite `cashu` (catalog `SuiteCatalog`, 1 namespace).
+- Run it with `scripts/run-cluster.sh --matrix cashu` (or `-n 1 --suite cashu`). Without `NLTG_TEST_BACKEND=cluster` the test is skipped with the reason.
+- History: the branch first proved it on Docker (host-network containers, `scripts/run-interop.sh cashu`). The wip/fafo integration ported it to the cluster harness, since every suite but Tor runs there (owner decision, NL-866); `DockerAbsenceTests` keeps Docker out of the fixture.
 
-**Fixture:** `Fixtures/Cashu/CashuMintFixture`. It is the second source `DockerAbsenceTests` lets drive Docker. It has:
-- its own bitcoind (`TorChainHost` on `nltg-cashu-net`);
-- `cashubtc/mintd:0.18.1`, configured through `cdk-mintd config init --new-mint` with `backend = "grpcprocessor"` and `allow_insecure = true`. cdk-mintd 0.18 refuses a plaintext processor without that, loopback included.
-- `nltg-cdk-cli:0.18.1`, built from `test/Docker/cdk-cli` when missing, because CDK publishes no CLI image. It is a `cargo install cdk-cli` build of about 10 min; behind a TLS-intercepting proxy, pass its CA as the build secret `ca`.
+**Fixture:** `Fixtures/Cashu/CashuMintFixture`, a run namespace (suite `cashu-mint`) with:
+- the harness's bitcoind `miner` (Bitcoin Core 31.1, `emptyDir`);
+- `cdk-mintd` (`ImageVersions.CdkMintd`, `cashubtc/mintd:0.18.1` pinned by digest; `docker pull` it once), deployed per test by `StartMintAsync(processorPort)`. The pod writes its `config.toml` from an environment variable and runs `cdk-mintd config init --new-mint` with `backend = "grpcprocessor"` and `allow_insecure = true` (cdk-mintd 0.18 refuses a plaintext processor without it, loopback included). Workloads: `Testing.Cluster/Nodes/Cashu/CdkNodes`;
+- `cdk-cli` in an idle pod (`ImageVersions.CdkCli`, `nltg-cdk-cli:0.18.1`, pull policy `Never`), built once with `docker build -t nltg-cdk-cli:0.18.1 test/Docker/cdk-cli` because CDK publishes no CLI image (a `cargo install cdk-cli` build of about 10 min; behind a TLS-intercepting proxy, pass its CA as the build secret `ca`). The test runs `cdk-cli` in it with `kubectl exec`.
 
-Both containers run with `--network host`. The mint reaches the node's processor on `127.0.0.1`, and the wallet and the test reach the mint there. Docker Desktop and OrbStack need host networking turned on.
+The mint reaches the in-process node's processor, which listens on the host's loopback, at `host.orb.internal` (OrbStack forwards it to the host's loopback). The wallet reaches the mint by its Service name `http://cdk-mintd:8085`, the test by its pod IP.
 
 **The flow:**
 1. Two in-process nodes on the fixture's chain. The mint's node runs the processor, its `CashuPaymentProcessorHost` started by the test from the node's services. The payer opens a 1M sat channel with a 200k push.
 2. `cdk-cli mint <url> 10000`. The mint quote is our invoice labelled `cashu-mint`; the payer pays it. The quote goes UNPAID → PAID → ISSUED, and the wallet holds 10,000 sat.
 3. `cdk-cli melt --invoice <payer's 4,000 sat invoice>`. The fee reserve is 20 sat (the processor's 0.5 %). Our node pays it, labelled `cashu-mint`, the payer's invoice settles, and the wallet holds 6,000 sat: no routing fee on a direct channel, so the reserve came back as change.
 
-**Result:** green twice in a row, about 18 s each with the images present. Containers are removed afterwards.
+**Result:** on Docker green twice in a row (about 18 s each, the branch); on the cluster green (35 s with the images present, 2026-10-03, the wip/fafo integration).

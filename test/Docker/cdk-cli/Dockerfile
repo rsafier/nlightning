@@ -1,6 +1,7 @@
-# CDK's wallet CLI (cdk-cli) for the Cashu mint proof (Cashu plan C2, NL-903): the fixture
-# (test/NLightning.Integration.Tests/Fixtures/Cashu/CashuMintFixture.cs) builds it as nltg-cdk-cli:<CdkVersion> when the
-# tag is missing and runs it with --network host against cdk-mintd. CDK publishes no cdk-cli image. A bump of
+# CDK's wallet CLI (cdk-cli) for the Cashu mint proof (Cashu plan C2, NL-993) on the cluster harness: build it once as
+#   docker build -t nltg-cdk-cli:0.18.1 test/Docker/cdk-cli
+# (about 10 min); the cluster runs it with pull policy Never (ImageVersions.CdkCli) as an idle pod the fixture
+# (test/NLightning.Integration.Tests/Fixtures/Cashu/CashuMintFixture.cs) execs cdk-cli in. CDK publishes no cdk-cli image. A bump of
 # CDK_VERSION goes with the mintd image tag and the vendored proto (src/NLightning.Cashu.PaymentProcessor/Protos).
 #
 # Behind a TLS-intercepting proxy, pass its CA as a build secret: --secret id=ca,src=/path/ca.pem

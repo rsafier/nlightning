@@ -98,7 +98,7 @@ public class ThreeNodeSwitchTests
     [Fact]
     public async Task Given_ASubscriberAtCarol_When_AlicePaysThroughBob_Then_CarolPublishesTheSettleOnce()
     {
-        // Arrange - Cashu plan C0 (NL-901): the settle is published after its save, once per invoice
+        // Arrange - Cashu plan C0 (NL-991): the settle is published after its save, once per invoice
         await using var harness = await ThreeNodeHarness.CreateAsync();
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "coffee", null,
                                                                       TestContext.Current.CancellationToken);

@@ -1,5 +1,6 @@
 using NLightning.Domain.Bitcoin.Interfaces;
 using NLightning.Domain.Bitcoin.Transactions.Enums;
+using NLightning.Domain.Bitcoin.Transactions.Extensions;
 using NLightning.Domain.Bitcoin.Transactions.Interfaces;
 using NLightning.Domain.Bitcoin.Transactions.Models;
 using NLightning.Domain.Bitcoin.Transactions.Outputs;
@@ -58,6 +59,32 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                                                                        CompactPubKey? remotePerCommitmentPoint = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
+        return CreateCommitmentTransactionModel(channel, spec, side, commitmentNumber,
+                                                channel.ChannelParams.CommitmentFormat, remotePerCommitmentPoint);
+    }
+
+    /// <summary>
+    /// Creates a commitment transaction from an explicit <see cref="CommitmentTxSpec"/> in the given commitment
+    /// format, whatever the channel's <see cref="ChannelParams.CommitmentFormat"/> says (the other overloads read the
+    /// format from it). <see cref="CommitmentFormat.SimpleTaproot"/> (bolt-simple-taproot.md) keeps the anchors rules
+    /// (zero-fee HTLC transactions, trimming on the dust limit alone, two 330 sat anchors paid by the funder) with its
+    /// own commitment weight, and keys the anchors to the holder's <c>local_delayedpubkey</c> and the other side's
+    /// <c>remotepubkey</c> instead of the funding keys.
+    /// </summary>
+    /// <param name="channel">The channel (static data only; its balances and HTLCs are ignored).</param>
+    /// <param name="spec">Net balances, feerate and HTLCs from the local node's point of view.</param>
+    /// <param name="side">Whose commitment to build.</param>
+    /// <param name="commitmentNumber">The holder's commitment number (48 bits).</param>
+    /// <param name="format">The commitment format to build.</param>
+    /// <param name="remotePerCommitmentPoint">
+    /// Required for <see cref="CommitmentSide.Remote"/>, null for <see cref="CommitmentSide.Local"/>.
+    /// </param>
+    public CommitmentTransactionModel CreateCommitmentTransactionModel(ChannelModel channel, CommitmentTxSpec spec,
+                                                                       CommitmentSide side, ulong commitmentNumber,
+                                                                       CommitmentFormat format,
+                                                                       CompactPubKey? remotePerCommitmentPoint = null)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(spec);
 
         if (commitmentNumber > CommitmentNumber.MaxValue)
@@ -113,7 +140,7 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                                                        "You should use either Local or Remote commitment side.")
         };
 
-        var hasAnchors = channel.ChannelParams.OptionAnchorOutputs;
+        var hasAnchors = format.HasAnchorOutputs();
         var feeRatePerKw = spec.FeeRatePerKw;
 
         // The holder's own dust limit applies to its commitment, and its to_local waits for the delay the OTHER side
@@ -145,7 +172,7 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
 
             // Trim the HTLC if its amount minus the second-stage fee is below the holder's dust limit
             if (CommitmentFeeCalculator.IsHtlcTrimmed(htlc.Amount, isOffered, dustLimitAmount, feeRatePerKw,
-                                                      hasAnchors))
+                                                      format))
                 continue;
 
             if (isOffered)
@@ -158,12 +185,12 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                                                                    commitmentKeys.RevocationPubKey));
         }
 
-        // Base fee: feerate_per_kw * (724 or 1124 + 172 per untrimmed HTLC) / 1000, rounded down
+        // Base fee: feerate_per_kw * (724, 1124 or 968 (taproot) + 172 per untrimmed HTLC) / 1000, rounded down
         var untrimmedHtlcCount = offeredHtlcOutputs.Count + receivedHtlcOutputs.Count;
-        var fee = CommitmentFeeCalculator.CommitmentBaseFee(feeRatePerKw, hasAnchors, untrimmedHtlcCount);
+        var fee = CommitmentFeeCalculator.CommitmentBaseFee(feeRatePerKw, format, untrimmedHtlcCount);
 
-        // The funder pays the base fee and, with option_anchors, both anchor outputs. Its output may end at zero.
-        var funderCost = CommitmentFeeCalculator.FunderCost(feeRatePerKw, hasAnchors, untrimmedHtlcCount);
+        // The funder pays the base fee and, with anchor outputs, both anchors. Its output may end at zero.
+        var funderCost = CommitmentFeeCalculator.FunderCost(feeRatePerKw, format, untrimmedHtlcCount);
         ref var feePayerAmount =
             ref GetFeePayerAmount(side, channel.IsInitiator, ref toLocalAmount, ref toRemoteAmount);
         feePayerAmount = feePayerAmount > funderCost
@@ -181,16 +208,14 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                                                   commitmentKeys.LocalDelayedPubKey, commitmentKeys.RevocationPubKey,
                                                   toSelfDelay);
 
+        // remotepubkey (option_static_remotekey): the other side's payment_basepoint
+        var remotePubKey = side == CommitmentSide.Local
+                               ? channel.RemoteKeySet.PaymentCompactBasepoint
+                               : channel.LocalKeySet.PaymentCompactBasepoint;
         ToRemoteOutputInfo? toRemoteOutput = null;
         if (toRemoteAmount.Satoshi >= dustLimitAmount.Satoshi)
-        {
-            var remotePubKey = side == CommitmentSide.Local
-                                   ? channel.RemoteKeySet.PaymentCompactBasepoint
-                                   : channel.LocalKeySet.PaymentCompactBasepoint;
-
             toRemoteOutput = new ToRemoteOutputInfo(LightningMoney.Satoshis(toRemoteAmount.Satoshi), remotePubKey,
                                                     hasAnchors);
-        }
 
         AnchorOutputInfo? localAnchorOutput = null;
         AnchorOutputInfo? remoteAnchorOutput = null;
@@ -198,15 +223,28 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
         {
             // to_local_anchor belongs to the commitment holder, to_remote_anchor to the other side. Each exists only
             // if its side's balance output exists or there are untrimmed HTLCs.
-            // The current funding's keys: a locked splice moves them off the key sets (splicing plan D5)
-            var localFundingPubKey = channel.LocalFundingPubKey;
-            var remoteFundingPubKey = channel.RemoteFundingPubKey ?? channel.RemoteKeySet.FundingCompactPubKey;
-            var holderFundingPubKey = side == CommitmentSide.Local ? localFundingPubKey : remoteFundingPubKey;
-            var counterpartyFundingPubKey = side == CommitmentSide.Local ? remoteFundingPubKey : localFundingPubKey;
+            CompactPubKey holderAnchorPubKey;
+            CompactPubKey counterpartyAnchorPubKey;
+            if (format == CommitmentFormat.SimpleTaproot)
+            {
+                // Simple taproot: the funding keys are aggregated by MuSig2 and never revealed, so the anchors'
+                // internal keys are the holder's local_delayedpubkey and the other side's remotepubkey
+                holderAnchorPubKey = commitmentKeys.LocalDelayedPubKey;
+                counterpartyAnchorPubKey = remotePubKey;
+            }
+            else
+            {
+                // The current funding's keys: a locked splice moves them off the key sets (splicing plan D5)
+                var localFundingPubKey = channel.LocalFundingPubKey;
+                var remoteFundingPubKey = channel.RemoteFundingPubKey ?? channel.RemoteKeySet.FundingCompactPubKey;
+                holderAnchorPubKey = side == CommitmentSide.Local ? localFundingPubKey : remoteFundingPubKey;
+                counterpartyAnchorPubKey = side == CommitmentSide.Local ? remoteFundingPubKey : localFundingPubKey;
+            }
+
             if (toLocalOutput is not null || untrimmedHtlcCount > 0)
-                localAnchorOutput = new AnchorOutputInfo(holderFundingPubKey, true);
+                localAnchorOutput = new AnchorOutputInfo(holderAnchorPubKey, true);
             if (toRemoteOutput is not null || untrimmedHtlcCount > 0)
-                remoteAnchorOutput = new AnchorOutputInfo(counterpartyFundingPubKey, false);
+                remoteAnchorOutput = new AnchorOutputInfo(counterpartyAnchorPubKey, false);
         }
 
         return new CommitmentTransactionModel(channel.CommitmentNumber, commitmentNumber, fee, channel.FundingOutput,
@@ -215,6 +253,7 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
         {
             FeeRatePerKw = feeRatePerKw,
             HasAnchors = hasAnchors,
+            Format = format,
             ToSelfDelay = toSelfDelay,
             LocalDelayedPubKey = commitmentKeys.LocalDelayedPubKey,
             RevocationPubKey = commitmentKeys.RevocationPubKey,

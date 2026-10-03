@@ -117,7 +117,7 @@ public enum ClientCommand
     LiquidityAds = 46,
 
     /// <summary>
-    /// Waits until one of our invoices leaves <c>Open</c> (<c>waitinvoice</c>, Cashu plan C0, NL-901), at most the
+    /// Waits until one of our invoices leaves <c>Open</c> (<c>waitinvoice</c>, Cashu plan C0, NL-991), at most the
     /// request's timeout; answers with the invoice either way.
     /// </summary>
     WaitInvoice = 47

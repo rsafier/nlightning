@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Tests.Node.Options;
 
 using Domain.Node.Options;
+using Domain.Protocol.Constants;
 using Enums;
 
 public class FeatureOptionsTests
@@ -574,8 +575,89 @@ public class FeatureOptionsTests
         Assert.Empty(errors);
         Assert.DoesNotContain(Feature.OptionSimpleClose, FeatureOptions.ExperimentalFeatures);
         Assert.True(features.IsFeatureSet(Feature.OptionSimpleClose, false));
-        Assert.False(new FeatureOptions().GetNodeFeatures(FeatureContext.Init)
-                                         .IsFeatureSet(Feature.OptionSimpleClose, false));
+    }
+
+    public static TheoryData<string> Networks => ["mainnet", "testnet", "testnet4", "signet", "regtest"];
+
+    [Theory]
+    [MemberData(nameof(Networks))]
+    public void Given_DefaultOptions_When_GetNodeFeatures_Then_SimpleCloseAdvertisedOptionalOnEveryNetwork(
+        string network)
+    {
+        // Arrange (taproot plan D-T1, owner decision 2026-10-03: option_simple_close Optional by default everywhere)
+        var options = new FeatureOptions
+        {
+            ChainHashes = [network switch
+            {
+                "mainnet" => ChainConstants.Main,
+                "testnet" => ChainConstants.Testnet,
+                "testnet4" => ChainConstants.Testnet4,
+                "signet" => ChainConstants.Signet,
+                _ => ChainConstants.Regtest
+            }]
+        };
+
+        // Act
+        var initFeatures = options.GetNodeFeatures(FeatureContext.Init);
+        var nodeAnnouncementFeatures = options.GetNodeFeatures(FeatureContext.NodeAnnouncement);
+
+        // Assert: bit 61 (optional), never 60 (compulsory), and its BOLT 9 dependency option_shutdown_anysegwit
+        Assert.Equal(FeatureSupport.Optional, options.OptionSimpleClose);
+        Assert.Empty(options.GetValidationErrors());
+        foreach (var features in new[] { initFeatures, nodeAnnouncementFeatures })
+        {
+            Assert.True(features.IsFeatureSet(Feature.OptionSimpleClose, false));
+            Assert.False(features.IsFeatureSet(Feature.OptionSimpleClose, true));
+            Assert.True(features.IsFeatureSet(Feature.OptionShutdownAnySegwit, false));
+        }
+
+        var wire = initFeatures.GetWireBytes()!;
+        Assert.Equal(0x20, wire[^8] & 0x30); // bits 61/60 live in byte 7 from the end: 61 set, 60 clear
+    }
+
+    [Fact]
+    public void Given_SimpleCloseNo_When_GetNodeFeatures_Then_NotAdvertised()
+    {
+        // Arrange: the operator's opt-out (legacy closing_signed only)
+        var options = new FeatureOptions { OptionSimpleClose = FeatureSupport.No };
+
+        // Act
+        var features = options.GetNodeFeatures();
+
+        // Assert
+        Assert.False(features.HasFeature(Feature.OptionSimpleClose));
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_PeerWithSimpleClose_Then_SimpleCloseNegotiated()
+    {
+        // Arrange: a peer that signals option_simple_close (Eclair 0.14.3, LND with --protocol.rbf-coop-close)
+        var local = new FeatureOptions().GetNodeFeatures();
+        var remote = new FeatureOptions().GetNodeFeatures();
+
+        // Act
+        var result = local.IsCompatible(remote, out var negotiatedFeatureSet);
+
+        // Assert
+        Assert.True(result);
+        Assert.Equal(FeatureSupport.Optional,
+                     FeatureOptions.GetNodeOptions(negotiatedFeatureSet!, null).OptionSimpleClose);
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_PeerWithoutSimpleClose_Then_SimpleCloseNotNegotiated()
+    {
+        // Arrange: a peer without bits 60/61 (LND without rbf-coop-close, LDK): the close stays legacy
+        var local = new FeatureOptions().GetNodeFeatures();
+        var remote = new FeatureOptions { OptionSimpleClose = FeatureSupport.No }.GetNodeFeatures();
+
+        // Act
+        var result = local.IsCompatible(remote, out var negotiatedFeatureSet);
+
+        // Assert
+        Assert.True(result);
+        Assert.Equal(FeatureSupport.No, FeatureOptions.GetNodeOptions(negotiatedFeatureSet!, null).OptionSimpleClose);
     }
 
     [Fact]

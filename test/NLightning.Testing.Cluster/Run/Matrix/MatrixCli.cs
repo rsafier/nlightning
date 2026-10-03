@@ -16,6 +16,8 @@ public static class MatrixCli
         Usage:
           nltg-cluster matrix list
               the suites, their tests, namespaces and hang timeouts
+          nltg-cluster matrix cap
+              the machine's cap on run namespaces (the --max-namespaces and -j limit of run-cluster.sh)
           nltg-cluster matrix plan [--suites a,b,...] [--max-namespaces M] [--repo R]
               one line per suite: run|skip, name, project, explicit, namespaces, parallel, timeout s,
               selection, constraints, reason or description ('|'-separated; default: every suite)
@@ -48,6 +50,10 @@ public static class MatrixCli
             {
                 case "list":
                     await output.WriteAsync(FormatCatalog()).ConfigureAwait(false);
+                    return ClusterCli.Ok;
+                case "cap":
+                    await output.WriteLineAsync(MatrixPlanner.MaxNamespaces.ToString(CultureInfo.InvariantCulture))
+                                .ConfigureAwait(false);
                     return ClusterCli.Ok;
                 case "plan":
                     var wired = options.Repo is { } repo && LndBackendProbe.IsWiredIn(repo);
@@ -127,7 +133,7 @@ public static class MatrixCli
         public static Options Parse(IReadOnlyList<string> args)
         {
             var command = args[0];
-            if (command is not ("list" or "plan" or "rerun-classes" or "summary" or "green-attempts"))
+            if (command is not ("list" or "cap" or "plan" or "rerun-classes" or "summary" or "green-attempts"))
                 throw new ArgumentException($"unknown matrix command '{command}'");
 
             var options = new Options(null, MatrixPlanner.MaxNamespaces, null, null, MatrixReport.DefaultRerunMax, null);

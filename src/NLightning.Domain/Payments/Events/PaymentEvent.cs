@@ -4,7 +4,7 @@ using Crypto.ValueObjects;
 using Money;
 
 /// <summary>
-/// A payment outcome raised after the save that made it true has committed (Cashu plan C0, NL-901): a subscriber that
+/// A payment outcome raised after the save that made it true has committed (Cashu plan C0, NL-991): a subscriber that
 /// reads the database when it gets one sees the new state.
 /// </summary>
 /// <param name="PaymentHash">The payment hash of the invoice or payment.</param>

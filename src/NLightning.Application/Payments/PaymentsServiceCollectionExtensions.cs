@@ -42,7 +42,7 @@ public static class PaymentsServiceCollectionExtensions
         services.AddSingleton<PaymentOnionFactory>();
         services.AddSingleton<IInvoiceService, InvoiceService>();
 
-        // Cashu plan C0 (NL-901): one bus for invoice and payment outcomes, published by the switch and the payment
+        // Cashu plan C0 (NL-991): one bus for invoice and payment outcomes, published by the switch and the payment
         // service after their saves
         services.TryAddSingleton<PaymentEventHub>();
         services.TryAddSingleton<IPaymentEventPublisher>(sp => sp.GetRequiredService<PaymentEventHub>());

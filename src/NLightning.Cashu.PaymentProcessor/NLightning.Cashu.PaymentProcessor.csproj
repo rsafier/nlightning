@@ -3,7 +3,6 @@
   <PropertyGroup>
     <Version>0.0.1</Version>
     <Description>Cashu CDK payment processor (gRPC) over an NLightning node: lets cdk-mintd use the node as its Lightning backend</Description>
-    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
   <PropertyGroup Condition="$(Configuration.Contains('Debug'))">
@@ -29,7 +28,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Server for the daemon, client for the tests and the Docker proof (NL-903) -->
+    <!-- Server for the daemon, client for the tests and the Docker proof (NL-993) -->
     <Protobuf Include="Protos\payment_processor.proto" GrpcServices="Both" Access="Public"/>
   </ItemGroup>
 

@@ -3,6 +3,7 @@ using k8s.Models;
 namespace NLightning.Testing.Cluster.Tests.Run;
 
 using Cluster.Run;
+using Cluster.Run.Matrix;
 
 public class RunAdmissionTests
 {
@@ -26,10 +27,10 @@ public class RunAdmissionTests
     }
 
     [Theory]
-    [InlineData(null, 6)]
-    [InlineData("", 6)]
+    [InlineData(null, 12)]
+    [InlineData("", 12)]
     [InlineData("3", 3)]
-    [InlineData(" 12 ", 12)]
+    [InlineData(" 6 ", 6)]
     [InlineData("0", null)]
     [InlineData("off", null)]
     [InlineData("OFF", null)]
@@ -37,6 +38,14 @@ public class RunAdmissionTests
     {
         // Act & Assert
         Assert.Equal(expected, RunAdmission.ParseMaxRuns(value));
+    }
+
+    [Fact]
+    public void Given_TheHarness_When_TheCapIsRead_Then_ItIsTwelveNamespacesForTheRunnerAndThePlanner()
+    {
+        // Act & Assert: NL-844 (owner decision 2026-10-03) raised the machine's cap from 6 to 12
+        Assert.Equal(12, RunAdmission.DefaultMaxRuns);
+        Assert.Equal(RunAdmission.DefaultMaxRuns, MatrixPlanner.MaxNamespaces);
     }
 
     [Theory]

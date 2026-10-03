@@ -7,7 +7,7 @@ namespace NLightning.Testing.Cluster.Run.Matrix;
 /// 2-namespace suite queued behind 1-namespace ones would wait until two slots free at once. The longest collections
 /// are split in two suites (<c>gossip</c>/<c>day0</c>, <c>eclair</c>/<c>eclair2</c>), each its own process and
 /// topology, so no suite runs much longer than the CLN suite. Every suite runs on the cluster backend
-/// (<c>NLTG_TEST_BACKEND=cluster</c>), its fixtures' only backend (NL-820, NL-866), except <c>tor</c> and <c>cashu</c>, which stay on
+/// (<c>NLTG_TEST_BACKEND=cluster</c>), its fixtures' only backend (NL-820, NL-866), except <c>tor</c>, which stays on
 /// Docker (owner decision) and is listed as skipped. SQL Server tests never run (owner decision): <see cref="GlobalConstraints"/> leave them out everywhere.
 /// </summary>
 public static class SuiteCatalog
@@ -74,13 +74,12 @@ public static class SuiteCatalog
         new("postgres", "PostgresTests and ServerDatabaseClusterTests on Postgres pods", "integration",
             ["-class", $"{Docker}.PostgresTests", "-class", $"{Cluster}.ServerDatabaseClusterTests"],
             ["-trait", "Database=Postgres"], "on", 3, 2, TimeSpan.FromMinutes(10)),
+        // Cashu plan C2 (NL-993): CDK's cdk-mintd on our CDK payment processor, with cdk-cli as the wallet (pods)
+        new("cashu", "the Cashu mint proof (Category=Interop.Cashu)", "integration",
+            [], ["-trait", "Category=Interop.Cashu"], "off", 1, 1, TimeSpan.FromMinutes(20)),
         new("tor", "the Tor interop suite (Category=Interop.Tor)", "integration",
             [], ["-trait", "Category=Interop.Tor"], "off", 1, 1, TimeSpan.FromMinutes(30),
-            DockerOnlyReason: "Tor interop stays on Docker (owner decision); run scripts/run-interop.sh tor"),
-        // Cashu plan C2 (NL-903): cdk-mintd on our CDK payment processor, with cdk-cli as the wallet
-        new("cashu", "the Cashu mint proof (Category=Interop.Cashu)", "integration",
-            [], ["-trait", "Category=Interop.Cashu"], "off", 1, 1, TimeSpan.FromMinutes(30),
-            DockerOnlyReason: "the Cashu mint proof runs on Docker (host-network cdk-mintd); run scripts/run-interop.sh cashu")
+            DockerOnlyReason: "Tor interop stays on Docker (owner decision); run scripts/run-interop.sh tor")
     ];
 
     /// <summary>The names, in the matrix's default order.</summary>

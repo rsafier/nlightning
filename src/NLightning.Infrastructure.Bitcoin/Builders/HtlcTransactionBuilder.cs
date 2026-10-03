@@ -19,6 +19,7 @@ using Domain.Onchain.Models;
 using Interfaces;
 using Networks;
 using Outputs;
+using Taproot;
 
 /// <summary>
 /// Builds BOLT 3 HTLC-timeout/HTLC-success transactions from a Domain <see cref="HtlcTransactionModel"/>, and combines
@@ -44,6 +45,9 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
     public HtlcTransactionBuildResult Build(HtlcTransactionModel transaction)
     {
         ArgumentNullException.ThrowIfNull(transaction);
+
+        if (transaction.IsSimpleTaproot)
+            return BuildSimpleTaproot(transaction);
 
         var spentOutput = CreateSpentOutput(transaction.SpentOutput, transaction.HasAnchors);
 
@@ -86,6 +90,10 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
             preimagePush = [];
         }
 
+        if (transaction.IsSimpleTaproot)
+            return AddSimpleTaprootWitness(transaction, buildResult, remoteHtlcSignature, localHtlcSignature,
+                                           preimagePush);
+
         // BOLT 3 / BOLT 5: with option_anchors the remote HTLC signature is SIGHASH_SINGLE|SIGHASH_ANYONECANPAY
         var remoteSigHash = transaction.HasAnchors ? SigHash.Single | SigHash.AnyoneCanPay : SigHash.All;
         var remoteSignature = ToTransactionSignature(remoteHtlcSignature, remoteSigHash, nameof(remoteHtlcSignature));
@@ -109,6 +117,7 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(buildResult);
         ArgumentOutOfRangeException.ThrowIfNegative(changeScriptLength);
+        ThrowIfSimpleTaproot(transaction);
 
         return EstimateWeight(transaction, buildResult, [], changeScriptLength);
     }
@@ -122,6 +131,7 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
         ArgumentNullException.ThrowIfNull(buildResult);
         ArgumentNullException.ThrowIfNull(feeInputs);
         ArgumentNullException.ThrowIfNull(changeScript);
+        ThrowIfSimpleTaproot(transaction);
         if (!transaction.HasAnchors)
             throw new ArgumentException("Only an option_anchors HTLC transaction (SIGHASH_SINGLE|ANYONECANPAY) can take "
                                       + "fee inputs: a SIGHASH_ALL peer signature would no longer verify",
@@ -244,6 +254,96 @@ public class HtlcTransactionBuilder : IHtlcTransactionBuilder
         <= 0xffff => 3,
         _ => 5
     };
+
+    /// <summary>
+    /// A simple taproot HTLC-timeout/success (bolt-simple-taproot.md §HTLC Second Level Transactions): version 2,
+    /// sequence 1, zero fee, the spent HTLC output's timeout leaf (HTLC-timeout) or success leaf (HTLC-success) with its
+    /// control block, and one P2TR output on the revocation key with the delay leaf.
+    /// </summary>
+    private HtlcTransactionBuildResult BuildSimpleTaproot(HtlcTransactionModel transaction)
+    {
+        var spentOutput = CreateSimpleTaprootSpentOutput(transaction.SpentOutput);
+        var leaf = transaction.Type == HtlcTransactionType.Timeout ? spentOutput.TimeoutLeaf : spentOutput.SuccessLeaf;
+
+        var tx = Transaction.Create(_network);
+        tx.Version = TransactionConstants.HtlcTransactionVersion;
+        tx.LockTime = new LockTime(transaction.LockTime);
+        tx.Inputs.Add(new OutPoint(new uint256(transaction.CommitmentTxId), transaction.CommitmentOutputIndex), null,
+                      null, new Sequence(transaction.Sequence));
+
+        var output = new TaprootHtlcResolutionOutput(transaction.OutputAmount,
+                                                     new PubKey(transaction.LocalDelayedPubKey),
+                                                     new PubKey(transaction.RevocationPubKey),
+                                                     transaction.ToSelfDelay);
+        tx.Outputs.Add(output.ToTxOut());
+
+        return new HtlcTransactionBuildResult(new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes()),
+                                              leaf.Script.ToBytes(),
+                                              LightningMoney.Satoshis(spentOutput.Amount.Satoshi))
+        {
+            SpentScriptPubKey = spentOutput.ScriptPubKey.ToBytes(),
+            ControlBlock = spentOutput.GetControlBlock(leaf)
+        };
+    }
+
+    /// <summary>
+    /// The script-path witness of a simple taproot HTLC transaction:
+    /// <c>&lt;remotesig||0x83&gt; &lt;localsig&gt; [&lt;preimage&gt;] &lt;leaf script&gt; &lt;control block&gt;</c>, the remote
+    /// BIP 340 signature with <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c>, ours with <c>SIGHASH_DEFAULT</c>.
+    /// </summary>
+    private SignedTransaction AddSimpleTaprootWitness(HtlcTransactionModel transaction,
+                                                      HtlcTransactionBuildResult buildResult,
+                                                      CompactSignature remoteHtlcSignature,
+                                                      CompactSignature localHtlcSignature, byte[] preimagePush)
+    {
+        if (!buildResult.IsTaproot)
+            throw new ArgumentException("The build result is not a simple taproot HTLC transaction",
+                                        nameof(buildResult));
+
+        var witness = new List<byte[]>
+        {
+            TaprootSignatures.ToWitnessSignature((byte[])remoteHtlcSignature,
+                                                 TaprootSignatures.CounterpartyHtlcSigHash),
+            TaprootSignatures.ToWitnessSignature((byte[])localHtlcSignature, TaprootSignatures.HolderHtlcSigHash)
+        };
+        if (transaction.Type == HtlcTransactionType.Success)
+            witness.Add(preimagePush);
+
+        witness.Add((byte[])buildResult.SpentWitnessScript);
+        witness.Add(buildResult.ControlBlock!);
+
+        var tx = Transaction.Load(buildResult.Transaction.RawTxBytes, _network);
+        tx.Inputs[0].WitScript = new WitScript(witness.ToArray());
+
+        return new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes(),
+                                     [remoteHtlcSignature, localHtlcSignature]);
+    }
+
+    private static void ThrowIfSimpleTaproot(HtlcTransactionModel transaction)
+    {
+        if (transaction.IsSimpleTaproot)
+            throw new NotSupportedException("Fee inputs for simple taproot HTLC transactions are not supported yet "
+                                          + "(NL-877 T4): their witness weights differ from the P2WSH ones");
+    }
+
+    private static TaprootHtlcOutput CreateSimpleTaprootSpentOutput(HtlcOutputInfo htlcOutput)
+    {
+        return htlcOutput switch
+        {
+            OfferedHtlcOutputInfo offered => new TaprootOfferedHtlcOutput(offered.Amount, offered.CltvExpiry,
+                                                                          new PubKey(offered.LocalHtlcPubKey),
+                                                                          offered.PaymentHash,
+                                                                          new PubKey(offered.RemoteHtlcPubKey),
+                                                                          new PubKey(offered.RevocationPubKey)),
+            ReceivedHtlcOutputInfo received => new TaprootReceivedHtlcOutput(received.Amount, received.CltvExpiry,
+                                                                             new PubKey(received.LocalHtlcPubKey),
+                                                                             received.PaymentHash,
+                                                                             new PubKey(received.RemoteHtlcPubKey),
+                                                                             new PubKey(received.RevocationPubKey)),
+            _ => throw new ArgumentException($"Unsupported HTLC output type {htlcOutput.GetType().Name}",
+                                             nameof(htlcOutput))
+        };
+    }
 
     private static BaseHtlcOutput CreateSpentOutput(HtlcOutputInfo htlcOutput, bool hasAnchors)
     {

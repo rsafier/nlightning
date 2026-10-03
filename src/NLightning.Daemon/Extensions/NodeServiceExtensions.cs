@@ -93,7 +93,7 @@ public static class NodeServiceExtensions
             // Expired unpaid BOLT 12 invoice rows pruned on a timer (NL-448)
             services.AddExpiredBolt12InvoicePruning();
 
-            // Cashu plan C1 (NL-902): the CDK payment processor's gRPC server, after the node started (off unless
+            // Cashu plan C1 (NL-992): the CDK payment processor's gRPC server, after the node started (off unless
             // Cashu:PaymentProcessor:Enabled)
             services.AddCashuPaymentProcessorHost();
 
@@ -169,7 +169,7 @@ public static class NodeServiceExtensions
                                           sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<ListPaymentsClientRequest, ListPaymentsClientResponse>>(sp =>
             new ListPaymentsClientHandler(GetPaymentLayerService<IPaymentService>(sp)));
-        // Cashu plan C0 (NL-901): wait for an invoice to leave Open (ClientCommand 47)
+        // Cashu plan C0 (NL-991): wait for an invoice to leave Open (ClientCommand 47)
         services.AddScoped<IClientCommandHandler<WaitInvoiceClientRequest, WaitInvoiceClientResponse>>(sp =>
             new WaitInvoiceClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
                                          sp.GetService<IPaymentEventSource>(),
@@ -247,7 +247,7 @@ public static class NodeServiceExtensions
         // On-chain withdraw (wave m6 W1, ClientCommand 25)
         services.AddWithdrawIpcServices();
 
-        // Cashu plan C1 (NL-902): the CDK payment processor (Cashu:PaymentProcessor, off by default)
+        // Cashu plan C1 (NL-992): the CDK payment processor (Cashu:PaymentProcessor, off by default)
         services.AddCashuPaymentProcessor(configuration);
         // BOLT 12 offers (wave B12): createoffer/listoffers/disableoffer (ClientCommand 26-28) and payoffer/
         // fetchinvoice (29-30); the Application registers the offer services themselves (AddApplicationServices)

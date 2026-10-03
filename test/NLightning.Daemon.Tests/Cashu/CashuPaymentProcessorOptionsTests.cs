@@ -3,7 +3,7 @@ namespace NLightning.Daemon.Tests.Cashu;
 using NLightning.Cashu.PaymentProcessor;
 
 /// <summary>
-/// The start-up checks of <c>Cashu:PaymentProcessor</c> (Cashu plan C1, NL-902).
+/// The start-up checks of <c>Cashu:PaymentProcessor</c> (Cashu plan C1, NL-992).
 /// </summary>
 public class CashuPaymentProcessorOptionsTests
 {

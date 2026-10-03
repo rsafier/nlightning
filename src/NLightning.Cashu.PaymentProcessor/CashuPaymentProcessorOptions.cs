@@ -4,7 +4,7 @@ namespace NLightning.Cashu.PaymentProcessor;
 
 /// <summary>
 /// <c>Cashu:PaymentProcessor</c>: the CDK payment processor that lets a Cashu mint (<c>cdk-mintd</c> with
-/// <c>ln_backend = "grpcprocessor"</c>) use this node as its Lightning backend (Cashu plan C1, NL-902).
+/// <c>ln_backend = "grpcprocessor"</c>) use this node as its Lightning backend (Cashu plan C1, NL-992).
 /// </summary>
 /// <remarks>
 /// Plain settable properties only: the configuration binding source generator binds into the existing instance and

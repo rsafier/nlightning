@@ -3,13 +3,13 @@ using System.Text.RegularExpressions;
 namespace NLightning.Integration.Tests.Fixtures;
 
 /// <summary>
-/// The cluster is the only backend of every suite but Tor and the Cashu mint proof (NL-820 for the LND suites, NL-866
-/// for CLN, Eclair, LDK and Postgres): the Docker API (<c>Docker.DotNet</c>) and the <c>docker</c> CLI are used only by
-/// the Tor interop fixture (<c>Fixtures/Tor/</c>) and the Cashu mint fixture (<c>Fixtures/Cashu/</c>, NL-903), the two
-/// Docker suites, the shared container helpers they use, the SQL Server fixture (its tests are not run) and the Explicit
-/// live test of <c>NLightning.Testing.Lnd.Tests</c>, which drives <c>docker</c> itself. Only this assembly references
-/// the <c>Docker.DotNet</c> package, and it holds no <c>Docker*Backend</c> type, so a Docker path cannot come back into a
-/// cluster fixture unnoticed. Reads the sources of the checkout the test assembly was built from (skipped without one).
+/// The cluster is the only backend of every suite but Tor (NL-820 for the LND suites, NL-866 for CLN, Eclair, LDK and
+/// Postgres): the Docker API (<c>Docker.DotNet</c>) and the <c>docker</c> CLI are used only by the Tor interop fixture
+/// (<c>Fixtures/Tor/</c>, the one Docker suite), the shared container helpers it uses, the SQL Server fixture (its tests
+/// are not run) and the Explicit live test of <c>NLightning.Testing.Lnd.Tests</c>, which drives <c>docker</c> itself.
+/// Only this assembly references the <c>Docker.DotNet</c> package, and it holds no <c>Docker*Backend</c> type, so a
+/// Docker path cannot come back into a cluster fixture unnoticed. Reads the sources of the checkout the test assembly was
+/// built from (skipped without one).
 /// </summary>
 public partial class DockerAbsenceTests
 {
@@ -17,8 +17,6 @@ public partial class DockerAbsenceTests
     private static readonly string[] s_allowedDockerSources =
     [
         "test/NLightning.Integration.Tests/Fixtures/Tor/",
-        // The Cashu mint proof (Cashu plan C2, NL-903): cdk-mintd and cdk-cli on host networking, Docker only
-        "test/NLightning.Integration.Tests/Fixtures/Cashu/",
         "test/NLightning.Integration.Tests/Fixtures/DockerContainerUtils.cs",
         "test/NLightning.Integration.Tests/Fixtures/SqlServerFixture.cs",
         "test/NLightning.Testing.Lnd.Tests/Docker/DockerCli.cs",

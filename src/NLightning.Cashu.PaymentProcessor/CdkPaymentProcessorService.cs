@@ -18,7 +18,7 @@ using Domain.Payments.Models;
 using Grpc;
 
 /// <summary>
-/// CDK's <c>CdkPaymentProcessor</c> gRPC service over this node (Cashu plan C1, NL-902): a Cashu mint
+/// CDK's <c>CdkPaymentProcessor</c> gRPC service over this node (Cashu plan C1, NL-992): a Cashu mint
 /// (<c>cdk-mintd</c>, <c>ln_backend = "grpcprocessor"</c>) creates its mint quotes as our BOLT 11 invoices and pays
 /// its melts with our payment service.
 /// </summary>

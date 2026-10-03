@@ -21,7 +21,7 @@ using NLightning.Cashu.PaymentProcessor;
 using NLightning.Cashu.PaymentProcessor.Grpc;
 
 /// <summary>
-/// The CDK payment processor (Cashu plan C1, NL-902) over a real Kestrel gRPC server on loopback, called with the
+/// The CDK payment processor (Cashu plan C1, NL-992) over a real Kestrel gRPC server on loopback, called with the
 /// client generated from CDK's own proto, with the node's invoice and payment services mocked.
 /// </summary>
 public sealed class CdkPaymentProcessorServiceTests : IAsyncLifetime

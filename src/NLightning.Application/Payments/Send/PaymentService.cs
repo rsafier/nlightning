@@ -2683,7 +2683,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     }
 
     /// <summary>
-    /// Logs a payment that succeeded and tells the payment event subscribers (Cashu plan C0, NL-901). Every caller
+    /// Logs a payment that succeeded and tells the payment event subscribers (Cashu plan C0, NL-991). Every caller
     /// calls it after the save that marked the payment succeeded.
     /// </summary>
     private void LogSucceeded(PaymentModel payment)
@@ -2699,7 +2699,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
     }
 
     /// <summary>
-    /// Logs a payment that failed and tells the payment event subscribers (Cashu plan C0, NL-901). Every caller calls
+    /// Logs a payment that failed and tells the payment event subscribers (Cashu plan C0, NL-991). Every caller calls
     /// it after the save that marked the payment failed.
     /// </summary>
     private void LogFailed(PaymentModel payment)
