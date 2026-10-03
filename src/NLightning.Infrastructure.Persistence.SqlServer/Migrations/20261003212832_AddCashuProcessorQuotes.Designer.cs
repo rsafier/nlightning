@@ -2,39 +2,47 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using NLightning.Infrastructure.Persistence.Contexts;
 
 #nullable disable
 
-namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
+namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 {
     [DbContext(typeof(NLightningDbContext))]
-    partial class NLightningDbContextModelSnapshot : ModelSnapshot
+    [Migration("20261003212832_AddCashuProcessorQuotes")]
+    partial class AddCashuProcessorQuotes
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder.HasAnnotation("ProductVersion", "10.0.12");
+            modelBuilder
+                .HasAnnotation("ProductVersion", "10.0.12")
+                .HasAnnotation("Relational:MaxIdentifierLength", 128);
+
+            SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingBalanceEntity", b =>
                 {
                     b.Property<byte>("Book")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<int>("Account")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<string>("AccountName")
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(256)");
 
                     b.Property<long>("BalanceMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<decimal>("FiatAmount")
                         .HasPrecision(28, 8)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("decimal(28,8)");
 
                     b.HasKey("Book", "Account", "AccountName");
 
@@ -44,10 +52,10 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingCursorEntity", b =>
                 {
                     b.Property<byte>("Book")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("LastLedgerSeq")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.HasKey("Book");
 
@@ -57,46 +65,46 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingEntryEntity", b =>
                 {
                     b.Property<byte>("Book")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("LedgerSeq")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<int>("Adjustment")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte?>("Classification")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<string>("ClosedPeriodId")
                         .HasMaxLength(32)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(32)");
 
                     b.Property<string>("EventKey")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(200)");
 
                     b.Property<int>("Flags")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<int>("Kind")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<string>("Note")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<long>("OccurredAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("PaymentHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long?>("RuleId")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.HasKey("Book", "LedgerSeq", "Adjustment");
 
@@ -114,60 +122,62 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
 
                     b.Property<long>("AmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint?>("BlockHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("BlockHeight")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("Counterparty")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<string>("Details")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("EventKey")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(200)");
 
                     b.Property<long>("FeeMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("Finality")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<int>("Flags")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<byte[]>("Hash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<int>("Kind")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<long?>("LedgerSeq")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("OccurredAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint?>("OutputIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("OutputIndex")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("PaymentHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("ShortChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(8)");
 
                     b.Property<byte[]>("TxId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.HasKey("Id");
 
@@ -185,56 +195,56 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingLotEntity", b =>
                 {
                     b.Property<long>("Id")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<int?>("Account")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<long>("AcquiredAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<bool>("BasisEstimated")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<string>("ClosedPeriodId")
                         .HasMaxLength(32)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(32)");
 
                     b.Property<decimal?>("FiatCost")
                         .HasPrecision(28, 8)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("decimal(28,8)");
 
                     b.Property<string>("FiatCurrency")
                         .HasMaxLength(3)
-                        .HasColumnType("TEXT")
+                        .HasColumnType("nchar(3)")
                         .IsFixedLength();
 
                     b.Property<long?>("HeldSince")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<int?>("Lender")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<byte>("Origin")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("OriginalMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long?>("ParentLotId")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long?>("PriceId")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("RemainingMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<int>("SourceAdjustment")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<long?>("SourceLedgerSeq")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.HasKey("Id");
 
@@ -253,37 +263,39 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
 
                     b.Property<int>("Adjustment")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<string>("ClosedPeriodId")
                         .HasMaxLength(32)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(32)");
 
                     b.Property<decimal?>("FiatCostRelieved")
                         .HasPrecision(28, 8)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("decimal(28,8)");
 
                     b.Property<byte>("Kind")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("LedgerSeq")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("LotId")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("Msat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<decimal?>("Proceeds")
                         .HasPrecision(28, 8)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("decimal(28,8)");
 
                     b.Property<long>("RelievedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.HasKey("Id");
 
@@ -302,24 +314,26 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
 
                     b.Property<string>("Account")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(256)");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<string>("EventKey")
                         .IsRequired()
                         .HasMaxLength(200)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(200)");
 
                     b.Property<string>("Note")
                         .HasMaxLength(1024)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(1024)");
 
                     b.HasKey("Id");
 
@@ -333,37 +347,37 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                 {
                     b.Property<string>("PeriodId")
                         .HasMaxLength(32)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(32)");
 
                     b.Property<byte[]>("ChainHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long?>("ClosedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<string>("ClosingState")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<byte[]>("Digest")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long>("End")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<bool>("Forced")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<long>("LastLedgerSeq")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("Signature")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<long>("Start")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("State")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.HasKey("PeriodId");
 
@@ -375,41 +389,41 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Accounting.AccountingPostingEntity", b =>
                 {
                     b.Property<byte>("Book")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("LedgerSeq")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<int>("Adjustment")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<int>("Index")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<int>("Account")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<string>("AccountName")
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(256)");
 
                     b.Property<long>("AmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<decimal?>("FiatAmount")
                         .HasPrecision(28, 8)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("decimal(28,8)");
 
                     b.Property<string>("FiatCurrency")
                         .HasMaxLength(3)
-                        .HasColumnType("TEXT")
+                        .HasColumnType("nchar(3)")
                         .IsFixedLength();
 
                     b.Property<long>("OccurredAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long?>("PriceId")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.HasKey("Book", "LedgerSeq", "Adjustment", "Index");
 
@@ -424,27 +438,29 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
 
                     b.Property<string>("Currency")
                         .IsRequired()
                         .HasMaxLength(3)
-                        .HasColumnType("TEXT")
+                        .HasColumnType("nchar(3)")
                         .IsFixedLength();
 
                     b.Property<long>("FetchedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<decimal>("Price")
                         .HasPrecision(28, 8)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("decimal(28,8)");
 
                     b.Property<byte>("PriceSource")
-                        .HasColumnType("INTEGER")
+                        .HasColumnType("tinyint")
                         .HasColumnName("Source");
 
                     b.Property<long>("Time")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.HasKey("Id");
 
@@ -458,50 +474,52 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
 
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("Counterparty")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<string>("Description")
                         .HasMaxLength(1024)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(1024)");
 
                     b.Property<bool>("Enabled")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<string>("Kinds")
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(256)");
 
                     b.Property<string>("LabelPattern")
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(256)");
 
                     b.Property<byte[]>("OfferId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<int>("Priority")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<string>("TagKey")
                         .HasMaxLength(32)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(32)");
 
                     b.Property<string>("TagValue")
                         .HasMaxLength(128)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(128)");
 
                     b.Property<string>("TargetAccount")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(256)");
 
                     b.HasKey("Id");
 
@@ -512,16 +530,16 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.BlockHeaderEntity", b =>
                 {
-                    b.Property<uint>("Height")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("Height")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("BlockHash")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("PreviousBlockHash")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.HasKey("Height");
 
@@ -532,17 +550,17 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("TEXT");
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<DateTime>("LastProcessedAt")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("datetime2");
 
                     b.Property<byte[]>("LastProcessedBlockHash")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<uint>("LastProcessedHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("LastProcessedHeight")
+                        .HasColumnType("bigint");
 
                     b.HasKey("Id");
 
@@ -552,52 +570,52 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.BroadcastTransactionEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long?>("CommitmentNumber")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("ConfirmedBlockHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<uint?>("ConfirmedHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("ConfirmedHeight")
+                        .HasColumnType("bigint");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long?>("FeeSat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("FeeratePerKw")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("FirstBroadcastHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("FirstBroadcastHeight")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("Label")
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(256)");
 
                     b.Property<byte>("Purpose")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte[]>("RawTransaction")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("ReplacesTransactionId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte>("State")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<string>("Tags")
                         .HasMaxLength(1024)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(1024)");
 
                     b.HasKey("TransactionId");
 
@@ -613,25 +631,25 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.FeeInputReservationEntity", b =>
                 {
                     b.Property<Guid>("Id")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<long>("ChangeAmountSats")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("ChangeScript")
                         .HasMaxLength(64)
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(64)");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("FeeSats")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<string>("Purpose")
                         .IsRequired()
                         .HasMaxLength(128)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(128)");
 
                     b.HasKey("Id");
 
@@ -641,27 +659,27 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.FeeInputReservationInputEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<uint>("Index")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("Index")
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("AddressType")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("AmountSats")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<int>("Position")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<Guid>("ReservationId")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<byte[]>("ScriptPubKey")
                         .IsRequired()
                         .HasMaxLength(64)
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(64)");
 
                     b.HasKey("TransactionId", "Index");
 
@@ -673,62 +691,66 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<uint>("Index")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("Index")
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("AddressIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("AddressIndex")
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("AddressType")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("AmountSats")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("BlockHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("BlockHeight")
+                        .HasColumnType("bigint");
 
                     b.Property<bool>("IsAddressChange")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<byte[]>("LockedToChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("UsedInTransactionId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(900)");
 
                     b.HasKey("TransactionId", "Index");
 
-                    b.HasIndex("AddressType");
+                    b.HasIndex("AddressType")
+                        .HasAnnotation("SqlServer:Online", true);
 
-                    b.HasIndex("LockedToChannelId");
+                    b.HasIndex("LockedToChannelId")
+                        .HasAnnotation("SqlServer:Online", true);
 
-                    b.HasIndex("UsedInTransactionId");
+                    b.HasIndex("UsedInTransactionId")
+                        .HasAnnotation("SqlServer:Online", true);
 
-                    b.HasIndex("AddressIndex", "IsAddressChange", "AddressType");
+                    b.HasIndex("AddressIndex", "IsAddressChange", "AddressType")
+                        .HasAnnotation("SqlServer:Online", true);
 
                     b.ToTable("Utxos");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletAddressEntity", b =>
                 {
-                    b.Property<uint>("Index")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("Index")
+                        .HasColumnType("bigint");
 
                     b.Property<bool>("IsChange")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<byte>("AddressType")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<string>("Address")
                         .IsRequired()
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<bool>("IsReserved")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.HasKey("Index", "IsChange", "AddressType");
 
@@ -738,29 +760,29 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedOutpointEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<uint>("OutputIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("OutputIndex")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("ChannelId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("Purpose")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
-                    b.Property<uint?>("SpentAtHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("SpentAtHeight")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("SpentBlockHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("SpentByTransactionId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.HasKey("TransactionId", "OutputIndex");
 
@@ -774,26 +796,26 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedTransactionEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("ChannelId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<DateTime?>("CompletedAt")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("datetime2");
 
                     b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("datetime2");
 
-                    b.Property<uint?>("FirstSeenAtHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("FirstSeenAtHeight")
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("RequiredDepth")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("RequiredDepth")
+                        .HasColumnType("bigint");
 
-                    b.Property<uint?>("TransactionIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("TransactionIndex")
+                        .HasColumnType("bigint");
 
                     b.HasKey("TransactionId");
 
@@ -805,24 +827,24 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Cashu.CashuDepositEntity", b =>
                 {
                     b.Property<byte[]>("TxId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<uint>("OutputIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("OutputIndex")
+                        .HasColumnType("bigint");
 
                     b.Property<long>("AmountSat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("BlockHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("BlockHeight")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("QuoteId")
                         .IsRequired()
                         .HasMaxLength(128)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(128)");
 
                     b.Property<long?>("ReportedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.HasKey("TxId", "OutputIndex");
 
@@ -837,54 +859,54 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                 {
                     b.Property<string>("QuoteId")
                         .HasMaxLength(128)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(128)");
 
                     b.Property<string>("Address")
                         .HasMaxLength(128)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(128)");
 
                     b.Property<long>("AmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("Direction")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<string>("FailureReason")
                         .HasMaxLength(1024)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(1024)");
 
-                    b.Property<uint?>("FeeIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("FeeIndex")
+                        .HasColumnType("bigint");
 
                     b.Property<long?>("FeeMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long?>("MaxFeeMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("Method")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
-                    b.Property<uint?>("OutputIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("OutputIndex")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("PaymentHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<string>("Request")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<byte>("State")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte[]>("TxId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long>("UpdatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.HasKey("QuoteId");
 
@@ -900,67 +922,67 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelConfigEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<bool>("AnnounceChannel")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<long>("FeeRatePerKwSatoshis")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<bool>("HasInferredParams")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<long>("LocalChannelReserveAmountSats")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("LocalDustLimitAmountSats")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<ulong>("LocalHtlcMinimumMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("LocalHtlcMinimumMsat")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<ushort>("LocalMaxAcceptedHtlcs")
-                        .HasColumnType("INTEGER");
+                    b.Property<int>("LocalMaxAcceptedHtlcs")
+                        .HasColumnType("int");
 
-                    b.Property<ulong>("LocalMaxHtlcValueInFlightMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("LocalMaxHtlcValueInFlightMsat")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<ushort>("LocalToSelfDelay")
-                        .HasColumnType("INTEGER");
+                    b.Property<int>("LocalToSelfDelay")
+                        .HasColumnType("int");
 
                     b.Property<byte[]>("LocalUpfrontShutdownScript")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
-                    b.Property<uint>("MinimumDepth")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("MinimumDepth")
+                        .HasColumnType("bigint");
 
                     b.Property<bool>("OptionAnchorOutputs")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<long>("RemoteChannelReserveAmountSats")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("RemoteDustLimitAmountSats")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<ulong>("RemoteHtlcMinimumMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("RemoteHtlcMinimumMsat")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<ushort>("RemoteMaxAcceptedHtlcs")
-                        .HasColumnType("INTEGER");
+                    b.Property<int>("RemoteMaxAcceptedHtlcs")
+                        .HasColumnType("int");
 
-                    b.Property<ulong>("RemoteMaxHtlcValueInFlightMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("RemoteMaxHtlcValueInFlightMsat")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<ushort>("RemoteToSelfDelay")
-                        .HasColumnType("INTEGER");
+                    b.Property<int>("RemoteToSelfDelay")
+                        .HasColumnType("int");
 
                     b.Property<byte[]>("RemoteUpfrontShutdownScript")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte>("UseScidAlias")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.HasKey("ChannelId");
 
@@ -970,149 +992,149 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte?>("ChangeAddressAddressType")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
-                    b.Property<uint?>("ChangeAddressIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("ChangeAddressIndex")
+                        .HasColumnType("bigint");
 
                     b.Property<bool?>("ChangeAddressIsChange")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<byte?>("CloseProtocol")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte[]>("ClosingTransaction")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("ClosingTxId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<bool>("DataLossDetected")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<byte[]>("ErrorSent")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
-                    b.Property<ulong?>("FirstRemoteHtlcIdAfterLocalShutdown")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal?>("FirstRemoteHtlcIdAfterLocalShutdown")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<long>("FundingAmountSatoshis")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("FundingCreatedAtBlockHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("FundingCreatedAtBlockHeight")
+                        .HasColumnType("bigint");
 
-                    b.Property<ushort>("FundingOutputIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<int>("FundingOutputIndex")
+                        .HasColumnType("int");
 
                     b.Property<byte[]>("FundingTxId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<bool>("IsDualFunded")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<bool>("IsInitiator")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<string>("Label")
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(256)");
 
                     b.Property<byte[]>("LastReceivedSignature")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(64)");
 
                     b.Property<byte>("LastSentOrder")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte[]>("LastSentSignature")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(64)");
 
                     b.Property<long?>("LocalAnnouncementSigsSentAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("LocalBalanceMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<ulong>("LocalCommitmentNumber")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("LocalCommitmentNumber")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<long?>("LocalFundingContributionSatoshis")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<bool?>("LocalIsCloser")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
-                    b.Property<ulong>("LocalNextHtlcId")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("LocalNextHtlcId")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<ulong>("LocalRevocationNumber")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("LocalRevocationNumber")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte[]>("LocalShutdownScript")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
-                    b.Property<ulong?>("MaxDustHtlcExposureMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal?>("MaxDustHtlcExposureMsat")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<long?>("PushAmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("RemoteAlias")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(8)");
 
                     b.Property<byte[]>("RemoteAnnouncementBitcoinSig")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(64)");
 
                     b.Property<byte[]>("RemoteAnnouncementNodeSig")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(64)");
 
                     b.Property<long>("RemoteBalanceMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<ulong>("RemoteCommitmentNumber")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("RemoteCommitmentNumber")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<long?>("RemoteFundingContributionSatoshis")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<ulong>("RemoteNextHtlcId")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("RemoteNextHtlcId")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte[]>("RemoteNextPerCommitmentPoint")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("RemoteNodeId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
-                    b.Property<ulong>("RemoteRevocationNumber")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("RemoteRevocationNumber")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte[]>("RemoteShutdownScript")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
-                    b.Property<ulong?>("RevocationLogFromNumber")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal?>("RevocationLogFromNumber")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte[]>("SentCommitDiff")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("ShortChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(8)");
 
                     b.Property<byte>("State")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<string>("Tags")
                         .HasMaxLength(1024)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(1024)");
 
                     b.Property<byte>("Version")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.HasKey("ChannelId");
 
@@ -1124,66 +1146,66 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelFundingEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("FundingTxId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<bool>("AnnouncementSignaturesReceived")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<long>("CapacitySatoshis")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint?>("ConfirmedHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("ConfirmedHeight")
+                        .HasColumnType("bigint");
 
-                    b.Property<uint?>("FeeratePerKw")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("FeeratePerKw")
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("Kind")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("LocalBalanceDeltaMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("LocalFundingKeyIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("LocalFundingKeyIndex")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("LocalFundingPubKey")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
-                    b.Property<uint?>("Locktime")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("Locktime")
+                        .HasColumnType("bigint");
 
-                    b.Property<ushort>("OutputIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<int>("OutputIndex")
+                        .HasColumnType("int");
 
                     b.Property<byte[]>("RbfOf")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long>("RemoteBalanceDeltaMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("RemoteFundingPubKey")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<int>("Sequence")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<byte[]>("ShortChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(8)");
 
                     b.Property<bool>("SpliceLockedReceived")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<bool>("SpliceLockedSent")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<byte>("Status")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.HasKey("ChannelId", "FundingTxId");
 
@@ -1193,40 +1215,40 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelKeySetEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<bool>("IsLocal")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
-                    b.Property<ulong>("CurrentPerCommitmentIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("CurrentPerCommitmentIndex")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte[]>("CurrentPerCommitmentPoint")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("DelayedPaymentBasepoint")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("FundingPubKey")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("HtlcBasepoint")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
-                    b.Property<uint>("KeyIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("KeyIndex")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("PaymentBasepoint")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("RevocationBasepoint")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.HasKey("ChannelId", "IsLocal");
 
@@ -1236,11 +1258,11 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelLocalAliasEntity", b =>
                 {
                     b.Property<byte[]>("Alias")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(8)");
 
                     b.Property<byte[]>("ChannelId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.HasKey("Alias");
 
@@ -1252,25 +1274,25 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelPolicyEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<ushort?>("CltvExpiryDelta")
-                        .HasColumnType("INTEGER");
+                    b.Property<int?>("CltvExpiryDelta")
+                        .HasColumnType("int");
 
-                    b.Property<uint?>("FeeBaseMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("FeeBaseMsat")
+                        .HasColumnType("bigint");
 
-                    b.Property<uint?>("FeeProportionalMillionths")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("FeeProportionalMillionths")
+                        .HasColumnType("bigint");
 
-                    b.Property<ulong?>("HtlcMaximumMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal?>("HtlcMaximumMsat")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<ulong?>("HtlcMinimumMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal?>("HtlcMinimumMsat")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<long>("UpdatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.HasKey("ChannelId");
 
@@ -1280,41 +1302,41 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.CommitmentEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte>("Slot")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte[]>("FundingTxId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<uint>("FeeratePerKw")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("FeeratePerKw")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("HtlcSignatures")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("Htlcs")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
-                    b.Property<ulong>("LocalMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("LocalMsat")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<ulong>("Number")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("Number")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte[]>("PerCommitmentPoint")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
-                    b.Property<ulong>("RemoteMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("RemoteMsat")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte[]>("Signature")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(64)");
 
                     b.Property<byte[]>("SignedOnFundings")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.HasKey("ChannelId", "Slot", "FundingTxId");
 
@@ -1324,16 +1346,16 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.FeeUpdateEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<ulong>("Sequence")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("Sequence")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<uint>("FeeratePerKw")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("FeeratePerKw")
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("State")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.HasKey("ChannelId", "Sequence");
 
@@ -1343,75 +1365,75 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.HtlcEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<ulong>("HtlcId")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("HtlcId")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte>("Direction")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long?>("AddedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<ulong>("AmountMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("AmountMsat")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte[]>("AttributionData")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(920)");
 
-                    b.Property<uint>("CltvExpiry")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("CltvExpiry")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("FailReason")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
-                    b.Property<ushort?>("FailureCode")
-                        .HasColumnType("INTEGER");
+                    b.Property<int?>("FailureCode")
+                        .HasColumnType("int");
 
                     b.Property<byte[]>("FulfillmentPayload")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("KnownPreimage")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("OnionRoutingPacket")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("OnionSharedSecret")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("OriginIncomingChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<ulong?>("OriginIncomingHtlcId")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal?>("OriginIncomingHtlcId")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte?>("OriginKind")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte[]>("OriginPaymentHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("PathKey")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("PaymentHash")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("PaymentPreimage")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte?>("RemovalKind")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte[]>("Sha256OfOnion")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte>("State")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.HasKey("ChannelId", "HtlcId", "Direction");
 
@@ -1425,79 +1447,79 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.InteractiveTxSessionEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<Guid>("SessionId")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("uniqueidentifier");
 
                     b.Property<bool>("CommitmentSignedReceived")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<bool>("CommitmentSignedSent")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<byte[]>("ConstructedTx")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("FeeratePerKw")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("FeeratePerKw")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("Inputs")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<bool>("IsInitiator")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<byte[]>("LocalContribution")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<long?>("LocalFundingSatoshis")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<Guid?>("LocalReservationId")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("uniqueidentifier");
 
-                    b.Property<uint>("Locktime")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("Locktime")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("OurSharedInputSignature")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(64)");
 
                     b.Property<byte[]>("OurWitnesses")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("Outputs")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte>("Purpose")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long?>("ResolvedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("State")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte[]>("TheirCommitmentSignature")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(64)");
 
                     b.Property<byte[]>("TheirSharedInputSignature")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(64)");
 
                     b.Property<byte[]>("TheirWitnesses")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<bool>("TxSignaturesReceived")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<bool>("TxSignaturesSent")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.HasKey("ChannelId", "SessionId");
 
@@ -1509,17 +1531,17 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.RemoteShachainEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte>("Bucket")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("Index")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("Secret")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.HasKey("ChannelId", "Bucket");
 
@@ -1529,26 +1551,26 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.RevokedCommitmentEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<ulong>("Number")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("Number")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte[]>("FundingTxId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<uint>("FeeratePerKw")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("FeeratePerKw")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("Htlcs")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
-                    b.Property<ulong>("LocalMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("LocalMsat")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<ulong>("RemoteMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("RemoteMsat")
+                        .HasColumnType("decimal(20,0)");
 
                     b.HasKey("ChannelId", "Number", "FundingTxId");
 
@@ -1558,15 +1580,15 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphBannedNodeEntity", b =>
                 {
                     b.Property<byte[]>("NodeId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<string>("Reason")
                         .IsRequired()
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(256)");
 
                     b.Property<long>("Until")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.HasKey("NodeId");
 
@@ -1576,46 +1598,46 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelEntity", b =>
                 {
                     b.Property<byte[]>("ShortChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(8)");
 
                     b.Property<byte[]>("BitcoinKey1")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("BitcoinKey2")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<long>("CapacitySat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("Features")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("FundingTxId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("NodeId1")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("NodeId2")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("RawAnnouncement")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<long>("ReceivedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint?>("SpentAtHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("SpentAtHeight")
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("Verification")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.HasKey("ShortChannelId");
 
@@ -1631,38 +1653,38 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity", b =>
                 {
                     b.Property<byte[]>("ShortChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(8)");
 
                     b.Property<byte>("Direction")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte>("ChannelFlags")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
-                    b.Property<ushort>("CltvExpiryDelta")
-                        .HasColumnType("INTEGER");
+                    b.Property<int>("CltvExpiryDelta")
+                        .HasColumnType("int");
 
-                    b.Property<uint>("FeeBaseMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("FeeBaseMsat")
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("FeePpm")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("FeePpm")
+                        .HasColumnType("bigint");
 
-                    b.Property<ulong>("HtlcMaximumMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("HtlcMaximumMsat")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<ulong>("HtlcMinimumMsat")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("HtlcMinimumMsat")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte>("MessageFlags")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte[]>("RawUpdate")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
-                    b.Property<uint>("Timestamp")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("Timestamp")
+                        .HasColumnType("bigint");
 
                     b.HasKey("ShortChannelId", "Direction");
 
@@ -1672,33 +1694,33 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphNodeEntity", b =>
                 {
                     b.Property<byte[]>("NodeId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("Addresses")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("Alias")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("Color")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(3)");
 
                     b.Property<byte[]>("Features")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("RawAnnouncement")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<long>("ReceivedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("Timestamp")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("Timestamp")
+                        .HasColumnType("bigint");
 
                     b.HasKey("NodeId");
 
@@ -1709,87 +1731,89 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                 {
                     b.Property<long>("Id")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
 
                     b.Property<byte[]>("ChannelId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<uint?>("ClosedAtHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("ClosedAtHeight")
+                        .HasColumnType("bigint");
 
                     b.Property<bool>("ClosedEarly")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<long>("ContributedSat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("FundingScript")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("FundingTxId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte>("Kind")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
-                    b.Property<uint>("LeaseBlocks")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("LeaseBlocks")
+                        .HasColumnType("bigint");
 
-                    b.Property<uint?>("LeaseStartHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("LeaseStartHeight")
+                        .HasColumnType("bigint");
 
                     b.Property<long?>("MaxFeeSat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("MiningFeeSat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("PaymentType")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte[]>("PeerNodeId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
-                    b.Property<uint>("RateChannelCreationFeeSat")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("RateChannelCreationFeeSat")
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("RateFeeBaseSat")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("RateFeeBaseSat")
+                        .HasColumnType("bigint");
 
-                    b.Property<ushort>("RateFeeBasis")
-                        .HasColumnType("INTEGER");
+                    b.Property<int>("RateFeeBasis")
+                        .HasColumnType("int");
 
-                    b.Property<ushort>("RateFundingWeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<int>("RateFundingWeight")
+                        .HasColumnType("int");
 
-                    b.Property<uint>("RateMaxAmountSat")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("RateMaxAmountSat")
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("RateMinAmountSat")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("RateMinAmountSat")
+                        .HasColumnType("bigint");
 
                     b.Property<long>("RequestedSat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("Role")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("ServiceFeeSat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("Signature")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(64)");
 
                     b.Property<byte>("Status")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.HasKey("Id");
 
@@ -1806,24 +1830,24 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>
                 {
                     b.Property<byte[]>("NodeId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<string>("Host")
                         .IsRequired()
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<bool>("IsInboundOnly")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<DateTime>("LastSeenAt")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("datetime2");
 
-                    b.Property<uint>("Port")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("Port")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("Type")
                         .IsRequired()
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.HasKey("NodeId");
 
@@ -1833,14 +1857,14 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerStorageBlobEntity", b =>
                 {
                     b.Property<byte[]>("NodeId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("Blob")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<long>("UpdatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.HasKey("NodeId");
 
@@ -1850,21 +1874,21 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerStorageRetrievalEntity", b =>
                 {
                     b.Property<byte[]>("NodeId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("Blob")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<bool?>("MatchesLastSent")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<long>("ReceivedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("UnknownChannelIds")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.HasKey("NodeId");
 
@@ -1874,27 +1898,27 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("BlockHash")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<ulong?>("CommitmentNumber")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal?>("CommitmentNumber")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte[]>("CommitmentTxId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("Kind")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
-                    b.Property<uint>("SpentAtHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("SpentAtHeight")
+                        .HasColumnType("bigint");
 
                     b.HasKey("ChannelId");
 
@@ -1904,45 +1928,45 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.OutputResolutionEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<uint>("OutputIndex")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("OutputIndex")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("ChannelId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint?>("DeadlineHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("DeadlineHeight")
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("Descriptor")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte[]>("DescriptorData")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte?>("HtlcDirection")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
-                    b.Property<ulong?>("HtlcId")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal?>("HtlcId")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<uint?>("ResolvedHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("ResolvedHeight")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("ResolvingTxId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte>("State")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
-                    b.Property<uint?>("WaitUntilHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long?>("WaitUntilHeight")
+                        .HasColumnType("bigint");
 
                     b.HasKey("TransactionId", "OutputIndex");
 
@@ -1956,55 +1980,55 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.ForwardCircuitEntity", b =>
                 {
                     b.Property<byte[]>("IncomingChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<ulong>("IncomingHtlcId")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("IncomingHtlcId")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<ushort?>("FailureCode")
-                        .HasColumnType("INTEGER");
+                    b.Property<int?>("FailureCode")
+                        .HasColumnType("int");
 
                     b.Property<byte[]>("FailureSource")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long>("IncomingAmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("IncomingCltvExpiry")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("IncomingCltvExpiry")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("IncomingSharedSecret")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long>("OutgoingAmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("OutgoingChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<uint>("OutgoingCltvExpiry")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("OutgoingCltvExpiry")
+                        .HasColumnType("bigint");
 
-                    b.Property<ulong?>("OutgoingHtlcId")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal?>("OutgoingHtlcId")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte[]>("OutgoingShortChannelId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(8)");
 
                     b.Property<byte[]>("PaymentHash")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long?>("ResolvedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("Status")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.HasKey("IncomingChannelId", "IncomingHtlcId");
 
@@ -2018,71 +2042,71 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.InvoiceEntity", b =>
                 {
                     b.Property<byte[]>("PaymentHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long?>("AmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long?>("AmountReceivedMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<string>("Bolt11")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<byte[]>("Bolt12InvoiceBytes")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("CustomRecords")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<string>("Description")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
-                    b.Property<uint>("ExpirySeconds")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("ExpirySeconds")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("InvoiceRequestPayerId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte>("Kind")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<string>("Label")
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(256)");
 
-                    b.Property<ushort>("MinFinalCltvExpiry")
-                        .HasColumnType("INTEGER");
+                    b.Property<int>("MinFinalCltvExpiry")
+                        .HasColumnType("int");
 
                     b.Property<byte[]>("OfferId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<string>("PayerNote")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<byte[]>("PaymentSecret")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("Preimage")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<ulong?>("Quantity")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal?>("Quantity")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<long?>("SettledAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte>("Status")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<string>("Tags")
                         .HasMaxLength(1024)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(1024)");
 
                     b.HasKey("PaymentHash");
 
@@ -2096,60 +2120,60 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.OfferEntity", b =>
                 {
                     b.Property<byte[]>("OfferId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long?>("AbsoluteExpiry")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long?>("AmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<string>("Bolt12")
                         .IsRequired()
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<string>("Currency")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("Description")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<long?>("DisabledAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<bool>("HasPaths")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<string>("Issuer")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<byte>("IssuerKind")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<string>("Label")
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(256)");
 
                     b.Property<byte[]>("Metadata")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("OfferBytes")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
-                    b.Property<ulong?>("QuantityMax")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal?>("QuantityMax")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte>("Status")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<string>("Tags")
                         .HasMaxLength(1024)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(1024)");
 
                     b.HasKey("OfferId");
 
@@ -2163,17 +2187,17 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.OnionReplayEntryEntity", b =>
                 {
                     b.Property<byte[]>("Hmac")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("ChannelId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<uint>("ExpiryHeight")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("ExpiryHeight")
+                        .HasColumnType("bigint");
 
-                    b.Property<ulong>("HtlcId")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("HtlcId")
+                        .HasColumnType("decimal(20,0)");
 
                     b.HasKey("Hmac");
 
@@ -2185,73 +2209,73 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity", b =>
                 {
                     b.Property<byte[]>("PaymentHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long>("AmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<string>("Bolt11")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<byte[]>("Bolt12InvoiceBytes")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<long?>("CompletedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("CustomRecords")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
-                    b.Property<ushort?>("FailureCode")
-                        .HasColumnType("INTEGER");
+                    b.Property<int?>("FailureCode")
+                        .HasColumnType("int");
 
                     b.Property<string>("FailureReason")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<int?>("FailureSourceIndex")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<long>("FeeMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("InvoiceRequestMetadata")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<bool>("IsTrampolineRelay")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bit");
 
                     b.Property<string>("Label")
                         .HasMaxLength(256)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(256)");
 
                     b.Property<string>("OfferBolt12")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<byte[]>("OutgoingChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<ulong?>("OutgoingHtlcId")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal?>("OutgoingHtlcId")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte[]>("PayeeNodeId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<string>("PayerNote")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<byte[]>("Preimage")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte>("Status")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<string>("Tags")
                         .HasMaxLength(1024)
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(1024)");
 
                     b.HasKey("PaymentHash");
 
@@ -2265,31 +2289,31 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentHopEntity", b =>
                 {
                     b.Property<byte[]>("PaymentHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte>("HopIndex")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("AmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("CltvExpiry")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("CltvExpiry")
+                        .HasColumnType("bigint");
 
                     b.Property<long?>("HoldTimeMs")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("NodeId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("SharedSecret")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("ShortChannelId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(8)");
 
                     b.HasKey("PaymentHash", "HopIndex");
 
@@ -2299,20 +2323,20 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartEntity", b =>
                 {
                     b.Property<byte[]>("PaymentHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte>("PartIndex")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte[]>("ChannelId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<ulong>("HtlcId")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("HtlcId")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<byte>("State")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.HasKey("PaymentHash", "PartIndex");
 
@@ -2322,34 +2346,34 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentPartHopEntity", b =>
                 {
                     b.Property<byte[]>("PaymentHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte>("PartIndex")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<byte>("HopIndex")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.Property<long>("AmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("CltvExpiry")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("CltvExpiry")
+                        .HasColumnType("bigint");
 
                     b.Property<long?>("HoldTimeMs")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("NodeId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("SharedSecret")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("ShortChannelId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(8)");
 
                     b.HasKey("PaymentHash", "PartIndex", "HopIndex");
 
@@ -2359,27 +2383,27 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentTrampolineHopEntity", b =>
                 {
                     b.Property<byte[]>("PaymentHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<int>("Attempt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<int>("HopIndex")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("int");
 
                     b.Property<long>("AmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("CltvExpiry")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("CltvExpiry")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("NodeId")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("SharedSecret")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.HasKey("PaymentHash", "Attempt", "HopIndex");
 
@@ -2389,58 +2413,58 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", b =>
                 {
                     b.Property<byte[]>("PaymentHash")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<long>("AmountOutMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("CltvExpiryOut")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("CltvExpiryOut")
+                        .HasColumnType("bigint");
 
                     b.Property<long?>("CompletedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("CreatedAt")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<ushort?>("FailureCode")
-                        .HasColumnType("INTEGER");
+                    b.Property<int?>("FailureCode")
+                        .HasColumnType("int");
 
                     b.Property<string>("FailureReason")
-                        .HasColumnType("TEXT");
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<long?>("FeeEarnedMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<long>("IncomingTotalMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("NextEncryptedRecipientData")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("NextNodeId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("NextPathKey")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("NextTrampolinePacket")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("OutgoingPaymentSecret")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("Preimage")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("RecipientBlindedPaths")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte[]>("RecipientFeatures")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<byte>("Status")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("tinyint");
 
                     b.HasKey("PaymentHash");
 
@@ -2454,31 +2478,31 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
-                    b.Property<ulong>("HtlcId")
-                        .HasColumnType("INTEGER");
+                    b.Property<decimal>("HtlcId")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<long>("AmountMsat")
-                        .HasColumnType("INTEGER");
+                        .HasColumnType("bigint");
 
-                    b.Property<uint>("CltvExpiry")
-                        .HasColumnType("INTEGER");
+                    b.Property<long>("CltvExpiry")
+                        .HasColumnType("bigint");
 
                     b.Property<byte[]>("OuterPaymentSecret")
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("OuterSharedSecret")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("PaymentHash")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte[]>("TrampolineSharedSecret")
                         .IsRequired()
-                        .HasColumnType("BLOB");
+                        .HasColumnType("varbinary(32)");
 
                     b.HasKey("ChannelId", "HtlcId");
 
