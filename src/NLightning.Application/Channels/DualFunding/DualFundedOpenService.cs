@@ -14,6 +14,7 @@ using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Channels.Closing;
 using Domain.Channels.DualFunding;
 using Domain.Channels.DualFunding.Interfaces;
 using Domain.Channels.DualFunding.Models;
@@ -319,6 +320,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
              || !message.ChannelTypeTlv.Features.GetWireBytes().AsSpan().SequenceEqual(pending.ChannelType))
                 throw new ChannelErrorException("accept_channel2 did not echo our channel_type", temporaryId,
                                                 "channel_type must be the one of open_channel2");
+            CheckUpfrontShutdownScript(message.UpfrontShutdownScriptTlv, negotiatedFeatures, temporaryId);
 
             negotiation.RemoteShare = payload.FundingAmount;
             negotiation.RemoteRequiresConfirmedInputs = message.RequireConfirmedInputsTlv is not null;
@@ -732,6 +734,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                            (uint)ChannelOpenValidator.MinAcceptableFeeRatePerKw.Satoshi);
         if (violation is not null)
             throw new ChannelErrorException(violation, temporaryId, violation);
+        CheckUpfrontShutdownScript(message.UpfrontShutdownScriptTlv, negotiatedFeatures, temporaryId);
 
         // Keys first: the reserve and the checks need both contributions and our dust limit
         var total = LightningMoney.MilliSatoshis(payload.FundingAmount.MilliSatoshi + localContribution.MilliSatoshi);
@@ -2375,6 +2378,18 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     /// <summary>The features negotiated with <paramref name="peer"/> (our own without a peer manager).</summary>
     private FeatureOptions GetNegotiatedFeatures(CompactPubKey peer) =>
         _serviceProvider.GetService<IPeerManager>()?.GetPeer(peer)?.NegotiatedFeatures ?? _nodeOptions.Features;
+
+    /// <summary>
+    /// BOLT 2: a non-empty <c>upfront_shutdown_script</c> must be a <c>shutdown</c> form the negotiated features allow;
+    /// a P2TR script without <c>option_shutdown_anysegwit</c> could never close cooperatively (NL-776).
+    /// </summary>
+    private static void CheckUpfrontShutdownScript(UpfrontShutdownScriptTlv? tlv, FeatureOptions negotiatedFeatures,
+                                                   ChannelId temporaryId)
+    {
+        if (tlv is { Value.Length: > 0 } && !ShutdownScriptValidator.IsValidUpfront(tlv.Value, negotiatedFeatures))
+            throw new ChannelErrorException("upfront_shutdown_script is not a valid shutdown script", temporaryId,
+                                            "upfront_shutdown_script is not a valid form");
+    }
 
     private static BitcoinScript? NonEmpty(UpfrontShutdownScriptTlv? tlv)
     {

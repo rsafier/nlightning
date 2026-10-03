@@ -5,6 +5,7 @@ using Bitcoin.Transactions.Factories;
 using Bitcoin.Transactions.Outputs;
 using Bitcoin.ValueObjects;
 using Client.Requests;
+using Closing;
 using Constants;
 using Crypto.Hashes;
 using Crypto.ValueObjects;
@@ -71,7 +72,15 @@ public class ChannelFactory : IChannelFactory
 
         BitcoinScript? remoteUpfrontShutdownScript = null;
         if (message.UpfrontShutdownScriptTlv is not null && message.UpfrontShutdownScriptTlv.Value.Length > 0)
+        {
+            // BOLT 2: a non-empty upfront_shutdown_script is a shutdown form the negotiated features allow; a P2TR
+            // script without option_shutdown_anysegwit could never close cooperatively (NL-776)
+            if (!ShutdownScriptValidator.IsValidUpfront(message.UpfrontShutdownScriptTlv.Value, negotiatedFeatures))
+                throw new ChannelErrorException("upfront_shutdown_script is not a valid shutdown script",
+                                                payload.ChannelId, "upfront_shutdown_script is not a valid form");
+
             remoteUpfrontShutdownScript = message.UpfrontShutdownScriptTlv.Value;
+        }
 
         // Calculate the amounts
         var toLocalAmount = payload.PushAmount;

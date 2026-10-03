@@ -265,6 +265,6 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   open, pay both ways, cooperative close) and LND (v1 open by the topology with a push, pay both ways, restart, pay,
   cooperative close). Run: `scripts/run-cluster.sh -n 3 -p integration --class
   NLightning.Integration.Tests.Cluster.Live.InProcessNodeClusterTests`.
-- The CLN proof advertises `option_shutdown_anysegwit`: CLN v26.06.8 sends a P2TR `shutdown` script on a dual-funded
-  channel without the option negotiated, which our default features refuse ("shutdown scriptpubkey is not a valid
-  form"), and the close stalls.
+- The CLN proof runs with the default features: CLN v26.06.8 sends a P2TR upfront and `shutdown` script on a
+  dual-funded channel, allowed only with `option_shutdown_anysegwit`, which we advertise by default since NL-776
+  (before, our node refused CLN's `shutdown` and the close stalled).

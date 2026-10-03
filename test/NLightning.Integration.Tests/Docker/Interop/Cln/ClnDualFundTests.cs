@@ -12,6 +12,7 @@ using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
+using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
@@ -180,6 +181,53 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
         Assert.Equal(800_000_000L, theirs["total_msat"]!.GetValue<long>());
 
         await PayBothWaysAsync(node, ct);
+    }
+
+    /// <summary>
+    /// NL-776: CLN v26.06.8 puts a P2TR script in <c>accept_channel2</c> and <c>shutdown</c> of a dual-funded channel,
+    /// a form BOLT 2 allows only with <c>option_shutdown_anysegwit</c>; with our default features (the option
+    /// advertised) we keep it at the open, accept CLN's <c>shutdown</c>, and the cooperative close confirms.
+    /// </summary>
+    [Fact]
+    public async Task Given_OurDualFundedChannel_When_WeCloseCooperatively_Then_ClnsP2TrScriptIsPaidAndBothEndsClose()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var node = await CreateNodeAsync("df-close", 0, ct);
+        var channelId = await OpenThroughClientAsync(node, LightningMoney.Satoshis(400_000), ct);
+        await MineUntilUsableAsync(node, channelId, ct);
+
+        // Act
+        CloseChannelClientResponse closed;
+        using (var scope = node.Services.CreateScope())
+        {
+            var handler = scope.ServiceProvider.GetRequiredService<
+                Daemon.Interfaces.IClientCommandHandler<CloseChannelClientRequest, CloseChannelClientResponse>>();
+            closed = await handler.HandleAsync(new CloseChannelClientRequest(channelId)
+            {
+                WaitSeconds = 90
+            }, ct);
+        }
+
+        // Assert: CLN's shutdown script is a segwit v1 program (P2TR) and the closing transaction pays it
+        Assert.Equal(ChannelState.Closing, closed.State);
+        Assert.NotNull(closed.ClosingTxId);
+        var remoteScript = (byte[])Channel(node, channelId).RemoteShutdownScript!.Value;
+        Console.WriteLine($"[cln-df] CLN's shutdown script {Convert.ToHexStringLower(remoteScript)}");
+        Assert.Equal(0x51, remoteScript[0]);
+        await WaitInMempoolAsync(closed.ClosingTxId.Value, ct);
+        await MineAndWaitAsync(node, 6, ct);
+        await Poll.UntilAsync(async () =>
+        {
+            var ours = (await node.ListChannelsAsync(ct)).Channels.FirstOrDefault(c => c.ChannelId == channelId);
+            return ours is null || ours.State == ChannelState.Closed;
+        }, TimeSpan.FromSeconds(90), "our channel is Closed", ct);
+        await Poll.UntilAsync(async () =>
+        {
+            var state = (await _cln.GetPeerChannelAsync(node.NodeIdHex, channelId.ToString(), ct))?["state"]
+                          ?.GetValue<string>();
+            return state is "ONCHAIN" or "CLOSED";
+        }, TimeSpan.FromSeconds(90), "CLN sees the mutual close on chain", ct);
     }
 
     [Fact]

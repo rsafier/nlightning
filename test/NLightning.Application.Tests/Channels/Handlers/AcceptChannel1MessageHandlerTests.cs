@@ -155,6 +155,46 @@ public class AcceptChannel1MessageHandlerTests
     }
 
     [Fact]
+    public async Task Given_P2TrUpfrontScriptWithoutAnySegwit_When_HandleAsync_Then_ChannelIsRejected()
+    {
+        // Arrange (NL-776: a P2TR script is a shutdown form only with option_shutdown_anysegwit)
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Convert.FromHexString("5120" + new string('e', 64))));
+        var negotiatedFeatures = new FeatureOptions
+        {
+            UpfrontShutdownScript = FeatureSupport.Optional,
+            BeyondSegwitShutdown = FeatureSupport.No
+        };
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => _handler.HandleAsync(message, ChannelState.None, negotiatedFeatures, s_pubKey));
+
+        // Assert
+        Assert.Contains("upfront_shutdown_script", exception.Message);
+        Assert.Null(_tempChannel.RemoteUpfrontShutdownScript);
+    }
+
+    [Fact]
+    public async Task Given_P2TrUpfrontScriptWithAnySegwit_When_HandleAsync_Then_ScriptIsKept()
+    {
+        // Arrange
+        var script = Convert.FromHexString("5120" + new string('e', 64));
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(script));
+        var negotiatedFeatures = new FeatureOptions
+        {
+            UpfrontShutdownScript = FeatureSupport.Optional,
+            BeyondSegwitShutdown = FeatureSupport.Optional
+        };
+
+        // Act
+        var result = await _handler.HandleAsync(message, ChannelState.None, negotiatedFeatures, s_pubKey);
+
+        // Assert
+        Assert.IsType<FundingCreatedMessage>(Assert.Single(result));
+        Assert.Equal(script, (byte[])_tempChannel.RemoteUpfrontShutdownScript!.Value);
+    }
+
+    [Fact]
     public async Task Given_ValidAcceptChannel_When_HandleAsync_Then_ChannelIsNotPersistedBeforeFundingSigned()
     {
         // Arrange
