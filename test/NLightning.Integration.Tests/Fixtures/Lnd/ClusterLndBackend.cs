@@ -84,7 +84,7 @@ public sealed class ClusterLndBackend : ILndNetworkBackend
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await _fixture.InitializeAsync();
+        await _fixture.EnsureStartedAsync(cancellationToken);
         foreach (var line in _fixture.StartLog)
             Console.WriteLine(line);
         _bitcoin = ClusterChainEndpoint.Create(Network.Chain);

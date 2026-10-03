@@ -29,6 +29,32 @@ public class ClusterTopologyFixtureTests
     }
 
     [Fact]
+    public async Task Given_AFixture_When_XunitInitializesIt_Then_NothingIsBuiltUntilATestAsks()
+    {
+        // Arrange: xunit creates the fixtures of Explicit tests that will not run too (NL-800)
+        var fixture = new ClusterTopologyFixture<Pair>();
+
+        // Act: no cluster here; an eager build would throw or start a namespace
+        await fixture.InitializeAsync();
+
+        // Assert
+        Assert.Throws<InvalidOperationException>(() => fixture.Topology);
+        Assert.Empty(fixture.StartLog);
+        await fixture.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Given_ADisposedFixtureNeverStarted_When_ATestAsksForIt_Then_ItRefuses()
+    {
+        // Arrange
+        var fixture = new ClusterTopologyFixture<Pair>();
+        await fixture.DisposeAsync();
+
+        // Act + Assert (refused before any task starts)
+        Assert.Throws<ObjectDisposedException>(void () => _ = fixture.EnsureStartedAsync(CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Given_AFixtureNeverStarted_When_Disposed_Then_ItDoesNothing()
     {
         // Arrange

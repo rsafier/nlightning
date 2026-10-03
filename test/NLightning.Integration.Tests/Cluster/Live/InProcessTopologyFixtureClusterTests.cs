@@ -46,7 +46,7 @@ public sealed class WarmNltgClnCollection : ICollectionFixture<WarmNltgClnFixtur
 /// </remarks>
 [Trait("Category", "Cluster")]
 [Collection(WarmNltgClnCollection.Name)]
-public class InProcessTopologyFixtureClusterTests(WarmNltgClnFixture fixture)
+public class InProcessTopologyFixtureClusterTests(WarmNltgClnFixture fixture) : IAsyncLifetime
 {
     private const long PaymentMsat = 10_000_000;
 
@@ -54,6 +54,11 @@ public class InProcessTopologyFixtureClusterTests(WarmNltgClnFixture fixture)
     private static readonly ConcurrentDictionary<string, byte> s_namespaces = new(StringComparer.Ordinal);
 
     private static void Log(string line) => TestContext.Current.TestOutputHelper?.WriteLine(line);
+
+    // The warm topology starts with the first test that runs, not when xunit creates the fixture (NL-800)
+    public ValueTask InitializeAsync() => new(fixture.EnsureStartedAsync());
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     [Fact(Explicit = true)]
     public Task Given_TheWarmTopology_When_WePayCln_Then_ClnsBalanceGrowsByThePayment() =>

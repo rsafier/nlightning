@@ -35,13 +35,18 @@ public sealed class WarmClnPairCollection : ICollectionFixture<ClusterTopologyFi
 /// </summary>
 [Trait("Category", "Cluster")]
 [Collection(WarmClnPairCollection.Name)]
-public class TopologyFixtureTests(ClusterTopologyFixture<WarmClnPair> fixture)
+public class TopologyFixtureTests(ClusterTopologyFixture<WarmClnPair> fixture) : IAsyncLifetime
 {
     private const long PaymentMsat = 10_000_000;
 
     private static readonly ConcurrentDictionary<string, byte> s_namespaces = new(StringComparer.Ordinal);
 
     private static void Log(string line) => TestContext.Current.TestOutputHelper?.WriteLine(line);
+
+    // The warm topology starts with the first test that runs, not when xunit creates the fixture (NL-800)
+    public ValueTask InitializeAsync() => new(fixture.EnsureStartedAsync());
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     [Fact(Explicit = true)]
     public Task Given_TheWarmPair_When_TheFirstTestPays_Then_ItUsesTheCollectionsTopology() => PayAndCheckAsync("first");

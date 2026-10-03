@@ -58,7 +58,7 @@ public sealed class ClusterClnBackend : IClnBackend
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await _topology.InitializeAsync();
+        await _topology.EnsureStartedAsync(cancellationToken);
         foreach (var line in _topology.StartLog)
             Console.WriteLine(line);
 

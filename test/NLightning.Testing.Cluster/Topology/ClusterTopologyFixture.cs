@@ -7,11 +7,21 @@ namespace NLightning.Testing.Cluster.Topology;
 using Run;
 
 /// <summary>
-/// A topology kept warm for a whole xunit collection, as the Docker fixtures keep their containers: built once before
-/// the collection's first test, in its own run namespace, and deleted after its last one (in the background,
-/// <see cref="TestRunOptions.WaitForDeletion"/>). Nothing is reset between tests.
+/// A topology kept warm for a whole xunit collection, as the Docker fixtures keep their containers: built once, when
+/// the collection's first test that runs asks for it (<see cref="EnsureStartedAsync()"/>), in its own run namespace,
+/// and deleted after its last one (in the background, <see cref="TestRunOptions.WaitForDeletion"/>). Nothing is reset
+/// between tests.
 /// </summary>
 /// <remarks>
+/// <para>
+/// Starting it: each test class of the collection implements <see cref="IAsyncLifetime"/> and awaits
+/// <see cref="EnsureStartedAsync()"/> in its <c>InitializeAsync</c> (the first call builds, later calls return the
+/// same start). xunit's own <see cref="InitializeAsync"/> builds nothing: xunit creates a collection's or class's
+/// fixtures whenever the selection holds any of its tests, Explicit ones included (they turn into "not run" only
+/// later), so an eager build would start a namespace in every <c>FullyQualifiedName!~Docker</c> run and fail its
+/// Explicit tests where no cluster is reachable (CI; NL-800). A Docker-era fixture's cluster backend calls
+/// <see cref="EnsureStartedAsync(CancellationToken)"/> from its own start.
+/// </para>
 /// <para>Isolation expectations (what a test of a shared topology may and may not assume):</para>
 /// <list type="bullet">
 /// <item>Collections are isolated from each other: each fixture instance has its own namespace, chain and nodes
@@ -36,8 +46,10 @@ using Run;
 public abstract class ClusterTopologyFixture : IAsyncLifetime
 {
     private readonly ConcurrentQueue<string> _startLog = new();
+    private readonly object _startGate = new();
     private TestRun? _run;
     private TestTopology? _topology;
+    private Task? _start;
     private int _disposed;
 
     /// <summary>The suite label of the run (<see cref="RunLabels.Suite"/>) and its run options' suite.</summary>
@@ -78,9 +90,33 @@ public abstract class ClusterTopologyFixture : IAsyncLifetime
     /// <summary>The Lightning node named <paramref name="name"/> as its implementation's adapter.</summary>
     public T Node<T>(string name) where T : class, ITopologyLightningNode => Topology.Node<T>(name);
 
-    public async ValueTask InitializeAsync()
+    /// <summary>
+    /// xunit's fixture start: nothing is built here (see the remarks: xunit also creates the fixtures of tests that
+    /// will not run); the first <see cref="EnsureStartedAsync()"/> builds.
+    /// </summary>
+    public ValueTask InitializeAsync() => ValueTask.CompletedTask;
+
+    /// <summary>
+    /// Builds the run and the topology on the first call (under the calling test's token) and returns that same start
+    /// to every later call, failed or not: call it from each test class's <c>InitializeAsync</c>.
+    /// </summary>
+    public Task EnsureStartedAsync() => EnsureStartedAsync(TestContext.Current.CancellationToken);
+
+    /// <summary>
+    /// <see cref="EnsureStartedAsync()"/> under <paramref name="cancellationToken"/> (a caller with a start budget of
+    /// its own, e.g. the cluster backend of a Docker-era fixture, passes its token).
+    /// </summary>
+    public Task EnsureStartedAsync(CancellationToken cancellationToken)
     {
-        var cancellationToken = TestContext.Current.CancellationToken;
+        lock (_startGate)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0 && _start is null, this);
+            return _start ??= StartAsync(cancellationToken);
+        }
+    }
+
+    private async Task StartAsync(CancellationToken cancellationToken)
+    {
         var watch = Stopwatch.StartNew();
         _run = await TestRun.StartAsync(CreateRunOptions(), cancellationToken).ConfigureAwait(false);
         try
@@ -138,8 +174,8 @@ public abstract class ClusterTopologyFixture : IAsyncLifetime
     }
 
     private InvalidOperationException NotStarted() =>
-        new($"The {Suite} topology is not started: use the fixture as an xunit collection or class fixture "
-          + $"(its {nameof(InitializeAsync)} builds it)");
+        new($"The {Suite} topology is not started: use the fixture as an xunit collection or class fixture and await "
+          + $"its {nameof(EnsureStartedAsync)} in the test class's InitializeAsync (IAsyncLifetime)");
 }
 
 /// <summary>
