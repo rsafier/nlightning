@@ -91,16 +91,39 @@ public sealed class KubeNodeHandle : INodeHandle
     public Task KillAsync(TimeSpan readyTimeout, CancellationToken cancellationToken) =>
         ReplacePodAsync(KillGracePeriodSeconds, readyTimeout, cancellationToken);
 
+    /// <summary>
+    /// A graceful restart with a window while the node is stopped: the StatefulSet is scaled to 0,
+    /// <paramref name="whileStopped"/> works on the node's data PVC in a maintenance pod
+    /// (<see cref="StoppedNodeMaintenance"/>), then the node starts again on it (same pod name, DNS name and PVC; a new
+    /// pod IP) and this waits until it is ready. What a Docker test does with <c>docker stop</c>, <c>docker cp</c> and
+    /// <c>docker start</c>.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The node keeps its data in an <c>emptyDir</c>.</exception>
+    public async Task RestartAsync(TimeSpan readyTimeout,
+                                   Func<NodeMaintenanceShell, CancellationToken, Task> whileStopped,
+                                   CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(whileStopped);
+        RequirePersistent();
+
+        var previousUid = PodUid
+                       ?? (await _client.TryReadPodAsync(Namespace, PodName, cancellationToken).ConfigureAwait(false))
+                         ?.Metadata.Uid;
+        await StoppedNodeMaintenance.RunAsync(_client, Namespace, Name, readyTimeout, whileStopped, cancellationToken)
+                                    .ConfigureAwait(false);
+        var pod = await _client.WaitForPodReadyAsync(Namespace, PodName, readyTimeout, cancellationToken,
+                                                     previousUid)
+                               .ConfigureAwait(false);
+        PodIp = pod.Status.PodIP;
+        PodUid = pod.Metadata.Uid;
+    }
+
     public override string ToString() => $"{Namespace}/{Name}";
 
     private async Task ReplacePodAsync(int gracePeriodSeconds, TimeSpan readyTimeout,
                                        CancellationToken cancellationToken)
     {
-        if (Storage == NodeStorage.Ephemeral)
-            throw new InvalidOperationException(
-                $"{this} keeps its data in an emptyDir ({nameof(NodeStorage)}.{nameof(NodeStorage.Ephemeral)}): a new "
-              + $"pod would start empty. Deploy it with {nameof(NodeStorage)}.{nameof(NodeStorage.Persistent)} to "
-              + "restart or kill it");
+        RequirePersistent();
 
         var previousUid = await _client.DeletePodAsync(Namespace, PodName, gracePeriodSeconds, cancellationToken)
                                        .ConfigureAwait(false);
@@ -109,5 +132,14 @@ public sealed class KubeNodeHandle : INodeHandle
                                .ConfigureAwait(false);
         PodIp = pod.Status.PodIP;
         PodUid = pod.Metadata.Uid;
+    }
+
+    private void RequirePersistent()
+    {
+        if (Storage == NodeStorage.Ephemeral)
+            throw new InvalidOperationException(
+                $"{this} keeps its data in an emptyDir ({nameof(NodeStorage)}.{nameof(NodeStorage.Ephemeral)}): a new "
+              + $"pod would start empty. Deploy it with {nameof(NodeStorage)}.{nameof(NodeStorage.Persistent)} to "
+              + "restart or kill it");
     }
 }

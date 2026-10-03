@@ -7,6 +7,7 @@ using Grpc.Core;
 namespace NLightning.Testing.Cluster.Topology.Lnd;
 
 using Diagnostics;
+using Kube;
 using Nodes;
 using Nodes.Lnd;
 using Run;
@@ -221,10 +222,20 @@ public sealed class LndRegtestNetwork : IDisposable
     /// dial it again (LND peers at its new pod IP, the others at its alias) and waits until every channel it had active
     /// with a node of the network is active again on both ends. Its <see cref="LndNodeConnection"/> stays the same
     /// object. Channels with nodes the network does not know (a node a test started by itself) are left to that node.
+    /// With <paramref name="whileStopped"/> the restart is graceful and that code works on the stopped node's PVC first
+    /// (a maintenance pod, <see cref="LndNode.RestartAsync(TimeSpan, Func{NodeMaintenanceShell, CancellationToken, Task}, CancellationToken)"/>:
+    /// e.g. an LND <c>channel.db</c> copied or rolled back, test harness phase 6).
     /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="kill"/> with <paramref name="whileStopped"/>.</exception>
     public async Task<LndRestartResult> RestartAsync(string alias, bool kill = false,
-                                                     CancellationToken cancellationToken = default)
+                                                     CancellationToken cancellationToken = default,
+                                                     Func<NodeMaintenanceShell, CancellationToken, Task>? whileStopped =
+                                                         null)
     {
+        if (kill && whileStopped is not null)
+            throw new ArgumentException("A kill has no stopped window: restart gracefully to work on the data",
+                                        nameof(whileStopped));
+
         var node = Node(alias);
         var watch = Stopwatch.StartNew();
         var nodeId = await node.GetNodeIdAsync(cancellationToken).ConfigureAwait(false);
@@ -240,6 +251,8 @@ public sealed class LndRegtestNetwork : IDisposable
 
         if (kill)
             await node.KillAsync(Options.ReadyTimeout, cancellationToken).ConfigureAwait(false);
+        else if (whileStopped is not null)
+            await node.RestartAsync(Options.ReadyTimeout, whileStopped, cancellationToken).ConfigureAwait(false);
         else
             await node.RestartAsync(Options.ReadyTimeout, cancellationToken).ConfigureAwait(false);
         var serverActive = watch.Elapsed;

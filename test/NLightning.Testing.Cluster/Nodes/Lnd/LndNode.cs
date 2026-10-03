@@ -2,6 +2,7 @@ using Grpc.Core;
 
 namespace NLightning.Testing.Cluster.Nodes.Lnd;
 
+using Kube;
 using Run;
 using Testing.Lnd;
 using Testing.Lnd.Lnrpc;
@@ -179,6 +180,19 @@ public sealed class LndNode : ITopologyLightningNode, IDisposable
     public async Task RestartAsync(TimeSpan readyTimeout, CancellationToken cancellationToken)
     {
         await _handle.RestartAsync(readyTimeout, cancellationToken).ConfigureAwait(false);
+        await ReconnectAsync(readyTimeout, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A graceful restart with <paramref name="whileStopped"/> run on the stopped node's PVC (a maintenance pod,
+    /// <see cref="KubeNodeHandle.RestartAsync(TimeSpan, Func{NodeMaintenanceShell, CancellationToken, Task}, CancellationToken)"/>;
+    /// <see cref="LndWorkload.LndDir"/> is mounted at the same path), then the same connection is ready again.
+    /// </summary>
+    public async Task RestartAsync(TimeSpan readyTimeout,
+                                   Func<NodeMaintenanceShell, CancellationToken, Task> whileStopped,
+                                   CancellationToken cancellationToken)
+    {
+        await _handle.RestartAsync(readyTimeout, whileStopped, cancellationToken).ConfigureAwait(false);
         await ReconnectAsync(readyTimeout, cancellationToken).ConfigureAwait(false);
     }
 
