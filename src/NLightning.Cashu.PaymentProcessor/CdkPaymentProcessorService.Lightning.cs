@@ -271,6 +271,12 @@ public sealed partial class CdkPaymentProcessorService
                 await FailQuoteAsync(quoteId, e.Message);
                 throw new RpcException(new Status(StatusCode.InvalidArgument, e.Message));
             }
+            catch (InvalidOperationException e) when (e.GetType() == typeof(InvalidOperationException))
+            {
+                // The offer payer refused (already paying or paid the invoice it fetched, no block yet): the quote
+                // stays Dispatching, which reads PENDING, so the mint checks it again rather than giving the ecash back
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, e.Message));
+            }
 
             if (result.Payment?.Payment is not { } payment)
             {

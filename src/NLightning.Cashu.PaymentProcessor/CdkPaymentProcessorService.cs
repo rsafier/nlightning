@@ -62,6 +62,7 @@ public sealed partial class CdkPaymentProcessorService : CdkPaymentProcessor.Cdk
     private readonly IServiceScopeFactory? _scopeFactory;
     private readonly TimeProvider _timeProvider;
     private readonly IWalletSpendService? _walletSpendService;
+    private readonly SemaphoreSlim _melts;
 
     public CdkPaymentProcessorService(IInvoiceService invoiceService, IPaymentService paymentService,
                                       IPaymentEventSource eventSource, IOptions<NodeOptions> nodeOptions,
@@ -88,6 +89,7 @@ public sealed partial class CdkPaymentProcessorService : CdkPaymentProcessor.Cdk
         _blockchainMonitor = blockchainMonitor;
         _chainService = chainService;
         _labels = SourceLabels.Create(_options.Label, null);
+        _melts = new SemaphoreSlim(Math.Max(1, _options.MaxConcurrentMelts));
     }
 
     /// <summary>How many <see cref="WaitPaymentEvent"/> streams are open.</summary>
@@ -154,7 +156,23 @@ public sealed partial class CdkPaymentProcessorService : CdkPaymentProcessor.Cdk
     }
 
     /// <inheritdoc />
-    public override Task<MakePaymentResponse> MakePayment(MakePaymentRequest request, ServerCallContext context)
+    public override async Task<MakePaymentResponse> MakePayment(MakePaymentRequest request, ServerCallContext context)
+    {
+        // A bounded number of melts at once (NL-1000); the mint retries a refused one
+        if (!_melts.Wait(0))
+            throw new RpcException(new Status(StatusCode.ResourceExhausted,
+                                              $"At most {_options.MaxConcurrentMelts} melts are paid at once."));
+        try
+        {
+            return await MakePaymentCoreAsync(request, context);
+        }
+        finally
+        {
+            _melts.Release();
+        }
+    }
+
+    private Task<MakePaymentResponse> MakePaymentCoreAsync(MakePaymentRequest request, ServerCallContext context)
     {
         if (request.PartialAmount is not null)
             throw new RpcException(new Status(StatusCode.InvalidArgument,
@@ -232,6 +250,9 @@ public sealed partial class CdkPaymentProcessorService : CdkPaymentProcessor.Cdk
     public override async Task WaitPaymentEvent(EmptyRequest request, IServerStreamWriter<PaymentEventResponse> stream,
                                                 ServerCallContext context)
     {
+        if (_events.SubscriberCount >= _options.MaxEventStreams)
+            throw new RpcException(new Status(StatusCode.ResourceExhausted,
+                                              $"At most {_options.MaxEventStreams} event streams are open at once."));
         using var subscription = _events.Subscribe();
         _logger.LogInformation("Cashu mint subscribed to payment events");
         try

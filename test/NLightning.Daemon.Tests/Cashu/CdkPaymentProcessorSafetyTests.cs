@@ -1,4 +1,5 @@
 using Grpc.Core;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NBitcoin;
@@ -243,6 +244,102 @@ public sealed class CdkPaymentProcessorSafetyTests : CdkProcessorTestBase
         Assert.Equal(StatusCode.Unavailable, error.StatusCode);
         writer.VerifyNoOtherCalls();
     }
+
+    [Fact]
+    public async Task Given_AMeltPendingAtTheTimeout_When_AnAttemptFailsWhileRetrying_Then_TheStreamSaysNothing()
+    {
+        // Arrange (NL-999): the melt answered pending; then an attempt fails while the payment service retries
+        var (bolt11, hashHex) = SignedBolt11(LightningMoney.Satoshis(2_000));
+        var hash = new Hash(Convert.FromHexString(hashHex));
+        var payment = Payment(hash, LightningMoney.Satoshis(2_000), MintLabel);
+        PaymentService.Setup(s => s.PayInvoiceAsync(bolt11, null, It.IsAny<PayInvoiceOptions>(),
+                                                    It.IsAny<CancellationToken>()))
+                      .ReturnsAsync(new PayInvoiceResult(payment, 1, 1));
+        PaymentService.Setup(s => s.GetPaymentAsync(hash, It.IsAny<CancellationToken>())).ReturnsAsync(payment);
+        Assert.Equal(QuoteState.Pending, (await MeltAsync(bolt11, "melt-retrying")).Status);
+        using var stream = Client.WaitPaymentEvent(new EmptyRequest(), cancellationToken: Ct);
+        await WaitForStreamAsync();
+
+        // Act: a failure while retrying, then the success
+        payment.Fail(null, null, "Retrying.", DateTimeOffset.UtcNow);
+        PaymentService.Setup(s => s.IsPaying(hash)).Returns(true);
+        Hub.Publish(new PaymentFailedEvent(hash, "Retrying.", DateTimeOffset.UtcNow));
+        var succeeded = Payment(hash, LightningMoney.Satoshis(2_000), MintLabel);
+        succeeded.Succeed(Preimage, DateTimeOffset.UtcNow);
+        PaymentService.Setup(s => s.GetPaymentAsync(hash, It.IsAny<CancellationToken>())).ReturnsAsync(succeeded);
+        Hub.Publish(new PaymentSucceededEvent(hash, succeeded.Amount, succeeded.Fee, Preimage, DateTimeOffset.UtcNow));
+
+        // Assert: the stream's first message is the success
+        Assert.True(await stream.ResponseStream.MoveNext(Bounded));
+        Assert.Equal("melt-retrying", stream.ResponseStream.Current.PaymentSuccessful.QuoteId);
+    }
+
+    [Fact]
+    public async Task Given_TooManyEventStreams_When_OneMoreSubscribes_Then_ResourceExhausted()
+    {
+        // Arrange (NL-1000): at most 4 streams by default
+        var streams = Enumerable.Range(0, 4)
+                                .Select(_ => Client.WaitPaymentEvent(new EmptyRequest(), cancellationToken: Ct))
+                                .ToList();
+        try
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (Service.StreamCount < 4 && DateTime.UtcNow < deadline)
+                await Task.Delay(10, Ct);
+
+            // Act
+            using var extra = Client.WaitPaymentEvent(new EmptyRequest(), cancellationToken: Ct);
+            var error = await Assert.ThrowsAsync<RpcException>(() => extra.ResponseStream.MoveNext(Bounded));
+
+            // Assert
+            Assert.Equal(StatusCode.ResourceExhausted, error.StatusCode);
+        }
+        finally
+        {
+            foreach (var stream in streams)
+                stream.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Given_TheMeltLimitReached_When_OneMoreMeltComes_Then_ResourceExhausted()
+    {
+        // Arrange (NL-1000): one melt at a time, the first one held by the payment service
+        await using var provider = BuildProvider(new CashuPaymentProcessorOptions
+        {
+            Enabled = true,
+            Port = 0,
+            AllowInsecureLoopback = true,
+            MaxConcurrentMelts = 1
+        });
+        var service = provider.GetRequiredService<CdkPaymentProcessorService>();
+        var held = new TaskCompletionSource<PayInvoiceResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        PaymentService.Setup(s => s.PayInvoiceAsync(It.IsAny<string>(), null, It.IsAny<PayInvoiceOptions>(),
+                                                    It.IsAny<CancellationToken>()))
+                      .Returns(held.Task);
+        var (first, firstHash) = SignedBolt11(LightningMoney.Satoshis(1_000));
+        var (second, _) = SignedBolt11(LightningMoney.Satoshis(1_000));
+        var context = new Mock<ServerCallContext>().Object;
+
+        // Act
+        var pending = service.MakePayment(Bolt11Melt(first, "melt-held"), context);
+        var error = await Assert.ThrowsAsync<RpcException>(() => service.MakePayment(Bolt11Melt(second, "melt-2nd"),
+                                                                                     context));
+        held.SetResult(new PayInvoiceResult(Payment(new Hash(Convert.FromHexString(firstHash)),
+                                                    LightningMoney.Satoshis(1_000), MintLabel), 1, 1));
+        await pending.WaitAsync(TimeSpan.FromSeconds(10), Ct);
+
+        // Assert
+        Assert.Equal(StatusCode.ResourceExhausted, error.StatusCode);
+    }
+
+    private static MakePaymentRequest Bolt11Melt(string bolt11, string quoteId) => new()
+    {
+        PaymentOptions = new OutgoingPaymentVariant
+        {
+            Bolt11 = new Bolt11OutgoingPaymentOptions { Bolt11 = bolt11, QuoteId = quoteId }
+        }
+    };
 
     private async Task<MakePaymentResponse> CheckOutgoingAsync(Hash hash) =>
         await Client.CheckOutgoingPaymentAsync(new CheckOutgoingPaymentRequest

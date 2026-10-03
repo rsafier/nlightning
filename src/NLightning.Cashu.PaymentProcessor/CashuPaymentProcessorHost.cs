@@ -78,6 +78,9 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
         builder.Services.AddSingleton(service);
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
+            // Bounded for an authenticated client too (NL-1000)
+            kestrel.Limits.MaxConcurrentConnections = _options.MaxConnections;
+            kestrel.Limits.Http2.MaxStreamsPerConnection = 32;
             kestrel.Listen(IPAddress.Parse(_options.ListenAddress), _options.Port, ConfigureListener);
         });
 

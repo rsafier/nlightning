@@ -153,7 +153,7 @@ public sealed class CdkPaymentProcessorServiceTests : CdkProcessorTestBase
     }
 
     [Fact]
-    public async Task Given_AMelt_When_MakePaymentSucceeds_Then_PaidWithProofTheQuoteIsStoredAndTheStreamNamesIt()
+    public async Task Given_AMelt_When_MakePaymentSucceeds_Then_PaidWithProofTheQuoteIsStoredAndNotStreamedAgain()
     {
         // Arrange
         var (bolt11, hashHex) = SignedBolt11(LightningMoney.Satoshis(1_000));
@@ -196,10 +196,17 @@ public sealed class CdkPaymentProcessorServiceTests : CdkProcessorTestBase
         var stored = await Quotes.GetAsync("melt-1");
         Assert.Equal(CashuQuoteState.Paid, stored!.State);
         Assert.Equal(hash, stored.PaymentHash);
-        Assert.True(await stream.ResponseStream.MoveNext(Ct));
-        Assert.Equal("melt-1", stream.ResponseStream.Current.PaymentSuccessful.QuoteId);
-        Assert.Equal(QuoteState.Paid, stream.ResponseStream.Current.PaymentSuccessful.Details.Status);
-        Assert.Equal(hash.ToString(), stream.ResponseStream.Current.PaymentSuccessful.Details.PaymentIdentifier.Hash);
+        // MakePayment answered the quote final, so the stream does not repeat it (NL-999): its next message is the
+        // mint's next settled invoice
+        var minted = Hash(0x0a);
+        var mintInvoice = InvoiceRow(minted, InvoiceStatus.Settled, LightningMoney.Satoshis(3));
+        mintInvoice.Label = MintLabel;
+        InvoiceService.Setup(s => s.GetInvoiceAsync(minted, It.IsAny<CancellationToken>())).ReturnsAsync(mintInvoice);
+        Hub.Publish(new InvoiceSettledEvent(minted, LightningMoney.Satoshis(3), DateTimeOffset.UtcNow));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
+        Assert.True(await stream.ResponseStream.MoveNext(timeout.Token));
+        Assert.Equal(minted.ToString(), stream.ResponseStream.Current.PaymentReceived.PaymentIdentifier.Hash);
     }
 
     [Fact]
@@ -325,7 +332,7 @@ public sealed class CdkPaymentProcessorServiceTests : CdkProcessorTestBase
         var received = Assert.Single(check.Payments);
         Assert.Equal(2_000UL, received.PaymentAmount.Value);
         Assert.Equal(hash.ToString(), received.PaymentId);
-        Assert.True(await stream.ResponseStream.MoveNext(Ct));
+        Assert.True(await stream.ResponseStream.MoveNext(Bounded));
         Assert.Equal(hash.ToString(), stream.ResponseStream.Current.PaymentReceived.PaymentIdentifier.Hash);
     }
 
@@ -376,5 +383,5 @@ public sealed class CdkPaymentProcessorServiceTests : CdkProcessorTestBase
             status == InvoiceStatus.Settled ? DateTimeOffset.UtcNow : null);
 
     private static PaymentModel Payment(Hash hash, LightningMoney amount, LightningMoney fee) =>
-        new(hash, "lnbcrt1pay", Payee, amount, fee, DateTimeOffset.UtcNow);
+        new(hash, "lnbcrt1pay", Payee, amount, fee, DateTimeOffset.UtcNow) { Label = MintLabel };
 }
