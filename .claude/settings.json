@@ -15,6 +15,7 @@
       "Bash(git log:*)",
       "Bash(git show:*)",
       "Bash(git branch:*)",
+      "Bash(git push:*)",
       "Bash(ls:*)",
       "Bash(cat:*)",
       "Bash(grep:*)",
@@ -22,9 +23,13 @@
       "Bash(rg:*)"
     ],
     "deny": [
-      "Bash(git push:*)",
       "Bash(rm -rf:*)",
-      "Bash(dotnet nuget push:*)"
+      "Bash(dotnet nuget push:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push --force-with-lease:*)",
+      "Bash(git push origin main:*)",
+      "Bash(git push --delete:*)"
     ]
   }
 }
