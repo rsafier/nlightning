@@ -145,7 +145,7 @@ public sealed class DockerEclairBackend : IEclairBackend
     private async Task EnsureEclairImageAsync()
     {
         var reference = $"{EclairFixture.EclairImage}:{EclairFixture.EclairTag}";
-        if (await InteropChainHost.ImageExistsAsync(_client, reference))
+        if (await DockerContainerUtils.ImageExistsAsync(_client, reference))
             return;
 
         var dockerfileDir = EclairFixture.FindDockerDirectory("eclair");

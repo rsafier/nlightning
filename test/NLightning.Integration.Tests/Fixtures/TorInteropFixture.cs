@@ -261,7 +261,7 @@ public sealed class TorInteropFixture : IAsyncLifetime
     private async Task StartAsync()
     {
         await EnsureTorImageAsync();
-        await InteropChainHost.EnsureImageAsync(_client, ClnFixture.ClnImage, ClnFixture.ClnTag);
+        await DockerContainerUtils.EnsureImageAsync(_client, ClnFixture.ClnImage, ClnFixture.ClnTag);
         await DockerContainerUtils.RemoveContainerAsync(_client, ClnContainerName);
         await DockerContainerUtils.RemoveContainerAsync(_client, TorContainerName);
         await _chain.StartAsync();
@@ -360,7 +360,7 @@ public sealed class TorInteropFixture : IAsyncLifetime
 
     private async Task EnsureTorImageAsync()
     {
-        if (await InteropChainHost.ImageExistsAsync(_client, $"{TorImage}:{TorImageTag}"))
+        if (await DockerContainerUtils.ImageExistsAsync(_client, $"{TorImage}:{TorImageTag}"))
             return;
 
         await EclairFixture.BuildImageAsync(_client, EclairFixture.FindDockerDirectory("tor"),

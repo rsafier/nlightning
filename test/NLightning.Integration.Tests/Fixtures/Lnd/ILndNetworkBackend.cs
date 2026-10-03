@@ -7,7 +7,7 @@ namespace NLightning.Integration.Tests.Fixtures.Lnd;
 /// What <see cref="LightningRegtestNetworkFixture"/> needs from where its bitcoind and its LND nodes run
 /// (<see cref="TestBackend"/>), shaped like the members the LND Docker tests call on the fixture: <see cref="Bitcoin"/>,
 /// <see cref="BitcoinZmqPorts"/>, <see cref="LndNodes"/>, <see cref="GetLndNode"/> and <see cref="RestartLndAsync"/>
-/// (test harness phase 3). The Docker backend is the fixture's LNUnit orchestration; the cluster backend is
+/// (test harness phase 3). The Docker backend is <see cref="DockerLndBackend"/> (LNUnit); the cluster backend is
 /// <see cref="ClusterLndBackend"/>. The fixture's other members (<c>GetOrCreateAsync</c>, the alias and image
 /// constants) stay on the fixture.
 /// </summary>

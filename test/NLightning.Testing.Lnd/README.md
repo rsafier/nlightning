@@ -50,7 +50,6 @@ It fails if a file already sets `csharp_namespace`, has more or fewer than one `
 After a tag change, these tests show what moved:
 
 - **`ProtoManifestTests`** checks each committed file against its manifest hash. It also removes the namespace line from each file and checks the result against the upstream hash, and checks that LND's notice is there.
-- **`LnUnitCoexistenceTests`** pins the API that lnunit.lnd 3.0.4 (LND 0.20) has and the protos here lack. Update its list deliberately.
 
 Loop's protos (LNUnit's `LoopConnection`) are not fetched. They come from another repository, and nothing here uses Loop.
 
@@ -58,7 +57,7 @@ Loop's protos (LNUnit's `LoopConnection`) are not fetched. They come from anothe
 
 The generated types live in `NLightning.Testing.Lnd.Lnrpc`, `.Routerrpc`, `.Walletrpc`, `.Invoicesrpc`, `.Signrpc`, `.Chainrpc`, `.Peersrpc`, `.Devrpc`, `.Verrpc`, `.Autopilotrpc`, `.Watchtowerrpc`, `.Wtclientrpc` and `.Neutrinorpc`:
 
-- **Coexistence with lnunit.lnd.** lnunit.lnd uses the global `Lnrpc`, `Routerrpc` and so on, so this assembly can sit next to it in one test assembly with no `extern alias`. `LnUnitCoexistenceTests` compiles against both.
+- **Coexistence with lnunit.lnd.** lnunit.lnd uses the global `Lnrpc`, `Routerrpc` and so on, so this assembly can sit next to it in one test assembly with no `extern alias`. That still matters in `NLightning.Integration.Tests`, which gets lnunit.lnd transitively through `LNUnit` (the Docker LND backend's container builder, NL-819). The `LnUnitCoexistenceTests` that compiled against both left with the `LNUnit.LND` reference of `NLightning.Testing.Lnd.Tests` (NL-819).
 - **Wire names are unchanged.** Only the C# namespace moves. The proto packages stay the same, so the services are still `lnrpc.Lightning`, `routerrpc.Router` and so on, and LND sees the same method paths.
 - **Member names are unchanged.** Message, field and enum names are what protoc generates from LND's protos, as in lnunit.lnd. For example, `verrpc.Version.version` is `Version_`.
 

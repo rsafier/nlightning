@@ -1,5 +1,4 @@
 using Docker.DotNet;
-using LNUnit.Setup;
 
 namespace NLightning.Integration.Tests.Fixtures.Postgres;
 
@@ -23,7 +22,7 @@ public sealed class DockerPostgresBackend(string containerName) : IPostgresBacke
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await _client.PullImageAndWaitForCompleted(Image, Tag);
+        await DockerContainerUtils.EnsureImageAsync(_client, Image, Tag);
         await DockerContainerUtils.RemoveContainerAsync(_client, containerName);
 
         Port = await DockerContainerUtils.StartWithLoopbackPortAsync(_client, $"{Image}:{Tag}", containerName, 5432,

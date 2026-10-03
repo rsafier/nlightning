@@ -25,9 +25,11 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <!--
-      LNUnit (LNUnit.Setup's LNUnitBuilder) only orchestrates the containers of Fixtures/LightningRegtestNetworkFixture
-      until phase 3's cluster backend replaces it. Its LND client (lnunit.lnd) comes along transitively, but no test
-      uses it: every LND call goes through NLightning.Testing.Lnd (test harness phase 3 lane B).
+      LNUnit is used only by the Docker LND backend, Fixtures/Lnd/DockerLndBackend (LNUnit.Setup's LNUnitBuilder
+      orchestrates the containers of LightningRegtestNetworkFixture on Docker; NL-819). The other Docker fixtures pull
+      their images with Fixtures/DockerContainerUtils.EnsureImageAsync. LNUnit's own LND client (lnunit.lnd, with the
+      global Lnrpc/Routerrpc/... namespaces) comes along transitively, but nothing uses it: every LND call goes through
+      NLightning.Testing.Lnd (test harness phase 3 lane B). The reference goes when the Docker LND backend does.
     -->
     <PackageReference Include="LNUnit" Version="3.0.4"/>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0"/>

@@ -65,8 +65,9 @@ the library's existing seams: `NodeKind.NLightning`, `ILightningNodeDeployer`, `
 
 ## The LND regtest network on the cluster (phase 3)
 
-- `Fixtures/Lnd/ClusterLndBackend` (the cluster backend of `LightningRegtestNetworkFixture`; the next step wires the
-  fixture to it through `Fixtures/Lnd/ILndNetworkBackend`, whose members are the ones the LND Docker tests call:
+- `Fixtures/Lnd/ClusterLndBackend` (the cluster backend of `LightningRegtestNetworkFixture`, next to the Docker one,
+  `Fixtures/Lnd/DockerLndBackend`, the only LNUnit user (NL-819); the fixture holds an
+  `Fixtures/Lnd/ILndNetworkBackend`, still always the Docker one until the selection is wired, whose members are the ones the LND Docker tests call:
   `Bitcoin` (the miner's RPC with its `miner` wallet, by pod IP), `BitcoinZmqPorts` (28332/28333 on that host),
   `LndNodes`, `GetLndNode(alias)` (in-tree `LndNodeConnection`s, the same objects across restarts),
   `RestartLndAsync(alias)`). It is a warm `LndRegtestNetworkFixture` (the library's `Topology/Lnd/LndRegtestNetwork`:
