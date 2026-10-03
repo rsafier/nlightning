@@ -94,6 +94,7 @@ public class OnchainO3Tests : IAsyncLifetime
 
         // Act: force close, the commitment confirms
         var commitment = await ForceCloseAndConfirmAsync(node, david, channel, ct);
+        await ChainSync.MineUntilLndSweptAsync(_fixture, david, [node], commitment.Transaction.GetHash(), ct);
         var toLocalVout = await PollValueAsync(async () => (await GetRowsAsync(node, channel.ChannelId))
                                                         .FirstOrDefault(r => r.TransactionId == commitment.TxId
                                                                           && r.Descriptor

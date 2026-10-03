@@ -1,6 +1,8 @@
 using System.Text;
+using NBitcoin;
 using NLightning.Testing.Lnd;
 using NLightning.Testing.Lnd.Lnrpc;
+using NLightning.Testing.Lnd.Walletrpc;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
@@ -104,5 +106,43 @@ public static class ChainSync
         await bitcoin.GenerateToAddressAsync(blocks, await bitcoin.GetNewAddressAsync(cancellationToken),
                                              cancellationToken);
         return await WaitAllAtTipAsync(fixture, lndNodes, nodes, cancellationToken, timeout);
+    }
+
+    /// <summary>
+    /// Mines one block at a time, <paramref name="pace"/> apart (default 1 s), until <paramref name="lnd"/> lists a
+    /// confirmed sweep of an output of <paramref name="closingTxId"/> (its <c>to_remote</c> after our force close).
+    /// </summary>
+    /// <remarks>
+    /// LND 0.21.4's sweeper gives up a commit sweep for good when the sweep confirms in a block its fee bumper has not
+    /// processed yet ("Fail to fee bump tx ...: input no longer exists", then "unable to progress
+    /// *contractcourt.commitSweepResolver"): the channel then stays pending force close forever with the swept amount
+    /// in limbo, and <c>ClosedChannels</c> never lists it (NL-770). A burst of blocks right after the close (LND still
+    /// catching up on its 3 close confirmations) triggers it, so a test that later asserts LND's
+    /// <c>RemoteForceClose</c> lets LND sweep at this pace first.
+    /// </remarks>
+    public static async Task MineUntilLndSweptAsync(LightningRegtestNetworkFixture fixture, LndNodeConnection lnd,
+                                                    IEnumerable<NLightningTestNode> nodes, uint256 closingTxId,
+                                                    CancellationToken cancellationToken, TimeSpan? pace = null,
+                                                    int maxBlocks = 30)
+    {
+        var nodeList = nodes.ToList();
+        var prefix = closingTxId + ":";
+        for (var i = 0; i <= maxBlocks; i++)
+        {
+            var sweeps = await lnd.WalletKitClient.ListSweepsAsync(new ListSweepsRequest { Verbose = true },
+                                                                   cancellationToken: cancellationToken);
+            if (sweeps.TransactionDetails.Transactions.Any(
+                    t => t.NumConfirmations > 0
+                      && t.PreviousOutpoints.Any(o => o.Outpoint.StartsWith(prefix, StringComparison.Ordinal))))
+                return;
+
+            if (i == maxBlocks)
+                break;
+
+            await MineAndWaitAsync(fixture, 1, [lnd], nodeList, cancellationToken);
+            await Task.Delay(pace ?? TimeSpan.FromSeconds(1), cancellationToken);
+        }
+
+        throw new TimeoutException($"{lnd.LocalAlias} swept no output of {closingTxId} within {maxBlocks} blocks");
     }
 }

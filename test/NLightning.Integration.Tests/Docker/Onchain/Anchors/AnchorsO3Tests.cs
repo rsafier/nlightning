@@ -84,6 +84,7 @@ public class AnchorsO3Tests : IAsyncLifetime
 
         // Act: force close, the commitment confirms
         var commitment = await _harness.ForceCloseAndConfirmAsync(node, [david], channel, ct);
+        await ChainSync.MineUntilLndSweptAsync(_harness.Fixture, david, [node], commitment.Transaction.GetHash(), ct);
         var (ourAnchor, peerAnchor) = AnchorsHarness.FindAnchors(model, commitment.Transaction);
         var toLocalRow = await AnchorsHarness.WaitForRowAsync(node, channel.ChannelId,
                                                               r => r.TransactionId == commitment.TxId
