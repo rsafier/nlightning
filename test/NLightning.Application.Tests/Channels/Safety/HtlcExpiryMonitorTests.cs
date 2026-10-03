@@ -21,6 +21,7 @@ using Domain.Node.Options;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
+using Domain.Payments.Trampoline;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
@@ -52,6 +53,7 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
     private readonly Mock<IChannelStateDbRepository> _stateDb = new();
     private readonly Mock<IInvoiceDbRepository> _invoices = new();
     private readonly Mock<IChannelDbRepository> _channelDb = new();
+    private readonly Mock<ITrampolineRelayDbRepository> _relays = new();
     private readonly ServiceProvider _provider;
     private readonly byte[] _errorPacket = [0xEE, 0x01];
     private ChannelModel _channel;
@@ -81,6 +83,7 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
         unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(_stateDb.Object);
         unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(_invoices.Object);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(_channelDb.Object);
+        unitOfWork.SetupGet(u => u.TrampolineRelayDbRepository).Returns(_relays.Object);
         var services = new ServiceCollection();
         services.AddScoped(_ => unitOfWork.Object);
         _provider = services.BuildServiceProvider();
@@ -650,6 +653,115 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
                                                 state.FeeUpdates, state.LocalNextHtlcId, state.RemoteNextHtlcId,
                                                 state.LocalCommit, state.RemoteCommit, state.RemoteNextCommit,
                                                 state.RemoteNextPerCommitmentPoint);
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelayPartWhoseRelayIsSending_When_PastIncomingDeadlines_Then_NeverFailedBack()
+    {
+        // Arrange (NL-875): the relay's engine may still offer an outgoing attempt; the outgoing HTLCs' own deadlines
+        // protect the part, failing it upstream could lose the amount
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        UseRelayPart(incomingId, RealSigningCommitmentPair.Hash(preimage), TrampolineRelayStatus.Sending);
+        var monitor = CreateMonitor();
+
+        // Act
+        foreach (var h in new[] { Cltv - Delta, Cltv - FulfillSafety, Cltv })
+            await monitor.CheckAsync(h, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.VerifyNoOtherCalls();
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelayPartWithAnOutgoingHtlcOnAnUnloadedChannel_When_PastDeadlines_Then_NeverFailedBack()
+    {
+        // Arrange (NL-875): an outgoing HTLC of the relay on a channel that is not loaded (and not closed) may still be
+        // fulfilled downstream, even with the relay collecting
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        UseRelayPart(incomingId, hash, TrampolineRelayStatus.Collecting);
+        var unloaded = new ChannelId(Enumerable.Repeat((byte)0x77, 32).ToArray());
+        _stateDb.Setup(r => r.FindHtlcsByOriginAsync(HtlcOrigin.Trampoline(hash)))
+                .ReturnsAsync([(unloaded, new HtlcKey(HtlcDirection.Outgoing, 3))]);
+        var monitor = CreateMonitor();
+
+        // Act
+        foreach (var h in new[] { Cltv - Delta, Cltv - FulfillSafety, Cltv })
+            await monitor.CheckAsync(h, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.VerifyNoOtherCalls();
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_AFailedTrampolineRelayWithNoOutgoingHtlc_When_TheFailBackDeadlineIsReached_Then_ThePartIsFailedBack()
+    {
+        // Arrange (NL-875): nothing downstream can fulfill it any more
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        UseRelayPart(incomingId, RealSigningCommitmentPair.Hash(preimage), TrampolineRelayStatus.Failed);
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta - 1, TestContext.Current.CancellationToken);
+        _operations.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, incomingId, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_AFulfilledTrampolineRelay_When_ThePartIsStillUnfulfilledAtItsFulfillDeadline_Then_TheChannelIsFailed()
+    {
+        // Arrange (NL-875): the relay knows the preimage (B2-CLTV-06), so the part is never failed back
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        UseRelayPart(incomingId, RealSigningCommitmentPair.Hash(preimage), TrampolineRelayStatus.Fulfilled, preimage);
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety - 1, TestContext.Current.CancellationToken);
+        _failureService.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert
+        _failureService.Verify(f => f.FailChannelAsync(_channel.ChannelId, It.IsAny<ChannelFailureRequest>(),
+                                                       It.IsAny<CancellationToken>()), Times.Once);
+        _operations.VerifyNoOtherCalls();
+    }
+
+    private void UseRelayPart(ulong incomingId, Hash hash, TrampolineRelayStatus status, Secret? preimage = null)
+    {
+        var relay = new TrampolineRelayModel(hash, _pair.Alice.Channel.RemoteNodeId,
+                                             LightningMoney.MilliSatoshis(19_000_000), Cltv - Delta,
+                                             LightningMoney.MilliSatoshis(20_000_000), DateTimeOffset.UnixEpoch);
+        if (status is TrampolineRelayStatus.Sending or TrampolineRelayStatus.Fulfilled)
+            relay.MarkSending();
+        if (status == TrampolineRelayStatus.Fulfilled)
+            relay.MarkFulfilled(preimage!.Value, LightningMoney.MilliSatoshis(1_000_000), DateTimeOffset.UnixEpoch);
+        if (status == TrampolineRelayStatus.Failed)
+            relay.MarkFailed(0x2002, "no route", DateTimeOffset.UnixEpoch);
+
+        var part = new TrampolineRelayPartModel(hash, _channel.ChannelId, incomingId,
+                                                LightningMoney.MilliSatoshis(20_000_000), Cltv,
+                                                new Secret(new byte[32]), new Secret(new byte[32]), null);
+        _relays.Setup(r => r.GetPartAsync(_channel.ChannelId, incomingId)).ReturnsAsync(part);
+        _relays.Setup(r => r.GetAsync(hash)).ReturnsAsync((relay, [part]));
     }
 
     private HtlcExpiryMonitor CreateMonitor() =>

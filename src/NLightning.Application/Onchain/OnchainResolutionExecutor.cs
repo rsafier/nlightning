@@ -34,6 +34,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 using LiquidityAds;
 using Payments;
+using Payments.Trampoline;
 using Reorg;
 
 /// <summary>
@@ -1172,7 +1173,13 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 var circuit = unitOfWork.ForwardCircuitDbRepository is { } circuits
                                   ? await circuits.GetByIncomingAsync(channelId, spec.Id)
                                   : null;
-                return [(OnchainAccounting.ValueBookedByKey, circuit is null ? "invoice" : "forward")];
+                if (circuit is not null)
+                    return [(OnchainAccounting.ValueBookedByKey, "forward")];
+
+                // NL-875: a part of a trampoline relay: TrampolineRelaySettled booked it
+                return await TrampolineRelayReads.GetPartAsync(unitOfWork, channelId, spec.Id) is not null
+                           ? [(OnchainAccounting.ValueBookedByKey, OnchainAccounting.TrampolineValueOwner)]
+                           : [(OnchainAccounting.ValueBookedByKey, "invoice")];
             }
 
             if (spec.Direction == HtlcDirection.Outgoing && !ours)
@@ -1198,6 +1205,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                     {
                         HtlcOriginKind.Local => "payment",
                         HtlcOriginKind.Forwarded => "forward",
+                        HtlcOriginKind.Trampoline => OnchainAccounting.TrampolineValueOwner,
                         _ => null
                     }),
                     (OnchainAccounting.BucketKey, OnchainAccounting.PendingBucket)

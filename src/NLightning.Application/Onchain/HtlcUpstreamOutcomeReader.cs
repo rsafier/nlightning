@@ -3,8 +3,11 @@ namespace NLightning.Application.Onchain;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Payments.Enums;
+using Domain.Payments.Trampoline;
 using Domain.Persistence.Interfaces;
+using Payments.Trampoline;
 
 /// <summary>
 /// What was told upstream about one of our offered HTLCs (<see cref="HtlcUpstreamOutcome"/>), read from the one-way
@@ -63,9 +66,54 @@ internal static class HtlcUpstreamOutcomeReader
                          : HtlcUpstreamOutcome.Unknown;
                 }
 
+            case { Kind: HtlcOriginKind.Trampoline, PaymentHash: { } relayHash }:
+                return await ReadTrampolineAsync(unitOfWork, relayHash);
+
             default:
                 // No origin stored (an HTLC offered before NL-250): what happened upstream cannot be told
                 return HtlcUpstreamOutcome.Unknown;
         }
+    }
+
+    /// <summary>
+    /// NL-875: the upstream of a trampoline relay's outgoing HTLC is the relay's set of incoming parts. A part that has
+    /// our fulfill tells <see cref="HtlcUpstreamOutcome.Fulfilled"/> (the preimage went upstream), one with our fail
+    /// <see cref="HtlcUpstreamOutcome.Failed"/>; a part still waiting in a loaded channel leaves it
+    /// <see cref="HtlcUpstreamOutcome.Unknown"/>; with every part's channel gone, the relay's status decides.
+    /// </summary>
+    private static async Task<HtlcUpstreamOutcome> ReadTrampolineAsync(IUnitOfWork unitOfWork, Hash relayHash)
+    {
+        if (await TrampolineRelayReads.GetAsync(unitOfWork, relayHash) is not { } relay)
+            return HtlcUpstreamOutcome.Unknown;
+
+        bool fulfilled = false, failed = false, waiting = false;
+        foreach (var part in relay.Parts)
+        {
+            var incomingChannel = await unitOfWork.ChannelDbRepository.GetByIdAsync(part.ChannelId);
+            var incoming = incomingChannel?.Commitments?.GetHtlc(HtlcDirection.Incoming, part.HtlcId);
+            if (incoming?.Removal is { } removal)
+            {
+                if (removal.Kind == HtlcRemovalKind.Fulfill)
+                    fulfilled = true;
+                else
+                    failed = true;
+            }
+            else if (incoming is not null)
+                waiting = true;
+        }
+
+        if (fulfilled)
+            return HtlcUpstreamOutcome.Fulfilled;
+        if (failed)
+            return HtlcUpstreamOutcome.Failed;
+        if (waiting)
+            return HtlcUpstreamOutcome.Unknown;
+
+        return relay.Relay.Status switch
+        {
+            TrampolineRelayStatus.Fulfilled => HtlcUpstreamOutcome.Fulfilled,
+            TrampolineRelayStatus.Failed => HtlcUpstreamOutcome.Failed,
+            _ => HtlcUpstreamOutcome.Unknown
+        };
     }
 }

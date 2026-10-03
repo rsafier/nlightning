@@ -67,7 +67,7 @@ using Domain.Onchain.Models;
 /// economic value of an HTLC; these events own the bucket movements and the on-chain fees. (a) An incoming HTLC we
 /// claim on chain with the preimage is already income through <c>InvoiceSettled</c> or <c>ForwardSettled</c>: its
 /// event moves the value reaching our wallet (or our second-level output) with <see cref="HtlcDirectionKey"/> =
-/// <see cref="IncomingHtlc"/> and <see cref="ValueBookedByKey"/> = invoice or forward, and the books take its source to
+/// <see cref="IncomingHtlc"/> and <see cref="ValueBookedByKey"/> = invoice, forward or trampoline, and the books take its source to
 /// be that income, not new income. (b) An offered HTLC of ours the peer claims with the preimage was paid out through
 /// <c>PaymentSucceeded</c>, <c>ForwardSettled</c> or <c>ForwardLostOnchain</c>: its event writes the HTLC off the
 /// pending bucket (<c>AmountMsat</c> = −value, <see cref="BucketKey"/> = <see cref="PendingBucket"/>,
@@ -125,6 +125,10 @@ internal static class OnchainAccounting
     public const string NoteKey = AccountingDetailKeys.Note;
     public const string IncludesFeeBumpKey = AccountingDetailKeys.IncludesFeeBump;
     public const string ValueBookedByKey = AccountingDetailKeys.ValueBookedBy;
+
+    /// <summary>The <see cref="ValueBookedByKey"/> of an HTLC of a trampoline relay (NL-875): an incoming part or an
+    /// outgoing HTLC of the relay's payment, whose value <c>TrampolineRelaySettled</c> booked.</summary>
+    public const string TrampolineValueOwner = "trampoline";
     public const string ClaimedByKey = AccountingDetailKeys.ClaimedBy;
     public const string BucketKey = AccountingDetailKeys.Bucket;
     public const string OfferedHtlc = "offered";
