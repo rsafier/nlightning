@@ -6,6 +6,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Gossip.Addresses;
+using Domain.LiquidityAds.Models;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
@@ -36,7 +37,7 @@ public class MessageFactory : IMessageFactory
     /// </summary>
     /// <param name="remoteAddress">The BOLT 1 <c>remote_addr</c> TLV: the connection's remote endpoint as an address
     /// descriptor, sent by the receiver of an IP connection (NL-009); null sends no <c>remote_addr</c>.</param>
-    /// <returns>The Init message.</returns>
+    /// <returns>The Init message, with our <c>option_will_fund</c> rates when we sell liquidity (NL-771).</returns>
     /// <seealso cref="InitMessage"/>
     /// <seealso cref="InitPayload"/>
     public InitMessage CreateInitMessage(AddressDescriptor? remoteAddress = null)
@@ -45,8 +46,10 @@ public class MessageFactory : IMessageFactory
         var features = _nodeOptions.Features.GetNodeFeatures();
         var payload = new InitPayload(features);
 
+        var willFundRates = _nodeOptions.LiquidityAds.GetWillFundRates();
         return new InitMessage(payload, _nodeOptions.Features.GetInitTlvs(),
-                               remoteAddress is null ? null : new RemoteAddressTlv(remoteAddress));
+                               remoteAddress is null ? null : new RemoteAddressTlv(remoteAddress),
+                               willFundRates is null ? null : new WillFundRatesTlv(willFundRates));
     }
 
     #endregion
@@ -273,12 +276,14 @@ public class MessageFactory : IMessageFactory
     /// <param name="fundingOutputContrubution">The signed contribution in satoshis (negative for a splice-out);
     /// 0 omits the TLV.</param>
     /// <param name="requireConfirmedInputs">How many confirmed inputs we need.</param>
+    /// <param name="requestFunding">Our liquidity ads request (NL-771), null for none.</param>
     /// <returns>The TxInitRbf message.</returns>
     /// <seealso cref="TxInitRbfMessage"/>
     /// <seealso cref="ChannelId"/>
     /// <seealso cref="TxInitRbfPayload"/>
     public TxInitRbfMessage CreateTxInitRbfMessage(ChannelId channelId, uint locktime, uint feerate,
-                                                   long fundingOutputContrubution, bool requireConfirmedInputs)
+                                                   long fundingOutputContrubution, bool requireConfirmedInputs,
+                                                   RequestFunding? requestFunding = null)
     {
         FundingOutputContributionTlv? fundingOutputContributionTlv = null;
         RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null;
@@ -296,7 +301,8 @@ public class MessageFactory : IMessageFactory
 
         var payload = new TxInitRbfPayload(channelId, feerate, locktime);
 
-        return new TxInitRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv);
+        return new TxInitRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv,
+                                    requestFunding is null ? null : new RequestFundingTlv(requestFunding));
     }
 
     /// <summary>
@@ -306,6 +312,7 @@ public class MessageFactory : IMessageFactory
     /// <param name="fundingOutputContrubution">The signed contribution in satoshis (negative for a splice-out);
     /// 0 omits the TLV.</param>
     /// <param name="requireConfirmedInputs">How many confirmed inputs we need.</param>
+    /// <param name="willFund">Our liquidity ads answer (NL-771), null for none.</param>
     /// <returns>The TxAckRbf message.</returns>
     /// <seealso cref="TxAckRbfMessage"/>
     /// <seealso cref="ChannelId"/>
@@ -314,7 +321,7 @@ public class MessageFactory : IMessageFactory
     /// <seealso cref="FundingOutputContributionTlv"/>
     /// <seealso cref="RequireConfirmedInputsTlv"/>
     public TxAckRbfMessage CreateTxAckRbfMessage(ChannelId channelId, long fundingOutputContrubution,
-                                                 bool requireConfirmedInputs)
+                                                 bool requireConfirmedInputs, WillFund? willFund = null)
     {
         FundingOutputContributionTlv? fundingOutputContributionTlv = null;
         RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null;
@@ -332,7 +339,8 @@ public class MessageFactory : IMessageFactory
 
         var payload = new TxAckRbfPayload(channelId);
 
-        return new TxAckRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv);
+        return new TxAckRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv,
+                                   willFund is null ? null : new ProvideFundingTlv(willFund));
     }
 
     /// <summary>
@@ -454,7 +462,8 @@ public class MessageFactory : IMessageFactory
                                                          CompactPubKey secondPerCommitmentPoint,
                                                          ChannelFlags channelFlags, ChannelTypeTlv channelTypeTlv,
                                                          UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
-                                                         bool requireConfirmedInputs = false)
+                                                         bool requireConfirmedInputs = false,
+                                                         RequestFunding? requestFunding = null)
     {
         var payload = new OpenChannel2Payload(_bitcoinNetwork.ChainHash, channelFlags, commitmentFeeRatePerKw,
                                               delayedPaymentBasepoint, localParams.DustLimitAmount,
@@ -465,7 +474,8 @@ public class MessageFactory : IMessageFactory
                                               localParams.ToSelfDelay, temporaryChannelId);
 
         return new OpenChannel2Message(payload, upfrontShutdownScriptTlv, channelTypeTlv,
-                                       requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null);
+                                       requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null,
+                                       requestFunding is null ? null : new RequestFundingTlv(requestFunding));
     }
 
     /// <summary>
@@ -522,7 +532,8 @@ public class MessageFactory : IMessageFactory
                                                              CompactPubKey secondPerCommitmentPoint,
                                                              ChannelTypeTlv channelTypeTlv,
                                                              UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
-                                                             bool requireConfirmedInputs = false)
+                                                             bool requireConfirmedInputs = false,
+                                                             WillFund? willFund = null)
     {
         var payload = new AcceptChannel2Payload(delayedPaymentBasepoint, localParams.DustLimitAmount,
                                                 firstPerCommitmentPoint, fundingAmount, fundingPubKey, htlcBasepoint,
@@ -532,7 +543,8 @@ public class MessageFactory : IMessageFactory
                                                 secondPerCommitmentPoint);
 
         return new AcceptChannel2Message(payload, upfrontShutdownScriptTlv, channelTypeTlv,
-                                         requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null);
+                                         requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null,
+                                         willFund is null ? null : new ProvideFundingTlv(willFund));
     }
 
     /// <summary>
@@ -774,21 +786,25 @@ public class MessageFactory : IMessageFactory
     /// <inheritdoc />
     public SpliceInitMessage CreateSpliceInitMessage(ChannelId channelId, long fundingContributionSatoshis,
                                                      uint fundingFeeratePerKw, uint locktime,
-                                                     CompactPubKey fundingPubKey, bool requireConfirmedInputs = false)
+                                                     CompactPubKey fundingPubKey, bool requireConfirmedInputs = false,
+                                                     RequestFunding? requestFunding = null)
     {
         var payload = new SpliceInitPayload(channelId, fundingContributionSatoshis, fundingFeeratePerKw, locktime,
                                             fundingPubKey);
 
-        return new SpliceInitMessage(payload, requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null);
+        return new SpliceInitMessage(payload, requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null,
+                                     requestFunding is null ? null : new RequestFundingTlv(requestFunding));
     }
 
     /// <inheritdoc />
     public SpliceAckMessage CreateSpliceAckMessage(ChannelId channelId, long fundingContributionSatoshis,
-                                                   CompactPubKey fundingPubKey, bool requireConfirmedInputs = false)
+                                                   CompactPubKey fundingPubKey, bool requireConfirmedInputs = false,
+                                                   WillFund? willFund = null)
     {
         var payload = new SpliceAckPayload(channelId, fundingContributionSatoshis, fundingPubKey);
 
-        return new SpliceAckMessage(payload, requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null);
+        return new SpliceAckMessage(payload, requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null,
+                                    willFund is null ? null : new ProvideFundingTlv(willFund));
     }
 
     /// <inheritdoc />

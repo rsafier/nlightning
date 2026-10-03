@@ -893,18 +893,20 @@ public sealed partial class SpliceService
     /// The driver's <c>tx_init_rbf</c>/<c>tx_ack_rbf</c> with our signed <c>funding_output_contribution</c> (NL-481: a
     /// splice-out RBF carries a negative one). A splice RBF always carries the TLV, 0 included (NL-503): BOLT 2 reads an
     /// omitted one as 0, but Core Lightning v26.06.8 fails a splice RBF whose <c>tx_init_rbf</c>/<c>tx_ack_rbf</c> has
-    /// none ("tx_ack_rbf must contain tlv with a funding_output_contribution value") and always sends it itself.
+    /// none ("tx_ack_rbf must contain tlv with a funding_output_contribution value") and always sends it itself. The
+    /// other records (<c>require_confirmed_inputs</c>, a liquidity ads <c>request_funding</c>/<c>provide_funding</c>,
+    /// NL-771) are kept.
     /// </summary>
-    private static IReadOnlyList<IChannelMessage> WithContribution(IReadOnlyList<IChannelMessage> messages,
+    internal static IReadOnlyList<IChannelMessage> WithContribution(IReadOnlyList<IChannelMessage> messages,
                                                                    long contributionSatoshis) =>
         messages.Select(m => m switch
                  {
                      TxInitRbfMessage init => new TxInitRbfMessage(
                          init.Payload, new FundingOutputContributionTlv(contributionSatoshis),
-                         init.RequireConfirmedInputsTlv),
+                         init.RequireConfirmedInputsTlv, init.RequestFundingTlv),
                      TxAckRbfMessage ack => new TxAckRbfMessage(
                          ack.Payload, new FundingOutputContributionTlv(contributionSatoshis),
-                         ack.RequireConfirmedInputsTlv),
+                         ack.RequireConfirmedInputsTlv, ack.ProvideFundingTlv),
                      _ => m
                  })
                 .ToList();

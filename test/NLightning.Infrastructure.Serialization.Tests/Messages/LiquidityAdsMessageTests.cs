@@ -187,6 +187,7 @@ public class LiquidityAdsMessageTests
         Assert.NotNull(message.WillFundRatesTlv);
         Assert.Equal([s_rate1], message.WillFundRatesTlv.Rates.Rates);
         Assert.True(message.WillFundRatesTlv.Rates.Supports(LiquidityPaymentType.FromChannelBalance));
+        Assert.Null(message.UndecodableWillFundRates);
         Assert.EndsWith(InitOneRateHex[16..], Convert.ToHexString(bytes));
     }
 
@@ -219,8 +220,10 @@ public class LiquidityAdsMessageTests
         // Act
         var message = await DeserializeAsync<InitMessage>(hex);
 
-        // Assert
+        // Assert: the raw value is kept for the receiver's log
         Assert.Null(message.WillFundRatesTlv);
+        Assert.Equal("0002000186A00007A1200226006400001388000003E8000101",
+                     Convert.ToHexString(message.UndecodableWillFundRates!));
     }
 
     [Fact]

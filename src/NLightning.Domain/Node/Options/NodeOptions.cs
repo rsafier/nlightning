@@ -215,6 +215,13 @@ public class NodeOptions
     public AnchorReserveOptions Anchors { get; set; } = new();
 
     /// <summary>
+    /// Liquidity ads (NL-771): the rates we sell inbound liquidity at and the limits of our sales and purchases, from
+    /// <c>Node:LiquidityAds</c>. Empty rates (the default) mean we do not sell.
+    /// </summary>
+    /// <see cref="LiquidityAdsOptions"/>
+    public LiquidityAdsOptions LiquidityAds { get; set; } = new();
+
+    /// <summary>
     /// Spontaneous (keysend) payments, from <c>Node:Keysend</c> (lane lh1-l3).
     /// </summary>
     /// <see cref="KeysendOptions"/>
@@ -281,7 +288,7 @@ public class NodeOptions
 
     /// <summary>
     /// Returns every configuration error of the options this class owns (currently <see cref="Routing"/>,
-    /// <see cref="FeeUpdates"/>, <see cref="Anchors"/>, <see cref="Bootstrap"/>, <see cref="CustomSignet"/>, the reconnect delays, the accepted open limits, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
+    /// <see cref="FeeUpdates"/>, <see cref="Anchors"/>, <see cref="LiquidityAds"/>, <see cref="Bootstrap"/>, <see cref="CustomSignet"/>, the reconnect delays, the accepted open limits, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
     /// <see cref="FeatureOptions.GetValidationErrors"/>.
     /// </summary>
     public IReadOnlyList<string> GetValidationErrors()
@@ -314,6 +321,7 @@ public class NodeOptions
         errors.AddRange(Routing.GetValidationErrors());
         errors.AddRange(FeeUpdates.GetValidationErrors());
         errors.AddRange(Anchors.GetValidationErrors());
+        errors.AddRange(LiquidityAds.GetValidationErrors());
         errors.AddRange(Keysend.GetValidationErrors());
         errors.AddRange(Quiescence.GetValidationErrors());
         errors.AddRange(Bootstrap.GetValidationErrors());

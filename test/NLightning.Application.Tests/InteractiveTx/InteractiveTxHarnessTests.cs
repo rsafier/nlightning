@@ -1,6 +1,8 @@
 namespace NLightning.Application.Tests.InteractiveTx;
 
 using Application.InteractiveTx.Models;
+using Domain.Crypto.ValueObjects;
+using Domain.LiquidityAds.Models;
 using Domain.Money;
 using Domain.Protocol.InteractiveTx;
 using Domain.Protocol.InteractiveTx.Enums;
@@ -337,6 +339,40 @@ public class InteractiveTxHarnessTests
         Assert.Empty(harness.Alice.Contributor.Released);
         Assert.Empty(harness.Bob.Contributor.Released);
         Assert.Equal(2, harness.Alice.Repository.Committed.Values.Count(s => s.State == InteractiveTxSessionState.Signed));
+    }
+
+    [Theory]
+    [MemberData(nameof(Engines))]
+    public async Task Given_ALiquidityPurchase_When_Rbf_Then_TheRequestAndTheAnswerAreCarried(string engine)
+    {
+        // Arrange (liquidity ads, NL-771: an RBF of a purchase keeps requesting and the seller answers again)
+        var ct = TestContext.Current.CancellationToken;
+        var harness = new InteractiveTxHarness(engine, 100_000, 50_000);
+        harness.Alice.Fund(300_000);
+        harness.Bob.Fund(200_000);
+        await harness.PumpAsync(harness.Alice, await harness.StartAsync(FeeratePerKw, ct), ct);
+        var rate = new FundingRate(10_000, 500_000, 550, 100, 5_000, 1_000);
+        var request = new RequestFunding(50_000, rate, LiquidityPaymentDetails.FromChannelBalance);
+        var willFund = new WillFund(rate, Convert.FromHexString("0020" + new string('b', 64)),
+                                    new CompactSignature(Enumerable.Repeat((byte)0x07, 64).ToArray()));
+        harness.Bob.Host.RbfHandler = (message, _) =>
+            InteractiveTxRbfDecision.Accept(ReusingTerms(harness.Bob, harness.Alice, false, message.Payload.Feerate),
+                                            harness.Bob.Host.LocalOutputShare, willFund);
+
+        // Act
+        var initRbf = await harness.Alice.Driver.RequestRbfAsync(
+                          ReusingTerms(harness.Alice, harness.Bob, true, 1_100),
+                          harness.Alice.Host.LocalOutputShare, ct, request);
+        await harness.PumpAsync(harness.Alice, initRbf, ct);
+
+        // Assert
+        var sent = Assert.IsType<TxInitRbfMessage>(Assert.Single(initRbf));
+        Assert.Equal(request, sent.RequestFundingTlv?.Request);
+        Assert.Equal(request, Assert.Single(harness.Bob.Host.RbfRequests).RequestFundingTlv?.Request);
+        var ack = Assert.IsType<TxAckRbfMessage>(
+            Assert.Single(harness.Transcript, t => t.Message is TxAckRbfMessage).Message);
+        Assert.Equal(willFund, ack.ProvideFundingTlv?.WillFund);
+        Assert.Equal(2, harness.Alice.Host.Completions.Count);
     }
 
     [Theory]

@@ -10,6 +10,7 @@ using Domain.Exceptions;
 using Domain.Gossip.Addresses;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Queries;
+using Domain.LiquidityAds.Models;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -162,6 +163,9 @@ public sealed class PeerService : IPeerService
 
     /// <inheritdoc />
     public AddressDescriptor? ObservedAddress { get; private set; }
+
+    /// <inheritdoc />
+    public WillFundRates? LiquidityRates { get; private set; }
 
     /// <summary>
     /// The feature options negotiated between us and the peer; our own configuration until the peer's init arrives.
@@ -668,6 +672,20 @@ public sealed class PeerService : IPeerService
         {
             _logger.LogWarning("Ignoring the undecodable remote_addr of peer {peer}: {address}", PeerPubKey,
                                Convert.ToHexStringLower(initMessage.UndecodableRemoteAddress));
+        }
+
+        // Liquidity ads (NL-771): the rates the peer sells at, kept for a purchase; undecodable rates are odd and
+        // advisory, so they are dropped and the init stands
+        if (initMessage.WillFundRatesTlv is not null)
+        {
+            LiquidityRates = initMessage.WillFundRatesTlv.Rates;
+            _logger.LogDebug("Peer {peer} sells liquidity at {count} rate(s)", PeerPubKey,
+                             LiquidityRates.Rates.Count);
+        }
+        else if (initMessage.UndecodableWillFundRates is not null)
+        {
+            _logger.LogWarning("Ignoring the undecodable liquidity rates of peer {peer}: {rates}", PeerPubKey,
+                               Convert.ToHexStringLower(initMessage.UndecodableWillFundRates));
         }
 
         // What the peer itself advertised (NL-433), kept next to the negotiated set, which folds our own

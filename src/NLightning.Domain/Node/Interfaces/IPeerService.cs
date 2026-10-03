@@ -6,6 +6,7 @@ using Domain.Protocol.Messages;
 using Events;
 using Exceptions;
 using Gossip.Addresses;
+using LiquidityAds.Models;
 using Options;
 
 /// <summary>
@@ -82,6 +83,13 @@ public interface IPeerService : IDisposable
     /// the peer's address.
     /// </summary>
     AddressDescriptor? ObservedAddress { get; }
+
+    /// <summary>
+    /// The rates the peer sells inbound liquidity at (its init <c>option_will_fund</c>, liquidity ads, NL-771), or null
+    /// when it sent none, sent rates that do not decode (dropped, never fatal: the record is odd), or its init was not
+    /// accepted yet.
+    /// </summary>
+    WillFundRates? LiquidityRates { get; }
 
     /// <summary>
     /// Completes once the peer's <c>init</c> was received and accepted (ours is sent before the service is handed

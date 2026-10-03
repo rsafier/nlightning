@@ -99,6 +99,7 @@ public class InitMessageTypeSerializer : IMessageTypeSerializer<InitMessage>
             }
 
             WillFundRatesTlv? willFundRatesTlv = null;
+            byte[]? undecodableWillFundRates = null;
             if (extension.TryGetTlv(TlvConstants.LiquidityAds, out var baseLiquidityAdsTlv))
             {
                 var tlvConverter = _tlvConverterFactory.GetConverter<WillFundRatesTlv>()
@@ -111,13 +112,15 @@ public class InitMessageTypeSerializer : IMessageTypeSerializer<InitMessage>
                 catch (InvalidCastException)
                 {
                     // option_will_fund is odd and advisory (liquidity ads, NL-771): rates we cannot decode only mean
-                    // we do not buy from this peer, never a failed init.
+                    // we do not buy from this peer, never a failed init. The receiver logs and drops them.
+                    undecodableWillFundRates = baseLiquidityAdsTlv!.Value;
                 }
             }
 
             return new InitMessage(payload, networksTlv, remoteAddressTlv, willFundRatesTlv)
             {
-                UndecodableRemoteAddress = undecodableRemoteAddress
+                UndecodableRemoteAddress = undecodableRemoteAddress,
+                UndecodableWillFundRates = undecodableWillFundRates
             };
         }
         catch (SerializationException e)

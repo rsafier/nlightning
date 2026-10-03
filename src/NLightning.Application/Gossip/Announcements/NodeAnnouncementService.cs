@@ -9,6 +9,7 @@ using Domain.Channels.Interfaces;
 using Domain.Enums;
 using Domain.Gossip.Addresses;
 using Domain.Gossip.Persistence;
+using Domain.LiquidityAds;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
@@ -133,7 +134,8 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
             timestamp = _current.Timestamp + 1;
 
         var unsigned = new NodeAnnouncementPayload(NodeAnnouncementPayload.EmptySignature, fields.Features, timestamp,
-                                                   nodeId, fields.Color, fields.Alias, fields.Addresses);
+                                                   nodeId, fields.Color, fields.Alias, fields.Addresses,
+                                                   fields.ExtraData);
         var announcement = unsigned.WithSignature(_lightningSigner.SignNodeMessage(unsigned.GetSignatureHash()));
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -145,7 +147,8 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
     }
 
     /// <summary>
-    /// The configured fields: node features (node_announcement context, wire order), alias, color and addresses.
+    /// The configured fields: node features (node_announcement context, wire order), alias, color, addresses and, when
+    /// we sell liquidity, our <c>option_will_fund</c> rates as the extra data's TLV stream (NL-771, as Eclair).
     /// </summary>
     private AnnouncementFields BuildFields()
     {
@@ -153,8 +156,9 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
         var alias = NodeAnnouncementPayload.EncodeAlias(_nodeOptions.Alias ?? string.Empty);
         var descriptors = MergeAddresses(_gossipOptions.GetAnnounceAddressDescriptors(),
                                          _addressSources.SelectMany(GetSourceAddresses));
+        var extraData = NodeAnnouncementRates.EncodeExtraData(_nodeOptions.LiquidityAds.GetWillFundRates());
         return new AnnouncementFields(features, alias, _nodeOptions.GetColorBytes(),
-                                      AddressDescriptorCodec.EncodeList(descriptors), descriptors.Count);
+                                      AddressDescriptorCodec.EncodeList(descriptors), descriptors.Count, extraData);
     }
 
     /// <summary>
@@ -192,11 +196,14 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
     }
 
     private sealed record AnnouncementFields(byte[] Features, byte[] Alias, byte[] Color, byte[] Addresses,
-                                             int AddressCount)
+                                             int AddressCount, byte[] ExtraData)
     {
+        /// <summary>Whether <paramref name="announcement"/> announces these fields; a change of our liquidity rates
+        /// (the extra data) re-announces.</summary>
         public bool Matches(NodeAnnouncementPayload announcement) =>
             announcement.Features.Span.SequenceEqual(Features) && announcement.Alias.Span.SequenceEqual(Alias)
          && announcement.RgbColor.Span.SequenceEqual(Color)
-         && announcement.Addresses.Span.SequenceEqual(Addresses);
+         && announcement.Addresses.Span.SequenceEqual(Addresses)
+         && announcement.ExtraData.Span.SequenceEqual(ExtraData);
     }
 }

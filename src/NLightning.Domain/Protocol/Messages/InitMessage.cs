@@ -33,6 +33,13 @@ public sealed class InitMessage : BaseMessage
     /// </summary>
     public byte[]? UndecodableRemoteAddress { get; init; }
 
+    /// <summary>
+    /// The raw value of a received liquidity ads <c>option_will_fund</c> (TLV 1339, NL-771) that does not decode. The
+    /// record is odd and only advisory, so it never fails the init: <see cref="WillFundRatesTlv"/> is then null and the
+    /// receiver logs this and drops it. Never serialized.
+    /// </summary>
+    public byte[]? UndecodableWillFundRates { get; init; }
+
     public InitMessage(InitPayload payload, NetworksTlv? networksTlv = null, RemoteAddressTlv? remoteAddressTlv = null, WillFundRatesTlv? willFundRatesTlv = null)
         : base(MessageTypes.Init, payload)
     {

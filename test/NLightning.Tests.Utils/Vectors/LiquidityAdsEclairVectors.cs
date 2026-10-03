@@ -37,6 +37,23 @@ public static class LiquidityAdsEclairVectors
     public const string NodeAnnouncementRates =
         "0002000186a00007a1200226006400001388000003e80007a120004c4b40044c004b00000000000005dc000101";
 
+    /// <summary>
+    /// The whole node_announcement of LightningMessageCodecsSpec "encode/decode liquidity ads" (message type 257
+    /// included): no features, timestamp 0x661cebc9, <see cref="NodeId"/>, color 2a7557, alias "LN-Liquidity", no
+    /// addresses, then the TLV stream <c>fd053b 2d</c> <see cref="NodeAnnouncementRates"/>; signed by
+    /// <see cref="NodeKey"/> over everything after the signature.
+    /// </summary>
+    public const string NodeAnnouncementWire =
+        "0101"
+      + "22ec2e2a6e02f54d949e332cbce571d123ae20dda98d0340ac7e64f60f11d413659a2a9645adea8f886bb5dd40cc589bd3e0f4f8b2ab333d323b74b7762b4ca1"
+      + "0000"
+      + "661cebc9"
+      + NodeId
+      + "2a7557"
+      + "4c4e2d4c69717569646974790000000000000000000000000000000000000000"
+      + "0000"
+      + "fd053b2d" + NodeAnnouncementRates;
+
     /// <summary>A rates value with payment types 0, 75 and 211 (unknown types are kept).</summary>
     public const string RatesWithUnknownTypes =
         "0001000186a00007a120022600640000138800000000001b080000000000000000000000000000000008000000000000000001";

@@ -5,6 +5,7 @@ namespace NLightning.Application.Tests.OnionMessages.Harness;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Gossip.Addresses;
+using Domain.LiquidityAds.Models;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -91,6 +92,7 @@ internal sealed class LinkedPeerService : IPeerService
 
     public DateTimeOffset? LastMessageReceivedAt => null;
     public AddressDescriptor? ObservedAddress => null;
+    public WillFundRates? LiquidityRates => null;
 
 #pragma warning disable CS0067 // events of the interface the harness never raises
     public event EventHandler<PeerDisconnectedEventArgs>? OnDisconnect;
