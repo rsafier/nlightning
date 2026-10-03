@@ -5,6 +5,7 @@ using Domain.Accounting.Enums;
 using Domain.Channels.Commitments.Events;
 using Domain.Money;
 using Domain.Payments.Enums;
+using Domain.Payments.Events;
 using Domain.Payments.Models;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Models;
@@ -128,6 +129,34 @@ public class PaymentPartsRestartTests
         Assert.Contains("after the restart", recorded.Details["reason"]);
         Assert.Equal(0, await harness.Bob.RestartedPaymentOutcomeHandler().ReconcileInFlightPaymentsAsync(ct));
         Assert.Single(harness.Bob.Accounting.Saved);
+    }
+
+    [Fact]
+    public async Task Given_AnUnknownOutcomeAtStartup_When_AFulfillIsReplayedLater_Then_OnlyTheSuccessIsPublished()
+    {
+        // Arrange (NL-1001): the reconciliation fails the payment for an unknown outcome; that is not final, so no
+        // PaymentFailedEvent is published (a Cashu mint would give the melt's ecash back), and a fulfill replayed later
+        // still proves it paid
+        using var harness = Harness();
+        var ct = TestContext.Current.CancellationToken;
+        var (_, invoice, _, result) = await PaySplitAndFailAsync(harness);
+        Assert.Equal(PaymentStatus.InFlight, result.Payment.Status);
+        using var events = harness.Bob.PaymentEvents.Subscribe();
+        var restarted = harness.Bob.RestartedPaymentOutcomeHandler();
+
+        // Act
+        Assert.Equal(1, await restarted.ReconcileInFlightPaymentsAsync(ct));
+        var unknown = await harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct);
+        var part = (await harness.Bob.Parts.GetForPaymentAsync(invoice.PaymentHash))[0];
+        await restarted.HandleOutgoingHtlcFulfilledAsync(
+            new OutgoingHtlcFulfilled(part.ChannelId, part.HtlcId, invoice.PaymentHash, invoice.Preimage), ct);
+
+        // Assert: the failure was an unknown outcome and published nothing; the replayed fulfill is the first event
+        Assert.True(unknown!.IsOutcomeUnknown);
+        var succeeded = Assert.IsType<PaymentSucceededEvent>(await Events.PaymentEventHubTests.ReadOneAsync(events));
+        Assert.Equal(invoice.PaymentHash, succeeded.PaymentHash);
+        Assert.Equal(PaymentStatus.Succeeded,
+                     (await harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct))!.Status);
     }
 
     [Fact]

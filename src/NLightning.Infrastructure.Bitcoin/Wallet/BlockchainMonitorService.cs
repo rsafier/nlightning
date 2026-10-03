@@ -1265,7 +1265,7 @@ public partial class BlockchainMonitorService : IBlockchainMonitor
                 // same shutdown address, so a later deposit to it must be found too
                 effects.Movements.Add(new WalletMovementEventArgs(destinationAddress.ToString(),
                                                                   LightningMoney.Satoshis(output.Value.Satoshi),
-                                                                  txId.ToBytes(), blockHeight));
+                                                                  txId.ToBytes(), blockHeight, (uint)i));
             }
 
             // Check each input for spent utxos

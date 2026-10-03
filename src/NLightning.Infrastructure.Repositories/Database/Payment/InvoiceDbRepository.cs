@@ -131,6 +131,18 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<InvoiceModel>> ListSettledByOfferIdAsync(Hash offerId)
+    {
+        var entities = await DbSet.AsNoTracking()
+                                  .Where(e => e.OfferId == offerId && e.Status == SettledStatus)
+                                  .OrderBy(e => e.SettledAt)
+                                  .ThenBy(e => e.PaymentHash)
+                                  .ToListAsync();
+
+        return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
     /// <remarks>
     /// The expiry <c>CreatedAt + ExpirySeconds</c> does not translate over the ticks converter, so the expired rows are
     /// selected once per distinct <c>ExpirySeconds</c> (our configured invoice expiries, a handful) with the bound

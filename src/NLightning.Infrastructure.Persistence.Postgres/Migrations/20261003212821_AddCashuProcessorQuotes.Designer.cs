@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
 {
     [DbContext(typeof(NLightningDbContext))]
-    [Migration("20261003232232_AddSimpleTaprootChannels")]
-    partial class AddSimpleTaprootChannels
+    [Migration("20261003212821_AddCashuProcessorQuotes")]
+    partial class AddCashuProcessorQuotes
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -1049,6 +1049,130 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.ToTable("watched_transactions", (string)null);
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Cashu.CashuDepositEntity", b =>
+                {
+                    b.Property<byte[]>("TxId")
+                        .HasColumnType("bytea")
+                        .HasColumnName("tx_id");
+
+                    b.Property<long>("OutputIndex")
+                        .HasColumnType("bigint")
+                        .HasColumnName("output_index");
+
+                    b.Property<long>("AmountSat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount_sat");
+
+                    b.Property<long>("BlockHeight")
+                        .HasColumnType("bigint")
+                        .HasColumnName("block_height");
+
+                    b.Property<string>("QuoteId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("quote_id");
+
+                    b.Property<long?>("ReportedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("reported_at");
+
+                    b.HasKey("TxId", "OutputIndex")
+                        .HasName("pk_cashu_deposits");
+
+                    b.HasIndex("QuoteId")
+                        .HasDatabaseName("ix_cashu_deposits_quote_id");
+
+                    b.HasIndex("ReportedAt")
+                        .HasDatabaseName("ix_cashu_deposits_reported_at");
+
+                    b.ToTable("cashu_deposits", (string)null);
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Cashu.CashuQuoteEntity", b =>
+                {
+                    b.Property<string>("QuoteId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("quote_id");
+
+                    b.Property<string>("Address")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("address");
+
+                    b.Property<long>("AmountMsat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount_msat");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("created_at");
+
+                    b.Property<byte>("Direction")
+                        .HasColumnType("smallint")
+                        .HasColumnName("direction");
+
+                    b.Property<string>("FailureReason")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)")
+                        .HasColumnName("failure_reason");
+
+                    b.Property<long?>("FeeIndex")
+                        .HasColumnType("bigint")
+                        .HasColumnName("fee_index");
+
+                    b.Property<long?>("FeeMsat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("fee_msat");
+
+                    b.Property<long?>("MaxFeeMsat")
+                        .HasColumnType("bigint")
+                        .HasColumnName("max_fee_msat");
+
+                    b.Property<byte>("Method")
+                        .HasColumnType("smallint")
+                        .HasColumnName("method");
+
+                    b.Property<long?>("OutputIndex")
+                        .HasColumnType("bigint")
+                        .HasColumnName("output_index");
+
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("bytea")
+                        .HasColumnName("payment_hash");
+
+                    b.Property<string>("Request")
+                        .HasColumnType("text")
+                        .HasColumnName("request");
+
+                    b.Property<byte>("State")
+                        .HasColumnType("smallint")
+                        .HasColumnName("state");
+
+                    b.Property<byte[]>("TxId")
+                        .HasColumnType("bytea")
+                        .HasColumnName("tx_id");
+
+                    b.Property<long>("UpdatedAt")
+                        .HasColumnType("bigint")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("QuoteId")
+                        .HasName("pk_cashu_quotes");
+
+                    b.HasIndex("Address")
+                        .HasDatabaseName("ix_cashu_quotes_address");
+
+                    b.HasIndex("PaymentHash")
+                        .HasDatabaseName("ix_cashu_quotes_payment_hash");
+
+                    b.HasIndex("Direction", "Method", "State")
+                        .HasDatabaseName("ix_cashu_quotes_direction_method_state");
+
+                    b.ToTable("cashu_quotes", (string)null);
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelConfigEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
@@ -1102,10 +1226,6 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.Property<bool>("OptionAnchorOutputs")
                         .HasColumnType("boolean")
                         .HasColumnName("option_anchor_outputs");
-
-                    b.Property<bool>("OptionSimpleTaproot")
-                        .HasColumnType("boolean")
-                        .HasColumnName("option_simple_taproot");
 
                     b.Property<long>("RemoteChannelReserveAmountSats")
                         .HasColumnType("bigint")
@@ -1217,10 +1337,6 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("character varying(256)")
                         .HasColumnName("label");
 
-                    b.Property<byte[]>("LastReceivedPartialSignature")
-                        .HasColumnType("bytea")
-                        .HasColumnName("last_received_partial_signature");
-
                     b.Property<byte[]>("LastReceivedSignature")
                         .HasColumnType("bytea")
                         .HasColumnName("last_received_signature");
@@ -1300,10 +1416,6 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.Property<decimal>("RemoteNextHtlcId")
                         .HasColumnType("numeric(20,0)")
                         .HasColumnName("remote_next_htlc_id");
-
-                    b.Property<byte[]>("RemoteNextNonces")
-                        .HasColumnType("bytea")
-                        .HasColumnName("remote_next_nonces");
 
                     b.Property<byte[]>("RemoteNextPerCommitmentPoint")
                         .HasColumnType("bytea")
@@ -1590,10 +1702,6 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.Property<decimal>("Number")
                         .HasColumnType("numeric(20,0)")
                         .HasColumnName("number");
-
-                    b.Property<byte[]>("PartialSignature")
-                        .HasColumnType("bytea")
-                        .HasColumnName("partial_signature");
 
                     b.Property<byte[]>("PerCommitmentPoint")
                         .HasColumnType("bytea")

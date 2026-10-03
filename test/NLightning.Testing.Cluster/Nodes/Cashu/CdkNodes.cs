@@ -21,7 +21,7 @@ public static class CdkNodes
     /// <summary>The mint's HTTP port in its pod.</summary>
     public const int MintPort = 8085;
 
-    /// <summary>The mint's work directory (its configuration and database, an <c>emptyDir</c>).</summary>
+    /// <summary>The mint's work directory (its configuration and database, on a PVC so a restart keeps them).</summary>
     public const string MintDataPath = "/data";
 
     /// <summary>The wallet pod's directory for wallet work directories (an <c>emptyDir</c>).</summary>
@@ -70,9 +70,9 @@ public static class CdkNodes
     }
 
     /// <summary>
-    /// The mint: writes <see cref="ConfigVariable"/> to <c>config.toml</c>, loads it into a new mint
-    /// (<c>config init --new-mint</c>, CDK 0.18 keeps its configuration in its database) and runs it; ready once its
-    /// HTTP port accepts connections.
+    /// The mint: at its first start writes <see cref="ConfigVariable"/> to <c>config.toml</c> and loads it into a new
+    /// mint (<c>config init --new-mint</c>, CDK 0.18 keeps its configuration in its database), then runs it; a restart
+    /// keeps the database (quotes, keysets, the processor's address). Ready once its HTTP port accepts connections.
     /// </summary>
     public static NodeWorkload MintWorkload(string config, string mnemonic, ImageRef? image = null)
     {
@@ -83,16 +83,16 @@ public static class CdkNodes
             Command =
             [
                 "sh", "-c",
-                $"printf '%s' \"${ConfigVariable}\" > {MintDataPath}/config.toml "
+                $"{{ [ -f {MintDataPath}/.initialized ] || {{ printf '%s' \"${ConfigVariable}\" > {MintDataPath}/config.toml "
               + $"&& cdk-mintd -w {MintDataPath} config init --file {MintDataPath}/config.toml --new-mint "
-              + $"&& exec cdk-mintd -w {MintDataPath} --enable-logging"
+              + $"&& touch {MintDataPath}/.initialized; }}; }} && exec cdk-mintd -w {MintDataPath} --enable-logging"
             ],
             ReadinessProbe = Probes.Tcp(MintPort, periodSeconds: 1),
-            TerminationGracePeriodSeconds = 3
+            Data = new DataVolume(MintDataPath, "256Mi"),
+            TerminationGracePeriodSeconds = 10
         };
         workload.Env[ConfigVariable] = config;
         workload.Env[MnemonicVariable] = mnemonic;
-        workload.ScratchVolumes["data"] = MintDataPath;
         workload.Ports.Add(new WorkloadPort("http", MintPort));
         return workload;
     }

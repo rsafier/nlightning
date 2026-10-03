@@ -195,6 +195,11 @@ internal static class Bolt12SchemaRoundTrip
             var listed = await repository.ListAsync(0, 100);
             Assert.Null(listed.Single(i => i.PaymentHash == open.PaymentHash).Bolt11);
 
+            // An offer's paid invoices (NL-997, the Cashu processor's check by offer id): the settled one only
+            Assert.Equal([settled.PaymentHash],
+                         (await repository.ListSettledByOfferIdAsync(offer.OfferId)).Select(i => i.PaymentHash));
+            Assert.Empty(await repository.ListSettledByOfferIdAsync(otherOffer.OfferId));
+
             var offers = new OfferDbRepository(context);
             Assert.Equal(new OfferInvoiceCounts(1, 2), await offers.GetInvoiceCountsAsync(offer.OfferId, s_now));
             Assert.Equal(new OfferInvoiceCounts(0, 2), await offers.GetInvoiceCountsAsync(otherOffer.OfferId, s_now));
