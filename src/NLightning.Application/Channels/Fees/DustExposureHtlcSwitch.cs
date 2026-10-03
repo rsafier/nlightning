@@ -9,6 +9,7 @@ using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
@@ -32,7 +33,8 @@ using Payments.Trampoline;
 /// either way). A malformed onion is left to the decorated switch, which fails it with
 /// <c>update_fail_malformed_htlc</c> (no preimage either way). Inside a blinded route the BOLT 2 rules of
 /// <see cref="BlindedHtlcFailures"/> apply instead: an HTLC with a <c>path_key</c> gets <c>update_fail_malformed_htlc</c>
-/// + <c>invalid_onion_blinding</c>, an introduction-node forward our own <c>invalid_onion_blinding</c>.</para>
+/// + <c>invalid_onion_blinding</c>, an introduction-node forward our own <c>invalid_onion_blinding</c>. An HTLC that
+/// reached us as a trampoline node is failed at the trampoline layer (<see cref="TrampolineHtlcFailures"/>, NL-897).</para>
 /// <para>Idempotent and safe with replays: the handling of one incoming HTLC is serialized by a per-HTLC lock, an HTLC
 /// that is no longer waiting for a resolution is passed on (the decorated switch skips it), and an HTLC the decorated
 /// switch already started on (a forward circuit, a trampoline relay part (NL-875) or a stored onion secret exists) is
@@ -44,6 +46,7 @@ using Payments.Trampoline;
 /// </remarks>
 public sealed class DustExposureHtlcSwitch : IHtlcSwitch
 {
+    private readonly IAttributionDataService? _attributionDataService;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IChannelOperations _channelOperations;
     private readonly IFailureOnionService _failureOnionService;
@@ -57,8 +60,10 @@ public sealed class DustExposureHtlcSwitch : IHtlcSwitch
     public DustExposureHtlcSwitch(IHtlcSwitch inner, IChannelMemoryRepository channelMemoryRepository,
                                   IChannelOperations channelOperations, IFailureOnionService failureOnionService,
                                   IncomingOnionProcessor onionProcessor, IServiceScopeFactory serviceScopeFactory,
-                                  IOptions<NodeOptions> nodeOptions, ILogger<DustExposureHtlcSwitch> logger)
+                                  IOptions<NodeOptions> nodeOptions, ILogger<DustExposureHtlcSwitch> logger,
+                                  IAttributionDataService? attributionDataService = null)
     {
+        _attributionDataService = attributionDataService;
         _inner = inner;
         _channelMemoryRepository = channelMemoryRepository;
         _channelOperations = channelOperations;
@@ -131,6 +136,24 @@ public sealed class DustExposureHtlcSwitch : IHtlcSwitch
 
             var result = await _onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash,
                                                             replayOwner: null, htlc.PathKey);
+            // NL-897: an HTLC that reached us as a trampoline node is failed at the trampoline layer (trampoline
+            // secret, then the outer one), as the switch and the relay engine fail it
+            if (TrampolineHtlcFailures.KeysFrom(result) is { } trampolineKeys)
+            {
+                var attribution = _nodeOptions.Value.Features.OptionAttributionData != FeatureSupport.No
+                                      ? _attributionDataService
+                                      : null;
+                var sentTrampoline = await TrampolineHtlcFailures.FailAsync(_channelOperations, _failureOnionService,
+                                                                            attribution, channelId, htlc,
+                                                                            trampolineKeys,
+                                                                            FailureMessage.TemporaryChannelFailure(),
+                                                                            cancellationToken);
+                _logger.LogWarning("Failed incoming HTLC {HtlcId} of channel {ChannelId} ({AmountMsat} msat) with "
+                                 + "{Sent}: {Excess} (B2-DUST-01/02)", htlcId, channelId, htlc.AmountMsat,
+                                   sentTrampoline, excess);
+                return true;
+            }
+
             if (result.SharedSecretOrNull is not { } sharedSecret)
                 return false;
 

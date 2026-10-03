@@ -13,6 +13,7 @@ using Domain.Channels.Models;
 using Domain.Channels.Policies;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
@@ -38,7 +39,9 @@ using Payments.Trampoline;
 ///   past <c>cltv_expiry - 18</c>) fails the channel through <see cref="IChannelFailureService"/> (broadcast);</item>
 ///   <item>an unresolved incoming HTLC (no preimage, nothing downstream) at <c>cltv_expiry - FailBackBlocks</c> is
 ///   failed back upstream through <see cref="IChannelOperations.FailHtlcAsync"/> with <c>temporary_node_failure</c>
-///   (or <c>update_fail_malformed_htlc</c> when its onion does not peel), encrypted with its stored shared secret.</item>
+///   (or <c>update_fail_malformed_htlc</c> when its onion does not peel), encrypted with its stored shared secret; an
+///   HTLC that reached us as a trampoline node (a held final part, a relay part) at the trampoline layer, with the
+///   trampoline secret then the outer one (<see cref="TrampolineHtlcFailures"/>, NL-897).</item>
 /// </list>
 /// </summary>
 /// <remarks>
@@ -61,6 +64,7 @@ using Payments.Trampoline;
 /// </remarks>
 public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
 {
+    private readonly IAttributionDataService? _attributionDataService;
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IChannelFailureService _channelFailureService;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
@@ -86,8 +90,13 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
                              IFailureOnionService failureOnionService, ILogger<HtlcExpiryMonitor> logger,
                              IOptions<NodeOptions> nodeOptions, IServiceScopeFactory serviceScopeFactory,
                              IOptions<ChannelSafetyOptions>? safetyOptions = null,
-                             IncomingOnionProcessor? incomingOnionProcessor = null)
+                             IncomingOnionProcessor? incomingOnionProcessor = null,
+                             IAttributionDataService? attributionDataService = null)
     {
+        // attribution_data on a trampoline failure's outer layer only when we advertise it (as the switch, NL-897)
+        _attributionDataService = nodeOptions.Value.Features.OptionAttributionData != FeatureSupport.No
+                                      ? attributionDataService
+                                      : null;
         _blockchainMonitor = blockchainMonitor;
         _channelFailureService = channelFailureService;
         _channelMemoryRepository = channelMemoryRepository;
@@ -467,6 +476,20 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
             if (await BlindedHtlcFailures.TryFailMalformedAsync(_channelOperations, channelId, htlc, cancellationToken))
             {
                 LogFailedBack(channelId, htlc, height, "update_fail_malformed_htlc invalid_onion_blinding");
+                return;
+            }
+
+            // NL-897: an HTLC that reached us as a trampoline node (a held final part, a relay part) is failed at the
+            // trampoline layer, as the switch and the relay engine fail it; any other HTLC as before
+            if (await TrampolineHtlcFailures.ResolveKeysAsync(_incomingOnionProcessor, unitOfWork, channelId, htlc,
+                                                              _logger) is { } trampolineKeys)
+            {
+                LogFailedBack(channelId, htlc, height,
+                              await TrampolineHtlcFailures.FailAsync(_channelOperations, _failureOnionService,
+                                                                     _attributionDataService, channelId, htlc,
+                                                                     trampolineKeys,
+                                                                     FailureMessage.TemporaryNodeFailure(),
+                                                                     cancellationToken));
                 return;
             }
 

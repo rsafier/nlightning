@@ -6,6 +6,7 @@ namespace NLightning.Application.Tests.Channels.Safety;
 
 using Application.Channels.Safety;
 using Application.Channels.Safety.Interfaces;
+using Application.Payments.Onion;
 using Channels.Handlers;
 using Domain.Bitcoin.Events;
 using Domain.Channels.Commitments;
@@ -24,9 +25,11 @@ using Domain.Payments.Models;
 using Domain.Payments.Trampoline;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Payments.Switch;
 using Services;
 
 /// <summary>
@@ -704,13 +707,15 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
     [Fact]
     public async Task Given_AFailedTrampolineRelayWithNoOutgoingHtlc_When_TheFailBackDeadlineIsReached_Then_ThePartIsFailedBack()
     {
-        // Arrange (NL-875): nothing downstream can fulfill it any more
+        // Arrange (NL-875): nothing downstream can fulfill it any more; failed with its row's secrets at the trampoline
+        // layer (NL-897), so the failure onion is the real one
+        using var kit = new TrampolineFailureTestKit();
         var preimage = RealSigningCommitmentPair.Preimage(1);
         var incomingId = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
         _pair.Settle(_pair.Alice);
         UseChannel(_pair.Bob);
         UseRelayPart(incomingId, RealSigningCommitmentPair.Hash(preimage), TrampolineRelayStatus.Failed);
-        var monitor = CreateMonitor();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, processor: null);
 
         // Act
         await monitor.CheckAsync(Cltv - Delta - 1, TestContext.Current.CancellationToken);
@@ -745,7 +750,165 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
         _operations.VerifyNoOtherCalls();
     }
 
-    private void UseRelayPart(ulong incomingId, Hash hash, TrampolineRelayStatus status, Secret? preimage = null)
+    #region NL-897: trampoline HTLCs failed at the trampoline layer
+
+    [Fact]
+    public async Task Given_AHeldFinalTrampolinePart_When_ItsFulfillDeadlineIsReached_Then_ThePayerReadsTheFailureAtTheTrampolineLayer()
+    {
+        // Arrange: Bob is the final trampoline node of Alice's HTLC; the switch stored only the outer secret
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildFinalAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        StoreOuterSecret(onion.OuterSecret);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert: created with the trampoline secret, then the outer one (TR-R-14)
+        kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.TemporaryNodeFailure);
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_AHeldFinalTrampolinePartAndAttribution_When_FailedBack_Then_AttributedOnTheOuterLayerAndReadAtTheTrampolineLayer()
+    {
+        // Arrange
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildFinalAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        var attributed = new List<AttributedErrorPacket>();
+        _operations.Setup(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                               It.IsAny<AttributedErrorPacket>(), It.IsAny<CancellationToken>()))
+                   .Callback((ChannelId _, ulong _, AttributedErrorPacket packet, CancellationToken _) =>
+                                 attributed.Add(packet))
+                   .Returns(Task.CompletedTask);
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor, kit.Us.AttributionData);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert
+        var packet = Assert.Single(attributed);
+        Assert.NotEmpty(packet.AttributionData);
+        kit.AssertTrampolineLayer(onion, packet.Reason, FailureCode.TemporaryNodeFailure);
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelayPart_When_TheFailBackDeadlineIsReached_Then_ThePayerReadsTheFailureAtTheTrampolineLayer()
+    {
+        // Arrange: a relay part whose relay failed; its row's secrets are zero, so only the re-peeled onion's keys
+        // give a failure the payer can read
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        var onion = await kit.BuildRelayAsync(hash, 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        UseRelayPart(id, hash, TrampolineRelayStatus.Failed);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor);
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert
+        kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.TemporaryNodeFailure);
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelayPartAndNoOnionProcessor_When_FailedBack_Then_TheRowsSecretsGiveTheTrampolineLayer()
+    {
+        // Arrange: the monitor cannot peel; the relay part's row holds both secrets
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var hash = RealSigningCommitmentPair.Hash(preimage);
+        var onion = await kit.BuildRelayAsync(hash, 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet);
+        UseChannel(_pair.Bob);
+        UseRelayPart(id, hash, TrampolineRelayStatus.Failed, outerSecret: onion.OuterSecret,
+                     trampolineSecret: onion.TrampolineSecrets[0]);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, processor: null);
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert
+        kit.AssertTrampolineLayer(onion, Assert.Single(reasons), FailureCode.TemporaryNodeFailure);
+    }
+
+    [Fact]
+    public async Task Given_AnOrdinaryFinalHop_When_FailedBack_Then_StillTheOuterSecretOnlyAndNoAttribution()
+    {
+        // Arrange (regression): a plain final-hop onion with its stored secret, the attribution service registered
+        using var kit = new TrampolineFailureTestKit();
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var onion = await kit.BuildOrdinaryFinalAsync(RealSigningCommitmentPair.Hash(preimage), 20_000_000, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        SetOnion(_pair.Bob, id, onion.Packet.ToBytes());
+        UseChannel(_pair.Bob);
+        StoreOuterSecret(onion.SharedSecrets[0]);
+        var reasons = CaptureFailures();
+        var monitor = CreateMonitor(kit.Us.FailureOnion, kit.Us.OnionProcessor, kit.Us.AttributionData);
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert: the plain error onion of the stored secret, as before NL-897
+        var decrypted = kit.Payer.FailureOnion.DecryptErrorPacket(onion.SharedSecrets, Assert.Single(reasons));
+        Assert.NotNull(decrypted);
+        Assert.Equal(0, decrypted.ErringHopIndex);
+        Assert.Equal(FailureCode.TemporaryNodeFailure, decrypted.Code);
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<AttributedErrorPacket>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+    }
+
+    private List<byte[]> CaptureFailures()
+    {
+        var reasons = new List<byte[]>();
+        _operations.Setup(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                               It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()))
+                   .Callback((ChannelId _, ulong _, ReadOnlyMemory<byte> reason, CancellationToken _) =>
+                                 reasons.Add(reason.ToArray()))
+                   .Returns(Task.CompletedTask);
+        return reasons;
+    }
+
+    private void StoreOuterSecret(Secret secret) =>
+        _stateDb.Setup(r => r.GetOnionSharedSecretAsync(It.IsAny<ChannelId>(), It.IsAny<HtlcKey>()))
+                .ReturnsAsync(secret);
+
+    private static void SetOnion(RealSigningNode node, ulong htlcId, byte[] onion)
+    {
+        var state = node.State;
+        var record = state.GetHtlc(HtlcDirection.Incoming, htlcId)! with { OnionRoutingPacket = onion };
+        node.State = ChannelCommitments.Restore(state.ChannelId, state.Params, state.LocalBalanceMsat,
+                                                state.RemoteBalanceMsat, state.Htlcs.SetItem(record.Key, record).Values,
+                                                state.FeeUpdates, state.LocalNextHtlcId, state.RemoteNextHtlcId,
+                                                state.LocalCommit, state.RemoteCommit, state.RemoteNextCommit,
+                                                state.RemoteNextPerCommitmentPoint);
+    }
+
+    #endregion
+
+    private void UseRelayPart(ulong incomingId, Hash hash, TrampolineRelayStatus status, Secret? preimage = null,
+                              Secret? outerSecret = null, Secret? trampolineSecret = null)
     {
         var relay = new TrampolineRelayModel(hash, _pair.Alice.Channel.RemoteNodeId,
                                              LightningMoney.MilliSatoshis(19_000_000), Cltv - Delta,
@@ -759,7 +922,8 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
 
         var part = new TrampolineRelayPartModel(hash, _channel.ChannelId, incomingId,
                                                 LightningMoney.MilliSatoshis(20_000_000), Cltv,
-                                                new Secret(new byte[32]), new Secret(new byte[32]), null);
+                                                outerSecret ?? new Secret(new byte[32]),
+                                                trampolineSecret ?? new Secret(new byte[32]), null);
         _relays.Setup(r => r.GetPartAsync(_channel.ChannelId, incomingId)).ReturnsAsync(part);
         _relays.Setup(r => r.GetAsync(hash)).ReturnsAsync((relay, [part]));
     }
@@ -768,6 +932,13 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
         new(_blockchainMonitor.Object, _failureService.Object, _memory.Object, _operations.Object,
             _failureOnion.Object, NullLogger<HtlcExpiryMonitor>.Instance, Options.Create(new NodeOptions()),
             _provider.GetRequiredService<IServiceScopeFactory>());
+
+    private HtlcExpiryMonitor CreateMonitor(IFailureOnionService failureOnion, IncomingOnionProcessor? processor,
+                                            IAttributionDataService? attribution = null) =>
+        new(_blockchainMonitor.Object, _failureService.Object, _memory.Object, _operations.Object, failureOnion,
+            NullLogger<HtlcExpiryMonitor>.Instance, Options.Create(new NodeOptions()),
+            _provider.GetRequiredService<IServiceScopeFactory>(), incomingOnionProcessor: processor,
+            attributionDataService: attribution);
 
     private ForwardCircuitModel Circuit(ulong incomingId, ForwardCircuitStatus status, ulong? outgoingHtlcId,
                                         ChannelId? outgoingChannelId = null) =>
