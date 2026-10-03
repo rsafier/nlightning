@@ -33,13 +33,14 @@ internal class OpenChannelMessageHandler
     /// </summary>
     internal const string NoWaitOption = "--no-wait";
 
-    internal const string Usage = "<node> <amount_sats> [push_sats] [--public] [--dual-fund|--v1] [--no-wait]";
+    internal const string Usage =
+        "<node> <amount_sats> [push_sats] [--public] [--dual-fund|--v1] [--no-wait] " + LiquidityOptions.Usage;
 
     internal static async Task HandleAsync(string[] commandArgs, NamedPipeIpcClient client,
                                            CancellationToken cancellationToken, LabelArguments? labels = null)
     {
         var positional = ParseArguments(commandArgs, out var isPublic, out var isDualFunded, out var forceV1,
-                                        out var noWait, out var error);
+                                        out var noWait, out var liquidity, out var error);
         if (error is not null)
             throw new ArgumentException(error, nameof(commandArgs));
 
@@ -48,7 +49,8 @@ internal class OpenChannelMessageHandler
 
         await RunAsync(ct => client.OpenChannelAsync(positional[0], positional[1],
                                                      positional.Length > 2 ? positional[2] : null, ct, isPublic,
-                                                     isDualFunded, forceV1, labels),
+                                                     isDualFunded, forceV1, labels, liquidity.RequestInboundSat,
+                                                     liquidity.MaxLiquidityFeeSat),
                        client.OpenChannelSubscriptionAsync, noWait, Console.Out, cancellationToken);
     }
 
@@ -63,6 +65,14 @@ internal class OpenChannelMessageHandler
     /// <param name="noWait">Return once the first funding transaction is printed.</param>
     /// <param name="output">Where to print.</param>
     /// <param name="cancellationToken">Ctrl-C.</param>
+    /// <summary>
+    /// <see cref="ParseArguments(string[], out bool, out bool, out bool, out bool, out LiquidityArguments, out string?)"/>
+    /// for callers that do not read the liquidity options.
+    /// </summary>
+    internal static string[] ParseArguments(string[] commandArgs, out bool isPublic, out bool isDualFunded,
+                                            out bool forceV1, out bool noWait, out string? error) =>
+        ParseArguments(commandArgs, out isPublic, out isDualFunded, out forceV1, out noWait, out _, out error);
+
     internal static async Task RunAsync(Func<CancellationToken, Task<OpenChannelIpcResponse>> open,
                                         Func<ChannelId, TxId?, CancellationToken,
                                             Task<OpenChannelSubscriptionIpcResponse>> subscribe, bool noWait,
@@ -130,19 +140,30 @@ internal class OpenChannelMessageHandler
     /// <param name="isDualFunded">True when <see cref="DualFundOption"/> was given.</param>
     /// <param name="forceV1">True when <see cref="V1Option"/> was given.</param>
     /// <param name="noWait">True when <see cref="NoWaitOption"/> was given.</param>
+    /// <param name="liquidity">The liquidity ads options (<see cref="LiquidityOptions"/>, NL-771):
+    /// <c>--request-inbound</c> buys inbound liquidity with a dual-funded open, so it is refused with
+    /// <see cref="V1Option"/>.</param>
     /// <param name="error">The usage error for an unknown option, <see cref="DualFundOption"/> together with
-    /// <see cref="V1Option"/> or too many arguments, else null.</param>
+    /// <see cref="V1Option"/>, a bad liquidity option or too many arguments, else null.</param>
     /// <returns>The positional arguments, in order.</returns>
     internal static string[] ParseArguments(string[] commandArgs, out bool isPublic, out bool isDualFunded,
-                                            out bool forceV1, out bool noWait, out string? error)
+                                            out bool forceV1, out bool noWait, out LiquidityArguments liquidity,
+                                            out string? error)
     {
         isPublic = false;
         isDualFunded = false;
         forceV1 = false;
         noWait = false;
         error = null;
-        var positional = new List<string>(commandArgs.Length);
-        foreach (var arg in commandArgs)
+        var rest = LiquidityOptions.Extract(commandArgs, out liquidity, out var liquidityError);
+        if (rest is null)
+        {
+            error = $"{liquidityError} Usage: openchannel {Usage}";
+            return [];
+        }
+
+        var positional = new List<string>(rest.Length);
+        foreach (var arg in rest)
         {
             if (string.Equals(arg, PublicOption, StringComparison.OrdinalIgnoreCase))
             {
@@ -172,8 +193,9 @@ internal class OpenChannelMessageHandler
             // "--" is an option we don't know
             if (arg.StartsWith("--", StringComparison.Ordinal))
             {
-                error = $"Unknown option '{arg}': expected {PublicOption}, {DualFundOption}, {V1Option} or "
-                      + $"{NoWaitOption}.";
+                error = $"Unknown option '{arg}': expected {PublicOption}, {DualFundOption}, {V1Option}, "
+                      + $"{NoWaitOption}, {LiquidityOptions.RequestInboundOption} or "
+                      + $"{LiquidityOptions.MaxLiquidityFeeOption}.";
                 return [];
             }
 
@@ -182,6 +204,9 @@ internal class OpenChannelMessageHandler
 
         if (isDualFunded && forceV1)
             error = $"{DualFundOption} and {V1Option} can't be used together.";
+        else if (liquidity.IsRequested && forceV1)
+            error = $"{LiquidityOptions.RequestInboundOption} buys inbound liquidity with a dual-funded open; it "
+                  + $"can't be used with {V1Option}.";
         else if (positional.Count > 3)
             error = $"Too many arguments. Usage: openchannel {Usage}";
 

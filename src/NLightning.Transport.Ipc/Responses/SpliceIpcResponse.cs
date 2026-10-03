@@ -25,6 +25,9 @@ public sealed class SpliceIpcResponse
     /// </summary>
     [Key(5)] public string? Note { get; init; }
 
+    /// <summary>The liquidity bought with the splice (liquidity ads, NL-771), or null.</summary>
+    [Key(6)] public LiquidityPurchaseIpcInfo? Purchase { get; init; }
+
     public static SpliceIpcResponse FromClientResponse(SpliceClientResponse clientResponse)
     {
         ArgumentNullException.ThrowIfNull(clientResponse);
@@ -37,7 +40,8 @@ public sealed class SpliceIpcResponse
                              : null,
             NewCapacitySat = clientResponse.NewCapacitySat,
             FailureReason = clientResponse.FailureReason,
-            Note = clientResponse.Note
+            Note = clientResponse.Note,
+            Purchase = clientResponse.Purchase is { } purchase ? LiquidityPurchaseIpcInfo.From(purchase) : null
         };
     }
 }

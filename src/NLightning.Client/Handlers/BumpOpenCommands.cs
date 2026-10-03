@@ -4,6 +4,7 @@ namespace NLightning.Client.Handlers;
 
 using Domain.Channels.ValueObjects;
 using Ipc;
+using Printers;
 using Transport.Ipc.Responses;
 
 /// <summary>
@@ -13,7 +14,8 @@ using Transport.Ipc.Responses;
 internal static class BumpOpenCommands
 {
     /// <summary>The usage of bumpopen.</summary>
-    internal const string Usage = "<channel_id> <feerate_per_kw> [--contribution-sat <sats>]";
+    internal const string Usage =
+        "<channel_id> <feerate_per_kw> [--contribution-sat <sats>] " + LiquidityOptions.Usage;
 
     /// <summary>The most satoshis that exist (21 million BTC); the daemon refuses a larger contribution.</summary>
     internal const ulong MaxAmountSat = 2_100_000_000_000_000;
@@ -38,7 +40,9 @@ internal static class BumpOpenCommands
     {
         var arguments = Parse(commandArgs, out _)!;
         var response = await client.BumpOpenAsync(arguments.ChannelId, arguments.FeeRatePerKw,
-                                                  arguments.ContributionSat, cancellationToken);
+                                                  arguments.ContributionSat, cancellationToken,
+                                                  arguments.Liquidity.RequestInboundSat,
+                                                  arguments.Liquidity.MaxLiquidityFeeSat);
         Print(response, output);
     }
 
@@ -49,18 +53,27 @@ internal static class BumpOpenCommands
         output.WriteLine("Dual-funded open RBF signed");
         output.WriteLine($"  Channel ID:      {response.ChannelId}");
         output.WriteLine($"  Funding TxId:    {response.FundingTxId}");
+        if (response.Purchase is { } purchase)
+            LiquidityAdsPrinter.WritePurchase(output, purchase);
         output.WriteLine("  The new attempt is broadcast and replaces the previous one; any signed attempt may still");
         output.WriteLine("  confirm, and the channel follows the one that does.");
     }
 
     /// <summary>
     /// <c>&lt;channel_id&gt; &lt;feerate_per_kw&gt;</c> and <c>--contribution-sat</c> (also as
-    /// <c>--contribution-sat=value</c>, anywhere).
+    /// <c>--contribution-sat=value</c>, anywhere) and the liquidity ads options (<see cref="LiquidityOptions"/>, NL-771:
+    /// without <c>--request-inbound</c> the daemon repeats the previous attempt's purchase, if any).
     /// </summary>
     /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
     internal static BumpOpenArguments? Parse(string[] commandArgs, out string? error)
     {
         error = null;
+        var rest = LiquidityOptions.Extract(commandArgs, out var liquidity, out error);
+        if (rest is null)
+            return null;
+
+        commandArgs = rest;
+
         ulong? contributionSat = null;
         var positional = new List<string>();
         for (var i = 0; i < commandArgs.Length; i++)
@@ -130,9 +143,13 @@ internal static class BumpOpenCommands
             return null;
         }
 
-        return new BumpOpenArguments(channelId, feeRate, contributionSat);
+        return new BumpOpenArguments(channelId, feeRate, contributionSat) { Liquidity = liquidity };
     }
 }
 
 /// <summary>The parsed arguments of bumpopen.</summary>
-internal sealed record BumpOpenArguments(ChannelId ChannelId, uint FeeRatePerKw, ulong? ContributionSat);
+internal sealed record BumpOpenArguments(ChannelId ChannelId, uint FeeRatePerKw, ulong? ContributionSat)
+{
+    /// <summary>The liquidity ads options (NL-771).</summary>
+    public LiquidityArguments Liquidity { get; init; } = LiquidityArguments.None;
+}

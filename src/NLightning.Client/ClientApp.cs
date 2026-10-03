@@ -200,9 +200,10 @@ internal static class ClientApp
                     break;
                 case "closechannel":
                 case "close-channel":
-                    var (closeFeerate, closeWait, noFeeRange) = ParseCloseOptions(commandArgs);
-                    var close = await client.CloseChannelAsync(ParseChannelId(commandArgs[0]), closeFeerate,
-                                                               noFeeRange, closeWait, cancellationToken);
+                    var closeArgs = ExtractCloseForce(commandArgs, out var closeForced);
+                    var (closeFeerate, closeWait, noFeeRange) = ParseCloseOptions(closeArgs);
+                    var close = await client.CloseChannelAsync(ParseChannelId(closeArgs[0]), closeFeerate,
+                                                               noFeeRange, closeWait, cancellationToken, closeForced);
                     new CloseChannelPrinter().Print(close);
                     break;
                 case "forceclosechannel":
@@ -316,6 +317,10 @@ internal static class ClientApp
                 case "bump-open":
                     await BumpOpenCommands.RunAsync(commandArgs, client, Console.Out, cancellationToken);
                     break;
+                case "liquidityads":
+                case "liquidity-ads":
+                    await LiquidityAdsCommands.RunAsync(commandArgs, client, Console.Out, cancellationToken);
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -423,7 +428,7 @@ internal static class ClientApp
             case "openchannel":
             case "open-channel":
                 var openArgs = OpenChannelMessageHandler.ParseArguments(commandArgs, out _, out _, out _, out _,
-                                                                        out var openError);
+                                                                        out var openLiquidity, out var openError);
                 if (openError is not null)
                     return openError;
                 if (openArgs.Length < 2)
@@ -435,6 +440,9 @@ internal static class ClientApp
                  && !(ulong.TryParse(openArgs[2], NumberStyles.None, CultureInfo.InvariantCulture, out var pushSats)
                    && pushSats < fundingSats))
                     return $"Invalid push '{openArgs[2]}': expected a number of sats below the channel amount.";
+                if (openLiquidity.IsRequested && openArgs.Length > 2)
+                    return $"{LiquidityOptions.RequestInboundOption} opens a dual-funded channel, which has no push "
+                         + $"amount. Usage: {cmd} {OpenChannelMessageHandler.Usage}";
                 return null;
             case "createinvoice":
             case "create-invoice":
@@ -470,8 +478,9 @@ internal static class ClientApp
                            : null;
             case "closechannel":
             case "close-channel":
+                commandArgs = ExtractCloseForce(commandArgs, out _);
                 if (commandArgs.Length < 1)
-                    return $"Missing argument. Usage: {cmd} <channel_id> [feerate_per_kw|0] [wait_seconds] [nofeerange]";
+                    return $"Missing argument. Usage: {cmd} {CloseChannelUsage}";
                 if (!TryParseChannelId(commandArgs[0], out _))
                     return $"Invalid channel id '{commandArgs[0]}': expected 64 hex characters.";
                 if (commandArgs.Length > 1 && !uint.TryParse(commandArgs[1], NumberStyles.None,
@@ -564,6 +573,9 @@ internal static class ClientApp
             case "bumpopen":
             case "bump-open":
                 return BumpOpenCommands.Validate(cmd, commandArgs);
+            case "liquidityads":
+            case "liquidity-ads":
+                return LiquidityAdsCommands.Validate(cmd, commandArgs);
             case "listinvoices":
             case "list-invoices":
             case "listpayments":
@@ -899,6 +911,21 @@ internal static class ClientApp
     /// <c>[feerate_per_kw|0] [wait_seconds] [nofeerange]</c> of closechannel: a feerate of 0 (or none) uses the node's
     /// estimate, no wait uses the daemon's default.
     /// </summary>
+    /// <summary>The usage of closechannel.</summary>
+    internal const string CloseChannelUsage = "<channel_id> [feerate_per_kw|0] [wait_seconds] [nofeerange] [--force]";
+
+    /// <summary>
+    /// Takes closechannel's <c>--force</c> (anywhere after the command; liquidity ads D-L4, NL-771: close a channel we
+    /// sold inbound liquidity on inside its lease) out of the arguments.
+    /// </summary>
+    internal static string[] ExtractCloseForce(string[] commandArgs, out bool force)
+    {
+        force = commandArgs.Any(a => string.Equals(a, "--force", StringComparison.OrdinalIgnoreCase));
+        return force
+                   ? commandArgs.Where(a => !string.Equals(a, "--force", StringComparison.OrdinalIgnoreCase)).ToArray()
+                   : commandArgs;
+    }
+
     internal static (uint? FeeRatePerKw, uint? WaitSeconds, bool NoFeeRange) ParseCloseOptions(string[] commandArgs)
     {
         uint? feerate = commandArgs.Length > 1 && TryParsePositiveUInt(commandArgs[1], out var f) ? f : null;

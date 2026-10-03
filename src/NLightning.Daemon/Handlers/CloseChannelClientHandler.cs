@@ -17,7 +17,9 @@ using Interfaces;
 /// <see cref="DefaultWaitSeconds"/>, at most <see cref="MaxWaitSeconds"/>; 0 returns once our <c>shutdown</c> is out).
 /// The close goes on after the wait: <c>listchannels</c> shows it (ShuttingDown, Negotiating, Closing, Closed). An
 /// unknown channel and a channel that can't be closed now are <see cref="ErrorCodes.InvalidChannel"/> and
-/// <see cref="ErrorCodes.InvalidOperation"/>.
+/// <see cref="ErrorCodes.InvalidOperation"/>. A channel we sold inbound liquidity on is not closed inside its lease
+/// unless <see cref="CloseChannelClientRequest.Force"/> (liquidity ads D-L4, NL-771): the refusal is
+/// <see cref="ErrorCodes.InvalidOperation"/> naming the lease.
 /// </remarks>
 public sealed class CloseChannelClientHandler
     : IClientCommandHandler<CloseChannelClientRequest, CloseChannelClientResponse>
@@ -55,7 +57,10 @@ public sealed class CloseChannelClientHandler
             var result = await _channelCloseService.CloseChannelAsync(
                              request.ChannelId,
                              new ChannelCloseRequest(request.FeeRatePerKw, !request.NoFeeRange,
-                                                     TimeSpan.FromSeconds(waitSeconds)), ct);
+                                                     TimeSpan.FromSeconds(waitSeconds))
+                             {
+                                 Force = request.Force
+                             }, ct);
             return new CloseChannelClientResponse(result.ChannelId, result.State, result.ClosingTxId);
         }
         catch (KeyNotFoundException e)

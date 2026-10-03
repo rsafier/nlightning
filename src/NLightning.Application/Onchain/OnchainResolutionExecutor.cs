@@ -32,6 +32,7 @@ using Fees;
 using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using LiquidityAds;
 using Payments;
 using Reorg;
 
@@ -713,6 +714,10 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                     // BOLT 2 interactive-tx (NL-470): the closed channel's negotiations can never finish, and the
                     // table has no FK to Channels, so its rows go in the same save as the Closed state
                     await unitOfWork.InteractiveTxSessionDbRepository.DeleteByChannelIdAsync(channelId);
+
+                    // Liquidity ads (NL-771): the channel's purchases end with it, at the funding spend's height
+                    await LiquidityLeases.StageChannelClosedAsync(unitOfWork, channelId, close.SpentAtHeight,
+                                                                  _logger);
                 });
             }
 

@@ -260,6 +260,8 @@ public static class NodeServiceExtensions
         services.Configure<DualFundingOptions>(configuration.GetSection(DualFundingOptions.SectionName));
         // bumpopen (ClientCommand 38, lane dfrbf): RBF of our unconfirmed dual-funded open (Node:DualFund:AllowRbf)
         services.AddDualFundIpcServices();
+        // Liquidity ads (NL-771): liquidityads rates|sellers|purchases (ClientCommand 46)
+        services.AddLiquidityAdsIpcServices();
         // Per-channel routing policies (wave sp1 lane SP1-G): setchannelpolicy/getchannelpolicy (ClientCommand 35/36)
         services.AddChannelPolicyIpcServices();
         // The accounting feed (NL-602): listaccountingevents/accountingsnapshot (ClientCommand 41/42); the sealer and

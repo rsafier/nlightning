@@ -18,7 +18,8 @@ using Transport.Ipc.Responses;
 internal static class SpliceCommands
 {
     /// <summary>The usage of splicein.</summary>
-    internal const string SpliceInUsage = "<channel_id> <amount_sat> [--feerate <sat_per_kw>]";
+    internal const string SpliceInUsage =
+        "<channel_id> <amount_sat> [--feerate <sat_per_kw>] " + LiquidityOptions.Usage;
 
     /// <summary>The usage of spliceout.</summary>
     internal const string SpliceOutUsage = "<channel_id> <amount_sat> [--address <address>] [--feerate <sat_per_kw>]";
@@ -83,7 +84,9 @@ internal static class SpliceCommands
                            ? await client.SpliceOutAsync(arguments.ChannelId, arguments.AmountSat, arguments.Address,
                                                          arguments.FeeRatePerKw, cancellationToken)
                            : await client.SpliceInAsync(arguments.ChannelId, arguments.AmountSat,
-                                                        arguments.FeeRatePerKw, cancellationToken);
+                                                        arguments.FeeRatePerKw, cancellationToken,
+                                                        arguments.Liquidity.RequestInboundSat,
+                                                        arguments.Liquidity.MaxLiquidityFeeSat);
         new SplicePrinter().Print(response);
         return IsSuccess(response);
     }
@@ -182,12 +185,23 @@ internal static class SpliceCommands
 
     /// <summary>
     /// <c>&lt;channel_id&gt; &lt;amount_sat&gt;</c> and the options (also as <c>--option=value</c>, anywhere);
-    /// <c>--address</c> only for spliceout.
+    /// <c>--address</c> only for spliceout, the liquidity ads options (<see cref="LiquidityOptions"/>, NL-771) only for
+    /// splicein.
     /// </summary>
     /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
     internal static SpliceArguments? Parse(string[] commandArgs, bool spliceOut, out string? error)
     {
         error = null;
+        var liquidity = LiquidityArguments.None;
+        if (!spliceOut)
+        {
+            var rest = LiquidityOptions.Extract(commandArgs, out liquidity, out error);
+            if (rest is null)
+                return null;
+
+            commandArgs = rest;
+        }
+
         uint? feeRate = null;
         string? address = null;
         var positional = new List<string>();
@@ -271,12 +285,16 @@ internal static class SpliceCommands
             return null;
         }
 
-        return new SpliceArguments(channelId, amountSat, address, feeRate);
+        return new SpliceArguments(channelId, amountSat, address, feeRate) { Liquidity = liquidity };
     }
 }
 
 /// <summary>The parsed arguments of splicein/spliceout (<see cref="Address"/> is always null for splicein).</summary>
-internal sealed record SpliceArguments(ChannelId ChannelId, ulong AmountSat, string? Address, uint? FeeRatePerKw);
+internal sealed record SpliceArguments(ChannelId ChannelId, ulong AmountSat, string? Address, uint? FeeRatePerKw)
+{
+    /// <summary>The liquidity ads options of splicein (NL-771); none for spliceout.</summary>
+    public LiquidityArguments Liquidity { get; init; } = LiquidityArguments.None;
+}
 
 /// <summary>The parsed arguments of bumpsplice.</summary>
 internal sealed record BumpSpliceArguments(ChannelId ChannelId, uint FeeRatePerKw, ulong? MaxFeeSat);

@@ -22,13 +22,20 @@ public sealed class CloseChannelIpcRequest
     /// <summary>How long the daemon waits for the closing transaction, in seconds, or null for its default.</summary>
     [Key(3)] public uint? WaitSeconds { get; init; }
 
+    /// <summary>
+    /// Close even while a liquidity lease we sold on the channel is in force (liquidity ads D-L4, NL-771,
+    /// <c>closechannel --force</c>); an older client sends none (not forced).
+    /// </summary>
+    [Key(4)] public bool Force { get; init; }
+
     public CloseChannelClientRequest ToClientRequest()
     {
         return new CloseChannelClientRequest(ChannelId)
         {
             FeeRatePerKw = FeeRatePerKw,
             NoFeeRange = NoFeeRange,
-            WaitSeconds = WaitSeconds
+            WaitSeconds = WaitSeconds,
+            Force = Force
         };
     }
 }

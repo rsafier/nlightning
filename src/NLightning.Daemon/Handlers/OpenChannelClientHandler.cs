@@ -21,6 +21,7 @@ using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
+using Domain.LiquidityAds.Models;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
@@ -119,6 +120,9 @@ public sealed class OpenChannelClientHandler
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       "A channel can't be opened both dual-funded (--dual-fund) and v1 (--v1)");
 
+        // Liquidity ads (NL-771): buying inbound liquidity rides on open_channel2, so it implies a v2 open
+        CheckLiquidityRequest(request);
+
         // NL-602 A3-T1: refused before anything is sent; stored with the channel's first save
         var labels = SourceLabelsGuard.Check(request.Label, request.Tags);
 
@@ -137,7 +141,7 @@ public sealed class OpenChannelClientHandler
         // Wave DF: a dual-funded (v2) open negotiates the funding transaction interactively, our share from the wallet.
         // NL-551: it is the default when the peer supports it (Eclair refuses a v1 open once option_dual_fund is
         // negotiated; CLN and Eclair open v2 themselves then)
-        if (request.IsDualFunded)
+        if (request.IsDualFunded || request.RequestInboundSat is not null)
             return await OpenDualFundedAsync(request, peerId, labels, ct);
         if (OpensDualFundedByDefault(request, peer))
         {
@@ -364,7 +368,10 @@ public sealed class OpenChannelClientHandler
                                                     request.FeeRatePerKw is { } feerate ? (uint)feerate.Satoshi : null,
                                                     null, request.IsPublic)
         {
-            Labels = labels
+            Labels = labels,
+            Liquidity = request.RequestInboundSat is { } inbound
+                            ? new LiquidityRequest(inbound, null, request.MaxLiquidityFeeSat)
+                            : null
         };
         try
         {
@@ -392,8 +399,37 @@ public sealed class OpenChannelClientHandler
         return new OpenChannelClientResponse(result.ChannelId)
         {
             FundingTxId = result.FundingTxId,
-            FundingOutputIndex = outputIndex
+            FundingOutputIndex = outputIndex,
+            Purchase = result.Purchase
         };
+    }
+
+    /// <summary>
+    /// The liquidity ads options of <c>openchannel</c> (NL-771): <c>--request-inbound</c> needs a dual-funded open (no
+    /// <c>--v1</c>, no push, no zero-conf) and an amount above 0; <c>--max-liquidity-fee</c> only with it.
+    /// </summary>
+    internal static void CheckLiquidityRequest(OpenChannelClientRequest request)
+    {
+        if (request.RequestInboundSat is not { } inbound)
+        {
+            if (request.MaxLiquidityFeeSat is not null)
+                throw new ClientException(ErrorCodes.InvalidOperation,
+                                          "--max-liquidity-fee needs --request-inbound");
+            return;
+        }
+
+        if (inbound == 0)
+            throw new ClientException(ErrorCodes.InvalidOperation, "The inbound liquidity to buy must be above 0");
+        if (request.ForceV1)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "Buying inbound liquidity (--request-inbound) needs a dual-funded open, not --v1");
+        if (request.PushAmount is { IsZero: false })
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "Buying inbound liquidity (--request-inbound) needs a dual-funded open, which has "
+                                    + "no push amount");
+        if (request.IsZeroConfChannel)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "Buying inbound liquidity (--request-inbound) can't be zero-conf");
     }
 
     /// <summary>

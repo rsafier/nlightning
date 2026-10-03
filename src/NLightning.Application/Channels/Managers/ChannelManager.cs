@@ -40,6 +40,7 @@ using Handlers.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using InteractiveTx.Interfaces;
 using Interfaces;
+using LiquidityAds;
 using Onchain.Interfaces;
 using Quiescence;
 using Reestablish;
@@ -826,6 +827,11 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         // BOLT 2 interactive-tx (NL-470): the closed channel's negotiations can never finish, and the table has no FK
         // to Channels, so its rows go in the same save as the Closed state
         await unitOfWork.InteractiveTxSessionDbRepository.DeleteByChannelIdAsync(channel.ChannelId);
+
+        // Liquidity ads (NL-771): the channel's purchases end with it, a close inside a lease noted
+        await LiquidityLeases.StageChannelClosedAsync(unitOfWork, channel.ChannelId,
+                                                      closingTxHeight ?? _blockchainMonitor.LastProcessedBlockHeight,
+                                                      _logger);
         await unitOfWork.SaveChangesAsync();
 
         _channelMemoryRepository.TryRemoveChannel(channel.ChannelId);

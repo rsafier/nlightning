@@ -11,7 +11,14 @@ using ValueObjects;
 /// <param name="WaitFor">How long to wait for the closing transaction to be agreed and broadcast (null or zero: return
 /// once our <c>shutdown</c> is out).</param>
 public sealed record ChannelCloseRequest(uint? FeeRatePerKw = null, bool SendFeeRange = true,
-                                         TimeSpan? WaitFor = null);
+                                         TimeSpan? WaitFor = null)
+{
+    /// <summary>
+    /// Close even while a liquidity lease we sold on the channel is in force (liquidity ads D-L4, NL-771); without it
+    /// <see cref="IChannelCloseService.CloseChannelAsync"/> refuses to start such a close.
+    /// </summary>
+    public bool Force { get; init; }
+}
 
 /// <summary>Where a mutual close stands.</summary>
 /// <param name="ChannelId">The channel.</param>
@@ -34,7 +41,8 @@ public interface IChannelCloseService
 {
     /// <exception cref="KeyNotFoundException">The channel is not loaded.</exception>
     /// <exception cref="InvalidOperationException">The channel can't be closed now (not open, failed, the peer is not
-    /// connected on the channel's link, or updates are waiting for a signature that can't be sent yet).</exception>
+    /// connected on the channel's link, updates are waiting for a signature that can't be sent yet, or a liquidity
+    /// lease we sold on it is in force and <see cref="ChannelCloseRequest.Force"/> is not set).</exception>
     Task<ChannelCloseResult> CloseChannelAsync(ChannelId channelId, ChannelCloseRequest request,
                                                CancellationToken cancellationToken = default);
 }

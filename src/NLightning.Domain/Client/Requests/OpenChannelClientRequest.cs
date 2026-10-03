@@ -49,6 +49,18 @@ public sealed class OpenChannelClientRequest
     /// </summary>
     public IReadOnlyList<string> Tags { get; set; } = [];
 
+    /// <summary>
+    /// Inbound liquidity to buy from the peer with the open (liquidity ads, NL-771, <c>--request-inbound</c>), in
+    /// satoshis, or null to buy none. Implies a dual-funded (v2) open: refused with <see cref="ForceV1"/> or a push.
+    /// </summary>
+    public ulong? RequestInboundSat { get; set; }
+
+    /// <summary>
+    /// The most we pay for <see cref="RequestInboundSat"/> (mining + service fee), in satoshis
+    /// (<c>--max-liquidity-fee</c>); null for <c>Node:LiquidityAds:MaxFeeSat</c>. Only with a purchase.
+    /// </summary>
+    public ulong? MaxLiquidityFeeSat { get; set; }
+
     public OpenChannelClientRequest(string nodeInfo, LightningMoney fundingAmount)
     {
         NodeInfo = nodeInfo;
