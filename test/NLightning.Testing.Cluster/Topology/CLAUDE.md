@@ -4,9 +4,10 @@ Plan: `docs/agents/TEST_HARNESS_PLAN.md` R8 (declarative topology), R9 (facade),
 
 ## Topology/
 
-- `TopologyBuilder`: `AddBitcoinCore(name)`, `AddLnd(name)`, `AddCln(name)`, `AddNode(name, kind)` (each with an
-  optional `storage:`), `FundWallet(node, sat)`, `AddChannel(from, to, capacitySat, pushMsat, announce)`,
-  `UseDeployer(ILightningNodeDeployer)` (one per `NodeKind`; CLN and LND are registered by default),
+- `TopologyBuilder`: `AddBitcoinCore(name)`, `AddLnd(name)`, `AddCln(name)`, `AddEclair(name)` (phase 4; the chain
+  on `ImageVersions.BitcoinCore31`), `AddNode(name, kind)` (each with an optional `storage:`), `FundWallet(node, sat)`,
+  `AddChannel(from, to, capacitySat, pushMsat, announce)`, `UseDeployer(ILightningNodeDeployer)` (one per `NodeKind`;
+  CLN, LND and Eclair are registered by default),
   `UseChain(ChainFactory, ChainEndpointFactory?)` (default `BitcoinCoreTopologyChain.DeployAsync` and `.EndpointFor`;
   without an endpoint the nodes wait for the chain), `Storage` (nodes without their own; null = `NLTG_NODE_STORAGE`,
   else PVC), `DeployNodesWithChain` (default true), `ChainAddressWait`, `Log`, `ReadyTimeout`, `StepTimeout`.
@@ -45,7 +46,8 @@ Plan: `docs/agents/TEST_HARNESS_PLAN.md` R8 (declarative topology), R9 (facade),
   - `ITopologyLightningNode` (`ILightningTestPeer` plus block height and confirmed balance);
   - `ILightningNodeDeployer` (`DeploysWithChain`, default false) and `TopologyDeployContext` (`Run`,
     `ChainEndpoint`, `Chain` once ready, `IsChainReady`, `WaitForChainAsync`, `ReadyTimeout`, `Log`);
-  - `ITopologyChainEndpoint` (RPC host/port/credentials, ZMQ ports, `CreateStartupWait()`) and `ITopologyChain` (the
+  - `ITopologyChainEndpoint` (RPC host/port/credentials, ZMQ ports (`ZmqHashBlockPort` null by default, set by the
+    Bitcoin Core chain for Eclair), `CreateStartupWait()`) and `ITopologyChain` (the
     endpoint plus the node, mine, send, tip). `BitcoinCoreTopologyChain` is the
     implementation: the chain lane's `BitcoinCoreNode` + `RegtestChain` (its `Chain` property has the reorgs, fee
     seeding and tx waits). The CLN lane's stopgap `TopologyBitcoind` and the LND lane's `LndTopologyChain` were

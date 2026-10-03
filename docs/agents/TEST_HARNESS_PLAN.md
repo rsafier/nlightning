@@ -833,6 +833,40 @@ Evidence (OrbStack, Release, net10.0; `TestResults/cluster/hp3l-*`):
 | Regression: `LndPairTopologyTests` + `MixedTopologyTests` (`hp3l-reg1`), `InProcessNodeClusterTests` LND proof (`hp3l-reg2`) | 2/2, 1/1 | 39 s, 25 s |
 | Non-Docker suites touched | Testing.Cluster.Tests 522/522, Testing.Lnd.Tests 108/108, Integration.Tests (`!~Docker`) 1102/1102 | |
 
+### Phase 4 record: the Eclair interop suite on the cluster (2026-10-02, branch `hp3-eclair` from b88b2717)
+
+- **Harness (`test/NLightning.Testing.Cluster/Nodes/Eclair/`).** `NodeKind.Eclair` gets a workload, a facade and a
+  deployer: `EclairNode.Workload` runs the existing local `nltg-eclair:0.14.3` (PullPolicy Never; not rebuilt) with the
+  Docker fixture's `eclair.conf` (carried in an environment variable and written to `/data/eclair.conf` by the
+  container's command, which then `exec`s the image's start script, so SIGTERM reaches the JVM), its data on a PVC, two
+  init containers (the chain's startup wait, then `eclair-wallet`: curl + jq in Eclair's image create or load the
+  bitcoind wallet `eclair` and wait until bitcoind left IBD, since Eclair refuses a chain in IBD), readiness = not
+  draining and the API answers `getinfo`, `preStop` = the 5 s drain of `ClnNode`. `EclairTestPeer`
+  (`ITopologyLightningNode` over the JSON API at the pod IP from the host, the pod DNS name in the cluster;
+  `RestartAsync` retargets the API), `EclairNodeDeployer` (`DeploysWithChain`, a `StableNodeAddress`),
+  `TopologyBuilder.AddEclair` (registered by default), `ITopologyChainEndpoint.ZmqHashBlockPort` (Eclair's
+  `zmqblock`), Eclair state in the failure dumps (`getinfo`/`channels`/`peers`/`onchainbalance`).
+- **Fixture.** `EclairFixture` keeps its members and delegates to `IEclairBackend`: `DockerEclairBackend` (the former
+  fixture moved over; its `eclair.conf` pinned by `EclairBackendTests`) and `ClusterEclairBackend` (warm topology
+  `eclair-interop`: bitcoind 31.1 on `emptyDir`, Eclair on a PVC because two tests restart it; the config differs from
+  Docker only in the chain's alias and ZMQ ports, asserted). Our in-process nodes dial Eclair at its stable ClusterIP
+  name (NL-497: they dial out; the address survives `RestartEclairAsync` as Docker's fixed host port does), call its
+  API at the pod IP (`EclairClient.Retarget` after a restart) and are dialled by Eclair at `host.orb.internal`
+  (`HostAddressForEclair`). Test bodies changed only where they named Docker (`HostAddressForEclair`,
+  `DumpEclairLogAsync`, `EclairFixture.MineAsync` instead of the Docker-only `Chain`).
+- **Runner.** `scripts/run-cluster.sh -n 1 --suite eclair` (`--explicit on` adds E-X1).
+- **Findings.** None in the product: the suite was green on the cluster at the first full run, so no ledger entry
+  (NL-785..NL-789 unused).
+
+Evidence (OrbStack, Release, net10.0, `--no-incremental` build 0 warnings; logs under `TestResults/cluster/hp4e-*`):
+
+| Run | Result | Time |
+|---|---|---|
+| Cluster alone (`hp4e-full1`), one namespace | 28/28 (29 discovered, the Explicit E-X1 not run), 0 dumps | 1,129 s (xunit 1,128 s) |
+| Cluster, the Explicit E-X1 (`hp4e-explicit`) | 1/1 | 60 s |
+| Fixture ready | cluster 18.5 s (topology 13.1 s, then the ClusterIP routing wait); Docker 5.8 s | |
+| Docker (`run-interop.sh eclair` under the machine lock, final code) | 28/28 (29 discovered, 1 Explicit not run), the batch10 baseline | 1,084 s (xunit) |
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.

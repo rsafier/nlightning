@@ -57,6 +57,8 @@ public sealed class BitcoinCoreTopologyChain : ITopologyChain
 
     public int ZmqRawTxPort => BitcoinCorePorts.ZmqRawTx;
 
+    public int? ZmqHashBlockPort => BitcoinCorePorts.ZmqHashBlock;
+
     /// <summary>The startup wait of nodes deployed later (or restarted): one RPC call while bitcoind is up.</summary>
     public V1Container CreateStartupWait() => BitcoinCoreWorkload.StartupWaitContainer(Bitcoin.Options);
 

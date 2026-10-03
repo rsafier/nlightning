@@ -67,7 +67,7 @@ public sealed class EclairDualFundRbfTests : IAsyncLifetime
         if (DockerDiagnostics.CurrentTestFailed)
         {
             Console.WriteLine($"[eclair] channel at failure: {await _session.DescribeAsync(CancellationToken.None)}");
-            await DockerDiagnostics.DumpContainerLogsAsync([EclairFixture.EclairContainerName], 400);
+            await _fixture.DumpEclairLogAsync(400);
         }
 
         await _session.DisposeAsync();

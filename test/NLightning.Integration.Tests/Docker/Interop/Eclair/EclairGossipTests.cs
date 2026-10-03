@@ -55,7 +55,7 @@ public sealed class EclairGossipTests : IAsyncLifetime
         {
             foreach (var session in _sessions)
                 Console.WriteLine($"[eclair] channel at failure: {await session.DescribeAsync(CancellationToken.None)}");
-            await DockerDiagnostics.DumpContainerLogsAsync([EclairFixture.EclairContainerName], 400);
+            await _fixture.DumpEclairLogAsync(400);
         }
 
         foreach (var session in _sessions)

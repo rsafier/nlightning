@@ -31,7 +31,9 @@
 #       --explicit M      xunit's -explicit mode: only (default: the Cluster tests are Explicit), on or off
 #       --suite S         a ported suite on the cluster backend (NLTG_TEST_BACKEND=cluster): cln = the CLN interop
 #                         suite (-p integration, --trait Category=Interop.Cln, --explicit off; its 4 Explicit capture
-#                         tests stay out unless --explicit on is given); each run gets its own namespace(s)
+#                         tests stay out unless --explicit on is given); eclair = the Eclair interop suite
+#                         (--trait Category=Interop.Eclair, --explicit off; its 1 Explicit test likewise); each run gets
+#                         its own namespace(s)
 #
 # Example: the scaffold's namespace test 3 times at once
 #   scripts/run-cluster.sh -n 3 --method '*ARunDeploysABusyboxStatefulSet*'
@@ -39,6 +41,8 @@
 #   scripts/run-cluster.sh -n 3 -p integration --class NLightning.Integration.Tests.Cluster.Live.InProcessNodeClusterTests
 # Example: the whole CLN interop suite on the cluster, 3 runs at once (one CLN class: add --class)
 #   scripts/run-cluster.sh -n 3 --suite cln
+# Example: the Eclair interop suite on the cluster, one run
+#   scripts/run-cluster.sh -n 1 --suite eclair
 #
 # Never runs Docker suites and never touches namespaces outside nltg-spike-*: the test processes create only their
 # own namespaces, and the reaper only deletes harness run namespaces (nltg-cluster reap, RunReaper).
@@ -88,9 +92,11 @@ while [[ $# -gt 0 ]]; do
       case "$suite" in
         cln) project=integration; trait="Category=Interop.Cln"; backend=cluster
              [[ -n "${explicit_set:-}" ]] || explicit=off ;;
-        *) die "--suite $suite: unknown suite (cln)" ;;
+        eclair) project=integration; trait="Category=Interop.Eclair"; backend=cluster
+             [[ -n "${explicit_set:-}" ]] || explicit=off ;;
+        *) die "--suite $suite: unknown suite (cln, eclair)" ;;
       esac ;;
-    -h|--help) sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     --) shift; extra=("$@"); break ;;
     *) die "unknown argument $1 (see --help)" ;;
   esac

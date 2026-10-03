@@ -65,7 +65,7 @@ public sealed class EclairInteropTests : IAsyncLifetime
             foreach (var session in _ownSessions.Append(_session).OfType<EclairChannelSession>())
                 Console.WriteLine($"[eclair] channel at failure: {await session.DescribeAsync(CancellationToken.None)}");
 
-            await DockerDiagnostics.DumpContainerLogsAsync([EclairFixture.EclairContainerName], 400);
+            await _fixture.DumpEclairLogAsync(400);
         }
 
         foreach (var session in _ownSessions)
@@ -101,8 +101,9 @@ public sealed class EclairInteropTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// 1b: Eclair dials us at <c>host.docker.internal</c> (our listener on every interface): we are the BOLT 8
-    /// responder, the connection stays up and the same features are negotiated.
+    /// 1b: Eclair dials us at <see cref="EclairFixture.HostAddressForEclair"/> (<c>host.docker.internal</c>, or
+    /// <c>host.orb.internal</c> on the cluster; our listener on every interface): we are the BOLT 8 responder, the
+    /// connection stays up and the same features are negotiated.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_OurListeningNode_When_EclairConnectsToUs_Then_InitExchangedAndConnectionStable()
@@ -119,7 +120,7 @@ public sealed class EclairInteropTests : IAsyncLifetime
         CompactPubKey eclairId = Convert.FromHexString(_fixture.EclairNodeId);
 
         // Act
-        await _fixture.Eclair.ConnectAsync($"{node.NodeIdHex}@{ClnFixture.HostAddressFromContainers}:{node.Port}", ct);
+        await _fixture.Eclair.ConnectAsync($"{node.NodeIdHex}@{_fixture.HostAddressForEclair}:{node.Port}", ct);
 
         // Assert
         await Poll.UntilAsync(async () => node.IsConnectedTo(eclairId)
