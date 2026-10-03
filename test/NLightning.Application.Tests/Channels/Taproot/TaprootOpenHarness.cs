@@ -89,6 +89,9 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
     /// <summary>When set, messages are dropped (a link that is down).</summary>
     public bool LinkDown { get; set; }
 
+    /// <summary>Replaces a message in flight (sender name, message): a test's way to send what a peer could.</summary>
+    public Func<string, IChannelMessage, IChannelMessage>? Tamper { get; set; }
+
     /// <summary>
     /// What the nodes negotiated: anchors, <c>option_simple_taproot</c> and <c>option_simple_close</c> (LND 0.21 with
     /// <c>--protocol.simple-taproot-chans</c>, Eclair 0.14.3); no dual funding, so the open is v1.
@@ -263,6 +266,8 @@ internal sealed class TaprootOpenHarness : IAsyncDisposable
 
         var from = Nodes.Single(n => n.Name == key.From);
         var to = Other(from);
+        if (Tamper is not null)
+            message = Tamper(from.Name, message);
         lock (Transcript)
             Transcript.Add((from.Name, message));
         to.Received.Add(message);

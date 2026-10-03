@@ -123,6 +123,7 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
     };
 
     private readonly string _directory;
+    private bool _simpleTaproot;
     private readonly ConcurrentDictionary<(string From, string To), ConcurrentQueue<IChannelMessage>> _links = new();
 
     public SwitchNode Alice { get; }
@@ -148,13 +149,14 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
     /// (<see cref="BobCarolBobAlias"/>, <see cref="BobCarolCarolAlias"/>).</param>
     /// <param name="carolAlice">Also open <see cref="CarolAliceChannelId"/> (Carol funds and pushes, as the others),
     /// so the three nodes form a triangle (NL-609).</param>
+    /// <param name="simpleTaproot">Every channel is a simple taproot channel (NL-877 T5: MuSig2 commitments).</param>
     public static async Task<ThreeNodeHarness> CreateAsync(Action<ThreeNodeHarness>? beforeStart = null,
                                                            FeatureSupport bobCarolScidAlias = FeatureSupport.No,
-                                                           bool carolAlice = false)
+                                                           bool carolAlice = false, bool simpleTaproot = false)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"nltg-three-node-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
-        var harness = new ThreeNodeHarness(directory);
+        var harness = new ThreeNodeHarness(directory) { _simpleTaproot = simpleTaproot };
         beforeStart?.Invoke(harness);
         foreach (var node in harness.Nodes)
             await node.StartAsync(migrate: true);
@@ -395,9 +397,9 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
                                              new Sha256());
 
         var funderChannel = CreateChannel(funder, funderKeyIndex, fundee, fundeeKeyIndex, funderParty, fundeeParty,
-                                          true, channelId, scid, fundingTxId, obscuring, scidAlias);
+                                          true, channelId, scid, fundingTxId, obscuring, scidAlias, _simpleTaproot);
         var fundeeChannel = CreateChannel(fundee, fundeeKeyIndex, funder, funderKeyIndex, fundeeParty, funderParty,
-                                          false, channelId, scid, fundingTxId, obscuring, scidAlias);
+                                          false, channelId, scid, fundingTxId, obscuring, scidAlias, _simpleTaproot);
         if (scidAlias != FeatureSupport.No && funderAlias is { } a && fundeeAlias is { } b)
         {
             funderChannel.LocalAliases = [a];
@@ -406,20 +408,30 @@ internal sealed class ThreeNodeHarness : ISwitchNodeNetwork, IAsyncDisposable
             fundeeChannel.RemoteAlias = a;
         }
 
-        await funder.OpenAsync(funderChannel, fundee.Point(fundeeKeyIndex, 0), fundee.Point(fundeeKeyIndex, 1));
-        await fundee.OpenAsync(fundeeChannel, funder.Point(funderKeyIndex, 0), funder.Point(funderKeyIndex, 1));
+        // A simple taproot channel starts with the peer's verification nonce for its commitment 1 (channel_ready's)
+        await funder.OpenAsync(funderChannel, fundee.Point(fundeeKeyIndex, 0), fundee.Point(fundeeKeyIndex, 1),
+                               _simpleTaproot
+                                   ? fundee.Signer.GetLocalVerificationNonce(fundeeKeyIndex, fundingTxId, 1)
+                                   : null);
+        await fundee.OpenAsync(fundeeChannel, funder.Point(funderKeyIndex, 0), funder.Point(funderKeyIndex, 1),
+                               _simpleTaproot
+                                   ? funder.Signer.GetLocalVerificationNonce(funderKeyIndex, fundingTxId, 1)
+                                   : null);
     }
 
     private static ChannelModel CreateChannel(SwitchNode self, uint selfKeyIndex, SwitchNode peer, uint peerKeyIndex,
                                               ChannelParty local, ChannelParty remote, bool isInitiator,
                                               ChannelId channelId, ShortChannelId scid, TxId fundingTxId,
                                               CommitmentNumber obscuring,
-                                              FeatureSupport scidAlias = FeatureSupport.No)
+                                              FeatureSupport scidAlias = FeatureSupport.No, bool simpleTaproot = false)
     {
         var selfBasepoints = self.Basepoints(selfKeyIndex);
         var peerBasepoints = peer.Basepoints(peerKeyIndex);
         var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(InitialFeeratePerKw), 3, false,
-                                              scidAlias);
+                                              scidAlias)
+        {
+            OptionSimpleTaproot = simpleTaproot
+        };
         // Our key first, as the channel layer builds it: the model's funding output keys are the signer's local and
         // remote funding keys (ChannelModel.GetSigningInfo, NL-495); the script sorts them itself
         var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(FundingSatoshis),
@@ -590,10 +602,13 @@ internal sealed class SwitchNode
     }
 
     /// <summary>Persists a newly opened channel with its first commitments and registers it (as channel_ready).</summary>
-    public async Task OpenAsync(ChannelModel channel, CompactPubKey peerPoint0, CompactPubKey peerPoint1)
+    public async Task OpenAsync(ChannelModel channel, CompactPubKey peerPoint0, CompactPubKey peerPoint1,
+                                MusigPublicNonce? peerNextNonce = null)
     {
         channel.UpdateCommitments(ChannelStateTransitionService.CreateInitialCommitments(channel, peerPoint0,
-                                                                                         peerPoint1));
+                                                                                         peerPoint1,
+                                                                                         remoteNextNonce:
+                                                                                         peerNextNonce));
         await InScopeAsync(async unitOfWork =>
         {
             await unitOfWork.ChannelDbRepository.AddAsync(channel);

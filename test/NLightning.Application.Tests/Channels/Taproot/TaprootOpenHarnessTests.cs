@@ -138,6 +138,60 @@ public class TaprootOpenHarnessTests
         Assert.Equal(bytes.Length - nonceTlv.Length, bytes.AsSpan().IndexOf(nonceTlv));
     }
 
+    [Theory]
+    [InlineData("open_channel")]
+    [InlineData("open_channel bad nonce")]
+    [InlineData("accept_channel")]
+    [InlineData("funding_created")]
+    [InlineData("funding_signed")]
+    public async Task Given_AnOpenMessageWithoutItsNonceOrPartialSignature_When_Received_Then_TheOpenFails(
+        string stripped)
+    {
+        // Arrange - the spec: the receiver MUST fail the channel when next_local_nonce or partial_signature_with_nonce
+        // is absent (or the nonce does not parse as two points)
+        await using var harness = await TaprootOpenHarness.CreateAsync();
+        harness.Tamper = (_, message) => (stripped, message) switch
+        {
+            ("open_channel", OpenChannel1Message open) =>
+                new OpenChannel1Message(open.Payload, open.ChannelTypeTlv, open.UpfrontShutdownScriptTlv),
+            ("open_channel bad nonce", OpenChannel1Message open) =>
+                new OpenChannel1Message(open.Payload, open.ChannelTypeTlv, open.UpfrontShutdownScriptTlv,
+                                        new Domain.Protocol.Tlv.NextLocalNonceTlv(
+                                            new Domain.Crypto.ValueObjects.MusigPublicNonce(
+                                                Enumerable.Repeat((byte)0xFF, 66).ToArray()))),
+            ("accept_channel", AcceptChannel1Message accept) =>
+                new AcceptChannel1Message(accept.Payload, accept.ChannelTypeTlv, accept.UpfrontShutdownScriptTlv),
+            ("funding_created", FundingCreatedMessage created) => new FundingCreatedMessage(created.Payload),
+            ("funding_signed", FundingSignedMessage signed) => new FundingSignedMessage(signed.Payload),
+            _ => message
+        };
+
+        // Act / Assert
+        var exception = await Assert.ThrowsAnyAsync<Domain.Exceptions.ChannelErrorException>(
+                            () => harness.OpenAsync(s_fundingAmount));
+        Assert.Contains(stripped.Split(' ')[0], exception.Message);
+        Assert.Empty(harness.Alice.Published);
+    }
+
+    [Fact]
+    public async Task Given_ChannelReadyWithoutItsNonce_When_Received_Then_TheChannelFails()
+    {
+        // Arrange
+        await using var harness = await TaprootOpenHarness.CreateAsync();
+        var (channelId, funding) = await harness.OpenAsync(s_fundingAmount);
+        harness.Tamper = (from, message) => from == "Alice" && message is ChannelReadyMessage ready
+                                                ? new ChannelReadyMessage(ready.Payload, ready.ShortChannelIdTlv)
+                                                : message;
+
+        // Act
+        var exception = await Assert.ThrowsAsync<Domain.Exceptions.ChannelFailedException>(
+                            () => harness.ConfirmFundingAsync(channelId, funding.TransactionId));
+
+        // Assert
+        Assert.Equal("TAPROOT-CR-R01", exception.RequirementId);
+        Assert.Equal(ChannelState.Failed, harness.Bob.Channel(channelId).State);
+    }
+
     private static void AssertIdle(TaprootOpenNode alice, TaprootOpenNode bob, ChannelId channelId,
                                    ulong aliceBalanceMsat)
     {
