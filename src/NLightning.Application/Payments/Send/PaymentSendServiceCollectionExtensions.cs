@@ -9,6 +9,7 @@ using Interfaces;
 using Routing;
 using Routing.Interfaces;
 using Switch;
+using Trampoline;
 
 /// <summary>
 /// Registers the send side of payments (ABCD wave 2, lane W2-C).
@@ -34,6 +35,11 @@ public static class PaymentSendServiceCollectionExtensions
     /// only over direct channels and route hints), <see cref="IRouteQueryService"/> (the payment service, for
     /// <c>getroute</c>) and a no-op <see cref="IGossipScidRefresher"/> (<see cref="NullGossipScidRefresher"/>) that the
     /// host replaces with the gossip sync manager.</para>
+    /// <para>Trampoline (NL-875): the payment service is also the <see cref="ITrampolineLegSender"/> the relay engine
+    /// sends its outgoing legs through; it reports their ends to the <see cref="ITrampolineLegObserver"/> it resolves
+    /// from the container on first use (the engine registers it). The trampoline onion services
+    /// (<c>AddBitcoinInfrastructure</c>) and <c>IHopPayloadSerializer</c> are optional: without them no trampoline
+    /// onion is built or read.</para>
     /// </remarks>
     public static IServiceCollection AddPaymentSendServices(this IServiceCollection services)
     {
@@ -47,6 +53,7 @@ public static class PaymentSendServiceCollectionExtensions
         services.TryAddSingleton<IPaymentService>(sp => sp.GetRequiredService<PaymentService>());
         services.TryAddSingleton<IRouteQueryService>(sp => sp.GetRequiredService<PaymentService>());
         services.TryAddSingleton<IPaymentOutcomeHandler>(sp => sp.GetRequiredService<PaymentService>());
+        services.TryAddSingleton<ITrampolineLegSender>(sp => sp.GetRequiredService<PaymentService>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<ILocalPaymentHtlcHandler, PaymentOutcomeSwitchHandler>());
 
         return services;

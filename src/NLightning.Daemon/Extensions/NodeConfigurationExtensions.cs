@@ -509,6 +509,14 @@ public static class NodeConfigurationExtensions
                      "Accept": true,
                      "FinalCltvExpiryDelta": 40
                    },
+                   "Trampoline": {
+                     "FeeBaseMsat": 1000,
+                     "FeeProportionalMillionths": 1000,
+                     "CltvExpiryDelta": 576,
+                     "MaxRelaysInFlight": 32,
+                     "LegTimeout": "00:01:00",
+                     "MinCltvMarginBlocks": 48
+                   },
                    "Quiescence": {
                      "Timeout": "00:01:00",
                      "IdleTimeout": "00:05:00"

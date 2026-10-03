@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using NLightning.Tests.Utils.Vectors;
 
 namespace NLightning.Application.Tests.Payments.Onion;
 
@@ -7,6 +8,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
+using Domain.Protocol.Onion.Codecs;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Factories;
@@ -107,11 +109,39 @@ public class TrampolineOnionProcessorTests : IDisposable
         Assert.Equal(FinalCltv, relay.OutgoingCltvValue);
         Assert.Equal(incoming, relay.IncomingTotal);
         Assert.Equal(trampoline.SharedSecrets[0], relay.TrampolineSharedSecret);
-        Assert.Equal(trampoline.HopPayloadsLength, relay.NextTrampolinePacket.HopPayloadsLength);
+        Assert.Equal(trampoline.HopPayloadsLength, relay.NextTrampolinePacket!.Value.HopPayloadsLength);
 
-        var atDave = _dave.TrampolineOnion.Peel(relay.NextTrampolinePacket, s_paymentHash);
+        var atDave = _dave.TrampolineOnion.Peel(relay.NextTrampolinePacket!.Value, s_paymentHash);
         Assert.True(atDave.IsFinal);
         Assert.Equal(trampoline.SharedSecrets[1], atDave.SharedSecret);
+    }
+
+    [Fact]
+    public async Task Given_TheLastTrampolineLayerNamingRecipientBlindedPaths_When_Processed_Then_ARelayToThePaths()
+    {
+        // Arrange: the payer's trampoline onion ends with Carol's payload, which names the blinded paths of a recipient
+        // without trampoline support (BOLTs PR 836, trampoline-to-blinded-path-payment-onion-test.json; NL-875 TR5:
+        // this was refused as a final payload carrying recipient_blinded_paths)
+        var paths = PaymentBlindedPathCodec.DecodeList(
+            Convert.FromHexString(Bolt4TrampolineVectors.ToBlindedPathsInner)[^417..]);
+        var trampoline = await BuildTrampolineAsync(
+                             (_carol.NodeId, new HopPayload(new AmtToForwardTlv(s_amount),
+                                                            new OutgoingCltvValueTlv(FinalCltv),
+                                                            new RecipientBlindedPathsTlv(paths))));
+        var incoming = s_amount + LightningMoney.MilliSatoshis(5_000);
+        var outer = await BuildOuterAsync(_carol.NodeId, OuterPayload(trampoline, incoming, FinalCltv + 600, incoming));
+
+        // Act
+        var result = await ProcessAsync(_carol, outer, incoming, FinalCltv + 600);
+
+        // Assert: a relay to the paths, with no next trampoline node or packet
+        var relay = Assert.IsType<IncomingOnionTrampolineRelay>(result);
+        Assert.Null(relay.NextNodeId);
+        Assert.Null(relay.NextTrampolinePacket);
+        Assert.Equal(paths.Count, relay.RecipientBlindedPaths!.Count);
+        Assert.Equal(s_amount, relay.AmountToForward);
+        Assert.Equal(FinalCltv, relay.OutgoingCltvValue);
+        Assert.Equal(incoming, relay.IncomingTotal);
     }
 
     [Theory]
@@ -274,7 +304,7 @@ public class TrampolineOnionProcessorTests : IDisposable
         Assert.Equal(dave.AmountToForward, eve.MergedPayload.AmtToForward);
         Assert.Equal(s_amount, eve.MergedPayload.TotalAmountMsat);
         Assert.Equal(FinalCltv, eve.MergedPayload.OutgoingCltvValue);
-        Assert.Equal(SHA256.HashData(dave.NextTrampolinePacket.ToBytes()), eve.TrampolineOnionSha256);
+        Assert.Equal(SHA256.HashData(dave.NextTrampolinePacket!.Value.ToBytes()), eve.TrampolineOnionSha256);
         Assert.Equal(trampoline.SharedSecrets[1], eve.TrampolineSharedSecret);
     }
 
@@ -312,7 +342,7 @@ public class TrampolineOnionProcessorTests : IDisposable
         // Assert: the PR 836 blinded error vector's answer, with the trampoline packet's sha256
         var malformed = Assert.IsType<IncomingOnionMalformed>(result);
         Assert.Equal(FailureCode.InvalidOnionBlinding, malformed.FailureCode);
-        Assert.Equal(SHA256.HashData(dave.NextTrampolinePacket.ToBytes()), malformed.Sha256OfOnion.ToArray());
+        Assert.Equal(SHA256.HashData(dave.NextTrampolinePacket!.Value.ToBytes()), malformed.Sha256OfOnion.ToArray());
     }
 
     [Fact]
@@ -351,7 +381,7 @@ public class TrampolineOnionProcessorTests : IDisposable
 
     private static HopPayload EveOuterPayload(IncomingOnionTrampolineRelay dave, CompactPubKey pathKey) =>
         new(new AmtToForwardTlv(dave.AmountToForward!), new OutgoingCltvValueTlv(dave.OutgoingCltvValue!.Value),
-            new CurrentPathKeyTlv(pathKey), new TrampolineOnionPacketTlv(dave.NextTrampolinePacket));
+            new CurrentPathKeyTlv(pathKey), new TrampolineOnionPacketTlv(dave.NextTrampolinePacket!.Value));
 
     private async Task<TrampolineOnion> BuildTrampolineAsync(params (CompactPubKey NodeId, HopPayload Payload)[] hops)
     {

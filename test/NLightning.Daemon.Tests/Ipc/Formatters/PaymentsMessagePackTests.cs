@@ -370,6 +370,24 @@ public class PaymentsMessagePackTests
         CompletedAt = s_createdAt.AddSeconds(3)
     };
 
+    [Fact]
+    public void Given_ATrampolineNode_When_PayRequestsAreRoundTripped_Then_Key9IsKept()
+    {
+        // Arrange (NL-875: key 9 of payinvoice and payoffer)
+        var node = new CompactPubKey(Convert.FromHexString("02" + new string('1', 64)));
+
+        // Act
+        var invoice = RoundTrip(new PayInvoiceIpcRequest { Bolt11 = "lnbcrt1", TrampolineNode = node })
+           .ToClientRequest();
+        var offer = RoundTrip(new PayOfferIpcRequest { Offer = "lno1", TrampolineNode = node }).ToClientRequest();
+        var older = RoundTrip(new PayOfferIpcRequest { Offer = "lno1" }).ToClientRequest();
+
+        // Assert
+        Assert.Equal(node, invoice.TrampolineNode);
+        Assert.Equal(node, offer.TrampolineNode);
+        Assert.Null(older.TrampolineNode);
+    }
+
     private static T RoundTrip<T>(T value)
     {
         var bytes = MessagePackSerializer.Serialize(value, s_options, TestContext.Current.CancellationToken);

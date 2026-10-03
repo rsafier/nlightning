@@ -170,7 +170,7 @@ internal static class ClientApp
                                                                payOptions.TimeoutSeconds, payOptions.MaxFeeMsat,
                                                                payOptions.MaxParts, cancellationToken,
                                                                payOptions.OutgoingChannel, payOptions.IncomingChannel,
-                                                               labels);
+                                                               labels, payOptions.TrampolineNode);
                     new PayInvoicePrinter().Print(payment);
                     if (payment.Payment.Status == PaymentStatus.Failed)
                         return Failure;
@@ -460,7 +460,7 @@ internal static class ClientApp
                 if (commandArgs.Length < 1)
                     return $"Missing argument. Usage: {cmd} <bolt11> [amount_msat] [timeout_seconds] "
                          + "[--max-fee-msat <msat>] [--max-parts <n>] [--timeout <seconds>] [--out <channel>] "
-                         + "[--in <channel>]";
+                         + "[--in <channel>] [--trampoline <node_id>]";
                 return ParsePayInvoiceOptions(commandArgs, out var payError) is null ? payError : null;
             case "payoffer":
             case "pay-offer":
@@ -945,7 +945,8 @@ internal static class ClientApp
     /// (1 to <see cref="MaxPayTimeoutSeconds"/>, instead of the positional timeout), <c>--out &lt;channel&gt;</c> (the
     /// only channel the payment may leave through) and <c>--in &lt;channel&gt;</c> (for an invoice of our own, a
     /// circular rebalance: the only channel it may come back in through; NL-609), a channel being a channel id or a
-    /// short channel id, each also as <c>--option=value</c>, anywhere after the command.
+    /// short channel id, and <c>--trampoline &lt;node_id&gt;</c> (pay through that trampoline node, NL-875), each also as
+    /// <c>--option=value</c>, anywhere after the command.
     /// </summary>
     /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
     internal static PayInvoiceArguments? ParsePayInvoiceOptions(string[] commandArgs, out string? error)
@@ -956,6 +957,7 @@ internal static class ClientApp
         uint? timeout = null;
         string? outgoingChannel = null;
         string? incomingChannel = null;
+        CompactPubKey? trampolineNode = null;
         for (var i = 0; i < commandArgs.Length; i++)
         {
             var argument = commandArgs[i];
@@ -1026,8 +1028,18 @@ internal static class ClientApp
                     else
                         incomingChannel = value;
                     break;
+                case "--trampoline":
+                    if (!TryParseNodeId(value, out var trampoline))
+                    {
+                        error = $"Invalid trampoline node '{value}': expected a node id (66 hex characters).";
+                        return null;
+                    }
+
+                    trampolineNode = trampoline;
+                    break;
                 default:
-                    error = $"Unknown option '{name}': expected --max-fee-msat, --max-parts, --timeout, --out or --in.";
+                    error = $"Unknown option '{name}': expected --max-fee-msat, --max-parts, --timeout, --out, --in or "
+                          + "--trampoline.";
                     return null;
             }
         }
@@ -1077,7 +1089,8 @@ internal static class ClientApp
         return new PayInvoiceArguments(positional[0], amount, timeout, maxFeeMsat, maxParts)
         {
             OutgoingChannel = outgoingChannel,
-            IncomingChannel = incomingChannel
+            IncomingChannel = incomingChannel,
+            TrampolineNode = trampolineNode
         };
     }
 
@@ -1231,7 +1244,7 @@ internal static class ClientApp
     /// <summary>The arguments of payoffer.</summary>
     internal const string PayOfferUsage =
         "<offer> [amount_msat] [--quantity <n>] [--note <text>] [--max-fee-msat <msat>] [--max-parts <n>] "
-      + "[--timeout <seconds>]";
+      + "[--timeout <seconds>] [--trampoline <node_id>]";
 
     /// <summary>The arguments of fetchinvoice.</summary>
     internal const string FetchInvoiceUsage = "<offer> [amount_msat] [--quantity <n>] [--note <text>]";
@@ -1251,6 +1264,7 @@ internal static class ClientApp
         ulong? maxFeeMsat = null;
         uint? maxParts = null;
         uint? timeout = null;
+        CompactPubKey? trampolineNode = null;
         for (var i = 0; i < commandArgs.Length; i++)
         {
             var argument = commandArgs[i];
@@ -1325,10 +1339,19 @@ internal static class ClientApp
 
                     timeout = seconds;
                     break;
+                case "--trampoline" when payment:
+                    if (!TryParseNodeId(value, out var trampoline))
+                    {
+                        error = $"Invalid trampoline node '{value}': expected a node id (66 hex characters).";
+                        return null;
+                    }
+
+                    trampolineNode = trampoline;
+                    break;
                 default:
                     error = payment
                                 ? $"Unknown option '{name}': expected --quantity, --note, --max-fee-msat, "
-                                + "--max-parts or --timeout."
+                                + "--max-parts, --timeout or --trampoline."
                                 : $"Unknown option '{name}': expected --quantity or --note.";
                     return null;
             }
@@ -1354,7 +1377,10 @@ internal static class ClientApp
         }
 
         error = null;
-        return new PayOfferArguments(positional[0], amountMsat, quantity, note, timeout, maxFeeMsat, maxParts);
+        return new PayOfferArguments(positional[0], amountMsat, quantity, note, timeout, maxFeeMsat, maxParts)
+        {
+            TrampolineNode = trampolineNode
+        };
     }
 
     /// <summary>
@@ -1810,6 +1836,9 @@ internal sealed record PayInvoiceArguments(
 
     /// <summary><c>--in</c>: for an invoice of our own, the only channel it may come back in through (NL-609).</summary>
     public string? IncomingChannel { get; init; }
+
+    /// <summary><c>--trampoline</c>: the trampoline node to pay through (NL-875).</summary>
+    public CompactPubKey? TrampolineNode { get; init; }
 }
 
 /// <summary>
@@ -1832,7 +1861,11 @@ public sealed record PayOfferArguments(
     string? PayerNote,
     uint? TimeoutSeconds,
     ulong? MaxFeeMsat,
-    uint? MaxParts);
+    uint? MaxParts)
+{
+    /// <summary><c>--trampoline</c>: the trampoline node to pay through (NL-875); payoffer only.</summary>
+    public CompactPubKey? TrampolineNode { get; init; }
+}
 
 /// <summary>
 /// The parsed arguments of withdraw (a null amount is "all").
