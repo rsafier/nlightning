@@ -8,6 +8,7 @@ only: no Docker, no cluster.
 ```
 A ──(A–T, A funds)── T ──(T–X, T funds)── X ──(X–C, X funds)── C
 A ──(A–T #2, optional)── T
+T ──(T–X #2, optional)── X ──(X–C #2, optional)── C
 ```
 
 - Each channel is 2,000,000 sat with 800,000 sat pushed to the fundee, so both directions have liquidity.
@@ -31,6 +32,8 @@ A ──(A–T #2, optional)── T
 | `PaymentSenders` | none | Which nodes run `AddPaymentSendServices`. This gives them `IPaymentService` (and so `ITrampolineLegSender` once TR4 implements it on `PaymentService`). |
 | `GraphViewers` | every node | Which payment senders see `BuildGraph()`: every channel with both policies, and every node's `node_announcement` features, so T and C carry bit 57 there. |
 | `SecondAliceTrampolineChannel` | off | Adds `AliceTrampoline2ChannelId`, for MPP over two first hops. |
+| `SecondLegChannels` | off | Adds `TrampolineX2ChannelId` and `XCarol2ChannelId`, so T's leg can split. |
+| `LogLevel` | off | Every node's log lines at that level go to the test's output (`HarnessLoggerProvider`; framework categories from Warning). |
 | `SteppedClock` | on | Every node shares `harness.Clock`, a `SteppedTimeProvider`. MPP timers fire only from `AdvanceAsync`. |
 | `ConfigureNode(node)` | | Node options before the start: routing, `Node:Trampoline`-style options, keysend and so on. |
 | `ConfigureServices(node, services)` | | Last changes to a node's services, applied on every start, restarts included. Phase 2 registers the relay engine and leg sender on T here. |
@@ -40,7 +43,9 @@ A ──(A–T #2, optional)── T
 - `PumpAsync()` delivers messages until every queue is empty and every scheduler is idle.
 - `PumpUntilAsync(task)` pumps while an `IPaymentService` call runs, then returns its result.
 - `AdvanceAsync(by)` moves the clock, waits for every switch, then pumps.
-- `RestartAsync(node)` and then `ReconnectAsync(node)` restart a node. Restart only at a quiescent point: nothing is
+- `RestartAsync(node)` and then `ReconnectAsync(node)` restart a node; the restart also runs the daemon's next startup
+  steps when the node has them (payment reconciliation, then `TrampolineRelayService.StartAsync`). Restart only at a
+  quiescent point: nothing is
   retransmitted.
 - `Disconnect(a, b)` and `ReconnectLinkAsync(a, b)` drop and restore one link.
 
@@ -53,6 +58,9 @@ A ──(A–T #2, optional)── T
   trampoline hop, plus a random outer secret.
 - `SendTrampolinePartAsync(plan, firstChannel, [T, X, C], part, outerTotal?)` sends one part. In it, T and X are plain
   outer hops.
+- `PlanRelayAsync(A, T, C, invoice, trampolineFee, cltvDelta, nextNodeId?)` builds the inner onion with T as an
+  intermediate trampoline node (`outgoing_node_id`, the relay engine's input); send its parts with
+  `SendTrampolinePartAsync(plan, channel, [T], part)`.
 - For other inner routes, use `BuildTrampolineOnionAsync(payer, hash, (node, payload)...)` with `OuterTrampolinePayload`.
 - `DecryptTrampolineFailure(A, onion, plan.Onion, failed)` decrypts a failure with both layers.
 
@@ -83,60 +91,31 @@ A ──(A–T #2, optional)── T
 - the feature off on C, which gives `invalid_onion_payload` at the outer layer, index 2;
 - C restarting with one part held, after which the second part completes the set.
 
-## Phase 2 (after TR3 and TR4 merge)
+## Phase 2 (done)
 
-Every scenario below needs these settings first:
+`../TrampolineRelayE2ETests` runs the production relay engine (`AddTrampolineRelayServices` on T through
+`ConfigureServices`), leg sender (T's `PaymentService`, routing over the graph through X) and payer (A's
+`PaymentService`) together:
 
-- `PaymentSenders = A | T`.
-- On T, `ConfigureServices` registers the relay engine: `TrampolineRelayService` as `ITrampolineRelayIngress`
-  (scoped or singleton; the switch resolves it per part), `ITrampolineHtlcHandler` (singleton; `HtlcSwitch` takes it
-  as its last optional constructor argument, and `SwitchNode` builds `HtlcSwitch` through DI) and
-  `ITrampolineLegObserver`.
-- Use the layer's `Add…` extension if TR3 provides one.
-- Set T's `Node:Trampoline` policy in `ConfigureNode`, as `node.Options.Trampoline`, or in `ConfigureServices`,
-  wherever TR3 binds it.
+1. single part: fees, relay row, leg row, `TrampolineRelaySettled`, A's `PaymentTrampolineHops`;
+2. MPP on both legs (`SecondAliceTrampolineChannel` + `SecondLegChannels`), C settles once;
+3. T's NODE|26, A's cached policy and retry, the failed relay replaced (`RemoveFailedAsync`);
+4. C's error read by A at C's trampoline index;
+5. T restarted while collecting (hand-built parts), 6. while sending (C's switch suspended);
+7. refusals (CLTV, `MaxRelaysInFlight = 0`, `mpp_timeout` at T) read at the trampoline layer, index 0;
+8. an unknown next node (`unknown_next_trampoline`, no retry) and an unreachable one (`temporary_trampoline_failure`,
+   one retry);
+9. `Node:Payments:Trampoline=Auto` picking T from a peer manager stand-in (A sees no graph);
+10. (a) a blinded recipient without bit 57: T pays `recipient_blinded_paths` (C's `BlindedPathBuilder` path through X).
 
-Do not commit skipped or failing placeholders for these.
+Not covered: (b) blinded hops as trampoline hops. With C's builder path X (the introduction node) gets the trampoline
+onion but its recipient data names the X–C channel by `short_channel_id`, which the relay engine does not resolve
+("lacks its relay instructions"); resolved by hand, X then applies its own `Node:Trampoline` fee and delta to a hop
+whose price the recipient fixed in `payment_relay`, and refuses with NODE|26.
 
-1. **A pays C through the T relay, single part.** A uses `IPaymentService.PayInvoiceAsync(bolt11, null, new
-   PayInvoiceOptions { TrampolineNode = T.NodeId })`, through `PumpUntilAsync`. Assert:
-   - C's invoice is `Settled`;
-   - T's `TrampolineRelays` row is `Fulfilled` with the fee (`GetRelayAsync`);
-   - T's leg payment has `IsTrampolineRelay` and is not booked as our spend;
-   - A's `PaymentTrampolineHops` rows (`GetTrampolineHopsAsync`);
-   - the `TrampolineRelaySettled` accounting event on T (`InScopeAsync(u =>
-     u.AccountingEventDbRepository.GetUnsealedAsync(...))`).
-2. **MPP on both legs.** Add `SecondAliceTrampolineChannel` and set A's `MaxParts`. To force a split on A, cap A's
-   channels or pick amounts above one channel's balance. T's leg splits only when `recipient_features` has
-   `basic_mpp`, which C's bit 57 invoice has. The harness may need a second T–X or X–C channel. Add it the way
-   `OpenChannelAsync` opens `AliceTrampoline2`: a new option and a new channel id or scid.
-3. **NODE|26 refusal and retry.** Give T a policy above A's default budget (1,000 msat + 1,000 ppm, delta 576). Assert
-   that A's first attempt fails with `trampoline_fee_or_expiry_insufficient` (0x201A) carrying T's policy, that the
-   retry succeeds, and the attempt count. A `temporary_trampoline_failure` retry needs X's link down for the first
-   attempt: `Disconnect(T, X)`, then `ReconnectLinkAsync`.
-4. **Restart T while Collecting.** Send A's first part by hand (as `SendTrampolinePartAsync` does, but with a relay
-   payload for T: `OutgoingNodeIdTlv(C)` with C's inner final payload in the next layer, built through
-   `BuildTrampolineOnionAsync`). Then `RestartAsync(T)` and `ReconnectAsync(T)`, and send the second part. Assert the
-   timer was restored, the parts were found again, and a single relay.
-5. **Restart T while Sending.** Block the leg at X: suspend C's switch (`C.SwitchSuspended = true`) so C holds the
-   HTLC, then restart T. After `ReconnectAsync`, payment reconciliation and the switch replay finish the relay. Then
-   resume C (`SwitchSuspended = false`, `ReplayPendingEventsAsync`) and assert exactly one fulfill upstream per part.
-6. **T pays `recipient_blinded_paths` (TLV 22 + 21).** C needs a BOLT 12 invoice without bit 57, or a blinded path
-   from `BlindedPathBuilder`. The harness has no onion-message transport, so build C's blinded payment path directly
-   (`BlindedPathBuilder` on C, as `Payments/Send/BlindedSendThreeNodeTests` does) and put it in A's inner payload for
-   T.
-7. **BOLT 12 blinded trampoline hops.** C's offer invoice paths double as trampoline hops (TR2, M5). The harness has
-   no `invoice_request` exchange, because `ThreeNodeHarness`-style nodes carry channel messages only. Make C's
-   `Bolt12` invoice through `OfferInvoiceFactory`/`InvoiceRequestHandler` in-process, or extend `Route` with an
-   onion-message path (`IPeerOnionMessageOutbox` fake). The cheapest option is to build the blinded path with
-   `BlindedPathBuilder` and pay it with `PayBlindedAsync` plus the TR4 trampoline option.
-8. **Refusals.** For each refusal below, assert C never sees an HTLC and A decrypts the code at the trampoline layer,
-   index 0 (T):
-   - CLTV: give A's inner payload for T too small a CLTV margin (below T's `CltvExpiryDelta`);
-   - fee: incoming minus outgoing is below T's fee;
-   - `MaxRelaysInFlight`: hold one relay at C (suspend C's switch), then start a second payment with another invoice.
-9. **MPP timeout at T.** Send one part of two to T by hand, then `AdvanceAsync(MppTimeout)`. Assert every part fails
-   with `mpp_timeout` at the trampoline layer from T, and the relay row is `Failed`.
+Phase 2 found two product bugs, fixed with the scenarios: the relay kept its own trampoline fee and delta out of the
+leg's budget, so a payer paying exactly the policy of a NODE|26 got no route past T's peers (1, 3); and a last
+trampoline layer naming `recipient_blinded_paths` was refused as a final payload (10a).
 
 ## Gaps
 

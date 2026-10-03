@@ -24,14 +24,15 @@ using Protocol.ValueObjects;
 /// <c>trampoline_onion_packet</c>.
 /// </para>
 /// <list type="bullet">
-/// <item>Final, not blinded (a BOLT 11 recipient): <c>amt_to_forward</c>, <c>outgoing_cltv_value</c> and
-/// <c>payment_data</c> (the invoice's secret and total); <c>payment_metadata</c> optional; no
-/// <c>short_channel_id</c>, <c>outgoing_node_id</c>, <c>recipient_features</c> or
-/// <c>recipient_blinded_paths</c>.</item>
-/// <item>Intermediate, not blinded: <c>amt_to_forward</c>, <c>outgoing_cltv_value</c> and exactly one of
-/// <c>outgoing_node_id</c> (the next trampoline node) or a non-empty <c>recipient_blinded_paths</c> (a recipient that
-/// does not support trampoline); <c>recipient_features</c> only with the latter. A <c>short_channel_id</c> is ignored
-/// (the writer "MUST use outgoing_node_id instead").</item>
+/// <item>Final, not blinded, without <c>recipient_blinded_paths</c> (a BOLT 11 recipient): <c>amt_to_forward</c>,
+/// <c>outgoing_cltv_value</c> and <c>payment_data</c> (the invoice's secret and total); <c>payment_metadata</c>
+/// optional; no <c>short_channel_id</c>, <c>outgoing_node_id</c> or <c>recipient_features</c>.</item>
+/// <item>Intermediate, not blinded, and the last layer when it names <c>recipient_blinded_paths</c> (the payer's
+/// trampoline onion ends with the last trampoline node's payload, which pays the recipient's blinded paths, as in
+/// <c>trampoline-to-blinded-path-payment-onion-test.json</c>): <c>amt_to_forward</c>, <c>outgoing_cltv_value</c> and
+/// exactly one of <c>outgoing_node_id</c> (the next trampoline node) or a non-empty <c>recipient_blinded_paths</c> (a
+/// recipient that does not support trampoline); <c>recipient_features</c> only with the latter. A
+/// <c>short_channel_id</c> is ignored (the writer "MUST use outgoing_node_id instead").</item>
 /// <item>Blinded (<c>encrypted_recipient_data</c> present; BOLT 12 recipients that support trampoline): exactly one of
 /// the inner payload's <c>current_path_key</c> (the introduction node) and the outer one's (a later node) is present;
 /// an intermediate hop carries only <c>encrypted_recipient_data</c> and <c>current_path_key</c>, the final hop also
@@ -102,14 +103,16 @@ public static class TrampolinePayloadValidator
 
         var outerPathKey = outerHasPathKey || outer.CurrentPathKey is not null;
 
-        error = FindUnknownEvenType(inner, isFinal)
+        // A last layer naming recipient_blinded_paths is the last trampoline node's, not the recipient's
+        var isRecipient = isFinal && (inner.IsBlinded || inner.RecipientBlindedPaths is null);
+        error = FindUnknownEvenType(inner, isRecipient)
              ?? (inner.TrampolineOnionPacket is not null
                      ? HopPayloadValidator.Fail(inner, OnionPayloadTlvTypes.TrampolineOnionPacket,
                                                 "A trampoline payload cannot carry another trampoline_onion_packet.")
                      : null)
              ?? (inner.IsBlinded
                      ? ValidateBlinded(inner, isFinal, outerPathKey)
-                     : ValidateNonBlinded(inner, isFinal, outerPathKey))
+                     : ValidateNonBlinded(inner, isRecipient, outerPathKey))
              ?? ValidateAgainstOuter(inner, outer);
 
         return error is null;
@@ -174,7 +177,7 @@ public static class TrampolinePayloadValidator
                    : null;
     }
 
-    private static OnionException? ValidateNonBlinded(HopPayload inner, bool isFinal, bool outerPathKey)
+    private static OnionException? ValidateNonBlinded(HopPayload inner, bool isRecipient, bool outerPathKey)
     {
         // Outside a blinded route there is no path key in either onion
         if (outerPathKey)
@@ -192,13 +195,13 @@ public static class TrampolinePayloadValidator
         if (inner.OutgoingCltvValue is null)
             return HopPayloadValidator.Missing(inner, OnionPayloadTlvTypes.OutgoingCltvValue, "outgoing_cltv_value");
 
-        return isFinal ? ValidateFinal(inner) : ValidateIntermediate(inner);
+        return isRecipient ? ValidateFinal(inner) : ValidateIntermediate(inner);
     }
 
     private static OnionException? ValidateFinal(HopPayload inner)
     {
-        // The final node "MUST NOT include short_channel_id nor outgoing_node_id"; recipient_blinded_paths (and the
-        // recipient_features that go with it) are for the last trampoline node to pay, not for the recipient
+        // The final node "MUST NOT include short_channel_id nor outgoing_node_id"; recipient_features goes with
+        // recipient_blinded_paths, which make the last layer the last trampoline node's (validated as a relay)
         if (inner.ShortChannelId is not null)
             return HopPayloadValidator.Fail(inner, OnionPayloadTlvTypes.ShortChannelId,
                                             "short_channel_id is not allowed in a final trampoline payload.");
@@ -210,10 +213,6 @@ public static class TrampolinePayloadValidator
         if (inner.RecipientFeatures is not null)
             return HopPayloadValidator.Fail(inner, OnionPayloadTlvTypes.RecipientFeatures,
                                             "recipient_features is not allowed in a final trampoline payload.");
-
-        if (inner.RecipientBlindedPaths is not null)
-            return HopPayloadValidator.Fail(inner, OnionPayloadTlvTypes.RecipientBlindedPaths,
-                                            "recipient_blinded_paths is not allowed in a final trampoline payload.");
 
         // "MUST include the invoice's payment_secret in the last trampoline hop's payload"
         return inner.PaymentData is null

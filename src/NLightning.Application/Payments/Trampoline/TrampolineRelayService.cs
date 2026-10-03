@@ -72,6 +72,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
     private readonly ITrampolineFailureOnionService? _trampolineFailureOnionService;
     private readonly TrampolineOptions _options;
     private readonly bool _advertisesAttribution;
+    private readonly ushort _forwardingCltvExpiryDelta;
     private readonly TimeSpan _blindedErrorMaxDelay;
     private readonly TimeSpan _mppTimeout;
 
@@ -112,6 +113,8 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         _attributionDataService = attributionDataService;
         _onionProcessor = onionProcessor;
         _nodeDrainState = nodeDrainState;
+        _forwardingCltvExpiryDelta = nodeOptions?.Value.Routing.CltvExpiryDelta
+                                  ?? new RoutingOptions().CltvExpiryDelta;
         _advertisesAttribution = (nodeOptions?.Value.Features.OptionAttributionData ?? FeatureSupport.Optional)
                               != FeatureSupport.No;
         var mppTimeout = switchOptions?.Value.MppTimeout ?? HtlcSwitchOptions.DefaultMppTimeout;
@@ -368,7 +371,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
     }
 
     private static byte[]? NextPacketOf(IncomingOnionTrampolineRelay onion) =>
-        onion.NextNodeId is null ? null : onion.NextTrampolinePacket.ToBytes();
+        onion.NextNodeId is null ? null : onion.NextTrampolinePacket?.ToBytes();
 
     /// <summary>What makes a later part differ from the relay its payment hash started, or null when it belongs.
     /// </summary>
@@ -450,7 +453,7 @@ public sealed class TrampolineRelayService : ITrampolineRelayIngress, ITrampolin
         else
         {
             decision = TrampolineRelayPolicy.Evaluate(_options, sumIn, minCltvIn, relay.AmountOut,
-                                                      relay.CltvExpiryOut, height);
+                                                      relay.CltvExpiryOut, height, _forwardingCltvExpiryDelta);
             if (!decision.IsAccepted)
                 (failure, reason) = (decision.Failure, decision.Reason);
             else if (await CountSendingAsync(relays) >= _options.MaxRelaysInFlight)

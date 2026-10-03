@@ -197,8 +197,8 @@ A relay is N incoming HTLCs → one outgoing payment of M HTLCs. It is its own e
 2. **Set complete.** Check `TrampolineRelayPolicy` (`Node:Trampoline:FeeBaseMsat`, `FeeProportionalMillionths`, `CltvExpiryDelta`, `MaxRelaysInFlight`). The fee must satisfy sum in − amount out ≥ fee(amount out). The CLTV must satisfy min CLTV in − CLTV out ≥ delta and CLTV out > height. Otherwise every part fails with NODE|26 carrying our policy.
 3. **Outgoing leg.** `PaymentService` starts it, non-blocking:
    - The target is `outgoing_node_id`, the blinded paths (22), or the next blinded hop.
-   - The final CLTV is absolute, and the first-hop CLTV is ≤ min CLTV in − delta.
-   - MaxFee = sum in − amount out − our fee.
+   - The final CLTV is absolute, and the first-hop CLTV is ≤ min CLTV in − our plain forwarding delta (`Node:Routing:CltvExpiryDelta`; TR5: the trampoline delta pays for the route).
+   - MaxFee = sum in − amount out (TR5: our fee pays for the route, as Eclair; we keep what it leaves).
    - The final-payload hook adds TLV 20, a random outer secret and the total.
    - Split only when the next node is a trampoline or `recipient_features` has `basic_mpp`.
    - The outgoing HTLCs carry origin 3.

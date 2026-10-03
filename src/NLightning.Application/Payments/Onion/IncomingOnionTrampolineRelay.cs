@@ -20,10 +20,11 @@ using Domain.Protocol.Onion.ValueObjects;
 /// </remarks>
 /// <inheritdoc cref="IncomingOnionTrampolineResult"/>
 /// <param name="NextTrampolinePacket">The peeled trampoline onion for the next trampoline node (same
-/// <c>hop_payloads</c> length), to put in TLV 20 of the next node's outer final payload.</param>
+/// <c>hop_payloads</c> length), to put in TLV 20 of the next node's outer final payload; null when our layer was the
+/// last one and names <see cref="RecipientBlindedPaths"/> (we are the last trampoline node).</param>
 public sealed record IncomingOnionTrampolineRelay(Secret OuterSharedSecret, HopPayload OuterPayload,
                                                   Secret TrampolineSharedSecret, HopPayload InnerPayload,
-                                                  OnionPacket NextTrampolinePacket, IncomingBlindedHop? Blinded = null)
+                                                  OnionPacket? NextTrampolinePacket, IncomingBlindedHop? Blinded = null)
     : IncomingOnionTrampolineResult(OuterSharedSecret, OuterPayload, TrampolineSharedSecret, InnerPayload, Blinded)
 {
     /// <summary>

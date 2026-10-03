@@ -15,9 +15,10 @@ using Domain.Protocol.Onion.Models;
 /// <param name="FinalCltvExpiry">The trampoline payload's <c>outgoing_cltv_value</c>: the absolute expiry the next node
 /// must receive (its outer final hop's <c>outgoing_cltv_value</c>).</param>
 /// <param name="MaxFirstHopCltvExpiry">The highest expiry our first outgoing HTLC may carry: the lowest incoming
-/// part's expiry minus our trampoline <c>cltv_expiry_delta</c>.</param>
-/// <param name="MaxFee">The routing fee budget of the leg: incoming sum − <see cref="Amount"/> − our trampoline
-/// fee.</param>
+/// part's expiry minus our plain forwarding <c>cltv_expiry_delta</c> (<c>Node:Routing</c>; our trampoline delta pays
+/// for the route).</param>
+/// <param name="MaxFee">The routing fee budget of the leg: incoming sum − <see cref="Amount"/> (our trampoline fee pays
+/// for the route; we keep what it leaves).</param>
 /// <param name="NextNodeId">The next trampoline node (<c>outgoing_node_id</c>, or the next node of a blinded trampoline
 /// path); null when the leg pays <see cref="RecipientBlindedPaths"/>.</param>
 /// <param name="NextTrampolinePacket">The peeled trampoline onion to put in the next node's outer final payload (TLV
