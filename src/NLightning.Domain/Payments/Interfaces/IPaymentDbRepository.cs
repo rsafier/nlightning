@@ -27,7 +27,8 @@ public interface IPaymentDbRepository
     Task AddAsync(PaymentModel payment);
 
     /// <summary>
-    /// Stages the payment's mutable fields (status, outgoing HTLC, preimage, failure, completion time).
+    /// Stages the payment's mutable fields (status, outgoing HTLC, preimage, failure, completion time, and the fee, which
+    /// a failure sets to zero).
     /// </summary>
     Task UpdateAsync(PaymentModel payment);
 

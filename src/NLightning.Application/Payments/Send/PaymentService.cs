@@ -1730,6 +1730,8 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         {
             var repository = scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>();
             PaymentModel payment;
+            // The fee the in-flight attempt offered: kept in the log only, a failed payment records none (NL-982)
+            var lastAttemptFee = LightningMoney.Zero;
             // A row already Failed was failed by an attempt that was retried ("Retrying", no event) or, after a race,
             // for good by another path (its event exists): the final failure is recorded once
             var recordFailure = true;
@@ -1762,13 +1764,16 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                 if (stored.Status == PaymentStatus.InFlight)
                 {
                     RecordLastFailureHoldTimes(stored, session);
+                    lastAttemptFee = stored.Fee;
                     stored.Fail(code, sourceIndex, reason, now);
                     payment = stored;
                 }
                 else
                 {
+                    // A failed payment paid no fee (NL-982), whatever an older row recorded
                     payment = PaymentModel.Restore(stored.PaymentHash, stored.Bolt11, stored.PayeeNodeId,
-                                                   stored.Amount, stored.Fee, stored.CreatedAt, PaymentStatus.Failed,
+                                                   stored.Amount, LightningMoney.Zero, stored.CreatedAt,
+                                                   PaymentStatus.Failed,
                                                    stored.OutgoingChannelId, stored.OutgoingHtlcId, null, code,
                                                    sourceIndex, reason, now, stored.Route, stored.Bolt12,
                                                    stored.Keysend, stored.IsTrampolineRelay);
@@ -1791,7 +1796,7 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
             }
 
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
-            LogFailed(payment);
+            LogFailed(payment, lastAttemptFee);
         }
 
         if (session.IsTrampolineRelay)
@@ -2533,8 +2538,15 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
         var (channelId, htlcId) = payment.OutgoingHtlcId is { } recordedId
                                       ? (payment.OutgoingChannelId!.Value, recordedId)
                                       : (fulfilled.ChannelId, fulfilled.HtlcId);
+        // A failed row records no fee (NL-982): when the fulfilled HTLC is the row's and carried the whole amount, its
+        // fee is what it carried above the amount; otherwise it stays unknown (zero)
+        var fee = payment.Fee;
+        if (payment.Status == PaymentStatus.Failed && (channelId, htlcId) == (fulfilled.ChannelId, fulfilled.HtlcId)
+                                                   && payment.Route.Count > 0
+                                                   && payment.Route[0].Amount > payment.Amount)
+            fee = payment.Route[0].Amount - payment.Amount;
         return PaymentModel.Restore(payment.PaymentHash, payment.Bolt11, payment.PayeeNodeId, payment.Amount,
-                                    payment.Fee, payment.CreatedAt, PaymentStatus.Succeeded, channelId, htlcId,
+                                    fee, payment.CreatedAt, PaymentStatus.Succeeded, channelId, htlcId,
                                     fulfilled.PaymentPreimage, null, null, null, completedAt, payment.Route,
                                     payment.Bolt12, payment.Keysend, payment.IsTrampolineRelay);
     }
@@ -2685,9 +2697,16 @@ public sealed partial class PaymentService : IPaymentService, IPaymentOutcomeHan
                                    payment.PaymentHash, payment.Amount.MilliSatoshi, payment.Fee.MilliSatoshi);
     }
 
-    private void LogFailed(PaymentModel payment)
+    private void LogFailed(PaymentModel payment, LightningMoney? lastAttemptFee = null)
     {
-        if (_logger.IsEnabled(LogLevel.Warning))
+        if (!_logger.IsEnabled(LogLevel.Warning))
+            return;
+
+        // NL-982: the fee the last attempt offered is logged only; the failed payment records none
+        if (lastAttemptFee is { IsZero: false } offered)
+            _logger.LogWarning("Payment {PaymentHash} failed (its last attempt offered {Fee} msat in fees, none paid): "
+                             + "{Reason}", payment.PaymentHash, offered.MilliSatoshi, payment.FailureReason);
+        else
             _logger.LogWarning("Payment {PaymentHash} failed: {Reason}", payment.PaymentHash, payment.FailureReason);
     }
 
