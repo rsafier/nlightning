@@ -133,15 +133,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 1 | 45 | 46 |
+| open | 0 | 0 | 2 | 45 | 47 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 62 | 186 | 373 | 635 |
 | wontfix | 0 | 0 | 5 | 8 | 13 |
 | duplicate | 0 | 0 | 1 | 2 | 3 |
-| **Total** | **14** | **62** | **193** | **428** | **697** |
+| **Total** | **14** | **62** | **194** | **428** | **698** |
 
 ### Epics
 
+- NL-771: Liquidity ads (BOLT PR #1153) (open, medium; plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, tasks LA0-LA7; interop target Eclair 0.14.3 as seller)
 - NL-602: Accounting: core event feed and built-in books (fixed, medium; plan `docs/agents/ACCOUNTING_PLAN.md` phases A0-A3 all built on `wip/acct-a3`: A1 feed, A2 operational books, A3 financial profile (labels, classification, prices, projector and lots, period close, financial reports, config/security/docs; merge `c62d861b`, review fixes `94af679d`, `ecd983b1`); data gaps NL-603..NL-605 and the plugin stub NL-151 done; open follow-ups NL-606..NL-608, NL-610..NL-613, NL-645, NL-657, NL-658, NL-662, NL-674..NL-681 (NL-660, NL-665, NL-667 fixed on `wip/nl660`), flakes NL-620, NL-653)
 - NL-569: Tor: onion peers, our onion service, Tor-only mode (fixed, medium; lane tor, branch `wip/tor`: `Node:Tor` Off/Hybrid/TorOnly, SOCKS5 with isolation, control port with SAFECOOKIE, persisted v3 onion service announced in `node_announcement`, NL-542 and NL-178 fixed; `docs/agents/TOR.md`; follow-ups NL-571..NL-573; review fixes NL-575..NL-590)
 - NL-426: Static channel backup and restore (fixed, high; wave rf1: encrypted SCB, export/verify/restore IPC 21-23, recovery channels and the data-loss reestablish, proven against LND; wave lh1: NL-430, NL-431 old spends and every peer address, NL-432 persisted peer-storage retrievals with `listpeerstorage` (32); follow-up NL-435)
@@ -6839,6 +6840,16 @@ Update (lane ldksplice, branch `wip/fafo-ldksplice`): splicing and quiescence ar
 - **Fix sketch:** on recurrence, rerun the full suite with `--blame-hang-timeout 5m` and keep the full output; then move the wait that runs out to a stepped clock or an event-driven wait, as the de-timing pass did.
 - **Blocks/Blocked-by:** Related NL-764, NL-747
 - **Plan ref:** —
+
+### NL-771 [EPIC] Liquidity ads (BOLT PR #1153): buy and sell inbound liquidity in dual-funded opens, RBF and splices
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** new Domain `LiquidityAds/`; TLV 1339 on `open_channel2`/`accept_channel2`/`tx_init_rbf`/`tx_ack_rbf`/`splice_init`/`splice_ack`/`init`/`node_announcement`; `Channels/DualFunding/DualFundedOpenService.cs`, `Channels/Splicing/SpliceService*.cs`; IPC/CLI; accounting
+- **Evidence:** Owner decision 2026-10-03: liquidity ads instead of LSPS. NLightning has dual funding, splicing and RBF in both roles but no way to request or sell the peer's contribution for a fee; Eclair 0.14.3 sells liquidity this way (TLV 1339, `eclair.liquidity-ads`).
+- **Fix sketch:** Plan `docs/agents/LIQUIDITY_ADS_PLAN.md`, tasks LA0..LA7: Eclair capture and vectors, Domain codecs and rules, wire plumbing, seller and buyer with the `LiquidityPurchases` table, accounting kinds, proofs in-process (both roles) and against Eclair 0.14.3 as seller in Docker.
+- **Blocks/Blocked-by:** Related NL-037, NL-021, NL-602
+- **Plan ref:** LIQUIDITY_ADS_PLAN LA0-LA7
 
 ### NL-770 LND 0.21.4 gives up its `to_remote` sweep after a burst of blocks, so the O3 push proofs never saw `RemoteForceClose`
 - **Status:** fixed (46d0538e)
