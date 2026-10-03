@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Tests.Extensions;
 
+using Application.Payments.Switch;
 using Application.Payments.Trampoline;
 using Daemon.Extensions;
 using Domain.Protocol.Interfaces;
@@ -13,7 +14,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <summary>
 /// NL-875 TR3-T1: the <c>Node:Trampoline</c> section (<see cref="TrampolineOptions"/>) is in the default
 /// <c>appsettings.json</c> on every network with every code default, binds through the daemon's composition, and an
-/// invalid one fails the start validation.
+/// invalid one fails the start validation; the relay engine is composed as the switch's handler (TR3-T2).
 /// </summary>
 public class TrampolineConfigTemplateTests
 {
@@ -75,6 +76,22 @@ public class TrampolineConfigTemplateTests
 
         // Assert
         Assert.Contains(exception.Failures, f => f.Contains("MinCltvMarginBlocks"));
+    }
+
+    [Fact]
+    public void Given_NodeServices_When_Composed_Then_TheRelayEngineIsTheSwitchHandlerAndTheLegObserver()
+    {
+        // Arrange
+        using var provider = BuildProvider();
+
+        // Act
+        var engine = provider.GetRequiredService<TrampolineRelayService>();
+
+        // Assert
+        Assert.Same(engine, provider.GetRequiredService<ITrampolineHtlcHandler>());
+        Assert.Same(engine, provider.GetRequiredService<ITrampolineLegObserver>());
+        using var scope = provider.CreateScope();
+        Assert.Same(engine, scope.ServiceProvider.GetRequiredService<ITrampolineRelayIngress>());
     }
 
     private static ServiceProvider BuildProvider(params (string Key, string Value)[] values)
