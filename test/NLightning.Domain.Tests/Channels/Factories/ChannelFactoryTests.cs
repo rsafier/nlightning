@@ -24,6 +24,8 @@ using Domain.Protocol.ValueObjects;
 
 public class ChannelFactoryTests
 {
+    private static readonly FeatureOptions s_noSplice = new() { OptionSplice = FeatureSupport.No };
+
     private static readonly CompactPubKey s_remoteNodeId =
         Convert.FromHexString("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa");
 
@@ -300,9 +302,8 @@ public class ChannelFactoryTests
         var channelFactory = CreateNonInitiatorChannelFactory(nodeOptions);
         var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
 
-        // Act
-        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, new FeatureOptions(),
-                                                                              s_remoteNodeId);
+        // Act: a peer without option_splice, so our in-flight limit is a share of the funding (NL-880)
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, s_noSplice, s_remoteNodeId);
 
         // Assert: the peer's values are what it sent
         var remote = channel.ChannelParams.Remote;
@@ -382,9 +383,8 @@ public class ChannelFactoryTests
         var request = CreateRequest(LightningMoney.Satoshis(200_000));
         request.ToSelfDelay = 300;
 
-        // Act
-        var channel = await channelFactory.CreateChannelV1AsInitiatorAsync(request, new FeatureOptions(),
-                                                                           s_remoteNodeId);
+        // Act: a peer without option_splice, so our in-flight limit is a share of the funding (NL-880)
+        var channel = await channelFactory.CreateChannelV1AsInitiatorAsync(request, s_noSplice, s_remoteNodeId);
 
         // Assert
         var local = channel.ChannelParams.Local;
@@ -474,6 +474,52 @@ public class ChannelFactoryTests
                             () => channelFactory.CreateChannelV1AsInitiatorAsync(
                                 request, new FeatureOptions { ZeroConf = FeatureSupport.Optional }, s_remoteNodeId));
         Assert.Contains("public", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_SpliceNegotiated_When_CreatingChannel_Then_InFlightLimitHasNoCap(bool isInitiator)
+    {
+        // Arrange: max_htlc_value_in_flight_msat is fixed for the channel's lifetime (BOLT 2) while a splice can grow
+        // the channel, so a share of the opening capacity would cap the peer's sends at the first size (NL-880)
+        var channelFactory = CreateNonInitiatorChannelFactory(CreateDistinctNodeOptions());
+        var withSplice = new FeatureOptions { OptionAnchors = FeatureSupport.No, OptionSplice = FeatureSupport.Optional };
+
+        // Act
+        var channel = isInitiator
+                          ? await channelFactory.CreateChannelV1AsInitiatorAsync(
+                                CreateRequest(LightningMoney.Satoshis(200_000)), withSplice, s_remoteNodeId)
+                          : await channelFactory.CreateChannelV1AsNonInitiatorAsync(
+                                CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType())),
+                                withSplice, s_remoteNodeId);
+
+        // Assert
+        Assert.Equal(ulong.MaxValue, channel.ChannelParams.Local.MaxHtlcValueInFlight.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData(true, 100_000)]
+    [InlineData(false, 50_000)]
+    public async Task Given_LimitOnSpliceableChannels_When_SpliceNegotiated_Then_InFlightLimitIsAShareOfTheFunding(
+        bool isInitiator, long expectedSatoshis)
+    {
+        // Arrange: the operator keeps the percentage on channels that can be spliced (Node:LimitInFlightOnSpliceable...)
+        var nodeOptions = CreateDistinctNodeOptions();
+        nodeOptions.LimitInFlightOnSpliceableChannels = true;
+        var channelFactory = CreateNonInitiatorChannelFactory(nodeOptions);
+        var withSplice = new FeatureOptions { OptionAnchors = FeatureSupport.No, OptionSplice = FeatureSupport.Optional };
+
+        // Act
+        var channel = isInitiator
+                          ? await channelFactory.CreateChannelV1AsInitiatorAsync(
+                                CreateRequest(LightningMoney.Satoshis(200_000)), withSplice, s_remoteNodeId)
+                          : await channelFactory.CreateChannelV1AsNonInitiatorAsync(
+                                CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType())),
+                                withSplice, s_remoteNodeId);
+
+        // Assert: 50 % of the funding
+        Assert.Equal(LightningMoney.Satoshis(expectedSatoshis), channel.ChannelParams.Local.MaxHtlcValueInFlight);
     }
 
     private static NodeOptions CreateDistinctNodeOptions()

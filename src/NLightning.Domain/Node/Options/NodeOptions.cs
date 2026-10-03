@@ -105,7 +105,23 @@ public class NodeOptions
     /// <remarks>Configuration key <c>Node:MaxAcceptedToSelfDelay</c>; must be positive.</remarks>
     public ushort MaxAcceptedToSelfDelay { get; set; } = DefaultMaxAcceptedToSelfDelay;
 
+    /// <summary>
+    /// Our <c>max_htlc_value_in_flight_msat</c> as a percentage of the capacity known at the open (the funding
+    /// amount; a dual-funded opener counts its share and the liquidity it buys). The announced value is fixed for the
+    /// channel's lifetime (BOLT 2), so a channel opened with <c>option_splice</c> negotiated announces no cap unless
+    /// <see cref="LimitInFlightOnSpliceableChannels"/> is set (NL-880, <c>MaxHtlcValueInFlightRules</c>).
+    /// </summary>
+    /// <remarks>Configuration key <c>Node:AllowUpToPercentageOfChannelFundsInFlight</c>.</remarks>
     public uint AllowUpToPercentageOfChannelFundsInFlight { get; set; } = 80;
+
+    /// <summary>
+    /// Whether <see cref="AllowUpToPercentageOfChannelFundsInFlight"/> also caps channels opened with
+    /// <c>option_splice</c> negotiated. Off by default: such a channel can grow by splices, but the announced
+    /// <c>max_htlc_value_in_flight_msat</c> cannot follow it (BOLT 2 fixes it at the open), so a share of the opening
+    /// capacity would keep the peer's sends at that share of the first size for good (NL-880).
+    /// </summary>
+    /// <remarks>Configuration key <c>Node:LimitInFlightOnSpliceableChannels</c>.</remarks>
+    public bool LimitInFlightOnSpliceableChannels { get; set; }
 
     /// <summary>
     /// The default of <see cref="MinAcceptedMaxHtlcValueInFlightPercent"/>: 1 %.

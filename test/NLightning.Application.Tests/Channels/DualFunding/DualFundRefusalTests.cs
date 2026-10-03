@@ -91,6 +91,14 @@ public class DualFundRefusalTests
         await using var harness = await DualFundHarness.CreateAsync(0, TimeSpan.FromSeconds(1));
         harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
         harness.Bob.Options.MinAcceptedMaxHtlcValueInFlightPercent = 90;
+        // A channel that can be spliced announces no in-flight cap (NL-880): pin option_splice off
+        harness.NegotiatedFeatures = new FeatureOptions
+        {
+            DualFund = FeatureSupport.Optional,
+            OptionSplice = FeatureSupport.No
+        };
+        foreach (var node in harness.Nodes)
+            node.Options.Features.OptionSplice = FeatureSupport.No;
 
         // Act
         var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(
@@ -111,6 +119,14 @@ public class DualFundRefusalTests
         await using var harness = await DualFundHarness.CreateAsync(0, TimeSpan.FromSeconds(1));
         harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
         harness.Alice.Options.MinAcceptedMaxHtlcValueInFlightPercent = 90;
+        // A channel that can be spliced announces no in-flight cap (NL-880): pin option_splice off
+        harness.NegotiatedFeatures = new FeatureOptions
+        {
+            DualFund = FeatureSupport.Optional,
+            OptionSplice = FeatureSupport.No
+        };
+        foreach (var node in harness.Nodes)
+            node.Options.Features.OptionSplice = FeatureSupport.No;
 
         // Act
         var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(

@@ -20,6 +20,7 @@ using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Policies;
 using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Validators;
@@ -185,16 +186,6 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                : request.IsPublic
                                    ? FeatureSupport.Optional
                                    : FeatureSupport.Compulsory;
-        var localParams = CreateLocalParams(
-            DualFundingRules.GetChannelReserve(request.LocalFundingAmount, _nodeOptions.DustLimitAmount),
-            request.LocalFundingAmount);
-        var channelParams = new ChannelParams(localParams, ChannelParty.Unknown,
-                                              LightningMoney.Satoshis(commitmentFeerate), _nodeOptions.MinimumDepth,
-                                              optionAnchors, useScidAlias)
-        {
-            AnnounceChannel = request.IsPublic
-        };
-        var channelType = channelParams.ToChannelType().GetWireBytes() ?? [];
 
         // Liquidity ads (NL-850): the request goes out with open_channel2; the seller contributes at least the amount,
         // so the fee is known now (min(requested, contributed) is the requested amount) and checked before anything is
@@ -221,6 +212,22 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
             liquidityRequest = new DualFundLiquidityRequest(requestFunding, liquidity.MaxFeeSat, fundingFeerate);
         }
+
+        // Our in-flight limit is announced now and fixed for the channel's lifetime (BOLT 2): the accepter's share is
+        // not known yet, so the capacity counts ours and the liquidity we buy (the seller contributes at least that);
+        // a channel that can be spliced announces no cap (NL-880, NL-881)
+        var inFlightCapacity = request.LocalFundingAmount
+                             + LightningMoney.Satoshis(liquidityRequest?.Request.RequestedSat ?? 0UL);
+        var localParams = CreateLocalParams(
+            DualFundingRules.GetChannelReserve(request.LocalFundingAmount, _nodeOptions.DustLimitAmount),
+            GetAnnouncedMaxHtlcValueInFlight(inFlightCapacity, features));
+        var channelParams = new ChannelParams(localParams, ChannelParty.Unknown,
+                                              LightningMoney.Satoshis(commitmentFeerate), _nodeOptions.MinimumDepth,
+                                              optionAnchors, useScidAlias)
+        {
+            AnnounceChannel = request.IsPublic
+        };
+        var channelType = channelParams.ToChannelType().GetWireBytes() ?? [];
 
         var temporaryId = ChannelIdV2.DeriveTemporary(_sha256, basepoints.RevocationBasepoint);
         var localKeySet = CreateLocalKeySet(keyIndex, basepoints, firstPoint);
@@ -336,7 +343,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
             }, out _);
             _channelOpenValidator.CheckMaxHtlcValueInFlight(total, payload.MaxHtlcValueInFlightAmount);
 
-            var localParams = CreateLocalParams(reserve, total);
+            // Our in-flight limit stays the one open_channel2 announced (NL-881): nothing can change it on the wire
+            var localParams = CreateLocalParams(reserve, pending.LocalParams.MaxHtlcValueInFlight);
             var channelParams = new ChannelParams(localParams, remoteParams,
                                                   LightningMoney.Satoshis(pending.CommitmentFeeratePerKw),
                                                   payload.MinimumDepth, pending.OptionAnchors, pending.UseScidAlias)
@@ -731,7 +739,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         var total = LightningMoney.MilliSatoshis(payload.FundingAmount.MilliSatoshi + localContribution.MilliSatoshi);
         var reserve = DualFundingRules.GetChannelReserve(total, Max(payload.DustLimitAmount,
                                                                     _nodeOptions.DustLimitAmount));
-        var localParams = CreateLocalParams(reserve, total);
+        var localParams = CreateLocalParams(reserve, GetAnnouncedMaxHtlcValueInFlight(total, negotiatedFeatures));
         var remoteParams = new ChannelParty(payload.DustLimitAmount, reserve, payload.HtlcMinimumAmount,
                                             payload.MaxAcceptedHtlcs, payload.MaxHtlcValueInFlightAmount,
                                             payload.ToSelfDelay, NonEmpty(message.UpfrontShutdownScriptTlv));
@@ -865,7 +873,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
                                                + negotiation.LocalShare.MilliSatoshi);
             reserve = DualFundingRules.GetChannelReserve(total, Max(payload.DustLimitAmount,
                                                                     _nodeOptions.DustLimitAmount));
-            localParams = CreateLocalParams(reserve, total);
+            localParams = CreateLocalParams(reserve, GetAnnouncedMaxHtlcValueInFlight(total, negotiatedFeatures));
             remoteParams = new ChannelParty(payload.DustLimitAmount, reserve, payload.HtlcMinimumAmount,
                                             payload.MaxAcceptedHtlcs, payload.MaxHtlcValueInFlightAmount,
                                             payload.ToSelfDelay, NonEmpty(message.UpfrontShutdownScriptTlv));
@@ -2119,11 +2127,17 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
     /// The values we announce. v2 has no reserve field: the reserve is fixed from both contributions
     /// (<see cref="DualFundingRules.GetChannelReserve"/>), set once they are known.
     /// </summary>
-    private ChannelParty CreateLocalParams(LightningMoney reserve, LightningMoney inFlightBase) =>
+    private ChannelParty CreateLocalParams(LightningMoney reserve, LightningMoney maxHtlcValueInFlight) =>
         new(_nodeOptions.DustLimitAmount, reserve, _nodeOptions.HtlcMinimumAmount, _nodeOptions.MaxAcceptedHtlcs,
-            LightningMoney.Satoshis(_nodeOptions.AllowUpToPercentageOfChannelFundsInFlight * inFlightBase.Satoshi
-                                  / 100M),
-            _nodeOptions.ToSelfDelay);
+            maxHtlcValueInFlight, _nodeOptions.ToSelfDelay);
+
+    /// <summary>
+    /// The <c>max_htlc_value_in_flight_msat</c> we announce for a channel of <paramref name="capacity"/> (at the open):
+    /// fixed for the channel's lifetime, so no cap when <c>option_splice</c> was negotiated (NL-880,
+    /// <see cref="MaxHtlcValueInFlightRules"/>).
+    /// </summary>
+    private LightningMoney GetAnnouncedMaxHtlcValueInFlight(LightningMoney capacity, FeatureOptions features) =>
+        MaxHtlcValueInFlightRules.GetAnnounced(_nodeOptions, capacity, features.OptionSplice > FeatureSupport.No);
 
     private static ChannelKeySetModel CreateLocalKeySet(uint keyIndex, ChannelBasepoints basepoints,
                                                         CompactPubKey firstPoint) =>
@@ -2332,10 +2346,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 
     /// <summary>
     /// <paramref name="channelParams"/> for a funding of <paramref name="total"/>: the reserve (BOLT 2: 1% of the
-    /// funding both sides contribute, at least the dust limit, on both sides) and our in-flight limit (a share of the
-    /// capacity, as at the open) follow it; the peer's in-flight limit is what it announced.
+    /// funding both sides contribute, at least the dust limit, on both sides) follows it; both in-flight limits are
+    /// what each side announced at the open, which no RBF attempt changes on the wire (NL-881).
     /// </summary>
-    private ChannelParams WithCapacity(ChannelParams channelParams, LightningMoney total)
+    private static ChannelParams WithCapacity(ChannelParams channelParams, LightningMoney total)
     {
         var reserve = DualFundingRules.GetChannelReserve(total, Max(channelParams.Local.DustLimitAmount,
                                                                     channelParams.Remote.DustLimitAmount));
@@ -2343,9 +2357,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         var remote = channelParams.Remote;
         return channelParams
               .WithLocal(new ChannelParty(local.DustLimitAmount, reserve, local.HtlcMinimumAmount,
-                                          local.MaxAcceptedHtlcs,
-                                          LightningMoney.Satoshis(_nodeOptions.AllowUpToPercentageOfChannelFundsInFlight
-                                                                * total.Satoshi / 100M), local.ToSelfDelay,
+                                          local.MaxAcceptedHtlcs, local.MaxHtlcValueInFlight, local.ToSelfDelay,
                                           local.UpfrontShutdownScript))
               .WithRemote(new ChannelParty(remote.DustLimitAmount, reserve, remote.HtlcMinimumAmount,
                                            remote.MaxAcceptedHtlcs, remote.MaxHtlcValueInFlight, remote.ToSelfDelay,
