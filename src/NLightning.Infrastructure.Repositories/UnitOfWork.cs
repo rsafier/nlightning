@@ -6,6 +6,7 @@ namespace NLightning.Infrastructure.Repositories;
 
 using Database.Accounting;
 using Database.Bitcoin;
+using Database.Cashu;
 using Database.Channel;
 using Database.Gossip;
 using Database.LiquidityAds;
@@ -19,6 +20,7 @@ using Domain.Accounting.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Cashu.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -95,6 +97,9 @@ public class UnitOfWork : IUnitOfWork
 
     // Liquidity ads purchases (NL-850 LA3)
     private LiquidityPurchaseDbRepository? _liquidityPurchaseDbRepository;
+
+    // The CDK payment processor's quotes (NL-997)
+    private CashuQuoteDbRepository? _cashuQuoteDbRepository;
 
     // Accounting feed (NL-602)
     private AccountingEventDbRepository? _accountingEventDbRepository;
@@ -219,6 +224,9 @@ public class UnitOfWork : IUnitOfWork
 
     public ILiquidityPurchaseDbRepository LiquidityPurchaseDbRepository =>
         _liquidityPurchaseDbRepository ??= new LiquidityPurchaseDbRepository(_context);
+
+    public ICashuQuoteDbRepository CashuQuoteDbRepository =>
+        _cashuQuoteDbRepository ??= new CashuQuoteDbRepository(_context);
 
     /// <param name="context">The scope's database context.</param>
     /// <param name="logger">The logger.</param>

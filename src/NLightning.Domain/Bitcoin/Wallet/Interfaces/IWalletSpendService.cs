@@ -29,6 +29,19 @@ public interface IWalletSpendService
                                              CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Estimates the fee of <see cref="WithdrawAsync"/> for <paramref name="request"/> (an amount, not "all") without
+    /// reserving, signing or storing anything: the confirmed spendable outputs largest first, as the selector takes
+    /// them, plus a change output. The actual fee may differ when the wallet changes in between.
+    /// </summary>
+    /// <exception cref="Exceptions.WalletSpendException">As <see cref="WithdrawAsync"/>.</exception>
+    /// <exception cref="Exceptions.InsufficientFundsException">The confirmed wallet outputs do not cover the amount and
+    /// the fee.</exception>
+    /// <remarks>The default is for test doubles that do not estimate.</remarks>
+    Task<WalletWithdrawEstimate> EstimateWithdrawFeeAsync(WalletWithdrawRequest request,
+                                                          CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This wallet spend service does not estimate fees.");
+
+    /// <summary>
     /// Ends the <c>withdraw</c> reservations that no longer hold a spend: those none of whose inputs is still in the
     /// wallet (their spend was processed in a block) are confirmed, and those none of whose inputs a pending
     /// <c>BroadcastTransactions</c> row spends (a crash or a failed save between the reservation and the row) are

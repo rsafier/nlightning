@@ -147,13 +147,43 @@ public sealed class CashuMintFixture : IAsyncLifetime
         await StopMintAsync(cancellationToken);
         var workload = CdkNodes.MintWorkload(CdkNodes.MintConfig(HostAddressForMint, processorPort), MintMnemonic);
         _mint = await Run.DeployAsync(workload, s_readyTimeout, cancellationToken);
-        var hostUrl = string.Create(CultureInfo.InvariantCulture, $"http://{_mint.PodIp}:{CdkNodes.MintPort}");
+        await WaitForMintAsync(cancellationToken);
+        Console.WriteLine($"[cashu] cdk-mintd {CdkVersion} up at {MintUrl} ({MintHostUrl}), processor "
+                        + $"{HostAddressForMint}:{processorPort}");
+    }
+
+    /// <summary>
+    /// Restarts the mint's pod over the same database (its quotes, keysets and the processor's address) and waits
+    /// until it answers.
+    /// </summary>
+    public async Task RestartMintAsync(CancellationToken cancellationToken)
+    {
+        var mint = _mint ?? throw new InvalidOperationException("No mint runs");
+        await mint.RestartAsync(s_readyTimeout, cancellationToken);
+        await WaitForMintAsync(cancellationToken);
+        Console.WriteLine($"[cashu] cdk-mintd restarted ({MintHostUrl})");
+    }
+
+    /// <summary>GETs <paramref name="path"/> on the mint from this process (e.g. <c>/v1/melt/quote/onchain/{id}</c>).</summary>
+    public async Task<string> GetFromMintAsync(string path, CancellationToken cancellationToken)
+    {
+        using var http = new HttpClient();
+        return await http.GetStringAsync($"{MintHostUrl}{path}", cancellationToken);
+    }
+
+    /// <summary>The mint's URL from this process (its pod IP).</summary>
+    private string MintHostUrl =>
+        string.Create(CultureInfo.InvariantCulture,
+                      $"http://{(_mint ?? throw new InvalidOperationException("No mint runs")).PodIp}:{CdkNodes.MintPort}");
+
+    private async Task WaitForMintAsync(CancellationToken cancellationToken)
+    {
         using var http = new HttpClient();
         await Testing.Cluster.Poll.UntilDoneAsync(async ct =>
         {
             try
             {
-                using var response = await http.GetAsync($"{hostUrl}/v1/info", ct);
+                using var response = await http.GetAsync($"{MintHostUrl}/v1/info", ct);
                 return response.IsSuccessStatusCode ? null : $"/v1/info answered {(int)response.StatusCode}";
             }
             catch (HttpRequestException e)
@@ -161,8 +191,6 @@ public sealed class CashuMintFixture : IAsyncLifetime
                 return e.Message;
             }
         }, s_readyTimeout, "cdk-mintd answers /v1/info", cancellationToken, TimeSpan.FromMilliseconds(250));
-        Console.WriteLine($"[cashu] cdk-mintd {CdkVersion} up at {MintUrl} ({hostUrl}), processor "
-                        + $"{HostAddressForMint}:{processorPort}");
     }
 
     /// <summary>Removes the mint's node, if one runs.</summary>
@@ -224,9 +252,10 @@ public sealed class CashuMintFixture : IAsyncLifetime
     public WalletRun StartWallet(string walletDirectory, IReadOnlyList<string> arguments,
                                  CancellationToken cancellationToken)
     {
-        var log = $"{walletDirectory}.log";
+        var log = $"{walletDirectory}-{Guid.NewGuid():N}.log";
         var command = string.Join(' ', WalletCommand(walletDirectory, arguments).Select(Quote));
-        var exec = Wallet.ExecAsync(["sh", "-c", $"{command} > {log} 2>&1"], cancellationToken);
+        var exec = Wallet.ExecAsync(["sh", "-c", $"echo $$ > {log}.pid; exec {command} > {log} 2>&1"],
+                                    cancellationToken);
         return new WalletRun(log, exec);
     }
 
@@ -245,6 +274,20 @@ public sealed class CashuMintFixture : IAsyncLifetime
     {
         var result = await run.Exec.WaitAsync(cancellationToken);
         return (result.ExitCode, await GetWalletOutputAsync(run, cancellationToken));
+    }
+
+    /// <summary>Stops a background wallet command that is still running.</summary>
+    public async Task StopWalletAsync(WalletRun run, CancellationToken cancellationToken)
+    {
+        await Wallet.ExecAsync(["sh", "-c", $"kill $(cat {run.LogPath}.pid) 2>/dev/null || true"], cancellationToken);
+        try
+        {
+            await run.Exec.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+        }
+        catch (Exception e) when (e is TimeoutException or KubeExecException)
+        {
+            // Best effort: the wallet pod goes with the namespace
+        }
     }
 
     private static List<string> WalletCommand(string walletDirectory, IReadOnlyList<string> arguments)

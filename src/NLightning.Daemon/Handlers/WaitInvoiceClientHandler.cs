@@ -9,6 +9,7 @@ using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Interfaces;
+using Services.Ipc;
 
 /// <summary>
 /// Waits until one of our invoices leaves <c>Open</c> (ClientCommand 47, <c>waitinvoice</c>; Cashu plan C0, NL-991).
@@ -36,6 +37,7 @@ public sealed class WaitInvoiceClientHandler
     /// <summary>How often the invoice is read again without an event.</summary>
     public static readonly TimeSpan RecheckInterval = TimeSpan.FromSeconds(5);
 
+    private readonly IpcClientConnectionAccessor? _clientConnection;
     private readonly IPaymentEventSource? _eventSource;
     private readonly IInvoiceService _invoiceService;
     private readonly TimeProvider _timeProvider;
@@ -45,7 +47,15 @@ public sealed class WaitInvoiceClientHandler
 
     public WaitInvoiceClientHandler(IInvoiceService invoiceService, IPaymentEventSource? eventSource,
                                     TimeProvider timeProvider)
+        : this(invoiceService, eventSource, timeProvider, null)
     {
+    }
+
+    /// <param name="clientConnection">The IPC connection of the request: its disconnect ends the wait (NL-1002).</param>
+    internal WaitInvoiceClientHandler(IInvoiceService invoiceService, IPaymentEventSource? eventSource,
+                                      TimeProvider timeProvider, IpcClientConnectionAccessor? clientConnection)
+    {
+        _clientConnection = clientConnection;
         _invoiceService = invoiceService;
         _eventSource = eventSource;
         _timeProvider = timeProvider;
@@ -59,6 +69,13 @@ public sealed class WaitInvoiceClientHandler
         if (timeoutSeconds is 0 or > MaxTimeoutSeconds)
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       $"The timeout must be 1 to {MaxTimeoutSeconds} seconds.");
+        if (request.PaymentHash == default)
+            throw new ClientException(ErrorCodes.InvalidOperation, "The payment hash is missing.");
+
+        // A client that goes away (Ctrl-C) ends the wait, as for shutdown --wait (NL-1002)
+        var disconnected = _clientConnection?.Current?.Disconnected ?? default;
+        using var callerOrClient = CancellationTokenSource.CreateLinkedTokenSource(ct, disconnected);
+        ct = callerOrClient.Token;
 
         // Subscribe before the first read: an outcome committed in between is then in the read or in the queue
         using var subscription = _eventSource?.Subscribe(64);

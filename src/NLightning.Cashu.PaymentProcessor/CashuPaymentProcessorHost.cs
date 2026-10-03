@@ -20,11 +20,13 @@ namespace NLightning.Cashu.PaymentProcessor;
 /// </summary>
 /// <remarks>
 /// The server has its own small service provider (gRPC and Kestrel only); the service instance comes from the node's
-/// provider, so it uses the node's invoice, payment and event services, and no ambient configuration (only the one
-/// checked endpoint). Without <c>TlsDirectory</c> it serves HTTP/2 without TLS (h2c, what <c>cdk-mintd</c> uses with
-/// <c>allow_insecure</c>), which the options allow on loopback only with <c>AllowInsecureLoopback</c>. With it, it
-/// serves TLS with <c>server.pem</c>/<c>server.key</c>, and with <c>ca.pem</c> (required off loopback) every client
-/// must present a certificate that CA signed for client authentication.
+/// provider, so it uses the node's invoice, payment, offer, wallet and event services, and its background loops
+/// (<see cref="CdkPaymentProcessorService.StartBackgroundAsync"/>) run while the server does. It reads no ambient
+/// configuration (only the one checked endpoint). Without <c>TlsDirectory</c> it serves HTTP/2 without TLS (h2c, what
+/// <c>cdk-mintd</c> uses with <c>allow_insecure</c>), which the options allow on loopback only with
+/// <c>AllowInsecureLoopback</c>. With it, it serves TLS with <c>server.pem</c>/<c>server.key</c>, and with
+/// <c>ca.pem</c> (required unless <c>AllowInsecureLoopback</c>) every client must present a certificate that CA signed
+/// for client authentication.
 /// </remarks>
 public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
 {
@@ -35,6 +37,7 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
     private const string ClientAuthenticationOid = "1.3.6.1.5.5.7.3.2";
 
     private WebApplication? _app;
+    private CdkPaymentProcessorService? _service;
 
     public CashuPaymentProcessorHost(IServiceProvider serviceProvider,
                                      IOptions<CashuPaymentProcessorOptions> options,
@@ -57,6 +60,8 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
         if (!_options.Enabled)
             return;
 
+        WarnIfKeyReadable();
+
         // No ambient configuration (appsettings.json in the working directory, environment variables): a Kestrel
         // section there would add endpoints beside the checked one (NL-998)
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
@@ -69,11 +74,16 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
         builder.Services.AddSingleton(_serviceProvider.GetRequiredService<ILoggerFactory>());
         builder.Services.AddSingleton(typeof(ILogger<>), typeof(Logger<>));
         builder.Services.AddGrpc();
-        builder.Services.AddSingleton(_ => _serviceProvider.GetRequiredService<CdkPaymentProcessorService>());
+        var service = _serviceProvider.GetRequiredService<CdkPaymentProcessorService>();
+        builder.Services.AddSingleton(service);
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
             kestrel.Listen(IPAddress.Parse(_options.ListenAddress), _options.Port, ConfigureListener);
         });
+
+        // The event and chain loops first, so the mint's first stream sees everything after the start
+        await service.StartBackgroundAsync(cancellationToken);
+        _service = service;
 
         var app = builder.Build();
         app.MapGrpcService<CdkPaymentProcessorService>();
@@ -91,25 +101,35 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
 
         ListeningAddresses = [.. addresses];
         BoundPort = new Uri(addresses.First()).Port;
-        var transport = string.IsNullOrWhiteSpace(_options.TlsDirectory)
-                            ? "h2c, no client authentication"
-                            : HasCa(_options.TlsDirectory) ? "mutual TLS" : "TLS, no client authentication";
+        var mutualTls = !string.IsNullOrWhiteSpace(_options.TlsDirectory) && HasCa(_options.TlsDirectory);
+        var transport = mutualTls
+                            ? "mTLS"
+                            : string.IsNullOrWhiteSpace(_options.TlsDirectory)
+                                ? "insecure loopback: h2c, no client authentication"
+                                : "insecure loopback: TLS without client authentication";
         _logger.LogInformation("Cashu payment processor listening on {Address}:{Port} ({Transport}, unit {Unit})",
                                _options.ListenAddress, BoundPort, transport, _options.Unit);
-        if (!transport.StartsWith("mutual", StringComparison.Ordinal))
-            _logger.LogWarning("The Cashu payment processor authenticates no client (AllowInsecureLoopback): every "
-                             + "local process can pay from this node through it");
+        if (!mutualTls)
+            _logger.LogWarning("INSECURE: the Cashu payment processor authenticates no client "
+                             + "(Cashu:PaymentProcessor:AllowInsecureLoopback): every local process and user can pay "
+                             + "from this node's channels through it");
     }
 
     /// <inheritdoc />
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_app is null)
-            return;
+        if (_app is not null)
+        {
+            await _app.StopAsync(cancellationToken);
+            await _app.DisposeAsync();
+            _app = null;
+        }
 
-        await _app.StopAsync(cancellationToken);
-        await _app.DisposeAsync();
-        _app = null;
+        if (_service is not null)
+        {
+            await _service.StopBackgroundAsync();
+            _service = null;
+        }
     }
 
     /// <inheritdoc />
@@ -164,6 +184,18 @@ public sealed class CashuPaymentProcessorHost : IHostedService, IAsyncDisposable
             foreach (var element in chain.ChainElements)
                 element.Certificate.Dispose();
         }
+    }
+
+    /// <summary>Warns when <c>server.key</c> can be read by the group or others (NL-1000).</summary>
+    private void WarnIfKeyReadable()
+    {
+        if (string.IsNullOrWhiteSpace(_options.TlsDirectory) || OperatingSystem.IsWindows())
+            return;
+
+        var key = Path.Combine(_options.TlsDirectory, "server.key");
+        if (File.Exists(key) && (File.GetUnixFileMode(key) & (UnixFileMode.GroupRead | UnixFileMode.OtherRead)) != 0)
+            _logger.LogWarning("{Key} can be read by its group or by others; restrict it to its owner (chmod 600)",
+                               key);
     }
 
     private static bool HasCa(string directory) => File.Exists(Path.Combine(directory, "ca.pem"));

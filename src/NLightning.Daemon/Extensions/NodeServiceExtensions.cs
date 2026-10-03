@@ -175,7 +175,8 @@ public static class NodeServiceExtensions
         services.AddScoped<IClientCommandHandler<WaitInvoiceClientRequest, WaitInvoiceClientResponse>>(sp =>
             new WaitInvoiceClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
                                          sp.GetService<IPaymentEventSource>(),
-                                         sp.GetRequiredService<TimeProvider>()));
+                                         sp.GetRequiredService<TimeProvider>(),
+                                         sp.GetService<IpcClientConnectionAccessor>()));
         services.AddScoped<IClientCommandHandler<ListForwardsClientRequest, ListForwardsClientResponse>>(sp =>
             new ListForwardsClientHandler(GetPaymentLayerService<IForwardCircuitDbRepository>(sp),
                                           sp.GetRequiredService<ILogger<ListForwardsClientHandler>>(),

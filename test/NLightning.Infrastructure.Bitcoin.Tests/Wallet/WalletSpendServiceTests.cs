@@ -185,6 +185,57 @@ public class WalletSpendServiceTests
     }
 
     [Fact]
+    public async Task Given_TwoOutputs_When_EstimatingAndThenWithdrawing_Then_TheEstimateMatchesTheSpendAndNothingIsHeld()
+    {
+        // Arrange (NL-997: a Cashu on-chain melt's fee options)
+        AddWalletUtxo(AddressType.P2Tr, 3, 60_000);
+        AddWalletUtxo(AddressType.P2Wpkh, 4, 50_000);
+
+        // Act
+        var estimate = await _service.EstimateWithdrawFeeAsync(Request(90_000), TestContext.Current.CancellationToken);
+        var reservedAfterEstimate = _stored.Count;
+        var result = await _service.WithdrawAsync(Request(90_000), TestContext.Current.CancellationToken);
+
+        // Assert: the same inputs, and the fee within the signatures' few bytes of the real one
+        Assert.Equal(0, reservedAfterEstimate);
+        Assert.Equal(2, estimate.InputCount);
+        Assert.Equal(LightningMoney.Satoshis(FeeRatePerKw), estimate.FeeRatePerKw);
+        Assert.InRange(estimate.Fee.Satoshi - result.Fee.Satoshi, -2, 8);
+        Assert.Equal(0u, result.DestinationOutputIndex);
+    }
+
+    [Fact]
+    public async Task Given_TooLittleMoney_When_Estimating_Then_InsufficientFunds()
+    {
+        // Arrange
+        AddWalletUtxo(AddressType.P2Wpkh, 0, 10_000);
+
+        // Act / Assert
+        await Assert.ThrowsAsync<InsufficientFundsException>(() =>
+            _service.EstimateWithdrawFeeAsync(Request(10_000), TestContext.Current.CancellationToken));
+        Assert.Empty(_stored);
+    }
+
+    [Fact]
+    public async Task Given_AFeeLimitBelowTheFee_When_Withdrawing_Then_RefusedNothingStoredAndTheInputsReleased()
+    {
+        // Arrange (NL-997: a Cashu melt never pays more than its fee reserve)
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+        var request = Request(40_000) with { MaxFee = LightningMoney.Satoshis(10) };
+
+        // Act
+        var error = await Assert.ThrowsAsync<WalletSpendException>(() =>
+            _service.WithdrawAsync(request, TestContext.Current.CancellationToken));
+        var withinLimit = await _service.WithdrawAsync(Request(40_000) with { MaxFee = LightningMoney.Satoshis(1_000) },
+                                                       TestContext.Current.CancellationToken);
+
+        // Assert: refused before the row; the output was free again for the next withdrawal
+        Assert.Equal(WalletSpendError.FeeAboveLimit, error.Error);
+        Assert.True(withinLimit.Fee.Satoshi <= 1_000);
+        AssertPublishedAndValid(utxo.TxOut);
+    }
+
+    [Fact]
     public async Task Given_P2TrAndP2WpkhOutputs_When_WithdrawingMoreThanEither_Then_BothInputsVerify()
     {
         // Arrange

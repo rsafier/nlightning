@@ -44,6 +44,14 @@ public interface IInvoiceDbRepository
         throw new NotSupportedException("This repository does not list settled invoices.");
 
     /// <summary>
+    /// The <c>Settled</c> BOLT 12 invoices we issued for the offer <paramref name="offerId"/>, oldest settle first: every
+    /// payment the offer received (NL-997, the CDK payment processor's <c>CheckIncomingPayment</c> by offer id). The
+    /// default is for test doubles that store no BOLT 12 invoices.
+    /// </summary>
+    Task<IReadOnlyList<InvoiceModel>> ListSettledByOfferIdAsync(Hash offerId) =>
+        throw new NotSupportedException("This repository does not list an offer's invoices.");
+
+    /// <summary>
     /// Stages the deletion of at most <paramref name="max"/> BOLT 12 invoices that are still <c>Open</c> and expired at
     /// <paramref name="now"/> (<c>CreatedAt + ExpirySeconds &lt;= now</c>), oldest expiry first, and returns how many
     /// it staged (BOLT 12 plan §3.7 step 6, D11: every answered invoice_request adds a row, so the expired unpaid ones
