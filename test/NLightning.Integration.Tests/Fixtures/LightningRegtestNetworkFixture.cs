@@ -5,6 +5,7 @@ using NLightning.Testing.Lnd;
 namespace NLightning.Integration.Tests.Fixtures;
 
 using Lnd;
+using Testing.Cluster.Topology.Lnd;
 
 /// <summary>
 /// The shared regtest network of the <c>regtest</c> collection (and of the <c>onchain-regtest</c> and
@@ -63,20 +64,31 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
     {
     }
 
+    /// <summary>
+    /// A network of its own for a collection that needs other LND nodes or flags than the shared one (e.g.
+    /// <c>LndTaprootNetworkFixture</c>: one LND with <c>--protocol.simple-taproot-chans</c>), on the same backend switch.
+    /// </summary>
+    /// <param name="options">The network (<see cref="LndRegtestNetworkOptions.Spec"/> names its LND nodes).</param>
+    protected LightningRegtestNetworkFixture(LndRegtestNetworkOptions options)
+        : this(Environment.GetEnvironmentVariable, ClusterAvailability.KubeConfigurationProbe, options: options)
+    {
+    }
+
     /// <param name="environment">Reads environment variables (<see cref="TestBackend.EnvironmentVariable"/>).</param>
     /// <param name="kubeConfiguration">
     /// Throws when no Kubernetes configuration can be built (no kubeconfig, or in a pod without its service account
     /// token); called only on the cluster backend, where it is a fixture failure (<see cref="ConfigurationError"/>).
     /// </param>
     /// <param name="skip">Skips the current test with a reason (<see cref="Assert.Skip"/> when null).</param>
+    /// <param name="options">The network; <see cref="LndRegtestNetworkSpec.Default"/> when null.</param>
     internal LightningRegtestNetworkFixture(Func<string, string?> environment, Action kubeConfiguration,
-                                            Action<string>? skip = null)
+                                            Action<string>? skip = null, LndRegtestNetworkOptions? options = null)
     {
         _availability = new ClusterAvailability("the LND regtest network", "NL-820",
                                                 "scripts/run-cluster.sh --matrix lnd,onchain,anchors,gossip,day0,abcd",
                                                 environment, kubeConfiguration, skip);
         if (_availability.CanStart)
-            _backend = new ClusterLndBackend();
+            _backend = new ClusterLndBackend(options);
     }
 
     /// <summary>

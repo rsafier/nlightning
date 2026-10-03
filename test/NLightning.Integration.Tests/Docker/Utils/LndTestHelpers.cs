@@ -208,10 +208,39 @@ public static class LndTestHelpers
     /// <summary>
     /// What LND's balances leave out of the funder's side besides <c>CommitFee</c>: the two 330-sat anchor outputs of
     /// an anchors channel (BOLT 3, <c>option_anchors</c>, paid by the funder), 0 for the other commitment types. Since
-    /// wave O7b our node advertises <c>option_anchors</c> and LND opens and accepts anchors channels with it.
+    /// wave O7b our node advertises <c>option_anchors</c> and LND opens and accepts anchors channels with it. Simple
+    /// taproot channels (staging and final) have the same two anchors.
     /// </summary>
     public static long FunderAnchorsSat(Channel channel) =>
-        channel.CommitmentType is CommitmentType.Anchors or CommitmentType.SimpleTaproot ? 2 * 330 : 0;
+        channel.CommitmentType is CommitmentType.Anchors or CommitmentType.SimpleTaproot
+                               or CommitmentType.SimpleTaprootFinal
+            ? 2 * 330
+            : 0;
+
+    /// <summary>
+    /// <paramref name="node"/> opens a private simple taproot channel (<c>CommitmentType.SIMPLE_TAPROOT_FINAL</c> = 7,
+    /// <c>lncli openchannel --private --channel_type=taproot</c>: <c>channel_type</c> {80}) to
+    /// <paramref name="peerNodeId"/>, which must be connected. LND refuses a public taproot open and needs
+    /// <c>--protocol.simple-taproot-chans</c> (<c>LndNodeOptions.SimpleTaprootChannelsFlag</c>).
+    /// </summary>
+    /// <returns>LND's <c>txid:index</c> channel point (display order).</returns>
+    public static async Task<string> OpenPrivateTaprootChannelAsync(LndNodeConnection node, byte[] peerNodeId,
+                                                                     long capacitySat, long pushSat,
+                                                                     ulong satPerVbyte,
+                                                                     CancellationToken cancellationToken)
+    {
+        var point = await node.LightningClient.OpenChannelSyncAsync(new OpenChannelRequest
+        {
+            NodePubkey = ByteString.CopyFrom(peerNodeId),
+            LocalFundingAmount = capacitySat,
+            PushSat = pushSat,
+            SatPerVbyte = satPerVbyte,
+            Private = true,
+            CommitmentType = CommitmentType.SimpleTaprootFinal
+        }, cancellationToken: cancellationToken);
+        var txid = point.FundingTxidBytes.ToByteArray().Reverse().ToArray();
+        return $"{Convert.ToHexString(txid).ToLowerInvariant()}:{point.OutputIndex}";
+    }
 
     public static async Task<Channel?> GetChannelByPointAsync(LndNodeConnection node, string channelPoint,
                                                               CancellationToken cancellationToken)

@@ -13,6 +13,14 @@ using Kube;
 /// </summary>
 public sealed record LndNodeOptions
 {
+    /// <summary>
+    /// LND's switch for simple taproot channels (<see cref="ExtraArgs"/>): it advertises bits 81 (final) and 181
+    /// (staging), accepts and opens <c>channel_type</c> {80} (RPC <c>CommitmentType.SIMPLE_TAPROOT_FINAL</c> = 7,
+    /// private channels only) and, unless overlay channels are on too, forces LND's RBF cooperative close (bits 61/161,
+    /// <c>option_simple_close</c>). Give it only to a node of its own: it changes how the node closes every channel.
+    /// </summary>
+    public const string SimpleTaprootChannelsFlag = "--protocol.simple-taproot-chans";
+
     public LndNodeOptions(string alias)
     {
         Alias = KubeNames.RequireDns1123Label(alias, "LND alias", KubeNames.MaxWorkloadNameLength);

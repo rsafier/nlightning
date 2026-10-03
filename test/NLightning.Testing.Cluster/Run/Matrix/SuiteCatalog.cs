@@ -71,6 +71,13 @@ public static class SuiteCatalog
         new("abcd", "the ABCD multi-hop suite (Docker.Abcd)", "integration",
             ["-namespace", $"{Docker}.Abcd"],
             [], "off", 1, 1, TimeSpan.FromMinutes(45), SuiteRequirement.LndClusterBackend),
+        // Simple taproot channels against LND (taproot plan T6): their own network, one LND run with
+        // --protocol.simple-taproot-chans (the flag also forces LND's RBF close, so the shared regtest network's nodes
+        // never get it)
+        new("taproot", "simple taproot channels against LND (Docker.Taproot, LndTaprootRegtestCollection)",
+            "integration",
+            ["-namespace", $"{Docker}.Taproot"],
+            [], "off", 1, 1, TimeSpan.FromMinutes(30), SuiteRequirement.LndClusterBackend),
         new("postgres", "PostgresTests and ServerDatabaseClusterTests on Postgres pods", "integration",
             ["-class", $"{Docker}.PostgresTests", "-class", $"{Cluster}.ServerDatabaseClusterTests"],
             ["-trait", "Database=Postgres"], "on", 3, 2, TimeSpan.FromMinutes(10)),
