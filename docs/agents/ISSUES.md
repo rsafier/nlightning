@@ -6037,6 +6037,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-877, NL-959
 - **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
 
+### NL-974 A restored simple taproot channel's data-loss channel_reestablish had no next_local_nonces, so LND never force-closed it
+- **Status:** fixed (0bc69b2d)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`CreateDataLossReestablish`), `src/NLightning.Application/Channels/Backup/RecoveryChannels.cs`
+- **Evidence:** taproot wave t02 review (lane REVB). A channel restored from a static backup asks the peer to force close with the BOLT 2 data-loss `channel_reestablish` (B2-RE-14). For a simple taproot channel it carried no type-22 `next_local_nonces`. LND 0.21.4's `ProcessChanSyncMsg` checks the nonce before the data-loss numbers (lnwallet/channel.go:4478-4536: "remote verification nonce not sent"), and `handleChanSyncErr` treats that as an unspecified error, `LinkFailureForceNone` (htlcswitch/link.go:1284-1292): the link fails and nothing is force-closed, so the restored funds wait on the peer's operator. The spec makes a missing map a channel failure for every receiver (Eclair: `MissingCommitNonce`).
+- **Fix sketch:** done: a taproot recovery channel's data-loss reestablish carries one entry for the backed-up funding (our counter-derived verification nonce of commitment 1, derived from the key index so an unregistered recovery channel works; nothing ever signs with it). Tests: `RecoveryChannelReconnectTests.Given_ATaprootRecoveryChannel_*`, `Given_AnAnchorsRecoveryChannel_*`. Not proven against LND on the cluster yet (T6).
+- **Blocks/Blocked-by:** Related NL-877, NL-426, NL-955
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T3, T5
+
+### NL-975 A next_local_nonces entry that does not parse was saved instead of failing the channel
+- **Status:** fixed (9c5db378)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Handlers/RevokeAndAckMessageHandler.cs`, `src/NLightning.Application/Channels/Taproot/TaprootReestablish.cs`, `TaprootChannelNonces.ThrowIfUnparsable`
+- **Evidence:** taproot wave t02 review (lane REVB). The spec: the recipient of `channel_reestablish` MUST fail the channel if `next_local_nonces` "cannot be parsed". The `revoke_and_ack` and `channel_reestablish` handlers only checked that the map had an entry per active funding; the TLV converter checks lengths only. A nonce that is not two compressed points was saved as the peer's verification nonce, and every later `commitment_signed` of ours then threw in the signer (`CommitScheduler` logs "changes stay pending"), so the channel hung until its HTLC deadlines instead of failing.
+- **Fix sketch:** done: every entry must be two compressed points, else `ChannelFailedException` `TAPROOT-NONCE-R02` before anything is saved. Tests: `TaprootHarnessTests.Given_RevokeAndAckWithANonceThatIsNotTwoPoints_*`, `Given_ChannelReestablishWithANonceThatIsNotTwoPoints_*`.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T3
+
 
 ### NL-960 The D-T4 crash-injection proof of simple taproot channels has no Postgres (or SQL Server) run
 - **Status:** open
