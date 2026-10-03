@@ -224,6 +224,34 @@ public sealed class AccountingReconcileHtlcSettleTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Given_AForwardFoldedDownstreamWhileTheUpstreamLinkStaysDown_When_Reconciled_Then_NothingDrifts()
+    {
+        // Arrange: 20,001,000 msat in on channel 1, 20,000,000 out on channel 2 (fee 1,000); the downstream fulfill is
+        // folded past its revoke_and_ack, the upstream fulfill was never sent (the upstream peer is offline), so the
+        // incoming HTLC has neither a known preimage nor a fulfill removal (review finding on NL-886)
+        var incoming = await AddChannelAsync(1, Incoming(4, 20_001_000));
+        var outgoing = await AddChannelAsync(2, Outgoing(7, 20_000_000));
+        await SetOriginAsync(outgoing, 7, HtlcOrigin.Forwarded(incoming.ChannelId, 4));
+        await AddEventsAsync(Opening(incoming), Opening(outgoing),
+                             Settle(AccountingEventKind.ForwardSettled,
+                                    AccountingEventKeys.ForwardSettled(incoming.ChannelId, 4), 1_000));
+        Load(incoming, OpeningMsat, Incoming(4, 20_001_000));
+        Load(outgoing, OpeningMsat - 20_000_000);
+        await using var harness = await CreateBooksAsync();
+
+        // Act: reconciled twice, as the periodic loop would while the upstream peer stays away
+        var first = await harness.Books.ReconcileAsync(TestContext.Current.CancellationToken);
+        var second = await harness.Books.ReconcileAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the upstream HTLC holds the whole forward as outstanding, nothing drifts
+        Assert.True(first.IsClean);
+        Assert.Equal((1_200_001_000L, 1_180_000_000L, 20_001_000L, 0L), Channels(first));
+        Assert.True(second.IsClean);
+        Assert.Equal((1_200_001_000L, 1_180_000_000L, 20_001_000L, 0L), Channels(second));
+        Assert.Empty(_logger.Warnings);
+    }
+
+    [Fact]
     public async Task Given_ARealDriftBesideASettleInFlight_When_Reconciled_Then_OnlyTheDriftIsReportedAndLogged()
     {
         // Arrange: our invoice's fulfill in flight on channel 1, and 1,234 msat the books hold that the node never
