@@ -195,12 +195,13 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
         entity.Tags = payment.Tags;
         entity.IsTrampolineRelay = payment.IsTrampolineRelay;
         entity.AmountMsat = checked((long)payment.Amount.MilliSatoshi);
-        entity.FeeMsat = checked((long)payment.Fee.MilliSatoshi);
         MapMutableFields(payment, entity);
     }
 
     private static void MapMutableFields(PaymentModel payment, PaymentEntity entity)
     {
+        // A failed payment's fee is zero (NL-982)
+        entity.FeeMsat = checked((long)payment.Fee.MilliSatoshi);
         entity.Status = (byte)payment.Status;
         entity.OutgoingChannelId = payment.OutgoingChannelId;
         entity.OutgoingHtlcId = payment.OutgoingHtlcId;

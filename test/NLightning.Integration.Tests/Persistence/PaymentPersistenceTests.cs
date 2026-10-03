@@ -154,6 +154,25 @@ public class PaymentPersistenceTests
     }
 
     [Fact]
+    public async Task Given_AnInFlightPaymentWithAFee_When_ItFailsAndIsUpdated_Then_TheStoredFeeIsZero()
+    {
+        // Arrange (NL-982): the attempt offered 2,001 msat in fees
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var payment = CreatePayment(0x87);
+        await SaveAsync(db, c => new PaymentDbRepository(c).AddAsync(payment));
+        payment.Fail(null, 0, "refused", s_now);
+
+        // Act
+        await SaveAsync(db, c => new PaymentDbRepository(c).UpdateAsync(payment));
+
+        // Assert: a failed payment paid nothing
+        await using var context = db.CreateDbContext();
+        var stored = await new PaymentDbRepository(context).GetByPaymentHashAsync(payment.PaymentHash);
+        Assert.Equal(PaymentStatus.Failed, stored!.Status);
+        Assert.True(stored.Fee.IsZero);
+    }
+
+    [Fact]
     public async Task Given_VerifiedHoldTimes_When_ThePaymentIsUpdatedOrReplaced_Then_EachHopKeepsItsHoldTime()
     {
         // Arrange - BOLT 4 attribution_data verified at the origin (NL-326): hop 0 verified, hop 1 not

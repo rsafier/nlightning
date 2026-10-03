@@ -52,7 +52,10 @@ using Trampoline;
 /// both routes' secrets (<see cref="ITrampolineFailureOnionService.DecryptTrampolineErrorPacket"/>): an outer-layer
 /// error follows the normal retry rules; the trampoline node's <c>trampoline_fee_or_expiry_insufficient</c> caches its
 /// policy and starts a new attempt at it when the fee limit allows, its <c>temporary_trampoline_failure</c> one new
-/// attempt at twice the fee; any other trampoline-layer error ends the payment.</para>
+/// attempt at twice the fee; any other trampoline-layer error ends the payment. The outer layer's
+/// <c>attribution_data</c> (the trampoline layer has none, BOLTs PR 836) is verified over the outer route as for any
+/// payment (NL-898): the verified hops' hold times are recorded, and when no hop of either route authenticated the
+/// error the outer hop whose attribution HMAC failed is blamed.</para>
 /// </remarks>
 public sealed partial class PaymentService
 {
@@ -824,7 +827,8 @@ public sealed partial class PaymentService
 
     /// <summary>
     /// A failure without a session: through the stored trampoline hops when the payment went through a trampoline node
-    /// (each attempt tried, newest first, until one authenticates the error), else as any payment's.
+    /// (each attempt tried, newest first, until one authenticates the error), else as any payment's. The outer layer's
+    /// <c>attribution_data</c> is verified over <paramref name="route"/> (NL-898).
     /// </summary>
     private (FailureCode? Code, int? SourceIndex, string Reason, FailureInterpretation? Interpretation,
         AttributionVerification Attribution) DescribeStoredFailure(PaymentModel payment,
@@ -837,6 +841,8 @@ public sealed partial class PaymentService
             return DescribeFailure(route, removal);
 
         var outerSecrets = route.Select(h => h.SharedSecret).ToList();
+        var attribution = VerifyOuterAttribution(outerSecrets, removal);
+        var attributionText = DescribeOuterAttribution(route, attribution);
         var last = route.Count - 1;
         foreach (var attempt in hops.GroupBy(h => h.Attempt).OrderByDescending(g => g.Key))
         {
@@ -854,19 +860,54 @@ public sealed partial class PaymentService
                 var described = decrypted.ErringHopIndex == last
                                     ? $"the trampoline node {inner[0].NodeId}"
                                     : $"hop {decrypted.ErringHopIndex} ({DescribeHop(route, decrypted.ErringHopIndex)})";
-                return (code, decrypted.ErringHopIndex, $"{codeText} from {described}", null,
-                        AttributionVerification.Absent);
+                return (code, decrypted.ErringHopIndex, $"{codeText} from {described}{attributionText}", null,
+                        attribution);
             }
 
             var index = decrypted.ErringHopIndex;
             var node = index < inner.Count ? inner[index].NodeId.ToString() : "an unknown node";
             return (code, last + index, $"{codeText} from trampoline hop {index} ({node}) of payment "
-                                      + $"{payment.PaymentHash}'s attempt {attempt.Key}", null,
-                    AttributionVerification.Absent);
+                                      + $"{payment.PaymentHash}'s attempt {attempt.Key}{attributionText}", null,
+                    attribution);
         }
 
-        return (null, null, "The HTLC failed with an error onion no hop of either route authenticated", null,
-                AttributionVerification.Absent);
+        return (null, attribution.InvalidHopIndex,
+                "The HTLC failed with an error onion no hop of either route authenticated" + attributionText, null,
+                attribution);
+    }
+
+    /// <summary>
+    /// The outer layer's <c>attribution_data</c> of a failure through a trampoline node, verified over the outer
+    /// route's hops (NL-898; <see cref="IAttributionDataService.DecryptErrorPacket"/>, as for any payment: the hops up
+    /// to the outer erring hop, all of them when no outer hop authenticated the return packet, which is the case for an
+    /// error of the trampoline layer). The trampoline layer carries none (BOLTs PR 836). Absent without attribution or
+    /// the service.
+    /// </summary>
+    private AttributionVerification VerifyOuterAttribution(IReadOnlyList<Secret> outerSecrets, HtlcRemoval removal)
+    {
+        if (removal.AttributionData.IsEmpty || _attributionDataService is null || outerSecrets.Count == 0)
+            return AttributionVerification.Absent;
+
+        return _attributionDataService.DecryptErrorPacket(outerSecrets, removal.Reason.Span,
+                                                          removal.AttributionData.Span).Attribution;
+    }
+
+    /// <summary>
+    /// What the outer layer's <c>attribution_data</c> adds to a trampoline failure's reason: the outer hop whose HMAC
+    /// did not verify (it shares the blame with its upstream neighbour) and the verified hold times; empty without
+    /// attribution.
+    /// </summary>
+    private static string DescribeOuterAttribution(IReadOnlyList<PaymentHop> outerRoute,
+                                                   AttributionVerification attribution)
+    {
+        if (!attribution.IsPresent)
+            return "";
+
+        var tampered = attribution.InvalidHopIndex is { } invalid
+                           ? $"; the attribution_data of outer hop {invalid} ({DescribeHop(outerRoute, invalid)}) did "
+                           + "not verify"
+                           : "";
+        return tampered + DescribeHoldTimes(attribution);
     }
 
     /// <summary>The stored trampoline hops of a payment (every attempt); none when the unit of work stores none.

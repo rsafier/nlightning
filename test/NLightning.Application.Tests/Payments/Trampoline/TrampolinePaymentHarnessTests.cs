@@ -33,8 +33,8 @@ public class TrampolinePaymentHarnessTests
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(30);
     private static readonly LightningMoney s_amount = LightningMoney.MilliSatoshis(100_000);
 
-    private static async Task<InvoiceModel> CreateInvoiceAsync(PaymentHarnessNode node, LightningMoney amount,
-                                                               bool trampoline = true, bool requireTrampoline = false)
+    internal static async Task<InvoiceModel> CreateInvoiceAsync(PaymentHarnessNode node, LightningMoney amount,
+                                                                bool trampoline = true, bool requireTrampoline = false)
     {
         var preimage = RandomNumberGenerator.GetBytes(32);
         var paymentHash = SHA256.HashData(preimage);
