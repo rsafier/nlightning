@@ -24,6 +24,7 @@ using Offers;
 using Onion;
 using Onion.OnionMessages;
 using Onion.RouteBlinding;
+using Onion.Trampoline;
 using Services;
 using Signers;
 using Wallet;
@@ -74,6 +75,9 @@ public static class DependencyInjection
 
         // BOLT 4 onion messages (wave M6 OM1): message paths, the packet builder and the receive-side unwrapper
         services.AddOnionMessageCryptoServices();
+
+        // BOLT 4 trampoline onion and its failure layers (BOLTs PR 836, NL-875 lane TR1)
+        services.AddTrampolineOnionServices();
 
         // BOLT 7 gossip signature verification and the funding output lookup of channel announcements (G0-T3, G2-T2)
         services.AddGossipBitcoinServices();
