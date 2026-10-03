@@ -148,7 +148,8 @@ public class ChannelFactoryTests
     public async Task Given_UpfrontShutdownScriptOfAForbiddenForm_When_CreatingChannelAsNonInitiator_Then_ChannelError(
         string scriptHex, FeatureSupport anySegwit)
     {
-        // Arrange (NL-776: CLN v26.06.8 sends a P2TR upfront script without option_shutdown_anysegwit)
+        // Arrange (NL-776: CLN v26.06.8 sends a P2TR upfront script without option_shutdown_anysegwit). Simple close
+        // is pinned off: with it negotiated (the default since D-T1) BOLT 2 allows an OP_RETURN script
         var channelFactory = CreateNonInitiatorChannelFactory();
         var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()),
                                                 upfrontShutdownScriptTlv: new UpfrontShutdownScriptTlv(
@@ -156,7 +157,8 @@ public class ChannelFactoryTests
         var negotiatedFeatures = new FeatureOptions
         {
             UpfrontShutdownScript = FeatureSupport.Optional,
-            BeyondSegwitShutdown = anySegwit
+            BeyondSegwitShutdown = anySegwit,
+            OptionSimpleClose = FeatureSupport.No
         };
 
         // Act

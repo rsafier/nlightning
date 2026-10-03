@@ -11,6 +11,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Domain.Protocol.Constants;
@@ -232,7 +233,10 @@ public sealed class CloseRestartFlowTests : IAsyncLifetime
 
     private async Task<NLightningTestNode> StartNodeAsync(string name, CancellationToken ct)
     {
-        _node = await NLightningTestNode.CreateAsync(_fixture, name);
+        // Legacy closing_signed against alice (--protocol.rbf-coop-close): option_simple_close, Optional by default
+        // since taproot plan D-T1, pinned off
+        _node = await NLightningTestNode.CreateAsync(_fixture, name, configureNodeOptions: options =>
+            options.Features.OptionSimpleClose = FeatureSupport.No);
         _node.ConfigureServices = _wire.Install;
         await _node.StartAsync(ct);
         return _node;

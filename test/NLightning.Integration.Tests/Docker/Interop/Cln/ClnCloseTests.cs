@@ -24,7 +24,9 @@ using Utils;
 /// <c>fee_range</c>, so our fee_range receive path (B2-CLS-R03..R06) runs against another implementation. Cases: we
 /// close a channel we funded (with and without our <c>fee_range</c>), CLN closes a channel we funded (we propose as
 /// the funder), and CLN closes a channel it funded (we answer its <c>fee_range</c> as the non-funder). Each ends with
-/// the same closing transaction on both sides, confirmed, and our channel <c>Closed</c>.
+/// the same closing transaction on both sides, confirmed, and our channel <c>Closed</c>. Our nodes pin
+/// <c>option_simple_close</c> off (<see cref="ClnChannelSession.PinLegacyClose"/>; Optional by default since taproot
+/// plan D-T1) so these stay legacy proofs whatever CLN signals.
 /// </summary>
 [Collection(ClnInteropCollection.Name)]
 [Trait("Category", ClnInteropCollection.Category)]
@@ -163,7 +165,7 @@ public sealed class ClnCloseTests : IAsyncLifetime
         // Arrange
         var ct = TestContext.Current.CancellationToken;
         _session = await ClnChannelSession.BuildClnFundedAsync(_fixture, "nltg-close-fundee", s_capacity, "opening",
-                                                               ct);
+                                                               ct, ClnChannelSession.PinLegacyClose);
         AttachRecorder(_session);
         await ClnPaysUsAsync(_session, LightningMoney.Satoshis(40_000), ct);
 
@@ -241,7 +243,8 @@ public sealed class ClnCloseTests : IAsyncLifetime
 
     private async Task<ClnChannelSession> OpenOurFundedAsync(string nodeName, CancellationToken ct)
     {
-        _session = await ClnChannelSession.BuildOurFundedAsync(_fixture, nodeName, s_capacity, s_push, ct);
+        _session = await ClnChannelSession.BuildOurFundedAsync(_fixture, nodeName, s_capacity, s_push, ct,
+                                                               configureNodeOptions: ClnChannelSession.PinLegacyClose);
         AttachRecorder(_session);
         return _session;
     }

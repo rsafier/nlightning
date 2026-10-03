@@ -10,6 +10,7 @@ using Domain.Channels.Closing;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
@@ -84,6 +85,55 @@ public class SimpleCloseHarnessTests
                                 && CloseHarness.OutputTo(tx, CloseHarness.BobScript) == BobSat - (long)s_defaultFee);
         Assert.Contains(close.Alice.Channel.ClosingTransaction!.TxId, alicePublished);
         Assert.Contains(close.Bob.Channel.ClosingTransaction!.TxId, bobPublished);
+    }
+
+    [Fact]
+    public async Task Given_TwoNodesWithDefaultFeatures_When_FunderCloses_Then_SimpleCloseIsUsed()
+    {
+        // Arrange: taproot plan D-T1, option_simple_close is Optional by default, so two default nodes negotiate it
+        using var close = new CloseHarness();
+        var negotiated = Negotiate(new FeatureOptions(), new FeatureOptions());
+        Assert.Equal(FeatureSupport.Optional, negotiated.OptionSimpleClose);
+        close.Alice.NegotiatedFeatures = negotiated;
+        close.Bob.NegotiatedFeatures = negotiated;
+
+        // Act
+        await CloseAsync(close);
+
+        // Assert: closing_complete/closing_sig both ways, never closing_signed
+        Assert.Equal(ChannelState.Closing, close.Alice.Channel.State);
+        Assert.Equal(ChannelState.Closing, close.Bob.Channel.State);
+        Assert.Single(close.Bob.Received.OfType<ClosingCompleteMessage>());
+        Assert.Single(close.Alice.Received.OfType<ClosingCompleteMessage>());
+        Assert.Empty(close.Alice.Received.OfType<ClosingSignedMessage>());
+        Assert.Empty(close.Bob.Received.OfType<ClosingSignedMessage>());
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_DefaultNodeAndPeerWithoutSimpleClose_When_Close_Then_LegacyClosingSignedIsUsed(
+        bool weClose)
+    {
+        // Arrange: our default features against a peer without bits 60/61 (LND without rbf-coop-close, LDK): the
+        // negotiated set has no option_simple_close, so the close stays the legacy closing_signed negotiation
+        using var close = new CloseHarness();
+        var negotiated = Negotiate(new FeatureOptions(), new FeatureOptions { OptionSimpleClose = FeatureSupport.No });
+        Assert.Equal(FeatureSupport.No, negotiated.OptionSimpleClose);
+        close.Alice.NegotiatedFeatures = negotiated;
+        close.Bob.NegotiatedFeatures = negotiated;
+
+        // Act
+        await CloseAsync(close, weClose ? close.Alice : close.Bob);
+
+        // Assert
+        Assert.Equal(ChannelState.Closing, close.Alice.Channel.State);
+        Assert.Equal(ChannelState.Closing, close.Bob.Channel.State);
+        Assert.NotEmpty(close.Bob.Received.OfType<ClosingSignedMessage>());
+        Assert.NotEmpty(close.Alice.Received.OfType<ClosingSignedMessage>());
+        Assert.Empty(close.Alice.Received.OfType<ClosingCompleteMessage>());
+        Assert.Empty(close.Bob.Received.OfType<ClosingCompleteMessage>());
+        Assert.Equal(close.Alice.Channel.ClosingTransaction!.TxId, close.Bob.Channel.ClosingTransaction!.TxId);
     }
 
     [Fact]
@@ -393,7 +443,8 @@ public class SimpleCloseHarnessTests
 
         // Act
         var warning = await Assert.ThrowsAsync<ChannelWarningException>(
-                          () => close.Bob.ChannelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
+                          () => close.Bob.ChannelManager.HandleChannelMessageAsync(message,
+                                                                                   CloseHarness.LegacyCloseFeatures(),
                                                                                    close.Alice.NodeId));
 
         // Assert
@@ -497,6 +548,13 @@ public class SimpleCloseHarnessTests
     #endregion
 
     #region Helpers
+
+    /// <summary>The features both ends negotiate from these two <c>init</c>s (what the peer service hands on).</summary>
+    private static FeatureOptions Negotiate(FeatureOptions local, FeatureOptions remote)
+    {
+        Assert.True(local.GetNodeFeatures().IsCompatible(remote.GetNodeFeatures(), out var negotiated));
+        return FeatureOptions.GetNodeOptions(negotiated!, null);
+    }
 
     private static async Task CloseAsync(CloseHarness close, HarnessNode? initiator = null)
     {

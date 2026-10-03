@@ -10,7 +10,7 @@ This is the plan for the simple taproot channel type (`option_simple_taproot`, f
   - **CLN, LDK:** status not checked. Check before T6.
   - **Public taproot channels:** none anywhere until #1059 is merged and implemented.
 - **What the spec says that shapes this plan.** The facts below were read from the spec on 2026-10-03; T0 re-reads them against the merged text.
-  - `option_simple_taproot` **depends on `option_channel_type` and `option_simple_close`**. Our `OptionSimpleClose` defaults to `No` (`FeatureOptions`), so taproot needs it on, or at least negotiated per peer.
+  - `option_simple_taproot` **depends on `option_channel_type` and `option_simple_close`**. Our `OptionSimpleClose` defaulted to `No` (`FeatureOptions`); D-T1 (wave t01, lane SC) made it Optional by default on every network, so taproot only needs it negotiated with the peer.
   - Taproot channels **MUST NOT set `announce_channel`**: they are private only until taproot gossip exists.
   - **Funding output:** a BIP 327 MuSig2 aggregate key with a BIP-86 style tweak, spent by key path (commitment and cooperative close).
   - **Commitment outputs** are all P2TR:
