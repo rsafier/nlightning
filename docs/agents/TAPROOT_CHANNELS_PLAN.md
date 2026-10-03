@@ -14,8 +14,9 @@ This is the plan for the simple taproot channel type (`option_simple_taproot`, f
   - Taproot channels **MUST NOT set `announce_channel`**: they are private only until taproot gossip exists.
   - **Funding output:** a BIP 327 MuSig2 aggregate key with a BIP-86 style tweak, spent by key path (commitment and cooperative close).
   - **Commitment outputs** are all P2TR:
-    - `to_local`: the revocation key as the internal key, plus a delayed CSV leaf.
-    - `to_remote`: the NUMS point `simple_taproot_nums` (`02dca094751109d0bd055d03565874e8276dd53e926b44e3bd1bb6bf4bc130a279`) as the internal key, so it can only be spent by script.
+    - `to_local`: the NUMS point `simple_taproot_nums` (`02dca094751109d0bd055d03565874e8276dd53e926b44e3bd1bb6bf4bc130a279`) as the internal key and two leaves: the delay leaf (`<local_delayedpubkey> OP_CHECKSIGVERIFY <to_self_delay> OP_CSV`) and the revocation leaf (`<local_delayedpubkey> OP_DROP <revocation_pubkey> OP_CHECKSIG`). Both spends, the penalty included, are script-path spends.
+    - `to_remote`: the same NUMS point as the internal key and one leaf (`<remotepubkey> OP_CHECKSIGVERIFY 1 OP_CSV`), so it can only be spent by script.
+    - **Spec errata (checked against the spec's own vectors, 2026-10-03):** §To Remote Outputs names a second NUMS point `0245b181...` and a control block with `combined_funding_key`. The vectors use `02dca094...` as the internal key of both `to_local` and `to_remote`, so the vectors win, and the control block's internal key is the NUMS point.
     - anchors: the owner's key as the internal key, plus a 16-block leaf.
     - HTLC outputs and second-level HTLC transactions: tapscript trees.
   - **New TLVs:**
@@ -84,7 +85,7 @@ This is the plan for the simple taproot channel type (`option_simple_taproot`, f
 
 ### T4: BOLT 5 on chain
 - **Classification:** `OnchainChannelWatcher` classifies taproot commitments.
-- **Resolvers:** `LocalCommitResolver`, `RemoteCommitResolver` and `RevokedCommitResolver` gain taproot output descriptors: script-path spends with control blocks, and the key-path revocation spend of `to_local`.
+- **Resolvers:** `LocalCommitResolver`, `RemoteCommitResolver` and `RevokedCommitResolver` gain taproot output descriptors: script-path spends with control blocks (the `to_local` penalty included: its revocation leaf), and key-path penalties of HTLC outputs and second-level outputs, whose internal key is the revocation key.
 - **Fees and reorgs:** CPFP through the taproot anchor (`Onchain/Anchors/`), the anchor reserve, `SweepScheduler` RBF and the mempool reactor all work unchanged on the new descriptors.
 - **Tests:** script-execution tests for every spend, and the cluster proofs in T6.
 
@@ -108,8 +109,21 @@ This is the plan for the simple taproot channel type (`option_simple_taproot`, f
 
 ---
 
-## 2. Decisions to take
+## 2. Wave t01 (started 2026-10-03, branch `wip/taproot-plan`)
 
-- **D-T1 (owner):** turn `OptionSimpleClose` on by default, or only when taproot is negotiated. Taproot cannot close cooperatively without it.
-- **D-T2 (owner):** whether to offer taproot by default once T6 passes (Eclair does; LND only on request), and whether to prefer it over anchors for private opens.
-- **D-T3:** NBitcoin.Secp256k1 MuSig or our own BIP 327 module (decided by T0's vector run).
+Three lanes in parallel worktrees, merged with `--no-ff` by the integrator; new ledger entries are proposed by the lanes and numbered by the integrator.
+
+| Lane | Scope | Proof |
+|---|---|---|
+| T0 | BIP 327 MuSig2 behind a Domain port (`KeySort`, `KeyAgg` with the BIP-86 tweak, nonce generation with caller randomness, `NonceAgg`, partial sign/verify, aggregation; the 66-byte public nonce, 97-byte secret nonce and 32-byte partial signature as Domain value objects); D-T3 | every BIP 327 vector file, byte-exact; the spec's funding `combined_key` from its funding keys |
+| T1 | Tapscript trees, control blocks and the taproot output scripts of §Funding/§Commitment/§HTLC; the unsigned taproot commitment transaction (354 sat dust, zero-fee HTLC outputs, taproot anchors) and both second-level HTLC transactions; BIP-340 HTLC signatures | the spec's script vectors (leaf scripts, leaf hashes, roots, internal/output keys, pkScripts) and its three transaction cases (txid and outputs; the HTLC resolution transactions with their witnesses byte-exact) |
+| SC | D-T1: `OptionSimpleClose` Optional by default | feature tests, config template, docs |
+
+After the merge the integrator replays the spec's signed commitment vectors end to end (T0 nonces and partial signatures over T1's sighash).
+
+## 3. Decisions
+
+- **D-T1 (owner decision 2026-10-03): `OptionSimpleClose` Optional by default on every network**, independent of taproot (proven against LND, CLN and Eclair since ABCD wave 6 and batch10). Done in wave t01, lane SC.
+- **D-T2 (owner decision 2026-10-03):** once T6 passes, advertise `option_simple_taproot` Optional and accept taproot opens, but keep anchors as the channel type of our own opens until the owner flips the preference after field experience.
+- **D-T3 (owner decision 2026-10-03):** use `NBitcoin.Secp256k1`'s MuSig2 (`Musig.MusigContext`, already referenced) if it passes every BIP 327 vector, otherwise write a small BIP 327 module in `Infrastructure.Bitcoin`. Decided by T0's vector run.
+- **D-T4 (owner decision 2026-10-03):** verification nonces use the spec's counter scheme (re-derived, never stored); signing nonces are JIT and persisted before any message that uses them is sent; T3's crash-injection proof that no nonce is ever reused is a gate.
