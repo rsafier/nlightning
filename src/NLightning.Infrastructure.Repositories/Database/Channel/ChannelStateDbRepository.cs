@@ -456,8 +456,7 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         }
         catch (ArgumentException e)
         {
-            throw new InvalidOperationException(
-                $"The stored commitment state of channel {channel.ChannelId} is inconsistent: {e.Message}", e);
+            throw new ChannelStateInconsistentException(channel.ChannelId, e.Message, e);
         }
 
         ReadOnlyMemory<byte>? sentCommitDiff = null;

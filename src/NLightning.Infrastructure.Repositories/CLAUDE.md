@@ -43,7 +43,7 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 ## Conventions
 - Most files: System.*/Microsoft.* usings, then the file-scoped namespace, then relative `using Domain.X;` / `using Persistence.X;` below it. Follow the majority style in new files.
 - Channel/HTLC enums (`State`, `Version`, `Direction`) are stored as `byte` on entities; `UtxoEntity.AddressType` is the enum type itself. Money types vary: `FundingAmountSatoshis` and `UtxoEntity.AmountSats` are `long`, `HtlcEntity.AmountMsat` is `ulong`, `ChannelEntity.Local/RemoteBalanceMsat` are `long` msat (NL-191). `ChannelModel.ShortChannelId` maps to a nullable column: a default (unconfirmed) scid has no bytes and is written as null. Check the entity before mapping.
-- Writes build a fresh detached entity from the Domain model, then call Insert or Update. There are no explicit transactions.
+- Writes build a fresh detached entity from the Domain model, then call Insert or Update. There are no explicit transactions. Reads have none either: a channel load (`ChannelDbRepository.MapWithStateAsync`) takes the channel row, its funding and its state rows in separate queries, so a save committing in between can mix them (a splice lock under a `listchannels`); the engine's restore then throws `ChannelStateInconsistentException` and the channel is read again, whole, up to 3 times before the error goes out (NL-805).
 
 ## Tests
 - Payment schema: `test/NLightning.Integration.Tests/Persistence/PaymentPersistenceTests.cs` (SQLite) and `PaymentSchemaRoundTrip.cs` (shared with `Docker/PostgresTests`/`SqlServerTests`: a snapshot seeded before `AddInvoicesPaymentsAndCircuits` still loads and takes an origin; every table round-trips through its states).

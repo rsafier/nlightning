@@ -95,6 +95,9 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     private readonly NLightningDbContext _context;
     private readonly ISha256 _sha256;
     private readonly ChannelStateDbRepository _channelStateDbRepository;
+    /// <summary>How many times <see cref="MapWithStateAsync"/> reads a channel whose stored state disagrees (NL-805).</summary>
+    private const int TornReadAttempts = 3;
+
     private readonly ILogger _logger;
 
     /// <summary>
@@ -190,14 +193,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
 
     public async Task<ChannelModel?> GetByIdAsync(ChannelId channelId)
     {
-        var channelEntity = await DbSet
-                                 .AsNoTracking()
-                                 .Include(c => c.Config)
-                                 .Include(c => c.KeySets)
-                                 .Include(c => c.ChangeAddress)
-                                 .Include(c => c.LocalAliases)
-                                 .FirstOrDefaultAsync(c => c.ChannelId == channelId);
-
+        var channelEntity = await FindEntityAsync(channelId);
         if (channelEntity is null)
             return null;
 
@@ -273,11 +269,48 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     }
 
     /// <summary>
-    /// Maps a channel and attaches its commitment snapshot, if it has one. One query at a time: the context does not
-    /// allow concurrent operations.
+    /// Maps a channel and attaches its commitment snapshot, if it has one. The channel row, its funding and its state
+    /// rows are read in separate queries without a read transaction, so a save that commits between them (a splice
+    /// lock moving the funding and the balances, a transition moving the balances and the HTLCs) can make the rows
+    /// read here disagree. The engine's restore refuses such a mix; the channel is then read again, whole, at most
+    /// <see cref="TornReadAttempts"/> times, so only a state that is inconsistent on every read is refused (NL-805).
     /// </summary>
-    /// <exception cref="InvalidOperationException">The channel has HTLC rows in a legacy state (NL-025).</exception>
+    /// <exception cref="InvalidOperationException">The channel has HTLC rows in a legacy state (NL-025), or its
+    /// stored state is inconsistent (<see cref="ChannelStateInconsistentException"/>) on every read.</exception>
     private async Task<ChannelModel> MapWithStateAsync(ChannelEntity channelEntity)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await MapWithStateOnceAsync(channelEntity);
+            }
+            catch (ChannelStateInconsistentException e) when (attempt < TornReadAttempts)
+            {
+                // A channel deleted in between keeps the first error: there is nothing left to read again
+                var reread = await FindEntityAsync(channelEntity.ChannelId);
+                if (reread is null)
+                    throw;
+
+                _logger.LogDebug(e, "Channel {ChannelId} read while a save committed (attempt {Attempt}); reading it "
+                                  + "again", e.ChannelId, attempt);
+                channelEntity = reread;
+            }
+        }
+    }
+
+    /// <summary>The channel row with the children <see cref="MapEntityToDomain"/> reads, untracked.</summary>
+    private Task<ChannelEntity?> FindEntityAsync(ChannelId channelId) =>
+        DbSet.AsNoTracking()
+             .Include(c => c.Config)
+             .Include(c => c.KeySets)
+             .Include(c => c.ChangeAddress)
+             .Include(c => c.LocalAliases)
+             .FirstOrDefaultAsync(c => c.ChannelId == channelId);
+
+    /// <summary>One read of <see cref="MapWithStateAsync"/>. One query at a time: the context does not allow
+    /// concurrent operations.</summary>
+    private async Task<ChannelModel> MapWithStateOnceAsync(ChannelEntity channelEntity)
     {
         // After a splice the current funding's keys are the funding row's (our key rotated, splicing plan D5)
         var currentFunding = await _context.ChannelFundings.AsNoTracking()
