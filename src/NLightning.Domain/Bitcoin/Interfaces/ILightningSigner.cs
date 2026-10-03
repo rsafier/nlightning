@@ -354,6 +354,69 @@ public interface ILightningSigner
     #region Splicing (splicing plan SP1-0; implemented by lane SP1-C in LocalLightningSigner.Splicing.cs)
 
     /// <summary>
+    /// Simple taproot channels (bolt-simple-taproot.md, D-T4): our public verification nonce for our local commitment
+    /// <paramref name="localCommitmentNumber"/>, from the counter scheme: BIP 327 <c>NonceGen</c> with <c>rand'</c> the
+    /// commitment's leaf of the MuSig2 shachain whose root is <c>HMAC("taproot-rev-root" || funding_txid,
+    /// sha256(shachain_root))</c>. Nothing is stored: the same inputs give the same nonce, and the signer re-derives the
+    /// secret half only to sign that commitment for broadcast.
+    /// </summary>
+    /// <param name="channelKeyIndex">The channel's key index (usable before the channel id exists: open/accept).</param>
+    /// <param name="fundingTxId">The funding the commitment spends. Ignored for commitment 0, whose nonce is sent in
+    /// <c>open_channel</c>/<c>accept_channel</c> before the funding txid is known: commitment 0 always uses the context
+    /// without a txid (only one commitment 0 is ever signed for broadcast, invariant S1).</param>
+    /// <param name="localCommitmentNumber">Our local commitment number the nonce verifies.</param>
+    MusigPublicNonce GetLocalVerificationNonce(uint channelKeyIndex, TxId? fundingTxId, ulong localCommitmentNumber) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// <see cref="GetLocalVerificationNonce(uint, TxId?, ulong)"/> for a registered channel.
+    /// </summary>
+    MusigPublicNonce GetLocalVerificationNonce(ChannelId channelId, TxId? fundingTxId, ulong localCommitmentNumber) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// Simple taproot channels: our MuSig2 partial signature of the peer's commitment <paramref name="unsignedCommitment"/>
+    /// (key-path spend of the funding output, <c>SIGHASH_DEFAULT</c>) with a fresh just-in-time signing nonce, combined
+    /// with the peer's verification nonce <paramref name="remoteVerificationNonce"/>. The secret nonce is drawn from fresh
+    /// randomness, used once and never stored, so a re-sign (retransmission) always gets a new nonce.
+    /// </summary>
+    /// <param name="channelId">The registered channel.</param>
+    /// <param name="fundingTxId">The funding the commitment spends; null for the channel's current funding.</param>
+    /// <param name="unsignedCommitment">The peer's unsigned commitment transaction.</param>
+    /// <param name="remoteVerificationNonce">The peer's latest <c>next_local_nonce</c>(s) entry for that funding.</param>
+    /// <returns>The <c>partial_signature_with_nonce</c> payload (our partial signature and our signing nonce).</returns>
+    /// <exception cref="Exceptions.SignerException">The channel is not a registered taproot channel, data loss was
+    /// detected, or the nonce does not parse.</exception>
+    MusigPartialSignatureWithNonce SignRemoteCommitmentPartial(ChannelId channelId, TxId? fundingTxId,
+                                                               SignedTransaction unsignedCommitment,
+                                                               MusigPublicNonce remoteVerificationNonce) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// Simple taproot channels: checks the peer's partial signature of our local commitment
+    /// <paramref name="localCommitmentNumber"/> (<c>PartialSigVerifyInternal</c>), with the aggregate nonce built from
+    /// our verification nonce for that number (<see cref="GetLocalVerificationNonce(ChannelId, TxId?, ulong)"/>) and
+    /// the peer's signing nonce carried in <paramref name="remoteSignature"/>.
+    /// </summary>
+    /// <exception cref="Exceptions.SignerException">The partial signature does not verify or the channel is not a
+    /// registered taproot channel.</exception>
+    void ValidateLocalCommitmentPartialSignature(ChannelId channelId, TxId? fundingTxId, ulong localCommitmentNumber,
+                                                 MusigPartialSignatureWithNonce remoteSignature,
+                                                 SignedTransaction unsignedCommitment) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
+    /// <see cref="SignLocalCommitmentForBroadcast(ChannelId, ulong, SignedTransaction, CompactSignature)"/> for a simple
+    /// taproot channel: re-derives our verification secret nonce for <paramref name="commitmentNumber"/>, signs our
+    /// half, aggregates it with the peer's stored partial signature and returns the transaction with its one-element
+    /// key-path witness. The same guards (I4, I12, S1, SP-I4) apply.
+    /// </summary>
+    SignedTransaction SignLocalCommitmentForBroadcast(ChannelId channelId, TxId? fundingTxId, ulong commitmentNumber,
+                                                      SignedTransaction unsignedCommitment,
+                                                      MusigPartialSignatureWithNonce remoteSignature) =>
+        throw new NotImplementedException("Taproot wave t02 lane SIG");
+
+    /// <summary>
     /// Our funding public key number <paramref name="fundingKeyIndex"/> of the channel (splicing plan D5): index 0 is
     /// the channel's original funding key; each splice rotates to a new index, derived deterministically from the
     /// channel's keys so a static channel backup restores it.

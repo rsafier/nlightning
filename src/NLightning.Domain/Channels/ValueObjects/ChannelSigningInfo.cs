@@ -17,6 +17,13 @@ public record struct ChannelSigningInfo
     public uint ChannelKeyIndex { get; init; } // For deterministic key derivation
 
     /// <summary>
+    /// True for a simple taproot channel (<c>option_simple_taproot</c>): the funding output is the MuSig2 key-path
+    /// P2TR output of both funding keys, commitments are signed with MuSig2 partial signatures and HTLC signatures are
+    /// BIP 340 (taproot wave t02).
+    /// </summary>
+    public bool IsSimpleTaproot { get; init; }
+
+    /// <summary>
     /// The peer's <c>htlc_basepoint</c>, used to verify the HTLC signatures it sends for our commitments. Null until
     /// the peer's basepoints are known; HTLC signature validation then fails.
     /// </summary>
