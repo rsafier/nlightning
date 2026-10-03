@@ -29,7 +29,9 @@ using Utils;
 /// Proof N10 (BOLT2 plan): cooperative close against LND. A channel we funded (with a push to alice) carries a
 /// payment each way, then is closed by us and by alice, with and without <c>fee_range</c>; the agreed closing
 /// transaction confirms, LND lists a <c>COOPERATIVE_CLOSE</c> with the same txid and alice's settled balance, our
-/// side becomes Closed after 6 blocks and our wallet receives our output.
+/// side becomes Closed after 6 blocks and our wallet receives our output. Alice runs <c>--protocol.rbf-coop-close</c>
+/// and <c>option_simple_close</c> is Optional by default since taproot plan D-T1, so the legacy cases pin it off on
+/// their node ("closer") and the simple-close cases (N11) run a node with the default features.
 /// </summary>
 [Collection(LightningRegtestNetworkFixtureCollection.Name)]
 public class CooperativeCloseFlowTests : IAsyncLifetime
@@ -58,7 +60,10 @@ public class CooperativeCloseFlowTests : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        _node = await NLightningTestNode.CreateAsync(_fixture, "closer");
+        // The legacy closing_signed proofs: without the pin alice and our default node would close with
+        // option_simple_close (D-T1)
+        _node = await NLightningTestNode.CreateAsync(_fixture, "closer", configureNodeOptions: options =>
+            options.Features.OptionSimpleClose = FeatureSupport.No);
         await _node.StartAsync(TestContext.Current.CancellationToken);
     }
 
@@ -237,15 +242,12 @@ public class CooperativeCloseFlowTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// A node that negotiates <c>option_simple_close</c> (and its BOLT 9 dependency <c>option_shutdown_anysegwit</c>).
+    /// A node with the default features, which advertise <c>option_simple_close</c> (and its BOLT 9 dependency
+    /// <c>option_shutdown_anysegwit</c>) Optional since taproot plan D-T1: with alice it negotiates simple close.
     /// </summary>
     private async Task<NLightningTestNode> CreateSimpleCloseNodeAsync(CancellationToken ct)
     {
-        var node = await NLightningTestNode.CreateAsync(_fixture, "simple", configureNodeOptions: options =>
-        {
-            options.Features.OptionSimpleClose = FeatureSupport.Optional;
-            options.Features.BeyondSegwitShutdown = FeatureSupport.Optional;
-        });
+        var node = await NLightningTestNode.CreateAsync(_fixture, "simple");
         await node.StartAsync(ct);
         return node;
     }

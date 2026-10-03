@@ -89,11 +89,10 @@ internal sealed class CloseHarness : IDisposable
             configure?.Invoke(node.Name, services);
         });
 
-        if (simpleClose)
-        {
-            Alice.NegotiatedFeatures = SimpleCloseFeatures();
-            Bob.NegotiatedFeatures = SimpleCloseFeatures();
-        }
+        // The default negotiated features carry option_simple_close since taproot plan D-T1, so the legacy harness
+        // pins it off: its cases prove the closing_signed negotiation a peer without bits 60/61 gets
+        Alice.NegotiatedFeatures = simpleClose ? SimpleCloseFeatures() : LegacyCloseFeatures();
+        Bob.NegotiatedFeatures = simpleClose ? SimpleCloseFeatures() : LegacyCloseFeatures();
     }
 
     /// <summary>Negotiated features with <c>option_simple_close</c> (and its dependency, anysegwit).</summary>
@@ -102,6 +101,9 @@ internal sealed class CloseHarness : IDisposable
         OptionSimpleClose = FeatureSupport.Optional,
         BeyondSegwitShutdown = FeatureSupport.Optional
     };
+
+    /// <summary>Negotiated features without <c>option_simple_close</c>: the legacy <c>closing_signed</c> close.</summary>
+    public static FeatureOptions LegacyCloseFeatures() => new() { OptionSimpleClose = FeatureSupport.No };
 
     public IChannelCloseService CloseService(HarnessNode node) =>
         node.Services.GetRequiredService<IChannelCloseService>();
