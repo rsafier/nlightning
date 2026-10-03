@@ -91,7 +91,8 @@ public interface IChannelStateDbRepository
     /// under the same payment hash (<c>IPaymentDbRepository.AddAsync</c>), so a <see cref="HtlcOrigin"/> of kind
     /// <c>Local</c> can also match the archived HTLCs of earlier failed attempts: a replay must count as "has an HTLC"
     /// only a row that is not final, or the one matching the payment's recorded outgoing channel and HTLC id, and
-    /// otherwise fail the payment (else a retry that crashed before offering its HTLC stays in flight forever).
+    /// otherwise fail the payment (else a retry that crashed before offering its HTLC stays in flight forever). An origin
+    /// of kind <c>Trampoline</c> matches every HTLC of the relay's outgoing payment, every attempt included (NL-875).
     /// </summary>
     /// <exception cref="ArgumentException"><paramref name="origin"/> is not valid.</exception>
     Task<IReadOnlyList<(ChannelId ChannelId, HtlcKey Htlc)>> FindHtlcsByOriginAsync(HtlcOrigin origin);

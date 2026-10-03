@@ -41,6 +41,25 @@ public class HtlcOriginTests
     }
 
     [Fact]
+    public void Given_TrampolineOrigin_When_Created_Then_OnlyPaymentHashSetAndDistinctFromLocal()
+    {
+        // Arrange (NL-875)
+        var hash = new Hash(Enumerable.Repeat((byte)3, 32).ToArray());
+
+        // Act
+        var origin = HtlcOrigin.Trampoline(hash);
+
+        // Assert
+        Assert.Equal(HtlcOriginKind.Trampoline, origin.Kind);
+        Assert.True(origin.IsValid);
+        Assert.Equal(hash, origin.PaymentHash);
+        Assert.Null(origin.IncomingChannelId);
+        Assert.Null(origin.IncomingHtlcId);
+        Assert.Equal(HtlcOrigin.Trampoline(hash), origin);
+        Assert.NotEqual(HtlcOrigin.Local(hash), origin);
+    }
+
+    [Fact]
     public void Given_DefaultOrigin_When_Checked_Then_Invalid()
     {
         // Arrange
@@ -69,5 +88,6 @@ public class HtlcOriginTests
         // Assert (0 is reserved for an unset origin)
         Assert.Equal(1, (byte)HtlcOriginKind.Local);
         Assert.Equal(2, (byte)HtlcOriginKind.Forwarded);
+        Assert.Equal(3, (byte)HtlcOriginKind.Trampoline);
     }
 }
