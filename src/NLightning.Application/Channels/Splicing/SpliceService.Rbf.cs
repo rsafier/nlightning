@@ -16,6 +16,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
+using Domain.LiquidityAds.Enums;
 using Domain.Money;
 using Domain.Node.Constants;
 using Domain.Node.Options;
@@ -102,8 +103,14 @@ public sealed partial class SpliceService
                       ?? throw new InvalidOperationException($"[SPR-T1] Channel {channelId} has no pending splice");
             var previous = await GetLatestAttemptSessionAsync(channel, fundings, cancellationToken);
             var previousContribution = previous?.LocalContribution ?? InteractiveTxContribution.Empty;
-            var plan = PlanRbfContribution(previousContribution, latest.LocalBalanceDeltaMsat / 1_000, true,
-                                           request.FeeratePerKw, request.ContributionSatoshis, newSpliceOutScript);
+
+            // Liquidity ads (NL-771): an RBF of an attempt that bought liquidity buys it again (re-quoted at the new
+            // feerate); the latest attempt's deltas include its fee, which the contribution leaves out
+            var latestPurchase = await GetPurchaseAsync(channelId, latest.FundingTxId, null);
+            var purchase = CreateRbfPurchaseRequest(channel, request.Liquidity, latestPurchase, request.FeeratePerKw);
+            var previousSigned = GetContributions(latest, latestPurchase).Local;
+            var plan = PlanRbfContribution(previousContribution, previousSigned, true, request.FeeratePerKw,
+                                           request.ContributionSatoshis, newSpliceOutScript);
             InteractiveTxContribution? fresh = null;
             try
             {
@@ -112,8 +119,8 @@ public sealed partial class SpliceService
                     // NL-510: the attempt cannot be rebuilt from the latest one's inputs, or a positive contribution
                     // is asked without earlier inputs: fresh wallet inputs fund it (theirs is the attempt's own
                     // reservation, released with the losing siblings, NL-492)
-                    plan = await PlanFreshInputRbfContributionAsync(channelId, latest.LocalBalanceDeltaMsat / 1_000,
-                                                                    true, request.FeeratePerKw,
+                    plan = await PlanFreshInputRbfContributionAsync(channelId, previousSigned, true,
+                                                                    request.FeeratePerKw,
                                                                     request.ContributionSatoshis, cancellationToken);
                     fresh = plan?.Contribution;
                 }
@@ -143,10 +150,15 @@ public sealed partial class SpliceService
                     throw new InvalidOperationException(
                         $"[SPR-T1] Our share of the bumped splice's fee, {plan.FeeSatoshis} sat, is above the limit "
                       + $"of {maxFee} sat");
+                if (purchase is not null
+                 && CheckBuyerCanPay(channel, fundings, purchase, plan.SignedContributionSatoshis,
+                                     request.FeeratePerKw) is { } unaffordable)
+                    throw new InvalidOperationException($"[{unaffordable.RequirementId}] {unaffordable.Reason}");
 
                 negotiation = CreateRbfNegotiation(channel, fundings, latest, previous, plan, true,
                                                    null, request.FeeratePerKw, 0, false,
                                                    SpliceNegotiationState.AwaitingQuiescence);
+                negotiation.Liquidity = purchase;
                 // NL-510: a fresh reservation is ours until the driver takes it (this negotiation's end releases it);
                 // a rebuilt one stays the pending attempt's and is never released here
                 negotiation.WalletContribution = fresh;
@@ -221,7 +233,8 @@ public sealed partial class SpliceService
             try
             {
                 messages = await driver.RequestRbfAsync(CreateTerms(negotiation, negotiation.RbfContribution!),
-                                                        LightningMoney.Zero, cancellationToken);
+                                                        LightningMoney.Zero, cancellationToken,
+                                                        negotiation.Liquidity?.Request);
             }
             catch (InvalidOperationException e)
             {
@@ -316,15 +329,59 @@ public sealed partial class SpliceService
         var latest = fundings.LatestAttempt!;
         var previousContribution = previous?.LocalContribution ?? InteractiveTxContribution.Empty;
 
-        // Our side of the new attempt: the latest one's rebuilt at the new feerate as non-initiator, or — when that
-        // cannot be paid (a splice-in whose inputs cannot pay the higher fee) — fresh wallet inputs for the same
-        // amount (NL-510); nothing when even they cannot be funded or our share costs more than we accept (BOLT 2: a
-        // peer may stop contributing rather than fail the RBF: it "sets their sats to zero")
-        var plan = PlanRbfContribution(previousContribution, latest.LocalBalanceDeltaMsat / 1_000, false,
-                                       payload.Feerate, null, null)
-                ?? await PlanFreshInputRbfContributionAsync(channelId, latest.LocalBalanceDeltaMsat / 1_000, false,
-                                                            payload.Feerate, null, cancellationToken);
-        if (plan is not null && GetRbfFeeShareRefusal(plan) is { } refusal)
+        // Liquidity ads (NL-771): an RBF of an attempt that carried a purchase MUST request the funding again (BOLT PR
+        // #1153), and the buyer may not change sides; a request makes us the seller of this attempt
+        var latestPurchase = await GetPurchaseAsync(channelId, latest.FundingTxId, unitOfWork);
+        var previousSigned = GetContributions(latest, latestPurchase).Local;
+        var liquidityRequest = message.RequestFundingTlv?.Request;
+        if (latestPurchase is not null && liquidityRequest is null)
+            return EndQuiescenceWithTxAbort(channelId, peerPubKey,
+                                            "liquidity ads: the rbf must request the liquidity the splice bought "
+                                          + "again");
+        if (latestPurchase is { Role: LiquidityPurchaseRole.Buyer } && liquidityRequest is not null)
+            return EndQuiescenceWithTxAbort(channelId, peerPubKey,
+                                            "liquidity ads: the splice bought liquidity from the peer, not the other "
+                                          + "way round");
+
+        SpliceLiquidity? sale = null;
+        RbfContributionPlan? plan;
+        if (liquidityRequest is not null)
+        {
+            // We sell this attempt's liquidity: checked and signed again at its feerate, and we contribute exactly the
+            // requested amount (the latest attempt's inputs rebuilt, or fresh ones, NL-510); a sale we cannot fund is
+            // refused, never answered with a smaller contribution
+            if (TryStartSpliceSale(channel, peerPubKey, liquidityRequest, payload.Feerate, contribution ?? 0, fundings,
+                                   out sale) is { } saleRefusal)
+                return EndQuiescenceWithTxAbort(channelId, peerPubKey, $"liquidity ads: {saleRefusal}");
+
+            var requested = checked((long)liquidityRequest.RequestedSat);
+            plan = PlanRbfContribution(previousContribution, previousSigned, false, payload.Feerate, requested, null)
+                ?? await PlanFreshInputRbfContributionAsync(channelId, previousSigned, false, payload.Feerate,
+                                                            requested, cancellationToken);
+            if (plan is null || GetRbfFeeShareRefusal(plan) is not null)
+            {
+                if (plan is not null && plan.Contribution.ReservationId != previousContribution.ReservationId)
+                    await ReleaseAsync(plan.Contribution);
+                sale!.EndSale();
+                _logger.LogWarning("Cannot fund the {Amount} sat of liquidity {Peer} buys in its RBF of channel "
+                                 + "{ChannelId} at {Feerate} sat/kw", requested, peerPubKey, channelId,
+                                   payload.Feerate);
+                return EndQuiescenceWithTxAbort(channelId, peerPubKey,
+                                                "liquidity ads: the seller cannot fund the requested amount");
+            }
+        }
+        else
+        {
+            // Our side of the new attempt: the latest one's rebuilt at the new feerate as non-initiator, or — when
+            // that cannot be paid (a splice-in whose inputs cannot pay the higher fee) — fresh wallet inputs for the
+            // same amount (NL-510); nothing when even they cannot be funded or our share costs more than we accept
+            // (BOLT 2: a peer may stop contributing rather than fail the RBF: it "sets their sats to zero")
+            plan = PlanRbfContribution(previousContribution, previousSigned, false, payload.Feerate, null, null)
+                ?? await PlanFreshInputRbfContributionAsync(channelId, previousSigned, false, payload.Feerate, null,
+                                                            cancellationToken);
+        }
+
+        if (sale is null && plan is not null && GetRbfFeeShareRefusal(plan) is { } refusal)
         {
             _logger.LogWarning("Our share of the fee of the peer's RBF attempt on channel {ChannelId} at {Feerate} "
                              + "sat/kw, {Fee} sat, is too high ({Refusal}); not contributing to it", channelId,
@@ -352,8 +409,10 @@ public sealed partial class SpliceService
             plan.Contribution.ReservationId is { } reservation && reservation != previousContribution.ReservationId
                 ? plan.Contribution
                 : null;
+        negotiation.Liquidity = sale;
         if (!TryPrepareSharedFunding(negotiation, out var reason))
             return await EndRbfBeforeTheAttemptAsync(negotiation, channelId, peerPubKey, reason);
+        SignSale(negotiation);
         if (!await PrepareDriverForRbfAsync(channel, negotiation, fundings, cancellationToken, unitOfWork))
             return await EndRbfBeforeTheAttemptAsync(negotiation, channelId, peerPubKey,
                                                      "the signed splice attempts are not stored");
@@ -429,7 +488,16 @@ public sealed partial class SpliceService
             State = SpliceNegotiationState.Negotiating
         };
         var driver = GetDriver();
-        if (!TryPrepareSharedFunding(negotiation, out var reason))
+        // Liquidity ads (NL-771): the seller's answer to our repeated request, signed again for this attempt
+        var prepared = TryPrepareSharedFunding(negotiation, out var reason);
+        if (prepared && ValidateSellerAnswer(negotiation, message.ProvideFundingTlv?.WillFund, contribution ?? 0) is
+            { } refusal)
+        {
+            prepared = false;
+            reason = refusal;
+        }
+
+        if (!prepared)
         {
             End(negotiation, reason);
             var abort = await driver.AbortAsync(channelId, reason, unitOfWork, cancellationToken);
@@ -479,8 +547,12 @@ public sealed partial class SpliceService
          || negotiation.Model.FeeratePerKw != message.Payload.Feerate)
             return InteractiveTxRbfDecision.Reject("no splice rbf was prepared for this tx_init_rbf");
 
-        // The contribution TLV of our tx_ack_rbf is signed (NL-481): the service writes it on the driver's message
-        return InteractiveTxRbfDecision.Accept(CreateTerms(negotiation, contribution), LightningMoney.Zero);
+        // The contribution TLV of our tx_ack_rbf is signed (NL-481): the service writes it on the driver's message; a
+        // sale answers with our will_fund for this attempt (NL-771)
+        return InteractiveTxRbfDecision.Accept(CreateTerms(negotiation, contribution), LightningMoney.Zero,
+                                               negotiation.Liquidity is { Role: LiquidityPurchaseRole.Seller } sale
+                                                   ? sale.WillFund
+                                                   : null);
     }
 
     /// <summary>
@@ -848,6 +920,7 @@ public sealed partial class SpliceService
             await ReleaseAsync(fresh);
         }
 
+        negotiation.Liquidity?.EndSale();
         return EndQuiescenceWithTxAbort(channelId, peerPubKey, reason);
     }
 

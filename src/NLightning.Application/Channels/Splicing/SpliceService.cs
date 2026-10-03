@@ -64,7 +64,8 @@ using Quiescence;
 /// a negotiation it waits for is over (<see cref="QuiescenceService.QuiescenceEnded"/>: a disconnection, a peer's
 /// <c>tx_abort</c> answering our <c>splice_init</c>), and when a completed splice was saved (the driver ends the
 /// quiescence right after the save of the last <c>tx_signatures</c>).</para>
-/// <para>D10: as acceptor we contribute 0. D5: a new funding key per splice unless <see cref="SpliceOptions.RotateFundingKey"/>
+/// <para>D10: as acceptor we contribute 0, unless the peer buys liquidity from us (liquidity ads, NL-771:
+/// <c>SpliceService.Liquidity.cs</c>). D5: a new funding key per splice unless <see cref="SpliceOptions.RotateFundingKey"/>
 /// is off. D16: a splice-out we initiate pays its fee share from our channel balance (the contribution is the amount
 /// plus the fee of the common fields, the shared input and output and the splice-out output).</para>
 /// </remarks>
@@ -133,7 +134,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         if (_serviceProvider.GetService<IInteractiveTxDriver>() is null)
             throw new InvalidOperationException("Splicing needs the interactive-tx driver, which is not available");
 
-        if (!_channelMemoryRepository.TryGetChannel(channelId, out _))
+        if (!_channelMemoryRepository.TryGetChannel(channelId, out var unlocked))
             throw new KeyNotFoundException($"Channel {channelId} is not loaded");
 
         // Everything that needs I/O is done before the lock: the feerate, the splice-out destination
@@ -141,6 +142,11 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         if (feeratePerKw < _options.MinFeeratePerKw)
             throw new ArgumentOutOfRangeException(nameof(request),
                                                   $"The feerate {feeratePerKw} sat/kw is below {_options.MinFeeratePerKw} sat/kw");
+
+        // Liquidity ads (NL-771): the inbound liquidity we buy with this splice, at the seller's rate
+        var purchase = request.Liquidity is { } liquidity
+                           ? CreatePurchaseRequest(unlocked.RemoteNodeId, liquidity, feeratePerKw)
+                           : null;
 
         long contribution;
         BitcoinScript? spliceOutScript = null;
@@ -188,12 +194,16 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             };
             if (SpliceRules.CheckSendInit(conditions, contribution) is { } violation)
                 throw new InvalidOperationException($"[{violation.RequirementId}] {violation.Reason}");
+            if (purchase is not null
+             && CheckBuyerCanPay(channel, fundings, purchase, contribution, feeratePerKw) is { } unaffordable)
+                throw new InvalidOperationException($"[{unaffordable.RequirementId}] {unaffordable.Reason}");
 
             var (fundingPubKey, fundingKeyIndex) = GetNewFundingKey(channel, fundings);
             negotiation = CreateNegotiation(channel, fundings, true, contribution, null, feeratePerKw, 0, fundingPubKey,
                                             fundingKeyIndex, null, _options.RequireConfirmedInputs, false,
                                             spliceOutScript, spliceOutAmount,
                                             SpliceNegotiationState.AwaitingQuiescence);
+            negotiation.Liquidity = purchase;
             _negotiations[channelId] = negotiation;
         }
 
@@ -243,7 +253,10 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             var fundings = _statePort.GetFundings(channel);
             var conditions = GetConditions(channel, GetNegotiatedFeatures(channel.RemoteNodeId),
                                            quiescence.GetState(channelId), fundings);
-            if (SpliceRules.CheckSendInit(conditions, contribution) is { } violation)
+            if ((SpliceRules.CheckSendInit(conditions, contribution)
+              ?? (negotiation.Liquidity is { } buying
+                      ? CheckBuyerCanPay(channel, fundings, buying, contribution, feeratePerKw)
+                      : null)) is { } violation)
             {
                 // Quiescent for nothing: our tx_abort ends it (SP-Q-01)
                 var reason = $"[{violation.RequirementId}] {violation.Reason}";
@@ -260,7 +273,8 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             };
             var spliceInit = _messageFactory.CreateSpliceInitMessage(channelId, contribution, feeratePerKw, locktime,
                                                                      negotiation.Model.LocalFundingPubKey,
-                                                                     _options.RequireConfirmedInputs);
+                                                                     _options.RequireConfirmedInputs,
+                                                                     negotiation.Liquidity?.Request);
             _logger.LogInformation(
                 "Sending splice_init on channel {ChannelId}: contribution {Contribution} sat at {Feerate} sat/kw",
                 channelId, contribution, feeratePerKw);
@@ -308,32 +322,77 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         if (SpliceRules.CheckReceiveInit(conditions, payload, feerateAcceptable) is { } violation)
             return Reject(channelId, peerPubKey, violation);
 
+        // D10: we add nothing, unless the peer buys liquidity from us (NL-771): then we contribute exactly the
+        // requested amount from our wallet and sign our rate over the new funding script
+        SpliceLiquidity? sale = null;
+        var contribution = InteractiveTxContribution.Empty;
+        if (message.RequestFundingTlv?.Request is { } request)
+        {
+            if (TryStartSpliceSale(channel, peerPubKey, request, payload.FundingFeeratePerKw,
+                                   payload.FundingContributionSatoshis, fundings, out sale) is { } refusal)
+            {
+                _logger.LogInformation("Refusing the liquidity request of {Peer} on channel {ChannelId}: {Reason}",
+                                       peerPubKey, channelId, refusal);
+                return EndQuiescenceWithTxAbort(channelId, peerPubKey, $"liquidity ads: {refusal}");
+            }
+
+            try
+            {
+                contribution = await ReserveSaleContributionAsync(channelId, request.RequestedSat,
+                                                                  payload.FundingFeeratePerKw, cancellationToken);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                sale!.EndSale();
+                _logger.LogWarning("The wallet cannot fund the {Amount} sat of liquidity {Peer} asked for on channel "
+                                 + "{ChannelId}: {Reason}", request.RequestedSat, peerPubKey, channelId, e.Message);
+                return EndQuiescenceWithTxAbort(channelId, peerPubKey,
+                                                "liquidity ads: the seller cannot fund the requested amount");
+            }
+        }
+
+        var localContribution = sale is null ? 0 : checked((long)sale.Request.RequestedSat);
         var (fundingPubKey, fundingKeyIndex) = GetNewFundingKey(channel, fundings);
-        var negotiation = CreateNegotiation(channel, fundings, false, 0, payload.FundingContributionSatoshis,
-                                            payload.FundingFeeratePerKw, payload.Locktime, fundingPubKey,
-                                            fundingKeyIndex, payload.FundingPubKey, _options.RequireConfirmedInputs,
+        var negotiation = CreateNegotiation(channel, fundings, false, localContribution,
+                                            payload.FundingContributionSatoshis, payload.FundingFeeratePerKw,
+                                            payload.Locktime, fundingPubKey, fundingKeyIndex, payload.FundingPubKey,
+                                            _options.RequireConfirmedInputs,
                                             message.RequireConfirmedInputsTlv is not null, null, null,
                                             SpliceNegotiationState.Negotiating);
+        negotiation.Liquidity = sale;
         if (!TryPrepareSharedFunding(negotiation, out var reason))
+        {
+            sale?.EndSale();
+            await ReleaseAsync(contribution);
             return EndQuiescenceWithTxAbort(channelId, peerPubKey, reason);
+        }
 
+        SignSale(negotiation);
         _negotiations[channelId] = negotiation;
         try
         {
-            // D10: we add nothing; the initiator sends the first tx_add_input
-            await GetDriver().StartAsync(CreateTerms(negotiation, InteractiveTxContribution.Empty),
-                                         CreateHost(negotiation), cancellationToken);
+            // The initiator sends the first tx_add_input
+            await GetDriver().StartAsync(CreateTerms(negotiation, contribution), CreateHost(negotiation),
+                                         cancellationToken);
         }
-        catch (InvalidOperationException e)
+        catch (Exception e) when (e is InvalidOperationException or ArgumentException)
         {
+            // The driver released our contribution and told the host (a contribution the engine refused), or never
+            // took it (a negotiation in progress)
+            if (contribution.ReservationId is not null && Get(channelId) == negotiation)
+                await ReleaseAsync(contribution);
             await EndBeforeNegotiationAsync(negotiation, e.Message);
             return EndQuiescenceWithTxAbort(channelId, peerPubKey, "cannot start the splice negotiation");
         }
 
         _logger.LogInformation("Accepting the splice of channel {ChannelId} by {Peer}: its contribution {Contribution} "
-                             + "sat at {Feerate} sat/kw", channelId, peerPubKey, payload.FundingContributionSatoshis,
-                               payload.FundingFeeratePerKw);
-        return [_messageFactory.CreateSpliceAckMessage(channelId, 0, fundingPubKey, _options.RequireConfirmedInputs)];
+                             + "sat, ours {Ours} sat at {Feerate} sat/kw", channelId, peerPubKey,
+                               payload.FundingContributionSatoshis, localContribution, payload.FundingFeeratePerKw);
+        return
+        [
+            _messageFactory.CreateSpliceAckMessage(channelId, localContribution, fundingPubKey,
+                                                   _options.RequireConfirmedInputs, sale?.WillFund)
+        ];
     }
 
     /// <inheritdoc />
@@ -364,7 +423,16 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             RemoteRequiresConfirmedInputs = message.RequireConfirmedInputsTlv is not null,
             State = SpliceNegotiationState.Negotiating
         };
-        if (!TryPrepareSharedFunding(negotiation, out var reason))
+        // Liquidity ads (NL-771): the seller's answer to our request is checked over the new funding script
+        var prepared = TryPrepareSharedFunding(negotiation, out var reason);
+        if (prepared && ValidateSellerAnswer(negotiation, message.ProvideFundingTlv?.WillFund,
+                                             payload.FundingContributionSatoshis) is { } refusal)
+        {
+            prepared = false;
+            reason = refusal;
+        }
+
+        if (!prepared)
         {
             await EndBeforeNegotiationAsync(negotiation, reason);
             return EndQuiescenceWithTxAbort(channelId, peerPubKey, reason);
@@ -436,15 +504,19 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             return;
         }
 
+        // The deltas include a liquidity purchase's fee (NL-771): its row, saved with our commitment_signed like the
+        // funding row, takes it back out of the contributions
+        var purchase = await GetPurchaseAsync(channelId, txId, unitOfWork);
+        var (localContribution, remoteContribution) = GetContributions(funding, purchase);
         var fundings = _statePort.GetFundings(channel);
-        var negotiation = CreateNegotiation(channel, fundings, latest.IsInitiator,
-                                            funding.LocalBalanceDeltaMsat / 1_000,
-                                            funding.RemoteBalanceDeltaMsat / 1_000, latest.FeeratePerKw,
-                                            latest.Locktime, funding.LocalFundingPubKey, funding.LocalFundingKeyIndex,
+        var negotiation = CreateNegotiation(channel, fundings, latest.IsInitiator, localContribution,
+                                            remoteContribution, latest.FeeratePerKw, latest.Locktime,
+                                            funding.LocalFundingPubKey, funding.LocalFundingKeyIndex,
                                             funding.RemoteFundingPubKey, false, false, null, null,
                                             SpliceNegotiationState.CommitmentSigned);
         // An RBF attempt stays one (its funding row names the attempt it replaces, wave SPR)
         negotiation.Model = negotiation.Model with { SpliceTxId = txId, RbfOf = funding.RbfOf };
+        negotiation.Liquidity = purchase is null ? null : SpliceLiquidity.FromPurchase(purchase);
         if (!TryPrepareSharedFunding(negotiation, out var reason))
         {
             _logger.LogWarning("Cannot resume splice {TxId} of channel {ChannelId}: {Reason}", txId, channelId, reason);
@@ -549,9 +621,13 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
 
         // SP-TX-01..05 on the whole transaction (the session checked most of them already; the reserve row is ours,
         // and for an RBF attempt the fee of the attempt it replaces)
+        // A liquidity purchase's fee (NL-771) moves from the buyer's balance to the seller's on the new funding: it is in
+        // the balance deltas (the shared funding's shares stay the contributions), and the buyer keeps its reserve
+        var liquidityFeeMsat = negotiation.Liquidity?.FeeMsat ?? 0;
         var facts = GetFacts(negotiation, transaction) with
         {
-            PreviousAttemptFeeSatoshis = negotiation.PreviousAttemptFeeSatoshis
+            PreviousAttemptFeeSatoshis = negotiation.PreviousAttemptFeeSatoshis,
+            LiquidityFeeMsat = liquidityFeeMsat
         };
         if (SpliceRules.CheckTxComplete(facts) is { } violation)
             throw new InvalidOperationException($"[{violation.RequirementId}] {violation.Reason}");
@@ -560,8 +636,8 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         var funding = new ChannelFunding(transaction.TxId, checked((ushort)transaction.SharedOutputIndex!.Value),
                                          facts.FundingOutputSatoshis, model.LocalFundingPubKey,
                                          model.RemoteFundingPubKey!.Value, model.LocalFundingKeyIndex,
-                                         checked(model.LocalContributionSatoshis * 1_000),
-                                         checked(model.RemoteContributionSatoshis!.Value * 1_000),
+                                         checked(model.LocalContributionSatoshis * 1_000 - liquidityFeeMsat),
+                                         checked(model.RemoteContributionSatoshis!.Value * 1_000 + liquidityFeeMsat),
                                          model.IsRbf ? ChannelFundingKind.SpliceRbf : ChannelFundingKind.Splice,
                                          ChannelFundingStatus.Pending, model.FeeratePerKw, model.Locktime,
                                          model.RbfOf);
@@ -576,6 +652,9 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         var commitmentSigned = await _statePort.SignSpliceCommitmentAsync(channel, funding, unitOfWork,
                                                                           cancellationToken);
         negotiation.NewFunding = funding;
+
+        // The attempt's purchase row rides in this save (NL-771), like the funding row
+        await StagePurchaseAsync(negotiation, funding.FundingTxId, unitOfWork);
 
         // SP2-C (splicing plan §3.6): the new funding output is watched from this save on (our tx_signatures follow)
         if (await Onchain.SpliceFundingWatch.StageAsync(unitOfWork, channel.ChannelId, funding) is { } fundingWatch)
@@ -943,10 +1022,15 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
 
         // The accounting feed's SpliceLocked (NL-602) rides in the lock's save; a lock happens once per funding (the
         // funding is current afterwards, never pending again). Its delta is relative to the funding it replaces
+        // A liquidity purchase made with the splice (NL-771): its row becomes active (the siblings' replaced) and its fee
+        // is booked in the same save, the SpliceLocked event leaving the fee out of the balance change
         if (retired.Count > 0)
-            await ChannelAccountingEvents.StageSpliceLockedAsync(
-                unitOfWork, channel, updated, fundings.Current,
-                (_serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow(), _logger);
+        {
+            var occurredAt = (_serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow();
+            var liquidityFeeMsat = await StageLiquidityAtLockAsync(unitOfWork, channel, updated, retired, occurredAt);
+            await ChannelAccountingEvents.StageSpliceLockedAsync(unitOfWork, channel, updated, fundings.Current,
+                                                                 occurredAt, _logger, liquidityFeeMsat);
+        }
 
         // SP-LK-03 with RBF siblings (NL-489): the lock discards the other attempts of the splice in the same save, and
         // their transactions, which double-spend the locked one, are no longer rebroadcast
@@ -1174,6 +1258,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             _lastSigned[negotiation.ChannelId] = negotiation.Model;
         }
 
+        negotiation.Liquidity?.EndSale();
         if (_channelMemoryRepository.TryGetChannel(negotiation.ChannelId, out var channel))
             _statePort.ApplyFundings(channel, completion.Fundings, []);
 
@@ -1254,6 +1339,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
 
         // An ended RBF attempt gives the channel's host back to the negotiation it served before
         RestoreHost(negotiation);
+        negotiation.Liquidity?.EndSale();
         negotiation.Result.TrySetResult(negotiation.ToResult(reason));
     }
 
