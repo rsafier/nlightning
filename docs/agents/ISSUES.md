@@ -155,10 +155,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 |---|---|---|---|---|---|
 | open | 0 | 0 | 3 | 69 | 72 |
 | in-progress | 0 | 0 | 1 | 0 | 1 |
-| fixed | 14 | 63 | 201 | 417 | 695 |
+| fixed | 14 | 63 | 201 | 418 | 696 |
 | wontfix | 0 | 0 | 5 | 10 | 15 |
 | duplicate | 0 | 0 | 2 | 3 | 5 |
-| **Total** | **14** | **63** | **212** | **499** | **788** |
+| **Total** | **14** | **63** | **212** | **500** | **789** |
 
 ### Epics
 
@@ -2783,6 +2783,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** run the class with logs on, find why Alice does not answer Bob's `commitment_signed` when its accepter announced a P2TR `upfront_shutdown_script` with anysegwit negotiated (a validation or signing refusal swallowed into the open's timeout?); fix and keep the test green.
 - **Blocks/Blocked-by:** related NL-776
 - **Plan ref:** none
+
+### NL-921 NL-897 review follow-ups: blinded trampoline failure shapes outside the switch
+- **Status:** fixed (c7bc7ecf)
+- **Severity:** low
+- **Kind:** spec
+- **Location:** `src/NLightning.Application/Payments/Switch/TrampolineHtlcFailures.cs`, `Channels/Safety/HtlcExpiryMonitor.cs` (`FailBackAsync`), `Channels/Fees/DustExposureHtlcSwitch.cs`, `Payments/Trampoline/TrampolineRelayService.cs` (`GetFailureKeysAsync`)
+- **Evidence:** adversarial review of NL-897 (2026-10-03): (1) at the introduction node of a blinded trampoline route that is not ours to end, a recipient data the processor refuses gives `IncomingOnionTrampolineFailed(..., invalid_onion_blinding)`, but `KeysFrom` kept only the secrets, so the dust switch sent `temporary_channel_failure` and the monitor `temporary_node_failure` instead of our own `invalid_onion_blinding` (BOLT 4, TR-R-14); (2) a relay part past a blinded introduction node whose re-peel only answers malformed `invalid_onion_blinding` (route blinding turned off since) fell back to its `TrampolineRelayParts` row without the blinded answer and was failed double-wrapped (same in the relay engine); (3) the dust switch peeled without the HTLC's amount and expiry, so `payment_constraints` were not checked; (4) a zero secret (a damaged row) silently made a failure nobody can read; (5) the monitor peeled an ordinary HTLC up to three times. Missing tests: the blinded branches of both paths, the switch's added-after-shutdown relay at the introduction node, attribution off, attribution in the dust switch.
+- **Fix (c7bc7ecf):** `KeysFrom` keeps the processor's `invalid_onion_blinding` as `IntroductionSha256` (the switch builds its keys with it too); `TrampolineHtlcFailures.FromStoredPart`, shared with the relay engine (its `PartFailureKeys` removed), keeps a re-peel's malformed `invalid_onion_blinding` as `BlindedMalformedSha256`; a row without a usable outer secret (32 non-zero bytes) gives no keys (the caller's ordinary path, the HTLC's stored secret) and `FailAsync` never uses an unusable trampoline secret (outer-only failure, warning, no throw); `ResolveAsync` returns the re-peel, reused by the monitor for the secret and the introduction check; the dust switch passes the HTLC's amount and expiry. The BOLT 2/4 random delay before an introduction node's `invalid_onion_blinding` stays out of these paths (documented, as `BlindedHtlcFailures.FailAsync`). Tests: region NL-921 of `HtlcExpiryMonitorTests` and `DustExposureHtlcSwitchTests` (new `TrampolineFailureTestKit.BuildBlindedRelayAsync`/`BuildBlindedFinalAsync`/`CreateUsWithoutRouteBlinding`) and `BlindedTrampolineRelayTests.Given_ARelayPartAtTheIntroductionNodeAddedAfterOurShutdown_*`; the six covering a fix fail on 9418c968.
+- **Blocks/Blocked-by:** Follow-up of NL-897 (and NL-895)
+- **Plan ref:** TRAMPOLINE_PLAN TR-R-14
 
 ## BOLT 5: On-chain handling
 
