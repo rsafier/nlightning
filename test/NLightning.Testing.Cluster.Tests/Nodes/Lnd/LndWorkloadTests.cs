@@ -106,6 +106,36 @@ public class LndWorkloadTests
     }
 
     [Fact]
+    public void Given_FlagsWithSeparateValueTokens_When_TheArgsAreBuilt_Then_EveryValueTokenIsKept()
+    {
+        // Arrange: go-flags takes "--name value"; the two flags carry the same value
+        var options = new LndNodeOptions("alice")
+        {
+            ExtraArgs = ["--protocol.custom-message", "513", "--protocol.custom-nodeann", "513", "--accept-keysend"]
+        };
+
+        // Act
+        var args = LndWorkload.BuildArgs(options);
+
+        // Assert
+        Assert.Equal(["--protocol.custom-message", "513", "--protocol.custom-nodeann", "513"], args.TakeLast(4));
+        Assert.Single(args, a => a == "--accept-keysend");
+    }
+
+    [Fact]
+    public void Given_AFlagTheDefaultsHaveFollowedByAValue_When_TheArgsAreBuilt_Then_TheFlagAndItsValueArePassed()
+    {
+        // Arrange: a default switch's name followed by a value token is a flag with its value, not a duplicate
+        var options = new LndNodeOptions("alice") { ExtraArgs = ["--protocol.wumbo-channels", "true"] };
+
+        // Act
+        var args = LndWorkload.BuildArgs(options);
+
+        // Assert: the value never ends up alone
+        Assert.Equal(["--protocol.wumbo-channels", "true"], args.TakeLast(2));
+    }
+
+    [Fact]
     public void Given_ALndNode_When_ItsManifestsAreBuilt_Then_TheContainerKeepsTheImageEntrypointAndGetsTheArgs()
     {
         // Act

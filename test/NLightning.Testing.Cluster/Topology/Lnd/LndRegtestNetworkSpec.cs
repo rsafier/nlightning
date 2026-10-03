@@ -70,7 +70,10 @@ public sealed record LndRegtestNetworkSpec(IReadOnlyList<LndRegtestNodeSpec> Nod
     /// <summary>
     /// The problems of the spec (empty when it can be deployed): DNS-1123 aliases, unique and not the chain's, channels
     /// between two different nodes of the spec, capacity and push, at most <see cref="WalletUtxoCount"/> opens per
-    /// funder, each funder's outputs larger than any channel it opens, the miner's reserve.
+    /// funder, each funder's outputs larger than any channel it opens, and a reserve of at least 0 blocks. Whether the
+    /// miner's wallet covers the wallet fundings depends on the chain's history (coinbases matured before the network
+    /// and the subsidy at that height), so <see cref="LndRegtestNetwork"/> checks the miner's balance against them
+    /// before it sends them and fails with what is missing.
     /// </summary>
     public IReadOnlyList<string> Validate()
     {

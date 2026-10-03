@@ -101,8 +101,21 @@ public static class LndWorkload
         if (options.AcceptKeysend)
             args.Add("--accept-keysend");
         // An extra flag that is already there (alice's --accept-keysend, which the Docker fixture adds on top of
-        // LNUnit's default) is not passed twice
-        args.AddRange(options.ExtraArgs.Where(extra => !args.Contains(extra, StringComparer.Ordinal)).Distinct());
+        // LNUnit's default) is not passed twice. Only whole flags are compared: a flag token followed by its own value
+        // token (go-flags takes "--name value") and every value token are always passed, so a repeated value ("513")
+        // or a value equal to another token is never dropped.
+        var extras = options.ExtraArgs;
+        for (var i = 0; i < extras.Count; i++)
+        {
+            var extra = extras[i];
+            var wholeFlag = extra.StartsWith("--", StringComparison.Ordinal)
+                         && (i + 1 == extras.Count || extras[i + 1].StartsWith('-'));
+            if (wholeFlag && args.Contains(extra, StringComparer.Ordinal))
+                continue;
+
+            args.Add(extra);
+        }
+
         return args;
     }
 }

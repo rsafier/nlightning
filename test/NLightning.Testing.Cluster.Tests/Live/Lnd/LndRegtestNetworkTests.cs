@@ -19,7 +19,8 @@ using Testing.Lnd.Lnrpc;
 /// NLightning.Testing.Cluster.Tests.Live.Lnd.LndRegtestNetworkTests</c> (<c>-n 2</c>: two networks at once).
 /// </remarks>
 [Trait("Category", "Cluster")]
-public class LndRegtestNetworkTests(LndRegtestNetworkFixture fixture) : IClassFixture<LndRegtestNetworkFixture>
+public class LndRegtestNetworkTests(LndRegtestNetworkFixture fixture)
+    : IClassFixture<LndRegtestNetworkFixture>, IAsyncLifetime
 {
     private const long PaymentMsat = 10_000_000;
 
@@ -28,6 +29,11 @@ public class LndRegtestNetworkTests(LndRegtestNetworkFixture fixture) : IClassFi
     private LndRegtestNetwork Network => fixture.Network;
 
     private static void Log(string line) => TestContext.Current.TestOutputHelper?.WriteLine(line);
+
+    // The warm topology starts with the first test that runs, not when xunit creates the fixture (NL-800)
+    public ValueTask InitializeAsync() => new(fixture.EnsureStartedAsync());
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     [Fact(Explicit = true)]
     public async Task Given_TheNetwork_When_Built_Then_ItIsTheDockerFixturesNetworkAndReady()
@@ -166,6 +172,10 @@ public class LndRegtestNetworkTests(LndRegtestNetworkFixture fixture) : IClassFi
                                           .Select(c => c.ChanId).Order());
         Assert.All(listed.Channels.Where(c => aliceChannels.Contains(c.ChanId)), c => Assert.True(c.Active));
         await Network.WaitReadyAsync(ct);
+        // Assert: the mesh is whole again, david included (no channel with bob: only the redial brings him back)
+        await Network.WaitMeshAsync(ct);
+        Assert.Equal(Network.Nodes.Count - 1, restarted.PeersRedialled);
+        Assert.Equal(Network.Nodes.Count - 1, killed.PeersRedialled);
         Assert.True(afterRestart.Succeeded, afterRestart.FailureReason);
         Log($"{Network.Run.Namespace}: {restarted}; {killed}; alice > bob > carol after both in "
           + $"{afterRestart.Attempts} attempt(s)");
