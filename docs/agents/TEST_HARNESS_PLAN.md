@@ -1288,6 +1288,20 @@ Evidence (OrbStack, Release, net10.0):
 Still open: the cluster proofs of `onchain`, `anchors`, `gossip` and `abcd` (phase 6; then drop their
 `ClusterProofPending`), NL-818 (log volume), NL-820 (LNUnit removal).
 
+### Phase 6 ABCD lane record: the ABCD suite on the cluster (2026-10-03, `wip/harness-spike` from 3e31759f)
+
+- `Docker/Abcd/` needed no change: since the phase 3 completion it reaches LND only through the backend-neutral
+  `LightningRegtestNetworkFixture`, and bob and carol dial alice and david at `GetLndPeerEndpointAsync`. The lane only
+  drops the catalog's `ClusterProofPending` for `abcd` (8dc1fb09), so the default matrix runs it; no product bug
+  surfaced (NL-835..NL-839 unused).
+- Evidence (OrbStack, Release, net10.0): `--suite abcd` 11/11 alone (`abcd-c1`, 58 s), `-n 2` 2 x 11/11 at once
+  (`abcd-c2`, 64 s / 68 s), `--matrix abcd` green 11/11 (`abcd-mx1`, 51 s, fixture ready 27.8 s, 1/1 namespace);
+  per class on the cluster: `AbcdRestartTests` 3/3, `AbcdPaymentTests` 2/2, `AbcdSendReceiveTests` 2/2,
+  `AbcdReestablishTests` 1/1, `AbcdAccountingTests` 1/1, `OnceOnlyBuildTests` 2/2. Docker unchanged:
+  `scripts/run-abcd.sh 1` under the machine lock 11/11 (network ready 9.9 s, 34 s). Matrix unit tests 76/76,
+  `SuiteCatalogMembershipTests` green, `scripts/tests/run-cluster-tests.sh` 48/48 (its "pending suite runs when named"
+  case still names `abcd`, which now simply runs as a proven suite).
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.

@@ -170,6 +170,17 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   server-database test's own server and topology; `--class` runs one class) and `scripts/run-cluster.sh -n 1 --suite
   faults` (no Docker lock). The Docker side of the Postgres round trips is unchanged (`PostgresTests` from the host, under the lock).
 
+## The ABCD suite on the cluster (test harness phase 6)
+
+- `Docker/Abcd/` (LND alice → our bob → our carol → LND david, 11 tests incl. `AbcdAccountingTests` and the
+  container-free `OnceOnlyBuildTests`) runs unchanged on either backend: it reaches LND only through
+  `LightningRegtestNetworkFixture` (`GetLndNode`, `Bitcoin`, `LndNodes`, `DumpLndLogsAsync`), and bob and carol dial
+  alice and david at `GetLndPeerEndpointAsync` (the Service names on the cluster), so LND's own disconnects in
+  `AbcdReestablishTests` and bob's stop/crash in `AbcdRestartTests` end with our nodes redialling the stored names.
+- Run: `scripts/run-cluster.sh -n 1 --suite abcd` (1 namespace, the `regtest` collection's network; no Docker lock),
+  or as part of the default matrix (`--matrix`). `scripts/run-abcd.sh` is unchanged and runs the Docker backend
+  (under the machine's Docker lock). Proven 2026-10-03: 11/11 alone (51-58 s, network ready 28 s), 2 x 11/11 at once.
+
 ## Reachability (OrbStack, host-side tests)
 
 - Our node listens on 127.0.0.1 (all interfaces when `NLTG_HOST_ADDRESS` names another host) and is announced to the
