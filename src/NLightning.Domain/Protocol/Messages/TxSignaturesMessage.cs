@@ -26,17 +26,26 @@ public sealed class TxSignaturesMessage : BaseChannelMessage
     /// </summary>
     public SharedInputSignatureTlv? SharedInputSignatureTlv { get; }
 
+    /// <summary>
+    /// BOLTs PR #1324 <c>shared_input_partial_signature</c> (TLV 2): the sender's MuSig2 partial signature with nonce of
+    /// the shared taproot input of a splice (instead of <see cref="SharedInputSignatureTlv"/>).
+    /// </summary>
+    public SharedInputPartialSignatureTlv? SharedInputPartialSignatureTlv { get; }
+
     /// <param name="payload">The tx_signatures payload.</param>
     /// <param name="sharedInputSignatureTlv">The <c>shared_input_signature</c> TLV, if any.</param>
-    public TxSignaturesMessage(TxSignaturesPayload payload, SharedInputSignatureTlv? sharedInputSignatureTlv = null)
+    /// <param name="sharedInputPartialSignatureTlv">The <c>shared_input_partial_signature</c> TLV, if any.</param>
+    public TxSignaturesMessage(TxSignaturesPayload payload, SharedInputSignatureTlv? sharedInputSignatureTlv = null,
+                               SharedInputPartialSignatureTlv? sharedInputPartialSignatureTlv = null)
         : base(MessageTypes.TxSignatures, payload)
     {
         SharedInputSignatureTlv = sharedInputSignatureTlv;
+        SharedInputPartialSignatureTlv = sharedInputPartialSignatureTlv;
 
-        if (SharedInputSignatureTlv is not null)
+        if (SharedInputSignatureTlv is not null || SharedInputPartialSignatureTlv is not null)
         {
             Extension = new TlvStream();
-            Extension.Add(SharedInputSignatureTlv);
+            Extension.Add(SharedInputSignatureTlv, SharedInputPartialSignatureTlv);
         }
     }
 }

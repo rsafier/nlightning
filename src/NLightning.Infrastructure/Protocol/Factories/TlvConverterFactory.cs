@@ -51,6 +51,17 @@ public class TlvConverterFactory : ITlvConverterFactory
         _converters.Add(typeof(StartBatchMessageTypeTlv), new StartBatchMessageTypeTlvConverter());
         _converters.Add(typeof(UpfrontShutdownScriptTlv), new UpfrontShutdownScriptTlvConverter());
 
+        // Simple taproot channels (option_simple_taproot) and BOLTs PR #1324 (taproot interactive-tx/splices; NL-877)
+        _converters.Add(typeof(CommitNoncesTlv), new CommitNoncesTlvConverter());
+        _converters.Add(typeof(CurrentCommitNonceTlv), new CurrentCommitNonceTlvConverter());
+        _converters.Add(typeof(FundingNonceTlv), new FundingNonceTlvConverter());
+        _converters.Add(typeof(NextCloseeNonceTlv), new NextCloseeNonceTlvConverter());
+        _converters.Add(typeof(NextLocalNonceTlv), new NextLocalNonceTlvConverter());
+        _converters.Add(typeof(NextLocalNoncesTlv), new NextLocalNoncesTlvConverter());
+        _converters.Add(typeof(PartialSignatureWithNonceTlv), new PartialSignatureWithNonceTlvConverter());
+        _converters.Add(typeof(SharedInputPartialSignatureTlv), new SharedInputPartialSignatureTlvConverter());
+        _converters.Add(typeof(ShutdownNonceTlv), new ShutdownNonceTlvConverter());
+
         // Liquidity ads (BOLT PR #1153, TLV 1339; NL-850)
         _converters.Add(typeof(RequestFundingTlv), new RequestFundingTlvConverter());
         _converters.Add(typeof(ProvideFundingTlv), new ProvideFundingTlvConverter());

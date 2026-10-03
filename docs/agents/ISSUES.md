@@ -5904,6 +5904,36 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-877
 - **Plan ref:** TAPROOT_CHANNELS_PLAN D-T3
 
+
+### NL-957 tx_add_input `prevtx_details` (taproot shared/wallet inputs without prevtx) is not on the wire
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure.Serialization/Messages/Types/TxAddInputMessageTypeSerializer.cs`
+- **Evidence:** taproot wave t02 lane WIRE added the BOLTs PR #1324 nonce TLVs (tx_complete 4/6, tx_signatures 2, channel_reestablish 24) but not tx_add_input's `prevtx_details`, which PR #1324 numbers 2 and Eclair 0.14.3 still sends as 1111 (`PrevTxOut`: txid, u64 amount, script; a taproot input may then omit prevtx). Our known set for tx_add_input has no 2, so an Eclair-style 2 would be refused, and 1111 (odd) is ignored, leaving a prevtx-less taproot input unusable.
+- **Fix sketch:** add a `PrevTxDetailsTlv` read as both 2 and 1111 when the interactive-tx lane needs it (dual-funded taproot opens and splices with Eclair).
+- **Blocks/Blocked-by:** Part of NL-877 (T5/T6, dual-funded taproot and splices)
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
+
+### NL-958 LND's channel_ready announcement nonces (TLVs 0 and 2) are unknown even types to us
+- **Status:** open
+- **Severity:** low
+- **Kind:** interop
+- **Location:** `src/NLightning.Infrastructure.Serialization/Messages/Types/ChannelReadyMessageTypeSerializer.cs`
+- **Evidence:** LND 0.21.4 (`lnwire/channel_ready.go:34-44`) defines channel_ready TLVs 0 and 2 as announcement nonces for public taproot channels; our known set is {1, 4}, so a channel_ready carrying them is refused (warning + close). LND sends them only for announced taproot channels, which both LND and Eclair refuse today, and the simple taproot proposal leaves public taproot channels to the gossip v1.75 work.
+- **Fix sketch:** read and ignore (or model) TLVs 0 and 2 when taproot gossip lands, or as soon as an LND peer is seen sending them on a private channel.
+- **Blocks/Blocked-by:** Related NL-877
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
+
+### NL-959 funding_created, funding_signed, revoke_and_ack, shutdown and tx_complete now refuse unknown even TLVs
+- **Status:** open
+- **Severity:** low
+- **Kind:** interop
+- **Location:** `src/NLightning.Infrastructure.Serialization/Messages/Types/{FundingCreated,FundingSigned,RevokeAndAck,Shutdown,TxComplete}*Serializer.cs`
+- **Evidence:** before taproot wave t02 these serializers never read the bytes after the payload, so any trailing TLV (even ones included) was silently ignored. Lane WIRE made them read the extension with `DeserializeStrictAsync` (BOLT 1, NL-001) to get the taproot TLVs, so a peer sending an even TLV we do not know in one of them is now answered with a warning and disconnected. Known sets: funding_created/funding_signed {2}, revoke_and_ack {22}, shutdown {8}, tx_complete {4, 6}. No LND 0.21.4, CLN v26.06.8 or Eclair 0.14.3 even TLV is known to be missing (LND staging taproot sends revoke_and_ack 4, but only on staging channels, which we never open), but the interop suites have not run against this change yet.
+- **Fix sketch:** run the cluster interop matrix (cln, eclair, ldk, lnd) on the integration branch; add any even TLV a peer sends to the right known set.
+- **Blocks/Blocked-by:** Related NL-001, NL-877
+- **Plan ref:** `TAPROOT_CHANNELS_PLAN.md` T2
 ### NL-158 Key file encryption: fixed Argon2 salt, all-zero XChaCha nonce, 64 KiB Argon2 memory
 - **Status:** fixed (953a33b, b999208)
 - **Severity:** critical

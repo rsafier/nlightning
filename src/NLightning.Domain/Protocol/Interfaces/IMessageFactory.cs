@@ -6,6 +6,7 @@ using Crypto.ValueObjects;
 using Gossip.Addresses;
 using LiquidityAds.Models;
 using Messages;
+using Models;
 using Money;
 using Tlv;
 
@@ -199,4 +200,108 @@ public interface IMessageFactory
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="batchSize"/> is not in 2..20.</exception>
     StartBatchMessage CreateStartBatchMessage(ChannelId channelId, ushort batchSize);
+
+    #region Simple taproot channels (option_simple_taproot, BOLTs PR #1324; NL-877)
+
+    /// <summary>
+    /// Creates an open_channel for a simple taproot channel: as the overload without a nonce, plus
+    /// <c>next_local_nonce</c> (TLV 4), our verification nonce for the first commitment the peer signs for us.
+    /// </summary>
+    OpenChannel1Message CreateOpenChannel1Message(ChannelId temporaryChannelId, LightningMoney fundingAmount,
+                                                  CompactPubKey fundingPubKey, LightningMoney pushAmount,
+                                                  ChannelParty localParams, LightningMoney feeRatePerKw,
+                                                  CompactPubKey revocationBasepoint,
+                                                  CompactPubKey paymentBasepoint, CompactPubKey delayedPaymentBasepoint,
+                                                  CompactPubKey htlcBasepoint, CompactPubKey firstPerCommitmentPoint,
+                                                  ChannelFlags channelFlags,
+                                                  ChannelTypeTlv channelTypeTlv,
+                                                  UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv,
+                                                  MusigPublicNonce nextLocalNonce);
+
+    /// <summary>
+    /// Creates an accept_channel for a simple taproot channel: as the overload without a nonce, plus
+    /// <c>next_local_nonce</c> (TLV 4).
+    /// </summary>
+    AcceptChannel1Message CreateAcceptChannel1Message(ChannelParty localParams, ChannelTypeTlv channelTypeTlv,
+                                                      CompactPubKey delayedPaymentBasepoint,
+                                                      CompactPubKey firstPerCommitmentPoint,
+                                                      CompactPubKey fundingPubKey, CompactPubKey htlcBasepoint,
+                                                      uint minimumDepth, CompactPubKey paymentBasepoint,
+                                                      CompactPubKey revocationBasepoint, ChannelId temporaryChannelId,
+                                                      UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv,
+                                                      MusigPublicNonce nextLocalNonce);
+
+    /// <summary>
+    /// Creates a channel_ready for a simple taproot channel, with <c>next_local_nonce</c> (TLV 4).
+    /// </summary>
+    ChannelReadyMessage CreateChannelReadyMessage(ChannelId channelId, CompactPubKey secondPerCommitmentPoint,
+                                                  ShortChannelId? shortChannelId, MusigPublicNonce nextLocalNonce);
+
+    /// <summary>
+    /// Creates a funding_created for a simple taproot channel: the 64-byte <c>signature</c> is all zeros
+    /// (<see cref="CompactSignature.Zero"/>) and the partial signature goes in <c>partial_signature_with_nonce</c>
+    /// (TLV 2).
+    /// </summary>
+    FundingCreatedMessage CreateFundingCreatedMessage(ChannelId temporaryChannelId, TxId fundingTxId,
+                                                      ushort fundingOutputIndex,
+                                                      MusigPartialSignatureWithNonce partialSignatureWithNonce);
+
+    /// <summary>
+    /// Creates a funding_signed for a simple taproot channel (zero <c>signature</c>, TLV 2).
+    /// </summary>
+    FundingSignedMessage CreateFundingSignedMessage(ChannelId channelId,
+                                                    MusigPartialSignatureWithNonce partialSignatureWithNonce);
+
+    /// <summary>
+    /// Creates a commitment_signed for a simple taproot channel: zero <c>signature</c>, the partial signature in TLV 2,
+    /// <c>funding_txid</c> (TLV 1) as always; the HTLC signatures are 64-byte schnorr signatures.
+    /// </summary>
+    CommitmentSignedMessage CreateCommitmentSignedMessage(ChannelId channelId,
+                                                          MusigPartialSignatureWithNonce partialSignatureWithNonce,
+                                                          IEnumerable<CompactSignature> htlcSignatures,
+                                                          TxId fundingTxId);
+
+    /// <summary>
+    /// Creates a revoke_and_ack for a simple taproot channel, with <c>next_local_nonces</c> (TLV 22): one nonce per
+    /// active funding.
+    /// </summary>
+    RevokeAndAckMessage CreateRevokeAndAckMessage(ChannelId channelId, ReadOnlyMemory<byte> perCommitmentSecret,
+                                                  CompactPubKey nextPerCommitmentPoint, FundingNonces nextLocalNonces);
+
+    /// <summary>
+    /// Creates a channel_reestablish with every optional TLV: <c>next_funding</c> (1), <c>my_current_funding_locked</c>
+    /// (5), the simple taproot <c>next_local_nonces</c> (22) and BOLTs PR #1324 <c>current_commit_nonce</c> (24); a
+    /// null argument leaves its TLV out.
+    /// </summary>
+    ChannelReestablishMessage CreateChannelReestablishMessage(ChannelId channelId, ulong nextCommitmentNumber,
+                                                              ulong nextRevocationNumber,
+                                                              ReadOnlyMemory<byte> yourLastPerCommitmentSecret,
+                                                              CompactPubKey myCurrentPerCommitmentPoint,
+                                                              FundingNonces? nextLocalNonces,
+                                                              MusigPublicNonce? currentCommitNonce = null,
+                                                              NextFundingTlv? nextFundingTlv = null,
+                                                              MyCurrentFundingLockedTlv? myCurrentFundingLockedTlv =
+                                                                  null);
+
+    /// <summary>
+    /// Creates a shutdown for a simple taproot channel, with <c>shutdown_nonce</c> (TLV 8): our closee nonce.
+    /// </summary>
+    ShutdownMessage CreateShutdownMessage(ChannelId channelId, BitcoinScript scriptPubkey,
+                                          MusigPublicNonce shutdownNonce);
+
+    /// <summary>
+    /// Creates a tx_complete of a simple taproot interactive-tx session (BOLTs PR #1324): <c>commit_nonces</c> (TLV 4)
+    /// and, for a splice of a taproot channel, <c>funding_nonce</c> (TLV 6).
+    /// </summary>
+    TxCompleteMessage CreateTxCompleteMessage(ChannelId channelId, MusigPublicNonce commitNonce,
+                                              MusigPublicNonce nextCommitNonce, MusigPublicNonce? fundingNonce = null);
+
+    /// <summary>
+    /// Creates a tx_signatures with <c>shared_input_partial_signature</c> (TLV 2, BOLTs PR #1324): our partial signature
+    /// with nonce of the shared taproot input of a splice.
+    /// </summary>
+    TxSignaturesMessage CreateTxSignaturesMessage(ChannelId channelId, byte[] txId, List<Witness> witnesses,
+                                                  MusigPartialSignatureWithNonce sharedInputPartialSignature);
+
+    #endregion
 }

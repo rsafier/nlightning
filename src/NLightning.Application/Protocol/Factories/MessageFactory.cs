@@ -19,7 +19,7 @@ using Domain.Protocol.ValueObjects;
 /// <summary>
 /// Factory for creating messages.
 /// </summary>
-public class MessageFactory : IMessageFactory
+public partial class MessageFactory : IMessageFactory
 {
     private readonly NodeOptions _nodeOptions;
     private readonly BitcoinNetwork _bitcoinNetwork;

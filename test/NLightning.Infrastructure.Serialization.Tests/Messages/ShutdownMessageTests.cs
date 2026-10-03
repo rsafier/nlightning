@@ -13,7 +13,8 @@ public class ShutdownMessageTests
     public ShutdownMessageTests()
     {
         _shutdownMessageTypeSerializer =
-            new ShutdownMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            new ShutdownMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
+                                              SerializerHelper.TlvStreamSerializer);
     }
 
     [Fact]

@@ -248,6 +248,18 @@ public class TlvStreamSerializerTests
             new ShortChannelIdTlv(new ShortChannelId(1234, 0, 1)),
             StartBatchMessageTypeTlv.CommitmentSigned(),
             new UpfrontShutdownScriptTlv(new BitcoinScript([0x00, 0x14, .. new byte[20]])),
+            new CommitNoncesTlv(Nonce(0x21), Nonce(0x22)),
+            new CurrentCommitNonceTlv(Nonce(0x23)),
+            new FundingNonceTlv(Nonce(0x24)),
+            new NextCloseeNonceTlv(Nonce(0x25)),
+            new NextLocalNonceTlv(Nonce(0x26)),
+            new NextLocalNoncesTlv(new FundingNonces([(new TxId(Enumerable.Repeat((byte)0x27, 32).ToArray()),
+                                                        Nonce(0x28))])),
+            new PartialSignatureWithNonceTlv(new MusigPartialSignatureWithNonce(
+                                                 Enumerable.Repeat((byte)0x29, 98).ToArray())),
+            new SharedInputPartialSignatureTlv(new MusigPartialSignatureWithNonce(
+                                                   Enumerable.Repeat((byte)0x2a, 98).ToArray())),
+            new ShutdownNonceTlv(Nonce(0x2b)),
             new AmtToForwardTlv(LightningMoney.MilliSatoshis(1_000_000)),
             new OutgoingCltvValueTlv(800_000),
             new OnionShortChannelIdTlv(new ShortChannelId(800_000, 1, 2)),
@@ -270,6 +282,8 @@ public class TlvStreamSerializerTests
 
         return samples.ToDictionary(t => t.GetType());
     }
+
+    private static MusigPublicNonce Nonce(byte fill) => new(Enumerable.Repeat(fill, 66).ToArray());
 
     private sealed class UnregisteredTlv() : BaseTlv(new BigSize(99), [0x01]);
 }

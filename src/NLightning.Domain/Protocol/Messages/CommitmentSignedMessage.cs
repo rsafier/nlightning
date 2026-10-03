@@ -25,15 +25,24 @@ public sealed class CommitmentSignedMessage : BaseChannelMessage
     /// </summary>
     public FundingTxIdTlv? FundingTxIdTlv { get; }
 
-    public CommitmentSignedMessage(CommitmentSignedPayload payload, FundingTxIdTlv? fundingTxIdTlv = null)
+    /// <summary>
+    /// Simple taproot channels <c>partial_signature_with_nonce</c> (TLV 2): the MuSig2 partial signature of the
+    /// peer's commitment and its signing nonce; the payload's <c>signature</c> is then all zeros
+    /// (<see cref="Crypto.ValueObjects.CompactSignature.Zero"/>). Absent on other channels.
+    /// </summary>
+    public PartialSignatureWithNonceTlv? PartialSignatureWithNonceTlv { get; }
+
+    public CommitmentSignedMessage(CommitmentSignedPayload payload, FundingTxIdTlv? fundingTxIdTlv = null,
+                                   PartialSignatureWithNonceTlv? partialSignatureWithNonceTlv = null)
         : base(MessageTypes.CommitmentSigned, payload)
     {
         FundingTxIdTlv = fundingTxIdTlv;
+        PartialSignatureWithNonceTlv = partialSignatureWithNonceTlv;
 
-        if (FundingTxIdTlv is not null)
+        if (FundingTxIdTlv is not null || PartialSignatureWithNonceTlv is not null)
         {
             Extension = new TlvStream();
-            Extension.Add(FundingTxIdTlv);
+            Extension.Add(FundingTxIdTlv, PartialSignatureWithNonceTlv);
         }
     }
 }

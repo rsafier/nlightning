@@ -299,10 +299,11 @@ public class FeatureOptionsTests
     }
 
     [Fact]
-    public void Given_TheShippedOptions_When_CheckingExperimentalFeatures_Then_OnlyTrampolineRoutingIsLeft()
+    public void Given_TheShippedOptions_When_CheckingExperimentalFeatures_Then_OnlyTrampolineAndTaprootAreLeft()
     {
-        // Act & Assert (NL-332: attribution_data left the set; NL-875: trampoline_routing is gated while it is built)
-        Assert.Equal(new HashSet<Feature> { Feature.OptionTrampolineRouting },
+        // Act & Assert (NL-332: attribution_data left the set; NL-875: trampoline_routing and NL-877:
+        // option_simple_taproot are gated while they are built)
+        Assert.Equal(new HashSet<Feature> { Feature.OptionTrampolineRouting, Feature.OptionSimpleTaproot },
                      FeatureOptions.ExperimentalFeatures.ToHashSet());
         Assert.Same(FeatureOptions.ExperimentalFeatures, new FeatureOptions().ExperimentalFeatureSet);
     }

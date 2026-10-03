@@ -13,7 +13,8 @@ public class RevokeAndAckMessageTests
     public RevokeAndAckMessageTests()
     {
         _revokeAndAckMessageTypeSerializer =
-            new RevokeAndAckMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory);
+            new RevokeAndAckMessageTypeSerializer(SerializerHelper.PayloadSerializerFactory, SerializerHelper.TlvConverterFactory,
+                                                  SerializerHelper.TlvStreamSerializer);
     }
 
     [Fact]
