@@ -118,21 +118,45 @@ every implementation, our own node included, is driven through the same seams.
   wait), `StableNodeAddress`, the CLN node and `ClusterTopologyFixture<TDefinition>` (a topology kept warm per xunit
   collection).
 - `Nodes/Lnd/` (LND lane): `LndNodeOptions` (alias, the bitcoind Service, extra flags) → `LndWorkload.Build`
-  (`custom_lnd:0.21.4-beta` Never, LNUnit's `AddPolarLNDNode` flags, `lnddir` `/home/lnd/.lnd` on the PVC, readiness =
-  `lncli getinfo` answers with `synced_to_chain`); `LndCredentials` (`tls.cert` + `admin.macaroon` read by exec);
-  `LndGrpcConnection` (LNUnit.LND's generated `Lnrpc`/`Routerrpc`/`Walletrpc`/`Invoicesrpc` clients, the server
-  certificate **pinned** to the node's `tls.cert`, macaroon header; pod IP from the host, pod DNS name in-cluster);
+  (`custom_lnd:0.21.4-beta` Never, LNUnit's `AddPolarLNDNode` flags, an extra flag already among them not passed twice,
+  `lnddir` `/home/lnd/.lnd` on the PVC, readiness = `lncli getinfo` answers with `synced_to_chain`); `LndCredentials`
+  (`tls.cert` + `admin.macaroon` read by exec, `ToSettings(host, port)` = the in-tree client's `LndSettings.FromBytes`);
+  `LndNode.Connection` is an in-tree `NLightning.Testing.Lnd.LndNodeConnection` (phase 3: no LNUnit.LND in this
+  library; `Lightning`/`Router` are its `LightningClient`/`RouterClient`, the certificate pinned) dialled at the pod's
+  **DNS name** (`alias-0.alias.ns.svc.cluster.local`, from the host too, about 120 ms once per connection), so it is
+  the same object across `RestartAsync`/`KillAsync` (replaced only if LND wrote other credentials);
   `LndNode.DeployAsync(run, options, timeout, ct)` implements `ITopologyLightningNode` (its block height counts only
   once `synced_to_chain`: an open before the wallet caught up fails "channels cannot be created before the wallet is
-  fully synced") and reconnects after `RestartAsync`/`KillAsync`; `LndNodeDeployer` puts LND in a declarative topology (`AddLnd`); `LndMapping` (txids,
-  `chan_id` → `BxTxO`, channel points). `LndNodeOptions` defaults follow the shared bitcoind (`miner`, `nltg`, ZMQ
-  28332/28333).
+  fully synced"; ready = `SERVER_ACTIVE` (`WaitServerActiveAsync`; LND 0.21 stays `RPC_ACTIVE` at genesis) and synced,
+  also after a restart); `LndNodeDeployer` puts LND in a declarative topology (`AddLnd`); `LndMapping` (txids,
+  `chan_id` → `BxTxO`, channel points); `LndGraph` (`GetEdgeAsync`, `HasOwnChannelEdgeAsync` = the Docker suites'
+  `LndTestHelpers` check, `EdgeProblem`: both policies there and enabled, the funder's at a given fee and delta).
+  `LndNodeOptions` defaults follow the shared bitcoind (`miner`, `nltg`, ZMQ 28332/28333).
 - `Topology/Lnd/` (LND lane): `LndPairTopology.BuildAsync` = the shared bitcoind `miner`
   (`BitcoinCoreTopologyChain`) + `alice`/`bob` (started in bitcoind's wave, `Settings.DeployNodesWithChain`;
   `Settings.Storage`) with an active alice → bob channel; `PayAsync` retries a failed
   payment (NL-319; any `ILightningTestPeer` pair); `RestartAsync(node, kill)` restarts or kills a node and redials it
   **by its new pod IP**: LND stores the resolved IP of a peer it dialled by name, and the cluster DNS may answer with
   the old IP for a while after a restart.
+- `Topology/Lnd/LndRegtestNetwork` (phase 3): the Docker suites' `LightningRegtestNetworkFixture` network on the
+  cluster. `LndRegtestNetworkSpec.Default` = bitcoind `miner` + `alice` (`--protocol.rbf-coop-close`,
+  `--accept-keysend`), `bob`, `carol`, `david`; alice → bob 10M sat, bob → alice / carol → alice / carol → bob 10M
+  with 1M pushed; each funder's side at 0 msat / 0 ppm / delta 40 (LNUnit's channel defaults); 2 x 42.69 BTC per
+  wallet; public opens at 10 sat/vB. `Declare(builder, options)` puts the chain and the LND nodes (PVCs by default, so
+  they restart) in one wave; `SetUpAsync(topology, options)` then does the LND part: every LND `SERVER_ACTIVE`, the
+  miner's reserve (30 coinbases to its wallet, matured with 100 burn blocks: about 1,200 BTC left for the tests),
+  every LND a permanent peer of every other one (LNUnit's mesh, dialled at once), one `sendmany` for the wallets, the
+  opens, 6 blocks, active on both ends, `UpdateChannelPolicy`, and every channel in **every LND's graph** with both
+  policies enabled and the funder's set (LND 0.21 lists a fresh channel active before it can route, NL-319).
+  `BuildAsync(run, options)` = both. Members shaped like the fixture: `GetLndNode(alias)`, `LndNodes` (the in-tree
+  connections), `Node(alias)` (`LndNode`), `Chain`, `Channels` (`LndRegtestChannel`: spec, funding outpoint,
+  `chan_id`), `Timings`. `RestartAsync(alias, kill)`: a StatefulSet restart (same DNS name and PVC, new pod IP, so no
+  NL-262 address-hold trick), `SERVER_ACTIVE` and synced, every node of the network it was connected to dials it
+  again (LND peers at the new pod IP, permanent; joined nodes at its alias), and every channel it had active with
+  them is active on both ends again (about 7-8 s). `JoinAsync(deployer, spec, fundSat)` adds a node on the chain
+  (our in-process node through `InProcessNodeDeployer`), `OpenChannelAsync(from, to, ...)` opens and waits active
+  plus the LND ends' own edge, `PayAlongAsync(payer, hops, msat, outgoingChanId)` pays along exactly one route
+  (`BuildRoute` + `SendToRouteV2`, retried). `LndRegtestNetworkFixture` is the warm `ClusterTopologyFixture` of it.
 - `Faults/`: `FaultInjector` (`run.CreateFaultInjector(log)`; disposing resumes and heals; `Events` is the
   timeline). Measured on OrbStack (k3s, flannel host-gw + k3s's kube-router policy controller):
   - `RestartAsync` (graceful) and `KillAsync` (pod deleted with a 1 s grace) replace the pod; PVC data stays, the DNS
@@ -220,6 +244,12 @@ every implementation, our own node included, is driven through the same seams.
   (build per step, disposal). `Live/TopologyFixtureTests` is the warm topology proof (two tests, one namespace, one
   build). `scripts/run-cluster.sh -n 3 --class '...StartupTimingClnTests' --class '...StartupTimingLndTests'` runs six
   topologies at once.
+- `Live/Lnd/LndRegtestNetworkTests` (phase 3, one warm `LndRegtestNetworkFixture` per class): the network is the
+  Docker fixture's (versions, mesh, channels, policies in every graph, the miner's reserve), every startup channel
+  routes (each funder pays over exactly that channel, and alice → bob → carol), and a graceful restart of alice and a
+  kill of bob keep their channels, node ids and `LndNodeConnection` objects. `scripts/run-cluster.sh -n 2 --class
+  NLightning.Testing.Cluster.Tests.Live.Lnd.LndRegtestNetworkTests`: network ready in 36-47 s, the three tests about
+  25 s.
 - `Live/InClusterRunnerTests` need the runner image (`Runner/image/build.sh` first; a lane that runs beside others
   builds its own tag, `NLTG_RUNNER_TAG=<lane> ...build.sh` and `NLTG_RUNNER_IMAGE=nltg-spike-runner:<lane>`); `Live/ReachabilityTests` assert
   OrbStack's matrix and only record it on another context. `Live/MixedTopologyTests` is the integration proof (LND +

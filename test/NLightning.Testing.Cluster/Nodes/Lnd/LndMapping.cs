@@ -1,8 +1,9 @@
 using System.Globalization;
 using Google.Protobuf;
-using Lnrpc;
 
 namespace NLightning.Testing.Cluster.Nodes.Lnd;
+
+using Testing.Lnd.Lnrpc;
 
 /// <summary>
 /// Conversions between LND's gRPC types and the facade's (<see cref="ILightningTestPeer"/>): transaction ids, short

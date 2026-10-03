@@ -1,24 +1,26 @@
 using Grpc.Core;
-using Lnrpc;
-using Routerrpc;
 
 namespace NLightning.Testing.Cluster.Nodes.Lnd;
 
 using Run;
+using Testing.Lnd;
+using Testing.Lnd.Lnrpc;
+using Testing.Lnd.Routerrpc;
 using Topology;
 
 /// <summary>
 /// An LND node deployed in a run: its <see cref="KubeNodeHandle"/> (StatefulSet + PVC, see <see cref="LndWorkload"/>),
-/// its credentials, a pinned gRPC connection (<see cref="Grpc"/>) and the <see cref="ILightningTestPeer"/> facade.
-/// Restarts and kills go through the StatefulSet and reconnect: the node keeps its name, wallet and channels. Also a
-/// topology node (<see cref="LndNodeDeployer"/>).
+/// its credentials, one in-tree gRPC connection (<see cref="Connection"/>, <c>NLightning.Testing.Lnd</c>, the
+/// certificate pinned) and the <see cref="ILightningTestPeer"/> facade. Restarts and kills go through the StatefulSet:
+/// the node keeps its name, wallet, channels, certificate and macaroon, and the connection stays the same object (it
+/// dials the pod's DNS name, which follows the new pod). Also a topology node (<see cref="LndNodeDeployer"/>).
 /// </summary>
 public sealed class LndNode : ITopologyLightningNode, IDisposable
 {
     private static readonly TimeSpan s_pollInterval = TimeSpan.FromMilliseconds(500);
 
     private readonly KubeNodeHandle _handle;
-    private LndGrpcConnection? _grpc;
+    private LndNodeConnection? _connection;
     private string? _nodeId;
 
     private LndNode(KubeNodeHandle handle, LndNodeOptions options)
@@ -41,22 +43,25 @@ public sealed class LndNode : ITopologyLightningNode, IDisposable
     /// <summary>The certificate and macaroon read at the last (re)connection.</summary>
     public LndCredentials? Credentials { get; private set; }
 
-    /// <summary>The current gRPC connection (replaced after a restart).</summary>
-    public LndGrpcConnection Grpc =>
-        _grpc ?? throw new InvalidOperationException($"{Alias}: gRPC is not connected yet");
+    /// <summary>
+    /// The gRPC connection (the in-tree client, LNUnit.LND's member names: <c>LightningClient</c>,
+    /// <c>RouterClient</c>, <c>WalletKitClient</c>, ...). The same object across restarts and kills: its endpoint is
+    /// the pod's DNS name (<see cref="GrpcHost"/>) and the certificate it pins lives on the PVC. It is replaced only
+    /// when LND wrote another certificate or macaroon (a node whose PVC was lost).
+    /// </summary>
+    public LndNodeConnection Connection =>
+        _connection ?? throw new InvalidOperationException($"{Alias}: gRPC is not connected yet");
 
-    public Lightning.LightningClient Lightning => Grpc.Lightning;
+    public Lightning.LightningClient Lightning => Connection.LightningClient;
 
-    public Router.RouterClient Router => Grpc.Router;
+    public Router.RouterClient Router => Connection.RouterClient;
 
     /// <summary>
-    /// Where this process reaches the node's gRPC port: the pod's stable DNS name when the test runs in the cluster,
-    /// the pod IP from the host (OrbStack routes pod IPs to the Mac).
+    /// Where this process reaches the node's gRPC port: the pod's DNS name (<c>alias-0.alias.ns.svc.cluster.local</c>),
+    /// in the cluster and from the host alike (OrbStack resolves it on the Mac, about 120 ms once per connection). It
+    /// follows the pod after a restart, which a pod IP does not, so <see cref="Connection"/> survives a restart.
     /// </summary>
-    public string GrpcHost =>
-        KubeClientFactory.DetectSource() == KubeConfigSource.InCluster
-            ? _handle.PodDnsName
-            : _handle.PodIp ?? throw new InvalidOperationException($"{Alias}: the pod IP is not known yet");
+    public string GrpcHost => _handle.PodDnsName;
 
     /// <summary>
     /// Deploys <paramref name="options"/>' node into <paramref name="run"/>, waits until its pod is ready (LND synced
@@ -85,22 +90,56 @@ public sealed class LndNode : ITopologyLightningNode, IDisposable
     }
 
     /// <summary>
-    /// Reads the credentials again, opens a new gRPC connection to the current pod and waits until <c>GetInfo</c>
-    /// answers with <c>synced_to_chain</c>.
+    /// Reads the credentials again (a new connection only when they changed), then waits until the server is active
+    /// (<c>SERVER_ACTIVE</c>; LND 0.21 stays <c>RPC_ACTIVE</c> on a chain at genesis) and <c>GetInfo</c> answers with
+    /// <c>synced_to_chain</c>, and loads the connection's node info (<c>LocalNodePubKey</c>, <c>LocalAlias</c>).
     /// </summary>
     public async Task ReconnectAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
         var deadline = DateTime.UtcNow + timeout;
-        Credentials = await LndCredentials.ReadAsync(_handle, timeout, cancellationToken).ConfigureAwait(false);
-        var previous = _grpc;
-        _grpc = new LndGrpcConnection(GrpcHost, LndWorkload.GrpcPort, Credentials);
-        previous?.Dispose();
+        var credentials = await LndCredentials.ReadAsync(_handle, timeout, cancellationToken).ConfigureAwait(false);
+        if (_connection is null || !credentials.SameAs(Credentials))
+        {
+            var previous = _connection;
+            _connection = LndNodeConnection.CreateWithoutNodeInfo(credentials.ToSettings(GrpcHost,
+                                                                                           LndWorkload.GrpcPort));
+            previous?.Dispose();
+        }
 
+        Credentials = credentials;
+        await WaitServerActiveAsync(Remaining(deadline), cancellationToken).ConfigureAwait(false);
         var info = await WaitSyncedToChainAsync(Remaining(deadline), cancellationToken).ConfigureAwait(false);
         if (_nodeId is not null && _nodeId != info.IdentityPubkey)
             throw new InvalidOperationException($"{Alias}: node id changed from {_nodeId} to {info.IdentityPubkey}");
 
         _nodeId = info.IdentityPubkey;
+        await Connection.RefreshNodeInfoAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Polls <c>State.GetState</c> until LND reports <c>SERVER_ACTIVE</c> (every RPC served; gRPC errors while LND
+    /// starts or while the DNS name still points at the old pod count as not yet).
+    /// </summary>
+    public Task WaitServerActiveAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var last = "no answer";
+        return Poll.UntilDoneAsync(async ct =>
+        {
+            try
+            {
+                var state = await Connection.StateClient.GetStateAsync(new GetStateRequest(),
+                                                                       deadline: DateTime.UtcNow.AddSeconds(5),
+                                                                       cancellationToken: ct)
+                                            .ResponseAsync.ConfigureAwait(false);
+                last = state.State.ToString();
+                return state.State == WalletState.ServerActive ? null : $"state {last}";
+            }
+            catch (RpcException e) when (!ct.IsCancellationRequested)
+            {
+                last = $"{e.StatusCode}: {e.Status.Detail}";
+                return last;
+            }
+        }, timeout, $"{Alias} ({Connection.Host}) SERVER_ACTIVE", cancellationToken, s_pollInterval);
     }
 
     /// <summary>
@@ -130,20 +169,23 @@ public sealed class LndNode : ITopologyLightningNode, IDisposable
             }
 
             if (DateTime.UtcNow >= deadline)
-                throw new TimeoutException($"{Alias} ({Grpc.Endpoint}) not synced to chain after {timeout}: {last}");
+                throw new TimeoutException($"{Alias} ({Connection.Host}) not synced to chain after {timeout}: {last}");
 
             await Task.Delay(s_pollInterval, cancellationToken).ConfigureAwait(false);
         }
     }
 
-    /// <summary>A graceful restart (same pod name and PVC), then a new gRPC connection.</summary>
+    /// <summary>A graceful restart (same pod name and PVC), then the same connection is ready again (<see cref="ReconnectAsync"/>).</summary>
     public async Task RestartAsync(TimeSpan readyTimeout, CancellationToken cancellationToken)
     {
         await _handle.RestartAsync(readyTimeout, cancellationToken).ConfigureAwait(false);
         await ReconnectAsync(readyTimeout, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>A hard stop (<see cref="INodeHandle.KillAsync"/>: 1 s grace, same pod name and PVC), then a new gRPC connection.</summary>
+    /// <summary>
+    /// A hard stop (<see cref="INodeHandle.KillAsync"/>: 1 s grace, same pod name and PVC), then the same connection is
+    /// ready again (<see cref="ReconnectAsync"/>).
+    /// </summary>
     public async Task KillAsync(TimeSpan readyTimeout, CancellationToken cancellationToken)
     {
         await _handle.KillAsync(readyTimeout, cancellationToken).ConfigureAwait(false);
@@ -306,8 +348,8 @@ public sealed class LndNode : ITopologyLightningNode, IDisposable
 
     public void Dispose()
     {
-        _grpc?.Dispose();
-        _grpc = null;
+        _connection?.Dispose();
+        _connection = null;
     }
 
     public override string ToString() => $"lnd {_handle}";

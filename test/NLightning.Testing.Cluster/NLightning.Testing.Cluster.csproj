@@ -25,13 +25,16 @@
     <PackageReference Include="KubernetesClient" Version="19.0.2"/>
     <!-- The repo's RPC client (RegtestBitcoinEndpoint, InteropChainHost); same version as Infrastructure.Bitcoin -->
     <PackageReference Include="NBitcoin" Version="9.0.5"/>
-    <!-- LND's generated gRPC client types (Lnrpc, Routerrpc, ...) for Nodes/Lnd, the same build the LNUnit fixtures
-         use; the plan replaces them with clients generated from LND's protos (§4 "The LND client"). -->
-    <PackageReference Include="LNUnit.LND" Version="3.0.4"/>
     <!-- IAsyncLifetime and TestContext: the collection fixture base (Topology/ClusterTopologyFixture), which test or
          collection a run belongs to, and the failure hook of Diagnostics/ (the library part of xunit v3, no runner;
          the same version as the test projects). -->
     <PackageReference Include="xunit.v3.extensibility.core" Version="3.2.2"/>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The in-tree LND gRPC client (generated from LND 0.21.4's protos; LndSettings, LndNodeConnection) for Nodes/Lnd
+         and Topology/Lnd (test harness phase 3: no more LNUnit.LND here) -->
+    <ProjectReference Include="..\NLightning.Testing.Lnd\NLightning.Testing.Lnd.csproj"/>
   </ItemGroup>
 
   <ItemGroup>
