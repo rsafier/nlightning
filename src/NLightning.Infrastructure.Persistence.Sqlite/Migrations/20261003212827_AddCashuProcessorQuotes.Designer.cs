@@ -2389,6 +2389,55 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("PaymentTrampolineHops");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayAttemptEntity", b =>
+                {
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("BLOB");
+
+                    b.Property<int>("Attempt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("AmountOutMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("CltvExpiryOut")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("CompletedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<ushort?>("FailureCode")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("FailureReason")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("IncomingAmountMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("IncomingChannelIds")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("IncomingTotalMsat")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("NextNodeId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<int>("Parts")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("PaymentHash", "Attempt");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.ToTable("TrampolineRelayAttempts");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", b =>
                 {
                     b.Property<byte[]>("PaymentHash")
