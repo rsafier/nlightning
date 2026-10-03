@@ -1,26 +1,18 @@
 using System.Text.Json.Nodes;
-using Docker.DotNet;
-using Docker.DotNet.Models;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
 /// <summary>
 /// A Core Lightning JSON-RPC client that runs <c>lightning-cli --network=regtest -k &lt;method&gt; key=value…</c> in the
-/// CLN node, so the tests need no TLS/rune setup and no docker CLI. Where the command runs is the backend's: a
-/// <c>docker exec</c> through the Docker API (<see cref="ClnClient(DockerClient, string)"/>) or a Kubernetes exec in
-/// the node's pod (the cluster backend of <c>Fixtures/ClnFixture</c>, through <see cref="ClnClient(string, ClnExec)"/>).
+/// CLN node, so the tests need no TLS/rune setup. Where the command runs is the caller's <see cref="ClnExec"/>: a
+/// Kubernetes exec in the node's pod (<c>Fixtures/Cln/ClusterClnBackend</c>) or, for the Tor suite's container, a
+/// <c>docker exec</c> (<c>Fixtures/Tor/TorInteropFixture</c>).
 /// </summary>
 public sealed class ClnClient
 {
     private static readonly TimeSpan s_callTimeout = TimeSpan.FromSeconds(90);
 
     private readonly ClnExec _exec;
-
-    /// <summary>A client of the CLN container <paramref name="containerName"/> (<c>docker exec</c>).</summary>
-    public ClnClient(DockerClient client, string containerName)
-        : this(containerName, DockerExec(client, containerName))
-    {
-    }
 
     /// <summary>A client that runs its commands through <paramref name="exec"/> in the node <paramref name="name"/>.</summary>
     public ClnClient(string name, ClnExec exec)
@@ -30,7 +22,7 @@ public sealed class ClnClient
         _exec = exec ?? throw new ArgumentNullException(nameof(exec));
     }
 
-    /// <summary>The container (Docker) or node (cluster) the commands run in.</summary>
+    /// <summary>The node (or the Tor suite's container) the commands run in.</summary>
     public string ContainerName { get; }
 
     /// <summary>
@@ -135,23 +127,6 @@ public sealed class ClnClient
             return $"(getlog failed: {e.Message})";
         }
     }
-
-    /// <summary>A <c>docker exec</c> of a command in <paramref name="containerName"/>.</summary>
-    private static ClnExec DockerExec(DockerClient client, string containerName) => async (command, cancellationToken) =>
-    {
-        var exec = await client.Exec.ExecCreateContainerAsync(containerName, new ContainerExecCreateParameters
-        {
-            Cmd = [.. command],
-            AttachStdout = true,
-            AttachStderr = true
-        }, cancellationToken);
-        string stdout, stderr;
-        using (var stream = await client.Exec.StartAndAttachContainerExecAsync(exec.ID, false, cancellationToken))
-            (stdout, stderr) = await stream.ReadOutputToEndAsync(cancellationToken);
-
-        var inspect = await client.Exec.InspectContainerExecAsync(exec.ID, cancellationToken);
-        return new ClnExecResult(inspect.ExitCode, stdout, stderr);
-    };
 
     private static string Format(object value) => value switch
     {

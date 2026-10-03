@@ -1,24 +1,22 @@
-using System.Formats.Tar;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using NBitcoin.RPC;
 
-namespace NLightning.Integration.Tests.Fixtures;
+namespace NLightning.Integration.Tests.Fixtures.Tor;
 
 using Docker.Utils;
 
 /// <summary>
-/// The chain side of an interop fixture (Eclair, LDK; NL-180): its own Docker network and a bitcoind 31.1 on it,
-/// never shared with the LND <c>regtest</c> collection or the CLN fixture. Copied from <see cref="ClnFixture"/> (which
-/// stays as it is), plus the <c>hashblock</c> ZMQ feed Eclair needs and fixed host ports for a peer whose address must
-/// survive a container restart.
+/// The chain side of the Tor interop fixture (<see cref="TorInteropFixture"/>, NL-572), the one fixture left on Docker
+/// (NL-866): its own Docker network and a bitcoind 31.1 on it. It was the Eclair and LDK fixtures' Docker chain
+/// (NL-180) until their Docker backends were retired.
 /// </summary>
 /// <remarks>
 /// bitcoind publishes RPC and the ZMQ raw block/tx feeds on <c>127.0.0.1</c> for the in-process NLightning nodes; the
-/// peer container reaches it by name on the network. The image is pinned by digest (Eclair 0.14.3 refuses Core older
-/// than 31).
+/// peer containers reach it by name on the network. The image is pinned by digest (the cluster runs the same release,
+/// <c>ImageVersions.BitcoinCore31</c>).
 /// </remarks>
-public sealed class InteropChainHost(DockerClient client, string networkName, string bitcoindName)
+public sealed class TorChainHost(DockerClient client, string networkName, string bitcoindName)
 {
     public const string BitcoinImage = "bitcoin/bitcoin";
 
@@ -31,8 +29,11 @@ public sealed class InteropChainHost(DockerClient client, string networkName, st
     public const int ZmqBlockPort = 28334;
     public const int ZmqTxPort = 28335;
 
-    /// <summary>The <c>hashblock</c> feed (Eclair's <c>zmqblock</c>), reachable only inside the network.</summary>
-    public const int ZmqHashBlockPort = 28336;
+    /// <summary>
+    /// How a container reaches a port the test process listens on (OrbStack and Docker Desktop resolve it to the host,
+    /// on Linux the containers get a <c>host-gateway</c> alias).
+    /// </summary>
+    public const string HostAddressFromContainers = "host.docker.internal";
 
     private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
 
@@ -67,7 +68,6 @@ public sealed class InteropChainHost(DockerClient client, string networkName, st
                                                   $"-rpcport={RpcPort}", "-rpcworkqueue=1024",
                                                   $"-zmqpubrawblock=tcp://0.0.0.0:{ZmqBlockPort}",
                                                   $"-zmqpubrawtx=tcp://0.0.0.0:{ZmqTxPort}",
-                                                  $"-zmqpubhashblock=tcp://0.0.0.0:{ZmqHashBlockPort}",
                                                   "-txindex=1", "-fallbackfee=0.0002", "-dnsseed=0",
                                                   "-listen=0", "-printtoconsole"
                                               ], [RpcPort, ZmqBlockPort, ZmqTxPort]);
@@ -76,17 +76,11 @@ public sealed class InteropChainHost(DockerClient client, string networkName, st
         await DockerContainerUtils.WaitUntilReadyAsync(BitcoindName, async ct => await rpc.GetBlockCountAsync(ct),
                                                        s_readyTimeout);
         await rpc.SendCommandAsync("createwallet", "miner");
-        // Scoped to the miner wallet: Eclair's wallet is loaded next to it, and wallet calls without a wallet path
-        // fail once several are loaded (node calls work on a wallet path too)
+        // Scoped to the miner wallet (node calls work on a wallet path too)
         _bitcoin = new RegtestBitcoinEndpoint(rpc.SetWalletContext("miner"), "127.0.0.1", ports[ZmqBlockPort],
                                               ports[ZmqTxPort]);
         await MineAsync(101, CancellationToken.None);
     }
-
-    /// <summary>
-    /// Creates a bitcoind wallet for a peer that funds from bitcoind (Eclair).
-    /// </summary>
-    public async Task CreateWalletAsync(string name) => await Bitcoin.Rpc.SendCommandAsync("createwallet", name);
 
     /// <summary>
     /// Mines <paramref name="blocks"/> blocks to the miner wallet.
@@ -119,14 +113,11 @@ public sealed class InteropChainHost(DockerClient client, string networkName, st
 
     /// <summary>
     /// Creates and starts a container on <see cref="NetworkName"/>. <paramref name="containerPorts"/> are published on
-    /// <c>127.0.0.1</c>, each on its <paramref name="fixedHostPorts"/> entry when given (so it survives a restart),
-    /// otherwise on a free port. <paramref name="files"/> (path in the container, content) are copied in before start.
+    /// free <c>127.0.0.1</c> ports.
     /// </summary>
     /// <returns>The host port of each container port.</returns>
     public async Task<Dictionary<int, int>> StartContainerAsync(string image, string name, IList<string> env,
-                                                                IList<string> cmd, IReadOnlyList<int> containerPorts,
-                                                                IReadOnlyDictionary<int, int>? fixedHostPorts = null,
-                                                                IReadOnlyDictionary<string, string>? files = null)
+                                                                IList<string> cmd, IReadOnlyList<int> containerPorts)
     {
         var parameters = new CreateContainerParameters
         {
@@ -141,55 +132,17 @@ public sealed class InteropChainHost(DockerClient client, string networkName, st
                 NetworkMode = NetworkName,
                 PortBindings = containerPorts.ToDictionary(
                     p => $"{p}/tcp",
-                    IList<PortBinding> (p) =>
-                    [
-                        new PortBinding
-                        {
-                            HostIP = "127.0.0.1",
-                            HostPort = fixedHostPorts is not null && fixedHostPorts.TryGetValue(p, out var hostPort)
-                                           ? hostPort.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                                           : string.Empty
-                        }
-                    ]),
+                    IList<PortBinding> (_) => [new PortBinding { HostIP = "127.0.0.1", HostPort = string.Empty }]),
                 // OrbStack and Docker Desktop resolve host.docker.internal themselves; plain Linux Docker needs the alias
-                ExtraHosts = OperatingSystem.IsLinux() ? [$"{ClnFixture.HostAddressFromContainers}:host-gateway"] : null
+                ExtraHosts = OperatingSystem.IsLinux() ? [$"{HostAddressFromContainers}:host-gateway"] : null
             }
         };
 
         var container = await client.Containers.CreateContainerAsync(parameters)
                      ?? throw new InvalidOperationException($"Failed to create the {name} container");
-        if (files is not null)
-        {
-            foreach (var (path, content) in files)
-                await CopyFileAsync(container.ID, path, content);
-        }
 
         await client.Containers.StartContainerAsync(container.ID, new ContainerStartParameters());
         return await WaitForPortsAsync(container.ID, name, containerPorts);
-    }
-
-    /// <summary>
-    /// Restarts a container (its file system, and so the peer's state, is kept).
-    /// </summary>
-    public async Task RestartContainerAsync(string name) =>
-        await client.Containers.RestartContainerAsync(name, new ContainerRestartParameters { WaitBeforeKillSeconds = 10 });
-
-    private async Task CopyFileAsync(string containerId, string path, string content)
-    {
-        using var tar = new MemoryStream();
-        await using (var writer = new TarWriter(tar, TarEntryFormat.Pax, leaveOpen: true))
-        {
-            var entry = new PaxTarEntry(TarEntryType.RegularFile, Path.GetFileName(path))
-            {
-                DataStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(content)),
-                Mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead
-            };
-            await writer.WriteEntryAsync(entry);
-        }
-
-        tar.Position = 0;
-        await client.Containers.ExtractArchiveToContainerAsync(
-            containerId, new ContainerPathStatParameters { Path = Path.GetDirectoryName(path)! }, tar);
     }
 
     private async Task<Dictionary<int, int>> WaitForPortsAsync(string containerId, string name,

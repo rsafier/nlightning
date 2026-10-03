@@ -4,8 +4,8 @@ using Images;
 using Kube;
 
 /// <summary>
-/// A regtest bitcoind of a run (plan R7 <c>BitcoinCore</c>). The defaults match the Docker fixtures
-/// (<c>InteropChainHost</c>, <c>ClnFixture</c>): user/password <c>nltg</c>, <c>-txindex</c>, <c>-fallbackfee=0.0002</c>,
+/// A regtest bitcoind of a run (plan R7 <c>BitcoinCore</c>). The defaults match the fixtures' former Docker
+/// chains (their only backend is this harness since NL-866) and the Tor fixture's <c>TorChainHost</c>: user/password <c>nltg</c>, <c>-txindex</c>, <c>-fallbackfee=0.0002</c>,
 /// ZMQ raw block, raw tx and hash block feeds, and a <c>miner</c> wallet.
 /// </summary>
 public sealed record BitcoinCoreOptions

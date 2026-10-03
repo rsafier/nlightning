@@ -3,8 +3,8 @@ namespace NLightning.Testing.Cluster.Images;
 using Nodes;
 
 /// <summary>
-/// The one version table of the harness (plan R12), taken from today's Docker fixtures so both harnesses run the same
-/// software. Locally built images use <see cref="ImagePullPolicy.Never"/>: OrbStack's cluster runs on the same Docker
+/// The one version table of the harness (plan R12), taken from the fixtures' former Docker backends (retired by NL-820 and
+/// NL-866), so the suites kept their software. Locally built images use <see cref="ImagePullPolicy.Never"/>: OrbStack's cluster runs on the same Docker
 /// image store, so no registry is needed; another cluster needs them pushed first (plan §4 "R12 images").
 /// </summary>
 /// <remarks>
@@ -27,15 +27,16 @@ public static class ImageVersions
 
     /// <summary>
     /// Bitcoin Core 31.1 (the official image, multi-arch index digest): the chain of the Eclair and LDK fixtures
-    /// (<c>InteropChainHost</c>; Eclair 0.14.3 refuses Core older than 31).
+    /// (Eclair 0.14.3 refuses Core older than 31) and of the Tor fixture's Docker <c>TorChainHost</c>.
     /// </summary>
     public static readonly ImageRef BitcoinCore31 =
         new("bitcoin/bitcoin", "31.1",
             "sha256:da25cedc66b1daefff9f412ee196c901a899c3fa68a33b20849c3e08b5c40d63");
 
     /// <summary>
-    /// LND 0.21.4-beta, built locally from <c>test/Docker/custom_lnd</c> by the LND fixture (the Docker suites run the
-    /// same tag since NL-768). Reused as it is.
+    /// LND 0.21.4-beta, built locally from <c>test/Docker/custom_lnd</c>
+    /// (<c>docker build -t custom_lnd:0.21.4-beta test/Docker/custom_lnd</c>; nothing builds it automatically since
+    /// NL-820). Reused as it is.
     /// </summary>
     public static readonly ImageRef Lnd = new("custom_lnd", "0.21.4-beta", PullPolicy: ImagePullPolicy.Never);
 
@@ -46,15 +47,23 @@ public static class ImageVersions
         new("elementsproject/lightningd", "v26.06.8",
             "sha256:56f1cebe829fbb3c7d5674be8cd1212c7e02527ab32403b695033a29bcd2abce");
 
-    /// <summary>Eclair 0.14.3, built locally by <c>EclairFixture</c>. Reused as it is.</summary>
+    /// <summary>
+    /// Eclair 0.14.3, built locally from <c>test/Docker/eclair</c>
+    /// (<c>docker build -t nltg-eclair:0.14.3 test/Docker/eclair</c>; nothing builds it automatically since NL-866).
+    /// Reused as it is.
+    /// </summary>
     public static readonly ImageRef Eclair = new("nltg-eclair", "0.14.3", PullPolicy: ImagePullPolicy.Never);
 
-    /// <summary>ldk-server at commit dc02b76c, built locally by <c>LdkFixture</c>. Reused as it is.</summary>
+    /// <summary>
+    /// ldk-server at commit dc02b76c, built locally from <c>test/Docker/ldk_server</c>
+    /// (<c>docker build -t nltg-ldk-server:dc02b76c test/Docker/ldk_server</c>, 10-20 min cold; nothing builds it
+    /// automatically since NL-866). Reused as it is.
+    /// </summary>
     public static readonly ImageRef Ldk = new("nltg-ldk-server", "dc02b76c", PullPolicy: ImagePullPolicy.Never);
 
     /// <summary>
-    /// PostgreSQL as in <c>PostgresFixture</c> (its Docker backend pulls the same tag; the cluster's is pinned to the
-    /// official multi-arch index digest).
+    /// PostgreSQL as in <c>PostgresFixture</c> (the tag its retired Docker backend pulled, pinned to the official
+    /// multi-arch index digest).
     /// </summary>
     public static readonly ImageRef Postgres =
         new("postgres", "16.2-alpine", "sha256:951bfda460300925caa3949eaa092ba022e9aec191bbea9056a39e2382260b27");

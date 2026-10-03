@@ -1,15 +1,12 @@
 using System.Text.Json.Nodes;
-using Docker.DotNet;
-using Docker.DotNet.Models;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
 /// <summary>
 /// An ldk-server client that runs <c>ldk-server-cli -c /data/config.toml &lt;subcommand&gt; args…</c> in the LDK node,
 /// so the tests need no gRPC, TLS or macaroon setup of their own (NL-180). The CLI prints the gRPC response as JSON
-/// (snake_case proto fields). Where the command runs is the backend's: a <c>docker exec</c> through the Docker API
-/// (<see cref="LdkClient(DockerClient, string, string)"/>, as <see cref="ClnClient"/> does) or a Kubernetes exec in the
-/// node's pod (the cluster backend of <c>Fixtures/LdkFixture</c>, through <see cref="LdkClient(string, string, LdkExec)"/>).
+/// (snake_case proto fields). The command runs through the caller's <see cref="LdkExec"/>: a Kubernetes exec in the
+/// node's pod (<c>Fixtures/Ldk/ClusterLdkBackend</c>).
 /// </summary>
 public sealed class LdkClient
 {
@@ -17,12 +14,6 @@ public sealed class LdkClient
 
     private readonly string _configPath;
     private readonly LdkExec _exec;
-
-    /// <summary>A client of the LDK container <paramref name="containerName"/> (<c>docker exec</c>).</summary>
-    public LdkClient(DockerClient client, string containerName, string configPath)
-        : this(containerName, configPath, DockerExec(client, containerName))
-    {
-    }
 
     /// <summary>
     /// A client that runs its commands through <paramref name="exec"/> in the node <paramref name="name"/>, with the
@@ -37,7 +28,7 @@ public sealed class LdkClient
         _exec = exec ?? throw new ArgumentNullException(nameof(exec));
     }
 
-    /// <summary>The container (Docker) or node (cluster) the commands run in.</summary>
+    /// <summary>The node the commands run in.</summary>
     public string ContainerName { get; }
 
     /// <summary>
@@ -315,23 +306,6 @@ public sealed class LdkClient
         timeoutCts.CancelAfter(s_callTimeout);
         return await _exec(cmd, timeoutCts.Token);
     }
-
-    /// <summary>A <c>docker exec</c> of a command in <paramref name="containerName"/>.</summary>
-    private static LdkExec DockerExec(DockerClient client, string containerName) => async (command, cancellationToken) =>
-    {
-        var exec = await client.Exec.ExecCreateContainerAsync(containerName, new ContainerExecCreateParameters
-        {
-            Cmd = [.. command],
-            AttachStdout = true,
-            AttachStderr = true
-        }, cancellationToken);
-        string stdout, stderr;
-        using (var stream = await client.Exec.StartAndAttachContainerExecAsync(exec.ID, false, cancellationToken))
-            (stdout, stderr) = await stream.ReadOutputToEndAsync(cancellationToken);
-
-        var inspect = await client.Exec.InspectContainerExecAsync(exec.ID, cancellationToken);
-        return new LdkExecResult(inspect.ExitCode, stdout, stderr);
-    };
 }
 
 /// <summary>

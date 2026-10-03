@@ -1,8 +1,10 @@
 # ldk-server (LDK Node over gRPC) for the NLightning interop tests (NL-180). ldk-server has no tags, releases or
 # official image, so this builds a pinned commit of github.com/lightningdevkit/ldk-server on pinned Rust and Debian
-# images (the upstream Dockerfile's build, without its dependency-cache layer). The fixture
-# (test/NLightning.Integration.Tests/Fixtures/LdkFixture.cs) builds it as nltg-ldk-server:dc02b76c when the tag is
-# missing; `scripts/run-interop.sh ldk --build` prebuilds it. A cold build takes 10-20 min (release profile with LTO).
+# images (the upstream Dockerfile's build, without its dependency-cache layer). The cluster harness runs it as
+# nltg-ldk-server:dc02b76c with pull policy Never (ImageVersions.Ldk; the only backend of LdkFixture since NL-866) and
+# never builds it: build it once with
+#   docker build -t nltg-ldk-server:dc02b76c test/Docker/ldk_server
+# (OrbStack's cluster shares the Docker image store). A cold build takes 10-20 min (release profile with LTO).
 # A bump is a deliberate change of LDK_SERVER_COMMIT and the fixture's image tag.
 FROM rust:1.85-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4 AS builder
 ARG LDK_SERVER_COMMIT=dc02b76c7d338161aeafbcd95a0be32e7dce2caa

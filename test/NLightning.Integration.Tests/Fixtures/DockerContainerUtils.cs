@@ -4,9 +4,10 @@ using Docker.DotNet.Models;
 namespace NLightning.Integration.Tests.Fixtures;
 
 /// <summary>
-/// Container and image helpers shared by the Docker fixtures (CLN, Eclair, LDK, Postgres, SQL Server, Tor). They
-/// replaced <c>LNUnit.Setup</c>'s Docker extensions (<c>PullImageAndWaitForCompleted</c>, NL-819); the solution
-/// references no LNUnit package since NL-820.
+/// Container and image helpers of the two fixtures left on Docker: the Tor interop fixture (<c>Tor/TorInteropFixture</c>,
+/// the one Docker suite) and <see cref="SqlServerFixture"/> (SQL Server tests are not run, plan "SQL Server"). The CLN,
+/// Eclair, LDK and Postgres fixtures run on the cluster only since NL-866, and <c>Fixtures/DockerAbsenceTests</c> keeps
+/// the Docker API out of every other file. They replaced <c>LNUnit.Setup</c>'s Docker extensions (NL-819).
 /// </summary>
 internal static class DockerContainerUtils
 {
@@ -141,5 +142,65 @@ internal static class DockerContainerUtils
         }
 
         throw new TimeoutException($"{name} was not ready after {timeout}", lastError);
+    }
+
+    /// <summary>
+    /// <c>test/Docker/&lt;name&gt;</c>, found by walking up from the test assembly.
+    /// </summary>
+    public static string FindDockerDirectory(string name)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null)
+        {
+            var candidate = Path.Combine(dir.FullName, "test", "Docker", name);
+            if (File.Exists(Path.Combine(candidate, "Dockerfile")))
+                return candidate;
+
+            candidate = Path.Combine(dir.FullName, "Docker", name);
+            if (File.Exists(Path.Combine(candidate, "Dockerfile")))
+                return candidate;
+
+            dir = dir.Parent;
+        }
+
+        throw new DirectoryNotFoundException($"test/Docker/{name}/Dockerfile not found above {AppContext.BaseDirectory}");
+    }
+
+    /// <summary>
+    /// <c>docker build -t <paramref name="tag"/> <paramref name="directory"/></c> through the Docker CLI (BuildKit), with
+    /// <paramref name="timeout"/>.
+    /// </summary>
+    public static async Task BuildImageAsync(DockerClient client, string directory, string tag, TimeSpan timeout)
+    {
+        var info = new System.Diagnostics.ProcessStartInfo("docker")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = directory
+        };
+        info.ArgumentList.Add("build");
+        info.ArgumentList.Add("-t");
+        info.ArgumentList.Add(tag);
+        info.ArgumentList.Add(".");
+        using var process = System.Diagnostics.Process.Start(info)
+                         ?? throw new InvalidOperationException("Could not start docker build");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        using var cts = new CancellationTokenSource(timeout);
+        try
+        {
+            await process.WaitForExitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            process.Kill(true);
+            throw new TimeoutException($"docker build {tag} took more than {timeout}");
+        }
+
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"docker build {tag} failed:\n{await stdout}\n{await stderr}");
+
+        if (!await ImageExistsAsync(client, tag))
+            throw new InvalidOperationException($"docker build {tag} did not produce the image");
     }
 }

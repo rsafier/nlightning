@@ -5,7 +5,6 @@ using NLightning.Testing.Lnd;
 namespace NLightning.Integration.Tests.Fixtures;
 
 using Lnd;
-using Testing.Cluster.Run;
 
 /// <summary>
 /// The shared regtest network of the <c>regtest</c> collection (and of the <c>onchain-regtest</c> and
@@ -55,12 +54,12 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
     public const string LndImageTag = "0.21.4-beta";
 
     private readonly ClusterLndBackend? _backend;
-    private readonly Action<string> _skip;
+    private readonly ClusterAvailability _availability;
     private readonly SharedObjectCache _shared = new();
     private int _disposed;
 
     public LightningRegtestNetworkFixture()
-        : this(Environment.GetEnvironmentVariable, KubeConfigurationProbe)
+        : this(Environment.GetEnvironmentVariable, ClusterAvailability.KubeConfigurationProbe)
     {
     }
 
@@ -73,13 +72,10 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
     internal LightningRegtestNetworkFixture(Func<string, string?> environment, Action kubeConfiguration,
                                             Action<string>? skip = null)
     {
-        _skip = skip ?? (reason => Assert.Skip(reason));
-        UnavailableReason = GetUnavailableReason(environment);
-        if (UnavailableReason is not null)
-            return;
-
-        ConfigurationError = GetConfigurationError(kubeConfiguration);
-        if (ConfigurationError is null)
+        _availability = new ClusterAvailability("the LND regtest network", "NL-820",
+                                                "scripts/run-cluster.sh --matrix lnd,onchain,anchors,gossip,day0,abcd",
+                                                environment, kubeConfiguration, skip);
+        if (_availability.CanStart)
             _backend = new ClusterLndBackend();
     }
 
@@ -88,13 +84,13 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
     /// the cluster. Null on the cluster backend, where the network runs or the fixture fails
     /// (<see cref="ConfigurationError"/>).
     /// </summary>
-    public string? UnavailableReason { get; }
+    public string? UnavailableReason => _availability.UnavailableReason;
 
     /// <summary>
     /// On the cluster backend, why no Kubernetes configuration could be built; <see cref="InitializeAsync"/> then throws
     /// it, so every test of the collections fails as a fixture failure instead of skipping (NL-860). Null otherwise.
     /// </summary>
-    public string? ConfigurationError { get; }
+    public string? ConfigurationError => _availability.ConfigurationError;
 
     /// <summary>The cluster backend (its run, network and in-process deployer).</summary>
     public ClusterLndBackend Cluster => Backend;
@@ -164,11 +160,7 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
     /// Skips the current test when the network cannot run in this process (<see cref="UnavailableReason"/>). Every
     /// member that needs the network calls it, so a test that reaches one is reported skipped, never passed.
     /// </summary>
-    public void SkipIfUnavailable()
-    {
-        if (UnavailableReason is not null)
-            _skip(UnavailableReason);
-    }
+    public void SkipIfUnavailable() => _availability.SkipIfUnavailable();
 
     public async ValueTask InitializeAsync()
     {
@@ -205,40 +197,6 @@ public class LightningRegtestNetworkFixture : IAsyncLifetime
         if (_backend is not null)
             await _backend.DisposeAsync();
     }
-
-    /// <summary>
-    /// Why the network does not run under <paramref name="environment"/>: the backend is not the cluster; null when it
-    /// is (a mistyped backend name throws, so a typo never turns a suite into skips).
-    /// </summary>
-    internal static string? GetUnavailableReason(Func<string, string?> environment)
-    {
-        ArgumentNullException.ThrowIfNull(environment);
-        return TestBackend.Parse(environment(TestBackend.EnvironmentVariable)) != TestBackendKind.Cluster
-                   ? "The LND regtest network runs on the cluster backend only (NL-820): set "
-                   + $"{TestBackend.EnvironmentVariable}=cluster or run scripts/run-cluster.sh "
-                   + "--matrix lnd,onchain,anchors,gossip,day0,abcd"
-                   : null;
-    }
-
-    /// <summary>
-    /// Why no Kubernetes configuration can be built (<paramref name="kubeConfiguration"/> throws), or null when it can.
-    /// </summary>
-    internal static string? GetConfigurationError(Action kubeConfiguration)
-    {
-        ArgumentNullException.ThrowIfNull(kubeConfiguration);
-        try
-        {
-            kubeConfiguration();
-            return null;
-        }
-        catch (Exception e)
-        {
-            return $"{TestBackend.EnvironmentVariable}=cluster, but no Kubernetes cluster is configured to run the LND "
-                 + $"regtest network on ({e.GetType().Name}: {e.Message})";
-        }
-    }
-
-    private static void KubeConfigurationProbe() => KubeClientFactory.BuildConfiguration();
 
     private ClusterLndBackend Backend
     {

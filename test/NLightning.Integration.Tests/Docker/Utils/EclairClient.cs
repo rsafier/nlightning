@@ -14,13 +14,7 @@ public sealed class EclairClient : IDisposable
     private readonly HttpClient _http;
     private Uri _baseAddress;
 
-    /// <summary>Eclair's API published on <c>127.0.0.1:<paramref name="apiPort"/></c> (Docker).</summary>
-    public EclairClient(int apiPort, string password)
-        : this(new Uri($"http://127.0.0.1:{apiPort}/"), password)
-    {
-    }
-
-    /// <summary>Eclair's API at <paramref name="baseAddress"/> (the pod's address on the cluster backend).</summary>
+    /// <summary>Eclair's API at <paramref name="baseAddress"/> (the pod's address).</summary>
     public EclairClient(Uri baseAddress, string password)
     {
         _baseAddress = baseAddress ?? throw new ArgumentNullException(nameof(baseAddress));

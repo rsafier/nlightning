@@ -253,7 +253,7 @@ public class OnchainO6Tests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
             await _fixture.DumpLndLogsAsync(["david"]);
 
         // A failed test must not leave the mock time set (a skipped one never reached the network)

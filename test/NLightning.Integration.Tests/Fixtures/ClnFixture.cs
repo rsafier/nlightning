@@ -4,81 +4,82 @@ using Cln;
 using Docker.Utils;
 
 /// <summary>
-/// A Core Lightning (CLN) regtest node for the interop tests, on its own bitcoind, never sharing containers, names or
-/// chain state with the LND <c>regtest</c> collection. Where they run is <see cref="TestBackend"/>'s
-/// (<c>NLTG_TEST_BACKEND</c>): Docker by default (<see cref="DockerClnBackend"/>: its own Docker network, ports
-/// published on <c>127.0.0.1</c>), or a run namespace of the Kubernetes harness (<see cref="ClusterClnBackend"/>, test
-/// harness phase 2). The tests see the same members either way.
+/// A Core Lightning (CLN) regtest node for the interop tests, on its own bitcoind, never sharing nodes, names or chain
+/// state with the LND <c>regtest</c> collection: a run namespace of the Kubernetes harness
+/// (<see cref="ClusterClnBackend"/>, test harness phase 2), the fixture's only backend since NL-866 retired the Docker
+/// one. Without <c>NLTG_TEST_BACKEND=cluster</c> the fixture starts nothing and every test that uses it is skipped with
+/// the reason (<see cref="UnavailableReason"/>); with it, a missing Kubernetes configuration fails the fixture
+/// (<see cref="ConfigurationError"/>, NL-860). Run the suite with <c>scripts/run-cluster.sh --matrix cln</c>.
 /// </summary>
 /// <remarks>
 /// CLN (the official <c>elementsproject/lightningd</c> image, <see cref="ClnTag"/>) runs with
 /// <c>--developer --dev-bitcoind-poll=1</c> so it sees a new block within a second (the default poll is 30 s), and
 /// with <c>--ignore-fee-limits=false</c>: on testnet/regtest CLN ignores its feerate limits by default (only its
-/// mainnet config checks them), which would make any feerate we send look fine.
+/// mainnet config checks them), which would make any feerate we send look fine. A test class skips in its constructor
+/// (<see cref="SkipIfUnavailable"/>), so its cleanup never touches a fixture that did not start.
 /// </remarks>
 // ReSharper disable once ClassNeverInstantiated.Global
 public sealed class ClnFixture : IAsyncLifetime
 {
-    public const string NetworkName = "nltg-cln-net";
-    public const string BitcoinContainerName = "nltg-cln-bitcoind";
-
-    /// <summary>The fixture CLN's container (Docker) or node (cluster) name, also its alias.</summary>
+    /// <summary>The fixture CLN's node name, also its alias.</summary>
     public const string ClnContainerName = "nltg-cln";
 
     /// <summary>
     /// The CLN release the interop tests were written against (pinned so a new release is a deliberate change; the
-    /// cluster backend's image is the same release by digest, <c>ImageVersions.Cln</c>).
+    /// cluster runs the same release by digest, <c>ImageVersions.Cln</c>, and the Tor suite's container this tag).
     /// </summary>
     public const string ClnImage = "elementsproject/lightningd";
 
     public const string ClnTag = "v26.06.8";
 
-    /// <summary>
-    /// How a Docker container reaches a port the test process listens on (OrbStack and Docker Desktop resolve it to
-    /// the host, on Linux the containers get a <c>host-gateway</c> alias; the listener must bind a non-loopback address).
-    /// The backend-neutral member is <see cref="HostAddressForCln"/>.
-    /// </summary>
-    public const string HostAddressFromContainers = "host.docker.internal";
-
-    /// <summary>The bitcoind RPC credentials and port of the Docker backend (the cluster's chain uses the same).</summary>
-    public const string RpcUser = "nltg";
-
-    public const string RpcPassword = "nltg";
-
-    public const int RpcPort = 18443;
-
-    /// <summary>CLN's p2p port in its container or pod.</summary>
+    /// <summary>CLN's p2p port in its pod.</summary>
     public const int ClnP2PPort = 9735;
 
-    private readonly IClnBackend _backend =
-        TestBackend.Current == TestBackendKind.Cluster ? new ClusterClnBackend() : new DockerClnBackend();
-
+    private readonly ClusterAvailability _availability;
+    private readonly ClusterClnBackend? _backend;
     private readonly SharedObjectCache _shared = new();
 
-    /// <summary>Where the fixture runs (<see cref="TestBackend.Current"/> when xunit created it).</summary>
-    public TestBackendKind Backend => _backend.Kind;
+    public ClnFixture()
+        : this(Environment.GetEnvironmentVariable, ClusterAvailability.KubeConfigurationProbe)
+    {
+    }
+
+    /// <param name="environment">Reads environment variables (<see cref="TestBackend.EnvironmentVariable"/>).</param>
+    /// <param name="kubeConfiguration">Throws when no Kubernetes configuration can be built.</param>
+    /// <param name="skip">Skips the current test with a reason (<see cref="Assert.Skip"/> when null).</param>
+    internal ClnFixture(Func<string, string?> environment, Action kubeConfiguration, Action<string>? skip = null)
+    {
+        _availability = new ClusterAvailability("the CLN fixture", "NL-866", "scripts/run-cluster.sh --matrix cln",
+                                                environment, kubeConfiguration, skip);
+        if (_availability.CanStart)
+            _backend = new ClusterClnBackend();
+    }
+
+    /// <summary>Why the fixture does not run in this process (the skip reason of its tests); null on the cluster.</summary>
+    public string? UnavailableReason => _availability.UnavailableReason;
+
+    /// <summary>Under <c>NLTG_TEST_BACKEND=cluster</c>, why no Kubernetes configuration could be built (NL-860).</summary>
+    public string? ConfigurationError => _availability.ConfigurationError;
 
     /// <summary>
     /// The fixture's bitcoind, for <see cref="NLightningTestNode.CreateAsync(RegtestBitcoinEndpoint, string, TestNodeDatabase?, Action{Domain.Node.Options.NodeOptions}?)"/>.
     /// </summary>
-    public RegtestBitcoinEndpoint Bitcoin => _backend.Bitcoin;
+    public RegtestBitcoinEndpoint Bitcoin => Backend.Bitcoin;
 
-    public ClnClient Cln => _backend.Cln;
+    public ClnClient Cln => Backend.Cln;
 
-    /// <summary>
-    /// The host this process dials CLN at (<c>127.0.0.1</c> for Docker, CLN's pod IP for the cluster).
-    /// </summary>
-    public string ClnHost => _backend.ClnHost;
+    /// <summary>The host this process dials CLN at (CLN's pod IP).</summary>
+    public string ClnHost => Backend.ClnHost;
 
     /// <summary>
     /// CLN's p2p port at <see cref="ClnHost"/>.
     /// </summary>
-    public int ClnHostPort => _backend.ClnPort;
+    public int ClnHostPort => Backend.ClnPort;
 
     /// <summary>
     /// CLN's node id (hex, lower case).
     /// </summary>
-    public string ClnNodeId => _backend.ClnNodeId;
+    public string ClnNodeId => Backend.ClnNodeId;
 
     /// <summary>
     /// The <c>pubkey@host:port</c> an in-process node connects to.
@@ -86,27 +87,42 @@ public sealed class ClnFixture : IAsyncLifetime
     public string ClnAddress => $"{ClnNodeId}@{ClnHost}:{ClnHostPort}";
 
     /// <summary>
-    /// The host CLN dials to reach a listener of this process (<see cref="HostAddressFromContainers"/> for Docker,
-    /// <c>host.orb.internal</c> on OrbStack's cluster); listen on every interface.
+    /// The host CLN dials to reach a listener of this process (<c>host.orb.internal</c> on OrbStack's cluster, or
+    /// <c>NLTG_HOST_ADDRESS</c>); listen on every interface.
     /// </summary>
-    public string HostAddressForCln => _backend.HostAddressForPeers;
+    public string HostAddressForCln => Backend.HostAddressForPeers;
 
     /// <summary>
     /// Returns the object stored under <paramref name="key"/>, creating it once with <paramref name="factory"/> (see
     /// <see cref="LightningRegtestNetworkFixture.GetOrCreateAsync{T}"/>). Disposed with the fixture.
     /// </summary>
-    public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class =>
-        _shared.GetOrCreateAsync(key, factory);
+    public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class
+    {
+        SkipIfUnavailable();
+        return _shared.GetOrCreateAsync(key, factory);
+    }
+
+    /// <summary>
+    /// Skips the current test when the fixture does not run in this process (<see cref="UnavailableReason"/>); every
+    /// member that needs CLN calls it, and a test class calls it in its constructor.
+    /// </summary>
+    public void SkipIfUnavailable() => _availability.SkipIfUnavailable();
 
     public async ValueTask InitializeAsync()
     {
+        if (UnavailableReason is not null)
+        {
+            Console.WriteLine($"[fixture] CLN fixture not started: {UnavailableReason}");
+            return;
+        }
+
+        _availability.ThrowIfMisconfigured();
         var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            await _backend.StartAsync(TestContext.Current.CancellationToken);
+            await Backend.StartAsync(TestContext.Current.CancellationToken);
             await WaitAllAtTipAsync([], CancellationToken.None);
-            // One comparable line per backend (test harness phase 2: fixture start, Docker against the cluster)
-            Console.WriteLine($"[fixture] CLN fixture ({Backend}) ready in {watch.Elapsed.TotalSeconds:F1} s");
+            Console.WriteLine($"[fixture] CLN fixture (cluster) ready in {watch.Elapsed.TotalSeconds:F1} s");
         }
         catch
         {
@@ -118,20 +134,21 @@ public sealed class ClnFixture : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         _shared.DisposeAll();
-        await _backend.DisposeAsync();
+        if (_backend is not null)
+            await _backend.DisposeAsync();
     }
 
     /// <summary>
     /// Starts another CLN on the fixture's bitcoind (<paramref name="spec"/>); disposing it removes it.
     /// </summary>
     public Task<ExtraClnNode> StartClnAsync(ClnNodeSpec spec, CancellationToken cancellationToken) =>
-        _backend.StartClnAsync(spec, cancellationToken);
+        Backend.StartClnAsync(spec, cancellationToken);
 
     /// <summary>
-    /// Writes the last <paramref name="tail"/> lines of CLN's log to <see cref="Console"/> (the test output). On the
-    /// cluster backend a failed test also gets a full dump of the namespace under <c>TestResults/cluster/</c>.
+    /// Writes the last <paramref name="tail"/> lines of CLN's log to <see cref="Console"/> (the test output); a failed
+    /// test also gets a full dump of the namespace under <c>TestResults/cluster/</c>. Does nothing when CLN never ran.
     /// </summary>
-    public Task DumpClnLogAsync(int tail = 300) => _backend.DumpClnLogAsync(tail);
+    public Task DumpClnLogAsync(int tail = 300) => _backend?.DumpClnLogAsync(tail) ?? Task.CompletedTask;
 
     /// <summary>
     /// Mines <paramref name="blocks"/> blocks to the bitcoind wallet.
@@ -199,5 +216,14 @@ public sealed class ClnFixture : IAsyncLifetime
     {
         await MineAsync(blocks, cancellationToken);
         return await WaitAllAtTipAsync(nodes, cancellationToken);
+    }
+
+    private ClusterClnBackend Backend
+    {
+        get
+        {
+            SkipIfUnavailable();
+            return _backend ?? throw new InvalidOperationException(UnavailableReason ?? ConfigurationError);
+        }
     }
 }

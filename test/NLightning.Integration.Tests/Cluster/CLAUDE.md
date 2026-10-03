@@ -41,30 +41,42 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
 
 ## The CLN interop suite on the cluster (phase 2 lane B)
 
-- `NLTG_TEST_BACKEND=docker|cluster` (`Fixtures/TestBackend`, Docker when unset, a typo throws) picks the backend of
-  `Fixtures/ClnFixture`; the 17 classes under `Docker/Interop/Cln/` (and the two Explicit gossip captures) run
-  unchanged on either. `Fixtures/Cln/`: `IClnBackend`, `DockerClnBackend` (the former fixture: same images, containers,
-  flags and published ports) and `ClusterClnBackend` (a warm `ClusterTopologyFixture`, suite `cln-interop`: bitcoind
-  `miner` + CLN `nltg-cln` on `emptyDir`, same CLN release by digest, same flags and alias; bitcoind and CLN by pod IP
-  from the host; CLN dials us at `host.orb.internal`, `ClnFixture.HostAddressForCln`).
+- **The cluster is the only backend of the CLN, Eclair, LDK and Postgres fixtures since NL-866** (owner decision
+  2026-10-03; the LND network's since NL-820): their Docker backends (`DockerClnBackend`, `DockerEclairBackend`,
+  `DockerLdkBackend`, `DockerPostgresBackend`) and the `I*Backend` switches are gone, and `Fixtures/DockerAbsenceTests`
+  keeps the Docker API and the `docker` CLI out of every source but the Tor fixture (`Fixtures/Tor/`), the shared
+  `DockerContainerUtils`, `SqlServerFixture` (not run) and `Testing.Lnd.Tests`' Explicit live test.
+  `NLTG_TEST_BACKEND=cluster` (`Fixtures/TestBackend`; also `k8s`/`kubernetes`) is the explicit opt-in; unset, every
+  cluster fixture starts nothing and its tests are skipped with the reason (`ClusterAvailability`: "The CLN fixture
+  runs on the cluster backend only (NL-866): set NLTG_TEST_BACKEND=cluster or run scripts/run-cluster.sh --matrix
+  cln"; the test classes call `fixture.SkipIfUnavailable()` in their constructor, so their cleanup never touches a
+  fixture that did not start); set, a missing Kubernetes configuration fails the fixture (NL-860); `docker` or a typo
+  throws. `scripts/run-cluster.sh` sets it for every suite.
+- `Fixtures/ClnFixture` runs `Fixtures/Cln/ClusterClnBackend` (a warm `ClusterTopologyFixture`, suite `cln-interop`:
+  bitcoind `miner` + CLN `nltg-cln` on `emptyDir`, the CLN release by digest, its flags and alias, pinned by
+  `ClnBackendTests`; bitcoind and CLN by pod IP from the host; CLN dials us at `host.orb.internal`,
+  `ClnFixture.HostAddressForCln`). The 17 classes under `Docker/Interop/Cln/` and the two Explicit gossip captures run
+  on it.
 - The classes that ran CLN containers of their own use `ClnFixture.StartClnAsync(ClnNodeSpec)` (`ExtraClnNode`:
   client, node id, `Address`, `PeerHost` for other nodes, `RestartAsync`, disposal removes it): `ClnDualFundTests`
   (`nltg-cln-df` per test), `ClnSpliceReestablishTests` (`nltg-cln-sp2`, `Restartable`: a PVC and its stable
-  `<node>-p2p` ClusterIP name on the cluster, a fixed `127.0.0.1` port on Docker) and the captures (`nltg-cln2`,
-  reached only by CLN). On the cluster they go into the run's namespace and `TestRun.RemoveNodeAsync` takes them out.
-- `ClnClient` runs `lightning-cli` through a `ClnExec` delegate (`docker exec`, or `ClusterClnBackend.KubeExec`); the
-  tests catch the Integration.Tests `ClnRpcException` on both backends.
-- Blocks ZMQ never announced: a subscription to bitcoind's pod is slower to set up than to Docker's 127.0.0.1 port,
+  `<node>-p2p` ClusterIP name) and the captures (`nltg-cln2`, reached only by CLN). They go into the run's namespace
+  and `TestRun.RemoveNodeAsync` takes them out.
+- `ClnClient` runs `lightning-cli` through a `ClnExec` delegate (`ClusterClnBackend.KubeExec`; the Tor fixture's
+  `docker exec`); the tests catch the Integration.Tests `ClnRpcException`.
+- Blocks ZMQ never announced: a subscription to bitcoind's pod was slower to set up than to Docker's 127.0.0.1 port,
   so a block mined right after a node's start was lost and the monitor waited for the next block (the first
   3-at-once CLN batch). The product's chain monitor now polls the tip (`Bitcoin:TipPollInterval`, default 30 s;
-  `NLightningTestNode` sets 1 s on both backends) and catches up with a Warning "ZMQ announced no block from height
+  `NLightningTestNode` sets 1 s) and catches up with a Warning "ZMQ announced no block from height
   ..."; the earlier test-only ZMQ startup guard is gone, so the cluster exercises the product path.
-- The Tor interop suite (`Docker/Interop/Tor/`, `Category=Interop.Tor`) stays on Docker: on the cluster backend its
-  fixture starts nothing and its tests skip with the reason (`TestBackend.SkipOnCluster`).
+- The Tor interop suite (`Docker/Interop/Tor/`, `Category=Interop.Tor`, fixture `Fixtures/Tor/TorInteropFixture` with
+  its Docker chain `TorChainHost`) is the one suite left on Docker: it runs without `NLTG_TEST_BACKEND`
+  (`scripts/run-interop.sh tor`, under the machine's Docker lock), and under `NLTG_TEST_BACKEND=cluster` its fixture
+  starts nothing and its tests skip with the reason (`TestBackend.SkipOnCluster`).
 - Run: `scripts/run-cluster.sh -n 3 --suite cln` (N processes, each its own run id and namespace, no Docker lock;
   `--class` for one class, `--explicit on` adds the captures). One process by hand:
   `NLTG_TEST_BACKEND=cluster NLTG_KUBE_CONTEXT=orbstack dotnet test/NLightning.Integration.Tests/bin/Release/net10.0/NLightning.Integration.Tests.dll -trait Category=Interop.Cln`.
-  `scripts/run-interop.sh cln` is unchanged and runs the Docker backend (under the machine's Docker lock).
+  `scripts/run-interop.sh cln` only prints these commands and exits 2 (NL-866).
 
 ## The LND regtest network on the cluster (phase 3)
 
@@ -79,7 +91,7 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   `miner` wallet, by pod IP), `BitcoinZmqPorts` (28332/28333 on that host), `LndNodes`, `GetLndNode(alias)` (in-tree
   `LndNodeConnection`s, the same objects across restarts), `RestartLndAsync(alias)`, `GetLndPeerEndpointAsync(lnd)`,
   `HostAddressForLnd` (where LND dials us: `host.orb.internal` or `NLTG_HOST_ADDRESS`), `DumpLndLogsAsync(aliases)`
-  (pod logs; the test bodies call it instead of `DockerDiagnostics`), `Cluster` (the `ClusterLndBackend`) and
+  (pod logs; the test bodies call it instead of container log dumps; `TestDiagnostics.CurrentTestFailed` says when), `Cluster` (the `ClusterLndBackend`) and
   `UnavailableReason`. The image `custom_lnd:0.21.4-beta` is never pulled or built by the harness: build it once with
   `docker build -t custom_lnd:0.21.4-beta test/Docker/custom_lnd` (OrbStack shares the Docker image store with its
   cluster; a missing image fails the pod at once with `ErrImageNeverPull`).
@@ -107,63 +119,60 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
 
 ## The Eclair interop suite on the cluster (phase 4)
 
-- `Fixtures/EclairFixture` keeps its members and delegates to `Fixtures/Eclair/IEclairBackend`: `DockerEclairBackend`
-  (the former fixture: `InteropChainHost`, the same image, container, config and fixed host ports; its `eclair.conf` is
-  pinned by `EclairBackendTests`) and `ClusterEclairBackend` (a warm `ClusterTopologyFixture`, suite `eclair-interop`:
-  bitcoind `miner` on Bitcoin Core 31.1 (Eclair 0.14.3 refuses older) on `emptyDir`, and Eclair `nltg-eclair` from the
-  same local `nltg-eclair:0.14.3` image (never pulled, never rebuilt) with the same `eclair.conf` apart from the chain's
-  alias and ZMQ ports (asserted by `EclairBackendTests`), on a PVC because two tests restart it).
+- `Fixtures/EclairFixture` runs `Fixtures/Eclair/ClusterEclairBackend` (a warm `ClusterTopologyFixture`, suite
+  `eclair-interop`: bitcoind `miner` on Bitcoin Core 31.1 (Eclair 0.14.3 refuses older) on `emptyDir`, and Eclair
+  `nltg-eclair` from the local `nltg-eclair:0.14.3` image (never pulled, never rebuilt by the harness: build it once
+  with `docker build -t nltg-eclair:0.14.3 test/Docker/eclair`) with its `eclair.conf` (pinned by `EclairBackendTests`),
+  on a PVC because two tests restart it). Its Docker backend (`DockerEclairBackend` on `InteropChainHost`) was retired
+  by NL-866.
 - Addresses: bitcoind by pod IP (`ClusterChainEndpoint`); Eclair's p2p port at its stable ClusterIP name
   (`nltg-eclair-p2p.<ns>.svc.cluster.local:9735`, `EclairFixture.EclairAddress`), which our nodes store and redial after
-  `RestartEclairAsync`, as the Docker backend's fixed host port; Eclair's API at the pod IP, moved to the new pod after a
-  restart (`EclairClient.Retarget`); Eclair dials us at `EclairFixture.HostAddressForEclair` (`host.orb.internal`).
-- Test bodies changed only where they named Docker: `HostAddressForEclair` instead of `host.docker.internal`,
-  `DumpEclairLogAsync` instead of container log dumps, `EclairFixture.MineAsync` instead of `Chain.MineAsync`
-  (`EclairFixture.Chain`, the Docker-only `InteropChainHost`, is gone from the fixture).
-- The liquidity seller of PR #19 (NL-850, `EclairLiquidityAdsTests`) runs on both backends (NL-864):
-  `EclairFixture.GetSellerAsync` asks the backend (`IEclairBackend.StartSellerAsync`, once per fixture) for a second
-  Eclair `nltg-eclair-seller` on the same bitcoind, wallet `eclair-seller`, with `EclairFixture.SellerConfigLines`
-  (`eclair.liquidity-ads` at `EclairFixture.SellerRates`) after the common configuration: on Docker a container with
-  fixed host ports, on the cluster a node deployed into the collection's run namespace (`EclairNode.Workload` with
-  `ClusterEclairBackend.BuildSellerOptions`: `emptyDir`, never restarted, dialed and called at its pod IP; the wallet
-  init container creates the wallet), removed with the namespace. Its config is pinned on both backends by
+  `RestartEclairAsync`; Eclair's API at the pod IP, moved to the new pod after a restart (`EclairClient.Retarget`);
+  Eclair dials us at `EclairFixture.HostAddressForEclair` (`host.orb.internal`).
+- The liquidity seller of PR #19 (NL-850, `EclairLiquidityAdsTests`, NL-864): `EclairFixture.GetSellerAsync` asks the
+  backend (`ClusterEclairBackend.StartSellerAsync`, once per fixture) for a second Eclair `nltg-eclair-seller` on the
+  same bitcoind, wallet `eclair-seller`, with `EclairFixture.SellerConfigLines` (`eclair.liquidity-ads` at
+  `EclairFixture.SellerRates`) after the common configuration: a node deployed into the collection's run namespace
+  (`EclairNode.Workload` with `ClusterEclairBackend.BuildSellerOptions`: `emptyDir`, never restarted, dialed and called
+  at its pod IP; the wallet init container creates the wallet), removed with the namespace. Its config is pinned by
   `EclairBackendTests`; a failed test dumps its log through `EclairFixture.DumpSellerLogAsync`.
 - Run: `scripts/run-cluster.sh -n 1 --suite eclair` and `--suite eclair2` (no Docker lock; the catalog runs
   `EclairSpliceTests`, the longest class, as `eclair2`, its own process and Eclair topology, NL-841; `--class` for one
-  class, `--explicit on` adds the Explicit E-X1 open). `scripts/run-interop.sh eclair` is unchanged and runs the Docker backend (under the machine's
-  Docker lock).
+  class, `--explicit on` adds the Explicit E-X1 open). `scripts/run-interop.sh eclair` only prints these commands and
+  exits 2 (NL-866).
 
 ## The LDK interop suite on the cluster (test harness phase 4)
 
-- `Fixtures/LdkFixture` delegates to `Fixtures/Ldk/ILdkBackend`: `DockerLdkBackend` (the former fixture: the same
-  `InteropChainHost` bitcoind 31.1, container, config file and fixed `127.0.0.1` port; its `config.toml` is pinned by
-  `LdkBackendTests`) and `ClusterLdkBackend` (a warm `ClusterTopologyFixture`, suite `ldk-interop`: bitcoind `miner`
-  31.1 on `emptyDir` + ldk-server `nltg-ldk` from the local `nltg-ldk-server:dc02b76c` image (never rebuilt, pulled
-  `Never`) on a PVC, through the harness's `LdkNodeDeployer`). The 27 tests under `Docker/Interop/Ldk/` run unchanged
-  on either backend; they reach the backend only through the fixture.
+- `Fixtures/LdkFixture` runs `Fixtures/Ldk/ClusterLdkBackend` (a warm `ClusterTopologyFixture`, suite
+  `ldk-interop`: bitcoind `miner` 31.1 on `emptyDir` + ldk-server `nltg-ldk` from the local `nltg-ldk-server:dc02b76c`
+  image (never rebuilt, pulled `Never`: build it once with
+  `docker build -t nltg-ldk-server:dc02b76c test/Docker/ldk_server`, 10-20 min cold) on a PVC, through the harness's
+  `LdkNodeDeployer`; its `config.toml` is pinned by `LdkBackendTests`). The 27 tests under `Docker/Interop/Ldk/` reach
+  it only through the fixture. Its Docker backend (`DockerLdkBackend`) was retired by NL-866.
 - Addresses: this process dials LDK at its stable ClusterIP (`LdkFixture.LdkHost`; LDK announces the same address),
-  which survives `RestartLdkAsync` as the Docker backend's fixed port does (a graceful pod restart: 5 s drain, then
-  SIGTERM; the new pod on the same PVC keeps the node id and channels). LDK dials our listeners at
-  `LdkFixture.HostAddressForLdk` (`host.docker.internal` on Docker, `host.orb.internal` on OrbStack's cluster).
-- `LdkClient` runs `ldk-server-cli` through an `LdkExec` delegate (`docker exec`, or `ClusterLdkBackend.KubeExec`);
-  `LdkFixture.DumpLdkLogAsync` replaces the container log dumps and `LdkFixture.GetTipAsync` the chain host's.
+  which survives `RestartLdkAsync` (a graceful pod restart: 5 s drain, then SIGTERM; the new pod on the same PVC keeps
+  the node id and channels). LDK dials our listeners at `LdkFixture.HostAddressForLdk` (`host.orb.internal` on
+  OrbStack's cluster).
+- `LdkClient` runs `ldk-server-cli` through an `LdkExec` delegate (`ClusterLdkBackend.KubeExec`);
+  `LdkFixture.DumpLdkLogAsync` dumps LDK's log and `LdkFixture.GetTipAsync` reads the chain's tip.
 - Run: `scripts/run-cluster.sh -n 1 --suite ldk` (no Docker lock; `--class` for one class). `scripts/run-interop.sh
-  ldk` is unchanged and runs the Docker backend (under the machine's Docker lock).
+  ldk` only prints these commands and exits 2 (NL-866).
 
 ## Postgres and partitions on the cluster (test harness phase 4)
 
-- `Fixtures/PostgresFixture` keeps its members (`DbConnectionString`, `ConnectionStringFor`, `StartNamed`, `HostPort`,
-  plus `Host` and `Backend`) over `Fixtures/Postgres/IPostgresBackend`: `DockerPostgresBackend` (the former fixture,
-  unchanged: `postgres:16.2-alpine` on a `127.0.0.1` port) or `ClusterPostgresBackend` (its own run namespace, suite
+- `Fixtures/PostgresFixture` (`DbConnectionString`, `ConnectionStringFor`, `StartNamed`, `StartNamedOnCluster`, `Host`,
+  `HostPort`, `UnavailableReason`) runs `Fixtures/Postgres/ClusterPostgresBackend` only (its own run namespace, suite
   `postgres` or `postgres-<name>`, one `PostgresNode` by digest on an `emptyDir`, reached at its pod IP; about 4-5 s
-  to ready). `Docker/PostgresTests` run unchanged on both; `MultiNodeHarnessTests`' Postgres fact gets the backend's
-  server through `StartNamed` but still needs the LND Docker fixture (phase 3).
+  to ready); the Docker container (`DockerPostgresBackend`, `postgres:16.2-alpine` on a `127.0.0.1` port) was retired
+  by NL-866. It starts in its constructor: without the opt-in its members skip the test, under the opt-in without a
+  Kubernetes configuration the constructor throws, and `StartNamed` skips the calling test when unavailable.
+  `MultiNodeHarnessTests`' Postgres fact gets its server through `StartNamed` (the `lnd` suite).
 - `Live/ServerDatabaseClusterTests` (Explicit, `Category=Cluster`, no collection): the server-database restart on the
   cluster: our node on a fresh database of a Postgres pod the test starts itself
-  (`PostgresFixture.StartNamed("pg-restart", TestBackendKind.Cluster)`, whatever `NLTG_TEST_BACKEND` says) connects to
+  (`PostgresFixture.StartNamedOnCluster("pg-restart")`, whatever `NLTG_TEST_BACKEND` says) connects to
   an LND pod, stops, starts and redials it from the stored peer. It must not join the `postgres` collection: xunit
   creates a collection's fixture whenever the selection holds any of its tests, Explicit ones included, so a
-  `FullyQualifiedName!~Docker` run would start the Docker Postgres container (NL-801).
+  `FullyQualifiedName!~Docker` run would start the collection's Postgres fixture (NL-801).
 - `Live/PartitionClusterTests` (Explicit, one topology per test: bitcoind, our node, CLN with `ProcessFaults`, a channel
   `nltg` → `cln` with a push; `Node:ReconnectMaxDelay` 4 s): an HTLC to a frozen CLN across a partition (our ping gets
   no pong and drops the link; the HTLC is kept, then settles after the heal through `channel_reestablish`), a partition
@@ -181,7 +190,7 @@ Running the ported suites: `scripts/run-cluster.sh --matrix [suites]` runs sever
   reconnects after (`PeerManager`'s backoff).
 - Run: `scripts/run-cluster.sh -n 1 --suite postgres` (3 namespaces at once: the collection's server, and the
   server-database test's own server and topology; `--class` runs one class) and `scripts/run-cluster.sh -n 1 --suite
-  faults` (no Docker lock). The Docker side of the Postgres round trips is unchanged (`PostgresTests` from the host, under the lock).
+  faults` (no Docker lock). The Postgres round trips have no Docker side since NL-866.
 
 ## The ABCD suite on the cluster (test harness phase 6)
 

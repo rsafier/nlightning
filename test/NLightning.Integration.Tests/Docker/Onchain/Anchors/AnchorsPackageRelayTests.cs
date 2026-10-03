@@ -20,7 +20,8 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// <para>Our node runs on a <see cref="RelayBitcoind"/> (the miner's image, a 5 MB mempool, synced from and relaying
-/// to the miner; a container on Docker, a pod in the network's namespace on the cluster) whose mempool the test fills with 6 sat/vB transactions until bitcoind trims it: its
+/// to the miner; a pod in the network's namespace) whose mempool the test fills with 6 sat/vB transactions until
+/// bitcoind trims it: its
 /// <c>mempoolminfee</c> rises to about 7 sat/vB while <c>minrelaytxfee</c> stays at 1 sat/vB. The channel is opened at
 /// our opener's lowest feerate (1,000 sat/kw, about 4 sat/vB), so the commitment is between the two: refused alone
 /// ("mempool min fee not met"), accepted in a package whose feerate (the child pays for the 10 sat/vB estimate) is

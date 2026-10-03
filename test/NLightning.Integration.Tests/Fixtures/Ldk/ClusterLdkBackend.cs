@@ -11,17 +11,19 @@ using Testing.Cluster.Run;
 using Testing.Cluster.Topology;
 
 /// <summary>
-/// The cluster backend of <see cref="LdkFixture"/> (<c>NLTG_TEST_BACKEND=cluster</c>, test harness phase 4): a warm
+/// The backend of <see cref="LdkFixture"/> (<c>NLTG_TEST_BACKEND=cluster</c>, test harness phase 4; the only one since
+/// NL-866 retired the Docker backend): a warm
 /// topology (<see cref="ClusterTopologyFixture"/>, one run namespace for the whole LDK collection) with the harness's
-/// bitcoind (<c>miner</c>, Bitcoin Core 31.1 as on Docker, on <c>emptyDir</c>) and an ldk-server named
-/// <see cref="LdkFixture.LdkContainerName"/> (the same local image, configuration and alias as the Docker container) on
+/// bitcoind (<c>miner</c>, Bitcoin Core 31.1, on <c>emptyDir</c>) and an ldk-server named
+/// <see cref="LdkFixture.LdkContainerName"/> (the local image <c>nltg-ldk-server:dc02b76c</c>, built from <c>test/Docker/ldk_server</c> and never pulled,
+/// with its configuration and alias) on
 /// a PVC, so <see cref="RestartLdkAsync"/> keeps its node id and channels. The in-process nodes reach bitcoind by its
 /// pod IP (<see cref="ClusterChainEndpoint"/>) and LDK at its stable ClusterIP (<see cref="StableNodeAddress"/>), which
-/// LDK also announces and which survives the restart as the Docker backend's fixed host port does; LDK reaches them at
+/// LDK also announces and which survives the restart; LDK reaches them at
 /// <see cref="HostEndpoints.ForPods"/>. A failed test of the collection dumps the namespace
 /// (<c>[assembly: ClusterDiagnostics]</c>).
 /// </summary>
-public sealed class ClusterLdkBackend : ILdkBackend
+public sealed class ClusterLdkBackend
 {
     /// <summary>How long LDK may take to be ready again after a restart, and to reach the tip.</summary>
     private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
@@ -31,8 +33,6 @@ public sealed class ClusterLdkBackend : ILdkBackend
     private RegtestBitcoinEndpoint? _bitcoin;
     private LdkClient? _ldk;
     private KubeNodeHandle? _ldkHandle;
-
-    public TestBackendKind Kind => TestBackendKind.Cluster;
 
     public RegtestBitcoinEndpoint Bitcoin =>
         _bitcoin ?? throw new InvalidOperationException("The LDK fixture is not running");
@@ -137,7 +137,7 @@ public sealed class ClusterLdkBackend : ILdkBackend
     /// <summary>
     /// The collection's topology: bitcoind <c>miner</c> (31.1, <c>emptyDir</c>) and ldk-server
     /// <see cref="LdkFixture.LdkContainerName"/> (alias <see cref="LdkFixture.LdkAlias"/>, on a PVC), nothing funded or
-    /// opened (the tests build their own channels, as on Docker).
+    /// opened (the tests build their own channels).
     /// </summary>
     private sealed class LdkTopology : ClusterTopologyFixture
     {

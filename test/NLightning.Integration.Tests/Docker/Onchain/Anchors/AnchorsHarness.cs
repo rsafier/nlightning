@@ -116,7 +116,7 @@ internal sealed class AnchorsHarness
 
     public async Task DisposeNodesAsync(IEnumerable<string> containers)
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var node in _nodes)
                 foreach (var line in node.NodeLog.TakeLast(300))

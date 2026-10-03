@@ -1,5 +1,3 @@
-using Docker.DotNet;
-
 namespace NLightning.Integration.Tests.Fixtures;
 
 using Docker.Utils;
@@ -7,29 +5,28 @@ using Domain.Money;
 using Eclair;
 
 /// <summary>
-/// An Eclair regtest node for the interop tests (NL-180), on its own bitcoind, never sharing containers, names or chain
-/// state with the LND or CLN fixtures. Where they run is <see cref="TestBackend"/>'s (<c>NLTG_TEST_BACKEND</c>): Docker
-/// by default (<see cref="DockerEclairBackend"/>: its own Docker network, <see cref="InteropChainHost"/>, ports
-/// published on <c>127.0.0.1</c>), or a run namespace of the Kubernetes harness (<see cref="ClusterEclairBackend"/>,
-/// test harness phase 4). The tests see the same members either way.
+/// An Eclair regtest node for the interop tests (NL-180), on its own bitcoind, never sharing nodes, names or chain state
+/// with the LND or CLN fixtures: a run namespace of the Kubernetes harness (<see cref="ClusterEclairBackend"/>, test
+/// harness phase 4), the fixture's only backend since NL-866 retired the Docker one. Without
+/// <c>NLTG_TEST_BACKEND=cluster</c> the fixture starts nothing and every test that uses it is skipped with the reason
+/// (<see cref="UnavailableReason"/>); with it, a missing Kubernetes configuration fails the fixture
+/// (<see cref="ConfigurationError"/>, NL-860). Run the suites with <c>scripts/run-cluster.sh --matrix eclair,eclair2</c>.
 /// </summary>
 /// <remarks>
-/// <para>ACINQ publishes no pinned multi-arch image of a recent release (NL-553), so the Docker backend builds
-/// <see cref="EclairImage"/> from <c>test/Docker/eclair</c> (the v0.14.3 release zip, sha256-checked, on a pinned
-/// Temurin 21 JRE) when the tag is missing (about 15 s); the cluster backend runs the same local tag (never pulled).</para>
+/// <para>ACINQ publishes no pinned multi-arch image of a recent release (NL-553), so <see cref="EclairImage"/> is a local
+/// image built from <c>test/Docker/eclair</c> (the v0.14.3 release zip, sha256-checked, on a pinned Temurin 21 JRE):
+/// build it once with <c>docker build -t nltg-eclair:0.14.3 test/Docker/eclair</c>; the cluster never pulls it
+/// (<c>ImagePullPolicy.Never</c>, OrbStack's cluster shares the Docker image store).</para>
 /// <para>Eclair funds channels from the bitcoind wallet <c>eclair</c>, follows blocks over ZMQ <c>hashblock</c> and
 /// answers its JSON API (password <see cref="ApiPassword"/>). Its p2p address (<see cref="EclairAddress"/>) survives
-/// <see cref="RestartEclairAsync"/> on both backends. Eclair runs with its default channel policy, the
-/// <c>to_self_delay</c> of <see cref="EclairDefaultToRemoteDelayBlocks"/> it asks of us included (accepted since
-/// NL-550).</para>
+/// <see cref="RestartEclairAsync"/>. Eclair runs with its default channel policy, the <c>to_self_delay</c> of
+/// <see cref="EclairDefaultToRemoteDelayBlocks"/> it asks of us included (accepted since NL-550). A test class skips in
+/// its constructor (<see cref="SkipIfUnavailable"/>), so its cleanup never touches a fixture that did not start.</para>
 /// </remarks>
 // ReSharper disable once ClassNeverInstantiated.Global
 public sealed class EclairFixture : IAsyncLifetime
 {
-    public const string NetworkName = "nltg-eclair-net";
-    public const string BitcoinContainerName = "nltg-eclair-bitcoind";
-
-    /// <summary>The fixture Eclair's container (Docker) or node (cluster) name, also its alias.</summary>
+    /// <summary>The fixture Eclair's node name, also its alias.</summary>
     public const string EclairContainerName = "nltg-eclair";
 
     /// <summary>
@@ -48,8 +45,8 @@ public sealed class EclairFixture : IAsyncLifetime
     /// </summary>
     public const int EclairDefaultToRemoteDelayBlocks = 720;
 
-    private readonly IEclairBackend _backend =
-        TestBackend.Current == TestBackendKind.Cluster ? new ClusterEclairBackend() : new DockerEclairBackend();
+    private readonly ClusterAvailability _availability;
+    private readonly ClusterEclairBackend? _backend;
 
     private readonly SharedObjectCache _shared = new();
 
@@ -57,46 +54,80 @@ public sealed class EclairFixture : IAsyncLifetime
 
     private EclairEndpoint? _seller;
 
-    /// <summary>Where the fixture runs (<see cref="TestBackend.Current"/> when xunit created it).</summary>
-    public TestBackendKind Backend => _backend.Kind;
+    public EclairFixture()
+        : this(Environment.GetEnvironmentVariable, ClusterAvailability.KubeConfigurationProbe)
+    {
+    }
 
-    public RegtestBitcoinEndpoint Bitcoin => _backend.Bitcoin;
+    /// <param name="environment">Reads environment variables (<see cref="TestBackend.EnvironmentVariable"/>).</param>
+    /// <param name="kubeConfiguration">Throws when no Kubernetes configuration can be built.</param>
+    /// <param name="skip">Skips the current test with a reason (<see cref="Assert.Skip"/> when null).</param>
+    internal EclairFixture(Func<string, string?> environment, Action kubeConfiguration, Action<string>? skip = null)
+    {
+        _availability = new ClusterAvailability("the Eclair fixture", "NL-866",
+                                                "scripts/run-cluster.sh --matrix eclair,eclair2", environment,
+                                                kubeConfiguration, skip);
+        if (_availability.CanStart)
+            _backend = new ClusterEclairBackend();
+    }
 
-    public EclairClient Eclair => _backend.Eclair;
+    /// <summary>Why the fixture does not run in this process (the skip reason of its tests); null on the cluster.</summary>
+    public string? UnavailableReason => _availability.UnavailableReason;
+
+    /// <summary>Under <c>NLTG_TEST_BACKEND=cluster</c>, why no Kubernetes configuration could be built (NL-860).</summary>
+    public string? ConfigurationError => _availability.ConfigurationError;
+
+    public RegtestBitcoinEndpoint Bitcoin => Backend.Bitcoin;
+
+    public EclairClient Eclair => Backend.Eclair;
 
     /// <summary>Eclair's node id (hex, lower case).</summary>
-    public string EclairNodeId => _backend.EclairNodeId;
+    public string EclairNodeId => Backend.EclairNodeId;
 
     /// <summary>
-    /// The host this process dials Eclair at (<c>127.0.0.1</c> for Docker, Eclair's stable ClusterIP name for the
-    /// cluster); fixed for the fixture's lifetime.
+    /// The host this process dials Eclair at (Eclair's stable ClusterIP name); fixed for the fixture's lifetime.
     /// </summary>
-    public string EclairHost => _backend.EclairHost;
+    public string EclairHost => Backend.EclairHost;
 
     /// <summary>Eclair's p2p port at <see cref="EclairHost"/> (fixed for the fixture's lifetime).</summary>
-    public int EclairHostPort => _backend.EclairPort;
+    public int EclairHostPort => Backend.EclairPort;
 
     /// <summary>The <c>pubkey@host:port</c> an in-process node connects to.</summary>
     public string EclairAddress => $"{EclairNodeId}@{EclairHost}:{EclairHostPort}";
 
     /// <summary>
-    /// The host Eclair dials to reach a listener of this process (<see cref="ClnFixture.HostAddressFromContainers"/>
-    /// for Docker, <c>host.orb.internal</c> on OrbStack's cluster); listen on every interface.
+    /// The host Eclair dials to reach a listener of this process (<c>host.orb.internal</c> on OrbStack's cluster, or
+    /// <c>NLTG_HOST_ADDRESS</c>); listen on every interface.
     /// </summary>
-    public string HostAddressForEclair => _backend.HostAddressForPeers;
+    public string HostAddressForEclair => Backend.HostAddressForPeers;
 
-    public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class =>
-        _shared.GetOrCreateAsync(key, factory);
+    public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class
+    {
+        SkipIfUnavailable();
+        return _shared.GetOrCreateAsync(key, factory);
+    }
+
+    /// <summary>
+    /// Skips the current test when the fixture does not run in this process (<see cref="UnavailableReason"/>); every
+    /// member that needs Eclair calls it, and a test class calls it in its constructor.
+    /// </summary>
+    public void SkipIfUnavailable() => _availability.SkipIfUnavailable();
 
     public async ValueTask InitializeAsync()
     {
+        if (UnavailableReason is not null)
+        {
+            Console.WriteLine($"[fixture] Eclair fixture not started: {UnavailableReason}");
+            return;
+        }
+
+        _availability.ThrowIfMisconfigured();
         var watch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            await _backend.StartAsync(TestContext.Current.CancellationToken);
+            await Backend.StartAsync(TestContext.Current.CancellationToken);
             await WaitAllAtTipAsync([], CancellationToken.None);
-            // One comparable line per backend (test harness: fixture start, Docker against the cluster)
-            Console.WriteLine($"[fixture] Eclair fixture ({Backend}) ready in {watch.Elapsed.TotalSeconds:F1} s");
+            Console.WriteLine($"[fixture] Eclair fixture (cluster) ready in {watch.Elapsed.TotalSeconds:F1} s");
         }
         catch
         {
@@ -108,8 +139,8 @@ public sealed class EclairFixture : IAsyncLifetime
     /// <summary>
     /// The fixture's liquidity seller (NL-850): a second Eclair 0.14.3 on the same chain (<see cref="SellerContainerName"/>,
     /// wallet <c>eclair-seller</c>) whose <c>eclair.liquidity-ads</c> sells at <see cref="SellerRates"/>, paid from the
-    /// channel balance only (<see cref="SellerConfigLines"/>), on either backend: a container on the fixture's Docker
-    /// network, or a node in the collection's run namespace (<c>emptyDir</c>, dialed at its pod IP). Started on first
+    /// channel balance only (<see cref="SellerConfigLines"/>): a node in the collection's run namespace (<c>emptyDir</c>,
+    /// dialed at its pod IP). Started on first
     /// use, then shared by the tests of the collection; <see cref="WaitAllAtTipAsync"/> waits for it too once it runs.
     /// Its wallet is funded with <paramref name="walletSat"/> on first use (Eclair needs confirmed coins to contribute).
     /// </summary>
@@ -121,7 +152,7 @@ public sealed class EclairFixture : IAsyncLifetime
             if (_seller is not null)
                 return _seller;
 
-            var seller = await _backend.StartSellerAsync(SellerRates, cancellationToken);
+            var seller = await Backend.StartSellerAsync(SellerRates, cancellationToken);
             Console.WriteLine($"[eclair-seller] {seller.Address}: {(await seller.Client.GetInfoAsync(cancellationToken))
                .ToJsonString()}");
             _seller = seller;
@@ -138,7 +169,7 @@ public sealed class EclairFixture : IAsyncLifetime
     /// Writes the last <paramref name="tail"/> lines of the seller Eclair's log (<see cref="GetSellerAsync"/>) to
     /// <see cref="Console"/>; nothing when it never started.
     /// </summary>
-    public Task DumpSellerLogAsync(int tail = 400) => _backend.DumpSellerLogAsync(tail);
+    public Task DumpSellerLogAsync(int tail = 400) => _backend?.DumpSellerLogAsync(tail) ?? Task.CompletedTask;
 
     /// <summary>
     /// The rate the seller Eclair (<see cref="GetSellerAsync"/>) sells at: 10,000 to 5,000,000 sat, a funding weight
@@ -147,7 +178,7 @@ public sealed class EclairFixture : IAsyncLifetime
     public static readonly EclairSellerRate SellerRates = new(10_000, 5_000_000, 400, 500, 100, 1_000);
 
     /// <summary>
-    /// The seller's <c>eclair.conf</c> lines after the common ones, the same on both backends (<c>eclair.liquidity-ads</c>
+    /// The seller's <c>eclair.conf</c> lines after the common ones (<c>eclair.liquidity-ads</c>
     /// of Eclair 0.14.3's <c>reference.conf</c>: <c>funding-rates</c> entries with <c>min-funding-amount-satoshis</c>,
     /// <c>max-funding-amount-satoshis</c>, <c>funding-weight</c>, <c>fee-base-satoshis</c>, <c>fee-basis-points</c> and
     /// <c>channel-creation-fee-satoshis</c>; <c>payment-types</c>; <c>lock-utxos-during-funding</c>).
@@ -173,14 +204,15 @@ public sealed class EclairFixture : IAsyncLifetime
     public async ValueTask DisposeAsync()
     {
         _shared.DisposeAll();
-        await _backend.DisposeAsync();
+        if (_backend is not null)
+            await _backend.DisposeAsync();
     }
 
     /// <summary>
-    /// Writes the last <paramref name="tail"/> lines of Eclair's log to <see cref="Console"/> (the test output). On the
-    /// cluster backend a failed test also gets a full dump of the namespace under <c>TestResults/cluster/</c>.
+    /// Writes the last <paramref name="tail"/> lines of Eclair's log to <see cref="Console"/> (the test output); a failed
+    /// test also gets a full dump of the namespace under <c>TestResults/cluster/</c>. Does nothing when Eclair never ran.
     /// </summary>
-    public Task DumpEclairLogAsync(int tail = 300) => _backend.DumpEclairLogAsync(tail);
+    public Task DumpEclairLogAsync(int tail = 300) => _backend?.DumpEclairLogAsync(tail) ?? Task.CompletedTask;
 
     /// <summary>Mines <paramref name="blocks"/> blocks to the miner wallet.</summary>
     public async Task MineAsync(int blocks, CancellationToken cancellationToken)
@@ -257,79 +289,21 @@ public sealed class EclairFixture : IAsyncLifetime
     /// the tip.
     /// </summary>
     public Task RestartEclairAsync(CancellationToken cancellationToken) =>
-        _backend.RestartEclairAsync(cancellationToken);
+        Backend.RestartEclairAsync(cancellationToken);
 
-    /// <summary>
-    /// <c>test/Docker/&lt;name&gt;</c>, found by walking up from the test assembly.
-    /// </summary>
-    internal static string FindDockerDirectory(string name)
+    private ClusterEclairBackend Backend
     {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir is not null)
+        get
         {
-            var candidate = Path.Combine(dir.FullName, "test", "Docker", name);
-            if (File.Exists(Path.Combine(candidate, "Dockerfile")))
-                return candidate;
-
-            candidate = Path.Combine(dir.FullName, "Docker", name);
-            if (File.Exists(Path.Combine(candidate, "Dockerfile")))
-                return candidate;
-
-            dir = dir.Parent;
+            SkipIfUnavailable();
+            return _backend ?? throw new InvalidOperationException(UnavailableReason ?? ConfigurationError);
         }
-
-        throw new DirectoryNotFoundException($"test/Docker/{name}/Dockerfile not found above {AppContext.BaseDirectory}");
-    }
-
-    /// <summary>
-    /// <c>docker build -t <paramref name="tag"/> <paramref name="directory"/></c> through the Docker CLI (BuildKit), with
-    /// <paramref name="timeout"/>.
-    /// </summary>
-    internal static async Task BuildImageAsync(DockerClient client, string directory, string tag, TimeSpan timeout,
-                                               params string[] buildArgs)
-    {
-        var info = new System.Diagnostics.ProcessStartInfo("docker")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            WorkingDirectory = directory
-        };
-        info.ArgumentList.Add("build");
-        info.ArgumentList.Add("-t");
-        info.ArgumentList.Add(tag);
-        foreach (var arg in buildArgs)
-        {
-            info.ArgumentList.Add("--build-arg");
-            info.ArgumentList.Add(arg);
-        }
-
-        info.ArgumentList.Add(".");
-        using var process = System.Diagnostics.Process.Start(info)
-                         ?? throw new InvalidOperationException("Could not start docker build");
-        var stdout = process.StandardOutput.ReadToEndAsync();
-        var stderr = process.StandardError.ReadToEndAsync();
-        using var cts = new CancellationTokenSource(timeout);
-        try
-        {
-            await process.WaitForExitAsync(cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            process.Kill(true);
-            throw new TimeoutException($"docker build {tag} took more than {timeout}");
-        }
-
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException($"docker build {tag} failed:\n{await stdout}\n{await stderr}");
-
-        if (!await DockerContainerUtils.ImageExistsAsync(client, tag))
-            throw new InvalidOperationException($"docker build {tag} did not produce the image");
     }
 }
 
 /// <summary>
 /// An Eclair reachable from the tests: its API client, its node id and the <c>pubkey@host:port</c> our nodes dial
-/// (<c>127.0.0.1</c> and a published port on Docker, the pod IP on the cluster).
+/// (its pod IP).
 /// </summary>
 public sealed record EclairEndpoint(EclairClient Client, string NodeId, string Address);
 

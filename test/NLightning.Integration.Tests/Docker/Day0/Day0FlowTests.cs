@@ -111,7 +111,7 @@ public sealed class Day0FlowTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var node in _nodes)
             {

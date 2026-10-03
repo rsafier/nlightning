@@ -1,6 +1,6 @@
 namespace NLightning.Integration.Tests.Docker.Interop.Tor;
 
-using Fixtures;
+using Fixtures.Tor;
 
 /// <summary>
 /// The Tor interop collection (NL-572): one <see cref="TorInteropFixture"/> (its own bitcoind, a Tor client and a CLN

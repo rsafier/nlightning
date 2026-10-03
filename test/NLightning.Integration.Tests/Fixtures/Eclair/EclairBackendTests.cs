@@ -8,37 +8,31 @@ using Testing.Cluster.Topology;
 
 public class EclairBackendTests
 {
-    [Fact]
-    public void Given_TheFixturesEclair_When_ItsDockerConfigIsBuilt_Then_ItIsTheConfigBeforeTheBackendSplit()
-    {
-        // Arrange: the eclair.conf EclairFixture copied into its container before the backend split
-        const string expected = """
-                                eclair.chain = "regtest"
-                                eclair.server.port = 9735
-                                eclair.api.enabled = true
-                                eclair.api.binding-ip = "0.0.0.0"
-                                eclair.api.port = 8080
-                                eclair.api.password = "nltg"
-                                eclair.bitcoind.host = "nltg-eclair-bitcoind"
-                                eclair.bitcoind.rpcport = 18443
-                                eclair.bitcoind.rpcuser = "nltg"
-                                eclair.bitcoind.rpcpassword = "nltg"
-                                eclair.bitcoind.wallet = "eclair"
-                                eclair.bitcoind.zmqblock = "tcp://nltg-eclair-bitcoind:28336"
-                                eclair.bitcoind.zmqtx = "tcp://nltg-eclair-bitcoind:28335"
-                                eclair.node-alias = "nltg-eclair"
-                                eclair.channel.min-depth-blocks = 6
-                                """;
-
-        // Act
-        var config = DockerEclairBackend.BuildConfig(EclairFixture.EclairContainerName, "eclair");
-
-        // Assert
-        Assert.Equal(expected.ReplaceLineEndings("\n"), config.ReplaceLineEndings("\n"));
-    }
+    /// <summary>
+    /// The <c>eclair.conf</c> the fixture's Eclair always ran with (wallet <c>eclair</c>), on the run's chain (alias
+    /// <c>miner</c>, the harness's ZMQ ports: <c>hashblock</c> 28334, <c>rawtx</c> 28333).
+    /// </summary>
+    private static string ExpectedConfig(string alias, string wallet) =>
+        $"""
+         eclair.chain = "regtest"
+         eclair.server.port = 9735
+         eclair.api.enabled = true
+         eclair.api.binding-ip = "0.0.0.0"
+         eclair.api.port = 8080
+         eclair.api.password = "nltg"
+         eclair.bitcoind.host = "miner"
+         eclair.bitcoind.rpcport = 18443
+         eclair.bitcoind.rpcuser = "nltg"
+         eclair.bitcoind.rpcpassword = "nltg"
+         eclair.bitcoind.wallet = "{wallet}"
+         eclair.bitcoind.zmqblock = "tcp://miner:28334"
+         eclair.bitcoind.zmqtx = "tcp://miner:28333"
+         eclair.node-alias = "{alias}"
+         eclair.channel.min-depth-blocks = 6
+         """.ReplaceLineEndings("\n");
 
     [Fact]
-    public void Given_TheClusterTopology_When_EclairsConfigIsBuilt_Then_OnlyTheChainsAddressDiffersFromDocker()
+    public void Given_TheClusterTopology_When_EclairsConfigIsBuilt_Then_ItIsTheFixturesConfig()
     {
         // Arrange: the cluster's Eclair on the topology's chain (alias miner, the harness's ZMQ ports)
         var endpoint = BitcoinCoreTopologyChain.EndpointFor(new TopologyNodeSpec("miner", NodeKind.BitcoinCore,
@@ -47,30 +41,22 @@ public class EclairBackendTests
                                                                                     NodeKind.Eclair));
 
         // Act
-        var cluster = EclairNode.BuildConfig(EclairFixture.EclairContainerName, options).Split('\n');
-        var docker = DockerEclairBackend.BuildConfig(EclairFixture.EclairContainerName, "eclair")
-                                        .ReplaceLineEndings("\n").Split('\n');
+        var config = EclairNode.BuildConfig(EclairFixture.EclairContainerName, options);
 
         // Assert
-        Assert.Equal(docker.Length, cluster.Length);
-        var differing = docker.Zip(cluster).Where(p => p.First != p.Second).Select(p => p.Second).ToList();
-        Assert.Equal(
-        [
-            "eclair.bitcoind.host = \"miner\"",
-            "eclair.bitcoind.zmqblock = \"tcp://miner:28334\"",
-            "eclair.bitcoind.zmqtx = \"tcp://miner:28333\""
-        ], differing);
+        Assert.Equal(ExpectedConfig("nltg-eclair", "eclair"), config.ReplaceLineEndings("\n"));
         Assert.Equal(EclairFixture.ApiPassword, options.ApiPassword);
         Assert.Equal($"{EclairFixture.EclairImage}:{EclairFixture.EclairTag}", options.Image.Reference);
         Assert.Equal(ImagePullPolicy.Never, options.Image.PullPolicy);
     }
 
     [Fact]
-    public void Given_TheSellerRates_When_TheDockerSellerConfigIsBuilt_Then_ItIsTheCommonConfigPlusTheLiquidityAdsSection()
+    public void Given_TheClusterTopology_When_TheSellersConfigIsBuilt_Then_ItIsTheCommonConfigPlusTheLiquidityAdsSection()
     {
-        // Arrange
-        var common = DockerEclairBackend.BuildConfig(EclairFixture.SellerContainerName, "eclair-seller")
-                                        .ReplaceLineEndings("\n");
+        // Arrange: the seller on the cluster topology's chain (alias miner, the harness's ZMQ ports)
+        var endpoint = BitcoinCoreTopologyChain.EndpointFor(new TopologyNodeSpec("miner", NodeKind.BitcoinCore,
+                                                                                 ImageVersions.BitcoinCore31));
+        var options = ClusterEclairBackend.BuildSellerOptions(endpoint, EclairFixture.SellerRates);
         const string section = """
                                eclair.liquidity-ads {
                                  funding-rates = [
@@ -89,39 +75,11 @@ public class EclairBackendTests
                                """;
 
         // Act
-        var config = DockerEclairBackend.BuildConfig(EclairFixture.SellerContainerName, "eclair-seller",
-                                                     EclairFixture.SellerConfigLines(EclairFixture.SellerRates))
-                                        .ReplaceLineEndings("\n");
+        var config = EclairNode.BuildConfig(EclairFixture.SellerContainerName, options).ReplaceLineEndings("\n");
 
-        // Assert
-        Assert.Equal(common + "\n" + section.ReplaceLineEndings("\n"), config);
-        Assert.Contains("eclair.bitcoind.wallet = \"eclair-seller\"", config);
-        Assert.Contains("eclair.node-alias = \"nltg-eclair-seller\"", config);
-    }
-
-    [Fact]
-    public void Given_TheClusterTopology_When_TheSellersConfigIsBuilt_Then_OnlyTheChainsAddressDiffersFromDocker()
-    {
-        // Arrange: the seller on the cluster topology's chain (alias miner, the harness's ZMQ ports)
-        var endpoint = BitcoinCoreTopologyChain.EndpointFor(new TopologyNodeSpec("miner", NodeKind.BitcoinCore,
-                                                                                 ImageVersions.BitcoinCore31));
-        var options = ClusterEclairBackend.BuildSellerOptions(endpoint, EclairFixture.SellerRates);
-
-        // Act
-        var cluster = EclairNode.BuildConfig(EclairFixture.SellerContainerName, options).Split('\n');
-        var docker = DockerEclairBackend.BuildConfig(EclairFixture.SellerContainerName, "eclair-seller",
-                                                     EclairFixture.SellerConfigLines(EclairFixture.SellerRates))
-                                        .ReplaceLineEndings("\n").Split('\n');
-
-        // Assert: the same seller section and wallet on both backends; the seller is never restarted
-        Assert.Equal(docker.Length, cluster.Length);
-        var differing = docker.Zip(cluster).Where(p => p.First != p.Second).Select(p => p.Second).ToList();
-        Assert.Equal(
-        [
-            "eclair.bitcoind.host = \"miner\"",
-            "eclair.bitcoind.zmqblock = \"tcp://miner:28334\"",
-            "eclair.bitcoind.zmqtx = \"tcp://miner:28333\""
-        ], differing);
+        // Assert: the seller's own wallet and alias, its section last; the seller is never restarted
+        Assert.Equal(ExpectedConfig("nltg-eclair-seller", "eclair-seller") + "\n" + section.ReplaceLineEndings("\n"),
+                     config);
         Assert.Equal("eclair-seller", options.Wallet);
         Assert.Equal(NodeStorage.Ephemeral, options.Storage);
         Assert.Equal($"{EclairFixture.EclairImage}:{EclairFixture.EclairTag}", options.Image.Reference);

@@ -8,7 +8,7 @@ using Run;
 
 /// <summary>
 /// How a PostgreSQL server of a run is deployed (test harness phase 4): the version table's image, the credentials and
-/// database <c>PostgresFixture</c> uses on Docker, the data in an <c>emptyDir</c> by default (a database server of the
+/// database <c>PostgresFixture</c> always used, the data in an <c>emptyDir</c> by default (a database server of the
 /// tests is never restarted).
 /// </summary>
 public sealed record PostgresNodeOptions

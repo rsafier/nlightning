@@ -43,7 +43,7 @@ Build `-c Release` and `-c Release.Native`. CI (`.github/workflows/dotnet.wasm.y
 - `dotnet build -c Release -p:MSBuildWarningsAsMessages=MSB4121`
 - `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` (the CI gate; `dotnet build` does not catch these)
 - `dotnet test test/NLightning.Infrastructure.Tests` (hermetic; the `PeerAddressTests` HTTP cases resolve `localhost` only)
-- CI runs `dotnet test --filter 'FullyQualifiedName!~Docker'` (Docker tests live in `test/NLightning.Integration.Tests/Docker/`).
+- CI runs `dotnet test --filter 'FullyQualifiedName!~Docker'` (the container tests live in `test/NLightning.Integration.Tests/Docker/`; they run through `scripts/run-cluster.sh --matrix`, the cluster harness being their only backend but for Tor since NL-866, `scripts/run-interop.sh tor`).
 - BOLT 8 vectors: `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~BOLT8"`
 - Crypto provider tests are `#if`-gated: `SodiumCryptoProviderTests` is `#if CRYPTO_LIBSODIUM` (default configs), `NativeCryptoProviderTests` is `#if CRYPTO_NATIVE` (`*.Native`).
 

@@ -292,7 +292,7 @@ public class OnchainO3Tests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var line in _node?.NodeLog.TakeLast(300) ?? [])
                 Console.WriteLine(line);

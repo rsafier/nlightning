@@ -41,6 +41,7 @@ public sealed class LdkInteropTests : IAsyncLifetime
 
     public LdkInteropTests(LdkFixture fixture, ITestOutputHelper output)
     {
+        fixture.SkipIfUnavailable(); // the fixture runs on the cluster only (NL-866)
         _fixture = fixture;
         Console.SetOut(new TestOutputWriter(output));
     }
@@ -49,7 +50,7 @@ public sealed class LdkInteropTests : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        if (DockerDiagnostics.CurrentTestFailed)
+        if (TestDiagnostics.CurrentTestFailed)
         {
             foreach (var session in _ownSessions.Append(_session).OfType<LdkChannelSession>())
                 Console.WriteLine($"[ldk] channel at failure: {await session.DescribeAsync(CancellationToken.None)}");
