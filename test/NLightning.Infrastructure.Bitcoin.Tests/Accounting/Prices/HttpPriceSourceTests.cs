@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NLightning.Tests.Utils.Mocks;
 using MsOptions = Microsoft.Extensions.Options.Options;
@@ -8,6 +9,7 @@ namespace NLightning.Infrastructure.Bitcoin.Tests.Accounting.Prices;
 using Bitcoin.Accounting.Prices;
 using Domain.Accounting.Financial;
 using Domain.Accounting.Prices;
+using Domain.Node.Options;
 
 /// <summary>
 /// mempool.space's historical price as a price source (NL-602 A3-T2, D-A11), against a fake handler: the request,
@@ -188,6 +190,85 @@ public class HttpPriceSourceTests
         Assert.Same(ask, finished);
         Assert.Null(await ask);
         Assert.True(handler.BodyReadCancelled);
+    }
+
+    [Fact]
+    public async Task Given_Failures_When_PricesAreAsked_Then_EachIsDebugAndKeptAsLastFailureNeverAWarning()
+    {
+        // Arrange (NL-868: the back-valuation warns once per round, not once per hour)
+        var handler = new FakePriceHttpHandler { FailWith = HttpStatusCode.TooManyRequests };
+        var logger = new RecordingLogger<HttpPriceSource>();
+        var source = new HttpPriceSource(new HttpClient(handler), MsOptions.Create(new AccountingPriceOptions()),
+                                         logger);
+
+        // Act
+        await source.GetPriceAsync("USD", s_at, TestContext.Current.CancellationToken);
+        await source.GetPriceAsync("USD", s_at.AddHours(1), TestContext.Current.CancellationToken);
+        var failure = source.LastFailure;
+        handler.FailWith = null;
+        var price = await source.GetPriceAsync("USD", s_at, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Contains("429", failure);
+        Assert.NotNull(price);
+        Assert.Null(source.LastFailure);
+        Assert.Equal(2, logger.At(LogLevel.Debug).Count);
+        Assert.DoesNotContain(logger.Entries, e => e.Level >= LogLevel.Information);
+    }
+
+    [Fact]
+    public async Task Given_NoDataForTheHour_When_APriceIsAsked_Then_ItIsAFailureOfTheSource()
+    {
+        // Arrange
+        var source = CreateSource(new FakePriceHttpHandler { PriceAt = _ => null });
+
+        // Act
+        await source.GetPriceAsync("USD", s_at, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Contains("no price", source.LastFailure);
+    }
+
+    [Theory]
+    [InlineData(TorMode.Hybrid, true)]
+    [InlineData(TorMode.TorOnly, false)]
+    public async Task Given_TheClearnetDefaultThroughTor_When_ItFailsTwice_Then_OneHintNamesTheOnionUrl(
+        TorMode mode, bool suggestsDirect)
+    {
+        // Arrange (NL-868: mempool.space's clearnet API refuses Tor exits)
+        var logger = new RecordingLogger<HttpPriceSource>();
+        var source = new HttpPriceSource(new HttpClient(new ThrowingHandler(new TaskCanceledException("timeout"))),
+                                         MsOptions.Create(new AccountingPriceOptions()), logger, null, mode);
+
+        // Act
+        await source.GetPriceAsync("USD", s_at, TestContext.Current.CancellationToken);
+        await source.GetPriceAsync("USD", s_at.AddHours(1), TestContext.Current.CancellationToken);
+
+        // Assert: once, with the onion URL; ThroughTor false only where it is allowed (not in TorOnly)
+        var hint = Assert.Single(logger.At(LogLevel.Information));
+        Assert.Contains(AccountingPriceOptions.MempoolOnionUrl, hint);
+        Assert.Equal(suggestsDirect, hint.Contains("ThroughTor false"));
+        Assert.DoesNotContain(logger.Entries, e => e.Level >= LogLevel.Warning);
+    }
+
+    [Theory]
+    [InlineData(null, AccountingPriceOptions.DefaultUrl)] // direct: Tor exits are not the cause
+    [InlineData(TorMode.Hybrid, AccountingPriceOptions.MempoolOnionUrl)]
+    [InlineData(TorMode.Hybrid, "https://prices.example/api/v1/historical-price")]
+    public async Task Given_NotTheClearnetDefaultThroughTor_When_ItFails_Then_ThereIsNoHint(TorMode? mode, string url)
+    {
+        // Arrange
+        var logger = new RecordingLogger<HttpPriceSource>();
+        var source = new HttpPriceSource(new HttpClient(new ThrowingHandler(new HttpRequestException("refused"))),
+                                         MsOptions.Create(new AccountingPriceOptions { Url = url }), logger, null,
+                                         mode);
+
+        // Act
+        await source.GetPriceAsync("USD", s_at, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotNull(source.LastFailure);
+        Assert.Empty(logger.At(LogLevel.Information));
     }
 
     private static HttpPriceSource CreateSource(HttpMessageHandler handler) =>

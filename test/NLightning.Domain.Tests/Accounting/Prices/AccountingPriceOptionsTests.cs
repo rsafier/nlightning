@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Tests.Accounting.Prices;
 
 using Domain.Accounting.Prices;
+using Domain.Node.Options;
 
 /// <summary><c>Accounting:Prices</c> (NL-602 A3-T2): the defaults of D-A1/D-A11 and what makes them invalid.</summary>
 public class AccountingPriceOptionsTests
@@ -128,5 +129,83 @@ public class AccountingPriceOptionsTests
         // Act & Assert
         Assert.True(options.IsPlausibleNext(1m, AccountingPriceCsv.MaxPrice));
         Assert.Equal(AccountingPriceOptions.DefaultMaxPriceJumpFactor, new AccountingPriceOptions().MaxPriceJumpFactor);
+    }
+
+    [Theory]
+    [InlineData(null, TorMode.Off, false)]
+    [InlineData(null, TorMode.Hybrid, true)]
+    [InlineData(null, TorMode.TorOnly, true)]
+    [InlineData(true, TorMode.Off, false)]
+    [InlineData(true, TorMode.Hybrid, true)]
+    [InlineData(true, TorMode.TorOnly, true)]
+    [InlineData(false, TorMode.Off, false)]
+    [InlineData(false, TorMode.Hybrid, false)]
+    [InlineData(false, TorMode.TorOnly, true)]
+    public void Given_ThroughTorAndATorMode_When_TheRouteIsAsked_Then_UnsetFollowsTorAndTorOnlyAlwaysUsesIt(
+        bool? throughTor, TorMode mode, bool expected)
+    {
+        // Arrange (NL-868)
+        var options = new AccountingPriceOptions { ThroughTor = throughTor };
+
+        // Act
+        var routes = options.RoutesThroughTor(new TorOptions { Mode = mode });
+
+        // Assert
+        Assert.Equal(expected, routes);
+    }
+
+    [Theory]
+    [InlineData(null, TorMode.Off, null)]
+    [InlineData(null, TorMode.Hybrid, null)]
+    [InlineData(null, TorMode.TorOnly, null)]
+    [InlineData(true, TorMode.Off, "Node:Tor:Mode is Off")]
+    [InlineData(true, TorMode.Hybrid, null)]
+    [InlineData(true, TorMode.TorOnly, null)]
+    [InlineData(false, TorMode.Off, null)]
+    [InlineData(false, TorMode.Hybrid, null)]
+    [InlineData(false, TorMode.TorOnly, "Node:Tor:Mode is TorOnly")]
+    public void Given_ThroughTorAndATorMode_When_Validated_Then_OnlyTrueWithoutTorAndFalseInTorOnlyAreRefused(
+        bool? throughTor, TorMode mode, string? expected)
+    {
+        // Arrange (NL-868)
+        var options = new AccountingPriceOptions { ThroughTor = throughTor };
+
+        // Act
+        var errors = options.GetTorRoutingErrors(new TorOptions { Mode = mode });
+
+        // Assert
+        if (expected is null)
+        {
+            Assert.Empty(errors);
+            return;
+        }
+
+        var error = Assert.Single(errors);
+        Assert.Contains(expected, error);
+        Assert.Contains("Accounting:Prices:ThroughTor", error);
+    }
+
+    [Theory]
+    [InlineData(true, TorMode.Off)]
+    [InlineData(false, TorMode.TorOnly)]
+    public void Given_NoHttpSource_When_ThroughTorContradictsTor_Then_ItIsNotAnError(bool throughTor, TorMode mode)
+    {
+        // Arrange: the route of a source that is never asked does not matter (NL-868)
+        var options = new AccountingPriceOptions { ThroughTor = throughTor, Source = AccountingPriceSourceMode.Csv };
+
+        // Act / Assert
+        Assert.Empty(options.GetTorRoutingErrors(new TorOptions { Mode = mode }));
+        Assert.Empty(options.GetTorRoutingErrors(null));
+    }
+
+    [Fact]
+    public void Given_TheOnionUrl_When_Validated_Then_ItIsAllowedAsPlainHttpToAnOnionHost()
+    {
+        // Arrange (NL-868: the recommended URL with Tor)
+        var options = new AccountingPriceOptions { Url = AccountingPriceOptions.MempoolOnionUrl };
+
+        // Act / Assert
+        Assert.Empty(options.GetValidationErrors());
+        Assert.Null(options.ThroughTor);
     }
 }

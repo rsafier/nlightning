@@ -17,4 +17,11 @@ public interface IPriceSource
     /// </summary>
     Task<AccountingPrice?> GetPriceAsync(string currency, DateTimeOffset time,
                                          CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Why the latest <see cref="GetPriceAsync"/> answered null, when it was a failure of the source (unreachable, an
+    /// error status, an answer without a price; null for an answer, or for "no price known" from a file). The caller
+    /// asks one at a time and sums the failures of a round in one warning (NL-868); default null.
+    /// </summary>
+    string? LastFailure => null;
 }
