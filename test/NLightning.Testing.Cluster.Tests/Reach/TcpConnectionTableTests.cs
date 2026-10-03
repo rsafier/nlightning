@@ -17,6 +17,52 @@ public class TcpConnectionTableTests
         """;
 
     [Fact]
+    public void Given_TheExecCommand_When_Read_Then_ItReadsBothProcTablesThroughTheScript()
+    {
+        // Assert
+        Assert.Equal(["sh", "-c", "cat /proc/net/tcp && { [ ! -e /proc/net/tcp6 ] || cat /proc/net/tcp6; }"],
+                     TcpConnectionTable.Command);
+    }
+
+    [Theory]
+    [InlineData(true, true, 0, "v4v6")]
+    [InlineData(true, false, 0, "v4")]
+    [InlineData(false, true, 1, "")]
+    public async Task Given_TheTablesPresentOrNot_When_TheScriptRuns_Then_OnlyAMissingIpv4TableFails(
+        bool tcp, bool tcp6, int expectedExit, string expectedOutput)
+    {
+        // Arrange: a fake /proc/net in a temporary directory
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "needs a POSIX sh");
+        var directory = Directory.CreateTempSubdirectory("nltg-tcp-");
+        try
+        {
+            var path = Path.Combine(directory.FullName, "tcp");
+            if (tcp)
+                await File.WriteAllTextAsync(path, "v4", TestContext.Current.CancellationToken);
+            if (tcp6)
+                await File.WriteAllTextAsync(path + "6", "v6", TestContext.Current.CancellationToken);
+
+            // Act
+            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("sh")
+            {
+                ArgumentList = { "-c", TcpConnectionTable.Script(path) },
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            })!;
+            var output = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+            await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+
+            // Assert
+            Assert.Equal(expectedExit, process.ExitCode == 0 ? 0 : 1);
+            Assert.Equal(expectedOutput, output);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public void Given_ProcNetTcp_When_Parsed_Then_EverySocketIsReadAndHeadersSkipped()
     {
         // Act

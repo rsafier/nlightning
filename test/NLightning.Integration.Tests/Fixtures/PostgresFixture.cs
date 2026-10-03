@@ -34,10 +34,14 @@ public class PostgresFixture : IDisposable
     {
     }
 
-    private PostgresFixture(string containerName)
+    private PostgresFixture(string containerName) : this(containerName, TestBackend.Current)
+    {
+    }
+
+    private PostgresFixture(string containerName, TestBackendKind backend)
     {
         ContainerName = containerName;
-        _backend = TestBackend.Current == TestBackendKind.Cluster
+        _backend = backend == TestBackendKind.Cluster
                        ? new ClusterPostgresBackend(containerName)
                        : new DockerPostgresBackend(containerName);
         try
@@ -55,7 +59,10 @@ public class PostgresFixture : IDisposable
     /// <summary>The container (Docker) or node (cluster) name.</summary>
     public string ContainerName { get; }
 
-    /// <summary>Where the server runs (<see cref="TestBackend.Current"/> when the fixture was created).</summary>
+    /// <summary>
+    /// Where the server runs (<see cref="TestBackend.Current"/> when the fixture was created, or the backend
+    /// <see cref="StartNamed(string, TestBackendKind)"/> was given).
+    /// </summary>
     public TestBackendKind Backend => _backend.Kind;
 
     /// <summary>The host this process connects to (<c>127.0.0.1</c> on Docker, the pod IP on the cluster).</summary>
@@ -76,6 +83,14 @@ public class PostgresFixture : IDisposable
     /// container of its own on Docker, a run namespace of its own on the cluster). Dispose it when done.
     /// </summary>
     public static PostgresFixture StartNamed(string containerName) => new(containerName);
+
+    /// <summary>
+    /// <see cref="StartNamed(string)"/> on <paramref name="backend"/> whatever <c>NLTG_TEST_BACKEND</c> says: a cluster
+    /// test (<c>Category=Cluster</c>) passes <see cref="TestBackendKind.Cluster"/>, so selecting it never starts a
+    /// Docker container.
+    /// </summary>
+    public static PostgresFixture StartNamed(string containerName, TestBackendKind backend) =>
+        new(containerName, backend);
 
     /// <summary>
     /// An Npgsql connection string to <paramref name="database"/> at <paramref name="host"/> (the format the fixture

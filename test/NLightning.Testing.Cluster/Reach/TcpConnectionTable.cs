@@ -26,8 +26,19 @@ public sealed record TcpSocketEntry(int LocalPort, int RemotePort, string State)
 /// </summary>
 public static class TcpConnectionTable
 {
-    /// <summary>The exec command: both tables, IPv6 missing is fine.</summary>
-    public static IReadOnlyList<string> Command { get; } = ["sh", "-c", "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null"];
+    /// <summary>
+    /// The exec command over <see cref="Script"/> for <c>/proc/net/tcp</c>: both tables; a kernel without IPv6
+    /// (<c>ipv6.disable=1</c>, no <c>/proc/net/tcp6</c>) is fine, a failure on <c>/proc/net/tcp</c> fails the exec.
+    /// </summary>
+    public static IReadOnlyList<string> Command { get; } = ["sh", "-c", Script("/proc/net/tcp")];
+
+    /// <summary>
+    /// The script that prints <paramref name="tcp"/> and, when it is readable, <paramref name="tcp"/><c>6</c>; it exits
+    /// non-zero only when <paramref name="tcp"/> itself cannot be read (<c>cat a b</c> fails when <c>b</c> is missing
+    /// whatever <c>2&gt;/dev/null</c> hides).
+    /// </summary>
+    public static string Script(string tcp) =>
+        $"cat {tcp} && {{ [ ! -e {tcp}6 ] || cat {tcp}6; }}";
 
     /// <summary>The sockets of <c>/proc/net/tcp</c>-formatted <paramref name="text"/> (header lines skipped).</summary>
     public static IReadOnlyList<TcpSocketEntry> Parse(string text)

@@ -12,6 +12,7 @@ using Testing.Cluster.Faults;
 using Testing.Cluster.Kube;
 using Testing.Cluster.Nodes;
 using Testing.Cluster.Nodes.Cln;
+using Testing.Cluster.Reach;
 using Testing.Cluster.Run;
 using Testing.Cluster.Topology;
 using ClusterPoll = Testing.Cluster.Poll;
@@ -189,9 +190,16 @@ public class PartitionClusterTests
             await pair.Nltg.DisconnectAsync(pair.ClnId, ct);
             var redial = await Record.ExceptionAsync(() => pair.Nltg.ConnectAsync(clnAddress, ct));
 
-            // Act: whatever the transport does, the channel must not become usable without CLN's reestablish
-            var gated = await HoldAsync(pair, ct, c => c is { State: ChannelState.Open, IsReestablished: false });
-            var connectedWhileGated = (await FindOurChannelAsync(pair, ct)).IsPeerConnected;
+            // Act: the transport is up (connectd completed init) and the channel must not become usable without CLN's
+            // reestablish; the case this test exists for, so it holds for the whole period or fails
+            Assert.Null(redial);
+            var gated = await HoldAsync(pair, ct, c => c is
+            {
+                State: ChannelState.Open,
+                IsPeerConnected: true,
+                IsReestablished: false
+            });
+            var clnSockets = await TcpConnectionTable.CountEstablishedAsync(pair.ClnHandle, ClnNode.P2PPort, ct);
             var refused = await pair.Nltg.PayInvoiceAsync(invoice.Bolt11, ct);
             var afterRefusal = await FindOurChannelAsync(pair, ct);
 
@@ -207,14 +215,17 @@ public class PartitionClusterTests
             var activeIn = heal.Elapsed;
 
             // Assert
+            Assert.True(clnSockets >= 1, $"CLN's pod holds {clnSockets} established connections on its p2p port while "
+                                       + "lightningd is frozen");
             Assert.False(refused.Succeeded);
+            Assert.True(afterRefusal.IsPeerConnected, "the transport dropped while the channel was gated");
             Assert.Equal(0, afterRefusal.OfferedHtlcCount);
             Assert.Equal("unpaid", await ClnInvoiceStatusAsync(pair, invoice.PaymentHashHex, ct));
             await PayClnAsync(pair, HtlcMsat, ct);
             await WaitBalancesAsync(pair, PushMsat + HtlcMsat, ct);
 
-            Log($"{pair.Namespace}: redial to the frozen CLN: {redial?.Message ?? "connected"}; gated "
-              + $"{gated.TotalSeconds:F1} s (transport connected: {connectedWhileGated}), "
+            Log($"{pair.Namespace}: redial to the frozen CLN connected; gated {gated.TotalSeconds:F1} s with the "
+              + $"transport up ({clnSockets} established on CLN's p2p port), "
               + $"payment refused ({refused.FailureReason}), active {activeIn.TotalSeconds:F1} s after the heal");
             foreach (var fault in pair.Faults.Events)
                 Log($"  {fault}");

@@ -14,20 +14,23 @@ using ClusterPoll = Testing.Cluster.Poll;
 
 /// <summary>
 /// The server-database restart of <c>Docker/MultiNodeHarnessTests</c> (NL-347, NL-429) on the cluster harness (test
-/// harness phase 4): our in-process node on a database of its own on the <c>postgres</c> collection's server
-/// (<see cref="PostgresFixture"/>, a pod on the cluster backend) connects to an LND pod, stops, and on its next start
-/// reads the stored peer from Postgres and dials it again by its Service name.
+/// harness phase 4): our in-process node on a database of its own on a Postgres pod the test starts
+/// (<see cref="PostgresFixture.StartNamed(string, TestBackendKind)"/> on the cluster backend, whatever
+/// <c>NLTG_TEST_BACKEND</c> says) connects to an LND pod, stops, and on its next start reads the stored peer from
+/// Postgres and dials it again by its Service name.
 /// </summary>
 /// <remarks>
-/// Explicit and <c>Category=Cluster</c>. Run with the cluster backend, so the server is a pod too:
-/// <c>scripts/run-cluster.sh -n 1 --suite postgres</c> (with <c>Docker/PostgresTests</c>), or the built test assembly with
-/// <c>NLTG_TEST_BACKEND=cluster -explicit on -class NLightning.Integration.Tests.Cluster.Live.ServerDatabaseClusterTests</c>.
-/// Two namespaces: the collection's server and this test's topology.
+/// Explicit and <c>Category=Cluster</c>: <c>scripts/run-cluster.sh -n 1 --suite postgres</c> (with
+/// <c>Docker/PostgresTests</c>), <c>scripts/run-cluster.sh -n 1 -p integration --class
+/// NLightning.Integration.Tests.Cluster.Live.ServerDatabaseClusterTests</c>, or the built test assembly with
+/// <c>-explicit on -class ...</c>. Two namespaces: the test's Postgres server and its topology. Not in the
+/// <c>postgres</c> collection: xunit creates a collection's fixture whenever the selection holds any of its tests,
+/// Explicit ones included, so a <c>FullyQualifiedName!~Docker</c> run would start the Docker Postgres fixture
+/// (NL-801).
 /// </remarks>
-[Collection("postgres")]
 [Trait("Category", "Cluster")]
 [Trait("Database", "Postgres")]
-public class ServerDatabaseClusterTests(PostgresFixture postgres)
+public class ServerDatabaseClusterTests
 {
     private static readonly TimeSpan s_stepTimeout = TimeSpan.FromMinutes(2);
 
@@ -39,6 +42,7 @@ public class ServerDatabaseClusterTests(PostgresFixture postgres)
         // Arrange: bitcoind + LND in a run of their own, our node on a fresh database of the collection's server
         var ct = TestContext.Current.CancellationToken;
         var watch = Stopwatch.StartNew();
+        using var postgres = PostgresFixture.StartNamed("pg-restart", TestBackendKind.Cluster);
         var databaseName = $"nltg_cluster_{Guid.NewGuid():N}";
         var database = TestNodeDatabase.Postgres(postgres.ConnectionStringFor(databaseName));
         var run = await TestRun.StartAsync(TestRunOptions.FromEnvironment("pg-restart") with
@@ -75,7 +79,7 @@ public class ServerDatabaseClusterTests(PostgresFixture postgres)
             await nltg.TestNode.StartAsync(ct);
 
             // Assert: the node ran on the server database, and the peer came back from it without a connect call
-            Assert.Equal(TestBackend.Current, postgres.Backend);
+            Assert.Equal(TestBackendKind.Cluster, postgres.Backend);
             Assert.Equal("Npgsql.EntityFrameworkCore.PostgreSQL", nltg.TestNode.GetEfProviderName());
             await ClusterPoll.UntilAsync(async c => await IsPeerOfAsync(lnd, nltg.TestNode.NodeIdHex, c)
                                                  && nltg.TestNode.IsConnectedTo(
