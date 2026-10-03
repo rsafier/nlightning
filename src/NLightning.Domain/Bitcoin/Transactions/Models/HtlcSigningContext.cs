@@ -15,7 +15,9 @@ using Crypto.ValueObjects;
 /// </param>
 /// <param name="HasAnchors">
 /// Whether option_anchors applies: the counterparty's signature on the holder's HTLC transaction is then
-/// <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c>, otherwise <c>SIGHASH_ALL</c>.
+/// <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c>, otherwise <c>SIGHASH_ALL</c>. True for a simple taproot HTLC
+/// transaction (<see cref="HtlcTransactionBuildResult.IsTaproot"/>), whose signatures are BIP 340 ones over the BIP 341
+/// script-path sighash (the holder's with <c>SIGHASH_DEFAULT</c>).
 /// </param>
 public sealed record HtlcSigningContext(
     HtlcTransactionBuildResult HtlcTransaction,

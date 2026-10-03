@@ -61,7 +61,7 @@ public static class HtlcTransactionModelFactory
         };
 
         var fee = CommitmentFeeCalculator.HtlcTransactionFee(type == HtlcTransactionType.Timeout,
-                                                              commitment.FeeRatePerKw, commitment.HasAnchors);
+                                                              commitment.FeeRatePerKw, commitment.Format);
 
         // txout[0] amount: floor(amount_msat / 1000) - fee. An untrimmed HTLC always covers its fee.
         var amountSats = htlcOutput.Amount.Satoshi;
@@ -75,6 +75,9 @@ public static class HtlcTransactionModelFactory
 
         return new HtlcTransactionModel(type, commitmentTxId, outputIndex, htlcOutput, commitment.HasAnchors, fee,
                                         outputAmount, lockTime, sequence, commitment.RevocationPubKey.Value,
-                                        commitment.LocalDelayedPubKey.Value, commitment.ToSelfDelay);
+                                        commitment.LocalDelayedPubKey.Value, commitment.ToSelfDelay)
+        {
+            Format = commitment.Format
+        };
     }
 }

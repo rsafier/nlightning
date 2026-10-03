@@ -12,7 +12,9 @@ public interface IHtlcTransactionBuilder
 {
     /// <summary>
     /// Builds the unsigned HTLC transaction and returns it with the witness script and amount of the commitment HTLC
-    /// output it spends (the BIP 143 sighash inputs).
+    /// output it spends (the BIP 143 sighash inputs). For a simple taproot model (<c>IsSimpleTaproot</c>) the
+    /// "witness script" is the spent leaf and the result also carries the spent P2TR scriptPubKey and the leaf's
+    /// control block (the BIP 341 script-path sighash inputs).
     /// </summary>
     HtlcTransactionBuildResult Build(HtlcTransactionModel transaction);
 
@@ -21,7 +23,9 @@ public interface IHtlcTransactionBuilder
     /// <c>0 &lt;remotehtlcsig&gt; &lt;localhtlcsig&gt; &lt;payment_preimage&gt;</c> (HTLC-success) or
     /// <c>0 &lt;remotehtlcsig&gt; &lt;localhtlcsig&gt; &lt;&gt;</c> (HTLC-timeout), followed by the witness script.
     /// The remote signature carries <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> with option_anchors, else
-    /// <c>SIGHASH_ALL</c>; the local signature always carries <c>SIGHASH_ALL</c>.
+    /// <c>SIGHASH_ALL</c>; the local signature always carries <c>SIGHASH_ALL</c>. For simple taproot the signatures are
+    /// 64-byte BIP 340 ones and the witness is <c>&lt;remotehtlcsig||0x83&gt; &lt;localhtlcsig&gt;
+    /// [&lt;payment_preimage&gt;] &lt;leaf script&gt; &lt;control block&gt;</c> (ours with <c>SIGHASH_DEFAULT</c>).
     /// </summary>
     /// <param name="transaction">The HTLC transaction model.</param>
     /// <param name="buildResult">The result of <see cref="Build"/> for that model.</param>

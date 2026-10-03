@@ -33,31 +33,30 @@ public class TransactionOutputComparer : IComparer<BaseOutput>
             return scriptComparison;
         }
 
-        // For HTLC outputs, compare by CLTV expiry
-        if (x is OfferedHtlcOutput or ReceivedHtlcOutput &&
-            y is OfferedHtlcOutput or ReceivedHtlcOutput)
-        {
-            ulong xExpiry = x switch
-            {
-                OfferedHtlcOutput offered => offered.CltvExpiry,
-                ReceivedHtlcOutput received => received.CltvExpiry,
-                _ => 0
-            };
-
-            ulong yExpiry = y switch
-            {
-                OfferedHtlcOutput offered => offered.CltvExpiry,
-                ReceivedHtlcOutput received => received.CltvExpiry,
-                _ => 0
-            };
-
-            if (xExpiry != yExpiry)
-            {
-                return xExpiry.CompareTo(yExpiry);
-            }
-        }
+        // For HTLC outputs, compare by CLTV expiry (a simple taproot offered HTLC's script does not commit to it)
+        if (TryGetCltvExpiry(x, out var xExpiry) && TryGetCltvExpiry(y, out var yExpiry) && xExpiry != yExpiry)
+            return xExpiry.CompareTo(yExpiry);
 
         return 0;
+    }
+
+    private static bool TryGetCltvExpiry(BaseOutput output, out ulong cltvExpiry)
+    {
+        switch (output)
+        {
+            case OfferedHtlcOutput offered:
+                cltvExpiry = offered.CltvExpiry;
+                return true;
+            case ReceivedHtlcOutput received:
+                cltvExpiry = received.CltvExpiry;
+                return true;
+            case TaprootHtlcOutput taproot:
+                cltvExpiry = taproot.CltvExpiry;
+                return true;
+            default:
+                cltvExpiry = 0;
+                return false;
+        }
     }
 
     private static int CompareScriptPubKey(ReadOnlySpan<byte> script1, ReadOnlySpan<byte> script2)
