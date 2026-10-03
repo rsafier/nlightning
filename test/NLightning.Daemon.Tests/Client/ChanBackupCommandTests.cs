@@ -99,6 +99,49 @@ public class ChanBackupCommandTests
     }
 
     [Fact]
+    public void Given_ATaprootChannelInTheBackup_When_VerificationAndExportPrinted_Then_ItIsNamedSimpleTaproot()
+    {
+        // Arrange (NL-877 T5)
+        var verifyOutput = new StringWriter();
+        var exportOutput = new StringWriter();
+        var channelId = new ChannelId(Enumerable.Repeat((byte)7, 32).ToArray());
+        var verification = new VerifyChanBackupIpcResponse
+        {
+            IsValid = true,
+            Channels =
+            [
+                new ChanBackupChannelIpcInfo
+                {
+                    ChannelId = channelId,
+                    RemoteNodeId = new Domain.Crypto.ValueObjects.CompactPubKey(
+                        Convert.FromHexString("02" + new string('a', 64))),
+                    Addresses = [],
+                    FundingTxId = new string('b', 64),
+                    IsInitiator = false,
+                    OptionAnchors = true,
+                    OptionSimpleTaproot = true,
+                    KeysMatch = true
+                }
+            ]
+        };
+        var export = new ExportChanBackupIpcResponse
+        {
+            Backup = [0x4e],
+            ChannelIds = [channelId, new ChannelId(new byte[32])],
+            SimpleTaprootChannelIds = [channelId]
+        };
+
+        // Act
+        new VerifyChanBackupPrinter(verifyOutput).Print(verification);
+        new ExportChanBackupPrinter(null, exportOutput).Print(export);
+
+        // Assert
+        Assert.Contains("Type: simple_taproot, the peer funded it", verifyOutput.ToString());
+        Assert.Contains($"{channelId} (simple_taproot)", exportOutput.ToString());
+        Assert.DoesNotContain($"{new ChannelId(new byte[32])} (simple_taproot)", exportOutput.ToString());
+    }
+
+    [Fact]
     public void Given_AnExportWithoutOutputFile_When_Printed_Then_TheBackupIsPrintedAsHex()
     {
         // Arrange

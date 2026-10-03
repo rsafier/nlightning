@@ -43,7 +43,9 @@ public sealed class ExportChanBackupClientHandler
                                ? _options.FilePath
                                : null;
             return new ExportChanBackupClientResponse(export.Backup, export.Snapshot.Channels.Select(c => c.ChannelId).ToList(),
-                                                      filePath);
+                                                      filePath,
+                                                      export.Snapshot.Channels.Where(c => c.OptionSimpleTaproot)
+                                                            .Select(c => c.ChannelId).ToList());
         }
         catch (KeyNotFoundException e)
         {

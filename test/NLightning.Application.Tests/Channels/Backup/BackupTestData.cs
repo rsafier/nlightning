@@ -72,7 +72,8 @@ internal sealed class BackupTestData
     /// <summary>A funded channel with key index <paramref name="tag"/>, keys matching <see cref="Signer"/>.</summary>
     public ChannelModel AddChannel(byte tag, bool anchors = false, ChannelState state = ChannelState.Open,
                                    bool withFunding = true, bool initiator = true, ShortChannelId? scid = null,
-                                   bool withPeer = true, ChannelVersion version = ChannelVersion.V1)
+                                   bool withPeer = true, ChannelVersion version = ChannelVersion.V1,
+                                   bool simpleTaproot = false)
     {
         var remoteNode = Key(0x03, tag, 9);
         var local = new ChannelKeySetModel(tag, Key(0x02, tag, 1), Key(0x02, tag, 2), Key(0x02, tag, 3),
@@ -86,7 +87,10 @@ internal sealed class BackupTestData
                                            LightningMoney.MilliSatoshis(1), 483,
                                            LightningMoney.Satoshis(990_000), 720);
         var channelParams = new ChannelParams(localParty, remoteParty, LightningMoney.Satoshis(2_500), 3, anchors,
-                                              FeatureSupport.No);
+                                              FeatureSupport.No)
+        {
+            OptionSimpleTaproot = simpleTaproot
+        };
         FundingOutputInfo? funding = null;
         if (withFunding)
             funding = new FundingOutputInfo(LightningMoney.Satoshis(1_000_000 + tag), local.FundingCompactPubKey,
@@ -208,6 +212,7 @@ internal sealed class BackupTestData
          && x.FundingOutputIndex == y.FundingOutputIndex && x.CapacitySat == y.CapacitySat
          && x.FundingHeight == y.FundingHeight && Nullable.Equals(x.ShortChannelId, y.ShortChannelId)
          && x.IsInitiator == y.IsInitiator && x.OptionAnchorOutputs == y.OptionAnchorOutputs
+         && x.OptionSimpleTaproot == y.OptionSimpleTaproot
          && x.AnnounceChannel == y.AnnounceChannel && x.HasInferredParams == y.HasInferredParams
          && x.Version == y.Version && x.UseScidAlias == y.UseScidAlias && x.MinimumDepth == y.MinimumDepth
          && x.KeyIndex == y.KeyIndex && x.LocalFundingPubKey == y.LocalFundingPubKey

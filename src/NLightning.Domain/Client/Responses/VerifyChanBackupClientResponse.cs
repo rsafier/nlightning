@@ -31,6 +31,7 @@ public sealed record VerifyChanBackupClientResponse(
 /// <param name="OptionAnchors">Whether it is an <c>option_anchors</c> channel.</param>
 /// <param name="KeysMatch">Whether our key index re-derives the recorded keys.</param>
 /// <param name="LocalState">The channel's state in this node's database, when it is there.</param>
+/// <param name="OptionSimpleTaproot">Whether it is a simple taproot channel (NL-877 T5).</param>
 public sealed record ChanBackupChannelInfo(
     ChannelId ChannelId,
     CompactPubKey RemoteNodeId,
@@ -42,4 +43,5 @@ public sealed record ChanBackupChannelInfo(
     bool IsInitiator,
     bool OptionAnchors,
     bool KeysMatch,
-    ChannelState? LocalState);
+    ChannelState? LocalState,
+    bool OptionSimpleTaproot = false);

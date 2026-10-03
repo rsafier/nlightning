@@ -581,6 +581,7 @@ public sealed class ChannelBackupService : IChannelBackupService
             ShortChannelId = HasShortChannelId(channel.ShortChannelId) ? channel.ShortChannelId : (ShortChannelId?)null,
             IsInitiator = channel.IsInitiator,
             OptionAnchorOutputs = channel.ChannelParams.OptionAnchorOutputs,
+            OptionSimpleTaproot = channel.ChannelParams.OptionSimpleTaproot,
             AnnounceChannel = channel.ChannelParams.AnnounceChannel,
             HasInferredParams = channel.ChannelParams.HasInferredParams,
             Version = channel.Version,

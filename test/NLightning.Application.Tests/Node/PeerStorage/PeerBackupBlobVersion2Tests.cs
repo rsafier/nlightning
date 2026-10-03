@@ -46,6 +46,26 @@ public class PeerBackupBlobVersion2Tests
     }
 
     [Fact]
+    public async Task Given_ATaprootChannel_When_ABlobIsBuiltAndRead_Then_ItIsMarkedSimpleTaproot()
+    {
+        // Arrange (NL-877 T5: flag bit 2 of the entry)
+        using var context = new PeerStorageTestContext();
+        var taproot = Funded(context.AddChannel(new FakeGossipPeer(4).PeerPubKey, simpleTaproot: true), s_fundingTxId,
+                             0);
+        Funded(context.AddChannel(new FakeGossipPeer(5).PeerPubKey), s_spliceTxId, 1);
+
+        // Act
+        var blob = await context.BlobProvider.CreateBlobAsync(TestContext.Current.CancellationToken);
+        var contents = await context.BlobProvider.TryReadBlobAsync(blob!.Blob, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(2, contents!.Channels.Count);
+        Assert.Equal(new PeerBackupChannel(taproot.ChannelId, taproot.RemoteNodeId, s_fundingTxId, 0, 0, true),
+                     contents.Channels.Single(c => c.ChannelId == taproot.ChannelId));
+        Assert.False(contents.Channels.Single(c => c.ChannelId != taproot.ChannelId).IsSimpleTaproot);
+    }
+
+    [Fact]
     public async Task Given_ASpliceLock_When_TheBlobIsBuiltAgain_Then_ItHoldsTheNewOutpointAndKeyIndexUnderANewFingerprint()
     {
         // Arrange: the stored funding row of the splice says key index 3
