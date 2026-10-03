@@ -1,9 +1,9 @@
 using Google.Protobuf;
-using Lnrpc;
 
 namespace NLightning.Testing.Cluster.Tests.Nodes.Lnd;
 
 using Cluster.Nodes.Lnd;
+using Testing.Lnd.Lnrpc;
 
 public class LndMappingTests
 {

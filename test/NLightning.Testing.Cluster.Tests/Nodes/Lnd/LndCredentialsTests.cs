@@ -42,6 +42,38 @@ public class LndCredentialsTests
     }
 
     [Fact]
+    public void Given_Credentials_When_TurnedIntoClientSettings_Then_TheCertificateIsPinnedAndTheMacaroonSent()
+    {
+        // Arrange
+        var pem = NewCertificatePem();
+        var credentials = new LndCredentials(pem, s_macaroon);
+
+        // Act
+        var settings = credentials.ToSettings("alice-0.alice.nltg-spike-r1.svc.cluster.local", 10009);
+
+        // Assert
+        Assert.Equal("https://alice-0.alice.nltg-spike-r1.svc.cluster.local:10009", settings.GrpcEndpoint);
+        Assert.Equal(Encoding.ASCII.GetBytes(pem), settings.TlsCert);
+        Assert.Equal(s_macaroon, settings.Macaroon);
+        using var loaded = settings.LoadTlsCertificate();
+        Assert.Equal(credentials.TlsCertDer, loaded.RawData);
+    }
+
+    [Fact]
+    public void Given_TwoReads_When_Compared_Then_OnlyTheSameCertificateAndMacaroonAreTheSame()
+    {
+        // Arrange
+        var pem = NewCertificatePem();
+        var first = new LndCredentials(pem, s_macaroon);
+
+        // Act & Assert: a restart on the PVC reads the same files; a lost PVC writes new ones
+        Assert.True(first.SameAs(new LndCredentials(pem, [.. s_macaroon])));
+        Assert.False(first.SameAs(new LndCredentials(NewCertificatePem(), s_macaroon)));
+        Assert.False(first.SameAs(new LndCredentials(pem, [0x02, 0x01])));
+        Assert.False(first.SameAs(null));
+    }
+
+    [Fact]
     public void Given_BrokenFiles_When_Loaded_Then_TheyThrow()
     {
         // Act & Assert

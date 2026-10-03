@@ -187,8 +187,12 @@ public class LndNodeConnection : IDisposable
         }
     }
 
-    /// <summary>A connection whose node identity is not loaded yet (no call is made); for pools and tests.</summary>
-    internal static LndNodeConnection CreateWithoutNodeInfo(LndSettings settings,
+    /// <summary>
+    /// A connection whose node identity is not loaded yet (no call is made); for pools, tests and a harness that opens
+    /// the connection while LND is still starting (the Kubernetes harness's <c>LndNode</c>), then calls
+    /// <see cref="RefreshNodeInfoAsync"/>.
+    /// </summary>
+    public static LndNodeConnection CreateWithoutNodeInfo(LndSettings settings,
                                                             ILogger<LndNodeConnection>? logger = null) =>
         new(settings, logger, loadNodeInfo: false);
 

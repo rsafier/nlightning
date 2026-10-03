@@ -6,7 +6,7 @@ using Kube;
 
 /// <summary>
 /// An LND node as a <see cref="NodeWorkload"/>: the <c>custom_lnd</c> image (built from <c>test/Docker/custom_lnd</c>,
-/// LND 0.20.0-beta) with the flags LNUnit's <c>AddPolarLNDNode</c> passes, its <c>lnddir</c> on the PVC (wallet, channel
+/// LND 0.21.4-beta) with the flags LNUnit's <c>AddPolarLNDNode</c> passes, its <c>lnddir</c> on the PVC (wallet, channel
 /// database, <c>tls.cert</c> and macaroons survive a restart; <c>--noseedbackup</c> unlocks the wallet again at start),
 /// and a readiness probe that passes only when LND's own gRPC <c>GetInfo</c> answers with <c>synced_to_chain</c>.
 /// </summary>
@@ -100,7 +100,9 @@ public static class LndWorkload
         };
         if (options.AcceptKeysend)
             args.Add("--accept-keysend");
-        args.AddRange(options.ExtraArgs);
+        // An extra flag that is already there (alice's --accept-keysend, which the Docker fixture adds on top of
+        // LNUnit's default) is not passed twice
+        args.AddRange(options.ExtraArgs.Where(extra => !args.Contains(extra, StringComparer.Ordinal)).Distinct());
         return args;
     }
 }

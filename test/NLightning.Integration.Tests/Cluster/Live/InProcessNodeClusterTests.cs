@@ -1,6 +1,6 @@
 using System.Diagnostics;
-using Lnrpc;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Testing.Lnd.Lnrpc;
 
 namespace NLightning.Integration.Tests.Cluster.Live;
 

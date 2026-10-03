@@ -88,6 +88,24 @@ public class LndWorkloadTests
     }
 
     [Fact]
+    public void Given_AnExtraFlagTheDefaultsHave_When_TheArgsAreBuilt_Then_ItIsPassedOnce()
+    {
+        // Arrange: alice of the LND regtest network adds --accept-keysend on top of the default (as the Docker fixture)
+        var options = new LndNodeOptions("alice")
+        {
+            ExtraArgs = ["--protocol.rbf-coop-close", "--accept-keysend", "--protocol.rbf-coop-close"]
+        };
+
+        // Act
+        var args = LndWorkload.BuildArgs(options);
+
+        // Assert
+        Assert.Single(args, a => a == "--accept-keysend");
+        Assert.Single(args, a => a == "--protocol.rbf-coop-close");
+        Assert.Equal("--protocol.rbf-coop-close", args[^1]);
+    }
+
+    [Fact]
     public void Given_ALndNode_When_ItsManifestsAreBuilt_Then_TheContainerKeepsTheImageEntrypointAndGetsTheArgs()
     {
         // Act

@@ -3,10 +3,13 @@ using System.Text;
 
 namespace NLightning.Testing.Cluster.Nodes.Lnd;
 
+using Testing.Lnd;
+
 /// <summary>
 /// What a gRPC client needs to talk to an LND node: its self-signed TLS certificate and the admin macaroon, read out of
-/// the pod with exec (LNUnit PR #10's <c>WaitForFileAndRead</c>, here <see cref="INodeHandle.WaitForFileAsync"/>). Both
-/// live on the node's PVC, so they stay the same across restarts.
+/// the pod with exec (LNUnit PR #10's <c>WaitForFileAndRead</c>, here <see cref="INodeHandle.WaitForFileAsync"/>) and
+/// handed to the in-tree client as <see cref="LndSettings"/> (<see cref="ToSettings"/>). Both live on the node's PVC, so
+/// they stay the same across restarts.
 /// </summary>
 public sealed class LndCredentials
 {
@@ -39,6 +42,18 @@ public sealed class LndCredentials
     /// <summary>Whether <paramref name="presented"/> is exactly the pinned certificate.</summary>
     public bool Matches(X509Certificate? presented) =>
         presented is not null && presented.GetRawCertData().AsSpan().SequenceEqual(TlsCertDer);
+
+    /// <summary>
+    /// The in-tree client's settings for <paramref name="host"/>:<paramref name="port"/> (<see cref="LndSettings.FromBytes(string, int, byte[], byte[])"/>):
+    /// the certificate is pinned, so the host name need not be in it (a pod IP or DNS name the certificate does not list).
+    /// </summary>
+    public LndSettings ToSettings(string host, int port) =>
+        LndSettings.FromBytes(host, port, Encoding.ASCII.GetBytes(TlsCertPem), AdminMacaroon);
+
+    /// <summary>Whether <paramref name="other"/> holds the same certificate and macaroon.</summary>
+    public bool SameAs(LndCredentials? other) =>
+        other is not null && TlsCertDer.AsSpan().SequenceEqual(other.TlsCertDer)
+     && AdminMacaroon.AsSpan().SequenceEqual(other.AdminMacaroon);
 
     /// <summary>
     /// Waits until LND has written its certificate and admin macaroon (the wallet exists), then reads both.
