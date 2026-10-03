@@ -28,6 +28,7 @@ using Interfaces;
 using Reestablish;
 using Services;
 using Splicing;
+using Taproot;
 
 /// <summary>
 /// Receives the peer's <c>channel_reestablish</c> (BOLT 2 Message Retransmission, plan N7-T1..T4): runs the
@@ -83,7 +84,11 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         _tracker = tracker;
         _transitions = transitions;
         _unitOfWork = unitOfWork;
+        _taproot = new TaprootReestablish(logger, messageSerializer, transitions);
     }
+
+    /// <summary>The simple taproot rules (nonces required, commitment_signed signed again; NL-877 T3).</summary>
+    private readonly TaprootReestablish _taproot;
 
     public async Task<IReadOnlyList<IChannelMessage>> HandleAsync(ChannelReestablishMessage message,
                                                                   ChannelState currentState,
@@ -193,6 +198,10 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                 };
         }
 
+        // Simple taproot channels: the peer's next_local_nonces replace its verification nonces before anything is
+        // retransmitted (a missing map or entry fails the channel; NL-877 T3)
+        await _taproot.ReceiveNoncesAsync(channel, message);
+
         // A dual-funded open waiting for its funding resumes its negotiation first (the driver forgot it on a restart),
         // so the peer's retransmitted tx_signatures and our own rebuilt ones find it
         if (_dualFundReestablish is not null && DualFundReestablish.IsPendingOpen(channel)
@@ -292,6 +301,11 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                     return [];
 
                 var secondPoint = _lightningSigner.GetPerCommitmentPoint(channelId, local.LocalCommitmentNumber + 1);
+
+                // A simple taproot channel's carries our verification nonce for that commitment again (NL-877 T3)
+                if (channel.ChannelParams.OptionSimpleTaproot)
+                    return CreateTaprootChannelReady(channel, local.LocalCommitmentNumber + 1, secondPoint);
+
                 // One channel_ready per local alias, as the funding confirmation sent them (the peer must recognize
                 // every alias for incoming HTLCs; NL-260), else the real scid (as at funding confirmation), or none
                 // in the TLV while both are unknown
@@ -317,6 +331,11 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
             case ReestablishStep.CommitDiff:
                 var diff = channel.SentCommitDiff
                         ?? throw new InvalidOperationException($"Channel {channelId} has no stored commitment diff");
+
+                // A MuSig2 signature is never replayed: signed again against the peer's new nonce (NL-877 T3)
+                if (channel.ChannelParams.OptionSimpleTaproot)
+                    return await _taproot.ResignCommitDiffAsync(channel, diff);
+
                 var messages = await SentCommitDiffCodec.DecodeAsync(_messageSerializer, diff);
                 return messages.Select(m => m as IChannelMessage
                                          ?? throw new InvalidOperationException(
@@ -421,6 +440,27 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         _logger.LogInformation("Retransmitting our announcement_signatures for channel {ChannelId} (SP-RE-04)",
                                channel.ChannelId);
         return [message];
+    }
+
+    /// <summary>
+    /// A simple taproot channel's retransmitted <c>channel_ready</c>s (one per local alias, else the real scid or none):
+    /// with <c>next_local_nonce</c>, our verification nonce for local commitment <paramref name="number"/> on the current
+    /// funding.
+    /// </summary>
+    private IReadOnlyList<IChannelMessage> CreateTaprootChannelReady(ChannelModel channel, ulong number,
+                                                                     CompactPubKey secondPoint)
+    {
+        var nonce = TaprootChannelNonces.GetCurrentFundingNonce(_lightningSigner, channel, number);
+        if (channel.LocalAliases is { Count: > 0 } localAliases)
+            return localAliases.Select(alias => (IChannelMessage)_messageFactory.CreateChannelReadyMessage(
+                                           channel.ChannelId, secondPoint, alias, nonce))
+                               .ToList();
+
+        ShortChannelId? aliasOrScid = null;
+        if (IsSet(channel.ShortChannelId))
+            aliasOrScid = channel.ShortChannelId;
+
+        return [_messageFactory.CreateChannelReadyMessage(channel.ChannelId, secondPoint, aliasOrScid, nonce)];
     }
 
     /// <summary><c>default(ShortChannelId)</c> (a channel not confirmed yet) has no bytes.</summary>

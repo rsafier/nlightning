@@ -117,16 +117,55 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         var localUnsignedCommitmentTransaction = _commitmentTransactionBuilder.Build(localCommitmentTransaction);
         var remoteUnsignedCommitmentTransaction = _commitmentTransactionBuilder.Build(remoteCommitmentTransaction);
 
-        // Validate remote signature for our local commitment transaction
-        _lightningSigner.ValidateSignature(channel.ChannelId, payload.Signature, localUnsignedCommitmentTransaction);
+        FundingSignedMessage fundingSignedMessage;
+        if (channel.ChannelParams.OptionSimpleTaproot)
+        {
+            // Simple taproot channels (bolt-simple-taproot.md §funding_created, NL-877 T5): the funder's MuSig2 partial
+            // signature of our commitment 0 is partial_signature_with_nonce (required), checked against our
+            // verification nonce of accept_channel; ours of its commitment 0 is made against its open_channel nonce
+            // with a fresh signing nonce
+            if (message.PartialSignatureWithNonceTlv is not { } partialTlv)
+            {
+                _lightningSigner.UnregisterChannel(channel.ChannelId);
+                throw new ChannelErrorException("funding_created of a simple taproot channel without "
+                                              + "partial_signature_with_nonce", channel.ChannelId,
+                                                "funding_created without partial_signature_with_nonce");
+            }
 
-        // Sign our remote commitment transaction
-        var ourSignature =
-            _lightningSigner.SignChannelTransaction(channel.ChannelId, remoteUnsignedCommitmentTransaction);
+            try
+            {
+                _lightningSigner.ValidateLocalCommitmentPartialSignature(
+                    channel.ChannelId, null, channel.LocalCommitmentNumber, partialTlv.PartialSignatureWithNonce,
+                    localUnsignedCommitmentTransaction);
+                var ourPartial = _lightningSigner.SignRemoteCommitmentPartial(
+                    channel.ChannelId, null, remoteUnsignedCommitmentTransaction,
+                    channel.RemoteOpeningNonce ?? throw new InvalidOperationException(
+                                                      $"No opening nonce of the peer for channel {channel.ChannelId}"));
+                channel.UpdateLastReceivedPartialSignature(partialTlv.PartialSignatureWithNonce);
+                fundingSignedMessage = _messageFactory.CreateFundingSignedMessage(channel.ChannelId, ourPartial);
+            }
+            catch
+            {
+                _lightningSigner.UnregisterChannel(channel.ChannelId);
+                throw;
+            }
+        }
+        else
+        {
+            // Validate remote signature for our local commitment transaction
+            _lightningSigner.ValidateSignature(channel.ChannelId, payload.Signature,
+                                               localUnsignedCommitmentTransaction);
 
-        // Update the channel with the new signatures and the new state
-        channel.UpdateLastReceivedSignature(payload.Signature);
-        channel.UpdateLastSentSignature(ourSignature);
+            // Sign our remote commitment transaction
+            var ourSignature =
+                _lightningSigner.SignChannelTransaction(channel.ChannelId, remoteUnsignedCommitmentTransaction);
+
+            // Update the channel with the new signatures
+            channel.UpdateLastReceivedSignature(payload.Signature);
+            channel.UpdateLastSentSignature(ourSignature);
+            fundingSignedMessage = _messageFactory.CreateFundingSignedMessage(channel.ChannelId, ourSignature);
+        }
+
         channel.UpdateState(ChannelState.V1FundingSigned);
 
         // Remember when we started waiting for the funding transaction, so we can forget the channel if it never
@@ -139,10 +178,6 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         await ChannelAccountingEvents.StagePushAmountAsync(_unitOfWork, channel.ChannelId, channel.LocalBalance,
                                                            _logger);
         await _unitOfWork.SaveChangesAsync();
-
-        // Create the funding signed message
-        var fundingSignedMessage =
-            _messageFactory.CreateFundingSignedMessage(channel.ChannelId, ourSignature);
 
         // Add the channel to the dictionary
         _channelMemoryRepository.AddChannel(channel);
