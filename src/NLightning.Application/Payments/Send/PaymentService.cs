@@ -1643,7 +1643,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                                    stored.Amount, stored.Fee, stored.CreatedAt, PaymentStatus.Failed,
                                                    stored.OutgoingChannelId, stored.OutgoingHtlcId, null, code,
                                                    sourceIndex, reason, now, stored.Route, stored.Bolt12,
-                                                   stored.Keysend);
+                                                   stored.Keysend, stored.IsTrampolineRelay);
                     recordFailure = !await PaymentFailedRecordedAsync(scope, payment);
                 }
 
@@ -1712,7 +1712,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             var row = PaymentModel.Restore(stored.PaymentHash, stored.Bolt11, stored.PayeeNodeId, stored.Amount,
                                            LightningMoney.MilliSatoshis(session.FeesInFlightMsat), stored.CreatedAt,
                                            PaymentStatus.InFlight, next.Channel.ChannelId, next.HtlcId!.Value, null,
-                                           null, null, null, null, next.Hops, stored.Bolt12, stored.Keysend);
+                                           null, null, null, null, next.Hops, stored.Bolt12, stored.Keysend,
+                                           stored.IsTrampolineRelay);
             await StageReplacementAsync(repository, stored, row, "Superseded by another part in flight.");
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
             session.PrimaryPart = next;
@@ -1785,7 +1786,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                                  payment.Amount, settledFee, payment.CreatedAt,
                                                  PaymentStatus.Succeeded, fulfilled.ChannelId, fulfilled.HtlcId,
                                                  fulfilled.PaymentPreimage, null, null, null, now, part.Hops,
-                                                 payment.Bolt12, payment.Keysend);
+                                                 payment.Bolt12, payment.Keysend, payment.IsTrampolineRelay);
             verification = RecordFulfillHoldTimes(succeeded, fulfilled, part.Hops);
             await StageReplacementAsync(repository, payment, succeeded, "Superseded by the fulfilled part.");
             payment = succeeded;
@@ -2374,7 +2375,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         return PaymentModel.Restore(payment.PaymentHash, payment.Bolt11, payment.PayeeNodeId, payment.Amount,
                                     payment.Fee, payment.CreatedAt, PaymentStatus.Succeeded, channelId, htlcId,
                                     fulfilled.PaymentPreimage, null, null, null, completedAt, payment.Route,
-                                    payment.Bolt12, payment.Keysend);
+                                    payment.Bolt12, payment.Keysend, payment.IsTrampolineRelay);
     }
 
     private async Task WaitAsync(Task outcome, TimeSpan timeout, CancellationToken cancellationToken)
@@ -2398,10 +2399,16 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
     /// <summary>
     /// Stages the payment's <c>PaymentSucceeded</c> accounting event (NL-602) on the scope's unit of work, in the save
     /// that marks it <c>Succeeded</c> (the callers return early for a payment already <c>Succeeded</c>). A payment of
-    /// one of our own invoices is flagged as a self-payment (a rebalance). Never throws.
+    /// one of our own invoices is flagged as a self-payment (a rebalance); a trampoline relay's outgoing payment
+    /// (<c>IsTrampolineRelay</c>, NL-875) stages nothing. Never throws.
     /// </summary>
     private async Task StagePaymentSucceededAsync(IServiceScope scope, PaymentModel payment, int parts)
     {
+        // NL-875: a trampoline relay's outgoing payment is booked by the relay's TrampolineRelaySettled (its incoming
+        // parts minus what this payment took), never as a payment of ours
+        if (payment.IsTrampolineRelay)
+            return;
+
         try
         {
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -2444,6 +2451,10 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
     /// </summary>
     private void StagePaymentFailed(IServiceScope scope, PaymentModel payment)
     {
+        // NL-875: nothing of a trampoline relay's outgoing payment (its relay fails or retries it)
+        if (payment.IsTrampolineRelay)
+            return;
+
         try
         {
             PaymentAccountingEvents.TryStage(scope.ServiceProvider.GetRequiredService<IUnitOfWork>(),

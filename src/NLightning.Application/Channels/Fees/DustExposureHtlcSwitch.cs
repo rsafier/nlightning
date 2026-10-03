@@ -16,6 +16,7 @@ using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
 using Payments.Onion;
 using Payments.Switch;
+using Payments.Trampoline;
 
 /// <summary>
 /// The receiver half of BOLT 2 <c>max_dust_htlc_exposure_msat</c> (BOLT2 plan N9-T3, B2-DUST-01/02): an
@@ -34,8 +35,9 @@ using Payments.Switch;
 /// + <c>invalid_onion_blinding</c>, an introduction-node forward our own <c>invalid_onion_blinding</c>.</para>
 /// <para>Idempotent and safe with replays: the handling of one incoming HTLC is serialized by a per-HTLC lock, an HTLC
 /// that is no longer waiting for a resolution is passed on (the decorated switch skips it), and an HTLC the decorated
-/// switch already started on (a forward circuit or a stored onion secret exists) is never failed here, so an HTLC that
-/// was forwarded is never failed behind the switch's back. A refused failure (the peer is away) persists nothing; the
+/// switch already started on (a forward circuit, a trampoline relay part (NL-875) or a stored onion secret exists) is
+/// never failed here, so an HTLC that was forwarded is never failed behind the switch's back. A refused failure (the
+/// peer is away) persists nothing; the
 /// event is derived again when the link comes back. On a channel that can no longer carry an update (Failed,
 /// <c>OnchainResolving</c>) nothing is failed here at all: the event goes to the decorated switch, whose on-chain
 /// final-hop rules decide (NL-336; the off-chain fail would be refused and swallow that decision).</para>
@@ -153,6 +155,10 @@ public sealed class DustExposureHtlcSwitch : IHtlcSwitch
         using var scope = _serviceScopeFactory.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         if (await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(channelId, htlcId) is not null)
+            return true;
+
+        // NL-875: a part of a trampoline relay was processed (and may be paid for downstream)
+        if (await TrampolineRelayReads.GetPartAsync(unitOfWork, channelId, htlcId) is not null)
             return true;
 
         return await unitOfWork.ChannelStateDbRepository.GetOnionSharedSecretAsync(

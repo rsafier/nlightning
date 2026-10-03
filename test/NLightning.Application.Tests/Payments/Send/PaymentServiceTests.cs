@@ -302,6 +302,45 @@ public class PaymentServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ATrampolineRelaysOutgoingPayment_When_ItSucceeds_Then_NoPaymentEventIsRecorded()
+    {
+        // Arrange (NL-875): the relay's TrampolineRelaySettled books it (incoming parts minus this payment)
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3, isTrampolineRelay: true));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(
+                          new OutgoingHtlcFulfilled(s_channelId, 3, hash, preimage),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.True(stored.IsTrampolineRelay);
+        Assert.Empty(_accounting.Saved);
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelaysOutgoingPayment_When_ItFails_Then_NoPaymentEventIsRecorded()
+    {
+        // Arrange (NL-875)
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3, isTrampolineRelay: true));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 3, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(handled);
+        Assert.Equal(PaymentStatus.Failed, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+        Assert.Empty(_accounting.Saved);
+    }
+
+    [Fact]
     public async Task Given_FulfillOfAForwardedHtlcWithTheSameHash_When_Handled_Then_PaymentUnchanged()
     {
         // Arrange
@@ -697,7 +736,7 @@ public class PaymentServiceTests : IDisposable
     }
 
     private PaymentModel StoredPayment(Hash hash, PaymentStatus status, ulong? htlcId = null,
-                                       CompactPubKey? payee = null)
+                                       CompactPubKey? payee = null, bool isTrampolineRelay = false)
     {
         var payeeNodeId = payee ?? _payee.NodeId;
         var hop = new PaymentHop(payeeNodeId, new ShortChannelId(400, 1, 0), s_amount, Height + 21,
@@ -706,7 +745,8 @@ public class PaymentServiceTests : IDisposable
         return PaymentModel.Restore(hash, null, payeeNodeId, s_amount, LightningMoney.Zero, now, status,
                                     htlcId is null ? (ChannelId?)null : s_channelId, htlcId,
                                     status == PaymentStatus.Succeeded ? Preimage() : (Secret?)null, null, null, null,
-                                    status == PaymentStatus.InFlight ? null : now, [hop]);
+                                    status == PaymentStatus.InFlight ? null : now, [hop],
+                                    isTrampolineRelay: isTrampolineRelay);
     }
 
     private static Secret Preimage() => new(RandomNumberGenerator.GetBytes(32));

@@ -16,7 +16,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
     public partial class NLightningDbContextModel
     {
         private NLightningDbContextModel()
-            : base(skipDetectChanges: false, modelId: new Guid("054755b4-35dc-41d8-a0ae-a1ef7ce5e25b"), entityTypeCount: 50)
+            : base(skipDetectChanges: false, modelId: new Guid("a65be178-cd25-42ee-b212-6d2a58e8be4d"), entityTypeCount: 53)
         {
         }
 
@@ -72,6 +72,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             var paymentHopEntity = PaymentHopEntityEntityType.Create(this);
             var paymentPartEntity = PaymentPartEntityEntityType.Create(this);
             var paymentPartHopEntity = PaymentPartHopEntityEntityType.Create(this);
+            var paymentTrampolineHopEntity = PaymentTrampolineHopEntityEntityType.Create(this);
+            var trampolineRelayEntity = TrampolineRelayEntityEntityType.Create(this);
+            var trampolineRelayPartEntity = TrampolineRelayPartEntityEntityType.Create(this);
 
             AccountingLotEntityEntityType.CreateForeignKey1(accountingLotEntity, accountingPriceEntity);
             AccountingLotReliefEntityEntityType.CreateForeignKey1(accountingLotReliefEntity, accountingLotEntity);
@@ -97,6 +100,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             PaymentHopEntityEntityType.CreateForeignKey1(paymentHopEntity, paymentEntity);
             PaymentPartEntityEntityType.CreateForeignKey1(paymentPartEntity, paymentEntity);
             PaymentPartHopEntityEntityType.CreateForeignKey1(paymentPartHopEntity, paymentPartEntity);
+            TrampolineRelayPartEntityEntityType.CreateForeignKey1(trampolineRelayPartEntity, trampolineRelayEntity);
 
             AccountingBalanceEntityEntityType.CreateAnnotations(accountingBalanceEntity);
             AccountingCursorEntityEntityType.CreateAnnotations(accountingCursorEntity);
@@ -148,6 +152,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             PaymentHopEntityEntityType.CreateAnnotations(paymentHopEntity);
             PaymentPartEntityEntityType.CreateAnnotations(paymentPartEntity);
             PaymentPartHopEntityEntityType.CreateAnnotations(paymentPartHopEntity);
+            PaymentTrampolineHopEntityEntityType.CreateAnnotations(paymentTrampolineHopEntity);
+            TrampolineRelayEntityEntityType.CreateAnnotations(trampolineRelayEntity);
+            TrampolineRelayPartEntityEntityType.CreateAnnotations(trampolineRelayPartEntity);
 
             AddAnnotation("ProductVersion", "10.0.12");
             AddRuntimeAnnotation("Relational:RelationalModelFactory", () => CreateRelationalModel());
@@ -6487,6 +6494,8 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
                 IsNullable = true
             };
             nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase.Columns.Add("InvoiceRequestMetadata", invoiceRequestMetadataColumnBase);
+            var isTrampolineRelayColumnBase = new ColumnBase<ColumnMappingBase>("IsTrampolineRelay", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase.Columns.Add("IsTrampolineRelay", isTrampolineRelayColumnBase);
             var labelColumnBase3 = new ColumnBase<ColumnMappingBase>("Label", "TEXT", nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityTableBase)
             {
                 IsNullable = true
@@ -6544,6 +6553,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)failureSourceIndexColumnBase, paymentEntity.FindProperty("FailureSourceIndex")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)feeMsatColumnBase0, paymentEntity.FindProperty("FeeMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)invoiceRequestMetadataColumnBase, paymentEntity.FindProperty("InvoiceRequestMetadata")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)isTrampolineRelayColumnBase, paymentEntity.FindProperty("IsTrampolineRelay")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)labelColumnBase3, paymentEntity.FindProperty("Label")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)offerBolt12ColumnBase, paymentEntity.FindProperty("OfferBolt12")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
             RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)outgoingChannelIdColumnBase0, paymentEntity.FindProperty("OutgoingChannelId")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentEntityMappingBase);
@@ -6617,6 +6627,9 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             };
             paymentsTable.Columns.Add("InvoiceRequestMetadata", invoiceRequestMetadataColumn);
             invoiceRequestMetadataColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(invoiceRequestMetadataColumn);
+            var isTrampolineRelayColumn = new Column("IsTrampolineRelay", "INTEGER", paymentsTable);
+            paymentsTable.Columns.Add("IsTrampolineRelay", isTrampolineRelayColumn);
+            isTrampolineRelayColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<bool>(isTrampolineRelayColumn);
             var labelColumn3 = new Column("Label", "TEXT", paymentsTable)
             {
                 IsNullable = true
@@ -6681,6 +6694,7 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.CreateColumnMapping(failureSourceIndexColumn, paymentEntity.FindProperty("FailureSourceIndex")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(feeMsatColumn0, paymentEntity.FindProperty("FeeMsat")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(invoiceRequestMetadataColumn, paymentEntity.FindProperty("InvoiceRequestMetadata")!, paymentsTableMapping);
+            RelationalModel.CreateColumnMapping(isTrampolineRelayColumn, paymentEntity.FindProperty("IsTrampolineRelay")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(labelColumn3, paymentEntity.FindProperty("Label")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(offerBolt12Column, paymentEntity.FindProperty("OfferBolt12")!, paymentsTableMapping);
             RelationalModel.CreateColumnMapping(outgoingChannelIdColumn0, paymentEntity.FindProperty("OutgoingChannelId")!, paymentsTableMapping);
@@ -6964,6 +6978,423 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             pK_PaymentPartHops.MappedKeys.Add(pK_PaymentPartHopsKey);
             RelationalModel.GetOrCreateUniqueConstraints(pK_PaymentPartHopsKey).Add(pK_PaymentPartHops);
             paymentPartHopsTable.UniqueConstraints.Add("PK_PaymentPartHops", pK_PaymentPartHops);
+
+            var paymentTrampolineHopEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentTrampolineHopEntity")!;
+
+            var defaultTableMappings49 = new List<TableMappingBase<ColumnMappingBase>>();
+            paymentTrampolineHopEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings49);
+            var nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentTrampolineHopEntity", null, relationalModel);
+            var amountMsatColumnBase7 = new ColumnBase<ColumnMappingBase>("AmountMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase.Columns.Add("AmountMsat", amountMsatColumnBase7);
+            var attemptColumnBase = new ColumnBase<ColumnMappingBase>("Attempt", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase.Columns.Add("Attempt", attemptColumnBase);
+            var cltvExpiryColumnBase2 = new ColumnBase<ColumnMappingBase>("CltvExpiry", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase.Columns.Add("CltvExpiry", cltvExpiryColumnBase2);
+            var hopIndexColumnBase1 = new ColumnBase<ColumnMappingBase>("HopIndex", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase.Columns.Add("HopIndex", hopIndexColumnBase1);
+            var nodeIdColumnBase6 = new ColumnBase<ColumnMappingBase>("NodeId", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase.Columns.Add("NodeId", nodeIdColumnBase6);
+            var paymentHashColumnBase8 = new ColumnBase<ColumnMappingBase>("PaymentHash", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase.Columns.Add("PaymentHash", paymentHashColumnBase8);
+            var sharedSecretColumnBase1 = new ColumnBase<ColumnMappingBase>("SharedSecret", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase.Columns.Add("SharedSecret", sharedSecretColumnBase1);
+            relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentTrampolineHopEntity", nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase);
+            var nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase = new TableMappingBase<ColumnMappingBase>(paymentTrampolineHopEntity, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase, null);
+            nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase, false);
+            defaultTableMappings49.Add(nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)attemptColumnBase, paymentTrampolineHopEntity.FindProperty("Attempt")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)hopIndexColumnBase1, paymentTrampolineHopEntity.FindProperty("HopIndex")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase8, paymentTrampolineHopEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountMsatColumnBase7, paymentTrampolineHopEntity.FindProperty("AmountMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)cltvExpiryColumnBase2, paymentTrampolineHopEntity.FindProperty("CltvExpiry")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nodeIdColumnBase6, paymentTrampolineHopEntity.FindProperty("NodeId")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)sharedSecretColumnBase1, paymentTrampolineHopEntity.FindProperty("SharedSecret")!, nLightningInfrastructurePersistenceEntitiesPaymentPaymentTrampolineHopEntityMappingBase);
+
+            var tableMappings49 = new List<TableMapping>();
+            paymentTrampolineHopEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings49);
+            var paymentTrampolineHopsTable = new Table("PaymentTrampolineHops", null, relationalModel);
+            var paymentHashColumn8 = new Column("PaymentHash", "BLOB", paymentTrampolineHopsTable);
+            paymentTrampolineHopsTable.Columns.Add("PaymentHash", paymentHashColumn8);
+            paymentHashColumn8.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(paymentHashColumn8);
+            var attemptColumn = new Column("Attempt", "INTEGER", paymentTrampolineHopsTable);
+            paymentTrampolineHopsTable.Columns.Add("Attempt", attemptColumn);
+            attemptColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<int>(attemptColumn);
+            var hopIndexColumn1 = new Column("HopIndex", "INTEGER", paymentTrampolineHopsTable);
+            paymentTrampolineHopsTable.Columns.Add("HopIndex", hopIndexColumn1);
+            hopIndexColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<int>(hopIndexColumn1);
+            var amountMsatColumn7 = new Column("AmountMsat", "INTEGER", paymentTrampolineHopsTable);
+            paymentTrampolineHopsTable.Columns.Add("AmountMsat", amountMsatColumn7);
+            amountMsatColumn7.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(amountMsatColumn7);
+            var cltvExpiryColumn2 = new Column("CltvExpiry", "INTEGER", paymentTrampolineHopsTable);
+            paymentTrampolineHopsTable.Columns.Add("CltvExpiry", cltvExpiryColumn2);
+            cltvExpiryColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(cltvExpiryColumn2);
+            var nodeIdColumn6 = new Column("NodeId", "BLOB", paymentTrampolineHopsTable);
+            paymentTrampolineHopsTable.Columns.Add("NodeId", nodeIdColumn6);
+            nodeIdColumn6.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(nodeIdColumn6);
+            var sharedSecretColumn1 = new Column("SharedSecret", "BLOB", paymentTrampolineHopsTable);
+            paymentTrampolineHopsTable.Columns.Add("SharedSecret", sharedSecretColumn1);
+            sharedSecretColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(sharedSecretColumn1);
+            relationalModel.Tables.Add(("PaymentTrampolineHops", null), paymentTrampolineHopsTable);
+            var paymentTrampolineHopsTableMapping = new TableMapping(paymentTrampolineHopEntity, paymentTrampolineHopsTable, null);
+            paymentTrampolineHopsTable.AddTypeMapping(paymentTrampolineHopsTableMapping, false);
+            tableMappings49.Add(paymentTrampolineHopsTableMapping);
+            RelationalModel.CreateColumnMapping(attemptColumn, paymentTrampolineHopEntity.FindProperty("Attempt")!, paymentTrampolineHopsTableMapping);
+            RelationalModel.CreateColumnMapping(hopIndexColumn1, paymentTrampolineHopEntity.FindProperty("HopIndex")!, paymentTrampolineHopsTableMapping);
+            RelationalModel.CreateColumnMapping(paymentHashColumn8, paymentTrampolineHopEntity.FindProperty("PaymentHash")!, paymentTrampolineHopsTableMapping);
+            RelationalModel.CreateColumnMapping(amountMsatColumn7, paymentTrampolineHopEntity.FindProperty("AmountMsat")!, paymentTrampolineHopsTableMapping);
+            RelationalModel.CreateColumnMapping(cltvExpiryColumn2, paymentTrampolineHopEntity.FindProperty("CltvExpiry")!, paymentTrampolineHopsTableMapping);
+            RelationalModel.CreateColumnMapping(nodeIdColumn6, paymentTrampolineHopEntity.FindProperty("NodeId")!, paymentTrampolineHopsTableMapping);
+            RelationalModel.CreateColumnMapping(sharedSecretColumn1, paymentTrampolineHopEntity.FindProperty("SharedSecret")!, paymentTrampolineHopsTableMapping);
+            var pK_PaymentTrampolineHops = new UniqueConstraint("PK_PaymentTrampolineHops", paymentTrampolineHopsTable, new[] { paymentHashColumn8, attemptColumn, hopIndexColumn1 });
+            paymentTrampolineHopsTable.PrimaryKey = pK_PaymentTrampolineHops;
+            pK_PaymentTrampolineHops.SetRowKeyValueFactory(new CompositeRowKeyValueFactory(pK_PaymentTrampolineHops));
+            var pK_PaymentTrampolineHopsKey = RelationalModel.GetKey(this,
+                "NLightning.Infrastructure.Persistence.Entities.Payment.PaymentTrampolineHopEntity",
+                new[] { "PaymentHash", "Attempt", "HopIndex" });
+            pK_PaymentTrampolineHops.MappedKeys.Add(pK_PaymentTrampolineHopsKey);
+            RelationalModel.GetOrCreateUniqueConstraints(pK_PaymentTrampolineHopsKey).Add(pK_PaymentTrampolineHops);
+            paymentTrampolineHopsTable.UniqueConstraints.Add("PK_PaymentTrampolineHops", pK_PaymentTrampolineHops);
+
+            var trampolineRelayEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity")!;
+
+            var defaultTableMappings50 = new List<TableMappingBase<ColumnMappingBase>>();
+            trampolineRelayEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings50);
+            var nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", null, relationalModel);
+            var amountOutMsatColumnBase = new ColumnBase<ColumnMappingBase>("AmountOutMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("AmountOutMsat", amountOutMsatColumnBase);
+            var cltvExpiryOutColumnBase = new ColumnBase<ColumnMappingBase>("CltvExpiryOut", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("CltvExpiryOut", cltvExpiryOutColumnBase);
+            var completedAtColumnBase1 = new ColumnBase<ColumnMappingBase>("CompletedAt", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("CompletedAt", completedAtColumnBase1);
+            var createdAtColumnBase13 = new ColumnBase<ColumnMappingBase>("CreatedAt", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("CreatedAt", createdAtColumnBase13);
+            var failureCodeColumnBase2 = new ColumnBase<ColumnMappingBase>("FailureCode", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("FailureCode", failureCodeColumnBase2);
+            var failureReasonColumnBase0 = new ColumnBase<ColumnMappingBase>("FailureReason", "TEXT", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("FailureReason", failureReasonColumnBase0);
+            var feeEarnedMsatColumnBase = new ColumnBase<ColumnMappingBase>("FeeEarnedMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("FeeEarnedMsat", feeEarnedMsatColumnBase);
+            var incomingTotalMsatColumnBase = new ColumnBase<ColumnMappingBase>("IncomingTotalMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("IncomingTotalMsat", incomingTotalMsatColumnBase);
+            var nextEncryptedRecipientDataColumnBase = new ColumnBase<ColumnMappingBase>("NextEncryptedRecipientData", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("NextEncryptedRecipientData", nextEncryptedRecipientDataColumnBase);
+            var nextNodeIdColumnBase = new ColumnBase<ColumnMappingBase>("NextNodeId", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("NextNodeId", nextNodeIdColumnBase);
+            var nextPathKeyColumnBase = new ColumnBase<ColumnMappingBase>("NextPathKey", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("NextPathKey", nextPathKeyColumnBase);
+            var nextTrampolinePacketColumnBase = new ColumnBase<ColumnMappingBase>("NextTrampolinePacket", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("NextTrampolinePacket", nextTrampolinePacketColumnBase);
+            var outgoingPaymentSecretColumnBase = new ColumnBase<ColumnMappingBase>("OutgoingPaymentSecret", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("OutgoingPaymentSecret", outgoingPaymentSecretColumnBase);
+            var paymentHashColumnBase9 = new ColumnBase<ColumnMappingBase>("PaymentHash", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("PaymentHash", paymentHashColumnBase9);
+            var preimageColumnBase1 = new ColumnBase<ColumnMappingBase>("Preimage", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("Preimage", preimageColumnBase1);
+            var recipientBlindedPathsColumnBase = new ColumnBase<ColumnMappingBase>("RecipientBlindedPaths", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("RecipientBlindedPaths", recipientBlindedPathsColumnBase);
+            var recipientFeaturesColumnBase = new ColumnBase<ColumnMappingBase>("RecipientFeatures", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("RecipientFeatures", recipientFeaturesColumnBase);
+            var statusColumnBase5 = new ColumnBase<ColumnMappingBase>("Status", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.Columns.Add("Status", statusColumnBase5);
+            relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase);
+            var nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase = new TableMappingBase<ColumnMappingBase>(trampolineRelayEntity, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase, null);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase, false);
+            defaultTableMappings50.Add(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase9, trampolineRelayEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountOutMsatColumnBase, trampolineRelayEntity.FindProperty("AmountOutMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)cltvExpiryOutColumnBase, trampolineRelayEntity.FindProperty("CltvExpiryOut")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)completedAtColumnBase1, trampolineRelayEntity.FindProperty("CompletedAt")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)createdAtColumnBase13, trampolineRelayEntity.FindProperty("CreatedAt")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)failureCodeColumnBase2, trampolineRelayEntity.FindProperty("FailureCode")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)failureReasonColumnBase0, trampolineRelayEntity.FindProperty("FailureReason")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)feeEarnedMsatColumnBase, trampolineRelayEntity.FindProperty("FeeEarnedMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)incomingTotalMsatColumnBase, trampolineRelayEntity.FindProperty("IncomingTotalMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nextEncryptedRecipientDataColumnBase, trampolineRelayEntity.FindProperty("NextEncryptedRecipientData")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nextNodeIdColumnBase, trampolineRelayEntity.FindProperty("NextNodeId")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nextPathKeyColumnBase, trampolineRelayEntity.FindProperty("NextPathKey")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)nextTrampolinePacketColumnBase, trampolineRelayEntity.FindProperty("NextTrampolinePacket")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)outgoingPaymentSecretColumnBase, trampolineRelayEntity.FindProperty("OutgoingPaymentSecret")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)preimageColumnBase1, trampolineRelayEntity.FindProperty("Preimage")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)recipientBlindedPathsColumnBase, trampolineRelayEntity.FindProperty("RecipientBlindedPaths")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)recipientFeaturesColumnBase, trampolineRelayEntity.FindProperty("RecipientFeatures")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)statusColumnBase5, trampolineRelayEntity.FindProperty("Status")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayEntityMappingBase);
+
+            var tableMappings50 = new List<TableMapping>();
+            trampolineRelayEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings50);
+            var trampolineRelaysTable = new Table("TrampolineRelays", null, relationalModel);
+            var paymentHashColumn9 = new Column("PaymentHash", "BLOB", trampolineRelaysTable);
+            trampolineRelaysTable.Columns.Add("PaymentHash", paymentHashColumn9);
+            paymentHashColumn9.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(paymentHashColumn9);
+            var amountOutMsatColumn = new Column("AmountOutMsat", "INTEGER", trampolineRelaysTable);
+            trampolineRelaysTable.Columns.Add("AmountOutMsat", amountOutMsatColumn);
+            amountOutMsatColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(amountOutMsatColumn);
+            var cltvExpiryOutColumn = new Column("CltvExpiryOut", "INTEGER", trampolineRelaysTable);
+            trampolineRelaysTable.Columns.Add("CltvExpiryOut", cltvExpiryOutColumn);
+            cltvExpiryOutColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(cltvExpiryOutColumn);
+            var completedAtColumn1 = new Column("CompletedAt", "INTEGER", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("CompletedAt", completedAtColumn1);
+            completedAtColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(completedAtColumn1);
+            var createdAtColumn13 = new Column("CreatedAt", "INTEGER", trampolineRelaysTable);
+            trampolineRelaysTable.Columns.Add("CreatedAt", createdAtColumn13);
+            createdAtColumn13.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(createdAtColumn13);
+            var failureCodeColumn2 = new Column("FailureCode", "INTEGER", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("FailureCode", failureCodeColumn2);
+            failureCodeColumn2.Accessors = ColumnAccessorsFactory.CreateGeneric<ushort>(failureCodeColumn2);
+            var failureReasonColumn0 = new Column("FailureReason", "TEXT", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("FailureReason", failureReasonColumn0);
+            failureReasonColumn0.Accessors = ColumnAccessorsFactory.CreateGeneric<string>(failureReasonColumn0);
+            var feeEarnedMsatColumn = new Column("FeeEarnedMsat", "INTEGER", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("FeeEarnedMsat", feeEarnedMsatColumn);
+            feeEarnedMsatColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(feeEarnedMsatColumn);
+            var incomingTotalMsatColumn = new Column("IncomingTotalMsat", "INTEGER", trampolineRelaysTable);
+            trampolineRelaysTable.Columns.Add("IncomingTotalMsat", incomingTotalMsatColumn);
+            incomingTotalMsatColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(incomingTotalMsatColumn);
+            var nextEncryptedRecipientDataColumn = new Column("NextEncryptedRecipientData", "BLOB", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("NextEncryptedRecipientData", nextEncryptedRecipientDataColumn);
+            nextEncryptedRecipientDataColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(nextEncryptedRecipientDataColumn);
+            var nextNodeIdColumn = new Column("NextNodeId", "BLOB", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("NextNodeId", nextNodeIdColumn);
+            nextNodeIdColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(nextNodeIdColumn);
+            var nextPathKeyColumn = new Column("NextPathKey", "BLOB", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("NextPathKey", nextPathKeyColumn);
+            nextPathKeyColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(nextPathKeyColumn);
+            var nextTrampolinePacketColumn = new Column("NextTrampolinePacket", "BLOB", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("NextTrampolinePacket", nextTrampolinePacketColumn);
+            nextTrampolinePacketColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(nextTrampolinePacketColumn);
+            var outgoingPaymentSecretColumn = new Column("OutgoingPaymentSecret", "BLOB", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("OutgoingPaymentSecret", outgoingPaymentSecretColumn);
+            outgoingPaymentSecretColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(outgoingPaymentSecretColumn);
+            var preimageColumn1 = new Column("Preimage", "BLOB", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("Preimage", preimageColumn1);
+            preimageColumn1.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(preimageColumn1);
+            var recipientBlindedPathsColumn = new Column("RecipientBlindedPaths", "BLOB", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("RecipientBlindedPaths", recipientBlindedPathsColumn);
+            recipientBlindedPathsColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(recipientBlindedPathsColumn);
+            var recipientFeaturesColumn = new Column("RecipientFeatures", "BLOB", trampolineRelaysTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelaysTable.Columns.Add("RecipientFeatures", recipientFeaturesColumn);
+            recipientFeaturesColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(recipientFeaturesColumn);
+            var statusColumn5 = new Column("Status", "INTEGER", trampolineRelaysTable);
+            trampolineRelaysTable.Columns.Add("Status", statusColumn5);
+            statusColumn5.Accessors = ColumnAccessorsFactory.CreateGeneric<byte>(statusColumn5);
+            relationalModel.Tables.Add(("TrampolineRelays", null), trampolineRelaysTable);
+            var trampolineRelaysTableMapping = new TableMapping(trampolineRelayEntity, trampolineRelaysTable, null);
+            trampolineRelaysTable.AddTypeMapping(trampolineRelaysTableMapping, false);
+            tableMappings50.Add(trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(paymentHashColumn9, trampolineRelayEntity.FindProperty("PaymentHash")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(amountOutMsatColumn, trampolineRelayEntity.FindProperty("AmountOutMsat")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(cltvExpiryOutColumn, trampolineRelayEntity.FindProperty("CltvExpiryOut")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(completedAtColumn1, trampolineRelayEntity.FindProperty("CompletedAt")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(createdAtColumn13, trampolineRelayEntity.FindProperty("CreatedAt")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(failureCodeColumn2, trampolineRelayEntity.FindProperty("FailureCode")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(failureReasonColumn0, trampolineRelayEntity.FindProperty("FailureReason")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(feeEarnedMsatColumn, trampolineRelayEntity.FindProperty("FeeEarnedMsat")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(incomingTotalMsatColumn, trampolineRelayEntity.FindProperty("IncomingTotalMsat")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(nextEncryptedRecipientDataColumn, trampolineRelayEntity.FindProperty("NextEncryptedRecipientData")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(nextNodeIdColumn, trampolineRelayEntity.FindProperty("NextNodeId")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(nextPathKeyColumn, trampolineRelayEntity.FindProperty("NextPathKey")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(nextTrampolinePacketColumn, trampolineRelayEntity.FindProperty("NextTrampolinePacket")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(outgoingPaymentSecretColumn, trampolineRelayEntity.FindProperty("OutgoingPaymentSecret")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(preimageColumn1, trampolineRelayEntity.FindProperty("Preimage")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(recipientBlindedPathsColumn, trampolineRelayEntity.FindProperty("RecipientBlindedPaths")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(recipientFeaturesColumn, trampolineRelayEntity.FindProperty("RecipientFeatures")!, trampolineRelaysTableMapping);
+            RelationalModel.CreateColumnMapping(statusColumn5, trampolineRelayEntity.FindProperty("Status")!, trampolineRelaysTableMapping);
+            var pK_TrampolineRelays = new UniqueConstraint("PK_TrampolineRelays", trampolineRelaysTable, new[] { paymentHashColumn9 });
+            trampolineRelaysTable.PrimaryKey = pK_TrampolineRelays;
+            pK_TrampolineRelays.SetRowKeyValueFactory(new SimpleRowKeyValueFactory<byte[]>(pK_TrampolineRelays));
+            var pK_TrampolineRelaysKey = RelationalModel.GetKey(this,
+                "NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity",
+                new[] { "PaymentHash" });
+            pK_TrampolineRelays.MappedKeys.Add(pK_TrampolineRelaysKey);
+            RelationalModel.GetOrCreateUniqueConstraints(pK_TrampolineRelaysKey).Add(pK_TrampolineRelays);
+            trampolineRelaysTable.UniqueConstraints.Add("PK_TrampolineRelays", pK_TrampolineRelays);
+            var iX_TrampolineRelays_CreatedAt = new TableIndex(
+            "IX_TrampolineRelays_CreatedAt", trampolineRelaysTable, new[] { createdAtColumn13 }, false);
+            iX_TrampolineRelays_CreatedAt.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<long>(iX_TrampolineRelays_CreatedAt));
+            var iX_TrampolineRelays_CreatedAtIx = RelationalModel.GetIndex(this,
+                "NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity",
+                new[] { "CreatedAt" });
+            iX_TrampolineRelays_CreatedAt.MappedIndexes.Add(iX_TrampolineRelays_CreatedAtIx);
+            RelationalModel.GetOrCreateTableIndexes(iX_TrampolineRelays_CreatedAtIx).Add(iX_TrampolineRelays_CreatedAt);
+            trampolineRelaysTable.Indexes.Add("IX_TrampolineRelays_CreatedAt", iX_TrampolineRelays_CreatedAt);
+            var iX_TrampolineRelays_Status = new TableIndex(
+            "IX_TrampolineRelays_Status", trampolineRelaysTable, new[] { statusColumn5 }, false);
+            iX_TrampolineRelays_Status.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<byte>(iX_TrampolineRelays_Status));
+            var iX_TrampolineRelays_StatusIx = RelationalModel.GetIndex(this,
+                "NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity",
+                new[] { "Status" });
+            iX_TrampolineRelays_Status.MappedIndexes.Add(iX_TrampolineRelays_StatusIx);
+            RelationalModel.GetOrCreateTableIndexes(iX_TrampolineRelays_StatusIx).Add(iX_TrampolineRelays_Status);
+            trampolineRelaysTable.Indexes.Add("IX_TrampolineRelays_Status", iX_TrampolineRelays_Status);
+
+            var trampolineRelayPartEntity = FindEntityType("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity")!;
+
+            var defaultTableMappings51 = new List<TableMappingBase<ColumnMappingBase>>();
+            trampolineRelayPartEntity.SetRuntimeAnnotation("Relational:DefaultMappings", defaultTableMappings51);
+            var nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase = new TableBase("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity", null, relationalModel);
+            var amountMsatColumnBase8 = new ColumnBase<ColumnMappingBase>("AmountMsat", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase.Columns.Add("AmountMsat", amountMsatColumnBase8);
+            var channelIdColumnBase22 = new ColumnBase<ColumnMappingBase>("ChannelId", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase.Columns.Add("ChannelId", channelIdColumnBase22);
+            var cltvExpiryColumnBase3 = new ColumnBase<ColumnMappingBase>("CltvExpiry", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase.Columns.Add("CltvExpiry", cltvExpiryColumnBase3);
+            var htlcIdColumnBase3 = new ColumnBase<ColumnMappingBase>("HtlcId", "INTEGER", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase.Columns.Add("HtlcId", htlcIdColumnBase3);
+            var outerPaymentSecretColumnBase = new ColumnBase<ColumnMappingBase>("OuterPaymentSecret", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase)
+            {
+                IsNullable = true
+            };
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase.Columns.Add("OuterPaymentSecret", outerPaymentSecretColumnBase);
+            var outerSharedSecretColumnBase = new ColumnBase<ColumnMappingBase>("OuterSharedSecret", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase.Columns.Add("OuterSharedSecret", outerSharedSecretColumnBase);
+            var paymentHashColumnBase10 = new ColumnBase<ColumnMappingBase>("PaymentHash", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase.Columns.Add("PaymentHash", paymentHashColumnBase10);
+            var trampolineSharedSecretColumnBase = new ColumnBase<ColumnMappingBase>("TrampolineSharedSecret", "BLOB", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase.Columns.Add("TrampolineSharedSecret", trampolineSharedSecretColumnBase);
+            relationalModel.DefaultTables.Add("NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity", nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase);
+            var nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase = new TableMappingBase<ColumnMappingBase>(trampolineRelayPartEntity, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase, null);
+            nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityTableBase.AddTypeMapping(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase, false);
+            defaultTableMappings51.Add(nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)channelIdColumnBase22, trampolineRelayPartEntity.FindProperty("ChannelId")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)htlcIdColumnBase3, trampolineRelayPartEntity.FindProperty("HtlcId")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)amountMsatColumnBase8, trampolineRelayPartEntity.FindProperty("AmountMsat")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)cltvExpiryColumnBase3, trampolineRelayPartEntity.FindProperty("CltvExpiry")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)outerPaymentSecretColumnBase, trampolineRelayPartEntity.FindProperty("OuterPaymentSecret")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)outerSharedSecretColumnBase, trampolineRelayPartEntity.FindProperty("OuterSharedSecret")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)paymentHashColumnBase10, trampolineRelayPartEntity.FindProperty("PaymentHash")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
+            RelationalModel.CreateColumnMapping((ColumnBase<ColumnMappingBase>)trampolineSharedSecretColumnBase, trampolineRelayPartEntity.FindProperty("TrampolineSharedSecret")!, nLightningInfrastructurePersistenceEntitiesPaymentTrampolineRelayPartEntityMappingBase);
+
+            var tableMappings51 = new List<TableMapping>();
+            trampolineRelayPartEntity.SetRuntimeAnnotation("Relational:TableMappings", tableMappings51);
+            var trampolineRelayPartsTable = new Table("TrampolineRelayParts", null, relationalModel);
+            var channelIdColumn22 = new Column("ChannelId", "BLOB", trampolineRelayPartsTable);
+            trampolineRelayPartsTable.Columns.Add("ChannelId", channelIdColumn22);
+            channelIdColumn22.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(channelIdColumn22);
+            var htlcIdColumn3 = new Column("HtlcId", "INTEGER", trampolineRelayPartsTable);
+            trampolineRelayPartsTable.Columns.Add("HtlcId", htlcIdColumn3);
+            htlcIdColumn3.Accessors = ColumnAccessorsFactory.CreateGeneric<ulong>(htlcIdColumn3);
+            var amountMsatColumn8 = new Column("AmountMsat", "INTEGER", trampolineRelayPartsTable);
+            trampolineRelayPartsTable.Columns.Add("AmountMsat", amountMsatColumn8);
+            amountMsatColumn8.Accessors = ColumnAccessorsFactory.CreateGeneric<long>(amountMsatColumn8);
+            var cltvExpiryColumn3 = new Column("CltvExpiry", "INTEGER", trampolineRelayPartsTable);
+            trampolineRelayPartsTable.Columns.Add("CltvExpiry", cltvExpiryColumn3);
+            cltvExpiryColumn3.Accessors = ColumnAccessorsFactory.CreateGeneric<uint>(cltvExpiryColumn3);
+            var outerPaymentSecretColumn = new Column("OuterPaymentSecret", "BLOB", trampolineRelayPartsTable)
+            {
+                IsNullable = true
+            };
+            trampolineRelayPartsTable.Columns.Add("OuterPaymentSecret", outerPaymentSecretColumn);
+            outerPaymentSecretColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(outerPaymentSecretColumn);
+            var outerSharedSecretColumn = new Column("OuterSharedSecret", "BLOB", trampolineRelayPartsTable);
+            trampolineRelayPartsTable.Columns.Add("OuterSharedSecret", outerSharedSecretColumn);
+            outerSharedSecretColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(outerSharedSecretColumn);
+            var paymentHashColumn10 = new Column("PaymentHash", "BLOB", trampolineRelayPartsTable);
+            trampolineRelayPartsTable.Columns.Add("PaymentHash", paymentHashColumn10);
+            paymentHashColumn10.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(paymentHashColumn10);
+            var trampolineSharedSecretColumn = new Column("TrampolineSharedSecret", "BLOB", trampolineRelayPartsTable);
+            trampolineRelayPartsTable.Columns.Add("TrampolineSharedSecret", trampolineSharedSecretColumn);
+            trampolineSharedSecretColumn.Accessors = ColumnAccessorsFactory.CreateGeneric<byte[]>(trampolineSharedSecretColumn);
+            relationalModel.Tables.Add(("TrampolineRelayParts", null), trampolineRelayPartsTable);
+            var trampolineRelayPartsTableMapping = new TableMapping(trampolineRelayPartEntity, trampolineRelayPartsTable, null);
+            trampolineRelayPartsTable.AddTypeMapping(trampolineRelayPartsTableMapping, false);
+            tableMappings51.Add(trampolineRelayPartsTableMapping);
+            RelationalModel.CreateColumnMapping(channelIdColumn22, trampolineRelayPartEntity.FindProperty("ChannelId")!, trampolineRelayPartsTableMapping);
+            RelationalModel.CreateColumnMapping(htlcIdColumn3, trampolineRelayPartEntity.FindProperty("HtlcId")!, trampolineRelayPartsTableMapping);
+            RelationalModel.CreateColumnMapping(amountMsatColumn8, trampolineRelayPartEntity.FindProperty("AmountMsat")!, trampolineRelayPartsTableMapping);
+            RelationalModel.CreateColumnMapping(cltvExpiryColumn3, trampolineRelayPartEntity.FindProperty("CltvExpiry")!, trampolineRelayPartsTableMapping);
+            RelationalModel.CreateColumnMapping(outerPaymentSecretColumn, trampolineRelayPartEntity.FindProperty("OuterPaymentSecret")!, trampolineRelayPartsTableMapping);
+            RelationalModel.CreateColumnMapping(outerSharedSecretColumn, trampolineRelayPartEntity.FindProperty("OuterSharedSecret")!, trampolineRelayPartsTableMapping);
+            RelationalModel.CreateColumnMapping(paymentHashColumn10, trampolineRelayPartEntity.FindProperty("PaymentHash")!, trampolineRelayPartsTableMapping);
+            RelationalModel.CreateColumnMapping(trampolineSharedSecretColumn, trampolineRelayPartEntity.FindProperty("TrampolineSharedSecret")!, trampolineRelayPartsTableMapping);
+            var pK_TrampolineRelayParts = new UniqueConstraint("PK_TrampolineRelayParts", trampolineRelayPartsTable, new[] { channelIdColumn22, htlcIdColumn3 });
+            trampolineRelayPartsTable.PrimaryKey = pK_TrampolineRelayParts;
+            pK_TrampolineRelayParts.SetRowKeyValueFactory(new CompositeRowKeyValueFactory(pK_TrampolineRelayParts));
+            var pK_TrampolineRelayPartsKey = RelationalModel.GetKey(this,
+                "NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity",
+                new[] { "ChannelId", "HtlcId" });
+            pK_TrampolineRelayParts.MappedKeys.Add(pK_TrampolineRelayPartsKey);
+            RelationalModel.GetOrCreateUniqueConstraints(pK_TrampolineRelayPartsKey).Add(pK_TrampolineRelayParts);
+            trampolineRelayPartsTable.UniqueConstraints.Add("PK_TrampolineRelayParts", pK_TrampolineRelayParts);
+            var iX_TrampolineRelayParts_PaymentHash = new TableIndex(
+            "IX_TrampolineRelayParts_PaymentHash", trampolineRelayPartsTable, new[] { paymentHashColumn10 }, false);
+            iX_TrampolineRelayParts_PaymentHash.SetRowIndexValueFactory(new SimpleRowIndexValueFactory<byte[]>(iX_TrampolineRelayParts_PaymentHash));
+            var iX_TrampolineRelayParts_PaymentHashIx = RelationalModel.GetIndex(this,
+                "NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity",
+                new[] { "PaymentHash" });
+            iX_TrampolineRelayParts_PaymentHash.MappedIndexes.Add(iX_TrampolineRelayParts_PaymentHashIx);
+            RelationalModel.GetOrCreateTableIndexes(iX_TrampolineRelayParts_PaymentHashIx).Add(iX_TrampolineRelayParts_PaymentHash);
+            trampolineRelayPartsTable.Indexes.Add("IX_TrampolineRelayParts_PaymentHash", iX_TrampolineRelayParts_PaymentHash);
             var fK_AccountingLotReliefs_AccountingLots_LotId = new ForeignKeyConstraint(
                 "FK_AccountingLotReliefs_AccountingLots_LotId", accountingLotReliefsTable, accountingLotsTable,
                 new[] { lotIdColumn },
@@ -7272,6 +7703,20 @@ namespace NLightning.Infrastructure.Persistence.CompiledModels.Sqlite
             RelationalModel.GetOrCreateForeignKeyConstraints(fK_RevokedCommitments_Channels_ChannelIdFk).Add(fK_RevokedCommitments_Channels_ChannelId);
             revokedCommitmentsTable.ForeignKeyConstraints.Add(fK_RevokedCommitments_Channels_ChannelId);
             channelsTable.ReferencingForeignKeyConstraints.Add(fK_RevokedCommitments_Channels_ChannelId);
+            var fK_TrampolineRelayParts_TrampolineRelays_PaymentHash = new ForeignKeyConstraint(
+                "FK_TrampolineRelayParts_TrampolineRelays_PaymentHash", trampolineRelayPartsTable, trampolineRelaysTable,
+                new[] { paymentHashColumn10 },
+                trampolineRelaysTable.FindUniqueConstraint("PK_TrampolineRelays")!, ReferentialAction.Cascade);
+            fK_TrampolineRelayParts_TrampolineRelays_PaymentHash.SetRowForeignKeyValueFactory(RowForeignKeyValueFactoryFactory.CreateSimpleNullableFactory<byte[], byte[]>(fK_TrampolineRelayParts_TrampolineRelays_PaymentHash));
+            var fK_TrampolineRelayParts_TrampolineRelays_PaymentHashFk = RelationalModel.GetForeignKey(this,
+                "NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayPartEntity",
+                new[] { "PaymentHash" },
+                "NLightning.Infrastructure.Persistence.Entities.Payment.TrampolineRelayEntity",
+                new[] { "PaymentHash" });
+            fK_TrampolineRelayParts_TrampolineRelays_PaymentHash.MappedForeignKeys.Add(fK_TrampolineRelayParts_TrampolineRelays_PaymentHashFk);
+            RelationalModel.GetOrCreateForeignKeyConstraints(fK_TrampolineRelayParts_TrampolineRelays_PaymentHashFk).Add(fK_TrampolineRelayParts_TrampolineRelays_PaymentHash);
+            trampolineRelayPartsTable.ForeignKeyConstraints.Add(fK_TrampolineRelayParts_TrampolineRelays_PaymentHash);
+            trampolineRelaysTable.ReferencingForeignKeyConstraints.Add(fK_TrampolineRelayParts_TrampolineRelays_PaymentHash);
             var fK_Utxos_WalletAddresses_AddressIndex_IsAddressChange_AddressType = new ForeignKeyConstraint(
                 "FK_Utxos_WalletAddresses_AddressIndex_IsAddressChange_AddressType", utxosTable, walletAddressesTable,
                 new[] { addressIndexColumn, isAddressChangeColumn, addressTypeColumn0 },

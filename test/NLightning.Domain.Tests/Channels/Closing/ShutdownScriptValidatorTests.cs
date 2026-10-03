@@ -1,6 +1,8 @@
 namespace NLightning.Domain.Tests.Channels.Closing;
 
 using Domain.Channels.Closing;
+using Domain.Enums;
+using Domain.Node.Options;
 
 /// <summary>
 /// BOLT 2 <c>shutdown</c> script forms (B2-SHUT-S10, B2-SHUT-R02) and BOLT 3 dust thresholds (B3-DUST-01).
@@ -47,6 +49,31 @@ public class ShutdownScriptValidatorTests
 
         // Assert
         Assert.True(expected == valid, name);
+    }
+
+    [Theory]
+    [InlineData("", false, false, true)]
+    [InlineData("0014aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false, false, true)]
+    [InlineData("5120eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", false, false, false)]
+    [InlineData("5120eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", true, false, true)]
+    [InlineData("6a06000000000000", true, false, false)]
+    [InlineData("6a06000000000000", true, true, true)]
+    [InlineData("76a914aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa88ac", true, true, false)]
+    public void Given_UpfrontScript_When_IsValidUpfront_Then_FollowsTheNegotiatedFeatures(string hex, bool anySegwit,
+        bool simpleClose, bool expected)
+    {
+        // Arrange (NL-776: zero-length, or a shutdown form the negotiated features allow)
+        var negotiated = new FeatureOptions
+        {
+            BeyondSegwitShutdown = anySegwit ? FeatureSupport.Optional : FeatureSupport.No,
+            OptionSimpleClose = simpleClose ? FeatureSupport.Optional : FeatureSupport.No
+        };
+
+        // Act
+        var valid = ShutdownScriptValidator.IsValidUpfront(Convert.FromHexString(hex), negotiated);
+
+        // Assert
+        Assert.Equal(expected, valid);
     }
 
     [Theory]

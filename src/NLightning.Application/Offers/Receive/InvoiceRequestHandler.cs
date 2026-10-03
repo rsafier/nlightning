@@ -21,6 +21,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.OnionMessages;
 using Domain.Protocol.OnionMessages.Enums;
 using Domain.Protocol.OnionMessages.Interfaces;
+using Payments.Onion;
 
 /// <summary>
 /// What <see cref="InvoiceRequestHandler.ProcessAsync"/> did with an invoice_request (for logs and tests).
@@ -223,7 +224,9 @@ public sealed class InvoiceRequestHandler : IOnionMessageHandler
         var invoiceBytes = OfferInvoiceFactory.CreateInvoice(request, paths, createdAt, relativeExpiry, paymentHash,
                                                              amountMsat,
                                                              nodeOptions.Features.BasicMpp != FeatureSupport.No,
-                                                             _secureKeyManager.GetNodePubKey(), _signer);
+                                                             _secureKeyManager.GetNodePubKey(), _signer,
+                                                             TrampolineRoutingSupport.IsAdvertised(
+                                                                 nodeOptions.Features));
 
         var invoice = CreateInvoiceModel(paymentHash, preimage, amount, offer.Description, createdAt, relativeExpiry,
                                          nodeOptions.Routing.InvoiceMinFinalCltvExpiry,

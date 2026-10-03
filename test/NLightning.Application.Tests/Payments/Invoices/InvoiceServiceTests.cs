@@ -74,6 +74,48 @@ public class InvoiceServiceTests : IDisposable
         Assert.True(decoded.Features.IsFeatureSet(Feature.PaymentSecret, true));
     }
 
+    [Theory]
+    [InlineData(FeatureSupport.Optional)]
+    [InlineData(FeatureSupport.No)]
+    public async Task Given_TrampolineRoutingOn_When_InvoiceCreated_Then_Bit57OptionalAndValid(FeatureSupport basicMpp)
+    {
+        // Arrange: trampoline routing advertised (experimental, NL-875), with and without basic_mpp
+        _node.EnableTrampoline();
+        _node.Options.Features.BasicMpp = basicMpp;
+
+        // Act
+        var invoice = await _node.InvoiceService.CreateInvoiceAsync(LightningMoney.Satoshis(1_000), "trampoline",
+                                                                    null, TestContext.Current.CancellationToken);
+        var decoded = Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest);
+
+        // Assert: we can be paid as the final trampoline node
+        Assert.True(new InvoiceValidationService().ValidateForEncoding(decoded).IsValid);
+        Assert.True(decoded.Features!.IsFeatureSet(Feature.OptionTrampolineRouting, false));
+        Assert.False(decoded.Features.IsFeatureSet(Feature.OptionTrampolineRouting, true));
+        Assert.Equal(basicMpp != FeatureSupport.No, decoded.Features.HasFeature(Feature.BasicMpp));
+        Assert.True(decoded.Features.IsFeatureSet(Feature.PaymentSecret, true));
+    }
+
+    [Theory]
+    [InlineData(FeatureSupport.No, true)]
+    [InlineData(FeatureSupport.Optional, false)]
+    public async Task Given_TrampolineRoutingNotAdvertised_When_InvoiceCreated_Then_NoBit57(FeatureSupport trampoline,
+                                                                                             bool experimentalAllowed)
+    {
+        // Arrange: off, or configured while still gated as experimental
+        _node.Options.Features.OptionTrampolineRouting = trampoline;
+        _node.Options.Features.AllowExperimentalFeatures = experimentalAllowed;
+
+        // Act
+        var invoice = await _node.InvoiceService.CreateInvoiceAsync(LightningMoney.Satoshis(1_000), "plain", null,
+                                                                    TestContext.Current.CancellationToken);
+        var decoded = Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest);
+
+        // Assert
+        Assert.False(decoded.Features!.HasFeature(Feature.OptionTrampolineRouting));
+        Assert.True(decoded.Features.IsFeatureSet(Feature.BasicMpp, false));
+    }
+
     [Fact]
     public async Task Given_NewInvoice_When_Created_Then_PersistedAndSavedOnceBeforeReturn()
     {

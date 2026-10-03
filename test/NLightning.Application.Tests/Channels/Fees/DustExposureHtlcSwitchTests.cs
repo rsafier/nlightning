@@ -13,9 +13,11 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.Money;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
+using Domain.Payments.Trampoline;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Interfaces;
@@ -131,6 +133,26 @@ public class DustExposureHtlcSwitchTests
                                                        DustHtlcMsat, 600, _htlcs[5].PaymentHash, s_sharedSecret,
                                                        new ShortChannelId(1, 2, 3), DustHtlcMsat - 1_000, 560,
                                                        DateTimeOffset.UnixEpoch));
+        var lockedIn = LockedIn(5);
+
+        // Act
+        await CreateSwitch().HandleAsync(lockedIn, TestContext.Current.CancellationToken);
+
+        // Assert
+        _inner.Verify(s => s.HandleAsync(lockedIn, It.IsAny<CancellationToken>()), Times.Once);
+        _operations.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_ATrampolineRelayPart_When_Replayed_Then_LeftToTheSwitch()
+    {
+        // Arrange (NL-875): the relay may be paying for it downstream
+        var relays = new Mock<ITrampolineRelayDbRepository>();
+        relays.Setup(r => r.GetPartAsync(NormalOperationTestContext.TestChannelId, 5))
+              .ReturnsAsync(new TrampolineRelayPartModel(_htlcs[5].PaymentHash, NormalOperationTestContext.TestChannelId,
+                                                         5, LightningMoney.MilliSatoshis(DustHtlcMsat), 600,
+                                                         s_sharedSecret, s_sharedSecret, null));
+        _context.UnitOfWork.SetupGet(u => u.TrampolineRelayDbRepository).Returns(relays.Object);
         var lockedIn = LockedIn(5);
 
         // Act

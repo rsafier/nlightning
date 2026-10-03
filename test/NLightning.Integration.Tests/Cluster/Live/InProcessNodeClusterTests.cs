@@ -7,7 +7,6 @@ namespace NLightning.Integration.Tests.Cluster.Live;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
-using Domain.Enums;
 using Testing.Cluster.Nodes;
 using Testing.Cluster.Nodes.Cln;
 using Testing.Cluster.Nodes.Lnd;
@@ -48,11 +47,10 @@ public class InProcessNodeClusterTests
     /// the same closing transaction confirms and both ends see the channel closed.
     /// </summary>
     /// <remarks>
-    /// Our node advertises <c>option_shutdown_anysegwit</c> here (off by default): on a dual-funded channel CLN v26.06.8
-    /// sets a P2TR <c>close_to</c> script and sends it in <c>shutdown</c> although the option was not negotiated, which
-    /// our node refuses with the warning "shutdown scriptpubkey is not a valid form" (BOLT 2), and the close then
-    /// stalls in <c>ShuttingDown</c> / <c>CLOSINGD_SIGEXCHANGE</c> (seen on the first runs of this proof; reported with
-    /// the lane's results). A v1 channel with CLN closes with the default features (Docker <c>ClnCloseTests</c>).
+    /// Runs with the default features: on a dual-funded channel CLN v26.06.8 sets a P2TR <c>close_to</c> script (in
+    /// <c>accept_channel2</c> and <c>shutdown</c>), a form BOLT 2 allows only with <c>option_shutdown_anysegwit</c>,
+    /// which we advertise by default since NL-776 (before, our node refused CLN's <c>shutdown</c> and the close
+    /// stalled in <c>ShuttingDown</c> / <c>CLOSINGD_SIGEXCHANGE</c>).
     /// </remarks>
     [Fact(Explicit = true)]
     public async Task Given_OurNodeAndAClnPod_When_WeOpenDualFundedPayBothWaysAndClose_Then_BothEndsAgree()
@@ -64,10 +62,7 @@ public class InProcessNodeClusterTests
         var ns = run.Namespace;
         try
         {
-            await using var inProcess = new InProcessNodeDeployer
-            {
-                ConfigureNodeOptions = (_, o) => o.Features.BeyondSegwitShutdown = FeatureSupport.Optional
-            };
+            await using var inProcess = new InProcessNodeDeployer();
             using var topology = await Builder(inProcess)
                                       .AddCln("cln", extraArgs: ["--experimental-dual-fund"])
                                       .BuildAsync(run, ct);

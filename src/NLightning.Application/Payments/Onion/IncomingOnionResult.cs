@@ -16,6 +16,10 @@ using Domain.Crypto.ValueObjects;
 ///   (a BADONION code and <c>sha256_of_onion</c>; nothing to encrypt).</item>
 ///   <item><see cref="IncomingOnionFailed"/>: fail with <c>update_fail_htlc</c>, whose reason is
 ///   <c>IFailureOnionService.CreateErrorPacket(SharedSecret, Failure)</c>.</item>
+///   <item>Trampoline (NL-875): <see cref="IncomingOnionTrampolineFinal"/> (we are the trampoline recipient),
+///   <see cref="IncomingOnionTrampolineRelay"/> (we relay to the next trampoline node) or
+///   <see cref="IncomingOnionTrampolineFailed"/> (fail with an error created with the trampoline and the outer
+///   secrets).</item>
 /// </list>
 /// Keep <see cref="SharedSecretOrNull"/> with the incoming HTLC: every later failure of it (policy, final hop,
 /// downstream) is created or wrapped with it.

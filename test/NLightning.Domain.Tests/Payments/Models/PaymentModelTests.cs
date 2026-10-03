@@ -103,6 +103,25 @@ public class PaymentModelTests
     }
 
     [Fact]
+    public void Given_TrampolineRelayFlag_When_CreatedOrRestored_Then_ItIsKept()
+    {
+        // Arrange (NL-875: the outgoing leg of a trampoline relay)
+        var created = new PaymentModel(new Hash(new byte[32]), null, s_payee, LightningMoney.MilliSatoshis(1UL),
+                                       LightningMoney.Zero, s_createdAt)
+        { IsTrampolineRelay = true };
+
+        // Act
+        var restored = PaymentModel.Restore(created.PaymentHash, null, s_payee, created.Amount, created.Fee,
+                                            s_createdAt, PaymentStatus.InFlight, null, null, null, null, null, null,
+                                            null, isTrampolineRelay: created.IsTrampolineRelay);
+
+        // Assert
+        Assert.True(created.IsTrampolineRelay);
+        Assert.True(restored.IsTrampolineRelay);
+        Assert.False(CreatePayment().IsTrampolineRelay);
+    }
+
+    [Fact]
     public void Given_SucceededWithoutPreimage_When_Restored_Then_Throws()
     {
         // Act & Assert

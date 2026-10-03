@@ -263,6 +263,19 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresSchemaFromBeforeAddTrampolineRelays_When_Migrated_Then_RelaysRoundTrip()
+    {
+        // Arrange (NL-875: relays, parts, the relay payment flag and the trampoline hops, on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_trampoline_relays");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await TrampolineRelaySchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                         DatabaseType.PostgreSql,
+                                                         TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresSchemaFromBeforeAddPeerStorage_When_Migrated_Then_BlobsRoundTrip()
     {
         // Arrange (BOLT 1 option_provide_storage: a 65531-byte blob round-trips, replaced and deleted, on a real

@@ -65,7 +65,7 @@ public class OpenChannelSubscriptionIpcHandler : IIpcCommandHandler
         }
         catch (ClientException ce)
         {
-            _logger.LogError(ce, "Error while handling OpenChannelSubscription");
+            IpcRequestLog.LogClientException(_logger, Command, ce);
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ce.ErrorCode, ce.Message);
         }
         catch (InvalidOperationException oe)
@@ -76,13 +76,13 @@ public class OpenChannelSubscriptionIpcHandler : IIpcCommandHandler
         }
         catch (ConnectionException ce)
         {
-            _logger.LogError(ce, "Failed to connect to peer");
+            IpcRequestLog.LogRefused(_logger, Command, $"Connection failed: {ce.Message}");
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.ConnectionError,
                                                        $"Connection failed: {ce.Message}");
         }
         catch (ChannelErrorException cee)
         {
-            _logger.LogError(cee, "Error opening Channel");
+            IpcRequestLog.LogRefused(_logger, Command, $"Channel Error: {cee.Message}");
             return IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.ConnectionError,
                                                        $"Channel Error: {cee.Message}");
         }

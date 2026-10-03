@@ -12,8 +12,11 @@ using Domain.Money;
 /// <param name="HtlcAmount">The HTLC's <c>amount_msat</c>.</param>
 /// <param name="PartAmount">The onion's <c>amt_to_forward</c>, what counts towards <c>total_msat</c>.</param>
 /// <param name="SharedSecret">The HTLC's onion shared secret, to encrypt a failure.</param>
+/// <param name="Trampoline">Set when the HTLC reached us as the final trampoline node (NL-875): its failures are created
+/// with both secrets.</param>
 internal sealed record HtlcSetPart(ChannelId ChannelId, ulong HtlcId, LightningMoney HtlcAmount,
-                                   LightningMoney PartAmount, Secret SharedSecret)
+                                   LightningMoney PartAmount, Secret SharedSecret,
+                                   TrampolineFailureKeys? Trampoline = null)
 {
     public (ChannelId, ulong) Key => (ChannelId, HtlcId);
 }

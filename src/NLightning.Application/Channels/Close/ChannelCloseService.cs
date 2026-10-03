@@ -8,6 +8,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
+using Domain.LiquidityAds.Enums;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
@@ -151,9 +152,14 @@ public sealed class ChannelCloseService : IChannelCloseService
         if (await LiquidityLeases.GetActiveSaleLeaseAsync(unitOfWork, channelId, height) is not { } lease)
             return;
 
-        var refusal = LiquidityLeases.DescribeCloseRefusal(channelId, lease, height);
-        _logger.LogWarning("Refusing to close channel {ChannelId}: {Reason}", channelId, refusal);
-        throw new InvalidOperationException(refusal);
+        // Name every lease in force on the channel, ours to keep and the peer's (NL-882); the guarding sale is among
+        // them unless the purchases changed between the reads
+        var leases = await LiquidityLeases.GetLeasesInForceAsync(unitOfWork, channelId, height);
+        if (!leases.Any(l => l.Role == LiquidityPurchaseRole.Seller))
+            leases = [lease, .. leases];
+
+        // The refusal goes back to the operator, whose IPC handler logs it as one line (NL-883)
+        throw new InvalidOperationException(LiquidityLeases.DescribeCloseRefusal(channelId, leases, height));
     }
 
     private static ChannelCloseResult ToResult(ChannelModel channel) =>

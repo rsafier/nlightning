@@ -84,6 +84,8 @@ public class UnitOfWork : IUnitOfWork
     private PaymentDbRepository? _paymentDbRepository;
     private PaymentPartDbRepository? _paymentPartDbRepository;
     private ForwardCircuitDbRepository? _forwardCircuitDbRepository;
+    private TrampolineRelayDbRepository? _trampolineRelayDbRepository;
+    private PaymentTrampolineHopDbRepository? _paymentTrampolineHopDbRepository;
 
     // Onion replay set
     private OnionReplayDbRepository? _onionReplayDbRepository;
@@ -173,6 +175,12 @@ public class UnitOfWork : IUnitOfWork
 
     public IForwardCircuitDbRepository ForwardCircuitDbRepository =>
         _forwardCircuitDbRepository ??= new ForwardCircuitDbRepository(_context);
+
+    public ITrampolineRelayDbRepository TrampolineRelayDbRepository =>
+        _trampolineRelayDbRepository ??= new TrampolineRelayDbRepository(_context);
+
+    public IPaymentTrampolineHopDbRepository PaymentTrampolineHopDbRepository =>
+        _paymentTrampolineHopDbRepository ??= new PaymentTrampolineHopDbRepository(_context);
 
     public IOnionReplayDbRepository OnionReplayDbRepository =>
         _onionReplayDbRepository ??= new OnionReplayDbRepository(_context);

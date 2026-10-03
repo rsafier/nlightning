@@ -38,8 +38,9 @@ public sealed class NodeInfoPrinter : IPrinter<NodeInfoIpcResponse>
         _output.WriteLine("  Best Block Height: {0}", item.BestBlockHeight);
         // The block hash in the display (bitcoind, block explorer) byte order, not Hash.ToString()'s internal one
         _output.WriteLine("  Best Block Hash:   {0}", DisplayOrder.ToHex(item.BestBlockHash));
-        if (item.BestBlockTime is not null)
-            _output.WriteLine($"  Best Block Time:   {item.BestBlockTime:O}");
+        // When we processed the best block, in UTC with a Z (NL-885: ":O" printed the offset the value carried)
+        if (item.BestBlockTime is { } bestBlockTime)
+            _output.WriteLine("  Best Block Time:   {0}", PaymentsPrintFormat.FormatTime(bestBlockTime));
         _output.WriteLine("  Implementation:    {0}", item.Implementation);
         _output.WriteLine("  Version:           {0}", item.Version);
     }

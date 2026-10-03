@@ -511,6 +511,41 @@ public sealed class InvoiceRequestHandlerTests : IDisposable
         Assert.Equal(3_600U, Assert.Single(_store.Invoices.Invoices).ExpirySeconds);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_TrampolineRoutingConfigured_When_Processed_Then_Bit57OnlyWhenAdvertised(bool allowed)
+    {
+        // Arrange: trampoline_routing on, allowed as an experimental feature or not (NL-875)
+        var offer = await AddOfferAsync();
+        _nodeOptions.Features.OptionTrampolineRouting = FeatureSupport.Optional;
+        _nodeOptions.Features.AllowExperimentalFeatures = allowed;
+
+        // Act
+        await ProcessAsync(RequestFor(offer).Build());
+
+        // Assert: MPP (17) as before, trampoline_routing optional (57) only when advertised, never compulsory (56)
+        var (_, invoice) = SingleReply();
+        var features = invoice.Get(Bolt12TlvTypes.InvoiceFeatures);
+        Assert.True(Bolt12FieldCodec.IsBitSet(features, OfferInvoiceFactory.MppOptionalBit));
+        Assert.Equal(allowed, Bolt12FieldCodec.IsBitSet(features, OfferInvoiceFactory.TrampolineOptionalBit));
+        Assert.False(Bolt12FieldCodec.IsBitSet(features, 56));
+        Assert.Null(Bolt12FieldCodec.FindUnknownEvenBit(features));
+    }
+
+    [Fact]
+    public void Given_SeveralBits_When_BuildingAFeatureBitmap_Then_BigEndianWithEveryBitSet()
+    {
+        // Act
+        var bitmap = OfferInvoiceFactory.FeatureBitmap(17, 57);
+
+        // Assert: 8 bytes, bit 57 in the first, bit 17 in the third from the end
+        Assert.Equal(8, bitmap.Length);
+        Assert.Equal(new byte[] { 0x02, 0, 0, 0, 0, 0x02, 0, 0 }, bitmap);
+        Assert.Empty(OfferInvoiceFactory.FeatureBitmap([]));
+        Assert.Equal(OfferInvoiceFactory.FeatureBitmap(17), OfferInvoiceFactory.FeatureBitmap([17]));
+    }
+
     [Fact]
     public async Task Given_NoSigner_When_Processed_Then_Ignored()
     {

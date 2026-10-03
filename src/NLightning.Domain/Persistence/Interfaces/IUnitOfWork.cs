@@ -73,6 +73,15 @@ public interface IUnitOfWork : IDisposable
 
     IForwardCircuitDbRepository ForwardCircuitDbRepository { get; }
 
+    // Trampoline relays and their incoming parts (NL-875, migration AddTrampolineRelays); the default is for test
+    // doubles that store none
+    ITrampolineRelayDbRepository TrampolineRelayDbRepository =>
+        throw new NotSupportedException("This unit of work does not store trampoline relays.");
+
+    // The trampoline routes of our own payments (payer side, NL-875); the default is for test doubles that store none
+    IPaymentTrampolineHopDbRepository PaymentTrampolineHopDbRepository =>
+        throw new NotSupportedException("This unit of work does not store payment trampoline hops.");
+
     // Onion replay set (NL-078)
     IOnionReplayDbRepository OnionReplayDbRepository { get; }
 

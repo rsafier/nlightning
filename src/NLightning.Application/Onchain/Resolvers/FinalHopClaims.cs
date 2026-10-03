@@ -8,6 +8,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Payments.Enums;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
+using Payments.Trampoline;
 
 /// <summary>
 /// The final-hop side of the preimage claims of the local and remote commitment resolvers (NL-316, NL-322): an HTLC
@@ -70,6 +71,13 @@ internal static class FinalHopClaims
         if (forwards.Count > 0
          || await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(channelId, record.Id) is not null)
             return null;
+
+        // NL-875: a part of a trampoline relay: the switch hands the lock-in to the relay (never decided as a final
+        // hop), only while the relay may still act on it
+        if (await TrampolineRelayReads.GetPartAsync(unitOfWork, channelId, record.Id) is { } part)
+            return await TrampolineRelayReads.GetAsync(unitOfWork, part.PaymentHash) is { Relay.IsCompleted: false }
+                       ? new IncomingHtlcLockedIn(channelId, record)
+                       : null;
 
         // No invoice for the hash: it may be a keysend payment, whose record the switch makes only when it accepts the
         // HTLC (lane lh1-l3). The switch peels the onion and decides; on a channel closing on chain it never forwards,
