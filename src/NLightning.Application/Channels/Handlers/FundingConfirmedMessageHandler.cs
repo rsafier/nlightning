@@ -217,7 +217,7 @@ public class FundingConfirmedMessageHandler
     /// <summary>
     /// Persists the channel's move out of V1FundingSigned/ReadyForThem: the one transition per channel at which its
     /// funding confirmed for us, so the accounting feed's ChannelFunded (and push) ride in this save (NL-602), and so do
-    /// a dual-funded open's liquidity purchase (lease start, the fee event) with the same fee (NL-771).
+    /// a dual-funded open's liquidity purchase (lease start, the fee event) with the same fee (NL-850).
     /// </summary>
     private async Task PersistChannelAsync(ChannelModel channel)
     {

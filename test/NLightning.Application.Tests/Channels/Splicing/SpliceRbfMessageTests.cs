@@ -12,7 +12,7 @@ using Domain.Protocol.Tlv;
 /// <summary>
 /// The splice RBF's <c>tx_init_rbf</c>/<c>tx_ack_rbf</c> rewritten with our signed <c>funding_output_contribution</c>
 /// (<c>SpliceService.WithContribution</c>, NL-481/NL-503) keep every other record, the liquidity ads request and
-/// answer included (NL-771, plan LA2: an RBF of a purchase keeps requesting).
+/// answer included (NL-850, plan LA2: an RBF of a purchase keeps requesting).
 /// </summary>
 public class SpliceRbfMessageTests
 {

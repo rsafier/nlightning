@@ -23,7 +23,7 @@ public sealed class InitMessage : BaseMessage
 
     public RemoteAddressTlv? RemoteAddressTlv { get; }
 
-    /// <summary>Liquidity ads (TLV 1339, NL-771).</summary>
+    /// <summary>Liquidity ads (TLV 1339, NL-850).</summary>
     public WillFundRatesTlv? WillFundRatesTlv { get; }
 
     /// <summary>
@@ -34,7 +34,7 @@ public sealed class InitMessage : BaseMessage
     public byte[]? UndecodableRemoteAddress { get; init; }
 
     /// <summary>
-    /// The raw value of a received liquidity ads <c>option_will_fund</c> (TLV 1339, NL-771) that does not decode. The
+    /// The raw value of a received liquidity ads <c>option_will_fund</c> (TLV 1339, NL-850) that does not decode. The
     /// record is odd and only advisory, so it never fails the init: <see cref="WillFundRatesTlv"/> is then null and the
     /// receiver logs this and drops it. Never serialized.
     /// </summary>

@@ -40,7 +40,7 @@ public static class AccountingEventKeys
     public static string SpliceLocked(ChannelId channelId, TxId spliceTxId) => $"chan:{channelId}:splice:{spliceTxId}";
 
     /// <summary>The liquidity fee of a purchase made in the funding or splice <paramref name="fundingTxId"/> of
-    /// <paramref name="channelId"/> (liquidity ads, NL-771), paid or earned.</summary>
+    /// <paramref name="channelId"/> (liquidity ads, NL-850), paid or earned.</summary>
     public static string LiquidityFee(ChannelId channelId, TxId fundingTxId) =>
         $"chan:{channelId}:liquidity:{fundingTxId}";
 

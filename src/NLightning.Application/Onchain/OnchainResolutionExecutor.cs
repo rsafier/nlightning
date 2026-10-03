@@ -715,7 +715,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                     // table has no FK to Channels, so its rows go in the same save as the Closed state
                     await unitOfWork.InteractiveTxSessionDbRepository.DeleteByChannelIdAsync(channelId);
 
-                    // Liquidity ads (NL-771): the channel's purchases end with it, at the funding spend's height
+                    // Liquidity ads (NL-850): the channel's purchases end with it, at the funding spend's height
                     await LiquidityLeases.StageChannelClosedAsync(unitOfWork, channelId, close.SpentAtHeight,
                                                                   _logger);
                 });

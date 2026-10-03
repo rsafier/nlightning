@@ -42,7 +42,7 @@ using Splicing;
 /// wallet inputs minus our wallet outputs minus our fee), so <c>AmountMsat</c> is that delta and the fee is not counted
 /// twice: the books post the delta to the channel and the fee to expenses, and the wallet side follows from the
 /// identity above.</para>
-/// <para>Liquidity ads (NL-771): a purchase moves the fee (mining plus service) from the buyer's balance to the
+/// <para>Liquidity ads (NL-850): a purchase moves the fee (mining plus service) from the buyer's balance to the
 /// seller's in the new commitment, with no output of its own. <see cref="AccountingEventKind.ChannelFunded"/> and
 /// <see cref="AccountingEventKind.SpliceLocked"/> book our contribution without it (their <c>liquidityFeeMsat</c>
 /// argument, + when we paid, − when we earned, is the part of the balance that is the fee) and
@@ -61,7 +61,7 @@ internal static class ChannelAccountingEvents
     /// confirmation's save). The channel must hold the confirmed funding outpoint, its short channel id and, in
     /// <see cref="ChannelModel.FundingCreatedAtBlockHeight"/>, the funding's block.
     /// </summary>
-    /// <param name="liquidityFeeMsat">The liquidity fee of a purchase made in this funding (NL-771): + when we bought,
+    /// <param name="liquidityFeeMsat">The liquidity fee of a purchase made in this funding (NL-850): + when we bought,
     /// − when we sold, 0 for none. Only used when the attempt's contribution is not stored (the channel balance, which
     /// includes the fee, stands in for it); stage the fee itself with <see cref="RecordLiquidityPurchaseAsync"/>.</param>
     public static async Task StageChannelFundedAsync(IUnitOfWork unitOfWork, ChannelModel channel,
@@ -141,7 +141,7 @@ internal static class ChannelAccountingEvents
         ulong? totalFeeSat = null;
         if (isDualFunded)
         {
-            // Our share of the funding output: never the balance, which a liquidity fee moved (NL-771)
+            // Our share of the funding output: never the balance, which a liquidity fee moved (NL-850)
             var attempt = await FindAttemptAsync(unitOfWork, channel.ChannelId, fundingTxId);
             contributionMsat = attempt?.LocalFundingSatoshis is { } localSat
                                    ? checked(localSat * 1_000)
@@ -262,7 +262,7 @@ internal static class ChannelAccountingEvents
     /// locked (both <c>splice_locked</c>, before the lock's save), with its deltas relative to
     /// <paramref name="previous"/>, the funding it replaces.
     /// </summary>
-    /// <param name="liquidityFeeMsat">The liquidity fee of a purchase made in this splice (NL-771) that
+    /// <param name="liquidityFeeMsat">The liquidity fee of a purchase made in this splice (NL-850) that
     /// <see cref="ChannelFunding.LocalBalanceDeltaMsat"/> includes: + when we bought (the delta is our contribution
     /// less the fee), − when we sold (our contribution plus the fee), 0 for none. The event's amount and our fee share
     /// leave it out; stage the fee itself with <see cref="RecordLiquidityPurchaseAsync"/>.</param>
@@ -330,7 +330,7 @@ internal static class ChannelAccountingEvents
     }
 
     /// <summary>
-    /// Stages the liquidity fee of a purchase (liquidity ads, NL-771) made in the funding or splice
+    /// Stages the liquidity fee of a purchase (liquidity ads, NL-850) made in the funding or splice
     /// <paramref name="fundingTxId"/> of <paramref name="channelId"/>: <see cref="AccountingEventKind.LiquidityFeePaid"/>
     /// (AmountMsat −fee, FeeMsat fee) when we bought, <see cref="AccountingEventKind.LiquidityFeeEarned"/> (AmountMsat
     /// +fee) when we sold, the fee being the mining fee plus the service fee. Keyed by channel and funding
@@ -387,7 +387,7 @@ internal static class ChannelAccountingEvents
 
     /// <summary>
     /// Stages the <see cref="AccountingEventKind.Reversal"/> of the standing liquidity fee event of
-    /// <paramref name="replacedFundingTxId"/> (NL-771), an attempt of a dual-funded open or a splice that an RBF
+    /// <paramref name="replacedFundingTxId"/> (NL-850), an attempt of a dual-funded open or a splice that an RBF
     /// replaced before it confirmed: the books take the old fee back (the new attempt's purchase is recorded on its own
     /// key). Keyed <see cref="AccountingEventKeys.Replaced"/> of the reversed event, so a repeat is a duplicate; nothing
     /// when no event of that funding stands. Staged on <paramref name="unitOfWork"/>; never throws.

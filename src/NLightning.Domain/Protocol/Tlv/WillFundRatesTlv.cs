@@ -5,7 +5,7 @@ using LiquidityAds;
 using LiquidityAds.Models;
 
 /// <summary>
-/// Liquidity ads <c>option_will_fund</c> (BOLT PR #1153, TLV 1339 as Eclair 0.14.3 sends it; NL-771) in <c>init</c> (and, in its extra data, <c>node_announcement</c>): the rates the sender sells inbound liquidity at.
+/// Liquidity ads <c>option_will_fund</c> (BOLT PR #1153, TLV 1339 as Eclair 0.14.3 sends it; NL-850) in <c>init</c> (and, in its extra data, <c>node_announcement</c>): the rates the sender sells inbound liquidity at.
 /// <see cref="BaseTlv.Value"/> holds the wire bytes (<see cref="LiquidityAdsCodec"/>).
 /// </summary>
 public class WillFundRatesTlv : BaseTlv

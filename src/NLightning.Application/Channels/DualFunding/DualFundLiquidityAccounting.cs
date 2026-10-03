@@ -11,7 +11,7 @@ using Domain.LiquidityAds.Enums;
 using Domain.Persistence.Interfaces;
 
 /// <summary>
-/// The liquidity purchases of a dual-funded open at its funding confirmation (liquidity ads, NL-771): the confirmed
+/// The liquidity purchases of a dual-funded open at its funding confirmation (liquidity ads, NL-850): the confirmed
 /// attempt's purchase starts its lease (<c>MarkActive</c>), the other attempts' pending purchases are replaced, and the
 /// fee is booked (<c>LiquidityFeePaid</c>/<c>LiquidityFeeEarned</c>) in the same save as the channel's
 /// <c>ChannelFunded</c>, with the same fee, so the reconcile never sees the channels account drift.

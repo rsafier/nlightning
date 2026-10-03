@@ -185,7 +185,7 @@ internal static class SpliceCommands
 
     /// <summary>
     /// <c>&lt;channel_id&gt; &lt;amount_sat&gt;</c> and the options (also as <c>--option=value</c>, anywhere);
-    /// <c>--address</c> only for spliceout, the liquidity ads options (<see cref="LiquidityOptions"/>, NL-771) only for
+    /// <c>--address</c> only for spliceout, the liquidity ads options (<see cref="LiquidityOptions"/>, NL-850) only for
     /// splicein.
     /// </summary>
     /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
@@ -292,7 +292,7 @@ internal static class SpliceCommands
 /// <summary>The parsed arguments of splicein/spliceout (<see cref="Address"/> is always null for splicein).</summary>
 internal sealed record SpliceArguments(ChannelId ChannelId, ulong AmountSat, string? Address, uint? FeeRatePerKw)
 {
-    /// <summary>The liquidity ads options of splicein (NL-771); none for spliceout.</summary>
+    /// <summary>The liquidity ads options of splicein (NL-850); none for spliceout.</summary>
     public LiquidityArguments Liquidity { get; init; } = LiquidityArguments.None;
 }
 

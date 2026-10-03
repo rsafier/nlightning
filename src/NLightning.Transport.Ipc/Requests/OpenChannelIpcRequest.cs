@@ -47,7 +47,7 @@ public sealed class OpenChannelIpcRequest
     [Key(8)] public List<string>? Tags { get; init; }
 
     /// <summary>
-    /// Inbound liquidity to buy from the peer with a dual-funded open (liquidity ads, NL-771,
+    /// Inbound liquidity to buy from the peer with a dual-funded open (liquidity ads, NL-850,
     /// <c>--request-inbound</c>), in satoshis, or null; an older client sends none.
     /// </summary>
     [Key(9)] public ulong? RequestInboundSat { get; init; }

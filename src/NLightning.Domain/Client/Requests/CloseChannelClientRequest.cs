@@ -22,7 +22,7 @@ public sealed class CloseChannelClientRequest
     public uint? WaitSeconds { get; init; }
 
     /// <summary>
-    /// Close even while a liquidity lease we sold on the channel is in force (liquidity ads D-L4, NL-771,
+    /// Close even while a liquidity lease we sold on the channel is in force (liquidity ads D-L4, NL-850,
     /// <c>closechannel --force</c>); without it such a close is refused.
     /// </summary>
     public bool Force { get; init; }

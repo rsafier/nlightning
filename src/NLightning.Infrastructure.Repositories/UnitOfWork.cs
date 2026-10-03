@@ -91,7 +91,7 @@ public class UnitOfWork : IUnitOfWork
     // BOLT 12 offers
     private OfferDbRepository? _offerDbRepository;
 
-    // Liquidity ads purchases (NL-771 LA3)
+    // Liquidity ads purchases (NL-850 LA3)
     private LiquidityPurchaseDbRepository? _liquidityPurchaseDbRepository;
 
     // Accounting feed (NL-602)

@@ -15,7 +15,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 
 /// <summary>
-/// The liquidity ads fee in the books (NL-771 LA5): <see cref="AccountingEventKind.LiquidityFeePaid"/> and
+/// The liquidity ads fee in the books (NL-850 LA5): <see cref="AccountingEventKind.LiquidityFeePaid"/> and
 /// <see cref="AccountingEventKind.LiquidityFeeEarned"/> between the channels and the liquidity expense and income
 /// accounts, their reversals, and their financial accounts and lot kinds.
 /// </summary>

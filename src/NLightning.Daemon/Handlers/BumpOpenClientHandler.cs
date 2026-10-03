@@ -15,7 +15,7 @@ using Interfaces;
 /// <c>bumpopen</c> (ClientCommand 38, lane dfrbf): RBF of an unconfirmed dual-funded open, as its opener or its
 /// accepter (NL-530), through
 /// <see cref="IDualFundedOpenService.BumpAsync(Domain.Channels.ValueObjects.ChannelId, uint, LightningMoney?, Domain.LiquidityAds.Models.LiquidityRequest?, CancellationToken)"/>,
-/// buying inbound liquidity with the new attempt when asked (<c>--request-inbound</c>, liquidity ads NL-771; without it
+/// buying inbound liquidity with the new attempt when asked (<c>--request-inbound</c>, liquidity ads NL-850; without it
 /// the service repeats the previous attempt's purchase, if any).
 /// </summary>
 /// <remarks>

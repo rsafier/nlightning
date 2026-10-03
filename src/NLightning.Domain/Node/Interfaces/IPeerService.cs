@@ -85,7 +85,7 @@ public interface IPeerService : IDisposable
     AddressDescriptor? ObservedAddress { get; }
 
     /// <summary>
-    /// The rates the peer sells inbound liquidity at (its init <c>option_will_fund</c>, liquidity ads, NL-771), or null
+    /// The rates the peer sells inbound liquidity at (its init <c>option_will_fund</c>, liquidity ads, NL-850), or null
     /// when it sent none, sent rates that do not decode (dropped, never fatal: the record is odd), or its init was not
     /// accepted yet.
     /// </summary>

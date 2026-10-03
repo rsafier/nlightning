@@ -51,7 +51,7 @@ public class TlvConverterFactory : ITlvConverterFactory
         _converters.Add(typeof(StartBatchMessageTypeTlv), new StartBatchMessageTypeTlvConverter());
         _converters.Add(typeof(UpfrontShutdownScriptTlv), new UpfrontShutdownScriptTlvConverter());
 
-        // Liquidity ads (BOLT PR #1153, TLV 1339; NL-771)
+        // Liquidity ads (BOLT PR #1153, TLV 1339; NL-850)
         _converters.Add(typeof(RequestFundingTlv), new RequestFundingTlvConverter());
         _converters.Add(typeof(ProvideFundingTlv), new ProvideFundingTlvConverter());
         _converters.Add(typeof(WillFundRatesTlv), new WillFundRatesTlvConverter());

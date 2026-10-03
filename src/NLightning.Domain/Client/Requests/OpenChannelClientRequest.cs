@@ -50,7 +50,7 @@ public sealed class OpenChannelClientRequest
     public IReadOnlyList<string> Tags { get; set; } = [];
 
     /// <summary>
-    /// Inbound liquidity to buy from the peer with the open (liquidity ads, NL-771, <c>--request-inbound</c>), in
+    /// Inbound liquidity to buy from the peer with the open (liquidity ads, NL-850, <c>--request-inbound</c>), in
     /// satoshis, or null to buy none. Implies a dual-funded (v2) open: refused with <see cref="ForceV1"/> or a push.
     /// </summary>
     public ulong? RequestInboundSat { get; set; }

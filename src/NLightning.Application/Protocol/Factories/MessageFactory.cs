@@ -37,7 +37,7 @@ public class MessageFactory : IMessageFactory
     /// </summary>
     /// <param name="remoteAddress">The BOLT 1 <c>remote_addr</c> TLV: the connection's remote endpoint as an address
     /// descriptor, sent by the receiver of an IP connection (NL-009); null sends no <c>remote_addr</c>.</param>
-    /// <returns>The Init message, with our <c>option_will_fund</c> rates when we sell liquidity (NL-771).</returns>
+    /// <returns>The Init message, with our <c>option_will_fund</c> rates when we sell liquidity (NL-850).</returns>
     /// <seealso cref="InitMessage"/>
     /// <seealso cref="InitPayload"/>
     public InitMessage CreateInitMessage(AddressDescriptor? remoteAddress = null)
@@ -276,7 +276,7 @@ public class MessageFactory : IMessageFactory
     /// <param name="fundingOutputContrubution">The signed contribution in satoshis (negative for a splice-out);
     /// 0 omits the TLV.</param>
     /// <param name="requireConfirmedInputs">How many confirmed inputs we need.</param>
-    /// <param name="requestFunding">Our liquidity ads request (NL-771), null for none.</param>
+    /// <param name="requestFunding">Our liquidity ads request (NL-850), null for none.</param>
     /// <returns>The TxInitRbf message.</returns>
     /// <seealso cref="TxInitRbfMessage"/>
     /// <seealso cref="ChannelId"/>
@@ -312,7 +312,7 @@ public class MessageFactory : IMessageFactory
     /// <param name="fundingOutputContrubution">The signed contribution in satoshis (negative for a splice-out);
     /// 0 omits the TLV.</param>
     /// <param name="requireConfirmedInputs">How many confirmed inputs we need.</param>
-    /// <param name="willFund">Our liquidity ads answer (NL-771), null for none.</param>
+    /// <param name="willFund">Our liquidity ads answer (NL-850), null for none.</param>
     /// <returns>The TxAckRbf message.</returns>
     /// <seealso cref="TxAckRbfMessage"/>
     /// <seealso cref="ChannelId"/>

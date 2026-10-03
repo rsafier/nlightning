@@ -21,7 +21,7 @@ public sealed class BumpOpenIpcRequest
     [Key(2)] public ulong? ContributionSat { get; init; }
 
     /// <summary>
-    /// Inbound liquidity to buy with the new attempt (liquidity ads, NL-771, <c>--request-inbound</c>), in satoshis,
+    /// Inbound liquidity to buy with the new attempt (liquidity ads, NL-850, <c>--request-inbound</c>), in satoshis,
     /// or null to repeat the previous attempt's purchase, if any; an older client sends none.
     /// </summary>
     [Key(3)] public ulong? RequestInboundSat { get; init; }

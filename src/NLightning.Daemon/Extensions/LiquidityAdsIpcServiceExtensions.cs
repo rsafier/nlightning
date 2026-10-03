@@ -17,7 +17,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
 /// <summary>
-/// <c>liquidityads rates|sellers|purchases</c> (ClientCommand 46, liquidity ads NL-771).
+/// <c>liquidityads rates|sellers|purchases</c> (ClientCommand 46, liquidity ads NL-850).
 /// </summary>
 public static class LiquidityAdsIpcServiceExtensions
 {

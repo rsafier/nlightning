@@ -23,7 +23,7 @@ using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
-/// The lease of a liquidity sale (liquidity ads decision D-L4, NL-771): our cooperative close of a channel we sold
+/// The lease of a liquidity sale (liquidity ads decision D-L4, NL-850): our cooperative close of a channel we sold
 /// liquidity on is refused inside the lease unless forced (<see cref="ChannelCloseService"/>), and a channel's purchases
 /// are marked closed in the save that makes the channel Closed (<see cref="LiquidityLeases.StageChannelClosedAsync"/>).
 /// </summary>

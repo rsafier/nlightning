@@ -14,7 +14,7 @@ using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Signers;
 
 /// <summary>
-/// The seller's <c>will_fund</c> signature (NL-771): the node key's RFC 6979 ECDSA signature of
+/// The seller's <c>will_fund</c> signature (NL-850): the node key's RFC 6979 ECDSA signature of
 /// <see cref="LiquidityAdsRules.SignedData"/>, byte-exact against Eclair 0.14.3's vectors.
 /// </summary>
 public class LocalLightningSignerLiquidityAdsTests

@@ -5,7 +5,7 @@ using Enums;
 using LiquidityAds.Models;
 
 /// <summary>
-/// The answer of <c>liquidityads</c> (<c>ClientCommand.LiquidityAds</c>, NL-771): only the part the request's
+/// The answer of <c>liquidityads</c> (<c>ClientCommand.LiquidityAds</c>, NL-850): only the part the request's
 /// <see cref="Action"/> asks for is filled in.
 /// </summary>
 public sealed class LiquidityAdsClientResponse

@@ -64,7 +64,7 @@ using Quiescence;
 /// a negotiation it waits for is over (<see cref="QuiescenceService.QuiescenceEnded"/>: a disconnection, a peer's
 /// <c>tx_abort</c> answering our <c>splice_init</c>), and when a completed splice was saved (the driver ends the
 /// quiescence right after the save of the last <c>tx_signatures</c>).</para>
-/// <para>D10: as acceptor we contribute 0, unless the peer buys liquidity from us (liquidity ads, NL-771:
+/// <para>D10: as acceptor we contribute 0, unless the peer buys liquidity from us (liquidity ads, NL-850:
 /// <c>SpliceService.Liquidity.cs</c>). D5: a new funding key per splice unless <see cref="SpliceOptions.RotateFundingKey"/>
 /// is off. D16: a splice-out we initiate pays its fee share from our channel balance (the contribution is the amount
 /// plus the fee of the common fields, the shared input and output and the splice-out output).</para>
@@ -143,7 +143,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             throw new ArgumentOutOfRangeException(nameof(request),
                                                   $"The feerate {feeratePerKw} sat/kw is below {_options.MinFeeratePerKw} sat/kw");
 
-        // Liquidity ads (NL-771): the inbound liquidity we buy with this splice, at the seller's rate
+        // Liquidity ads (NL-850): the inbound liquidity we buy with this splice, at the seller's rate
         var purchase = request.Liquidity is { } liquidity
                            ? CreatePurchaseRequest(unlocked.RemoteNodeId, liquidity, feeratePerKw)
                            : null;
@@ -322,7 +322,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
         if (SpliceRules.CheckReceiveInit(conditions, payload, feerateAcceptable) is { } violation)
             return Reject(channelId, peerPubKey, violation);
 
-        // D10: we add nothing, unless the peer buys liquidity from us (NL-771): then we contribute exactly the
+        // D10: we add nothing, unless the peer buys liquidity from us (NL-850): then we contribute exactly the
         // requested amount from our wallet and sign our rate over the new funding script
         SpliceLiquidity? sale = null;
         var contribution = InteractiveTxContribution.Empty;
@@ -423,7 +423,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             RemoteRequiresConfirmedInputs = message.RequireConfirmedInputsTlv is not null,
             State = SpliceNegotiationState.Negotiating
         };
-        // Liquidity ads (NL-771): the seller's answer to our request is checked over the new funding script
+        // Liquidity ads (NL-850): the seller's answer to our request is checked over the new funding script
         var prepared = TryPrepareSharedFunding(negotiation, out var reason);
         if (prepared && ValidateSellerAnswer(negotiation, message.ProvideFundingTlv?.WillFund,
                                              payload.FundingContributionSatoshis) is { } refusal)
@@ -504,7 +504,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
             return;
         }
 
-        // The deltas include a liquidity purchase's fee (NL-771): its row, saved with our commitment_signed like the
+        // The deltas include a liquidity purchase's fee (NL-850): its row, saved with our commitment_signed like the
         // funding row, takes it back out of the contributions
         var purchase = await GetPurchaseAsync(channelId, txId, unitOfWork);
         var (localContribution, remoteContribution) = GetContributions(funding, purchase);
@@ -621,7 +621,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
 
         // SP-TX-01..05 on the whole transaction (the session checked most of them already; the reserve row is ours,
         // and for an RBF attempt the fee of the attempt it replaces)
-        // A liquidity purchase's fee (NL-771) moves from the buyer's balance to the seller's on the new funding: it is in
+        // A liquidity purchase's fee (NL-850) moves from the buyer's balance to the seller's on the new funding: it is in
         // the balance deltas (the shared funding's shares stay the contributions), and the buyer keeps its reserve
         var liquidityFeeMsat = negotiation.Liquidity?.FeeMsat ?? 0;
         var facts = GetFacts(negotiation, transaction) with
@@ -653,7 +653,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
                                                                           cancellationToken);
         negotiation.NewFunding = funding;
 
-        // The attempt's purchase row rides in this save (NL-771), like the funding row
+        // The attempt's purchase row rides in this save (NL-850), like the funding row
         await StagePurchaseAsync(negotiation, funding.FundingTxId, unitOfWork);
 
         // SP2-C (splicing plan §3.6): the new funding output is watched from this save on (our tx_signatures follow)
@@ -1022,7 +1022,7 @@ public sealed partial class SpliceService : ISpliceService, ISpliceCommitmentRec
 
         // The accounting feed's SpliceLocked (NL-602) rides in the lock's save; a lock happens once per funding (the
         // funding is current afterwards, never pending again). Its delta is relative to the funding it replaces
-        // A liquidity purchase made with the splice (NL-771): its row becomes active (the siblings' replaced) and its fee
+        // A liquidity purchase made with the splice (NL-850): its row becomes active (the siblings' replaced) and its fee
         // is booked in the same save, the SpliceLocked event leaving the fee out of the balance change
         if (retired.Count > 0)
         {

@@ -10,7 +10,7 @@ using Books;
 /// <remarks>
 /// <para>Defaults: the assets, the opening balances and the transfers keep the operational names in effect (so a
 /// renamed operational bucket is renamed here too); <c>income:sales</c> (received payments), <c>income:routing</c>,
-/// <c>income:liquidity</c> (liquidity sold, NL-771), <c>income:other</c> (on-chain gains), <c>income:unclassified</c>,
+/// <c>income:liquidity</c> (liquidity sold, NL-850), <c>income:other</c> (on-chain gains), <c>income:unclassified</c>,
 /// <c>income:gains:realized</c>, <c>expenses:payments</c> (sent payments), <c>expenses:losses</c>,
 /// <c>expenses:unclassified</c>, <c>expenses:losses:realized</c>,
 /// <c>expenses:fees:{routing,liquidity,funding,splice,close,commitment,sweep,cpfp,withdraw}</c>

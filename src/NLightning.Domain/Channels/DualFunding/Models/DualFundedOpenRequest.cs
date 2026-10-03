@@ -31,7 +31,7 @@ public sealed record DualFundedOpenRequest(
     public SourceLabels Labels { get; init; } = SourceLabels.None;
 
     /// <summary>
-    /// Inbound liquidity bought from the peer with this attempt (liquidity ads, NL-771); null buys none.
+    /// Inbound liquidity bought from the peer with this attempt (liquidity ads, NL-850); null buys none.
     /// </summary>
     public LiquidityRequest? Liquidity { get; init; }
 }

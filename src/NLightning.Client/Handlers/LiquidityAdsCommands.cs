@@ -9,7 +9,7 @@ using Printers;
 using Transport.Ipc.Requests;
 
 /// <summary>
-/// <c>liquidityads|liquidity-ads &lt;rates|sellers|purchases&gt;</c> (ClientCommand 46, liquidity ads NL-771):
+/// <c>liquidityads|liquidity-ads &lt;rates|sellers|purchases&gt;</c> (ClientCommand 46, liquidity ads NL-850):
 /// our rates, the sellers we know of (their <c>init</c> and <c>node_announcement</c>) and the liquidity we bought and
 /// sold with its lease (<c>purchases [--role buyer|seller] [--status pending|active|replaced|closed] [--skip &lt;n&gt;]
 /// [--limit &lt;n&gt;]</c>, options also as <c>--option=value</c>).

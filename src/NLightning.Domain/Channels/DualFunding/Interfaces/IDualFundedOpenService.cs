@@ -82,7 +82,7 @@ public interface IDualFundedOpenService
 
     /// <summary>
     /// <see cref="BumpAsync(ChannelId, uint, LightningMoney?, CancellationToken)"/> buying
-    /// <paramref name="liquidity"/> with the new attempt (liquidity ads, NL-771). Null repeats the purchase of the
+    /// <paramref name="liquidity"/> with the new attempt (liquidity ads, NL-850). Null repeats the purchase of the
     /// attempt it replaces, if any: BOLT PR #1153 fails an RBF that drops a purchase made before. The default serves
     /// implementations without liquidity ads.
     /// </summary>

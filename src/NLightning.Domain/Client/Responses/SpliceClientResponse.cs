@@ -36,6 +36,6 @@ public sealed class SpliceClientResponse
     /// </summary>
     public string? Note { get; init; }
 
-    /// <summary>The liquidity bought with the splice (liquidity ads, NL-771), or null.</summary>
+    /// <summary>The liquidity bought with the splice (liquidity ads, NL-850), or null.</summary>
     public LiquidityPurchaseModel? Purchase { get; init; }
 }

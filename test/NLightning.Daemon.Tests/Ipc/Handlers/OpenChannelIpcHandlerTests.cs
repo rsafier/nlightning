@@ -126,7 +126,7 @@ public class OpenChannelIpcHandlerTests
                 PushAmount = LightningMoney.Satoshis(10)
             }, s_options, TestContext.Current.CancellationToken);
         // fixarray of 11 (keys 0-10; 7 and 8 are the label and tags, NL-602 A3-T1; 9 and 10 the liquidity purchase,
-        // NL-771)
+        // NL-850)
         Assert.Equal(0x9B, current[0]);
         Assert.Equal(0xC2, current[^7]); // key 4: false
         Assert.Equal(0xC2, current[^6]); // key 5: false

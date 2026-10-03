@@ -7,7 +7,7 @@ using Domain.Client.Requests;
 using Domain.LiquidityAds.Enums;
 
 /// <summary>
-/// Request for LiquidityAds (ClientCommand 46, NL-771): <c>liquidityads rates|sellers|purchases</c>.
+/// Request for LiquidityAds (ClientCommand 46, NL-850): <c>liquidityads rates|sellers|purchases</c>.
 /// </summary>
 [MessagePackObject]
 public sealed class LiquidityAdsIpcRequest

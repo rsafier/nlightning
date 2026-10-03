@@ -14,7 +14,7 @@ public sealed record ChannelCloseRequest(uint? FeeRatePerKw = null, bool SendFee
                                          TimeSpan? WaitFor = null)
 {
     /// <summary>
-    /// Close even while a liquidity lease we sold on the channel is in force (liquidity ads D-L4, NL-771); without it
+    /// Close even while a liquidity lease we sold on the channel is in force (liquidity ads D-L4, NL-850); without it
     /// <see cref="IChannelCloseService.CloseChannelAsync"/> refuses to start such a close.
     /// </summary>
     public bool Force { get; init; }

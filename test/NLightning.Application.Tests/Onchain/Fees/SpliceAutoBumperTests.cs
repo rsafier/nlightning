@@ -93,7 +93,7 @@ public class SpliceAutoBumperTests
     [Fact]
     public async Task Given_ASpliceWeSoldLiquidityIn_When_ItWaitedLong_Then_ItIsNotBumped()
     {
-        // Arrange: liquidity ads (NL-771): the buyer bumps a sale, our bump would be refused [LA-RBF-01]
+        // Arrange: liquidity ads (NL-850): the buyer bumps a sale, our bump would be refused [LA-RBF-01]
         var sale = new LiquidityPurchaseModel(s_channelId, s_spliceTxId, LiquidityPurchaseRole.Seller,
                                               LiquidityPurchaseKind.Splice, 50_000, 50_000,
                                               new FundingRate(10_000, 100_000, 500, 100, 1_000, 0),

@@ -12,7 +12,7 @@ using Persistence.Contexts;
 using Persistence.Entities.LiquidityAds;
 
 /// <summary>
-/// Stores the liquidity purchases we made and sold (NL-771 LA3, migration <c>AddLiquidityPurchases</c>).
+/// Stores the liquidity purchases we made and sold (NL-850 LA3, migration <c>AddLiquidityPurchases</c>).
 /// </summary>
 /// <remarks>
 /// Writes are staged on the unit of work; the context's save assigns the database ids, which this repository copies

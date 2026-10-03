@@ -79,7 +79,7 @@ public static class AccountingDetailKeys
 
     #endregion
 
-    #region Liquidity ads (NL-771)
+    #region Liquidity ads (NL-850)
 
     /// <summary>
     /// The liquidity fee (msat, signed: positive when we paid it, negative when we earned it) that the balance of a

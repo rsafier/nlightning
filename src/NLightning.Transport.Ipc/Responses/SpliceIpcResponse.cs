@@ -25,7 +25,7 @@ public sealed class SpliceIpcResponse
     /// </summary>
     [Key(5)] public string? Note { get; init; }
 
-    /// <summary>The liquidity bought with the splice (liquidity ads, NL-771), or null.</summary>
+    /// <summary>The liquidity bought with the splice (liquidity ads, NL-850), or null.</summary>
     [Key(6)] public LiquidityPurchaseIpcInfo? Purchase { get; init; }
 
     public static SpliceIpcResponse FromClientResponse(SpliceClientResponse clientResponse)

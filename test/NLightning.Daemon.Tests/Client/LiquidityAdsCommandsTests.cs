@@ -13,7 +13,7 @@ using NLightning.Client.Printers;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// The CLI side of liquidity ads (NL-771): <c>liquidityads rates|sellers|purchases</c> (ClientCommand 46), the
+/// The CLI side of liquidity ads (NL-850): <c>liquidityads rates|sellers|purchases</c> (ClientCommand 46), the
 /// <c>--request-inbound</c>/<c>--max-liquidity-fee</c> options of <c>openchannel</c>, <c>splicein</c> and
 /// <c>bumpopen</c>, <c>closechannel --force</c>, and the printed purchases.
 /// </summary>

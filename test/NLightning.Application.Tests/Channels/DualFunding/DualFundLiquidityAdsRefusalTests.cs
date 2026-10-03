@@ -15,7 +15,7 @@ using Domain.Protocol.Tlv;
 using static LiquidityAdsKit;
 
 /// <summary>
-/// The refusals of liquidity ads in the dual-funded open (NL-771; Eclair 0.14.3's <c>validateRequest</c> and
+/// The refusals of liquidity ads in the dual-funded open (NL-850; Eclair 0.14.3's <c>validateRequest</c> and
 /// <c>validateRemoteFunding</c>) on <see cref="DualFundHarness"/>. Seller: no rates, a rate it does not sell, an amount
 /// outside the rate, a wallet that cannot fund the amount (never accepted without our funds), the griefing caps (D-L5)
 /// — each an <c>error</c> for the open, the sale slot given back. Buyer: no answer, a tampered signature, a short

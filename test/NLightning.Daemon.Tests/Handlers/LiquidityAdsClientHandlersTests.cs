@@ -44,7 +44,7 @@ using Ipc.Handlers;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// Liquidity ads (NL-771) on the daemon's client handlers: <c>--request-inbound</c> on <c>openchannel</c> (a v2 open),
+/// Liquidity ads (NL-850) on the daemon's client handlers: <c>--request-inbound</c> on <c>openchannel</c> (a v2 open),
 /// <c>splicein</c> and <c>bumpopen</c>, <c>closechannel --force</c>, and <c>liquidityads rates|sellers|purchases</c>.
 /// </summary>
 public class LiquidityAdsClientHandlersTests

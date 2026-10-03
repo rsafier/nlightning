@@ -118,10 +118,10 @@ public sealed record AccountingChannelLine
     /// <summary>Value lost on chain: trimmed or dust value of a force close, forwards lost on chain.</summary>
     public long OnchainLossMsat { get; init; }
 
-    /// <summary>Liquidity fees we paid buying liquidity on this channel (liquidity ads, NL-771).</summary>
+    /// <summary>Liquidity fees we paid buying liquidity on this channel (liquidity ads, NL-850).</summary>
     public long LiquidityFeesPaidMsat { get; init; }
 
-    /// <summary>Liquidity fees we earned selling liquidity on this channel (liquidity ads, NL-771).</summary>
+    /// <summary>Liquidity fees we earned selling liquidity on this channel (liquidity ads, NL-850).</summary>
     public long LiquidityFeesEarnedMsat { get; init; }
 
     public long OnchainFeesMsat =>

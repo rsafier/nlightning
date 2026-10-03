@@ -20,7 +20,7 @@ public sealed class OpenChannelIpcResponse
     /// <summary>The funding output's index in <see cref="FundingTxId"/>, or null.</summary>
     [Key(2)] public uint? FundingOutputIndex { get; init; }
 
-    /// <summary>The liquidity bought with a dual-funded open (liquidity ads, NL-771), or null.</summary>
+    /// <summary>The liquidity bought with a dual-funded open (liquidity ads, NL-850), or null.</summary>
     [Key(3)] public LiquidityPurchaseIpcInfo? Purchase { get; init; }
 
     public static OpenChannelIpcResponse FromClientResponse(OpenChannelClientResponse clientResponse)

@@ -4,7 +4,7 @@ using Enums;
 using LiquidityAds.Enums;
 
 /// <summary>
-/// <c>liquidityads rates|sellers|purchases</c> (<c>ClientCommand.LiquidityAds</c>, NL-771).
+/// <c>liquidityads rates|sellers|purchases</c> (<c>ClientCommand.LiquidityAds</c>, NL-850).
 /// </summary>
 public sealed class LiquidityAdsClientRequest
 {

@@ -10,7 +10,7 @@ using Domain.LiquidityAds.Enums;
 using Domain.LiquidityAds.Models;
 
 /// <summary>
-/// Response for LiquidityAds (ClientCommand 46, NL-771): only the part the request's action asks for is filled in.
+/// Response for LiquidityAds (ClientCommand 46, NL-850): only the part the request's action asks for is filled in.
 /// </summary>
 [MessagePackObject]
 public sealed class LiquidityAdsIpcResponse

@@ -88,7 +88,7 @@ internal sealed class SpliceHarness : IDisposable
     /// <param name="announceChannel">A public channel (<see cref="TwoNodeHarness"/>'s <c>announceChannel</c>; lane SP2-B).</param>
     /// <param name="configureServices">Adds or replaces services of each node after the splice services (last
     /// registration wins; lane SP2-B).</param>
-    /// <param name="configureNode">Per-node node options, e.g. the liquidity ads rates a node sells at (NL-771; the
+    /// <param name="configureNode">Per-node node options, e.g. the liquidity ads rates a node sells at (NL-850; the
     /// other node sees them as its peer's <c>init</c> rates).</param>
     public SpliceHarness(Action<string, SpliceOptions>? configureSplice = null, bool realEngine = false,
                          bool announceChannel = false,
@@ -347,7 +347,7 @@ internal sealed class SpliceHarness : IDisposable
         services.AddSingleton(Options.Create(options));
         services.Configure<SpliceOptions>(o => configure?.Invoke(node.Name, o));
 
-        // Liquidity ads (NL-771): the other node's rates are this node's peer's init rates
+        // Liquidity ads (NL-850): the other node's rates are this node's peer's init rates
         var peerName = node.Name == "Alice" ? "Bob" : "Alice";
         SpliceLiquidityTestKit.AddLiquidityAds(
             services, () => _nodes.GetValueOrDefault(peerName)?.Options?.LiquidityAds.GetWillFundRates());
@@ -413,7 +413,7 @@ internal sealed class SpliceNode(string name)
     /// <summary>The <c>ChannelFundings</c> rows of the node (real-engine mode; staged, then committed by a save).</summary>
     public InMemoryChannelFundingRepository FundingRows { get; } = new();
 
-    /// <summary>The <c>LiquidityPurchases</c> rows of the node (NL-771; staged, then committed by a save).</summary>
+    /// <summary>The <c>LiquidityPurchases</c> rows of the node (NL-850; staged, then committed by a save).</summary>
     public InMemorySpliceLiquidityPurchases Purchases { get; } = new();
 
     /// <summary>The node options of the node's current process.</summary>

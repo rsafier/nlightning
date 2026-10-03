@@ -312,7 +312,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="noFeeRange">Negotiate without <c>fee_range</c>.</param>
     /// <param name="waitSeconds">How long the daemon waits for the closing transaction, or null for its default.</param>
     /// <param name="ct">Cancels the call (the close itself goes on in the daemon).</param>
-    /// <param name="force">Close even while a liquidity lease we sold on the channel is in force (NL-771).</param>
+    /// <param name="force">Close even while a liquidity lease we sold on the channel is in force (NL-850).</param>
     public Task<CloseChannelIpcResponse> CloseChannelAsync(ChannelId channelId, uint? feeRatePerKw, bool noFeeRange,
                                                            uint? waitSeconds, CancellationToken ct = default,
                                                            bool force = false)
@@ -383,7 +383,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// <param name="amountSat">The amount added to our channel balance, in sats.</param>
     /// <param name="feeRatePerKw">The splice transaction's feerate in sat/kw; null for the node's estimate.</param>
     /// <param name="ct">Cancels the call.</param>
-    /// <param name="requestInboundSat">Inbound liquidity to buy with the splice (NL-771), or null.</param>
+    /// <param name="requestInboundSat">Inbound liquidity to buy with the splice (NL-850), or null.</param>
     /// <param name="maxLiquidityFeeSat">The most we pay for it, or null for the node's limit.</param>
     public Task<SpliceIpcResponse> SpliceInAsync(ChannelId channelId, ulong amountSat, uint? feeRatePerKw,
                                                  CancellationToken ct = default, ulong? requestInboundSat = null,
@@ -467,7 +467,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Liquidity ads (ClientCommand 46, NL-771): our rates, the sellers we know of or our purchases.
+    /// Liquidity ads (ClientCommand 46, NL-850): our rates, the sellers we know of or our purchases.
     /// </summary>
     public Task<LiquidityAdsIpcResponse> LiquidityAdsAsync(LiquidityAdsIpcRequest request,
                                                            CancellationToken ct = default)

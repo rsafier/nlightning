@@ -22,7 +22,7 @@ using Transport.Ipc.Responses;
 using Utils;
 
 /// <summary>
-/// Liquidity ads against Eclair 0.14.3 as the seller (BOLT PR #1153 as Eclair speaks it, NL-771, plan LA6): the
+/// Liquidity ads against Eclair 0.14.3 as the seller (BOLT PR #1153 as Eclair speaks it, NL-850, plan LA6): the
 /// fixture's second Eclair (<see cref="EclairFixture.GetSellerAsync"/>) sells at
 /// <see cref="EclairFixture.SellerRates"/>, paid from the channel balance, and our node buys through the daemon's own
 /// client handlers: (a) we see its rates in its <c>init</c> and through <c>liquidityads sellers</c>; (b)

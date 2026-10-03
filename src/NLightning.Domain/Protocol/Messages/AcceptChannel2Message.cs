@@ -34,7 +34,7 @@ public sealed class AcceptChannel2Message : BaseChannelMessage
     /// </summary>
     public RequireConfirmedInputsTlv? RequireConfirmedInputsTlv { get; }
 
-    /// <summary>Liquidity ads (TLV 1339, NL-771).</summary>
+    /// <summary>Liquidity ads (TLV 1339, NL-850).</summary>
     public ProvideFundingTlv? ProvideFundingTlv { get; }
 
     public AcceptChannel2Message(AcceptChannel2Payload payload, UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null, ChannelTypeTlv? channelTypeTlv = null, RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null, ProvideFundingTlv? provideFundingTlv = null)

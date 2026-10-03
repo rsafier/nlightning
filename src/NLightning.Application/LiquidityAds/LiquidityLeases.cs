@@ -9,7 +9,7 @@ using Domain.LiquidityAds.Models;
 using Domain.Persistence.Interfaces;
 
 /// <summary>
-/// The leases of liquidity purchases (liquidity ads decision D-L4, NL-771): the cooperative close guard of a channel we
+/// The leases of liquidity purchases (liquidity ads decision D-L4, NL-850): the cooperative close guard of a channel we
 /// sold liquidity on, and the purchases of a channel marked closed in the save that makes the channel Closed.
 /// </summary>
 /// <remarks>

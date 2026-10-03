@@ -7,7 +7,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 
 /// <summary>
-/// A liquidity purchase we made or sold (<c>LiquidityPurchaseModel</c>, NL-771 LA3, migration
+/// A liquidity purchase we made or sold (<c>LiquidityPurchaseModel</c>, NL-850 LA3, migration
 /// <c>AddLiquidityPurchases</c>), keyed by a database-assigned id; one row per (channel, funding attempt).
 /// </summary>
 /// <remarks>

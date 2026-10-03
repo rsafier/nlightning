@@ -441,7 +441,7 @@ public sealed class AccountingReportService : IAccountingReports
         }
     }
 
-    // The on-chain fees and losses of a channel, and its liquidity fees (NL-771); false for a kind that has none
+    // The on-chain fees and losses of a channel, and its liquidity fees (NL-850); false for a kind that has none
     private static bool ApplyOnchain(ChannelAccumulator channel, AccountingEventKind kind,
                                      AccountingEventModel accountingEvent)
     {
@@ -478,7 +478,7 @@ public sealed class AccountingReportService : IAccountingReports
                 channel.OnchainLossMsat -= accountingEvent.AmountMsat;
                 return true;
             case AccountingEventKind.LiquidityFeePaid:
-                // NL-771: AmountMsat is the channel's change (-fee); a reversal (an RBF that replaced the attempt, a
+                // NL-850: AmountMsat is the channel's change (-fee); a reversal (an RBF that replaced the attempt, a
                 // reorg) negates it
                 channel.LiquidityFeesPaidMsat -= accountingEvent.AmountMsat;
                 return true;

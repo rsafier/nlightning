@@ -14,7 +14,7 @@ public sealed class BumpOpenIpcResponse
     [Key(0)] public required ChannelId ChannelId { get; init; }
     [Key(1)] public required string FundingTxId { get; init; }
 
-    /// <summary>The liquidity bought with the new attempt (liquidity ads, NL-771), or null.</summary>
+    /// <summary>The liquidity bought with the new attempt (liquidity ads, NL-850), or null.</summary>
     [Key(2)] public LiquidityPurchaseIpcInfo? Purchase { get; init; }
 
     public static BumpOpenIpcResponse FromClientResponse(BumpOpenClientResponse clientResponse)

@@ -25,7 +25,7 @@ public sealed class SpliceInClientRequest
     public uint? FeeRatePerKw { get; init; }
 
     /// <summary>
-    /// Inbound liquidity to buy from the peer with the splice (liquidity ads, NL-771, <c>--request-inbound</c>), in
+    /// Inbound liquidity to buy from the peer with the splice (liquidity ads, NL-850, <c>--request-inbound</c>), in
     /// satoshis, or null to buy none.
     /// </summary>
     public ulong? RequestInboundSat { get; init; }

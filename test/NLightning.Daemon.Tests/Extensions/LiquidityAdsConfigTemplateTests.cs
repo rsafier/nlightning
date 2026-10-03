@@ -7,7 +7,7 @@ using Daemon.Extensions;
 using Domain.Node.Options;
 
 /// <summary>
-/// Liquidity ads (NL-771) in the default <c>appsettings.json</c>: the <c>Node:LiquidityAds</c> section is listed on
+/// Liquidity ads (NL-850) in the default <c>appsettings.json</c>: the <c>Node:LiquidityAds</c> section is listed on
 /// every network with no rates (decision D-L3: we do not sell until rates are configured) and its default limits.
 /// </summary>
 public class LiquidityAdsConfigTemplateTests

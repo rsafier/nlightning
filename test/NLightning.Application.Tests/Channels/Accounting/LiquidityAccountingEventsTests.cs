@@ -29,7 +29,7 @@ using Domain.Protocol.InteractiveTx.Models;
 using Handlers;
 
 /// <summary>
-/// The accounting feed of a liquidity ads purchase (NL-771 LA5): the fee event of either side, its replacement by an
+/// The accounting feed of a liquidity ads purchase (NL-850 LA5): the fee event of either side, its replacement by an
 /// RBF, and the funding and splice events that book our contribution without the fee, so the channels account matches
 /// the balance the node reports after the fee moved.
 /// </summary>

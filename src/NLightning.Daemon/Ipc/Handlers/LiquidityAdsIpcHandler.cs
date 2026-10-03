@@ -9,7 +9,7 @@ using Transport.Ipc.Requests;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// <c>liquidityads</c> (ClientCommand 46, liquidity ads NL-771) over IPC.
+/// <c>liquidityads</c> (ClientCommand 46, liquidity ads NL-850) over IPC.
 /// </summary>
 internal sealed class LiquidityAdsIpcHandler
     : ClientCommandIpcHandler<LiquidityAdsIpcRequest, LiquidityAdsClientRequest, LiquidityAdsClientResponse,

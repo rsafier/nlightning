@@ -29,7 +29,7 @@ public sealed class EclairFixture : IAsyncLifetime
     public const string EclairContainerName = "nltg-eclair";
 
     /// <summary>
-    /// The second Eclair of the fixture, configured as a liquidity seller (<see cref="GetSellerAsync"/>, NL-771); it
+    /// The second Eclair of the fixture, configured as a liquidity seller (<see cref="GetSellerAsync"/>, NL-850); it
     /// shares the chain and is removed with the fixture.
     /// </summary>
     public const string SellerContainerName = "nltg-eclair-seller";
@@ -99,7 +99,7 @@ public sealed class EclairFixture : IAsyncLifetime
     }
 
     /// <summary>
-    /// The fixture's liquidity seller (NL-771): a second Eclair 0.14.3 on the same chain (container
+    /// The fixture's liquidity seller (NL-850): a second Eclair 0.14.3 on the same chain (container
     /// <see cref="SellerContainerName"/>, wallet <c>eclair-seller</c>) whose <c>eclair.liquidity-ads</c> sells at
     /// <see cref="SellerRates"/>, paid from the channel balance only. Started on first use, then shared by the tests of
     /// the collection; <see cref="WaitAllAtTipAsync"/> waits for it too once it runs. Its wallet is funded with
@@ -409,7 +409,7 @@ public sealed class EclairFixture : IAsyncLifetime
 /// <summary>An Eclair reachable from the tests: its API client, its node id and its <c>pubkey@127.0.0.1:port</c>.</summary>
 public sealed record EclairEndpoint(EclairClient Client, string NodeId, string Address);
 
-/// <summary>One <c>eclair.liquidity-ads.funding-rates</c> entry (NL-771).</summary>
+/// <summary>One <c>eclair.liquidity-ads.funding-rates</c> entry (NL-850).</summary>
 public sealed record EclairSellerRate(
     uint MinFundingSat,
     uint MaxFundingSat,

@@ -5,7 +5,7 @@ using LiquidityAds.Enums;
 using LiquidityAds.Models;
 
 /// <summary>
-/// Liquidity ads (BOLT PR #1153 as Eclair 0.14.3 speaks it; NL-771): the rates we sell inbound liquidity at and the
+/// Liquidity ads (BOLT PR #1153 as Eclair 0.14.3 speaks it; NL-850): the rates we sell inbound liquidity at and the
 /// limits of our sales and purchases. Bound from the <c>Node:LiquidityAds</c> configuration section (it is
 /// <see cref="NodeOptions.LiquidityAds"/>).
 /// </summary>

@@ -828,7 +828,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         // to Channels, so its rows go in the same save as the Closed state
         await unitOfWork.InteractiveTxSessionDbRepository.DeleteByChannelIdAsync(channel.ChannelId);
 
-        // Liquidity ads (NL-771): the channel's purchases end with it, a close inside a lease noted
+        // Liquidity ads (NL-850): the channel's purchases end with it, a close inside a lease noted
         await LiquidityLeases.StageChannelClosedAsync(unitOfWork, channel.ChannelId,
                                                       closingTxHeight ?? _blockchainMonitor.LastProcessedBlockHeight,
                                                       _logger);
@@ -2236,7 +2236,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
              && channel.FundingOutput is { TransactionId: { } fundingTxId, Index: { } fundingIndex }
              && fundingTxId == fundedTxId)
             {
-                // NL-771: a dual-funded open's liquidity purchase is booked with it, with the same fee
+                // NL-850: a dual-funded open's liquidity purchase is booked with it, with the same fee
                 var lateUnitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
                 var lateScid = new ShortChannelId(firstSeenAtHeight, transactionIndex, fundingIndex);
                 var occurredAt = (_serviceProvider.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow();

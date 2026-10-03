@@ -104,7 +104,7 @@ public sealed partial class SpliceService
             var previous = await GetLatestAttemptSessionAsync(channel, fundings, cancellationToken);
             var previousContribution = previous?.LocalContribution ?? InteractiveTxContribution.Empty;
 
-            // Liquidity ads (NL-771): an RBF of an attempt that bought liquidity buys it again (re-quoted at the new
+            // Liquidity ads (NL-850): an RBF of an attempt that bought liquidity buys it again (re-quoted at the new
             // feerate); the latest attempt's deltas include its fee, which the contribution leaves out
             var latestPurchase = await GetPurchaseAsync(channelId, latest.FundingTxId, null);
             var purchase = CreateRbfPurchaseRequest(channel, request.Liquidity, latestPurchase, request.FeeratePerKw);
@@ -329,7 +329,7 @@ public sealed partial class SpliceService
         var latest = fundings.LatestAttempt!;
         var previousContribution = previous?.LocalContribution ?? InteractiveTxContribution.Empty;
 
-        // Liquidity ads (NL-771): an RBF of an attempt that carried a purchase MUST request the funding again (BOLT PR
+        // Liquidity ads (NL-850): an RBF of an attempt that carried a purchase MUST request the funding again (BOLT PR
         // #1153), and the buyer may not change sides; a request makes us the seller of this attempt
         var latestPurchase = await GetPurchaseAsync(channelId, latest.FundingTxId, unitOfWork);
         var previousSigned = GetContributions(latest, latestPurchase).Local;
@@ -488,7 +488,7 @@ public sealed partial class SpliceService
             State = SpliceNegotiationState.Negotiating
         };
         var driver = GetDriver();
-        // Liquidity ads (NL-771): the seller's answer to our repeated request, signed again for this attempt
+        // Liquidity ads (NL-850): the seller's answer to our repeated request, signed again for this attempt
         var prepared = TryPrepareSharedFunding(negotiation, out var reason);
         if (prepared && ValidateSellerAnswer(negotiation, message.ProvideFundingTlv?.WillFund, contribution ?? 0) is
             { } refusal)
@@ -548,7 +548,7 @@ public sealed partial class SpliceService
             return InteractiveTxRbfDecision.Reject("no splice rbf was prepared for this tx_init_rbf");
 
         // The contribution TLV of our tx_ack_rbf is signed (NL-481): the service writes it on the driver's message; a
-        // sale answers with our will_fund for this attempt (NL-771)
+        // sale answers with our will_fund for this attempt (NL-850)
         return InteractiveTxRbfDecision.Accept(CreateTerms(negotiation, contribution), LightningMoney.Zero,
                                                negotiation.Liquidity is { Role: LiquidityPurchaseRole.Seller } sale
                                                    ? sale.WillFund
@@ -968,7 +968,7 @@ public sealed partial class SpliceService
     /// omitted one as 0, but Core Lightning v26.06.8 fails a splice RBF whose <c>tx_init_rbf</c>/<c>tx_ack_rbf</c> has
     /// none ("tx_ack_rbf must contain tlv with a funding_output_contribution value") and always sends it itself. The
     /// other records (<c>require_confirmed_inputs</c>, a liquidity ads <c>request_funding</c>/<c>provide_funding</c>,
-    /// NL-771) are kept.
+    /// NL-850) are kept.
     /// </summary>
     internal static IReadOnlyList<IChannelMessage> WithContribution(IReadOnlyList<IChannelMessage> messages,
                                                                    long contributionSatoshis) =>

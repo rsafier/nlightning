@@ -6,7 +6,7 @@ using Domain.LiquidityAds.Models;
 using Domain.Money;
 
 /// <summary>
-/// The fee transfer of a liquidity purchase in a dual-funded open's first commitment (NL-771): the fee leaves the
+/// The fee transfer of a liquidity purchase in a dual-funded open's first commitment (NL-850): the fee leaves the
 /// buyer's balance and reaches the seller's, the shares (the funding output) stay as they are.
 /// </summary>
 public class DualFundLiquidityTests

@@ -140,7 +140,7 @@ internal class OpenChannelMessageHandler
     /// <param name="isDualFunded">True when <see cref="DualFundOption"/> was given.</param>
     /// <param name="forceV1">True when <see cref="V1Option"/> was given.</param>
     /// <param name="noWait">True when <see cref="NoWaitOption"/> was given.</param>
-    /// <param name="liquidity">The liquidity ads options (<see cref="LiquidityOptions"/>, NL-771):
+    /// <param name="liquidity">The liquidity ads options (<see cref="LiquidityOptions"/>, NL-850):
     /// <c>--request-inbound</c> buys inbound liquidity with a dual-funded open, so it is refused with
     /// <see cref="V1Option"/>.</param>
     /// <param name="error">The usage error for an unknown option, <see cref="DualFundOption"/> together with

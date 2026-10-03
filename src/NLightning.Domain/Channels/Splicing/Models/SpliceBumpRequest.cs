@@ -21,7 +21,7 @@ public sealed record SpliceBumpRequest(
     long? ContributionSatoshis = null)
 {
     /// <summary>
-    /// The inbound liquidity this attempt buys (liquidity ads, NL-771). Null repeats the purchase of the attempt it
+    /// The inbound liquidity this attempt buys (liquidity ads, NL-850). Null repeats the purchase of the attempt it
     /// replaces, if any (BOLT PR #1153: an RBF after a purchase MUST request funding again).
     /// </summary>
     public LiquidityRequest? Liquidity { get; init; }

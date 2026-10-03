@@ -120,7 +120,7 @@ public sealed class OpenChannelClientHandler
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       "A channel can't be opened both dual-funded (--dual-fund) and v1 (--v1)");
 
-        // Liquidity ads (NL-771): buying inbound liquidity rides on open_channel2, so it implies a v2 open
+        // Liquidity ads (NL-850): buying inbound liquidity rides on open_channel2, so it implies a v2 open
         CheckLiquidityRequest(request);
 
         // NL-602 A3-T1: refused before anything is sent; stored with the channel's first save
@@ -405,7 +405,7 @@ public sealed class OpenChannelClientHandler
     }
 
     /// <summary>
-    /// The liquidity ads options of <c>openchannel</c> (NL-771): <c>--request-inbound</c> needs a dual-funded open (no
+    /// The liquidity ads options of <c>openchannel</c> (NL-850): <c>--request-inbound</c> needs a dual-funded open (no
     /// <c>--v1</c>, no push, no zero-conf) and an amount above 0; <c>--max-liquidity-fee</c> only with it.
     /// </summary>
     internal static void CheckLiquidityRequest(OpenChannelClientRequest request)

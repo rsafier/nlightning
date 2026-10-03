@@ -14,7 +14,7 @@ using Domain.Node.Options;
 using InteractiveTx.TestDoubles;
 
 /// <summary>
-/// Liquidity ads (NL-771) on <see cref="DualFundHarness"/>: Bob sells at <see cref="Rate"/>, Alice buys with her
+/// Liquidity ads (NL-850) on <see cref="DualFundHarness"/>: Bob sells at <see cref="Rate"/>, Alice buys with her
 /// dual-funded open, each node seeing the other's rates as its <c>init</c> would carry them (mocked peer services).
 /// </summary>
 [ExcludeFromCodeCoverage]

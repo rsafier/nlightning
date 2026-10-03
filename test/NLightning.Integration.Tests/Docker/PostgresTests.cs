@@ -251,7 +251,7 @@ public class PostgresTests
     [Fact]
     public async Task Given_PostgresSchemaFromBeforeAddLiquidityPurchases_When_Migrated_Then_PurchasesRoundTrip()
     {
-        // Arrange (NL-771 LA3: every field, the assigned ids, staged updates, the queries and the unique funding
+        // Arrange (NL-850 LA3: every field, the assigned ids, staged updates, the queries and the unique funding
         // attempt, on a real server)
         var options = await CreateOwnDatabaseOptionsAsync("nltg_liquidity_purchases");
         var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);

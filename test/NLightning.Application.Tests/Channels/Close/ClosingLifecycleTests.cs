@@ -105,7 +105,7 @@ public class ClosingLifecycleTests
     [Fact]
     public async Task Given_ASoldLease_When_ClosingTransactionConfirmed_Then_ThePurchaseIsClosedInTheClosedSave()
     {
-        // Arrange (liquidity ads D-L4, NL-771): a sale active from block 100 (lease to 4,132), closed at block 600
+        // Arrange (liquidity ads D-L4, NL-850): a sale active from block 100 (lease to 4,132), closed at block 600
         var channel = CreateChannel(ChannelState.Closing);
         channel.SetClosingTransaction(s_closingTx);
         var channelId = channel.ChannelId;

@@ -3,7 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 namespace NLightning.Tests.Utils.Vectors;
 
 /// <summary>
-/// Liquidity ads (BOLT PR #1153) vectors from Eclair 0.14.3's own tests (NL-771, plan LA1):
+/// Liquidity ads (BOLT PR #1153) vectors from Eclair 0.14.3's own tests (NL-850, plan LA1):
 /// <c>eclair-core/src/test/scala/fr/acinq/eclair/wire/protocol/LiquidityAdsSpec.scala</c> ("validate liquidity ads
 /// funding attempt") and <c>LightningMessageCodecsSpec.scala</c> ("encode/decode init message", the tx_init_rbf /
 /// tx_ack_rbf / splice_init / splice_ack cases, "encode/decode liquidity ads", "decode unknown liquidity ads payment

@@ -344,7 +344,7 @@ public class SpliceRulesTests
 
     #endregion
 
-    #region LA-RES-01 a liquidity purchase's fee and the buyer's reserve (NL-771)
+    #region LA-RES-01 a liquidity purchase's fee and the buyer's reserve (NL-850)
 
     /// <summary>We splice in 100k sat and buy 200k sat from the peer for a 3,400 sat fee: 1M sat channel, 600k ours.
     /// </summary>

@@ -28,7 +28,7 @@ public sealed class BumpOpenClientRequest
     public ulong? ContributionSat { get; init; }
 
     /// <summary>
-    /// Inbound liquidity to buy with the new attempt (liquidity ads, NL-771, <c>--request-inbound</c>), in satoshis;
+    /// Inbound liquidity to buy with the new attempt (liquidity ads, NL-850, <c>--request-inbound</c>), in satoshis;
     /// null repeats the purchase of the attempt it replaces, if any (BOLT PR #1153: an RBF after a purchase requests
     /// funding again).
     /// </summary>

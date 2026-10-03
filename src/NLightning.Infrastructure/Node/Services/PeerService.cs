@@ -674,7 +674,7 @@ public sealed class PeerService : IPeerService
                                Convert.ToHexStringLower(initMessage.UndecodableRemoteAddress));
         }
 
-        // Liquidity ads (NL-771): the rates the peer sells at, kept for a purchase; undecodable rates are odd and
+        // Liquidity ads (NL-850): the rates the peer sells at, kept for a purchase; undecodable rates are odd and
         // advisory, so they are dropped and the init stands
         if (initMessage.WillFundRatesTlv is not null)
         {

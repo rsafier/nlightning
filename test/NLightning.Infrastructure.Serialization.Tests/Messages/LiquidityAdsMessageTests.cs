@@ -13,7 +13,7 @@ using Helpers;
 using Serialization.Messages;
 
 /// <summary>
-/// Liquidity ads (BOLT PR #1153 as Eclair 0.14.3 speaks it, NL-771 LA2): the TLV 1339 records on <c>init</c>,
+/// Liquidity ads (BOLT PR #1153 as Eclair 0.14.3 speaks it, NL-850 LA2): the TLV 1339 records on <c>init</c>,
 /// <c>open_channel2</c>, <c>accept_channel2</c>, <c>tx_init_rbf</c>, <c>tx_ack_rbf</c>, <c>splice_init</c> and
 /// <c>splice_ack</c>, against the message vectors of Eclair's <c>LightningMessageCodecsSpec</c>.
 /// </summary>

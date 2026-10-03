@@ -228,7 +228,7 @@ public static class AccountingPostingRules
     }
 
     /// <summary>
-    /// A liquidity purchase (liquidity ads, NL-771): AmountMsat is the channel's change, -fee when we bought (Cr Channels
+    /// A liquidity purchase (liquidity ads, NL-850): AmountMsat is the channel's change, -fee when we bought (Cr Channels
     /// fee; Dr LiquidityFees fee) and +fee when we sold (Dr Channels fee; Cr LiquidityIncome fee). No on-chain value
     /// moves: the fee changed hands in the commitment, and the funding's or splice's own event books our contribution
     /// without it.

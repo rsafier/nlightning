@@ -915,7 +915,7 @@ internal static class ClientApp
     internal const string CloseChannelUsage = "<channel_id> [feerate_per_kw|0] [wait_seconds] [nofeerange] [--force]";
 
     /// <summary>
-    /// Takes closechannel's <c>--force</c> (anywhere after the command; liquidity ads D-L4, NL-771: close a channel we
+    /// Takes closechannel's <c>--force</c> (anywhere after the command; liquidity ads D-L4, NL-850: close a channel we
     /// sold inbound liquidity on inside its lease) out of the arguments.
     /// </summary>
     internal static string[] ExtractCloseForce(string[] commandArgs, out bool force)

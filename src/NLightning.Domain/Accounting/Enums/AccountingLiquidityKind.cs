@@ -1,7 +1,7 @@
 namespace NLightning.Domain.Accounting.Enums;
 
 /// <summary>
-/// When a liquidity purchase was made (liquidity ads, NL-771): the detail <c>kind</c> of
+/// When a liquidity purchase was made (liquidity ads, NL-850): the detail <c>kind</c> of
 /// <see cref="AccountingEventKind.LiquidityFeePaid"/> and <see cref="AccountingEventKind.LiquidityFeeEarned"/>
 /// (<c>open</c>, <c>rbf</c>, <c>splice</c>). Not persisted as a number.
 /// </summary>

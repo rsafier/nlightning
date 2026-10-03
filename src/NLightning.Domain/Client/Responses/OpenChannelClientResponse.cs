@@ -18,7 +18,7 @@ public sealed class OpenChannelClientResponse
     /// <summary>The funding output's index in <see cref="FundingTxId"/>, or null.</summary>
     public uint? FundingOutputIndex { get; init; }
 
-    /// <summary>The liquidity bought with a dual-funded open (liquidity ads, NL-771), or null.</summary>
+    /// <summary>The liquidity bought with a dual-funded open (liquidity ads, NL-850), or null.</summary>
     public LiquidityPurchaseModel? Purchase { get; init; }
 
     public OpenChannelClientResponse(ChannelId channelId)

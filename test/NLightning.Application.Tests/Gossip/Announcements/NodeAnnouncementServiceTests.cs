@@ -240,7 +240,7 @@ public class NodeAnnouncementServiceTests : IDisposable
     [Fact]
     public async Task Given_NoFundingRates_When_Announcing_Then_TheAnnouncementHasNoExtraData()
     {
-        // Arrange (liquidity ads, NL-771: we do not sell by default)
+        // Arrange (liquidity ads, NL-850: we do not sell by default)
         MarkAnnounced();
         var service = CreateService();
 

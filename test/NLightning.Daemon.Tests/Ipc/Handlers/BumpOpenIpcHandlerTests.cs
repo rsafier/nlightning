@@ -242,7 +242,7 @@ public class BumpOpenIpcHandlerTests
     [Fact]
     public async Task Given_RequestInbound_When_Handled_Then_TheServiceBuysAndThePurchaseComesBack()
     {
-        // Arrange (liquidity ads, NL-771: keys 3/4 of the request, key 2 of the response)
+        // Arrange (liquidity ads, NL-850: keys 3/4 of the request, key 2 of the response)
         _purchase = LiquidityAdsTestData.Purchase(s_channelId, kind: Domain.LiquidityAds.Enums.LiquidityPurchaseKind.OpenRbf);
 
         // Act

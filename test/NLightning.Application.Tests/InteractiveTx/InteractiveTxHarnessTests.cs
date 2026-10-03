@@ -345,7 +345,7 @@ public class InteractiveTxHarnessTests
     [MemberData(nameof(Engines))]
     public async Task Given_ALiquidityPurchase_When_Rbf_Then_TheRequestAndTheAnswerAreCarried(string engine)
     {
-        // Arrange (liquidity ads, NL-771: an RBF of a purchase keeps requesting and the seller answers again)
+        // Arrange (liquidity ads, NL-850: an RBF of a purchase keeps requesting and the seller answers again)
         var ct = TestContext.Current.CancellationToken;
         var harness = new InteractiveTxHarness(engine, 100_000, 50_000);
         harness.Alice.Fund(300_000);

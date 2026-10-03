@@ -22,7 +22,7 @@ public sealed class TxInitRbfMessage : BaseChannelMessage
     public FundingOutputContributionTlv? FundingOutputContributionTlv { get; }
     public RequireConfirmedInputsTlv? RequireConfirmedInputsTlv { get; }
 
-    /// <summary>Liquidity ads (TLV 1339, NL-771).</summary>
+    /// <summary>Liquidity ads (TLV 1339, NL-850).</summary>
     public RequestFundingTlv? RequestFundingTlv { get; }
 
     public TxInitRbfMessage(TxInitRbfPayload payload, FundingOutputContributionTlv? fundingOutputContributionTlv = null, RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null, RequestFundingTlv? requestFundingTlv = null)

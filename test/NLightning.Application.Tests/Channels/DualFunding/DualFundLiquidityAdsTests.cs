@@ -16,7 +16,7 @@ using Domain.Protocol.Messages;
 using static LiquidityAdsKit;
 
 /// <summary>
-/// Liquidity ads in the dual-funded open (NL-771, BOLT PR #1153 as Eclair 0.14.3 speaks it; plan
+/// Liquidity ads in the dual-funded open (NL-850, BOLT PR #1153 as Eclair 0.14.3 speaks it; plan
 /// <c>docs/agents/LIQUIDITY_ADS_PLAN.md</c> LA3/LA4/LA6) on <see cref="DualFundHarness"/>, both roles NLightning: Alice
 /// buys inbound liquidity in her <c>open_channel2</c>, Bob sells it in <c>accept_channel2</c>; the fee moves from
 /// Alice's first-commitment balance to Bob's; one purchase row per signed attempt on each side; the confirmation starts

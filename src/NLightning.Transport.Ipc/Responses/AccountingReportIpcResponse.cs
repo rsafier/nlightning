@@ -281,10 +281,10 @@ public sealed class AccountingChannelIpcResponse
     /// <summary>The net yield annualized over the same time as <see cref="AnnualizedYield"/>.</summary>
     [Key(35)] public double? NetAnnualizedYield { get; init; }
 
-    /// <summary>Liquidity fees paid on the channel (liquidity ads, NL-771).</summary>
+    /// <summary>Liquidity fees paid on the channel (liquidity ads, NL-850).</summary>
     [Key(36)] public long LiquidityFeesPaidMsat { get; init; }
 
-    /// <summary>Liquidity fees earned on the channel (liquidity ads, NL-771).</summary>
+    /// <summary>Liquidity fees earned on the channel (liquidity ads, NL-850).</summary>
     [Key(37)] public long LiquidityFeesEarnedMsat { get; init; }
 
     public static AccountingChannelIpcResponse From(AccountingChannelLine line) => new()

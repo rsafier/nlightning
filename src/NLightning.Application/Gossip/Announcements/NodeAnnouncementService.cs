@@ -148,7 +148,7 @@ public sealed class NodeAnnouncementService : INodeAnnouncementService
 
     /// <summary>
     /// The configured fields: node features (node_announcement context, wire order), alias, color, addresses and, when
-    /// we sell liquidity, our <c>option_will_fund</c> rates as the extra data's TLV stream (NL-771, as Eclair).
+    /// we sell liquidity, our <c>option_will_fund</c> rates as the extra data's TLV stream (NL-850, as Eclair).
     /// </summary>
     private AnnouncementFields BuildFields()
     {

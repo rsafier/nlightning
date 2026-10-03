@@ -18,7 +18,7 @@ using Domain.Node.Models;
 using Domain.Node.Options;
 
 /// <summary>
-/// Liquidity ads in <see cref="SpliceHarness"/> (NL-771): each node's <see cref="LiquidityAdsService"/> sees the other
+/// Liquidity ads in <see cref="SpliceHarness"/> (NL-850): each node's <see cref="LiquidityAdsService"/> sees the other
 /// node's configured rates as that peer's <c>init</c> rates (through a peer manager that answers only the service), and
 /// its purchases live in <see cref="InMemorySpliceLiquidityPurchases"/>, committed with the node's saves.
 /// </summary>

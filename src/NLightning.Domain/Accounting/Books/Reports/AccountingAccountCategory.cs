@@ -18,7 +18,7 @@ public enum AccountingAccountCategory
 /// </summary>
 public static class AccountingAccountCategories
 {
-    /// <summary>The fee expense accounts: the route fees of our payments, the liquidity fees we paid (NL-771) and the
+    /// <summary>The fee expense accounts: the route fees of our payments, the liquidity fees we paid (NL-850) and the
     /// on-chain fees by purpose.</summary>
     public static IReadOnlyList<AccountRole> FeeAccounts { get; } =
     [

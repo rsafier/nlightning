@@ -98,7 +98,7 @@ public sealed class ChannelCloseService : IChannelCloseService
                     _registry.Get(channelId).Request ??= request;
                     break;
                 case ChannelState.Open:
-                    // Liquidity ads D-L4 (NL-771): a channel we sold inbound liquidity on is not closed by us inside
+                    // Liquidity ads D-L4 (NL-850): a channel we sold inbound liquidity on is not closed by us inside
                     // its lease unless forced; the peer's close and force closes are never held back
                     if (!request.Force)
                         await ThrowIfLeaseInForceAsync(scope, channelId);
@@ -140,7 +140,7 @@ public sealed class ChannelCloseService : IChannelCloseService
 
     /// <summary>
     /// Refuses our cooperative close while a liquidity lease we sold on the channel is in force at the chain monitor's
-    /// height (liquidity ads D-L4, NL-771).
+    /// height (liquidity ads D-L4, NL-850).
     /// </summary>
     private async Task ThrowIfLeaseInForceAsync(IServiceScope scope, ChannelId channelId)
     {

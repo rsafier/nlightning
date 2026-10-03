@@ -250,7 +250,7 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
     [Fact]
     public async Task Given_ABoughtLease_When_TheChannelClosesOnChain_Then_ThePurchaseIsClosedAtTheSpendInTheSave()
     {
-        // Arrange (liquidity ads, NL-771): a purchase active from block 900 (lease to 4,932); the funding was spent
+        // Arrange (liquidity ads, NL-850): a purchase active from block 900 (lease to 4,932); the funding was spent
         // at SpentAt
         var purchase = LiquidityPurchaseModel.Restore(
             5, _channel.ChannelId, new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray()), LiquidityPurchaseRole.Buyer,

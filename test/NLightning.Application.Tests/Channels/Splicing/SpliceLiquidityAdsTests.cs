@@ -26,7 +26,7 @@ using Domain.Protocol.Tlv;
 using Harness;
 
 /// <summary>
-/// Liquidity ads in a splice and its RBF attempts (NL-771, plan <c>docs/agents/LIQUIDITY_ADS_PLAN.md</c> LA3/LA4/LA6)
+/// Liquidity ads in a splice and its RBF attempts (NL-850, plan <c>docs/agents/LIQUIDITY_ADS_PLAN.md</c> LA3/LA4/LA6)
 /// on the real engine (<see cref="SpliceHarness"/> with <c>realEngine</c>): the buyer's <c>splice_init</c> carries
 /// <c>request_funding</c>, the seller contributes exactly the requested amount and answers <c>provide_funding</c>
 /// signed over the new funding script, the fee moves from the buyer's balance to the seller's on the new funding

@@ -295,7 +295,7 @@ public sealed class SpliceAutoBumper : ISpliceAutoBumper
         if (broadcast is not { State: BroadcastState.Pending })
             return null;
 
-        // Liquidity ads (NL-771): a splice we sold liquidity in is the buyer's to bump (its RBF must request the funding
+        // Liquidity ads (NL-850): a splice we sold liquidity in is the buyer's to bump (its RBF must request the funding
         // again), so SpliceService refuses our bump [LA-RBF-01]; never try it
         if (await IsSaleAsync(unitOfWork!, channel.ChannelId, latest.FundingTxId))
             return null;

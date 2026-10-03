@@ -215,7 +215,7 @@ public class NodeOptions
     public AnchorReserveOptions Anchors { get; set; } = new();
 
     /// <summary>
-    /// Liquidity ads (NL-771): the rates we sell inbound liquidity at and the limits of our sales and purchases, from
+    /// Liquidity ads (NL-850): the rates we sell inbound liquidity at and the limits of our sales and purchases, from
     /// <c>Node:LiquidityAds</c>. Empty rates (the default) mean we do not sell.
     /// </summary>
     /// <see cref="LiquidityAdsOptions"/>

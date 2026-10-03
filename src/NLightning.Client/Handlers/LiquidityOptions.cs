@@ -3,7 +3,7 @@ using System.Globalization;
 namespace NLightning.Client.Handlers;
 
 /// <summary>
-/// The liquidity ads options of <c>openchannel</c>, <c>splicein</c> and <c>bumpopen</c> (NL-771):
+/// The liquidity ads options of <c>openchannel</c>, <c>splicein</c> and <c>bumpopen</c> (NL-850):
 /// <c>--request-inbound &lt;sat&gt;</c> buys that much inbound liquidity from the peer with the funding attempt and
 /// <c>--max-liquidity-fee &lt;sat&gt;</c> caps what we pay for it (mining + service fee; the node's
 /// <c>Node:LiquidityAds:MaxFeeSat</c> when left out). Both also as <c>--option=value</c>, anywhere after the command.

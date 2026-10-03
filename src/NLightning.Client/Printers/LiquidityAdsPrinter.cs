@@ -8,7 +8,7 @@ using Domain.LiquidityAds.Enums;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// Prints <c>liquidityads rates|sellers|purchases</c> (ClientCommand 46, NL-771) and the purchase that an
+/// Prints <c>liquidityads rates|sellers|purchases</c> (ClientCommand 46, NL-850) and the purchase that an
 /// <c>openchannel</c>, <c>splicein</c> or <c>bumpopen</c> made (<see cref="WritePurchase"/>).
 /// </summary>
 public sealed class LiquidityAdsPrinter : IPrinter<LiquidityAdsIpcResponse>

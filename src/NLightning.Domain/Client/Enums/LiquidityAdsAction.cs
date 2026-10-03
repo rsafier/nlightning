@@ -1,7 +1,7 @@
 namespace NLightning.Domain.Client.Enums;
 
 /// <summary>
-/// What <c>liquidityads</c> shows (<c>ClientCommand.LiquidityAds</c>, NL-771). The values go on the wire: never
+/// What <c>liquidityads</c> shows (<c>ClientCommand.LiquidityAds</c>, NL-850). The values go on the wire: never
 /// renumber them.
 /// </summary>
 public enum LiquidityAdsAction

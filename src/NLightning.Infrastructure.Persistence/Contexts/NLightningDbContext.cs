@@ -98,7 +98,7 @@ public class NLightningDbContext : DbContext
     public DbSet<GraphChannelPolicyEntity> GraphChannelPolicies { get; set; }
     public DbSet<GraphBannedNodeEntity> GraphBannedNodes { get; set; }
 
-    // Liquidity ads purchases (NL-771 LA3, migration AddLiquidityPurchases)
+    // Liquidity ads purchases (NL-850 LA3, migration AddLiquidityPurchases)
     public DbSet<LiquidityPurchaseEntity> LiquidityPurchases { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

@@ -7,7 +7,7 @@ using Domain.LiquidityAds.Enums;
 using Domain.LiquidityAds.Models;
 
 /// <summary>
-/// Liquidity ads (NL-771) test data shared by the IPC, handler and printer tests.
+/// Liquidity ads (NL-850) test data shared by the IPC, handler and printer tests.
 /// </summary>
 internal static class LiquidityAdsTestData
 {

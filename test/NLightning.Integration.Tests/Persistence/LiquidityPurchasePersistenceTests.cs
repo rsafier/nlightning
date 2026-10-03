@@ -8,7 +8,7 @@ using Infrastructure.Persistence.Enums;
 using Infrastructure.Persistence.Providers;
 
 /// <summary>
-/// Liquidity purchases (NL-771 LA3, migration <c>AddLiquidityPurchases</c>) on the real SQLite schema.
+/// Liquidity purchases (NL-850 LA3, migration <c>AddLiquidityPurchases</c>) on the real SQLite schema.
 /// </summary>
 public class LiquidityPurchasePersistenceTests
 {

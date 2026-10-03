@@ -492,7 +492,7 @@ internal sealed class DualFundNode
         {
             PeerService.SetupGet(p => p.Features).Returns(() => _harness.NegotiatedFeatures);
 
-            // Liquidity ads (NL-771): the rates the other node sells at, as its init carries them
+            // Liquidity ads (NL-850): the rates the other node sells at, as its init carries them
             PeerService.SetupGet(p => p.LiquidityRates)
                        .Returns(() => _harness.Other(this).Options.LiquidityAds.GetWillFundRates());
 

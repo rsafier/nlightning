@@ -91,7 +91,7 @@ internal sealed class DualFundNegotiation
 
     /// <summary>
     /// Our <c>request_funding</c> waiting for the seller's answer (<c>accept_channel2</c> of our open, <c>tx_ack_rbf</c>
-    /// of our RBF; liquidity ads, NL-771). Memory only.
+    /// of our RBF; liquidity ads, NL-850). Memory only.
     /// </summary>
     public DualFundLiquidityRequest? LiquidityRequest { get; set; }
 

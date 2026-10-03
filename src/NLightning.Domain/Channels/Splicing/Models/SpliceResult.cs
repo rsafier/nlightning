@@ -23,7 +23,7 @@ public sealed record SpliceResult(
     string? FailureReason = null)
 {
     /// <summary>
-    /// The liquidity purchase made with this attempt (as buyer or seller; liquidity ads, NL-771), or null.
+    /// The liquidity purchase made with this attempt (as buyer or seller; liquidity ads, NL-850), or null.
     /// </summary>
     public LiquidityPurchaseModel? Purchase { get; init; }
 }

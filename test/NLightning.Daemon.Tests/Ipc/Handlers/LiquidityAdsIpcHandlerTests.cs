@@ -24,7 +24,7 @@ using Transport.Ipc.Requests;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// Liquidity ads (NL-771) over IPC: <c>liquidityads</c> (ClientCommand 46) through the envelope, and the keys added to
+/// Liquidity ads (NL-850) over IPC: <c>liquidityads</c> (ClientCommand 46) through the envelope, and the keys added to
 /// <c>openchannel</c> (9/10), <c>splicein</c> (3/4), <c>bumpopen</c> (3/4), <c>closechannel</c> (4) and to their
 /// responses (the purchase), which an older client or daemon simply leaves out.
 /// </summary>
@@ -176,7 +176,7 @@ public class LiquidityAdsIpcHandlerTests
     [Fact]
     public void Given_RequestsFromAnOlderClient_When_Deserialized_Then_NothingIsBoughtOrForced()
     {
-        // Arrange: each request cut after its last key from before NL-771
+        // Arrange: each request cut after its last key from before NL-850
         var ct = TestContext.Current.CancellationToken;
         var splice = MessagePackSerializer.Serialize(new SpliceInIpcRequest { ChannelId = s_channelId, AmountSat = 1 },
                                                      s_options, ct);

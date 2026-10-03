@@ -8,7 +8,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Tlv;
 
 /// <summary>
-/// Converts the liquidity ads <c>provide_funding</c> record (TLV 1339, NL-771) with <see cref="LiquidityAdsCodec"/>; a value that
+/// Converts the liquidity ads <c>provide_funding</c> record (TLV 1339, NL-850) with <see cref="LiquidityAdsCodec"/>; a value that
 /// does not decode strictly is refused.
 /// </summary>
 public class ProvideFundingTlvConverter : ITlvConverter<ProvideFundingTlv>

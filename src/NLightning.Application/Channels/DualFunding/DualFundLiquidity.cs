@@ -5,7 +5,7 @@ using Domain.LiquidityAds.Models;
 using Domain.Money;
 
 /// <summary>
-/// A liquidity purchase (liquidity ads, BOLT PR #1153 as Eclair 0.14.3 speaks it, NL-771) negotiated for one attempt of
+/// A liquidity purchase (liquidity ads, BOLT PR #1153 as Eclair 0.14.3 speaks it, NL-850) negotiated for one attempt of
 /// a dual-funded open: the buyer's <c>request_funding</c>, the seller's signed <c>will_fund</c> and the fee. It becomes a
 /// <see cref="LiquidityPurchaseModel"/> in the attempt's commitment step.
 /// </summary>

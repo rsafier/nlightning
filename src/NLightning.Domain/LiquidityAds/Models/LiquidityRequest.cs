@@ -1,7 +1,7 @@
 namespace NLightning.Domain.LiquidityAds.Models;
 
 /// <summary>
-/// What a buyer asks a seller for in a dual-funded open, a splice or one of their RBF attempts (NL-771): the amount the
+/// What a buyer asks a seller for in a dual-funded open, a splice or one of their RBF attempts (NL-850): the amount the
 /// seller should add to the funding output, optionally the seller rate to buy at (else its cheapest rate that sells the
 /// amount, from the seller's <c>init</c> or, failing that, its <c>node_announcement</c>), and our limit on the fee.
 /// </summary>

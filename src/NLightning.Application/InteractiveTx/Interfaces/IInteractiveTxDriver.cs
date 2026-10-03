@@ -71,7 +71,7 @@ public interface IInteractiveTxDriver
     /// contribution must re-add an input of every previous attempt we contributed to).</param>
     /// <param name="fundingOutputContribution">Our <c>funding_output_contribution</c>, zero for none.</param>
     /// <param name="cancellationToken">Cancels the call.</param>
-    /// <param name="requestFunding">Our liquidity ads request for the new attempt (NL-771; BOLT PR #1153: an RBF of a
+    /// <param name="requestFunding">Our liquidity ads request for the new attempt (NL-850; BOLT PR #1153: an RBF of a
     /// purchase keeps requesting), sent as <c>request_funding</c>; null for none.</param>
     /// <exception cref="InvalidOperationException">No completed attempt, one in progress, our <c>tx_abort</c> still
     /// waiting for its echo, or a feerate below the IT-RBF-01 minimum.</exception>

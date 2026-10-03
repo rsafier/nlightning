@@ -13,7 +13,7 @@ using Domain.Serialization.Interfaces;
 using Infrastructure.Serialization;
 
 /// <summary>
-/// Liquidity ads (NL-771, plan LA2): Eclair 0.14.3's <c>node_announcement</c> with <c>option_will_fund</c>
+/// Liquidity ads (NL-850, plan LA2): Eclair 0.14.3's <c>node_announcement</c> with <c>option_will_fund</c>
 /// (LightningMessageCodecsSpec "encode/decode liquidity ads") parses through the node's own message serializer,
 /// re-serializes byte-identically, its signature (which covers the TLV stream after the addresses) verifies against
 /// Eclair's node key, and <see cref="NodeAnnouncementRates"/> reads the seller's rates from it.

@@ -18,7 +18,7 @@ using Interfaces;
 /// The close goes on after the wait: <c>listchannels</c> shows it (ShuttingDown, Negotiating, Closing, Closed). An
 /// unknown channel and a channel that can't be closed now are <see cref="ErrorCodes.InvalidChannel"/> and
 /// <see cref="ErrorCodes.InvalidOperation"/>. A channel we sold inbound liquidity on is not closed inside its lease
-/// unless <see cref="CloseChannelClientRequest.Force"/> (liquidity ads D-L4, NL-771): the refusal is
+/// unless <see cref="CloseChannelClientRequest.Force"/> (liquidity ads D-L4, NL-850): the refusal is
 /// <see cref="ErrorCodes.InvalidOperation"/> naming the lease.
 /// </remarks>
 public sealed class CloseChannelClientHandler

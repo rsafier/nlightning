@@ -111,7 +111,7 @@ public enum ClientCommand
     AccountingAdmin = 45,
 
     /// <summary>
-    /// Liquidity ads (<c>liquidityads rates|sellers|purchases</c>, NL-771): our rates, the sellers we know of (their
+    /// Liquidity ads (<c>liquidityads rates|sellers|purchases</c>, NL-850): our rates, the sellers we know of (their
     /// <c>init</c> and <c>node_announcement</c>) and the purchases we made and sold with their lease status.
     /// </summary>
     LiquidityAds = 46

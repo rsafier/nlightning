@@ -61,7 +61,7 @@ internal static class BumpOpenCommands
 
     /// <summary>
     /// <c>&lt;channel_id&gt; &lt;feerate_per_kw&gt;</c> and <c>--contribution-sat</c> (also as
-    /// <c>--contribution-sat=value</c>, anywhere) and the liquidity ads options (<see cref="LiquidityOptions"/>, NL-771:
+    /// <c>--contribution-sat=value</c>, anywhere) and the liquidity ads options (<see cref="LiquidityOptions"/>, NL-850:
     /// without <c>--request-inbound</c> the daemon repeats the previous attempt's purchase, if any).
     /// </summary>
     /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
@@ -150,6 +150,6 @@ internal static class BumpOpenCommands
 /// <summary>The parsed arguments of bumpopen.</summary>
 internal sealed record BumpOpenArguments(ChannelId ChannelId, uint FeeRatePerKw, ulong? ContributionSat)
 {
-    /// <summary>The liquidity ads options (NL-771).</summary>
+    /// <summary>The liquidity ads options (NL-850).</summary>
     public LiquidityArguments Liquidity { get; init; } = LiquidityArguments.None;
 }

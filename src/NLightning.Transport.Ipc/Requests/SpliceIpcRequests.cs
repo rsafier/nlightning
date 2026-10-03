@@ -20,7 +20,7 @@ public sealed class SpliceInIpcRequest
     [Key(2)] public uint? FeeRatePerKw { get; init; }
 
     /// <summary>
-    /// Inbound liquidity to buy from the peer with the splice (liquidity ads, NL-771, <c>--request-inbound</c>), in
+    /// Inbound liquidity to buy from the peer with the splice (liquidity ads, NL-850, <c>--request-inbound</c>), in
     /// satoshis, or null; an older client sends none.
     /// </summary>
     [Key(3)] public ulong? RequestInboundSat { get; init; }

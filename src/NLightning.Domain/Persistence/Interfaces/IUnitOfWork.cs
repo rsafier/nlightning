@@ -120,7 +120,7 @@ public interface IUnitOfWork : IDisposable
     IAccountingPeriodDbRepository AccountingPeriodDbRepository =>
         throw new NotSupportedException("This unit of work does not store accounting periods.");
 
-    // Liquidity ads purchases, bought and sold (NL-771 LA3, migration AddLiquidityPurchases); the default is for test
+    // Liquidity ads purchases, bought and sold (NL-850 LA3, migration AddLiquidityPurchases); the default is for test
     // doubles that store none
     ILiquidityPurchaseDbRepository LiquidityPurchaseDbRepository =>
         throw new NotSupportedException("This unit of work does not store liquidity purchases.");

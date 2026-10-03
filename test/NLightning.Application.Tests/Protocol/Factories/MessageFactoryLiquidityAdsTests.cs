@@ -18,7 +18,7 @@ using Domain.Serialization.Interfaces;
 using Infrastructure.Serialization;
 
 /// <summary>
-/// Liquidity ads (NL-771, plan LA2) from the factory: <c>request_funding</c> on <c>open_channel2</c>,
+/// Liquidity ads (NL-850, plan LA2) from the factory: <c>request_funding</c> on <c>open_channel2</c>,
 /// <c>tx_init_rbf</c> and <c>splice_init</c>, <c>provide_funding</c> on <c>accept_channel2</c>, <c>tx_ack_rbf</c>
 /// and <c>splice_ack</c>, our <c>option_will_fund</c> rates on <c>init</c> when we sell; byte-identical to the
 /// messages without them when the argument is null.

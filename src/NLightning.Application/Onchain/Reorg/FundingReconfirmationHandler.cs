@@ -130,7 +130,7 @@ public sealed class FundingReconfirmationHandler
     /// <summary>
     /// The accounting events of the funding (NL-607): the <see cref="AccountingEventKind.ChannelFunded"/> and push of the
     /// open, or the <see cref="AccountingEventKind.SpliceLocked"/> of a spliced channel's current funding, and the
-    /// liquidity fee of a purchase made in it (NL-771), recorded at the old block, are reversed and recorded again at
+    /// liquidity fee of a purchase made in it (NL-850), recorded at the old block, are reversed and recorded again at
     /// <paramref name="height"/> with the new short channel id under their next confirmation key
     /// (<see cref="AccountingConfirmations.NextConfirmationKey"/>), in the move's save. A memo event of the backfill
     /// posts nothing and is left alone. Never throws.
@@ -150,7 +150,7 @@ public sealed class FundingReconfirmationHandler
             [
                 AccountingEventKeys.ChannelFunded(channelId, fundingTxId), AccountingEventKeys.Push(channelId),
                 AccountingEventKeys.SpliceLocked(channelId, fundingTxId),
-                // NL-771: a liquidity purchase booked with the confirmation moves with it
+                // NL-850: a liquidity purchase booked with the confirmation moves with it
                 AccountingEventKeys.LiquidityFee(channelId, fundingTxId)
             ];
             foreach (var baseKey in baseKeys)

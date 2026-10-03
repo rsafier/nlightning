@@ -25,7 +25,7 @@ using Domain.Protocol.InteractiveTx.Models;
 using LiquidityAds;
 
 /// <summary>
-/// Liquidity ads in a splice and its RBF attempts (BOLT PR #1153 as Eclair 0.14.3 speaks it, NL-771; plan
+/// Liquidity ads in a splice and its RBF attempts (BOLT PR #1153 as Eclair 0.14.3 speaks it, NL-850; plan
 /// <c>docs/agents/LIQUIDITY_ADS_PLAN.md</c> LA3/LA4): the buyer is the sender of <c>splice_init</c> (or
 /// <c>tx_init_rbf</c>) with <c>request_funding</c>, the seller the side that answers <c>provide_funding</c> in
 /// <c>splice_ack</c> (<c>tx_ack_rbf</c>) and contributes exactly the requested amount from its wallet.

@@ -5,7 +5,7 @@ using Domain.LiquidityAds.Models;
 using LiquidityAds;
 
 /// <summary>
-/// The liquidity purchase (liquidity ads, BOLT PR #1153 as Eclair 0.14.3 speaks it, NL-771) one splice attempt carries:
+/// The liquidity purchase (liquidity ads, BOLT PR #1153 as Eclair 0.14.3 speaks it, NL-850) one splice attempt carries:
 /// the buyer's <c>request_funding</c> (in <c>splice_init</c> or <c>tx_init_rbf</c>), the seller's signed
 /// <c>will_fund</c> (in <c>splice_ack</c> or <c>tx_ack_rbf</c>) and the fee, which moves from the buyer's balance to the
 /// seller's on the new funding (<see cref="FeeMsat"/>, through the <c>ChannelFunding</c> balance deltas).

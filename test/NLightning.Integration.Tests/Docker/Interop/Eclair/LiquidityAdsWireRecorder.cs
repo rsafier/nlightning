@@ -12,7 +12,7 @@ using Infrastructure.Serialization.Messages;
 
 /// <summary>
 /// Records the raw wire bytes (type prefix included) of the messages that carry liquidity ads TLV 1339 (BOLT PR #1153,
-/// NL-771), both ways: <c>init</c>, <c>open_channel2</c>/<c>accept_channel2</c>, <c>tx_init_rbf</c>/<c>tx_ack_rbf</c>,
+/// NL-850), both ways: <c>init</c>, <c>open_channel2</c>/<c>accept_channel2</c>, <c>tx_init_rbf</c>/<c>tx_ack_rbf</c>,
 /// <c>splice_init</c>/<c>splice_ack</c> and <c>node_announcement</c>.
 /// </summary>
 /// <remarks>

@@ -8,7 +8,7 @@ using Protocol.Payloads;
 using Protocol.Tlv;
 
 /// <summary>
-/// Liquidity ads rates in a <c>node_announcement</c> (BOLT PR #1153 <c>option_will_fund</c>, NL-771). Eclair 0.14.3
+/// Liquidity ads rates in a <c>node_announcement</c> (BOLT PR #1153 <c>option_will_fund</c>, NL-850). Eclair 0.14.3
 /// writes a TLV stream after the addresses (<see cref="NodeAnnouncementPayload.ExtraData"/>, covered by the signature)
 /// whose record <see cref="LiquidityAdsConstants.TlvType"/> holds the seller's <c>will_fund_rates</c>.
 /// </summary>

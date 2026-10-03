@@ -54,7 +54,7 @@ internal sealed class OnchainTestStore
     /// <summary>Our invoices by payment hash (<c>InvoiceDbRepository.GetByPaymentHashAsync</c>, NL-688).</summary>
     public Dictionary<Hash, InvoiceModel> Invoices { get; } = [];
 
-    /// <summary>The liquidity purchases (<c>LiquidityPurchaseDbRepository</c>, NL-771).</summary>
+    /// <summary>The liquidity purchases (<c>LiquidityPurchaseDbRepository</c>, NL-850).</summary>
     public List<LiquidityPurchaseModel> Purchases { get; } = [];
 
     /// <summary>The first commitment number the revocation log covers (<c>GetLogStartAsync</c>).</summary>

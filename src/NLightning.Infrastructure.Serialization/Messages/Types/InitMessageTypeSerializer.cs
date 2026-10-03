@@ -111,7 +111,7 @@ public class InitMessageTypeSerializer : IMessageTypeSerializer<InitMessage>
                 }
                 catch (InvalidCastException)
                 {
-                    // option_will_fund is odd and advisory (liquidity ads, NL-771): rates we cannot decode only mean
+                    // option_will_fund is odd and advisory (liquidity ads, NL-850): rates we cannot decode only mean
                     // we do not buy from this peer, never a failed init. The receiver logs and drops them.
                     undecodableWillFundRates = baseLiquidityAdsTlv!.Value;
                 }

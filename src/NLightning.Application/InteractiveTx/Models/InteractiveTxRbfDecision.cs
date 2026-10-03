@@ -21,7 +21,7 @@ public sealed record InteractiveTxRbfDecision
     public string? RejectReason { get; }
 
     /// <summary>
-    /// Our liquidity ads answer to the peer's <c>request_funding</c> (NL-771), sent as <c>provide_funding</c> in
+    /// Our liquidity ads answer to the peer's <c>request_funding</c> (NL-850), sent as <c>provide_funding</c> in
     /// <c>tx_ack_rbf</c>; null for none.
     /// </summary>
     public WillFund? WillFund { get; }

@@ -1,7 +1,7 @@
 namespace NLightning.Domain.LiquidityAds.Constants;
 
 /// <summary>
-/// Constants of liquidity ads (BOLT PR #1153 "Extensible Liquidity Ads", as Eclair 0.14.3 speaks it; NL-771).
+/// Constants of liquidity ads (BOLT PR #1153 "Extensible Liquidity Ads", as Eclair 0.14.3 speaks it; NL-850).
 /// </summary>
 public static class LiquidityAdsConstants
 {

@@ -17,7 +17,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
 /// <summary>
-/// <c>liquidityads rates|sellers|purchases</c> (ClientCommand 46, liquidity ads NL-771).
+/// <c>liquidityads rates|sellers|purchases</c> (ClientCommand 46, liquidity ads NL-850).
 /// </summary>
 /// <remarks>
 /// <para><c>rates</c>: our rates (<c>Node:LiquidityAds:FundingRates</c>; none means we do not sell), the lease and the

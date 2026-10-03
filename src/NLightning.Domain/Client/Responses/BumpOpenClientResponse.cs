@@ -22,6 +22,6 @@ public sealed class BumpOpenClientResponse
     /// <summary>The new attempt's funding transaction id (internal byte order).</summary>
     public TxId FundingTxId { get; }
 
-    /// <summary>The liquidity bought with the new attempt (liquidity ads, NL-771), or null.</summary>
+    /// <summary>The liquidity bought with the new attempt (liquidity ads, NL-850), or null.</summary>
     public LiquidityPurchaseModel? Purchase { get; init; }
 }

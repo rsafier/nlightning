@@ -16,7 +16,7 @@ using Domain.Node.Options;
 using Gossip.Graph.Interfaces;
 
 /// <summary>
-/// The node's side of liquidity ads (BOLT PR #1153 as Eclair 0.14.3 speaks it, NL-771), shared by the dual-funded open,
+/// The node's side of liquidity ads (BOLT PR #1153 as Eclair 0.14.3 speaks it, NL-850), shared by the dual-funded open,
 /// the splice and their RBF attempts in both roles. Seller: <see cref="TryStartSale"/> checks a request against our
 /// <c>Node:LiquidityAds:FundingRates</c> and the griefing caps (decision D-L5: at most
 /// <see cref="LiquidityAdsOptions.MaxConcurrentSales"/> sale negotiations node-wide and

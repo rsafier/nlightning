@@ -478,7 +478,7 @@ public static class SpliceRules
                            $"the RBF attempt pays {facts.TotalFeeSatoshis} sat, less than the previous "
                          + $"{previousFee} sat");
 
-        // A liquidity purchase (NL-771) moves its fee from the buyer's balance to the seller's on the new funding
+        // A liquidity purchase (NL-850) moves its fee from the buyer's balance to the seller's on the new funding
         var newCapacity = facts.FundingOutputSatoshis;
         if (facts.LocalAddedOtherOutput
          && !KeepsReserve(facts.LocalBalanceMsat, facts.LocalContributionSatoshis, -facts.LiquidityFeeMsat,
@@ -506,7 +506,7 @@ public static class SpliceRules
     }
 
     /// <summary>
-    /// LA-RES-01 (liquidity ads, NL-771): the buyer of a purchase made with a splice pays its fee (mining plus service)
+    /// LA-RES-01 (liquidity ads, NL-850): the buyer of a purchase made with a splice pays its fee (mining plus service)
     /// from its balance on the new funding and must keep at least the reserve that matches the new capacity (D9) after
     /// paying it, so the fee never eats into the reserve. A violation is a <c>tx_abort</c> (BOLT 2: MAY send
     /// <c>tx_abort</c> for any reason); the seller checks it on the request, the buyer before it asks and on the answer,
@@ -550,7 +550,7 @@ public static class SpliceRules
 
     /// <param name="balanceMsat">The side's main balance on the current funding.</param>
     /// <param name="contributionSatoshis">Its signed contribution.</param>
-    /// <param name="adjustmentMsat">What it gains (+) or pays (−) besides its contribution: a liquidity fee (NL-771).
+    /// <param name="adjustmentMsat">What it gains (+) or pays (−) besides its contribution: a liquidity fee (NL-850).
     /// </param>
     /// <param name="announcedReserveSatoshis">The reserve the other side requires of it.</param>
     /// <param name="newCapacitySatoshis">The new funding's capacity.</param>
@@ -625,7 +625,7 @@ public sealed record SpliceRbfConditions(
 /// <param name="TotalFeeSatoshis">The transaction's total fee (inputs minus outputs).</param>
 /// <param name="PreviousAttemptFeeSatoshis">For an RBF attempt, the last negotiated attempt's total fee; null
 /// otherwise.</param>
-/// <param name="LiquidityFeeMsat">The fee of a liquidity purchase made with the splice (NL-771), signed from our point
+/// <param name="LiquidityFeeMsat">The fee of a liquidity purchase made with the splice (NL-850), signed from our point
 /// of view: positive when we buy (it leaves our balance for the peer's), negative when we sell, 0 for none.</param>
 public sealed record SpliceTxCompleteFacts(
     int SharedInputCount,

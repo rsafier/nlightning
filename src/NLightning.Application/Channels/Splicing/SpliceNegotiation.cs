@@ -73,7 +73,7 @@ internal sealed class SpliceNegotiation
     /// as much).</summary>
     public ulong? PreviousAttemptFeeSatoshis { get; set; }
 
-    /// <summary>The liquidity purchase this attempt carries (liquidity ads, NL-771), or null.</summary>
+    /// <summary>The liquidity purchase this attempt carries (liquidity ads, NL-850), or null.</summary>
     public SpliceLiquidity? Liquidity { get; set; }
 
     /// <summary>The shared input and output (set once both funding keys are known).</summary>

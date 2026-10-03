@@ -9,7 +9,7 @@ using Domain.Accounting.Services;
 using static AccountingBooksTestKit;
 
 /// <summary>
-/// Liquidity ads fees in the operational reports and exports (NL-771 LA5): a channel where we bought liquidity and one
+/// Liquidity ads fees in the operational reports and exports (NL-850 LA5): a channel where we bought liquidity and one
 /// where we sold it, posted by the production rules.
 /// </summary>
 public class LiquidityFeeReportTests

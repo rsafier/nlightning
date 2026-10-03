@@ -23,7 +23,7 @@ public sealed class CloseChannelIpcRequest
     [Key(3)] public uint? WaitSeconds { get; init; }
 
     /// <summary>
-    /// Close even while a liquidity lease we sold on the channel is in force (liquidity ads D-L4, NL-771,
+    /// Close even while a liquidity lease we sold on the channel is in force (liquidity ads D-L4, NL-850,
     /// <c>closechannel --force</c>); an older client sends none (not forced).
     /// </summary>
     [Key(4)] public bool Force { get; init; }

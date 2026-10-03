@@ -6,7 +6,7 @@ using Domain.Protocol.Tlv;
 using Infrastructure.Protocol.Tlv.Converters;
 
 /// <summary>
-/// The three converters of the liquidity ads TLV 1339 (NL-771): one per meaning, each strict on its own value.
+/// The three converters of the liquidity ads TLV 1339 (NL-850): one per meaning, each strict on its own value.
 /// </summary>
 public class LiquidityAdsTlvConverterTests
 {

@@ -258,7 +258,7 @@ public class PeerServiceTests
     [Fact]
     public void Given_InitWithLiquidityRates_When_InitReceived_Then_ThePeersRatesAreKept()
     {
-        // Arrange (liquidity ads, NL-771: the peer sells at these rates)
+        // Arrange (liquidity ads, NL-850: the peer sells at these rates)
         var peerService = CreatePeerService();
         var rates = WillFundRates.Create([new FundingRate(100_000, 500_000, 550, 100, 5_000, 1_000)],
                                          [LiquidityPaymentType.FromChannelBalance]);

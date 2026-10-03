@@ -13,7 +13,7 @@ using Infrastructure.Persistence.Contexts;
 using Infrastructure.Repositories.Database.LiquidityAds;
 
 /// <summary>
-/// Provider-agnostic proof for migration <c>AddLiquidityPurchases</c> (NL-771 LA3), shared by the SQLite test and the
+/// Provider-agnostic proof for migration <c>AddLiquidityPurchases</c> (NL-850 LA3), shared by the SQLite test and the
 /// Docker Postgres test: the schema right before it moves forward; then purchases round-trip every field (the extremes of
 /// every rate field, the amounts and a non-UTC creation time to the tick), the save assigns their ids, updates staged
 /// before and after a save and on a reloaded model are written, the queries (by channel, by funding attempt, the list

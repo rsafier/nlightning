@@ -14,7 +14,7 @@ public interface IMessageFactory
     /// <summary>
     /// Creates an init message. <paramref name="remoteAddress"/> is the BOLT 1 <c>remote_addr</c> TLV: the address
     /// descriptor of the connection's remote endpoint, which the receiver of an IP connection SHOULD send (NL-009);
-    /// null sends no <c>remote_addr</c>. When we sell liquidity (<c>Node:LiquidityAds:FundingRates</c>, NL-771) our
+    /// null sends no <c>remote_addr</c>. When we sell liquidity (<c>Node:LiquidityAds:FundingRates</c>, NL-850) our
     /// <c>option_will_fund</c> rates go with it.
     /// </summary>
     InitMessage CreateInitMessage(AddressDescriptor? remoteAddress = null);
@@ -37,13 +37,13 @@ public interface IMessageFactory
     TxCompleteMessage CreateTxCompleteMessage(ChannelId channelId);
     TxSignaturesMessage CreateTxSignaturesMessage(ChannelId channelId, byte[] txId, List<Witness> witnesses);
 
-    /// <summary>A <c>tx_init_rbf</c>; <paramref name="requestFunding"/> is our liquidity ads request (NL-771), null
+    /// <summary>A <c>tx_init_rbf</c>; <paramref name="requestFunding"/> is our liquidity ads request (NL-850), null
     /// for none.</summary>
     TxInitRbfMessage CreateTxInitRbfMessage(ChannelId channelId, uint locktime, uint feerate,
                                             long fundingOutputContrubution,
                                             bool requireConfirmedInputs, RequestFunding? requestFunding = null);
 
-    /// <summary>A <c>tx_ack_rbf</c>; <paramref name="willFund"/> is our liquidity ads answer (NL-771), null for
+    /// <summary>A <c>tx_ack_rbf</c>; <paramref name="willFund"/> is our liquidity ads answer (NL-850), null for
     /// none.</summary>
     TxAckRbfMessage CreateTxAckRbfMessage(ChannelId channelId, long fundingOutputContrubution,
                                           bool requireConfirmedInputs, WillFund? willFund = null);
@@ -178,14 +178,14 @@ public interface IMessageFactory
     /// <param name="locktime">The splice transaction's <c>nLockTime</c>.</param>
     /// <param name="fundingPubKey">Our funding key for the new funding.</param>
     /// <param name="requireConfirmedInputs">Set <c>require_confirmed_inputs</c> (TLV 2).</param>
-    /// <param name="requestFunding">Our liquidity ads request (NL-771), null for none.</param>
+    /// <param name="requestFunding">Our liquidity ads request (NL-850), null for none.</param>
     SpliceInitMessage CreateSpliceInitMessage(ChannelId channelId, long fundingContributionSatoshis,
                                               uint fundingFeeratePerKw, uint locktime, CompactPubKey fundingPubKey,
                                               bool requireConfirmedInputs = false,
                                               RequestFunding? requestFunding = null);
 
     /// <summary>A <c>splice_ack</c> (BOLT 2, type 81, SP-W-02); <paramref name="willFund"/> is our liquidity ads
-    /// answer (NL-771), null for none.</summary>
+    /// answer (NL-850), null for none.</summary>
     SpliceAckMessage CreateSpliceAckMessage(ChannelId channelId, long fundingContributionSatoshis,
                                             CompactPubKey fundingPubKey, bool requireConfirmedInputs = false,
                                             WillFund? willFund = null);
