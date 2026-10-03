@@ -385,9 +385,11 @@ public partial class LocalLightningSigner : ILightningSigner
             _localCommitmentNumbers.TryRemove(channelId, out _);
             _broadcastSignedNumbers.TryRemove(channelId, out _);
             _spliceFundings.TryRemove(channelId, out _);
+            _taprootBroadcastSessions.TryRemove(channelId, out _);
         }
 
         _dataLossChannels.TryRemove(channelId, out _);
+        ForgetClosingNonces(channelId);
 
         if (removed && _logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Channel {ChannelId} was unregistered from the signer", channelId);
@@ -517,21 +519,8 @@ public partial class LocalLightningSigner : ILightningSigner
                                                                   SignedTransaction unsignedCommitment,
                                                                   CompactSignature remoteSignature)
     {
-        ThrowIfDataLoss(channelId, "broadcast our commitment");
-
-        // I4: never sign a revoked commitment for broadcast (the peer holds its revocation secret)
-        var localCommitmentNumber = _localCommitmentNumbers.GetValueOrDefault(channelId);
-        if (commitmentNumber < localCommitmentNumber)
-            throw new SignerException(
-                $"Refusing to sign revoked local commitment {commitmentNumber} for broadcast (current local "
-              + $"commitment is {localCommitmentNumber})", channelId, "Internal error");
-
-        // S1 (SP-I4 across fundings): once a commitment is signed for broadcast, only that commitment number may be
-        // signed again (a retry, or the same number on the funding that confirmed instead)
-        if (_broadcastSignedNumbers.TryGetValue(channelId, out var broadcastNumber) && commitmentNumber != broadcastNumber)
-            throw new SignerException(
-                $"Refusing to sign local commitment {commitmentNumber} for broadcast: commitment {broadcastNumber} is "
-              + "already signed for broadcast", channelId, "Internal error");
+        ThrowIfTaproot(channelId, signingInfo, "sign our commitment for broadcast with an ECDSA signature");
+        ThrowIfCannotSignForBroadcast(channelId, commitmentNumber);
 
         Transaction tx;
         try
@@ -896,13 +885,10 @@ public partial class LocalLightningSigner : ILightningSigner
                 throw new SignerException($"Funding output index {signingInfo.FundingOutputIndex} is out of range",
                                           channelId);
 
-            // Build the funding output using the channel's signing info
-            var fundingOutputInfo = new FundingOutputInfo(signingInfo.FundingSatoshis, signingInfo.LocalFundingPubKey,
-                                                          signingInfo.RemoteFundingPubKey, signingInfo.FundingTxId,
-                                                          signingInfo.FundingOutputIndex);
-
-            var expectedFundingOutput = _fundingOutputBuilder.Build(fundingOutputInfo);
-            var expectedTxOut = expectedFundingOutput.ToTxOut();
+            // The channel's funding output: the P2WSH 2-of-2, or the MuSig2 P2TR output of a simple taproot channel
+            var expectedTxOut = signingInfo.IsSimpleTaproot
+                                    ? BuildTaprootFundingTxOut(FromSigningInfo(signingInfo))
+                                    : BuildFundingOutput(FromSigningInfo(signingInfo)).ToTxOut();
 
             // Validate the transaction output matches what we expect
             var actualTxOut = nBitcoinTx.Outputs[signingInfo.FundingOutputIndex];
@@ -1076,6 +1062,7 @@ public partial class LocalLightningSigner : ILightningSigner
         if (!TryGetSigningInfo(channelId, out var signingInfo))
             throw new InvalidOperationException($"Channel {channelId} not registered with signer");
 
+        ThrowIfTaproot(channelId, signingInfo, "sign a channel transaction with an ECDSA signature");
         ThrowIfDataLoss(channelId, "sign a commitment");
         ThrowIfBroadcastSigned(channelId, "sign a channel transaction");
 
@@ -1092,6 +1079,8 @@ public partial class LocalLightningSigner : ILightningSigner
 
         if (!TryGetSigningInfo(channelId, out var signingInfo))
             throw new SignerException("Channel not registered with signer", channelId, "Internal error");
+
+        ThrowIfTaproot(channelId, signingInfo, "check an ECDSA signature of a channel transaction");
 
         Transaction nBitcoinTx;
         try
@@ -1432,6 +1421,29 @@ public partial class LocalLightningSigner : ILightningSigner
                                       "Internal error");
     }
 
+    /// <summary>
+    /// The guards of every broadcast signature of our commitment <paramref name="commitmentNumber"/> (ECDSA and simple
+    /// taproot), under the channel's commitment lock: data loss (I12), a revoked commitment (I4) and S1/SP-I4.
+    /// </summary>
+    private void ThrowIfCannotSignForBroadcast(ChannelId channelId, ulong commitmentNumber)
+    {
+        ThrowIfDataLoss(channelId, "broadcast our commitment");
+
+        // I4: never sign a revoked commitment for broadcast (the peer holds its revocation secret)
+        var localCommitmentNumber = _localCommitmentNumbers.GetValueOrDefault(channelId);
+        if (commitmentNumber < localCommitmentNumber)
+            throw new SignerException(
+                $"Refusing to sign revoked local commitment {commitmentNumber} for broadcast (current local "
+              + $"commitment is {localCommitmentNumber})", channelId, "Internal error");
+
+        // S1 (SP-I4 across fundings): once a commitment is signed for broadcast, only that commitment number may be
+        // signed again (a retry, or the same number on the funding that confirmed instead)
+        if (_broadcastSignedNumbers.TryGetValue(channelId, out var broadcastNumber) && commitmentNumber != broadcastNumber)
+            throw new SignerException(
+                $"Refusing to sign local commitment {commitmentNumber} for broadcast: commitment {broadcastNumber} is "
+              + "already signed for broadcast", channelId, "Internal error");
+    }
+
     private void ThrowIfBroadcastSigned(ChannelId channelId, string what)
     {
         if (_broadcastSignedNumbers.TryGetValue(channelId, out var broadcastNumber))
@@ -1514,7 +1526,16 @@ public partial class LocalLightningSigner : ILightningSigner
         // Simple taproot: a BIP 340 signature (fresh aux randomness) of the BIP 341 script-path sighash of the spent
         // leaf; the sighash byte (0x83 for the counterparty, none for SIGHASH_DEFAULT) is added by the tx builder
         if (context.HtlcTransaction.IsTaproot)
-            return TaprootSignatures.Sign(htlcKey, ComputeTaprootHtlcSigHash(context, sigHash));
+        {
+            var taprootSigHash = ComputeTaprootHtlcSigHash(context, sigHash);
+            var taprootSignature = TaprootSignatures.Sign(htlcKey, taprootSigHash);
+
+            // BIP 340's fault-attack advice (NL-904 item 7): a faulty signature never leaves the signer
+            if (!TaprootSignatures.Verify(htlcKey.PubKey, taprootSigHash, taprootSignature))
+                throw new SignerException("Our BIP 340 HTLC signature does not verify", "Internal error");
+
+            return taprootSignature;
+        }
 
         // RFC 6979 without low-R grinding, like SignChannelTransaction; the sighash flag is added by the tx builder
         var signature = htlcKey.Sign(ComputeHtlcSigHash(context, sigHash, allowFeeInputs),
@@ -1546,8 +1567,8 @@ public partial class LocalLightningSigner : ILightningSigner
     private uint256 ComputeTaprootHtlcSigHash(HtlcSigningContext context, SigHash sigHash)
     {
         if (!context.HasAnchors)
-            throw new ArgumentException("A simple taproot HTLC transaction has the anchors semantics",
-                                        nameof(context));
+            throw new SignerException("A simple taproot HTLC transaction has the anchors semantics (HasAnchors must "
+                                    + "be true)", "Internal error");
 
         var taprootSigHash = sigHash switch
         {
@@ -1676,6 +1697,9 @@ public partial class LocalLightningSigner : ILightningSigner
         ArgumentNullException.ThrowIfNull(unsignedTransaction);
         ArgumentNullException.ThrowIfNull(amount);
         var signingInfo = GetRegisteredSigningInfo(channelId);
+
+        // A simple taproot anchor is keyed to the delayed/payment key and spent by tapscript, not this P2WSH (T4)
+        ThrowIfTaproot(channelId, signingInfo, "sign a P2WSH anchor input");
 
         // BOLT 3 fixes every anchor at 330 sat; nothing else is ever signed with the funding key on this path
         if (amount != Domain.Bitcoin.Transactions.Constants.TransactionConstants.AnchorOutputAmount)
