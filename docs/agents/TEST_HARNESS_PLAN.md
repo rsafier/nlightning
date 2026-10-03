@@ -659,6 +659,93 @@ about three times that), and each run's nodes reach only their own namespace's p
 the run's own topology). Wall time per run is about Docker's (14-15 min against 13.5); the gain is concurrency: 3
 suites in 890 s instead of about 2,400 s one after another under the Docker lock.
 
+### Phase 2 record (2026-10-02, `wip/harness-spike` at 1d776c4c)
+
+Verdict: **phase 2 is done.** The CLN interop suite, the first real suite, runs unchanged on the cluster harness behind
+a backend switch, green alone and 3 times at once, while the Docker CLN suite stays green on the same code. The lane
+records above hold the detail; this section is the summary.
+
+**What each lane built**
+
+| Lane | Built | Where |
+|---|---|---|
+| A. In-process node in a topology | `InProcessNodeDeployer` (`NodeKind.NLightning`: one `NLightningTestNode` per topology node, on loopback, announced to pods as `host.orb.internal`, on the topology's bitcoind by pod IP) and `InProcessNode` (the `ITopologyLightningNode` adapter over the daemon's client handlers: connect, v1/dual-fund/`Auto` opens, invoices, pay, close, restart on the same key, database and port) | `test/NLightning.Integration.Tests/Cluster/` |
+| C. Startup and teardown cuts | One deployment wave (Lightning StatefulSets with bitcoind, an init container waiting for bitcoind), `NodeStorage.Ephemeral` (`emptyDir`), maturity blocks to a burn address, the chain Service address wait (CoreDNS NXDOMAIN cache), pods-first teardown with background namespace deletion, `ClusterTopologyFixture<T>` (warm topology per collection) | `test/NLightning.Testing.Cluster/` (`Topology/`, `Run/`) |
+| D. Diagnostics | Per-pod describe, current and previous logs, namespace events, PVC/StatefulSet/Service/NetworkPolicy state and per-node state (bitcoind, CLN, LND) on a `Poll` timeout, failed readiness or build, and a failed test (`[assembly: ClusterDiagnostics]`); `NLTG_CLUSTER_DIAG`, `NLTG_KEEP_NAMESPACE=failure`; `run-cluster.sh` lists the dumps per run | `test/NLightning.Testing.Cluster/Diagnostics/` |
+| Integration | `ClusterTopologyFixture.OnStoppingAsync` (stop in-process nodes before bitcoind goes), `InProcessTopologyFixture` (the seam the CLN port uses), the diagnostics hook in Integration.Tests, the reaper test's admission race | both projects |
+| B. The CLN port | `NLTG_TEST_BACKEND`, `ClnFixture` over `IClnBackend` (`DockerClnBackend`, `ClusterClnBackend`), `StartClnAsync(ClnNodeSpec)` for the classes' own CLNs, `ClnExec` (docker or Kubernetes exec), `TestRun.RemoveNodeAsync`, `run-cluster.sh --suite cln` | `test/NLightning.Integration.Tests/Fixtures/`, `scripts/run-cluster.sh` |
+| Review fixes | Chain monitor tip poll (`Bitcoin:TipPollInterval`, product), `TCP_NODELAY` on every peer connection (product, NL-477), a failed node removal finished by the next deploy, an accepted already-reset socket no longer ends the listener (product) | `src/NLightning.Infrastructure{,.Bitcoin}/`, `test/NLightning.Testing.Cluster/Run/` |
+
+**The CLN port design and the switch**
+
+- `NLTG_TEST_BACKEND=docker|cluster` (`Fixtures/TestBackend`): Docker when unset, any other value throws, so a typo
+  never quietly runs Docker. One process uses one backend.
+- `ClnFixture` keeps every member the 17 CLN classes use and delegates to `IClnBackend`. `DockerClnBackend` is the
+  former fixture moved over verbatim (images, container names, flags, ports; a unit test pins CLN's command line).
+  `ClusterClnBackend` is a warm `ClusterTopologyFixture` (suite `cln-interop`, one namespace per test process: bitcoind
+  `miner` + CLN `nltg-cln` on `emptyDir`, the same CLN release by digest, the same flags and alias).
+- Test bodies changed only where they named Docker: `HostAddressForCln` instead of `host.docker.internal`,
+  `DumpClnLogAsync` instead of container log dumps, `StartClnAsync(ClnNodeSpec)` instead of their own containers
+  (`ClnDualFundTests`, `ClnSpliceReestablishTests`, the captures), `ClnClient.ExecAsync` for a raw `lightning-cli`.
+- Running it: `scripts/run-cluster.sh -n 3 --suite cln` (cluster, no Docker lock) and `scripts/run-interop.sh cln`
+  (Docker, unchanged, under the machine lock).
+
+**Proof** (OrbStack k8s v1.35.6+orb1, Release, net10.0, final head; 81 tests discovered, 77 run, 4 Explicit captures
+run separately, 4/4 on the cluster in `hp2b-capt2`):
+
+| Run | Result | Wall time |
+|---|---|---|
+| Cluster alone (`hp2f-alone`) | 77/77, 0 diagnostics dumps | 889 s |
+| Cluster 3 at once (`hp2f-cln3`, 3 namespaces) | 77/77, 77/77, 77/77; namespaces gone after | 823-882 s per run, batch 890 s |
+| Docker (`run-interop.sh cln`, machine lock) | 77/77 | 807 s (876-886 s before the `NoDelay` fix) |
+| Fixture ready | cluster 7.2 s alone, 5.5-6.5 s 3 at once; Docker 3.0 s | |
+| Resources, 3 at once | peak 9 containers, 0.91 CPU cores, 539 MiB | |
+| Warm in-process pair (`InProcessTopologyFixtureClusterTests`, 3 at once) | 3/3, topology to active channel 9.3-9.7 s | |
+| Startup, pair alone (spike → phase 2) | CLN 22-25 s → 6.1-10.0 s, LND 21-32 s → 8.6 s on `emptyDir` | |
+| Non-Docker suite, net10.0 | 13,990 passed, 6 skipped, 0 failed | |
+
+The gain is concurrency, not per-run speed: 3 CLN suites in 890 s, against about 2,400 s one after another under the
+Docker lock.
+
+**Decisions**
+
+- **In-process node placement.** On OrbStack our node runs in the test process on the host, listens on loopback and
+  is announced to pods as `host.orb.internal:<port>`. Pods appear to it as 127.0.0.1 and would be saved inbound-only
+  (NL-497), so our node always dials out to the pods (stable DNS names or pod IPs). Other clusters run the test
+  assembly as a Job in the run's namespace (`InClusterTestRunner`, proven in the spike, not used by the CLN port yet).
+- **PVC vs `emptyDir`.** The library default stays a PVC (restart and kill tests need it), but fixtures use `emptyDir`
+  for every node a test never restarts: local-path provisioning was 6 s alone and 12-15 s under load, the biggest
+  single startup cost. Only `ClnSpliceReestablishTests`' restartable CLN takes a PVC (plus a stable `-p2p` ClusterIP
+  name). A pre-bound PV or an `Immediate` StorageClass would be cluster-scoped and is out of the rules.
+- **Warm topologies.** One topology per xunit collection per process (`ClusterTopologyFixture<T>`), never reset, the
+  same isolation contract as the Docker fixtures: tests must assert on their own channels and payments and wait for
+  settled state (the diagnostics hook caught one test that did not).
+- **Background deletion.** Disposal stops the pods first (1 s grace) and returns while the namespace terminates; a
+  terminating namespace keeps its admission slot until it is gone, so the cap of 6 counts it; the reaper owns
+  leftovers. Disposal went from 16-84 s to 0.6-4.4 s as the test sees it.
+- **Tor stays on Docker.** `ClnTorInteropTests` (`Category=Interop.Tor`) need a Tor daemon topology; on the cluster
+  backend the fixture starts nothing and they skip with the reason. Porting them belongs to phase 4 (with NL-572).
+- **Product fixes over test workarounds.** Two harness symptoms were product gaps: blocks ZMQ never announced (now the
+  tip poll) and Nagle holding our `stfu` behind our `revoke_and_ack` (NL-477, now `NoDelay`). Test-only guards for both
+  were tried and dropped.
+
+**Revised estimate for phases 3-6** (the CLN port took about a day once lanes A, C and D existed; the backend-switch
+pattern carries over):
+
+1. **Phase 3, LND (≈3-4 days).** The regtest topology (miner + alice/bob/carol/david, pre-opened channels, alice's
+   `--protocol.rbf-coop-close` and the other per-node flags), an `LndBackend` behind `LightningRegtestNetworkFixture`
+   keeping the members the 47 LNUnit-based files use, in-tree gRPC clients generated from LND 0.21.4's protos
+   (Grpc.Tools) replacing `lnunit`/`LNUnit.LND`, then the LND suite, on-chain, gossip and ABCD suites on the switch.
+   The long pole: four suites, address-hold restarts (NL-262) and LND's router timing (NL-319).
+2. **Phase 4, Eclair, LDK, Tor, Postgres, partitions (≈2-3 days, unchanged).** Same backend pattern per fixture;
+   Tor needs a Tor daemon in the namespace; partitions use the NetworkPolicy support proven in the spike.
+3. **Phase 5, matrix runner (≈1 day).** `run-cluster.sh` already runs N processes of a suite; it grows into the suite
+   matrix with rerun-alone and a summary, then replaces `run-{onchain,gossip,abcd,interop}.sh`.
+4. **Phase 6, proof (≈1 day).** The full matrix twice concurrently, then at the tuned N; close NL-262 and NL-276. Per-run
+   wall time is about Docker's, so the target (≈15 min instead of ≈75) comes from running 4-6 suites at once.
+
+Total left: about 7-9 working days.
+
 ## 6. Risks and open questions
 
 - **Timing flakes under load.** Six suites mining and paying at once on one VM raise the risk. Mitigations: per-container CPU and memory limits, readiness waits that check real state (graph edge present, not just "channel active"), the flake rule, and N tuned down if needed.

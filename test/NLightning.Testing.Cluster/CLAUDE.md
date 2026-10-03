@@ -1,7 +1,8 @@
 # NLightning.Testing.Cluster — the Kubernetes-native test harness (spike)
 
 Plan: `docs/agents/TEST_HARNESS_PLAN.md` (§3 requirements, §4 structure, §5 spike). This library replaces LNUnit and
-the Docker fixtures over time; for now it is the spike on `wip/harness-spike`. It references no NLightning project:
+the Docker fixtures over time, suite by suite (`wip/harness-spike`; phase 2 ported the CLN interop suite, plan
+"Phase 2 record"). It references no NLightning project:
 every implementation, our own node included, is driven through the same seams.
 
 ## Layout and seams (use these, do not re-invent them)
@@ -179,6 +180,18 @@ every implementation, our own node included, is driven through the same seams.
   `QuotaSizing.ForWorkloads(workloads, extraPods: 1, job.Resources)`. An adopted run (`TestRunOptions.AdoptNamespace`)
   admits itself without the cap (the host already holds the slot) and its disposal also removes its nodes'
   `StableNodeAddress` Services.
+
+## Running a ported suite (phase 2)
+
+- The suites keep their fixtures; `NLTG_TEST_BACKEND=docker|cluster` (Integration.Tests `Fixtures/TestBackend`, Docker
+  when unset, an unknown value throws) picks the backend per process. Ported so far: the CLN interop suite
+  (`ClnFixture` -> `ClusterClnBackend`, a warm `ClusterTopologyFixture`).
+- `scripts/run-cluster.sh -n 3 --suite cln` builds once and runs 3 processes of `-p integration --trait
+  Category=Interop.Cln`, each with `NLTG_TEST_BACKEND=cluster` and its own run id and namespace (`--class X` narrows it,
+  `--explicit on` adds the captures, `--keep-on-failure` keeps a failed run's namespace). No Docker lock is needed.
+- A new suite follows the same pattern: the fixture keeps its members and delegates to a Docker backend (the old code,
+  unchanged) and a cluster backend (`ClusterTopologyFixture`, plus `InProcessTopologyFixture` for our nodes); test
+  bodies reach the backend only through the fixture.
 
 ## Rules while batch work shares the machine
 
